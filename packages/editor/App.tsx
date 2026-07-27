@@ -150,7 +150,11 @@ import {
 } from './savedFileChangeValidation';
 import { fetchSourceDocumentSnapshot, probeSourceSave } from './sourceDocumentClient';
 import { reconcileSourceDocuments, type SourceDocumentReconcileEvent } from './sourceDocumentReconciliation';
-import { dirnameBrowserPath, normalizeBrowserPath, pathIsInsideDir } from './sourceDocumentPaths';
+import {
+  buildSourceWatchSubscription,
+  normalizeBrowserPath,
+  pathIsInsideDir,
+} from './sourceDocumentPaths';
 import { pickRestoredSingleFileDraftToDisplay } from './draftRestoreSelection';
 
 type NoteAutoSaveResults = {
@@ -2228,20 +2232,17 @@ const App: React.FC = () => {
     reconcileOpenSourceDocumentsRef.current = reconcileOpenSourceDocuments;
   }, [reconcileOpenSourceDocuments]);
 
-  const sourceWatchDirsKey = useMemo(() => {
-    const dirs = new Set<string>();
-    for (const doc of openSourceDocuments) dirs.add(dirnameBrowserPath(doc.sourceSave.path));
-    return [...dirs].sort().join('\n');
-  }, [openSourceDocuments]);
+  const sourceWatchSubscription = useMemo(
+    () => buildSourceWatchSubscription(openSourceDocuments.map((doc) => doc.sourceSave.path)),
+    [openSourceDocuments],
+  );
 
   useEffect(() => {
-    if (!sourceWatchDirsKey || typeof EventSource === 'undefined') return;
+    if (!sourceWatchSubscription.key || typeof EventSource === 'undefined') return;
 
-    const dirs = sourceWatchDirsKey.split('\n').filter(Boolean);
+    const dirs = sourceWatchSubscription.dirs;
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
-    const params = new URLSearchParams();
-    for (const dir of dirs) params.append('dirPath', dir);
-    const source = new EventSource(`/api/reference/files/stream?${params.toString()}`);
+    const source = new EventSource(`/api/reference/files/stream?${sourceWatchSubscription.query}`);
 
     const schedule = (dir?: string) => {
       const key = dir ?? '*';
@@ -2272,7 +2273,7 @@ const App: React.FC = () => {
       for (const timer of timers.values()) clearTimeout(timer);
       source.close();
     };
-  }, [sourceWatchDirsKey]);
+  }, [sourceWatchSubscription.key]);
 
   const handleTaterModeChange = useCallback((enabled: boolean) => {
     setTaterMode(enabled);
