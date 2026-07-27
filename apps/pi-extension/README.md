@@ -96,6 +96,7 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
 
 ```json
 {
+  "executionMode": "automatic",
   "defaults": {
     "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
     "thinking": "medium",
@@ -129,6 +130,7 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
 
 | Option | Type | Meaning |
 |--------|------|---------|
+| `executionMode` | `automatic` \| `external` | `automatic` executes approved plans in the current Pi session; `external` emits a handoff event and returns to idle |
 | `defaults` | object | Base values applied to every phase before phase-specific overrides |
 | `phases` | object | Phase-specific overrides |
 | `phases.planning` | object | Settings for planning mode |
@@ -158,6 +160,8 @@ Use these inside `systemPrompt` strings:
 - The resolved list is then turned on *alongside* whatever tools are already active in the session, so Plannotator still preserves tools provided by other extensions, and on phase exit it turns off only the tools it added.
 - `plannotator_submit_plan` is always enabled during planning even if your `activeTools` omits it — the planning system prompt tells the model to call it, so the phase cannot complete without it.
 - Execution progress remains dynamic (`[DONE:n]` + checklist tracking), even if `statusLabel` is set.
+- `executionMode` defaults to `automatic`, preserving the existing approval-to-execution flow.
+- In `external` mode, approval restores the pre-planning model, thinking level, and active tools before emitting the handoff event.
 
 #### Example files
 
@@ -190,6 +194,45 @@ Plan review is asynchronous:
 - callers can query `review-status` with the same `reviewId` to recover from startup races or session restarts
 
 The other shared actions remain request/response flows. Payloads are intentionally minimal and only include fields the shared implementation actually uses.
+
+#### External plan execution handoff
+
+Set `executionMode` to `external` when another Pi extension should orchestrate an approved plan instead of letting Plannotator execute it in the current session:
+
+```json
+{
+  "executionMode": "external"
+}
+```
+
+After approval, Plannotator returns to idle and emits `plannotator:plan-approved` with:
+
+```ts
+{
+  cwd: string;
+  planFilePath: string;
+  planContent: string;
+  feedback?: string;
+}
+```
+
+`planFilePath` is the path exactly as it was submitted, so it is normally relative to `cwd`. Resolve it against `cwd` before reading the file rather than against the companion extension's own working directory.
+
+Companion extensions can subscribe through the shared event bus:
+
+```ts
+import { PLANNOTATOR_PLAN_APPROVED_CHANNEL } from "@plannotator/pi-extension/plannotator-events";
+import { resolve } from "node:path";
+
+pi.events.on(PLANNOTATOR_PLAN_APPROVED_CHANNEL, (event) => {
+  const planPath = resolve(event.cwd, event.planFilePath);
+  // Compile and dispatch the approved plan with an external orchestrator.
+});
+```
+
+As with `plannotator:request`, the channel is a plain string, so a companion can listen with `pi.events.on("plannotator:plan-approved", ...)` and never import Plannotator internals. The constant and the `PlannotatorPlanApprovedEvent` type are exported purely as a typing convenience.
+
+Plannotator does not send `Continue with the approved plan`, enter its executing phase, or track checklist progress in this mode. The companion extension owns execution after the handoff.
 
 ### Markdown annotation
 
@@ -230,7 +273,7 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 
 ## How it works
 
-The extension manages a state machine: **idle** → **planning** → **executing** → **idle**.
+By default, the extension manages a state machine: **idle** → **planning** → **executing** → **idle**. With external execution enabled, approval follows **idle** → **planning** → **idle** and emits the handoff event.
 
 During **planning**:
 - All tools from other extensions remain available

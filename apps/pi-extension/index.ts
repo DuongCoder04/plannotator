@@ -25,7 +25,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { buildPromptVariables, formatTodoList, loadPlannotatorConfig, renderTemplate, resolvePhaseProfile } from "./config.ts";
+import { buildPromptVariables, formatTodoList, loadPlannotatorConfig, renderTemplate, resolveExecutionMode, resolvePhaseProfile } from "./config.ts";
 import {
 	type ChecklistItem,
 	markCompletedSteps,
@@ -42,6 +42,8 @@ import {
 	startLastMessageAnnotationSession,
 	startMarkdownAnnotationSession,
 	openPlanReviewBrowser,
+	PLANNOTATOR_PLAN_APPROVED_CHANNEL,
+	type PlannotatorPlanApprovedEvent,
 	registerPlannotatorEventListeners,
 } from "./plannotator-events.ts";
 import {
@@ -429,7 +431,13 @@ export default function plannotator(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function exitToIdle(ctx: ExtensionContext): Promise<void> {
+	/**
+	 * The single exit sequence every idle transition shares: drop phase state,
+	 * hand back the tools the phase added, restore the pre-phase model/thinking
+	 * level, then refresh the UI and persist. Callers add their own messaging,
+	 * session entries, and events around it.
+	 */
+	async function returnToIdle(ctx: ExtensionContext): Promise<void> {
 		phase = "idle";
 		checklistItems = [];
 		lastSubmittedPath = null;
@@ -440,6 +448,10 @@ export default function plannotator(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 		updateWidget(ctx);
 		persistState();
+	}
+
+	async function exitToIdle(ctx: ExtensionContext): Promise<void> {
+		await returnToIdle(ctx);
 		ctx.ui.notify("Plannotator: disabled. Full access restored.");
 	}
 
@@ -449,6 +461,23 @@ export default function plannotator(pi: ExtensionAPI): void {
 		} else {
 			await exitToIdle(ctx);
 		}
+	}
+
+	async function handoffApprovedPlan(
+		ctx: ExtensionContext,
+		planFilePath: string,
+		planContent: string,
+		feedback?: string,
+	): Promise<void> {
+		pi.appendEntry("plannotator-handoff", { planFilePath });
+		await returnToIdle(ctx);
+		pi.events.emit(PLANNOTATOR_PLAN_APPROVED_CHANNEL, {
+			cwd: ctx.cwd,
+			planFilePath,
+			planContent,
+			...(feedback ? { feedback } : {}),
+		} satisfies PlannotatorPlanApprovedEvent);
+		ctx.ui.notify("Plannotator: approved plan handed off for external execution.");
 	}
 
 	// ── Commands & Shortcuts ─────────────────────────────────────────────
@@ -947,6 +976,15 @@ export default function plannotator(pi: ExtensionAPI): void {
 
 			// Non-interactive or no HTML: auto-approve
 			if (!ctx.hasUI || !hasPlanBrowserHtml()) {
+				if (resolveExecutionMode(plannotatorConfig) === "external") {
+					await handoffApprovedPlan(ctx, inputPath, planContent);
+					return {
+						content: [{ type: "text", text: "Plan approved and handed off for external execution." }],
+						details: { approved: true, handedOff: true },
+						terminate: true,
+					};
+				}
+
 				phase = "executing";
 				await applyPhaseConfig(ctx, { restoreSavedState: true });
 				pi.appendEntry("plannotator-execute", { lastSubmittedPath });
@@ -978,6 +1016,19 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}
 
 			if (result.approved) {
+				if (resolveExecutionMode(plannotatorConfig) === "external") {
+					await handoffApprovedPlan(ctx, inputPath, planContent, result.feedback);
+					return {
+						content: [{ type: "text", text: "Plan approved and handed off for external execution." }],
+						details: {
+							approved: true,
+							handedOff: true,
+							...(result.feedback ? { feedback: result.feedback } : {}),
+						},
+						terminate: true,
+					};
+				}
+
 				phase = "executing";
 				await applyPhaseConfig(ctx, { restoreSavedState: true });
 				pi.appendEntry("plannotator-execute", { lastSubmittedPath });
@@ -1278,16 +1329,7 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 				},
 				{ triggerTurn: false },
 			);
-			phase = "idle";
-			checklistItems = [];
-			lastSubmittedPath = null;
-
-			releaseAddedPhaseTools();
-			await restoreSavedState(ctx);
-			savedState = null;
-			updateStatus(ctx);
-			updateWidget(ctx);
-			persistState();
+			await returnToIdle(ctx);
 		}
 	});
 
@@ -1318,6 +1360,10 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 			lastSubmittedPath = stateEntry.data.lastSubmittedPath ?? lastSubmittedPath;
 			savedState = stateEntry.data.savedState ?? savedState;
 			phaseAddedTools = stateEntry.data.phaseAddedTools ?? phaseAddedTools;
+		}
+
+		if (phase === "planning" && !savedState) {
+			captureSavedState(ctx);
 		}
 
 		// Rebuild execution state from disk + session messages
