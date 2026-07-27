@@ -28,6 +28,7 @@
   },
   "files": [
     "index.ts",
+    "annotate-outcome.ts",
     "assistant-message.ts",
     "current-pi-session.ts",
     "plannotator-browser.ts",
