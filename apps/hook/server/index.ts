@@ -154,6 +154,10 @@ import {
 import path from "path";
 import { tmpdir } from "os";
 import { buildLocalWorkspaceReview, type WorkspaceDiffType } from "@plannotator/server/review-workspace";
+import {
+  createAnnotateOutcomeEmitter,
+  supportsAnnotateApprovalNotes,
+} from "./annotate-output";
 
 // Embed the built HTML at compile time
 // @ts-ignore - Bun import attribute for text
@@ -230,42 +234,10 @@ if (renderMarkdownFlag) args.splice(renderMarkdownIdx, 1);
 // Plaintext (default):
 //   Close → empty. Approve → "The user approved." Annotate → feedback.
 //
-// TODO: The plaintext --gate approval sentinel must stay as the exact string
-// "The user approved." because slash command templates (plannotator-annotate.md,
-// plannotator-last.md) instruct the agent to match it literally. Making this
-// configurable requires updating those templates to accept dynamic values or
-// switching gate mode to structured output only.
-const APPROVED_PLAINTEXT_MARKER = "The user approved.";
-
-function emitAnnotateOutcome(result: {
-  feedback: string;
-  exit?: boolean;
-  approved?: boolean;
-}): void {
-  if (hookFlag) {
-    if (result.approved || result.exit) return;
-    if (result.feedback) {
-      console.log(JSON.stringify({ decision: "block", reason: result.feedback }));
-    }
-    return;
-  }
-  if (jsonFlag) {
-    if (result.approved) {
-      console.log(JSON.stringify({ decision: "approved" }));
-    } else if (result.exit) {
-      console.log(JSON.stringify({ decision: "dismissed" }));
-    } else {
-      console.log(JSON.stringify({ decision: "annotated", feedback: result.feedback || "" }));
-    }
-    return;
-  }
-  if (result.exit) return;
-  if (result.approved) {
-    console.log(APPROVED_PLAINTEXT_MARKER);
-    return;
-  }
-  if (result.feedback) console.log(result.feedback);
-}
+const emitAnnotateOutcome = createAnnotateOutcomeEmitter({
+  hook: hookFlag,
+  json: jsonFlag,
+});
 
 async function loadGoalSetupBundle(
   stage: GoalSetupStage,
@@ -433,7 +405,10 @@ function emitOpenCodeAnnotateOutcome(result: {
   feedbackScope?: "message" | "messages";
 }): void {
   if (result.approved) {
-    console.log(JSON.stringify({ decision: "approved" }));
+    console.log(JSON.stringify({
+      decision: "approved",
+      ...(result.feedback ? { feedback: result.feedback } : {}),
+    }));
     return;
   }
   if (result.exit) {
@@ -1087,6 +1062,11 @@ if (args[0] === "sessions") {
     shareBaseUrl,
     pasteApiUrl,
     gate: gateFlag,
+    approvalNotesSupported: supportsAnnotateApprovalNotes({
+      gate: gateFlag,
+      json: jsonFlag,
+      hook: hookFlag,
+    }),
     rawHtml,
     renderHtml: !!rawHtml,
     convertHtml: renderMarkdownFlag,
@@ -1286,6 +1266,11 @@ if (args[0] === "sessions") {
     shareBaseUrl,
     pasteApiUrl,
     gate: gateFlag,
+    approvalNotesSupported: supportsAnnotateApprovalNotes({
+      gate: gateFlag,
+      json: jsonFlag,
+      hook: hookFlag,
+    }),
     htmlContent: planHtmlContent,
     recentMessages: pickerMessages,
     onReady: async (url, isRemote, port) => {
@@ -1630,6 +1615,7 @@ if (args[0] === "sessions") {
     shareBaseUrl: bridgeShareBaseUrl,
     pasteApiUrl: bridgePasteApiUrl,
     gate: input.gate === true,
+    approvalNotesSupported: input.gate === true,
     htmlContent: planHtmlContent,
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
@@ -1781,6 +1767,11 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     gate: gateFlag,
+    approvalNotesSupported: supportsAnnotateApprovalNotes({
+      gate: gateFlag,
+      json: jsonFlag,
+      hook: hookFlag,
+    }),
     htmlContent: planHtmlContent,
     onReady: async (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);

@@ -24,7 +24,7 @@ section: "Guides"
  (none)                   │  2-button        │  n/a                    │  empty                   │  feedback (plaintext)
  --gate                   │  3-button        │  `The user approved.`   │  empty                   │  feedback (plaintext)
  --json                   │  2-button        │  n/a                    │  {"decision":"dismissed"}│  {"decision":"annotated","feedback":"..."}
- --gate --json            │  3-button        │  {"decision":"approved"}│  {"decision":"dismissed"}│  {"decision":"annotated","feedback":"..."}
+ --gate --json            │  3-button        │  {"decision":"approved","feedback":"..."}│  {"decision":"dismissed"}│  {"decision":"annotated","feedback":"..."}
  --hook                   │  3-button        │  empty                  │  empty                   │  {"decision":"block","reason":"..."}
 ```
 
@@ -33,7 +33,7 @@ section: "Guides"
 ```json
 {
   "decision": "approved" | "annotated" | "dismissed",
-  "feedback": "string (present only when decision is 'annotated')"
+  "feedback": "string (present for annotated decisions and approvals with notes)"
 }
 ```
 
@@ -43,6 +43,12 @@ section: "Guides"
 
 ```json
 {"decision":"approved"}
+```
+
+If the reviewer approves while leaving notes, direct structured transport preserves both:
+
+```json
+{"decision":"approved","feedback":"Keep the retry bounded."}
 ```
 
 **Dismissed** (reviewer clicked Close, `--json` or `--gate --json`):
@@ -80,6 +86,9 @@ Structured stdout. Every decision is emitted as a JSON object with a `decision` 
 
 - `--json` alone keeps the two-button UI. Only `annotated` and `dismissed` decisions are emitted.
 - `--gate --json` unlocks all three decisions in structured form.
+- Direct `--gate --json` approval can include feedback. Transports that can
+  deliver approval but not attached notes warn before discarding feedback and
+  direct the reviewer to **Send Feedback** instead.
 - On OpenCode and Pi, `--json` is accepted silently. Those harnesses write back to the session directly rather than via stdout, so the flag has no effect there. Recipes remain portable.
 
 ## `--hook`
@@ -91,6 +100,11 @@ Emits hook-native JSON that works directly with Claude Code and Codex PostToolUs
 - Send Annotations → `{"decision":"block","reason":"<feedback>"}` → hook blocks with feedback.
 
 This is the recommended approach for hook integrations. The `{"decision":"block","reason":"..."}` format is the native protocol both Claude Code and Codex use for PostToolUse and Stop hooks. No wrapper script needed.
+
+`--hook` remains intentionally unchanged: approval is represented by empty
+stdout in the native hook protocol, so it has no channel for approval notes.
+Use **Send Feedback** to block with notes; that action still means “revise and
+reopen,” not “approve and continue.”
 
 The flag is accepted silently on OpenCode and Pi for the same reason `--json` is: those harnesses don't use stdout as the signal channel.
 

@@ -86,6 +86,8 @@ export interface AnnotateServerOptions {
   sourceConverted?: boolean;
   /** Enable review-gate UX: adds an Approve button alongside Close/Send Annotations */
   gate?: boolean;
+  /** Whether this transport can deliver feedback attached to an approval. */
+  approvalNotesSupported?: boolean;
   /** Raw HTML content for direct iframe rendering. */
   rawHtml?: string;
   /** Render HTML as-is in an iframe. */
@@ -148,6 +150,7 @@ export async function startAnnotateServer(
     shareBaseUrl,
     pasteApiUrl,
     gate = false,
+    approvalNotesSupported = false,
     rawHtml,
     renderHtml = false,
     convertHtml = false,
@@ -376,6 +379,7 @@ export async function startAnnotateServer(
               sourceConverted: sourceConverted ?? false,
               sourceSave: primarySource.sourceSave,
               gate,
+              approvalNotesSupported,
               renderAs: displayRawHtml ? 'html' as const : 'markdown' as const,
               ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               ...(diffHtml ? { diffHtml } : {}),
@@ -699,8 +703,49 @@ export async function startAnnotateServer(
 
           // API: Approve the annotation session (review-gate UX)
           if (url.pathname === "/api/approve" && req.method === "POST") {
-            deleteDraft(draftKey, readDraftGenerationFromUrl(req));
-            resolveDecision({ feedback: "", annotations: [], approved: true });
+            const rawBody = await req.text();
+            let body: Record<string, unknown> = {};
+            if (rawBody.trim()) {
+              try {
+                const parsed = JSON.parse(rawBody);
+                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                  throw new Error("Expected a JSON object.");
+                }
+                body = parsed as Record<string, unknown>;
+              } catch (err) {
+                return Response.json(
+                  { error: err instanceof Error ? err.message : "Invalid JSON body." },
+                  { status: 400 },
+                );
+              }
+            }
+            if (
+              (body.feedback !== undefined && typeof body.feedback !== "string") ||
+              (body.annotations !== undefined && !Array.isArray(body.annotations)) ||
+              (body.codeAnnotations !== undefined && !Array.isArray(body.codeAnnotations)) ||
+              (body.draftGeneration !== undefined && typeof body.draftGeneration !== "number")
+            ) {
+              return Response.json({ error: "Invalid approval body." }, { status: 400 });
+            }
+
+            deleteDraft(draftKey, readDraftGenerationFromBody(body));
+            resolveDecision({
+              feedback: (body.feedback as string | undefined) || "",
+              annotations: (body.annotations as unknown[] | undefined) || [],
+              approved: true,
+              // Approval notes carry the same message scoping as /api/feedback —
+              // without it, approve-with-notes in a multi-message annotate-last
+              // session anchors to the last message instead of the one the
+              // reviewer picked.
+              selectedMessageId:
+                typeof body.selectedMessageId === "string" ? body.selectedMessageId : undefined,
+              feedbackScope:
+                body.feedbackScope === "messages"
+                  ? "messages"
+                  : body.feedbackScope === "message"
+                    ? "message"
+                    : undefined,
+            });
             return Response.json({ ok: true });
           }
 

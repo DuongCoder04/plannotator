@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { IncomingMessage } from "node:http";
 import { dirname, resolve as resolvePath } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -69,6 +70,31 @@ export interface AnnotateServerResult {
 	url: string;
 	waitForDecision: () => Promise<{ feedback: string; annotations: unknown[]; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages" }>;
 	stop: () => void;
+}
+
+function parseOptionalApprovalBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+	return new Promise((resolve, reject) => {
+		let data = "";
+		req.on("data", (chunk) => {
+			data += chunk;
+		});
+		req.on("error", reject);
+		req.on("end", () => {
+			if (!data.trim()) {
+				resolve({});
+				return;
+			}
+			try {
+				const parsed = JSON.parse(data);
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+					throw new Error("Expected a JSON object.");
+				}
+				resolve(parsed as Record<string, unknown>);
+			} catch (err) {
+				reject(err);
+			}
+		});
+	});
 }
 
 function createHtmlAssetRegistry() {
@@ -177,6 +203,7 @@ export async function startAnnotateServer(options: {
 	sourceInfo?: string;
 	sourceConverted?: boolean;
 	gate?: boolean;
+	approvalNotesSupported?: boolean;
 	rawHtml?: string;
 	renderHtml?: boolean;
 	convertHtml?: boolean;
@@ -407,6 +434,7 @@ export async function startAnnotateServer(options: {
 				sourceConverted: options.sourceConverted ?? false,
 				sourceSave: primarySource.sourceSave,
 				gate: options.gate ?? false,
+				approvalNotesSupported: options.approvalNotesSupported ?? false,
 				renderAs: displayRawHtml ? 'html' : 'markdown',
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
@@ -668,9 +696,34 @@ export async function startAnnotateServer(options: {
 			resolveDecision({ feedback: "", annotations: [], exit: true });
 			json(res, { ok: true });
 		} else if (url.pathname === "/api/approve" && req.method === "POST") {
-			deleteDraft(draftKey, readDraftGenerationFromUrl(req));
-			resolveDecision({ feedback: "", annotations: [], approved: true });
-			json(res, { ok: true });
+			try {
+				const body = await parseOptionalApprovalBody(req);
+				if (
+					(body.feedback !== undefined && typeof body.feedback !== "string") ||
+					(body.annotations !== undefined && !Array.isArray(body.annotations)) ||
+					(body.codeAnnotations !== undefined && !Array.isArray(body.codeAnnotations)) ||
+					(body.draftGeneration !== undefined && typeof body.draftGeneration !== "number")
+				) {
+					json(res, { error: "Invalid approval body." }, 400);
+					return;
+				}
+
+				deleteDraft(draftKey, readDraftGenerationFromBody(body));
+				resolveDecision({
+					feedback: (body.feedback as string | undefined) || "",
+					annotations: (body.annotations as unknown[] | undefined) || [],
+					approved: true,
+					// Approval notes carry the same message scoping as /api/feedback —
+					// without it, approve-with-notes in a multi-message annotate-last
+					// session anchors to the last message instead of the one the
+					// reviewer picked.
+					selectedMessageId: typeof body.selectedMessageId === "string" ? body.selectedMessageId : undefined,
+					feedbackScope: body.feedbackScope === "messages" ? "messages" : body.feedbackScope === "message" ? "message" : undefined,
+				});
+				json(res, { ok: true });
+			} catch (err) {
+				json(res, { error: err instanceof Error ? err.message : "Invalid JSON body." }, 400);
+			}
 		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
