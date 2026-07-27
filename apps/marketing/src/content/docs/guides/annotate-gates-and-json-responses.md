@@ -6,7 +6,7 @@ sidebar:
 section: "Guides"
 ---
 
-`plannotator annotate` and `plannotator annotate-last` accept three flags that turn markdown annotation into a full review gate with structured output.
+`plannotator annotate` and `plannotator annotate-last` accept three flags that turn markdown annotation into a full review gate with structured output. Direct `plannotator annotate` invocations also support strict automation with `--require-approval` and `--result-file`.
 
 ## Capabilities
 
@@ -94,6 +94,33 @@ This is the recommended approach for hook integrations. The `{"decision":"block"
 
 The flag is accepted silently on OpenCode and Pi for the same reason `--json` is: those harnesses don't use stdout as the signal channel.
 
+## Strict direct gates
+
+For a fail-closed direct CLI gate, add either or both strict options:
+
+```sh
+plannotator annotate docs/plan.md --gate --json \
+  --require-approval \
+  --result-file .tmp/plan-review-result.json
+```
+
+- **`--require-approval`** exits `0` only for `approved`. `annotated` and `dismissed` still publish their valid JSON decision, then exit nonzero.
+- **`--result-file <path>`** atomically publishes the same newline-terminated JSON bytes written to stdout. The path is resolved from the invocation working directory.
+- Both options require `--gate --json`, are available only on direct `annotate` invocations, and cannot be combined with `--hook`. Hook output and exit behavior are unchanged.
+
+The result-file parent directory must already exist and the destination must not. Plannotator writes a private `0600` temporary file in the same directory, flushes and closes it, then publishes it with an atomic no-clobber hard link. It never overwrites an existing destination or falls back to a non-atomic copy. Use a unique result path for every invocation.
+
+The stdout decision record is written **before** the result file. If publication fails, the reviewer's decision has already been emitted on stdout — capture stdout even when you also pass `--result-file`.
+
+Two caveats on the publication guarantees:
+
+- The `0600` temporary-file mode is a POSIX permission and is effectively a no-op on Windows; use filesystem ACLs there if the result path needs to be private.
+- The atomic link (like an atomic rename) is not followed by an `fsync` of the parent directory. Publication is atomic against concurrent readers, but a machine crash immediately afterwards can still lose the directory entry.
+
+Keep the reviewed source at a stable project path so revisions and version history continue to refer to the same artifact. Result and diagnostic log files can instead live in a narrowly scoped temporary directory.
+
+Clicking Close publishes `{"decision":"dismissed"}`. Closing or crashing the browser outside that explicit action is not guaranteed to produce a decision; callers should treat a missing result or failed process as a recovery case, never as approval.
+
 ## Primary use cases
 
 ### Spec-driven development frameworks
@@ -116,4 +143,10 @@ See [Hook Integration](/docs/guides/hook-integration/) for copy-paste recipes th
 
 ## Exit codes
 
-Every decision exits `0`. Signals live on stdout. This keeps Plannotator composable with harnesses that use exit codes for their own purposes.
+By default, every decision exits `0`; existing plaintext, JSON, and hook integrations are unchanged. With `--require-approval`, only `approved` exits `0`; `annotated` and `dismissed` publish their JSON result before exiting `1`.
+
+Strict invocations that are misconfigured or cannot start exit `2` — bad flag combinations, an invalid `--result-file` destination, and every annotate startup failure (missing or unreadable path, unreachable URL, empty folder, ambiguous filename, oversized file). Those startup failures exit `1` for non-strict invocations, as they always have; under a strict flag `1` means "the reviewer did not approve", so a mistyped path must never be reported as a rejection.
+
+A failed atomic publish also exits `2`, but that code means the result *file* was not published — the reviewer's decision was already written to stdout. Only a stdout write failure leaves no record at all.
+
+This follows the grep convention: `0` approved, `1` not approved, `2` the gate itself errored.
