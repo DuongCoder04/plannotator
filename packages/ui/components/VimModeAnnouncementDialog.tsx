@@ -25,6 +25,7 @@ interface SwitchRowProps {
   readonly description: string;
   readonly icon: React.ReactNode;
   readonly recommended?: boolean;
+  readonly disabled?: boolean;
   readonly onChange: (checked: boolean) => void;
 }
 
@@ -157,6 +158,7 @@ function SwitchRow({
   description,
   icon,
   recommended = false,
+  disabled = false,
   onChange,
 }: SwitchRowProps) {
   return (
@@ -164,8 +166,14 @@ function SwitchRow({
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className="vim-announcement-switch w-full min-h-24 rounded-xl border border-border bg-muted/25 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+      aria-disabled={disabled || undefined}
+      onClick={() => {
+        if (disabled) return;
+        onChange(!checked);
+      }}
+      className={`vim-announcement-switch w-full min-h-24 rounded-xl border border-border bg-muted/25 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card${
+        disabled ? ' cursor-not-allowed opacity-50' : ''
+      }`}
     >
       <span className="flex items-start gap-3">
         <span
@@ -439,26 +447,8 @@ export function VimModeAnnouncementDialog({
 
   if (!isOpen) return null;
 
-  const handleVimModeChange = (enabled: boolean) => {
-    onVimModeChange(enabled);
-    if (!enabled && vimHudEnabled) onVimHudChange(false);
-  };
-
-  const handleVimHudChange = (enabled: boolean) => {
-    if (enabled && !vimModeEnabled) onVimModeChange(true);
-    onVimHudChange(enabled);
-  };
-
-  const handlePrimaryAction = () => {
-    if (!vimModeEnabled) {
-      onVimModeChange(true);
-      onVimHudChange(true);
-    }
-    onDismiss();
-  };
-
   const primaryLabel = !vimModeEnabled
-    ? 'Enable Vim + HUD'
+    ? 'Close'
     : vimHudEnabled
       ? 'Start with Vim + HUD'
       : 'Start with Vim';
@@ -480,14 +470,15 @@ export function VimModeAnnouncementDialog({
             </span>
           </div>
           <h2 id="vim-announcement-title" className="mt-3 text-2xl font-semibold tracking-tight">
-            Navigate and annotate at Vim speed
+            Vim keys, if you want them
           </h2>
           <p
             id="vim-announcement-description"
             className="mt-1.5 max-w-3xl text-sm leading-relaxed text-muted-foreground"
           >
-            Move through document structure, refine into exact text, and annotate without reaching
-            for the mouse. Start with the HUD to see every target and command as you learn.
+            Plannotator now has optional Vim-style keyboard navigation for moving through a
+            document, selecting text, and annotating without the mouse. It stays off unless you
+            turn it on. If that's not how you work, close this and nothing changes.
           </p>
         </header>
 
@@ -498,7 +489,7 @@ export function VimModeAnnouncementDialog({
 
           <section aria-label="Vim controls settings" className="flex min-w-0 flex-col">
             <div>
-              <div className="text-sm font-semibold">Choose your starting setup</div>
+              <div className="text-sm font-semibold">Turn it on now, or never</div>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 These are the real saved settings. You can change them anytime.
               </p>
@@ -510,15 +501,20 @@ export function VimModeAnnouncementDialog({
                 title="Vim controls"
                 description="Use J/K to move by block, L/H to move in or out, then W/B/E and V for precise text selection."
                 icon={<Keyboard className="h-[18px] w-[18px]" />}
-                onChange={handleVimModeChange}
+                onChange={onVimModeChange}
               />
               <SwitchRow
                 checked={vimModeEnabled && vimHudEnabled}
                 title="Vim HUD"
-                description="Adds the four-corner target reticle, live keypress feedback, and a complete ? key map."
+                description={
+                  vimModeEnabled
+                    ? 'Adds the four-corner target reticle, live keypress feedback, and a complete ? key map.'
+                    : 'Turn on Vim controls first.'
+                }
                 icon={<Crosshair className="h-[18px] w-[18px]" />}
-                recommended
-                onChange={handleVimHudChange}
+                recommended={vimModeEnabled}
+                disabled={!vimModeEnabled}
+                onChange={onVimHudChange}
               />
             </div>
 
@@ -545,16 +541,9 @@ export function VimModeAnnouncementDialog({
           </p>
           <div className="flex items-center gap-2">
             <button
-              type="button"
-              onClick={onDismiss}
-              className="vim-announcement-secondary-action min-h-10 rounded-lg border border-border px-4 text-sm font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-            >
-              Not now
-            </button>
-            <button
               ref={primaryActionRef}
               type="button"
-              onClick={handlePrimaryAction}
+              onClick={onDismiss}
               className="vim-announcement-primary-action min-h-10 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
             >
               {primaryLabel}

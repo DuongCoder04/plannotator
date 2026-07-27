@@ -11,12 +11,16 @@ interface HarnessProps {
   readonly initialVim?: boolean;
   readonly initialHud?: boolean;
   readonly onDismiss?: () => void;
+  readonly onVimModeChange?: (enabled: boolean) => void;
+  readonly onVimHudChange?: (enabled: boolean) => void;
 }
 
 function Harness({
   initialVim = false,
   initialHud = false,
   onDismiss,
+  onVimModeChange,
+  onVimHudChange,
 }: HarnessProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [vimEnabled, setVimEnabled] = useState(initialVim);
@@ -27,8 +31,14 @@ function Harness({
       isOpen={isOpen}
       vimModeEnabled={vimEnabled}
       vimHudEnabled={hudEnabled}
-      onVimModeChange={setVimEnabled}
-      onVimHudChange={setHudEnabled}
+      onVimModeChange={enabled => {
+        onVimModeChange?.(enabled);
+        setVimEnabled(enabled);
+      }}
+      onVimHudChange={enabled => {
+        onVimHudChange?.(enabled);
+        setHudEnabled(enabled);
+      }}
       onDismiss={() => {
         onDismiss?.();
         setIsOpen(false);
@@ -72,10 +82,10 @@ describe('VimModeAnnouncementDialog', () => {
 
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute('aria-modal')).toBe('true');
-    expect(dialog?.textContent).toContain('Navigate and annotate at Vim speed');
+    expect(dialog?.textContent).toContain('Vim keys, if you want them');
     expect(dialog?.textContent).toContain('This is a demo');
     expect(dialog?.textContent).not.toContain('Ship collaborative review');
-    expect(dialog?.textContent).toContain('Recommended');
+    expect(dialog?.textContent).not.toContain('Not now');
     const selectionTarget = dialog?.querySelector('[data-vim-demo-target="selection"]');
     expect(selectionTarget?.querySelectorAll('.vim-announcement-reticle--selection')).toHaveLength(4);
     expect(selectionTarget?.querySelector('.vim-announcement-comment')).not.toBeNull();
@@ -86,30 +96,45 @@ describe('VimModeAnnouncementDialog', () => {
     ]);
   });
 
-  test.skipIf(!hasDom)('enabling HUD also enables Vim, and disabling Vim clears HUD', async () => {
-    await mountDialog();
+  test.skipIf(!hasDom)('the HUD switch stays inert until Vim controls are on', async () => {
+    const onVimHudChange = mock(() => {});
+    await mountDialog({ onVimHudChange });
 
-    switches()[1].focus();
+    expect(switches()[1].getAttribute('aria-disabled')).toBe('true');
+    expect(switches()[1].textContent).toContain('Turn on Vim controls first.');
+    expect(switches()[1].textContent).not.toContain('Recommended');
+
+    await act(async () => switches()[1].click());
+    expect(switches().map(button => button.getAttribute('aria-checked'))).toEqual([
+      'false',
+      'false',
+    ]);
+    expect(onVimHudChange).not.toHaveBeenCalled();
+
+    await act(async () => switches()[0].click());
+    expect(switches()[1].getAttribute('aria-disabled')).toBeNull();
+    expect(switches()[1].textContent).toContain('Recommended');
+
     await act(async () => switches()[1].click());
     expect(switches().map(button => button.getAttribute('aria-checked'))).toEqual([
       'true',
       'true',
     ]);
-    expect(document.activeElement).toBe(switches()[1]);
-
-    await act(async () => switches()[0].click());
-    expect(switches().map(button => button.getAttribute('aria-checked'))).toEqual([
-      'false',
-      'false',
-    ]);
+    expect(onVimHudChange).toHaveBeenCalledTimes(1);
   });
 
-  test.skipIf(!hasDom)('the default primary action enables Vim and HUD before dismissing', async () => {
+  test.skipIf(!hasDom)('the default primary action dismisses without changing any setting', async () => {
     const onDismiss = mock(() => {});
-    await mountDialog({ onDismiss });
+    const onVimModeChange = mock(() => {});
+    const onVimHudChange = mock(() => {});
+    await mountDialog({ onDismiss, onVimModeChange, onVimHudChange });
 
-    await act(async () => buttonWithText('Enable Vim + HUD').click());
+    expect(document.activeElement?.textContent).toContain('Close');
 
+    await act(async () => buttonWithText('Close').click());
+
+    expect(onVimModeChange).not.toHaveBeenCalled();
+    expect(onVimHudChange).not.toHaveBeenCalled();
     expect(onDismiss).toHaveBeenCalledTimes(1);
     expect(document.querySelector('[data-vim-announcement-dialog]')).toBeNull();
   });
