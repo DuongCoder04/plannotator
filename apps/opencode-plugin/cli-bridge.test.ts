@@ -13,7 +13,7 @@ import {
   getRecentAssistantMessages,
   injectSessionPrompt,
 } from "./cli-bridge";
-import { getReviewDeniedSuffix } from "@plannotator/shared/prompts";
+import { getReviewApprovedPrompt, getReviewDeniedSuffix } from "@plannotator/shared/prompts";
 import { OpenCodePromptDeliveryError } from "./prompt-delivery-error";
 
 describe("OpenCode CLI bridge helpers", () => {
@@ -236,7 +236,7 @@ describe("OpenCode CLI bridge helpers", () => {
       agentSwitch: "build",
     });
     expect(approved.agent).toBe("build");
-    expect(approved.message).toContain("Code Review");
+    expect(approved.message).toBe(getReviewApprovedPrompt("opencode"));
 
     const localFeedback = buildReviewPromptFromBridgeOutcome({
       decision: "annotated",

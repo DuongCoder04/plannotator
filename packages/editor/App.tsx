@@ -2761,7 +2761,7 @@ const App: React.FC = () => {
         body.permissionMode = permissionMode;
       }
 
-      const effectiveAgent = getEffectiveAgentName(getAgentSwitchSettings());
+      const effectiveAgent = getEffectiveAgentName(getAgentSwitchSettings('plan'));
       if (effectiveAgent) {
         body.agentSwitch = effectiveAgent;
       }
