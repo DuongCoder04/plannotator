@@ -18,9 +18,18 @@ Requires the `claude` CLI installed and authenticated. Uses Claude Code's full s
 
 **Models:**
 
-- Sonnet 4.6 (default)
+- Sonnet 5 (default)
+- Fable 5
+- Opus 5
+- Opus 4.8
+- Sonnet 4.6
+- Opus 4.7
 - Opus 4.6
 - Haiku 4.5
+
+Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 are also offered in `(1M)` context
+variants. The 5-series models use their 1M context window by default, so they
+have no separate variant.
 
 ### Codex (via Codex SDK)
 

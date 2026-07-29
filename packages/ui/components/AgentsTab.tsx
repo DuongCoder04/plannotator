@@ -30,6 +30,7 @@ export type { AgentLaunchParams } from '../hooks/useAgentJobs';
 
 export const CLAUDE_MODELS: Array<{ value: string; label: string }> = [
   { value: 'claude-fable-5', label: 'Fable 5' },
+  { value: 'claude-opus-5', label: 'Opus 5' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
   { value: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M)' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5' },

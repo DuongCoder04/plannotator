@@ -888,6 +888,32 @@ describe("resolveSDKModel", () => {
     expect(resolveSDKModel("claude-sonnet-4-6[1m]", bedrockEnv)).toBe(SONNET_ARN);
   });
 
+  // Opus 5 is a bare alias like every other picker entry: it must NOT be
+  // mistaken for a cloud identifier (no `arn:` / `anthropic.` prefix), and the
+  // family matcher must still route it to the configured Opus ARN on
+  // Bedrock/Vertex. A matcher that keyed on "opus-4" would silently drop it.
+  test("maps the bare Opus 5 alias to the configured Opus ARN", () => {
+    expect(resolveSDKModel("claude-opus-5", bedrockEnv)).toBe(OPUS_ARN);
+    expect(
+      resolveSDKModel("claude-opus-5", {
+        CLAUDE_CODE_USE_VERTEX: "true",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: OPUS_ARN,
+      }),
+    ).toBe(OPUS_ARN);
+  });
+
+  test("off Bedrock/Vertex: returns the Opus 5 alias unchanged", () => {
+    expect(resolveSDKModel("claude-opus-5", {})).toBe("claude-opus-5");
+  });
+
+  // Fable has no ANTHROPIC_DEFAULT_*_MODEL env var of its own (Claude Code
+  // only defines OPUS/SONNET/HAIKU), so on Bedrock it falls through to
+  // ANTHROPIC_MODEL rather than matching a family. Pinned so the fallthrough
+  // stays deliberate rather than looking like a missed family branch.
+  test("falls back to ANTHROPIC_MODEL for the Fable alias on Bedrock", () => {
+    expect(resolveSDKModel("claude-fable-5", bedrockEnv)).toBe(OPUS_ARN);
+  });
+
   test("passes through an identifier that is already an ARN", () => {
     expect(resolveSDKModel(SONNET_ARN, bedrockEnv)).toBe(SONNET_ARN);
   });
