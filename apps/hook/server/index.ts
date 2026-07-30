@@ -1662,6 +1662,21 @@ if (args[0] === "sessions") {
     pasteApiUrl: bridgePasteApiUrl,
     gate: input.gate === true,
     approvalNotesSupported: input.gate === true,
+    // Same predicate as the CLI-flag branches, with this transport's inputs
+    // mapped onto it: `gate` arrives on stdin JSON (cli-bridge.ts forwards
+    // parseAnnotateArgs' `gate`); `json` is unconditionally true because
+    // emitOpenCodeAnnotateOutcome is this branch's only output path and always
+    // writes a structured decision record the bridge parses back; `hook` is
+    // false because no flags are parsed here and no hook decision protocol is
+    // emitted. Without this, `/plannotator-last --gate` under OpenCode hangs on
+    // waitForDecision() forever once every review tab is abandoned — the exact
+    // hang #1143 closed for the other three call sites.
+    clientLeaseSupported: supportsAnnotateClientLease({
+      gate: input.gate === true,
+      json: true,
+      hook: false,
+      isRemote: isRemoteSession(),
+    }),
     htmlContent: planHtmlContent,
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
