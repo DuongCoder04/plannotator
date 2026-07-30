@@ -4,7 +4,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ChecklistItem } from "../generated/checklist.ts";
-import { createPiTodosProvider, detectPiTodos } from "./pi-todos.ts";
+import {
+	createPiTodosProvider,
+	detectPiTodos,
+	resolveContainedTodoDir,
+	resolveTodoDir,
+} from "./pi-todos.ts";
 import { resolveTodoProvider } from "./index.ts";
 
 /**
@@ -326,6 +331,140 @@ describe("pi-todos detection", () => {
 			await fs.rm(custom, { recursive: true, force: true });
 			await fs.rm(bare, { recursive: true, force: true });
 		}
+	});
+});
+
+/**
+ * ── Containment ──────────────────────────────────────────────────────────────
+ *
+ * `<cwd>/.pi/todos` is implied by whatever repository is checked out, so a
+ * hostile repo can commit it as a symlink and turn the mirror into a
+ * write-anywhere primitive on the first plan approval. These tests pin the trust
+ * split: the repo-implied path must stay inside the project, an explicit
+ * `$PI_TODO_PATH` (the user's own choice) must not be second-guessed, and the
+ * check must be a realpath comparison rather than a symlink ban — otherwise
+ * every temp-dir test here would false-negative, since `/tmp` and `/var` are
+ * themselves symlinks on macOS.
+ */
+describe("pi-todos containment", () => {
+	const scratch: string[] = [];
+
+	/** A fresh project dir plus an outside dir no write may ever reach. */
+	async function makeEscapeFixture(): Promise<{ project: string; outside: string }> {
+		const project = await fs.mkdtemp(path.join(os.tmpdir(), "plannotator-project-"));
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), "plannotator-outside-"));
+		scratch.push(project, outside);
+		return { project, outside };
+	}
+
+	afterEach(async () => {
+		await Promise.all(
+			scratch.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+		);
+	});
+
+	test("reads absent and writes nothing when .pi/todos escapes the project", async () => {
+		const { project, outside } = await makeEscapeFixture();
+		await fs.mkdir(path.join(project, ".pi"), { recursive: true });
+		await fs.symlink(outside, path.join(project, ".pi", "todos"), "dir");
+
+		expect(detectPiTodos(project)).toBe(false);
+		expect(resolveTodoProvider({}, { cwd: project })).toBeUndefined();
+
+		// Even constructed directly — the provider must fail closed, not trust
+		// that detection already ran.
+		await createPiTodosProvider({ cwd: project, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		expect(await fs.readdir(outside)).toEqual([]);
+	});
+
+	test("reads absent when .pi is a symlink out of the project and todos does not exist yet", async () => {
+		const { project, outside } = await makeEscapeFixture();
+		// The nastier shape: nothing to realpath at the leaf, so a lexical
+		// fallback would pass the check and mkdir -p would create the directory
+		// (and its todo files) inside `outside`.
+		await fs.symlink(outside, path.join(project, ".pi"), "dir");
+
+		expect(detectPiTodos(project)).toBe(false);
+
+		await createPiTodosProvider({ cwd: project, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		expect(await fs.readdir(outside)).toEqual([]);
+	});
+
+	test("still works when .pi/todos is a symlink to another directory inside the project", async () => {
+		const { project } = await makeEscapeFixture();
+		const inside = path.join(project, "docs", "todos");
+		await fs.mkdir(inside, { recursive: true });
+		await fs.mkdir(path.join(project, ".pi"), { recursive: true });
+		await fs.symlink(inside, path.join(project, ".pi", "todos"), "dir");
+
+		expect(detectPiTodos(project)).toBe(true);
+
+		await createPiTodosProvider({ cwd: project, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		expect((await fs.readdir(inside)).filter((entry) => entry.endsWith(".md"))).toHaveLength(3);
+	});
+
+	test("does not false-negative when the project root is reached through a symlink", async () => {
+		const { project } = await makeEscapeFixture();
+		// macOS `/tmp` -> `/private/tmp` and `/var` -> `/private/var` make this the
+		// ambient case for every test in this file: realpath ONE side only and the
+		// whole suite breaks.
+		const real = path.join(project, "real");
+		const viaLink = path.join(project, "link");
+		await fs.mkdir(path.join(real, ".pi", "todos"), { recursive: true });
+		await fs.symlink(real, viaLink, "dir");
+
+		expect(detectPiTodos(viaLink)).toBe(true);
+
+		await createPiTodosProvider({ cwd: viaLink, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		const written = await fs.readdir(path.join(real, ".pi", "todos"));
+		expect(written.filter((entry) => entry.endsWith(".md"))).toHaveLength(3);
+	});
+
+	test("trusts an explicit PI_TODO_PATH pointing outside the project", async () => {
+		const { project, outside } = await makeEscapeFixture();
+		// The attack is a symlink committed into a REPO, not an env var the user
+		// exported. pi-todos honours PI_TODO_PATH verbatim, so we do too.
+		process.env.PI_TODO_PATH = outside;
+
+		expect(detectPiTodos(project)).toBe(true);
+
+		await createPiTodosProvider({ cwd: project, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		expect((await fs.readdir(outside)).filter((entry) => entry.endsWith(".md"))).toHaveLength(3);
+	});
+
+	test("resolves a relative PI_TODO_PATH against cwd and still trusts an escape", async () => {
+		const { project, outside } = await makeEscapeFixture();
+		process.env.PI_TODO_PATH = path.relative(project, outside);
+
+		expect(detectPiTodos(project)).toBe(true);
+
+		await createPiTodosProvider({ cwd: project, sessionId: "s" }).sync(checklist(), PLAN_ID);
+		expect((await fs.readdir(outside)).filter((entry) => entry.endsWith(".md"))).toHaveLength(3);
+	});
+
+	test("does not throw when the path does not exist", async () => {
+		const { project } = await makeEscapeFixture();
+		const missingRoot = path.join(project, "gone", "deeper");
+
+		// Neither the todo dir nor its whole ancestor chain exists: the
+		// containment check has to absorb ENOENT rather than propagate it.
+		expect(() => detectPiTodos(missingRoot)).not.toThrow();
+		expect(detectPiTodos(missingRoot)).toBe(false);
+		expect(() => resolveContainedTodoDir(missingRoot)).not.toThrow();
+
+		// A removed project root is the same story.
+		const removed = await fs.mkdtemp(path.join(os.tmpdir(), "plannotator-removed-"));
+		await fs.rm(removed, { recursive: true, force: true });
+		expect(() => detectPiTodos(removed)).not.toThrow();
+		expect(detectPiTodos(removed)).toBe(false);
+	});
+
+	test("keeps the contained path identical to the raw upstream resolution", async () => {
+		const { project } = await makeEscapeFixture();
+		await fs.mkdir(path.join(project, ".pi", "todos"), { recursive: true });
+		// Containment gates the path, it never rewrites it — the provider must
+		// keep writing exactly where pi-todos looks.
+		expect(resolveContainedTodoDir(project)).toBe(resolveTodoDir(project));
 	});
 });
 

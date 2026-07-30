@@ -21,11 +21,15 @@
  * output through it, so a drift in either direction fails loudly.
  */
 import crypto from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { ChecklistItem } from "../generated/checklist.ts";
+// Containment is single-sourced from the shared helper every other sink uses
+// (see its docstring: duplicating it is how #927/#929 escaped one runtime).
+// It is already vendored into generated/, so reusing it adds no new vendoring.
+import { isWithinDirectory } from "../generated/html-assets-node.ts";
 import type { TodoProvider, TodoProviderEnv } from "./types.ts";
 
 const TODO_DIR_NAME = path.join(".pi", "todos");
@@ -50,7 +54,14 @@ interface OwnedTodo {
 	body: string;
 }
 
-/** Resolve the todo directory the way pi-todos itself resolves it. */
+/**
+ * Resolve the todo directory the way pi-todos itself resolves it.
+ *
+ * This is the RAW upstream resolution, and it is deliberately not the path this
+ * provider writes to — see `resolveContainedTodoDir`, which applies the trust
+ * split described there. Exported for callers that need to report or compare
+ * the nominal location.
+ */
 export function resolveTodoDir(cwd: string): string {
 	const fromEnv = process.env[TODO_PATH_ENV]?.trim();
 	if (fromEnv) return path.resolve(cwd, fromEnv);
@@ -58,19 +69,90 @@ export function resolveTodoDir(cwd: string): string {
 }
 
 /**
+ * Realpath the deepest existing ancestor of `target`, re-appending the segments
+ * that do not exist yet.
+ *
+ * `isWithinDirectory` keeps a nonexistent path LEXICAL, which is correct for a
+ * read sink (the read simply fails) but not for a write sink: `<cwd>/.pi` can
+ * itself be a symlink out of the project with `todos` not yet created, and
+ * `mkdir -p` would then create — and write into — the external target while a
+ * lexical check still saw `<cwd>/.pi/todos`. Resolving the existing prefix makes
+ * the containment check see the directory a write would actually land in.
+ *
+ * Never throws: an unreadable or absent prefix walks up to the filesystem root
+ * and, in the worst case, returns the plain lexical resolution.
+ */
+function resolveThroughExistingAncestor(target: string): string {
+	const absolute = path.resolve(target);
+	let current = absolute;
+	const pending: string[] = [];
+	for (;;) {
+		try {
+			return path.join(realpathSync(current), ...pending);
+		} catch {
+			const parent = path.dirname(current);
+			// Reached the filesystem root without finding anything resolvable.
+			if (parent === current) return absolute;
+			pending.unshift(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+/**
+ * The todo directory this provider is allowed to touch, or null when the
+ * repository-implied path escapes the project.
+ *
+ * TRUST SPLIT — read this before relaxing either branch:
+ *
+ *   - `$PI_TODO_PATH` is trusted verbatim, including targets outside the
+ *     project. It is an explicit choice by the USER, at the same trust level as
+ *     `~/.plannotator/config.json`, and pi-todos itself honours it that way;
+ *     pointing your own todo store at `~/notes/todos` is a supported workflow.
+ *   - `<cwd>/.pi/todos` is implied by whatever repository happens to be checked
+ *     out, so it is NOT trusted. A hostile repo can commit `.pi/todos` (or
+ *     `.pi`) as a symlink to any path on disk; without this check `sync()` would
+ *     create todo files there on the first plan approval, with no confirmation.
+ *     That path must therefore realpath to somewhere inside `cwd`.
+ *
+ * Containment is a realpath comparison on BOTH sides, not a "is it a symlink"
+ * rejection: a symlink that stays inside the project (`.pi` -> `docs/.pi`) keeps
+ * working, and a project root reached through a symlink (macOS `/tmp` ->
+ * `/private/tmp`) is not a false negative.
+ *
+ * Failing closed is cheap: absent means no mirror, which is the documented
+ * no-op behaviour for anyone not running pi-todos.
+ */
+export function resolveContainedTodoDir(cwd: string): string | null {
+	const todosDir = resolveTodoDir(cwd);
+	if (process.env[TODO_PATH_ENV]?.trim()) return todosDir;
+	return isWithinDirectory(resolveThroughExistingAncestor(todosDir), cwd)
+		? todosDir
+		: null;
+}
+
+/**
  * True when pi-todos looks present and in use.
  *
- * Detection is deliberately conservative: it only checks whether the todo
- * directory exists — pi-todos creates it on first write, so an existing
- * directory is the actual "in use" signal. PI_TODO_PATH does not detect
- * the provider by itself; it only redirects which directory gets checked,
- * so setting it with that directory absent still reads as "absent". A user
- * who installed pi-todos but never created a todo also reads as "absent"
- * and simply gets no mirror — the widget is unaffected either way, so a
- * false negative costs nothing.
+ * Detection only checks whether the todo directory exists, because that is the
+ * only signal available: pi-todos exposes no API and writes no marker.
+ * PI_TODO_PATH does not detect the provider by itself; it only redirects which
+ * directory gets checked, so setting it with that directory absent still reads
+ * as "absent".
+ *
+ * The directory exists from an installed pi-todos' FIRST session onward — its
+ * `session_start` handler calls `ensureTodosDir()` unconditionally, not lazily
+ * on the first todo. So do not weaken detection on the premise that an
+ * existing-but-empty directory means "installed but never used": it does not,
+ * and there is nothing finer-grained to test.
+ *
+ * A directory that escapes the project (see `resolveContainedTodoDir`) reads as
+ * absent, and the provider then never writes: a false negative only costs the
+ * mirror, which the widget does not depend on.
  */
 export function detectPiTodos(cwd: string): boolean {
-	return existsSync(resolveTodoDir(cwd));
+	const todosDir = resolveContainedTodoDir(cwd);
+	return todosDir !== null && existsSync(todosDir);
 }
 
 function serialize(frontMatter: PiTodoFrontMatter, body: string): string {
@@ -202,7 +284,6 @@ async function readOwnedTodos(todosDir: string, planId: string): Promise<Map<num
 }
 
 export function createPiTodosProvider(env: TodoProviderEnv): TodoProvider {
-	const todosDir = resolveTodoDir(env.cwd);
 	// Serializes overlapping sync() calls on this instance. pi-todos has no
 	// atomic upsert: two syncs racing between readOwnedTodos and its writes
 	// would both see the same step as "missing" and each create a todo for
@@ -210,6 +291,16 @@ export function createPiTodosProvider(env: TodoProviderEnv): TodoProvider {
 	let queue: Promise<void> = Promise.resolve();
 
 	async function runSync(items: ChecklistItem[], planId: string): Promise<void> {
+		// Re-derived per sync rather than snapshotted at construction: the check
+		// is cheap, and a repo that grows a `.pi/todos` symlink mid-session must
+		// not be followed either. Not atomic with the mkdir below — nothing short
+		// of openat2/O_NOFOLLOW would be — but it shrinks the window from a whole
+		// session to microseconds.
+		const todosDir = resolveContainedTodoDir(env.cwd);
+		// Fail closed. `resolveTodoProvider` already gates on `detectPiTodos`,
+		// which applies the same containment check; re-deriving it here keeps a
+		// provider constructed directly (tests, a future caller) safe too.
+		if (todosDir === null) return;
 		await fs.mkdir(todosDir, { recursive: true });
 		const owned = await readOwnedTodos(todosDir, planId);
 		// pi-todos sorts by created_at and has no explicit order field, and
