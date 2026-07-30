@@ -34,6 +34,35 @@ export type PiSessionIdentity = {
 
 const globalStore = globalThis as PlannotatorGlobal;
 
+/**
+ * Whether a captured `ctx` still belongs to a live session.
+ *
+ * Pi invalidates an extension's `ctx` — and the `pi` API object it was created
+ * from — the moment its session is replaced or disposed (`/new`, `/reload`,
+ * fork, resume, `/quit`, and print-mode teardown all land there). Every guarded
+ * accessor on both objects then throws "This extension ctx is stale after
+ * session replacement or reload...".
+ *
+ * Pi exposes no `ctx.isStale` flag. The sanctioned signals are the
+ * `session_shutdown` event, which fires just before invalidation, and the
+ * `withSession` callback, which only applies to a replacement the extension
+ * itself requested. Neither helps a timer or a promise continuation that is
+ * already in flight, so probe: read one cheap guarded getter and treat a throw
+ * as "this session is gone". `ctx.mode` is a plain property read with no
+ * session work behind it, so this is safe to call from a hot poll.
+ *
+ * On hosts predating the guard nothing ever throws and this always reports
+ * alive, which is exactly the old behaviour.
+ */
+export function isCtxAlive(ctx: Pick<ExtensionContext, "mode">): boolean {
+	try {
+		void ctx.mode;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function getStore(): CurrentPiSessionStore {
 	globalStore.__plannotatorCurrentPiSession ??= {};
 	return globalStore.__plannotatorCurrentPiSession;

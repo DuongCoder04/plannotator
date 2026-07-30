@@ -56,6 +56,7 @@ import {
 } from "./assistant-message.ts";
 import {
 	getPiSessionIdentity,
+	isCtxAlive,
 	isCurrentPiSessionDifferentFrom,
 	notifyCurrentPiSession,
 	type PiSessionIdentity,
@@ -264,16 +265,26 @@ export default function plannotator(pi: ExtensionAPI): void {
 	let phaseAddedTools: string[] = [];
 	let plannotatorConfig = {};
 	let justApprovedPlan = false;
+	/**
+	 * Cleared when this extension instance's session is torn down or replaced.
+	 * Pi builds a fresh instance for the replacement session, so this latch only
+	 * ever describes the session this closure was created for. It is the cheap
+	 * front half of the staleness check; `isCtxAlive` covers teardown paths that
+	 * never reach our `session_shutdown` handler.
+	 */
+	let sessionAlive = true;
 	/** Resolved once per execution phase; undefined means widget-only. */
 	let todoProvider: TodoProvider | undefined;
 	/** Latch: no provider found, or one sync failed. Cleared on return to idle. */
 	let todoProviderDisabled = false;
 
 	pi.on("session_start", (_event, ctx) => {
+		sessionAlive = true;
 		currentPiSession.update(ctx);
 	});
 
 	pi.on("session_shutdown", () => {
+		sessionAlive = false;
 		currentPiSession.clear();
 	});
 
@@ -1355,12 +1366,33 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 			justApprovedPlan = false;
 			let attempts = 0;
 			const continueWhenIdle = (): void => {
-				if (!ctx.isIdle()) {
-					attempts += 1;
-					if (attempts <= 200) setTimeout(continueWhenIdle, 50);
-					return;
+				// This poll outlives the turn that scheduled it, so the session can be
+				// replaced or disposed underneath it — print-mode teardown, /new,
+				// /reload. Both `ctx` and `pi` are invalidated at that moment and every
+				// call on them throws; an uncaught throw inside a timer callback takes
+				// the entire pi process down (issue #1140).
+				//
+				// Cancel rather than retarget: the continuation belongs to the session
+				// that approved this plan. A replacement session is a different
+				// conversation with no approved plan in it, so nudging it to "continue"
+				// would be wrong even though `pi` there is perfectly live.
+				if (!sessionAlive || !isCtxAlive(ctx)) return;
+				try {
+					if (!ctx.isIdle()) {
+						attempts += 1;
+						if (attempts <= 200) setTimeout(continueWhenIdle, 50);
+						return;
+					}
+					pi.sendUserMessage("Continue with the approved plan.");
+				} catch (err) {
+					// Lost the race between the liveness probe and the call, or the host
+					// failed the send for some other reason. Report, never rethrow.
+					if (isCtxAlive(ctx)) {
+						console.error(
+							`Plannotator: could not continue the approved plan: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
 				}
-				pi.sendUserMessage("Continue with the approved plan.");
 			};
 			setTimeout(continueWhenIdle, 0);
 			return;

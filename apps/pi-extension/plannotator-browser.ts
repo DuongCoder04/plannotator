@@ -156,7 +156,15 @@ function startBrowserDecisionSession<T>(
 	ctx: ExtensionContext,
 	waitForResult: () => Promise<T>,
 ): BrowserDecisionSession<T> {
-	openBrowserForServer(server.url, ctx);
+	// Fire-and-forget so the caller's turn is not blocked on a browser launch.
+	// Nothing may escape: an unhandled rejection here — a launcher that failed,
+	// or a `ctx` invalidated by a session replacement while the browser was
+	// opening — is an uncaught error that kills the whole pi process.
+	void openBrowserForServer(server.url, ctx).catch((err: unknown) => {
+		console.error(
+			`Plannotator: could not announce the browser URL ${server.url}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	});
 	let stopped = false;
 	let stopReject: ((err: Error) => void) | undefined;
 	let decisionPromise: Promise<T> | undefined;
