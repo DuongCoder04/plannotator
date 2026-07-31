@@ -168,6 +168,8 @@ export interface ReviewServerOptions {
   opencodeClient?: OpencodeClient;
   /** PR metadata when reviewing a pull request (PR mode) */
   prMetadata?: PRMetadata;
+  /** Platform review writer override used by isolated runtime tests. */
+  prReviewSubmitter?: typeof submitPRReview;
   /**
    * The initial layer patch is missing per-file content (platform APIs
    * withhold patches on very large PRs). Enables the local recompute upgrade
@@ -215,6 +217,7 @@ export async function startReviewServer(
   options: ReviewServerOptions
 ): Promise<ReviewServerResult> {
   const { htmlContent, origin, gitContext, sharingEnabled = true, shareBaseUrl, onReady } = options;
+  const submitPlatformReview = options.prReviewSubmitter ?? submitPRReview;
   const aiEnabled = resolveAIEnabled();
 
   let prMetadata = options.prMetadata;
@@ -2786,7 +2789,7 @@ export async function startReviewServer(
 
               console.error(`[pr-action] ${body.action} with ${body.fileComments.length} file comment(s), target=${targetUrl}, headSha=${targetHeadSha}`);
 
-              await submitPRReview(
+              const submission = await submitPlatformReview(
                 targetRef,
                 targetHeadSha,
                 body.action,
@@ -2794,9 +2797,9 @@ export async function startReviewServer(
                 body.fileComments,
               );
 
-              console.error(`[pr-action] Success`);
+              console.error(`[pr-action] ${submission.status === "complete" ? "Success" : "Partial success"}`);
               prContextLive.refreshAfterWrite(targetUrl, targetRef);
-              return Response.json({ ok: true, prUrl: targetUrl });
+              return Response.json({ ok: true, prUrl: targetUrl, submission });
             } catch (err) {
               const message =
                 err instanceof Error ? err.message : "Failed to submit PR review";

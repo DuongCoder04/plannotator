@@ -265,6 +265,8 @@ export async function startReviewServer(options: {
 	shareBaseUrl?: string;
 	pasteApiUrl?: string;
 	prMetadata?: PRMetadata;
+	/** Platform review writer override used by isolated runtime tests. */
+	prReviewSubmitter?: typeof submitPRReview;
 	/**
 	 * The initial layer patch is missing per-file content (platform APIs
 	 * withhold patches on very large PRs). Enables the local recompute upgrade
@@ -284,6 +286,7 @@ export async function startReviewServer(options: {
 }): Promise<ReviewServerResult> {
 	const gitUser = detectGitUser();
 	const aiEnabled = resolveAIEnabled();
+	const submitPlatformReview = options.prReviewSubmitter ?? submitPRReview;
 	let draftKey = contentHash(options.rawPatch);
 	let prMeta = options.prMetadata;
 	const isPRMode = !!prMeta;
@@ -2229,16 +2232,16 @@ export async function startReviewServer(options: {
 				}
 
 				console.error(`[pr-action] ${body.action} with ${fileComments.length} file comment(s), target=${targetUrl}, headSha=${targetHeadSha}`);
-				await submitPRReview(
+				const submission = await submitPlatformReview(
 					targetRef,
 					targetHeadSha,
 					body.action as "approve" | "comment",
 					body.body as string,
 					fileComments,
 				);
-				console.error(`[pr-action] Success`);
+				console.error(`[pr-action] ${submission.status === "complete" ? "Success" : "Partial success"}`);
 				prContextLive.refreshAfterWrite(targetUrl, targetRef);
-				json(res, { ok: true, prUrl: targetUrl });
+				json(res, { ok: true, prUrl: targetUrl, submission });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : "Failed to submit PR review";
 				console.error(`[pr-action] Failed: ${message}`);
