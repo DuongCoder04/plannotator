@@ -127,7 +127,27 @@ plannotator archive                    # Browse saved plan decisions read-only
 
 ---
 
-## Sharing &amp; Multiplayer
+## Privacy and network behavior
+
+Plannotator does not collect usage telemetry or analytics. Plans, diffs, annotations, drafts, history, and configuration stay local by default.
+
+Each plan review, annotate, archive, share-portal, and code-review app surface checks GitHub for the latest Plannotator release when it loads. This sends no plan or review content and gives the Plannotator project owner no usage analytics, although GitHub receives an ordinary request. There is currently no opt-out setting. Local Git code review can also query the configured `origin` with `git ls-remote` to detect the default branch and a stale baseline; it does not send the local diff.
+
+Content leaves the local workflow only when a network feature needs it:
+
+- URL annotation fetches the requested site, through Jina Reader by default for public pages or directly when Jina is disabled or unavailable.
+- GitHub and GitLab review uses your authenticated CLI and Git remote to retrieve PR or MR data.
+- Ask AI and review agents send the selected question and relevant plan, document, repository, or diff context to your configured provider.
+- Sharing sends the complete link to whoever or whatever service you use to deliver it. Encrypted short links upload ciphertext to the paste service.
+- Workspaces is a separate hosted product, so the open source app's local-storage model does not apply to content placed there.
+
+The [privacy policy](https://plannotator.ai/privacy) documents these boundaries and the hosted website and waitlist data.
+
+---
+
+## Link sharing
+
+Open source asynchronous link sharing remains available for compatibility but is moving to deprecated support. Workspaces is the primary direction for team sharing. No removal date has been announced.
 
 <p align="center">
   <a href="https://room.plannotator.ai/">
@@ -136,27 +156,26 @@ plannotator archive                    # Browse saved plan decisions read-only
 </p>
 
 <p align="center">
-  <sub>Beta: <a href="https://room.plannotator.ai/">room.plannotator.ai</a></sub>
+  <sub>Legacy link-sharing demo: <a href="https://room.plannotator.ai/">room.plannotator.ai</a></sub>
 </p>
 
 <p align="center">
   <a href="https://plannotator.ai/workspaces">
-    <img src=".github/assets/workspaces-cta.svg" alt="Beta is ending. Sign up for Workspaces." height="44" />
+    <img src=".github/assets/workspaces-cta.svg" alt="Workspaces is the team-sharing direction. Join the waitlist." height="44" />
   </a>
 </p>
 
 Share a plan with a teammate and they can annotate it themselves. Import their feedback and send it straight back to your agent.
 
-**Small plans** are encoded entirely in the URL hash. No server involved. The data lives in the link itself.
+**Small markdown shares** are compressed into the URL fragment. The fragment is not included in the browser's request to the share portal, but it is not encrypted. Anyone or any messaging service with the complete link can read the shared content. The portal host still receives ordinary request metadata.
 
-**Large plans** go through a short-link service, encrypted in your browser with AES-256-GCM. The server stores only ciphertext, and the key never leaves the URL fragment. Pastes auto-delete after 7 days.
+**Large markdown and raw HTML shares** use a short-link service. The share payload is encrypted with AES-256-GCM before upload, the server stores only ciphertext, and the key is kept in the URL fragment rather than sent in the paste request. Anyone with the complete link can decrypt it. Hosted pastes expire after 7 days.
 
 Same model as [PrivateBin](https://privatebin.info/). The paste service is [self-hostable](https://docs.plannotator.ai/open-source/workflows/sharing).
 
 Sharing can be disabled entirely with `PLANNOTATOR_SHARE=disabled`.
 
-**Coming next:** live collaboration. Teammates and their agents working through the same plan or review together, in real time. It arrives in Workspaces once the room beta wraps. [Sign up here](https://plannotator.ai/workspaces).
-
+[Workspaces](https://plannotator.ai/workspaces) is the primary path for hosted team collaboration.
 
 ---
 
@@ -173,6 +192,8 @@ curl -fsSL https://plannotator.ai/install.sh | bash
 # Windows PowerShell
 irm https://plannotator.ai/install.ps1 | iex
 ```
+
+The installer downloads the binary from GitHub Releases. A full install can also contact GitHub for release resolution and agent files, Ataraxy-Labs/sem for the optional `sem` sidecar, and npm for Pi, selected extra skills, or the managed agent-terminal runtime. Pinning `--version` skips only GitHub API release resolution, not the release download. See the [privacy policy](https://plannotator.ai/privacy) for the complete network boundaries.
 
 Want just the binary and nothing else? Pass `--minimal` (or export `PLANNOTATOR_MINIMAL=1`) to install only the `plannotator` binary to `~/.local/bin`, skipping every skill, hook, slash command, and per-agent config:
 
@@ -370,9 +391,9 @@ implementation architecture.
 | `PLANNOTATOR_ORIGIN` | Override agent detection: `claude-code`, `amp`, `droid`, `opencode`, `codex`, `copilot-cli`, `gemini-cli`, `kiro-cli`, `pi` |
 | `PLANNOTATOR_JINA` | `0`/`false` to disable Jina Reader for URL annotation |
 | `JINA_API_KEY` | Jina Reader API key for higher rate limits |
-| `PLANNOTATOR_DATA_DIR` | Base directory for all Plannotator data (plans, history, drafts, `config.json`). Default: `~/.plannotator`; if that directory doesn't exist and `$XDG_DATA_HOME` is set to an absolute path, `$XDG_DATA_HOME/plannotator` is used instead |
+| `PLANNOTATOR_DATA_DIR` | Base directory for Plannotator-managed files (plans, history, drafts, `config.json`). Default: `~/.plannotator`; if that directory doesn't exist and `$XDG_DATA_HOME` is set to an absolute path, `$XDG_DATA_HOME/plannotator` is used instead |
 
-All Plannotator data lives in a single directory — `~/.plannotator` by default. To relocate it (e.g. for an XDG-clean home):
+Plannotator-managed files live under `~/.plannotator` by default. Some UI preferences are stored in functional browser cookies. To relocate the files (for example, for an XDG-clean home):
 
 ```bash
 export PLANNOTATOR_DATA_DIR=~/.local/share/plannotator

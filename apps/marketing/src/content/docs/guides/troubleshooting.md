@@ -53,7 +53,7 @@ Stale sessions from crashed processes are cleaned up automatically. You can also
 
 ## Where does Plannotator store data?
 
-All local data lives under `~/.plannotator/`:
+Plannotator-managed files live under `~/.plannotator/` by default:
 
 | Directory | What's in it |
 |-----------|-------------|
@@ -62,7 +62,7 @@ All local data lives under `~/.plannotator/`:
 | `drafts/` | Auto-saved annotation drafts. If a server crashes mid-review, your in-progress annotations are recovered on the next session. |
 | `sessions/` | Temporary session files for active servers. Cleaned up automatically when a server exits. |
 
-Plan saving is enabled by default. You can change the save directory or disable it entirely in the Plannotator UI settings (gear icon).
+Plan saving is enabled by default. You can change the save directory or disable it entirely in the Plannotator UI settings (gear icon). Functional browser cookies store some UI preferences separately from this directory.
 
 ## Browser doesn't open
 

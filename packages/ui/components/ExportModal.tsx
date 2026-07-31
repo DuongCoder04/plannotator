@@ -317,7 +317,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </button>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Encrypted short link. Your plan is end-to-end encrypted before it leaves your browser — not even the server can read it.
+                    Encrypted short link. The browser uploads AES-256-GCM ciphertext; the decryption key stays in the URL fragment.
                   </p>
                 </div>
               ) : isGeneratingShortUrl ? (
@@ -384,13 +384,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
                 {!shortShareUrl && !isGeneratingShortUrl && !urlIsLarge && (
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Your plan is encoded entirely in the URL — it never touches a server.
+                    Shared content is compressed, not encrypted, in the URL fragment. The portal request does not include that fragment.
                   </p>
                 )}
               </div>}
 
               <p className="text-xs text-muted-foreground">
-                Only someone with this exact link can view your plan. Short links are end-to-end encrypted — the decryption key is in the URL and never sent to the server.
+                Anyone with the full link can view the shared content, including services used to send the link. Hosted short-link ciphertext expires after 7 days.
               </p>
             </div>
           ) : activeTab === 'notes' && showNotesTab ? (
