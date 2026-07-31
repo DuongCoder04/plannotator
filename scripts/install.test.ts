@@ -1416,6 +1416,29 @@ describe("install shared behavior", () => {
     // header on the curl line) is dropped and the call goes anonymous.
     expect(cmdScript).toContain('if defined TOKEN_RESIDUE set "GH_TOKEN_VAL="');
   });
+
+  test("install.ps1 git calls run under a scoped Continue preference", () => {
+    // On PowerShell < 7.2 (and profiles restoring the old behavior),
+    // redirecting a native command's stderr under
+    // $ErrorActionPreference=Stop turns its FIRST stderr line into a
+    // terminating error. git prints normal progress ("Cloning into ...")
+    // on stderr, so without the scope the skill install failed on the line
+    // announcing the clone had started. See #1162. Failure detection must
+    // stay exit-code/Test-Path based, never throw-based.
+    expect(ps).toContain(
+      "& { $local:ErrorActionPreference = 'Continue'; git clone",
+    );
+    expect(ps).toContain(
+      "& { $local:ErrorActionPreference = 'Continue'; git sparse-checkout set",
+    );
+    // Tripwire: no bare git clone/sparse-checkout with stderr redirection
+    // may exist outside the scoped block.
+    for (const line of ps.split("\n")) {
+      if (/^\s*git (clone|sparse-checkout)\b/.test(line)) {
+        throw new Error(`unscoped native git call in install.ps1: ${line.trim()}`);
+      }
+    }
+  });
 });
 
 describe("PlannotatorConfig schema", () => {

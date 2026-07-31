@@ -812,7 +812,14 @@ function Copy-SkillIfPresent {
 }
 
 try {
-    git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$null
+    # Scoped Continue preference: on PowerShell < 7.2 (and profiles that
+    # restore the old behavior), redirecting a native command's stderr under
+    # $ErrorActionPreference=Stop turns its FIRST stderr line into a
+    # terminating error, and git prints its normal "Cloning into ..."
+    # progress on stderr, so the clone "failed" on the message announcing it
+    # started (#1162). Real failures stay detectable: the clone is verified
+    # by Test-Path below, never by a throw.
+    & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$null }
     # git is a native executable - it does not throw under
     # $ErrorActionPreference=Stop on non-zero exit. Guard with
     # Test-Path so we only Push-Location if the clone actually
@@ -825,7 +832,10 @@ try {
         # only on the success path) leaks the location stack if a
         # PS-native cmdlet (Copy-Item etc.) throws under Stop.
         try {
-            git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>$null
+            # Same scoped Continue as the clone above: sparse-checkout may
+            # write advice to stderr, which must not become a terminating
+            # error on PowerShell < 7.2 (#1162).
+            & { $local:ErrorActionPreference = 'Continue'; git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>$null }
 
             # Claude Code and Codex consume different skill bodies. Claude Code
             # reads apps/skills/claude/* (dynamic-context injection
