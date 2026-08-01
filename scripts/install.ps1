@@ -420,6 +420,8 @@ function Show-PathAdvice {
         [Environment]::SetEnvironmentVariable("Path", "$userPath;$installDir", "User")
         Write-Host "Added to PATH. Restart your terminal for changes to take effect."
     }
+    Write-Host ""
+    Write-Host "To uninstall later: plannotator uninstall"
 }
 
 # Binary-only mode stops here (see the $minimal resolution near the top): the

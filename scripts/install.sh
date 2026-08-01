@@ -495,6 +495,8 @@ print_path_advice() {
         echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ${shell_config}"
         echo "  source ${shell_config}"
     fi
+    echo ""
+    echo "To uninstall later: plannotator uninstall"
 }
 
 # Binary-only mode stops here: the binary is installed, so print PATH advice and

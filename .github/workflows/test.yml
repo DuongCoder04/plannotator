@@ -72,6 +72,25 @@ jobs:
           packages/editor/App.archiveReadOnly.test.tsx
           packages/editor/actionsLabelMode.test.ts
 
+  uninstall-windows:
+    # Run the filesystem and path logic under real Windows path semantics.
+    # The tests inject temporary homes and process boundaries, so this job
+    # never touches the runner's actual agent installations or user data.
+    name: Uninstall lifecycle (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run focused uninstall tests
+        run: bun test packages/server/uninstall.test.ts apps/hook/server/cli.test.ts
+
   pi-extension-ai-runtime-windows:
     # Exercises the Pi extension's Node/jiti server mirror on Windows with an
     # npm-style `pi` shim pair. This catches regressions where `where pi`

@@ -1,7 +1,7 @@
 /**
  * Plannotator CLI for Claude Code, Droid, Codex, Gemini CLI, and Copilot CLI
  *
- * Supports twelve modes:
+ * Supports thirteen modes:
  *
  * 1. Plan Review (default, no args):
  *    - Spawned by Claude/Gemini/Codex hook entrypoints
@@ -56,6 +56,10 @@
  *    - Spawned by PreToolUse hook on EnterPlanMode
  *    - Reads improvement hook file from ~/.plannotator/hooks/
  *    - Returns additionalContext or silently passes through
+ *
+ * 13. Uninstall (`plannotator uninstall`):
+ *    - Removes recognized installer-owned components across supported hosts
+ *    - Preserves local data by default; `--purge` removes known local data
  *
  * Global flags:
  *   --help             - Show top-level usage information
@@ -112,6 +116,12 @@ import { registerSession, unregisterSession, listSessions } from "@plannotator/s
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
 import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
+import {
+  createDefaultUninstallEnvironment,
+  formatPurgeWarning,
+  formatUninstallResult,
+  runPlannotatorUninstall,
+} from "@plannotator/server/uninstall";
 import { detectProjectName } from "@plannotator/server/project";
 import { hostnameOrFallback } from "@plannotator/shared/project";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
@@ -144,6 +154,8 @@ import {
   isTopLevelHelpInvocation,
   isVersionInvocation,
   parseStrictAnnotateOptions,
+  isUninstallConfirmationAccepted,
+  parseUninstallOptions,
 } from "./cli";
 import { completeAnnotateCommand } from "./annotate-command";
 import {
@@ -154,6 +166,7 @@ import {
 } from "./strict-annotate-result";
 import path from "path";
 import { tmpdir } from "os";
+import { createInterface } from "node:readline/promises";
 import { buildLocalWorkspaceReview, type WorkspaceDiffType } from "@plannotator/server/review-workspace";
 import {
   createAnnotateOutcomeEmitter,
@@ -171,10 +184,11 @@ import reviewHtml from "../dist/review.html" with { type: "text" };
 const reviewHtmlContent = reviewHtml as unknown as string;
 
 // Check for subcommand
+const rawArgs = process.argv.slice(2);
 let parsedStrictAnnotateOptions;
 try {
   parsedStrictAnnotateOptions = parseStrictAnnotateOptions(
-    process.argv.slice(2),
+    rawArgs,
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
@@ -270,6 +284,78 @@ const helpSubcommand = isSubcommandHelpInvocation(args);
 if (helpSubcommand) {
   console.log(formatSubcommandHelp(helpSubcommand));
   process.exit(0);
+}
+
+if (args[0] === "uninstall") {
+  let options: ReturnType<typeof parseUninstallOptions>;
+  try {
+    options = parseUninstallOptions(rawArgs.slice(1));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error("Run 'plannotator uninstall --help' for usage.");
+    process.exit(1);
+  }
+
+  const environment = createDefaultUninstallEnvironment();
+
+  if (!options.dryRun && !options.yes) {
+    if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+      console.error(
+        "Uninstall requires confirmation. Re-run with --yes in a non-interactive shell.",
+      );
+      process.exit(1);
+    }
+
+    if (options.purge) {
+      console.error(formatPurgeWarning(environment.dataDir));
+    } else {
+      console.error(
+        `Local Plannotator data in ${environment.dataDir} will be preserved.`,
+      );
+    }
+
+    const prompt = options.purge
+      ? "Type 'purge' to permanently uninstall and delete local data: "
+      : "Remove Plannotator-installed components? [y/N] ";
+    const readline = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    let answer = "";
+    try {
+      answer = await readline.question(prompt);
+    } finally {
+      readline.close();
+    }
+
+    if (!isUninstallConfirmationAccepted(answer, options.purge)) {
+      console.log("Uninstall cancelled.");
+      process.exit(0);
+    }
+  } else if (options.purge && !options.dryRun) {
+    console.error(formatPurgeWarning(environment.dataDir));
+  }
+
+  const result = await runPlannotatorUninstall(
+    {
+      purge: options.purge,
+      dryRun: options.dryRun,
+      skipHosts: options.skipHosts,
+    },
+    environment,
+  );
+  const formatted = formatUninstallResult(result);
+  if (formatted) console.log(formatted);
+
+  if (options.dryRun) {
+    console.log("Dry run complete; no changes were made.");
+  } else if (options.purge && result.ok) {
+    console.log(`Known local Plannotator data was purged from ${result.dataDir}.`);
+  } else if (!options.purge) {
+    console.log(`Local Plannotator data was preserved in ${result.dataDir}.`);
+  }
+
+  process.exit(result.ok ? 0 : 1);
 }
 
 if (args[0] === "install-runtime") {

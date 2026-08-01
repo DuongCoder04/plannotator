@@ -471,6 +471,173 @@ jobs:
           # 4. terminal: exercises managed WebTUI runtime + compiled sidecar import.
           Test-AgentTerminal
 
+      - name: Smoke-test uninstall lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BINARY: artifacts/${{ matrix.binary }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          # This disposable GitHub-hosted VM is the real Windows QA boundary.
+          # The smoke temporarily adds one unique RUNNER_TEMP path to HKCU PATH,
+          # restores the original value in finally, and the VM is discarded.
+          $sourceBinary = (Resolve-Path $env:BINARY).Path
+          $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
+          $testRoot = [System.IO.Path]::GetFullPath((Join-Path $runnerTemp "plannotator-uninstall-$([System.Guid]::NewGuid().ToString('N'))"))
+          $expectedPrefix = $runnerTemp.TrimEnd('\') + '\'
+          if (-not $testRoot.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing unsafe uninstall smoke root: $testRoot"
+          }
+
+          $environmentNames = @(
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "FACTORY_CONFIG_DIR",
+            "COPILOT_HOME",
+            "PI_CODING_AGENT_DIR",
+            "PLANNOTATOR_DATA_DIR"
+          )
+          $savedEnvironment = @{}
+          foreach ($name in $environmentNames) {
+            $savedEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name, "Process")
+          }
+          $originalUserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+
+          function Wait-UntilMissing {
+            param([string] $Path)
+            for ($i = 0; $i -lt 80; $i++) {
+              if (-not (Test-Path -LiteralPath $Path)) { return }
+              Start-Sleep -Milliseconds 250
+            }
+            throw "Timed out waiting for uninstall to remove $Path"
+          }
+
+          function Set-IsolatedUninstallEnvironment {
+            param([string] $CaseRoot)
+            $isolatedHome = Join-Path $CaseRoot "home"
+            $localAppData = Join-Path $isolatedHome "AppData\Local"
+            $values = @{
+              USERPROFILE = $isolatedHome
+              LOCALAPPDATA = $localAppData
+              APPDATA = (Join-Path $isolatedHome "AppData\Roaming")
+              XDG_CONFIG_HOME = (Join-Path $isolatedHome ".config")
+              XDG_CACHE_HOME = (Join-Path $isolatedHome ".cache")
+              CLAUDE_CONFIG_DIR = (Join-Path $isolatedHome ".claude")
+              CODEX_HOME = (Join-Path $isolatedHome ".codex")
+              FACTORY_CONFIG_DIR = (Join-Path $isolatedHome ".factory")
+              COPILOT_HOME = (Join-Path $isolatedHome ".copilot")
+              PI_CODING_AGENT_DIR = (Join-Path $isolatedHome ".pi\agent")
+              PLANNOTATOR_DATA_DIR = (Join-Path $isolatedHome ".plannotator")
+            }
+            foreach ($entry in $values.GetEnumerator()) {
+              [System.Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
+            }
+            return $values
+          }
+
+          function Add-TestUserPathEntry {
+            param([string] $InstallDirectory)
+            $current = [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $next = if ([string]::IsNullOrWhiteSpace($current)) {
+              ";$InstallDirectory;"
+            } else {
+              "$current;;$InstallDirectory;"
+            }
+            [System.Environment]::SetEnvironmentVariable("Path", $next, "User")
+            if ([string]::IsNullOrWhiteSpace($current)) { return ";" }
+            return "$current;;"
+          }
+
+          function Assert-TestUserPathEntryRemoved {
+            param(
+              [string] $InstallDirectory,
+              [string] $ExpectedPath
+            )
+            $current = [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $target = $InstallDirectory.Trim().TrimEnd('\')
+            $matches = @($current -split ';' | Where-Object {
+              $_ -and $_.Trim().TrimEnd('\') -ieq $target
+            })
+            if ($matches.Count -ne 0) {
+              throw "Uninstall left its user PATH entry behind: $InstallDirectory"
+            }
+            if ($current -cne $ExpectedPath) {
+              throw "Uninstall changed unrelated user PATH bytes. Expected '$ExpectedPath', got '$current'"
+            }
+          }
+
+          function Invoke-UninstallSmoke {
+            param(
+              [string] $Name,
+              [bool] $Purge
+            )
+            $caseRoot = Join-Path $testRoot $Name
+            $values = Set-IsolatedUninstallEnvironment $caseRoot
+            $installDirectory = Join-Path $values.LOCALAPPDATA "plannotator"
+            $testBinary = Join-Path $installDirectory "plannotator.exe"
+            $dataDirectory = $values.PLANNOTATOR_DATA_DIR
+
+            New-Item -ItemType Directory -Force -Path $installDirectory | Out-Null
+            Copy-Item -LiteralPath $sourceBinary -Destination $testBinary
+            New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory "plans") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory "vendor\sem\v-test") | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory "vendor\agent-terminal\v-test") | Out-Null
+            Set-Content -LiteralPath (Join-Path $dataDirectory "plans\keep.md") -Value "# keep"
+            Set-Content -LiteralPath (Join-Path $dataDirectory "config.json") -Value '{}'
+            Set-Content -LiteralPath (Join-Path $dataDirectory "vendor\sem\v-test\sem.exe") -Value "fixture"
+            Set-Content -LiteralPath (Join-Path $dataDirectory "vendor\agent-terminal\v-test\server.js") -Value "fixture"
+            $expectedUserPath = Add-TestUserPathEntry $installDirectory
+
+            $arguments = @("uninstall", "--yes")
+            if ($Purge) { $arguments += "--purge" }
+            & $testBinary @arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "Uninstall smoke '$Name' exited $LASTEXITCODE"
+            }
+
+            Wait-UntilMissing $testBinary
+            Wait-UntilMissing $installDirectory
+            Assert-TestUserPathEntryRemoved $installDirectory $expectedUserPath
+
+            if ($Purge) {
+              if (Test-Path -LiteralPath $dataDirectory) {
+                throw "Purge smoke left the data directory behind: $dataDirectory"
+              }
+            } else {
+              if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory "plans\keep.md"))) {
+                throw "Default uninstall removed preserved plan data"
+              }
+              if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory "config.json"))) {
+                throw "Default uninstall removed preserved configuration"
+              }
+              if (Test-Path -LiteralPath (Join-Path $dataDirectory "vendor\sem")) {
+                throw "Default uninstall left the sem sidecar behind"
+              }
+              if (Test-Path -LiteralPath (Join-Path $dataDirectory "vendor\agent-terminal")) {
+                throw "Default uninstall left the agent-terminal runtime behind"
+              }
+            }
+          }
+
+          try {
+            Invoke-UninstallSmoke "preserve" $false
+            Invoke-UninstallSmoke "purge" $true
+            Write-Host "OK: Windows uninstall preserve-data, purge, PATH, and self-delete verified"
+          } finally {
+            [System.Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
+            foreach ($name in $environmentNames) {
+              [System.Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
+            }
+            if (Test-Path -LiteralPath $testRoot) {
+              Remove-Item -LiteralPath $testRoot -Recurse -Force
+            }
+          }
+
   pi-extension-ai-runtime-windows:
     needs: test
     # Exercises the Pi extension's Node/jiti server mirror on Windows with an

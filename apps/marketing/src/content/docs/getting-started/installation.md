@@ -83,6 +83,62 @@ For `curl … | bash` pipelines you can set `PLANNOTATOR_MINIMAL=1` in the envir
 
 </details>
 
+## Uninstall
+
+`plannotator uninstall` removes recognized installed components while
+preserving local Plannotator data by default:
+
+```bash
+plannotator uninstall
+```
+
+This removes the conventional binary, the managed `sem` and agent-terminal
+runtimes, installer-provided skills and commands, managed hook/config entries,
+recognizable global integrations, and detected host plugins. Shared settings
+are changed only when their Plannotator entries can be identified safely;
+custom files and separately installed optional skills are preserved.
+
+To remove known local plans, history, drafts, guides, settings, and other
+Plannotator data too, use:
+
+```bash
+plannotator uninstall --purge
+```
+
+Purge requires typing `purge` at the prompt. The CLI warns that this data is
+local-only: it is not stored on a Plannotator server and cannot be recovered
+after purge. `--yes` (or `-y`) skips confirmation for automation, and is
+required when no interactive terminal is available. `--dry-run` previews the
+recognized removal set without changing anything.
+If a broken or unavailable host blocks cleanup, `--skip-hosts` leaves host
+plugin managers and shared host configuration untouched while removing the
+remaining installer-owned components and binary. Remove the skipped host
+integrations manually afterward.
+
+The purge removes only known Plannotator entries from the configured data
+directory. Unknown top-level files are preserved rather than guessed at, and
+custom external plan-save paths or project-local integrations are never
+deleted. Malformed host config is treated as a fail-safe error unless
+`--skip-hosts` is explicit. If a host plugin manager is unavailable or a shared
+config cannot be edited safely, the command reports the follow-up and preserves
+the CLI and its Windows PATH entry so you can fix the problem and retry. If
+Windows PATH restoration itself fails, the CLI remains on disk and the output
+gives its full path for retry and manual PATH repair.
+Purge also refuses broad targets (filesystem roots, the home directory, or the
+shared temporary directory), symlinked data directories, and non-directory
+paths. Existing targets are compared by filesystem identity, so case aliases,
+symlinks, hardlinks, and bind mounts cannot bypass the root/home/ancestor
+checks. The identity and containment guards are revalidated after awaited host
+commands, immediately before data removal, so a swapped directory is refused.
+For a symlinked dedicated directory, set `PLANNOTATOR_DATA_DIR` to its
+resolved target and retry.
+
+Pi-only installations that do not include the `plannotator` CLI should use:
+
+```bash
+pi remove npm:@plannotator/pi-extension
+```
+
 <details>
 <summary><strong>Installing behind a rate-limited IP</strong></summary>
 

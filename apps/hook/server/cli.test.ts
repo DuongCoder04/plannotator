@@ -8,8 +8,10 @@ import {
   isInteractiveNoArgInvocation,
   isSubcommandHelpInvocation,
   isTopLevelHelpInvocation,
+  isUninstallConfirmationAccepted,
   isVersionInvocation,
   parseStrictAnnotateOptions,
+  parseUninstallOptions,
 } from "./cli";
 
 describe("CLI top-level help", () => {
@@ -32,6 +34,8 @@ describe("CLI top-level help", () => {
     expect(output).toContain("plannotator annotate-last [--stdin]");
     expect(output).toContain("plannotator copilot-last [--gate] [--json] [--hook]");
     expect(output).toContain("plannotator setup-goal <interview|facts>");
+    expect(output).toContain("plannotator uninstall [--purge] [--yes]");
+    expect(output).toContain("[--skip-hosts]");
     expect(output).toContain("Run 'plannotator <command> --help' for command-specific usage.");
     expect(output).toContain("running 'plannotator' without arguments is for hook integration");
   });
@@ -83,6 +87,7 @@ describe("CLI subcommand help", () => {
       "setup-goal",
       "archive",
       "sessions",
+      "uninstall",
       "improve-context",
     ]) {
       expect(isSubcommandHelpInvocation([sub, "--help"])).toBe(sub);
@@ -109,8 +114,60 @@ describe("CLI subcommand help", () => {
       "--require-approval",
     );
     expect(formatSubcommandHelp("sessions")).toContain("--open [N]");
+    expect(formatSubcommandHelp("uninstall")).toContain(
+      "Local plans, history, drafts",
+    );
+    expect(formatSubcommandHelp("uninstall")).toContain(
+      "not stored on a Plannotator server",
+    );
+    expect(formatSubcommandHelp("uninstall")).toContain("--skip-hosts");
     // unknown key falls back to top-level help
     expect(formatSubcommandHelp("nope")).toBe(formatTopLevelHelp());
+  });
+});
+
+describe("uninstall CLI options", () => {
+  test("defaults to preserving data and requiring confirmation", () => {
+    expect(parseUninstallOptions([])).toEqual({
+      purge: false,
+      yes: false,
+      dryRun: false,
+      skipHosts: false,
+    });
+  });
+
+  test("parses purge, automation, and preview flags", () => {
+    expect(
+      parseUninstallOptions(["--dry-run", "--purge", "-y", "--skip-hosts"]),
+    ).toEqual({
+      purge: true,
+      yes: true,
+      dryRun: true,
+      skipHosts: true,
+    });
+  });
+
+  test("rejects unknown and duplicate options", () => {
+    expect(() => parseUninstallOptions(["--force"])).toThrow(
+      "Unknown uninstall option",
+    );
+    expect(() => parseUninstallOptions(["--purge", "--purge"])).toThrow(
+      "--purge may only be specified once",
+    );
+    expect(() => parseUninstallOptions(["--yes", "-y"])).toThrow(
+      "--yes/-y may only be specified once",
+    );
+    expect(() =>
+      parseUninstallOptions(["--skip-hosts", "--skip-hosts"]),
+    ).toThrow("--skip-hosts may only be specified once");
+  });
+
+  test("uses a stronger confirmation for purge", () => {
+    expect(isUninstallConfirmationAccepted("yes", false)).toBe(true);
+    expect(isUninstallConfirmationAccepted("Y", false)).toBe(true);
+    expect(isUninstallConfirmationAccepted("", false)).toBe(false);
+    expect(isUninstallConfirmationAccepted("yes", true)).toBe(false);
+    expect(isUninstallConfirmationAccepted(" PURGE ", true)).toBe(true);
   });
 });
 
@@ -268,6 +325,7 @@ describe("interactive no-arg invocation", () => {
     expect(output).toContain("plannotator review");
     expect(output).toContain("plannotator setup-goal interview bundle.json --json");
     expect(output).toContain("plannotator sessions");
+    expect(output).toContain("plannotator uninstall");
     expect(output).toContain("Run 'plannotator --help' for top-level usage.");
   });
 });

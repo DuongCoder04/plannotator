@@ -231,6 +231,7 @@
         "@plannotator/shared": "workspace:*",
         "@plannotator/webtui": "0.1.0",
         "chokidar": "^5.0.0",
+        "jsonc-parser": "^3.3.1",
       },
       "devDependencies": {
         "glimpseui": "^0.8.0",

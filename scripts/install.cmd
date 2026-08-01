@@ -1101,6 +1101,8 @@ if !ERRORLEVEL! neq 0 (
     echo.
     echo   set PATH=%%PATH%%;!INSTALL_DIR!
 )
+echo.
+echo To uninstall later: plannotator uninstall
 goto :eof
 
 REM ======================================================================

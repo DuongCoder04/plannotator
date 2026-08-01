@@ -23,6 +23,17 @@ pi install ./plannotator/apps/pi-extension
 pi -e npm:@plannotator/pi-extension
 ```
 
+## Uninstall
+
+Remove a standalone Pi installation with:
+
+```bash
+pi remove npm:@plannotator/pi-extension
+```
+
+If Pi was configured by the full Plannotator installer, `plannotator uninstall`
+also detects and removes the extension through Pi.
+
 ## Build from source
 
 If installing from a local clone, build the HTML assets first:

@@ -19,6 +19,7 @@
     "./repo": "./repo.ts",
     "./review-workspace": "./review-workspace.ts",
     "./agent-terminal-runtime": "./agent-terminal-runtime.ts",
+    "./uninstall": "./uninstall.ts",
     "./share-url": "./share-url.ts",
     "./sessions": "./sessions.ts",
     "./project": "./project.ts",
@@ -30,11 +31,12 @@
     "*.mjs"
   ],
   "dependencies": {
-    "chokidar": "^5.0.0",
     "@pierre/diffs": "1.2.8",
     "@plannotator/ai": "workspace:*",
     "@plannotator/shared": "workspace:*",
-    "@plannotator/webtui": "0.1.0"
+    "@plannotator/webtui": "0.1.0",
+    "chokidar": "^5.0.0",
+    "jsonc-parser": "^3.3.1"
   },
   "peerDependencies": {
     "bun": ">=1.0.0"

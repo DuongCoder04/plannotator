@@ -6,6 +6,59 @@ export interface ParsedStrictAnnotateOptions {
   remainingArgs: string[];
 }
 
+export interface ParsedUninstallOptions {
+  purge: boolean;
+  yes: boolean;
+  dryRun: boolean;
+  skipHosts: boolean;
+}
+
+/**
+ * Parse the deliberately small, non-overlapping uninstall flag surface.
+ */
+export function parseUninstallOptions(
+  args: readonly string[],
+): ParsedUninstallOptions {
+  let purge = false;
+  let yes = false;
+  let dryRun = false;
+  let skipHosts = false;
+
+  for (const arg of args) {
+    if (arg === "--purge") {
+      if (purge) throw new Error("--purge may only be specified once");
+      purge = true;
+    } else if (arg === "--yes" || arg === "-y") {
+      if (yes) throw new Error("--yes/-y may only be specified once");
+      yes = true;
+    } else if (arg === "--dry-run") {
+      if (dryRun) throw new Error("--dry-run may only be specified once");
+      dryRun = true;
+    } else if (arg === "--skip-hosts") {
+      if (skipHosts) throw new Error("--skip-hosts may only be specified once");
+      skipHosts = true;
+    } else {
+      throw new Error(`Unknown uninstall option: ${arg}`);
+    }
+  }
+
+  return { purge, yes, dryRun, skipHosts };
+}
+
+/**
+ * Normal uninstall accepts y/yes. Purge intentionally requires an exact,
+ * explicit word so an accidental return key cannot destroy local data.
+ */
+export function isUninstallConfirmationAccepted(
+  answer: string,
+  purge: boolean,
+): boolean {
+  const normalized = answer.trim().toLowerCase();
+  return purge
+    ? normalized === "purge"
+    : normalized === "y" || normalized === "yes";
+}
+
 export function parseStrictAnnotateOptions(
   args: string[],
 ): ParsedStrictAnnotateOptions {
@@ -99,6 +152,7 @@ export function formatTopLevelHelp(): string {
     "  plannotator last",
     "  plannotator archive",
     "  plannotator sessions",
+    "  plannotator uninstall [--purge] [--yes] [--dry-run] [--skip-hosts]",
     "  plannotator improve-context",
     "",
     "Run 'plannotator <command> --help' for command-specific usage.",
@@ -213,6 +267,23 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     "  --open [N]    Reopen session #N (default 1) in the browser",
     "  --clean       Remove stale session entries",
   ].join("\n"),
+  uninstall: [
+    "Usage:",
+    "  plannotator uninstall [--purge] [--yes | -y] [--dry-run] [--skip-hosts]",
+    "",
+    "Remove Plannotator-installed components. Local plans, history, drafts,",
+    "settings, and other Plannotator data are preserved by default.",
+    "",
+    "Options:",
+    "  --purge       Also permanently delete known local Plannotator data",
+    "  --yes, -y     Skip the interactive confirmation (required without a TTY)",
+    "  --dry-run     Preview recognized removal work without changing anything",
+    "  --skip-hosts   Leave host plugin managers and shared host config untouched",
+    "                 (for recovery when a host install or config is broken)",
+    "",
+    "Purge data is local-only: it is not stored on a Plannotator server and",
+    "cannot be recovered after purge. Unrecognized custom files are preserved.",
+  ].join("\n"),
 };
 
 // Aliases share another subcommand's help text.
@@ -250,6 +321,7 @@ export function formatInteractiveNoArgClarification(): string {
     "  plannotator last",
     "  plannotator archive",
     "  plannotator sessions",
+    "  plannotator uninstall",
     "",
     "Run 'plannotator --help' for top-level usage.",
   ].join("\n");

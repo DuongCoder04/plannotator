@@ -766,6 +766,18 @@ describe("install shared behavior", () => {
   const sh = readScript("install.sh");
   const ps = readScript("install.ps1");
 
+  test("all installers advertise the conventional uninstall command", () => {
+    for (const [name, script] of [
+      ["install.sh", sh],
+      ["install.ps1", ps],
+      ["install.cmd", readScript("install.cmd")],
+    ] as const) {
+      expect(script, name).toContain(
+        "To uninstall later: plannotator uninstall",
+      );
+    }
+  });
+
   test("every extras install command uses global scope", () => {
     const files = [
       "scripts/install.sh",
