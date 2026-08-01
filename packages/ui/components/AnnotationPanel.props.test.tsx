@@ -77,6 +77,25 @@ describe('AnnotationPanel consumer props', () => {
     expect(document.querySelector('button[title="Edit annotation"]')).toBeNull();
   });
 
+  test.skipIf(!hasDom)('readOnly hides direct-edit discard and host mutation slots', async () => {
+    await mount(
+      <AnnotationPanel
+        {...baseProps}
+        readOnly
+        directEdits={[{
+          id: 'plan',
+          added: 1,
+          removed: 0,
+          diffText: '@@ -1 +1 @@\n-old\n+new',
+          onDiscard: () => {},
+        }]}
+        renderCardFooter={() => <button type="button">Reply</button>}
+      />,
+    );
+    expect(document.body.textContent).not.toContain('Discard');
+    expect(document.body.textContent).not.toContain('Reply');
+  });
+
   test.skipIf(!hasDom)('renderCardFooter renders per-card and does not select the card', async () => {
     const selected: string[] = [];
     let footerClicks = 0;

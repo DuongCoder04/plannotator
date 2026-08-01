@@ -53,6 +53,7 @@ import {
 } from "./reference.ts";
 import { handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
 import { warmFileListCache } from "../generated/resolve-file.ts";
+import { isArchiveDocumentMutation } from "../generated/archive-mode.ts";
 
 export interface PlanReviewDecision {
 	approved: boolean;
@@ -169,6 +170,11 @@ export async function startPlanReviewServer(options: {
 		if (url.pathname === "/api/done" && req.method === "POST") {
 			resolveDone?.();
 			json(res, { ok: true });
+		} else if (
+			options.mode === "archive" &&
+			isArchiveDocumentMutation(req.method ?? "GET", url.pathname)
+		) {
+			json(res, { error: "Archive is read-only" }, 403);
 		} else if (url.pathname === "/api/archive/plans" && req.method === "GET") {
 			const customPath = url.searchParams.get("customPath") || undefined;
 			if (!cachedArchivePlans)

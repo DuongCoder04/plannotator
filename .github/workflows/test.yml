@@ -69,6 +69,8 @@ jobs:
           packages/ui/hooks/useLinkedDoc.test.tsx
           packages/ui/components/DocBadges.test.tsx
           packages/editor/planDiffAutoExit.test.tsx
+          packages/editor/App.archiveReadOnly.test.tsx
+          packages/editor/actionsLabelMode.test.ts
 
   pi-extension-ai-runtime-windows:
     # Exercises the Pi extension's Node/jiti server mirror on Windows with an

@@ -101,6 +101,7 @@ import {
   type SourceSaveResponse,
 } from '@plannotator/shared/source-save';
 import type { AgentTerminalCapability } from '@plannotator/shared/agent-terminal';
+import { observeActionsLabelMode } from './actionsLabelMode';
 // Demo content toggle. Default: the original Real-time Collaboration plan.
 // Opt-in diff-engine stress test: `VITE_DIFF_DEMO=1 bun run dev:hook` swaps
 // in the 20-case Auth Service Refactor test plan. dev-mock-api.ts reads the
@@ -915,6 +916,7 @@ const App: React.FC = () => {
     markdown, viewerRef, linkedDocHook,
     setMarkdown, setAnnotations, setSelectedAnnotationId, setSubmitted,
   });
+  const documentReadOnly = archive.archiveMode;
 
   const canUseWideMode = useMemo(() => canUseAnnotateWideMode({
     archiveMode: archive.archiveMode,
@@ -1340,7 +1342,9 @@ const App: React.FC = () => {
   const activeSection = useActiveSection(containerRef, headingCount, scrollViewport);
 
   const { editorAnnotations, deleteEditorAnnotation } = useEditorAnnotations();
-  const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<Annotation>({ enabled: isApiMode && !goalSetupMode });
+  const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<Annotation>({
+    enabled: isApiMode && !goalSetupMode && !documentReadOnly,
+  });
 
   // Drive DOM highlights for SSE-delivered external annotations. Disabled
   // while a linked doc overlay is open (Viewer DOM is hidden) and while the
@@ -1557,15 +1561,9 @@ const App: React.FC = () => {
 
     const el = planAreaRef.current;
     if (!el) return;
-    const bucket = (w: number): ActionsLabelMode =>
-      w >= 800 ? 'full' : w >= 680 ? 'short' : 'icon';
-    setActionsLabelMode(bucket(el.getBoundingClientRect().width));
-    const ro = new ResizeObserver(([entry]) => {
-      const next = bucket(entry.contentRect.width);
+    return observeActionsLabelMode(el, (next) => {
       setActionsLabelMode((prev) => (prev === next ? prev : next));
     });
-    ro.observe(el);
-    return () => ro.disconnect();
   }, [isLoading, isSharedSession]);
 
   // The user's current direct-edit text: the open editor buffer, else the
@@ -1599,7 +1597,7 @@ const App: React.FC = () => {
     getEditedMarkdown: getDraftEditedMarkdown,
     getEditedDocuments: editableDocuments.getDraftDocuments,
     getSavedFileChanges: editableDocuments.getDraftSavedFileChanges,
-    isApiMode: isApiMode && !goalSetupMode,
+    isApiMode: isApiMode && !goalSetupMode && !documentReadOnly,
     isSharedSession,
     // isSubmitting counts: a save firing while approve/deny is in flight can
     // land after the server's draft delete and ghost a "Draft Recovered"
@@ -2624,6 +2622,7 @@ const App: React.FC = () => {
 
   // Global paste listener for image attachments
   useEffect(() => {
+    if (documentReadOnly) return;
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
@@ -2645,11 +2644,11 @@ const App: React.FC = () => {
 
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
-  }, [globalAttachments]);
+  }, [documentReadOnly, globalAttachments]);
 
   // Handle paste annotator accept — name comes from ImageAnnotator
   const handlePasteAnnotatorAccept = async (blob: Blob, hasDrawings: boolean, name: string) => {
-    if (!pendingPasteImage) return;
+    if (documentReadOnly || !pendingPasteImage) return;
 
     try {
       const formData = new FormData();
@@ -3113,6 +3112,9 @@ const App: React.FC = () => {
       // Don't intercept in demo/share mode (no API)
       if (!isApiMode) return;
 
+      // Standalone archive is navigable but has no review decision to submit.
+      if (documentReadOnly) return;
+
       // While the markdown editor is open, submit shortcuts belong to editing,
       // not the review session.
       if (isEditingMarkdown) return;
@@ -3177,13 +3179,14 @@ const App: React.FC = () => {
   }, [
     showExport, showImport, showFeedbackPrompt, showClaudeCodeWarning, showSourceFileEditWarning, showExitWarning, showApproveWithNotesConfirmation, showAgentWarning,
     showPermissionModeSetup, pendingPasteImage,
-    submitted, isSubmitting, isExiting, goalSetupAction.isSubmitting, isApiMode, isEditingMarkdown, linkedDocHook.isActive, annotations.length, codeAnnotations.length, externalAnnotations.length, annotateMode,
+    submitted, isSubmitting, isExiting, goalSetupAction.isSubmitting, isApiMode, documentReadOnly, isEditingMarkdown, linkedDocHook.isActive, annotations.length, codeAnnotations.length, externalAnnotations.length, annotateMode,
     gate, approvalNotesSupported, hasFeedbackToSend, goalSetupMode, goalSetupAction.canSubmit, isAgentTerminalReady,
     annotateSource, origin, getAgentWarning,
     maybeConfirmUnsavedSourceFileEdits,
   ]);
 
   const handleAddAnnotation = (ann: Annotation) => {
+    if (documentReadOnly) return;
     setAnnotations(prev => [...prev, ann]);
     setSelectedAnnotationId(ann.id);
     setSelectedCodeAnnotationId(null);
@@ -3197,6 +3200,7 @@ const App: React.FC = () => {
   }, [isMobile, wideModeType]);
 
   const handleAddCodeAnnotation = React.useCallback((input: CodeFileAnnotationInput) => {
+    if (documentReadOnly) return;
     const annotation: CodeAnnotation = {
       id: generateId('code-ann'),
       type: 'comment',
@@ -3214,7 +3218,7 @@ const App: React.FC = () => {
     setCodeAnnotations(prev => [...prev, annotation]);
     setSelectedAnnotationId(null);
     setSelectedCodeAnnotationId(annotation.id);
-  }, []);
+  }, [documentReadOnly]);
 
   // The code popout is full-viewport modal — the annotation panel is behind it.
   // This handler only fires when the popout is closed (sidebar visible), so
@@ -3229,16 +3233,19 @@ const App: React.FC = () => {
   }, [codeAnnotations, codeFilePopout.open, isMobile, wideModeType]);
 
   const handleDeleteCodeAnnotation = React.useCallback((id: string) => {
+    if (documentReadOnly) return;
     setCodeAnnotations(prev => prev.filter(a => a.id !== id));
     if (selectedCodeAnnotationId === id) setSelectedCodeAnnotationId(null);
-  }, [selectedCodeAnnotationId]);
+  }, [documentReadOnly, selectedCodeAnnotationId]);
 
   const handleEditCodeAnnotation = React.useCallback((id: string, updates: Partial<CodeAnnotation>) => {
+    if (documentReadOnly) return;
     setCodeAnnotations(prev => prev.map(a => a.id === id ? { ...a, ...updates } : a));
-  }, []);
+  }, [documentReadOnly]);
 
   // Core annotation removal — highlight cleanup + state filter + selection clear
   const removeAnnotation = (id: string) => {
+    if (documentReadOnly) return;
     viewerRef.current?.removeHighlight(id);
     setAnnotations(prev => prev.filter(a => a.id !== id));
     if (selectedAnnotationId === id) setSelectedAnnotationId(null);
@@ -3253,6 +3260,7 @@ const App: React.FC = () => {
   });
 
   const handleDeleteAnnotation = (id: string) => {
+    if (documentReadOnly) return;
     const ann = allAnnotations.find(a => a.id === id);
     // External annotations (live in SSE hook) route to the SSE hook, not local state.
     // Check membership by ID — source alone is insufficient because share-imported
@@ -3272,6 +3280,7 @@ const App: React.FC = () => {
   };
 
   const handleEditAnnotation = (id: string, updates: Partial<Annotation>) => {
+    if (documentReadOnly) return;
     const ann = allAnnotations.find(a => a.id === id);
     if (ann?.source && externalAnnotations.some(e => e.id === id)) {
       updateExternalAnnotation(id, updates);
@@ -3283,19 +3292,22 @@ const App: React.FC = () => {
   };
 
   const handleIdentityChange = useCallback((oldIdentity: string, newIdentity: string) => {
+    if (documentReadOnly) return;
     setAnnotations(prev => prev.map(ann =>
       ann.author === oldIdentity ? { ...ann, author: newIdentity } : ann
     ));
     setCodeAnnotations(prev => prev.map(ann =>
       ann.author === oldIdentity ? { ...ann, author: newIdentity } : ann
     ));
-  }, []);
+  }, [documentReadOnly]);
 
   const handleAddGlobalAttachment = (image: ImageAttachment) => {
+    if (documentReadOnly) return;
     setGlobalAttachments(prev => [...prev, image]);
   };
 
   const handleRemoveGlobalAttachment = (path: string) => {
+    if (documentReadOnly) return;
     setGlobalAttachments(prev => prev.filter(p => p.path !== path));
   };
 
@@ -3576,6 +3588,8 @@ const App: React.FC = () => {
   };
 
   const handleQuickSaveToNotes = async (target: 'obsidian' | 'bear' | 'octarine') => {
+    if (documentReadOnly) return;
+
     const body: { obsidian?: object; bear?: object; octarine?: object } = {};
     // Mid-edit saves describe the live buffer, matching handleApprove.
     const quickSaveMarkdown = isEditingMarkdown
@@ -3844,6 +3858,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleSaveShortcut = (e: KeyboardEvent) => {
       if (e.key !== 's' || !(e.metaKey || e.ctrlKey)) return;
+      if (documentReadOnly) return;
 
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -3886,7 +3901,7 @@ const App: React.FC = () => {
   }, [
     showExport, showFeedbackPrompt, showClaudeCodeWarning, showSourceFileEditWarning, showExitWarning, showApproveWithNotesConfirmation, showAgentWarning,
     showPermissionModeSetup, pendingPasteImage,
-    submitted, isApiMode, isEditingMarkdown, handleSaveEditedSourceFile, displayedMarkdown, annotationsOutput,
+    submitted, isApiMode, documentReadOnly, isEditingMarkdown, handleSaveEditedSourceFile, displayedMarkdown, annotationsOutput,
   ]);
 
   // Cmd/Ctrl+P keyboard shortcut — print plan
@@ -4595,6 +4610,7 @@ const App: React.FC = () => {
                     diffActive={isPlanDiffActive && !!htmlDiffHtml}
                     onToggleDiff={() => setIsPlanDiffActive((v) => !v)}
                     onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
+                    readOnly={documentReadOnly}
                   />
                 ) : isEditingMarkdown ? (
                   <MarkdownEditor
@@ -4675,6 +4691,7 @@ const App: React.FC = () => {
                     checkboxOverrides={checkbox.overrides}
                     actionsLabelMode={actionsLabelMode}
                     onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
+                    readOnly={documentReadOnly}
                   />
                 )}
               </div>
@@ -4718,6 +4735,7 @@ const App: React.FC = () => {
               onDiscard: item.id === 'plan' ? () => handleDiscardEdits() : undefined,
             })) ?? null}
             onOtherFileAnnotationsClick={handleFlashAnnotatedFiles}
+            readOnly={documentReadOnly}
           />
           {isPanelOpen && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAskAI && (
             <aside
@@ -4778,9 +4796,9 @@ const App: React.FC = () => {
             {...codeFilePopout.popoutProps}
             annotations={codeAnnotations.filter((ann) => ann.filePath === codeFilePopout.popoutProps?.filepath)}
             selectedAnnotationId={selectedCodeAnnotationId}
-            onAddAnnotation={handleAddCodeAnnotation}
-            onEditAnnotation={handleEditCodeAnnotation}
-            onDeleteAnnotation={handleDeleteCodeAnnotation}
+            onAddAnnotation={documentReadOnly ? undefined : handleAddCodeAnnotation}
+            onEditAnnotation={documentReadOnly ? undefined : handleEditCodeAnnotation}
+            onDeleteAnnotation={documentReadOnly ? undefined : handleDeleteCodeAnnotation}
             onSelectAnnotation={(id) => {
               setSelectedAnnotationId(null);
               setSelectedCodeAnnotationId(id);
@@ -4809,7 +4827,7 @@ const App: React.FC = () => {
           taterSprite={taterMode ? <TaterSpritePullup /> : undefined}
           sharingEnabled={canShareCurrentSession}
           markdown={markdown}
-          isApiMode={isApiMode}
+          isApiMode={isApiMode && !documentReadOnly}
           initialTab={initialExportTab}
           wrapCopiedAnnotations={wrapCopiedFeedback}
         />

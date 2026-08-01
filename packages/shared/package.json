@@ -71,7 +71,8 @@
     "./review-profiles": "./review-profiles.ts",
     "./commit-avatars": "./commit-avatars.ts",
     "./annotate-client-lease": "./annotate-client-lease.ts",
-    "./annotate-decision": "./annotate-decision.ts"
+    "./annotate-decision": "./annotate-decision.ts",
+    "./archive-mode": "./archive-mode.ts"
   },
   "dependencies": {
     "@plannotator/core": "workspace:*",

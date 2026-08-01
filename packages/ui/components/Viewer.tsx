@@ -297,6 +297,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     codeBlock: { block: Block; element: HTMLElement };
   } | null>(null);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   const stickySentinelRef = useRef<HTMLDivElement>(null);
   const lastAutoScrolledHashRef = useRef<string | null>(null);
   const [isStuck, setIsStuck] = useState(false);
@@ -344,6 +346,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     isQuickLabel?: boolean,
     quickLabelTip?: string,
   ) => {
+    if (readOnlyRef.current) return;
+
     const id = `codeblock-${Date.now()}`;
     const codeText = codeEl.textContent || '';
 
@@ -375,6 +379,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
 
   // Pinpoint mode: hover + click to select elements
   const handlePinpointCodeBlockClick = useCallback((blockId: string, element: HTMLElement) => {
+    if (readOnlyRef.current) return;
+
     const block = blocks.find((candidate) => candidate.id === blockId);
     const codeEl = element.querySelector('code');
     if (!block || !codeEl) return;
@@ -403,6 +409,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     element: HTMLElement,
     modeOverride?: EditorMode,
   ) => {
+    if (readOnlyRef.current) return;
+
     const block = blocks.find((candidate) => candidate.id === blockId);
     const codeEl = element.querySelector('code');
     if (!block || !codeEl) return;
@@ -486,6 +494,18 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   const pinpointOverlayTarget = vimOwnsHudTarget
     ? null
     : (inputMethod === 'pinpoint' ? hoverTarget : null) ?? legacyVimTarget;
+
+  useEffect(() => {
+    if (!readOnly) return;
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setCodeBlockToolbar(null);
+    setIsCodeBlockToolbarExiting(false);
+    setViewerCommentPopover(null);
+    setCodeBlockQuickLabelPicker(null);
+  }, [readOnly]);
 
   useEffect(() => {
     if (!vimOwnsDocumentNavigation) return;
@@ -623,7 +643,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   // --- Viewer-specific: code block annotation ---
 
   const handleCodeBlockAnnotate = (type: AnnotationType) => {
-    if (!codeBlockToolbar) return;
+    if (readOnlyRef.current || !codeBlockToolbar) return;
     const codeEl = codeBlockToolbar.element.querySelector('code');
     if (!codeEl) return;
     applyCodeBlockAnnotation(codeBlockToolbar.block.id, codeEl, type);
@@ -631,7 +651,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   };
 
   const handleCodeBlockQuickLabel = (label: QuickLabel) => {
-    if (!codeBlockToolbar) return;
+    if (readOnlyRef.current || !codeBlockToolbar) return;
     const codeEl = codeBlockToolbar.element.querySelector('code');
     if (!codeEl) return;
     applyCodeBlockAnnotation(
@@ -648,7 +668,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   // Viewer-specific comment popover handlers (code blocks + global comments)
 
   const handleCodeBlockRequestComment = (initialChar?: string) => {
-    if (!codeBlockToolbar) return;
+    if (readOnlyRef.current || !codeBlockToolbar) return;
     const codeText = codeBlockToolbar.element.querySelector('code')?.textContent || '';
     setViewerCommentPopover({
       anchorEl: codeBlockToolbar.element,
@@ -662,7 +682,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   };
 
   const handleViewerCommentSubmit = (text: string, images?: ImageAttachment[]) => {
-    if (!viewerCommentPopover) return;
+    if (readOnlyRef.current || !viewerCommentPopover) return;
 
     if (viewerCommentPopover.isGlobal) {
       const newAnnotation: Annotation = {
@@ -884,7 +904,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
             <CodeBlock
               key={group.block.id}
               block={group.block}
-              onHover={inputMethod === 'pinpoint' ? () => {} : (element) => {
+              onHover={readOnly || inputMethod === 'pinpoint' ? undefined : (element) => {
                 // Clear any pending leave timeout
                 if (hoverTimeoutRef.current) {
                   clearTimeout(hoverTimeoutRef.current);
@@ -905,7 +925,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                   });
                 }
               }}
-              onLeave={inputMethod === 'pinpoint' ? () => {} : () => {
+              onLeave={readOnly || inputMethod === 'pinpoint' ? undefined : () => {
                 if (keyboardCodeBlockToolbarOpen) return;
                 // Delay then start exit animation
                 hoverTimeoutRef.current = setTimeout(() => {
@@ -918,7 +938,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                 }, 100);
               }}
               isHovered={
-                inputMethod !== 'pinpoint'
+                !readOnly
+                && inputMethod !== 'pinpoint'
                 && !vimOwnsDocumentNavigation
                 && codeBlockToolbar?.block.id === group.block.id
               }
@@ -929,7 +950,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         )}
 
         {/* Text selection toolbar */}
-        {toolbarState && (
+        {!readOnly && toolbarState && (
           <ToolbarErrorBoundary>
             <AnnotationToolbar
               element={toolbarState.element}
@@ -980,7 +1001,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         )}
 
         {/* Code block hover toolbar */}
-        {codeBlockToolbar
+        {!readOnly
+          && codeBlockToolbar
           && !toolbarState
           && !(vimOwnsDocumentNavigation && codeBlockToolbar.activation === 'pointer')
           && (
@@ -1060,7 +1082,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         )}
 
         {/* Comment popover — hook handles text selection, Viewer handles global + code block */}
-        {hookCommentPopover && (
+        {!readOnly && hookCommentPopover && (
             <CommentPopover
               anchorEl={hookCommentPopover.anchorEl}
               contextText={hookCommentPopover.contextText}
@@ -1078,7 +1100,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               }}
             />
           )}
-        {viewerCommentPopover && (
+        {!readOnly && viewerCommentPopover && (
           <CommentPopover
             anchorEl={viewerCommentPopover.anchorEl}
             contextText={viewerCommentPopover.contextText}
@@ -1098,7 +1120,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         )}
 
         {/* Quick Label floating picker — hook handles text selection, Viewer handles code blocks */}
-        {hookQuickLabelPicker && (
+        {!readOnly && hookQuickLabelPicker && (
           <FloatingQuickLabelPicker
             anchorEl={hookQuickLabelPicker.anchorEl}
             cursorHint={hookQuickLabelPicker.cursorHint}
@@ -1106,7 +1128,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
             onDismiss={hookQuickLabelPickerDismiss}
           />
         )}
-        {codeBlockQuickLabelPicker && (
+        {!readOnly && codeBlockQuickLabelPicker && (
           <FloatingQuickLabelPicker
             anchorEl={codeBlockQuickLabelPicker.anchorEl}
             onSelect={(label: QuickLabel) => {

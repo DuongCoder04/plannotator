@@ -54,6 +54,7 @@ import { createExternalAnnotationHandler } from "./external-annotations";
 import { isWSL } from "./browser";
 import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
 import { isAIEndpointPath, type AIEndpoints } from "@plannotator/ai";
+import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -263,6 +264,10 @@ export async function startPlannotatorServer(
           if (url.pathname === "/api/done" && req.method === "POST") {
             resolveDone?.();
             return Response.json({ ok: true });
+          }
+
+          if (mode === "archive" && isArchiveDocumentMutation(req.method, url.pathname)) {
+            return Response.json({ error: "Archive is read-only" }, { status: 403 });
           }
 
           // API: Get plan content

@@ -43,6 +43,8 @@ type BridgeMessage =
 /** Dependencies and callbacks for the sandboxed HTML annotation bridge. */
 export interface UseHtmlAnnotationOptions {
   iframeRef: RefObject<HTMLIFrameElement | null>;
+  /** Whether selection bridge messages may open composers or create annotations. */
+  enabled?: boolean;
   annotations: Annotation[];
   onAddAnnotation?: (ann: Annotation) => void;
   onSelectAnnotation?: (id: string | null) => void;
@@ -124,6 +126,7 @@ function parseBridgeMessage(value: unknown): BridgeMessage | null {
  */
 export function useHtmlAnnotation({
   iframeRef,
+  enabled = true,
   onAddAnnotation,
   onSelectAnnotation,
   selectedAnnotationId,
@@ -138,6 +141,8 @@ export function useHtmlAnnotation({
   const [quickLabelPicker, setQuickLabelPicker] = useState<QuickLabelPickerState | null>(null);
 
   const pendingTextRef = useRef<string>("");
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // Mirror toolbar visibility into a ref so the (stable) message handler can gate
@@ -196,6 +201,10 @@ export function useHtmlAnnotation({
       if (!message) return;
 
       const type = message.type;
+
+      if (!enabledRef.current && type !== `${PREFIX}mark-click` && type !== `${PREFIX}resize`) {
+        return;
+      }
 
       if (type === `${PREFIX}selection`) {
         pendingTextRef.current = message.text;
@@ -301,6 +310,17 @@ export function useHtmlAnnotation({
   }, [iframeRef, positionAnchor, onResize, getOrCreateAnchor]);
 
   useEffect(() => {
+    if (enabled) return;
+    setToolbarState(null);
+    setCommentPopover(null);
+    setQuickLabelPicker(null);
+    pendingTextRef.current = "";
+    anchorRef.current?.remove();
+    anchorRef.current = null;
+    postToIframe(iframeRef.current, { type: `${PREFIX}cancel-selection` });
+  }, [enabled, iframeRef]);
+
+  useEffect(() => {
     if (selectedAnnotationId) {
       postToIframe(iframeRef.current, {
         type: `${PREFIX}scroll-to`,
@@ -316,6 +336,7 @@ export function useHtmlAnnotation({
 
   const handleAnnotate = useCallback(
     (type: AnnotationType) => {
+      if (!enabledRef.current) return;
       const text = pendingTextRef.current;
       if (!text || type !== AnnotationType.DELETION) return;
 
@@ -340,6 +361,7 @@ export function useHtmlAnnotation({
 
   const handleRequestComment = useCallback(
     (initialChar?: string) => {
+      if (!enabledRef.current) return;
       const text = pendingTextRef.current;
       if (!text) return;
       const anchor = anchorRef.current ?? getOrCreateAnchor();
@@ -351,6 +373,7 @@ export function useHtmlAnnotation({
 
   const handleCommentSubmit = useCallback(
     (comment: string, images?: ImageAttachment[]) => {
+      if (!enabledRef.current) return;
       // Prefer the text captured when the popover opened — it can't be clobbered by
       // a later selection change or clear while the user is composing the comment.
       const text = commentPopoverRef.current?.selectedText || pendingTextRef.current;
@@ -391,6 +414,7 @@ export function useHtmlAnnotation({
 
   const applyQuickLabel = useCallback(
     (label: QuickLabel, clearState: () => void) => {
+      if (!enabledRef.current) return;
       const text = pendingTextRef.current;
       if (!text) return;
       const id = nextHtmlAnnId();

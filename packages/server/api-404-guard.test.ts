@@ -114,6 +114,40 @@ const serverCases = [
   },
 ] satisfies readonly ServerCase[];
 
+const archiveServerCases = [
+  {
+    name: "Bun plan",
+    start: () =>
+      startBunPlanServer({
+        plan: "# Test Plan",
+        origin: "claude-code",
+        htmlContent: SPA_HTML,
+        mode: "archive",
+        customPlanPath: archivePath,
+      }),
+  },
+  {
+    name: "Pi plan",
+    start: () =>
+      startPiPlanServer({
+        plan: "# Test Plan",
+        origin: "pi",
+        htmlContent: SPA_HTML,
+        mode: "archive",
+        customPlanPath: archivePath,
+      }),
+  },
+] as const;
+
+const archiveMutationRequests = [
+  { path: "/api/approve", method: "POST" },
+  { path: "/api/deny", method: "POST" },
+  { path: "/api/draft", method: "POST" },
+  { path: "/api/draft", method: "DELETE" },
+  { path: "/api/save-notes", method: "POST" },
+  { path: "/api/upload", method: "POST" },
+] as const;
+
 async function expectJsonNotFound(
   server: RunningServer,
   requestPath: string,
@@ -221,6 +255,24 @@ describe("API route 404 guards", () => {
         expect(spaResponse.status).toBe(200);
         expect(spaResponse.headers.get("content-type")).toContain("text/html");
         expect(await spaResponse.text()).toBe(SPA_HTML);
+      } finally {
+        server.stop();
+      }
+    });
+  }
+
+  for (const serverCase of archiveServerCases) {
+    test(`${serverCase.name} rejects document mutations in archive mode`, async () => {
+      const server = await startOnRandomLocalPort(serverCase.start);
+
+      try {
+        for (const request of archiveMutationRequests) {
+          const response = await fetch(`${server.url}${request.path}`, {
+            method: request.method,
+          });
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({ error: "Archive is read-only" });
+        }
       } finally {
         server.stop();
       }

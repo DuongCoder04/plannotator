@@ -77,7 +77,7 @@ interface PanelProps {
     *  resolve UI). The panel stays presentation-only; clicks inside the slot
     *  do not select the card. Default: nothing rendered. */
   renderCardFooter?: (annotation: Annotation) => React.ReactNode;
-  /** Hide every mutation affordance (delete/edit buttons on all card kinds).
+  /** Hide every mutation affordance (delete/edit, direct-edit discard, and host card footers).
     *  Selection and scrolling still work. Default false — today's behavior. */
   readOnly?: boolean;
 }
@@ -178,7 +178,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
       <OverlayScrollArea className="flex-1 min-h-0">
         <div ref={listRef} className="p-2 flex flex-col gap-1.5">
         {directEdits?.map((item) => (
-          <DirectEditsCard key={item.id} {...item} />
+          <DirectEditsCard key={item.id} {...item} onDiscard={readOnly ? undefined : item.onDiscard} />
         ))}
         {totalCount === 0 ? (
           (!directEdits || directEdits.length === 0) && (
@@ -204,7 +204,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   onDelete={() => onDelete(entry.annotation.id)}
                   onEdit={onEdit ? (updates: Partial<Annotation>) => onEdit(entry.annotation.id, updates) : undefined}
                   readOnly={readOnly}
-                  footer={renderCardFooter?.(entry.annotation)}
+                  footer={readOnly ? undefined : renderCardFooter?.(entry.annotation)}
                 />
               ) : (
                 <CodeAnnotationCard

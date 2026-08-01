@@ -376,9 +376,9 @@ export const AppHeader = React.memo<AppHeaderProps>(({
           sharingEnabled={canShareCurrentSession}
           isApiMode={isApiMode}
           agentInstructionsEnabled={agentInstructionsEnabled}
-          obsidianConfigured={!goalSetupMode && obsidianConfigured}
-          bearConfigured={!goalSetupMode && bearConfigured}
-          octarineConfigured={!goalSetupMode && octarineConfigured}
+          obsidianConfigured={!archiveMode && !goalSetupMode && obsidianConfigured}
+          bearConfigured={!archiveMode && !goalSetupMode && bearConfigured}
+          octarineConfigured={!archiveMode && !goalSetupMode && octarineConfigured}
         />
       </div>
     </header>

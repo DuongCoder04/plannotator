@@ -5,8 +5,8 @@ import type { Block } from '../../types';
 
 interface CodeBlockProps {
   block: Block;
-  onHover: (element: HTMLElement) => void;
-  onLeave: () => void;
+  onHover?: (element: HTMLElement) => void;
+  onLeave?: () => void;
   isHovered: boolean;
 }
 
@@ -36,7 +36,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave })
   }, [block.content]);
 
   const handleMouseEnter = () => {
-    if (containerRef.current) {
+    if (containerRef.current && onHover) {
       onHover(containerRef.current);
     }
   };
@@ -49,7 +49,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave })
       ref={containerRef}
       className="relative group my-5"
       data-block-id={block.id}
-      onMouseEnter={handleMouseEnter}
+      onMouseEnter={onHover ? handleMouseEnter : undefined}
       onMouseLeave={onLeave}
     >
       <button
