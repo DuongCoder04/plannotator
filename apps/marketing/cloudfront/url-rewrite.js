@@ -39,7 +39,7 @@ function handler(event) {
     '/blog/local-diff-review-for-coding-agents': 'https://docs.plannotator.ai/learn/local-diff-review-for-coding-agents',
     '/blog/plan-diff-see-what-changed': 'https://docs.plannotator.ai/learn/plan-diff-see-what-changed',
     '/blog/plannotator-meets-pi': 'https://docs.plannotator.ai/open-source/agents/pi',
-    '/blog/sharing-plans-with-your-team': 'https://docs.plannotator.ai/workspaces/review-plans-and-technical-decisions',
+    '/blog/sharing-plans-with-your-team': 'https://docs.plannotator.ai/open-source/workflows/sharing',
     '/blog/welcome': 'https://docs.plannotator.ai/open-source/'
   };
 
