@@ -91,7 +91,12 @@ export function probeAnnotateToken(
 ): string | null {
   if (!token) return null;
 
-  if (/^https?:\/\//i.test(token)) return token;
+  // Unwrap the `@` reference marker and wrapping quotes before the URL
+  // check: the pipeline strips them first (and re-strips harmlessly), so
+  // `@https://example.com/page` in a multi-token invocation must count as a
+  // URL candidate, not fall through to the handoff.
+  const unwrapped = stripAtPrefix(token);
+  if (/^https?:\/\//i.test(unwrapped)) return unwrapped;
 
   const allowBareDirectory = options?.bareDirectories !== false;
   if (allowBareDirectory || /[\\/]/.test(token)) {
@@ -111,13 +116,12 @@ export function probeAnnotateToken(
   });
   if (html !== null) return resolveUserPath(html, projectRoot);
 
-  const stripped = stripAtPrefix(token);
-  let doc = resolveMarkdownFile(stripped, projectRoot);
-  if (doc.kind === "not_found" && stripped !== token) {
+  let doc = resolveMarkdownFile(unwrapped, projectRoot);
+  if (doc.kind === "not_found" && unwrapped !== token) {
     doc = resolveMarkdownFile(token, projectRoot);
   }
   if (doc.kind === "found") return doc.path;
-  if (doc.kind === "ambiguous") return stripped;
+  if (doc.kind === "ambiguous") return unwrapped;
 
   // Bare existence is file-only: directories are candidates exclusively via
   // the folder branch above, so disabling bare directories cannot be undone

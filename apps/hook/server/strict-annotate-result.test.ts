@@ -159,6 +159,11 @@ describe("annotate startup failure exit codes", () => {
     // tolerant handoff's `process.exit(0)` is fine: exit 0 is never a strict
     // outcome and the handoff is gated off strict invocations.)
     expect(annotateStartupBlock).not.toContain("process.exit(1)");
+    // The tolerance gate must be the NEGATED strict predicate: an inverted
+    // gate (tolerance in strict mode) cannot be spawn-tested without starting
+    // a server, so pin the source shape here.
+    expect(annotateStartupBlock).toContain("!strictAnnotate");
+    expect(annotateStartupBlock).toContain("isStrictAnnotateInvocation(");
     // The usage failure and every resolution failure route through the helper
     // that reads the strict flags.
     for (const failure of [

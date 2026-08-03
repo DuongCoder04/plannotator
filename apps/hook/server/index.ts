@@ -162,6 +162,7 @@ import {
 import { completeAnnotateCommand } from "./annotate-command";
 import {
   annotateStartupFailureExitCode,
+  isStrictAnnotateInvocation,
   assertResultPathAvailable,
   resolveResultFilePath,
   STRICT_GATE_ERROR_EXIT_CODE,
@@ -1022,8 +1023,12 @@ if (args[0] === "sessions") {
 
   // Strict invocations keep the exact legacy contract: args[1] is the target,
   // a typo'd path stays a startup failure (exit 2), and stdout carries only
-  // the decision record. The tolerant token fallback below never runs.
-  const strictAnnotate = requireApprovalFlag || !!resultFile;
+  // the decision record. The tolerant token fallback below never runs. Same
+  // predicate as the exit-code path, so the two cannot drift.
+  const strictAnnotate = isStrictAnnotateInvocation({
+    requireApproval: requireApprovalFlag,
+    resultFile,
+  });
 
   // Tolerant argument handling (#1182): slash-command hosts forward raw user
   // words verbatim, so a non-strict invocation with several tokens probes

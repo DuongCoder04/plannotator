@@ -280,6 +280,8 @@ Slash-command hosts forward raw user words to `plannotator annotate` verbatim (o
 
 Strict invocations (`--require-approval` / `--result-file`) bypass all three tiers: `args[1]` is the target and a typo'd path stays a startup failure with exit `2`.
 
+The bang prefix in the Claude Code skill is deliberate: #872 (commit `aac5aacb`, "restore `/plannotator-*` bash execution on Claude Code") put it back so the slash command never depends on the model choosing to run the binary. Argument-shape problems belong here in the CLI's resolution, not in the skill templates.
+
 ### Strict direct annotate results
 
 Direct `plannotator annotate` invocations may add `--require-approval` and/or `--result-file <path>` only with `--gate --json`; both reject `--hook` and are not shared with OpenCode/Pi slash-command parsing. When neither strict option is present, single-target invocations keep the legacy plaintext, JSON, hook, and exit behavior unchanged; multi-token invocations go through the tolerant tiers described under "Tolerant argument resolution" above.

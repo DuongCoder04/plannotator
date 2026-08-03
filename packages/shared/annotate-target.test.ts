@@ -28,6 +28,16 @@ beforeAll(() => {
   // Exists so that a wrongly split quoted token ("my notes.md" -> "notes.md")
   // would resolve if token boundaries were not preserved.
   writeFileSync(join(root, "notes.md"), "# Notes");
+  // Wider plain-text set (guards ANNOTATABLE_DOC_REGEX breadth, which the
+  // probe's no-walk cheapness for word tokens relies on).
+  writeFileSync(join(root, "notes.txt"), "notes");
+  writeFileSync(join(root, "config.yaml"), "a: 1");
+  // Real scoped-package-style directory for the literal-@ fallback.
+  mkdirSync(join(root, "@scope"), { recursive: true });
+  writeFileSync(join(root, "@scope/README.md"), "# scoped");
+  // Whole-string preference: the un-split input names this file even though
+  // its second token also names an annotatable file on its own.
+  writeFileSync(join(root, "Meeting Notes.md"), "# Meeting Notes");
 });
 
 afterAll(() => {
@@ -40,6 +50,15 @@ describe("probeAnnotateToken", () => {
   test("accepts URLs by shape without fetching", () => {
     expect(probe("https://example.com/page")).toBe("https://example.com/page");
     expect(probe("HTTP://example.com")).toBe("HTTP://example.com");
+  });
+
+  test("recognizes wrapped URLs: `@`-prefixed and quoted", () => {
+    // The pipeline strips the `@` reference marker and wrapping quotes
+    // before its own URL check, so the probe must unwrap the same way or
+    // `annotate @https://example.com/page and summarize it` hands off
+    // instead of opening the URL.
+    expect(probe("@https://example.com/page")).toBe("https://example.com/page");
+    expect(probe('"https://example.com/page"')).toBe("https://example.com/page");
   });
 
   test("resolves folders to absolute paths", () => {
@@ -55,6 +74,22 @@ describe("probeAnnotateToken", () => {
     expect(probe("plan.md")).toBe(join(root, "plan.md"));
     expect(probe("nested.md")).toBe(join(root, "notes/deep/nested.md"));
     expect(probe("@plan.md")).toBe(join(root, "plan.md"));
+  });
+
+  test("resolves an absolute path", () => {
+    expect(probe(join(root, "plan.md"))).toBe(join(root, "plan.md"));
+  });
+
+  test("resolves the wider plain-text set (.txt, .yaml)", () => {
+    expect(probe("notes.txt")).toBe(join(root, "notes.txt"));
+    expect(probe("config.yaml")).toBe(join(root, "config.yaml"));
+  });
+
+  test("resolves a scoped-package-style literal `@` path", () => {
+    // The strip half of the `@` handling is covered above (@plan.md); this
+    // covers the literal fallback: no `scope/README.md` exists, so only the
+    // literal `@scope/README.md` path can match.
+    expect(probe("@scope/README.md")).toBe(join(root, "@scope/README.md"));
   });
 
   test("returns the token itself for ambiguous document names", () => {
@@ -96,6 +131,15 @@ describe("annotateInputNamesExistingTarget", () => {
     expect(annotateInputNamesExistingTarget("", root)).toBe(false);
     expect(annotateInputNamesExistingTarget("   ", root)).toBe(false);
   });
+
+  test("the whole un-split string wins over its own tokens", () => {
+    // "Meeting Notes.md" names a real file whose second token ("Notes.md")
+    // also resolves on its own; the pre-pass must prefer the whole string so
+    // OpenCode/Pi keep supporting unquoted paths with spaces.
+    expect(probeAnnotateToken("Notes.md", root)).not.toBeNull();
+    expect(annotateInputNamesExistingTarget("Meeting Notes.md", root)).toBe(true);
+    expect(probeAnnotateToken("Meeting Notes.md", root)).toBe(join(root, "Meeting Notes.md"));
+  });
 });
 
 describe("selectAnnotateTokenTarget", () => {
@@ -105,6 +149,17 @@ describe("selectAnnotateTokenTarget", () => {
     if (selection.kind === "single") {
       expect(selection.candidate.token).toBe("docs/spec.md");
       expect(selection.candidate.value).toBe(join(root, "docs/spec.md"));
+    }
+  });
+
+  test("fast path: a wrapped URL among natural language is the candidate", () => {
+    const selection = selectAnnotateTokenTarget(
+      "@https://example.com/page and summarize it",
+      probe,
+    );
+    expect(selection.kind).toBe("single");
+    if (selection.kind === "single") {
+      expect(selection.candidate.value).toBe("https://example.com/page");
     }
   });
 
