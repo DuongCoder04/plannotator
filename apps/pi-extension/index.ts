@@ -73,6 +73,7 @@ import {
 	stripPlanningOnlyTools,
 } from "./tool-scope.ts";
 import { isRemoteSession } from "./server/network.ts";
+import { isBrowserSessionStoppedError } from "./browser-session-error.ts";
 import { classifyAnnotateOutcome } from "./annotate-outcome.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -170,6 +171,13 @@ function sessionOpenedMessage(label: string, url: string): string {
 function reportBackgroundError(ctx: ExtensionContext, message: string, err: unknown, origin?: PiSessionIdentity): void {
 	const detail = getStartupErrorMessage(err);
 	console.error(`${message}: ${detail}`);
+	// A stopped session is not a failure: it is how supersession ends a stale
+	// undecided session (port self-preemption, #1159) and how cancel paths
+	// settle a pending waitForDecision.
+	if (isBrowserSessionStoppedError(err)) {
+		safeNotify(ctx, "A Plannotator browser session was closed.", "info", origin);
+		return;
+	}
 	safeNotify(ctx, `${message}: ${detail}`, "error", origin);
 }
 
@@ -292,6 +300,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		sessionAlive = false;
 		currentPiSession.clear();
+		// Browser sessions deliberately outlive in-process session replacement so
+		// a tab opened before /new can still deliver feedback to the replacement
+		// session (withCurrentPiSessionFallbackHeader). On real process teardown
+		// the OS frees the ports, and port self-preemption reclaims any stale
+		// fixed-port session on the next command.
 	});
 
 	// ── Flags ────────────────────────────────────────────────────────────
@@ -984,7 +997,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}),
 		}) as any,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			// Guard: must be in planning phase
 			if (phase !== "planning") {
 				return {
@@ -1110,8 +1123,22 @@ export default function plannotator(pi: ExtensionAPI): void {
 
 			let result: Awaited<ReturnType<typeof openPlanReviewBrowser>>;
 			try {
-				result = await openPlanReviewBrowser(ctx, planContent);
+				result = await openPlanReviewBrowser(ctx, planContent, signal);
 			} catch (err) {
+				// A stopped session is an outcome, not a startup failure: the review
+				// was closed (cancellation or port self-preemption) before a decision.
+				if (isBrowserSessionStoppedError(err)) {
+					ctx.ui.notify("Plan review session was closed before a decision.", "info");
+					return {
+						content: [
+							{
+								type: "text",
+								text: "The plan review browser session was closed before a decision was made. The plan was neither approved nor rejected; resubmit to reopen review.",
+							},
+						],
+						details: { approved: false },
+					};
+				}
 				const message = `Failed to start plan review UI: ${getStartupErrorMessage(err)}`;
 				ctx.ui.notify(message, "error");
 				return {

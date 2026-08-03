@@ -2757,16 +2757,26 @@ export async function startReviewServer(options: {
 		isRemote,
 		waitForDecision: () => decisionPromise,
 		stop: () => {
-			process.removeListener("exit", exitHandler);
-			agentJobs.killAll();
-			aiRuntime?.dispose();
-			server.close();
-			// Invoke cleanup callback (e.g., remove temp worktree)
-			if (options.onCleanup) {
-				try {
-					const result = options.onCleanup();
-					if (result instanceof Promise) result.catch(() => {});
-				} catch { /* best effort */ }
+			// try/finally: a throwing dispose must never leave the listener bound.
+			try {
+				process.removeListener("exit", exitHandler);
+				agentJobs.killAll();
+				aiRuntime?.dispose();
+			} finally {
+				server.close();
+				// close() only stops the listener; drain browser keep-alive sockets so a
+				// stopped session's connections die immediately instead of at the
+				// browser's whim (parity with Bun's server.stop(), which closes idle
+				// connections). Guarded: jiti can run under hosts whose node:http lacks
+				// closeAllConnections.
+				server.closeAllConnections?.();
+				// Invoke cleanup callback (e.g., remove temp worktree)
+				if (options.onCleanup) {
+					try {
+						const result = options.onCleanup();
+						if (result instanceof Promise) result.catch(() => {});
+					} catch { /* best effort */ }
+				}
 			}
 		},
 	};

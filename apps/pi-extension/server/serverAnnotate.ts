@@ -852,14 +852,24 @@ export async function startAnnotateServer(options: {
 		url: `http://localhost:${port}`,
 		waitForDecision: () => decisionPromise,
 		stop: () => {
-			clientLease.cancel();
-			// Long-lived host process: an unclosed lease stream would keep its
-			// heartbeat timer and socket alive past the session, and would keep
-			// server.close() from ever completing.
-			clientLease.closeSessions();
-			aiRuntime?.dispose();
-			agentTerminal.dispose();
-			server.close();
+			// try/finally: a throwing dispose must never leave the listener bound.
+			try {
+				clientLease.cancel();
+				// Long-lived host process: an unclosed lease stream would keep its
+				// heartbeat timer and socket alive past the session, and would keep
+				// server.close() from ever completing.
+				clientLease.closeSessions();
+				aiRuntime?.dispose();
+				agentTerminal.dispose();
+			} finally {
+				server.close();
+				// close() only stops the listener; drain browser keep-alive sockets so a
+				// stopped session's connections die immediately instead of at the
+				// browser's whim (parity with Bun's server.stop(), which closes idle
+				// connections). Guarded: jiti can run under hosts whose node:http lacks
+				// closeAllConnections.
+				server.closeAllConnections?.();
+			}
 		},
 	};
 }

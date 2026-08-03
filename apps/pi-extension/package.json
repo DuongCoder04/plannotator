@@ -30,6 +30,7 @@
     "index.ts",
     "annotate-outcome.ts",
     "assistant-message.ts",
+    "browser-session-error.ts",
     "current-pi-session.ts",
     "plannotator-browser.ts",
     "plannotator-browser-runtime.ts",
