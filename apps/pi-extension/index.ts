@@ -92,14 +92,20 @@ function loadPlannotatorPrompts(): Promise<PlannotatorPromptsModule> {
 }
 
 async function loadAnnotateCommandModules() {
-	const [annotateArgs, atReference, resolveFile, referenceCommon] = await Promise.all([
+	const [annotateArgs, annotateTarget, atReference, resolveFile, referenceCommon] = await Promise.all([
 		import("./generated/annotate-args.ts"),
+		import("./generated/annotate-target.ts"),
 		import("./generated/at-reference.ts"),
 		import("./generated/resolve-file.ts"),
 		import("./generated/reference-common.ts"),
 	]);
 	return {
 		parseAnnotateArgs: annotateArgs.parseAnnotateArgs,
+		annotateInputNamesExistingTarget: annotateTarget.annotateInputNamesExistingTarget,
+		buildAmbiguousAnnotateArgsMessage: annotateTarget.buildAmbiguousAnnotateArgsMessage,
+		buildUnresolvedAnnotateArgsMessage: annotateTarget.buildUnresolvedAnnotateArgsMessage,
+		probeAnnotateToken: annotateTarget.probeAnnotateToken,
+		selectAnnotateTokenTarget: annotateTarget.selectAnnotateTokenTarget,
 		resolveAtReference: atReference.resolveAtReference,
 		hasMarkdownFiles: resolveFile.hasMarkdownFiles,
 		resolveUserPath: resolveFile.resolveUserPath,
@@ -636,6 +642,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 				FILE_BROWSER_EXCLUDED,
 				hasMarkdownFiles,
 				parseAnnotateArgs,
+				annotateInputNamesExistingTarget,
+				buildAmbiguousAnnotateArgsMessage,
+				buildUnresolvedAnnotateArgsMessage,
+				probeAnnotateToken,
+				selectAnnotateTokenTarget,
 				resolveAtReference,
 				resolveUserPath,
 				isAnnotatableTextPath,
@@ -647,10 +658,43 @@ export default function plannotator(pi: ExtensionAPI): void {
 			// accepted (Pi writes back via sendUserMessage, not stdout).
 			// `rawFilePath` keeps any leading `@` for the literal-@ fallback
 			// (scoped-package-style names).
-			const { filePath, rawFilePath, gate, renderMarkdown: renderMarkdownFlag, noJina } = parseAnnotateArgs(args ?? "");
+			let { filePath, rawFilePath, gate, renderHtml: renderHtmlFlag, renderMarkdown: renderMarkdownFlag, noJina } = parseAnnotateArgs(args ?? "");
 			if (!filePath) {
 				ctx.ui.notify("Usage: /plannotator-annotate <file.md | file.txt | file.html | https://... | folder/> [--markdown] [--no-jina] [--gate] [--json]", "error");
 				return;
+			}
+
+			// Tolerant fallback (#1182): when the whole argument string names
+			// nothing, probe each token; exactly one existing target proceeds,
+			// several is an error, several unresolvable words get an actionable
+			// message instead of "File not found: the". Bare directory names
+			// only count in the sole-arg pre-pass, and unrecognized
+			// dash-prefixed tokens disable tolerance so a typo'd flag errors
+			// the way it always did.
+			if (!annotateInputNamesExistingTarget(rawFilePath, ctx.cwd)) {
+				const selection = selectAnnotateTokenTarget(rawFilePath, (token: string) =>
+					probeAnnotateToken(token, ctx.cwd, { bareDirectories: false }),
+				);
+				if (selection.kind === "single") {
+					filePath = selection.candidate.value;
+					rawFilePath = selection.candidate.value;
+				} else if (selection.kind === "multiple") {
+					ctx.ui.notify(buildAmbiguousAnnotateArgsMessage(selection.candidates), "error");
+					return;
+				} else if (selection.kind === "none" && selection.words.length > 1) {
+					// Content flags only; --gate is transport for this
+					// invocation, not a property of the target.
+					const tolerantFlags = [
+						...(renderMarkdownFlag ? ["--markdown"] : []),
+						...(noJina ? ["--no-jina"] : []),
+						...(renderHtmlFlag ? ["--render-html"] : []),
+					];
+					ctx.ui.notify(buildUnresolvedAnnotateArgsMessage({ words: selection.words, flags: tolerantFlags }), "error");
+					return;
+				}
+				// "flagged" (unrecognized dash tokens) or a single unresolvable
+				// word falls through to the existing pipeline so its specific
+				// errors stay verbatim.
 			}
 			if (!hasPlanBrowserHtml()) {
 				ctx.ui.notify(
