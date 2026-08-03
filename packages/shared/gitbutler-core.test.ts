@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { GitCommandOptions, GitCommandResult } from "./review-core";
+import { MAX_REVIEW_FILE_CONTENT_BYTES } from "./review-core";
 import {
   GITBUTLER_WORKSPACE_DIFF,
   GitButlerContractError,
@@ -25,6 +26,8 @@ const ROOT = "/repo";
 const MERGE_BASE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const LOWER_TIP = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const TOP_TIP = "cccccccccccccccccccccccccccccccccccccccc";
+const PATCH_OLD_OBJECT = "d".repeat(40);
+const PATCH_NEW_OBJECT = "e".repeat(40);
 
 function commandResult(
   stdout = "",
@@ -87,7 +90,13 @@ function createRuntime(options: {
   let patch = "diff --git a/file.txt b/file.txt\n-old\n+new\n";
 
   const runtime: ReviewGitButlerRuntime = {
-    async runGit(args: string[]): Promise<GitCommandResult> {
+    async getFileInfo() {
+      return null;
+    },
+    async readLink() {
+      return null;
+    },
+    async runGit(args: string[], commandOptions?: GitCommandOptions): Promise<GitCommandResult> {
       gitCalls.push(args);
       const commandArgs = args[0] === "--no-optional-locks" ? args.slice(1) : args;
       if (commandArgs[0] === "symbolic-ref") {
@@ -115,6 +124,21 @@ function createRuntime(options: {
       }
       if (commandArgs[0] === "merge-base") {
         return commandResult(`${MERGE_BASE}\n`);
+      }
+      if (commandArgs[0] === "cat-file" && commandArgs[1] === "-s") {
+        return commandResult("10\n");
+      }
+      if (commandArgs[0] === "cat-file" && commandArgs.some((arg) => arg.startsWith("--batch-check"))) {
+        return commandResult(
+          (commandOptions?.stdin ?? "").trim().split("\n").filter(Boolean).map((objectId) =>
+            `${objectId} blob 10`,
+          ).join("\n"),
+        );
+      }
+      if (commandArgs[0] === "diff" && commandArgs.includes("--raw")) {
+        return commandResult(
+          `:100644 100644 ${PATCH_OLD_OBJECT} ${PATCH_NEW_OBJECT} M\0file.txt\0`,
+        );
       }
       if (commandArgs[0] === "diff") return commandResult(patch);
       if (commandArgs[0] === "status") return commandResult();
@@ -542,6 +566,54 @@ describe("GitButler diffs and expansion", () => {
     )).resolves.toMatchObject({ patch });
   });
 
+  test("omits oversized committed object diffs with a content-sensitive binary stub", async () => {
+    const fixture = createRuntime();
+    const originalRunGit = fixture.runtime.runGit.bind(fixture.runtime);
+    const oldObjectId = "d".repeat(40);
+    let newObjectId = "e".repeat(40);
+    let sawRawDiff = false;
+    fixture.setPatch("x".repeat(MAX_REVIEW_FILE_CONTENT_BYTES + 1));
+    fixture.runtime.runGit = async (args, options) => {
+      const commandArgs = args[0] === "-c" ? args.slice(2) : args;
+      if (commandArgs[0] === "diff" && commandArgs.includes("--raw")) {
+        sawRawDiff = true;
+        return commandResult(
+          `:100644 100644 ${oldObjectId} ${newObjectId} M\0large [*]?.txt\0`,
+        );
+      }
+      if (commandArgs[0] === "cat-file") {
+        return commandResult(`${MAX_REVIEW_FILE_CONTENT_BYTES + 1}\n`);
+      }
+      if (commandArgs[0] === "diff" && commandArgs.some((arg) => arg.startsWith(":(top,exclude,literal)"))) {
+        return commandResult();
+      }
+      return originalRunGit(args, options);
+    };
+
+    const result = await runGitButlerDiff(
+      fixture.runtime,
+      "gitbutler:branch:feature%2Ftop%20lane",
+      ROOT,
+    );
+    expect(result.patch.length).toBeLessThan(2_000);
+    expect(result.patch).toContain("Binary files");
+    expect(result.patch).not.toContain("xxxxxxxxxx");
+    expect(sawRawDiff).toBe(true);
+
+    const first = await getGitButlerDiffFingerprint(
+      fixture.runtime,
+      "gitbutler:branch:feature%2Ftop%20lane",
+      ROOT,
+    );
+    newObjectId = "f".repeat(40);
+    const second = await getGitButlerDiffFingerprint(
+      fixture.runtime,
+      "gitbutler:branch:feature%2Ftop%20lane",
+      ROOT,
+    );
+    expect(second).not.toBe(first);
+  });
+
   test("returns explicit errors when status or a selected target disappears", async () => {
     const failedStatus = createRuntime({ status: commandResult("", "database locked", 1) });
     await expect(runGitButlerDiff(failedStatus.runtime, GITBUTLER_WORKSPACE_DIFF, ROOT)).resolves.toMatchObject({
@@ -572,6 +644,28 @@ describe("GitButler diffs and expansion", () => {
       oldContent: `content:${LOWER_TIP}:src/old.ts`,
       newContent: `content:${TOP_TIP}:src/new.ts`,
     });
+  });
+
+  test("does not expand oversized committed GitButler blobs", async () => {
+    const fixture = createRuntime();
+    const originalRunGit = fixture.runtime.runGit.bind(fixture.runtime);
+    let showCalls = 0;
+    fixture.runtime.runGit = async (args, options) => {
+      if (args[0] === "cat-file" && args[1] === "-s") {
+        return commandResult(`${MAX_REVIEW_FILE_CONTENT_BYTES + 1}\n`);
+      }
+      if (args[0] === "show") showCalls++;
+      return originalRunGit(args, options);
+    };
+
+    await expect(getGitButlerFileContentsForDiff(
+      fixture.runtime,
+      "gitbutler:branch:feature%2Ftop%20lane",
+      "src/new.ts",
+      "src/old.ts",
+      ROOT,
+    )).resolves.toEqual({ oldContent: null, newContent: null });
+    expect(showCalls).toBe(0);
   });
 
   test("fingerprints the exact visible patch content", async () => {
