@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import type { Block } from '../../types';
+import { copyTextToClipboard } from '../../utils/clipboard';
 
 interface CodeBlockProps {
   block: Block;
@@ -26,12 +27,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave })
   }, [block.content, block.language]);
 
   const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(block.content);
+    if (await copyTextToClipboard(block.content)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
+    } else {
+      console.error('Failed to copy');
     }
   }, [block.content]);
 

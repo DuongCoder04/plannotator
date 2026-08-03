@@ -4,6 +4,7 @@ import hljs from 'highlight.js';
 import { AnnotationType, type Block, type Annotation, type EditorMode, type InputMethod, type ImageAttachment, type ActionsLabelMode } from '../types';
 import { computeListIndices, groupBlocks, type Frontmatter } from '../utils/parser';
 import { buildHeadingSlugMap } from '../utils/slugify';
+import { copyTextToClipboard } from '../utils/clipboard';
 import { BlockRenderer } from './BlockRenderer';
 import { CodeBlock } from './blocks/CodeBlock';
 import { TableBlock } from './blocks/TableBlock';
@@ -239,12 +240,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   const globalCommentButtonRef = useRef<HTMLButtonElement>(null);
 
   const handleCopyPlan = async () => {
-    try {
-      await navigator.clipboard.writeText(markdown);
+    if (await copyTextToClipboard(markdown)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
+    } else {
+      console.error('Failed to copy');
     }
   };
   const containerRef = useRef<HTMLDivElement>(null);
