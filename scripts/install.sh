@@ -47,12 +47,22 @@ RECONFIGURE=0
 # given (fall through to the PLANNOTATOR_MINIMAL env var). Resolved after arg
 # parsing so a flag overrides the env var in either direction.
 MINIMAL_FLAG=-1
+# Per-agent integration opt-outs (#1178). Skip means do-not-write: when a
+# skipped agent is detected, the installer reports "detected, skipped" and
+# writes nothing to that agent's home; it never removes an integration a
+# previous install already wired. 1 = flag passed. Resolution (flag > env >
+# config skipInstall.<agent> > default off) happens after _config_dir is known.
+SKIP_CODEX_FLAG=0
+SKIP_GEMINI_FLAG=0
+SKIP_KIRO_FLAG=0
+SKIP_OPENCODE_FLAG=0
 
 usage() {
     cat <<'USAGE'
 Usage: install.sh [--version <tag>] [--verify-attestation | --skip-attestation]
                   [--extras | --no-extras] [--model-invocable <list>|none]
-                  [--minimal | --no-minimal] [--non-interactive]
+                  [--minimal | --no-minimal] [--skip-codex] [--skip-gemini]
+                  [--skip-kiro] [--skip-opencode] [--non-interactive]
                   [--reconfigure] [--help]
        install.sh <tag>
 
@@ -81,6 +91,26 @@ Options:
                          enabled by exporting PLANNOTATOR_MINIMAL=1.
   --no-minimal           Force a full install even when PLANNOTATOR_MINIMAL is
                          set in the environment.
+  --skip-codex           Do not write the Codex integration (hooks.json /
+                         config.toml under CODEX_HOME) even when Codex is
+                         detected. Never removes an existing integration.
+                         Also enabled by PLANNOTATOR_SKIP_CODEX_INSTALL=1 or
+                         { "skipInstall": { "codex": true } } in
+                         ~/.plannotator/config.json (flag > env var > config).
+  --skip-gemini          Same opt-out for the Gemini CLI integration
+                         (~/.gemini policy, settings hook, commands). Env var:
+                         PLANNOTATOR_SKIP_GEMINI_INSTALL; config key:
+                         skipInstall.gemini.
+  --skip-kiro            Same opt-out for the Kiro CLI integration
+                         (~/.kiro skills and agent). Env var:
+                         PLANNOTATOR_SKIP_KIRO_INSTALL; config key:
+                         skipInstall.kiro.
+  --skip-opencode        Do not write the OpenCode integration (command stubs
+                         under ~/.config/opencode/commands and the OpenCode
+                         plugin cache clear). OpenCode has no detection leg,
+                         so this is a plain do-not-write switch. Env var:
+                         PLANNOTATOR_SKIP_OPENCODE_INSTALL; config key:
+                         skipInstall.opencode.
   --non-interactive      Never prompt, even in a terminal. Uses flags, then
                          saved answers from a previous run, then the defaults
                          (no extras, nothing model-invocable).
@@ -99,6 +129,12 @@ Provenance verification is off by default. Enable it by any of:
   - passing --verify-attestation
   - exporting PLANNOTATOR_VERIFY_ATTESTATION=1
   - setting { "verifyAttestation": true } in ~/.plannotator/config.json
+When enabled, the attestation bundle is fetched from GitHub's public
+attestations API and verified with `gh attestation verify --bundle`, so no
+gh login is required. The credential-free path needs one JSON tool on PATH
+(node, python3, or jq) to extract the bundle; without one, and whenever the
+public bundle fetch or bundle verification does not complete, gh's
+authenticated fetch runs as the fallback.
 
 The optional semantic-diff sidecar (the 'sem' binary, used by code review) is
 installed after Plannotator itself. Skip it by exporting
@@ -223,6 +259,22 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             MINIMAL_FLAG=0
+            shift
+            ;;
+        --skip-codex)
+            SKIP_CODEX_FLAG=1
+            shift
+            ;;
+        --skip-gemini)
+            SKIP_GEMINI_FLAG=1
+            shift
+            ;;
+        --skip-kiro)
+            SKIP_KIRO_FLAG=1
+            shift
+            ;;
+        --skip-opencode)
+            SKIP_OPENCODE_FLAG=1
             shift
             ;;
         -h|--help)
@@ -390,6 +442,137 @@ if [ "$VERIFY_ATTESTATION_FLAG" -ne -1 ]; then
     verify_attestation="$VERIFY_ATTESTATION_FLAG"
 fi
 
+# Resolve the per-agent integration opt-outs (#1178). Same three-layer shape
+# as verifyAttestation: CLI flag > env var > config.json > default (off).
+# The config layer first extracts JUST the skipInstall object (from the
+# first "{" after the "skipInstall" key to its first "}" — the object is a
+# flat map of booleans, so the first closing brace ends it) and matches
+# per-agent keys only inside that region. This keeps a "codex": true under
+# some OTHER key from opting anyone out (M2), works whether the JSON is
+# pretty-printed or single-line, and an explicit `"codex": false` inside
+# skipInstall is honored as a veto rather than being ignored. Each resolved
+# skip remembers its source so the detected-but-skipped report can name
+# what the user set.
+skip_codex=0
+skip_codex_source=""
+skip_gemini=0
+skip_gemini_source=""
+skip_kiro=0
+skip_kiro_source=""
+skip_opencode=0
+skip_opencode_source=""
+_skip_install_block=""
+if [ -f "$_config_dir/config.json" ]; then
+    _skip_install_block=$(awk '
+        { buf = buf $0 "\n" }
+        END {
+            # Token check: the key must be followed by optional whitespace,
+            # a colon, and the object brace - so a STRING VALUE that merely
+            # contains "skipInstall" cannot anchor the extraction. Non-token
+            # occurrences are skipped and the scan continues.
+            pos = 1
+            while (1) {
+                i = index(substr(buf, pos), "\"skipInstall\"")
+                if (i == 0) exit
+                i = pos + i - 1
+                rest = substr(buf, i + 13)
+                if (match(rest, /^[ \t\r\n]*:[ \t\r\n]*\{/) != 0) {
+                    rest = substr(rest, RLENGTH)
+                    k = index(rest, "}")
+                    if (k == 0) exit
+                    print substr(rest, 1, k)
+                    exit
+                }
+                pos = i + 13
+            }
+        }' "$_config_dir/config.json" 2>/dev/null) || _skip_install_block=""
+fi
+if [ -n "$_skip_install_block" ]; then
+    for _agent in codex gemini kiro opencode; do
+        if printf '%s' "$_skip_install_block" | grep -q "\"$_agent\"[[:space:]]*:[[:space:]]*false"; then
+            continue # explicit false is a veto, never a skip
+        fi
+        if printf '%s' "$_skip_install_block" | grep -q "\"$_agent\"[[:space:]]*:[[:space:]]*true"; then
+            case "$_agent" in
+                codex)
+                    skip_codex=1
+                    skip_codex_source="config skipInstall.codex"
+                    ;;
+                gemini)
+                    skip_gemini=1
+                    skip_gemini_source="config skipInstall.gemini"
+                    ;;
+                kiro)
+                    skip_kiro=1
+                    skip_kiro_source="config skipInstall.kiro"
+                    ;;
+                opencode)
+                    skip_opencode=1
+                    skip_opencode_source="config skipInstall.opencode"
+                    ;;
+            esac
+        fi
+    done
+    unset _agent
+fi
+unset _skip_install_block
+case "${PLANNOTATOR_SKIP_CODEX_INSTALL:-}" in
+    1|true|yes|TRUE|YES|True|Yes)
+        skip_codex=1
+        skip_codex_source="PLANNOTATOR_SKIP_CODEX_INSTALL"
+        ;;
+    0|false|no|FALSE|NO|False|No)
+        skip_codex=0
+        skip_codex_source=""
+        ;;
+esac
+case "${PLANNOTATOR_SKIP_GEMINI_INSTALL:-}" in
+    1|true|yes|TRUE|YES|True|Yes)
+        skip_gemini=1
+        skip_gemini_source="PLANNOTATOR_SKIP_GEMINI_INSTALL"
+        ;;
+    0|false|no|FALSE|NO|False|No)
+        skip_gemini=0
+        skip_gemini_source=""
+        ;;
+esac
+case "${PLANNOTATOR_SKIP_KIRO_INSTALL:-}" in
+    1|true|yes|TRUE|YES|True|Yes)
+        skip_kiro=1
+        skip_kiro_source="PLANNOTATOR_SKIP_KIRO_INSTALL"
+        ;;
+    0|false|no|FALSE|NO|False|No)
+        skip_kiro=0
+        skip_kiro_source=""
+        ;;
+esac
+case "${PLANNOTATOR_SKIP_OPENCODE_INSTALL:-}" in
+    1|true|yes|TRUE|YES|True|Yes)
+        skip_opencode=1
+        skip_opencode_source="PLANNOTATOR_SKIP_OPENCODE_INSTALL"
+        ;;
+    0|false|no|FALSE|NO|False|No)
+        skip_opencode=0
+        skip_opencode_source=""
+        ;;
+esac
+if [ "$SKIP_CODEX_FLAG" -eq 1 ]; then
+    skip_codex=1
+    skip_codex_source="--skip-codex"
+fi
+if [ "$SKIP_GEMINI_FLAG" -eq 1 ]; then
+    skip_gemini=1
+    skip_gemini_source="--skip-gemini"
+fi
+if [ "$SKIP_KIRO_FLAG" -eq 1 ]; then
+    skip_kiro=1
+    skip_kiro_source="--skip-kiro"
+fi
+if [ "$SKIP_OPENCODE_FLAG" -eq 1 ]; then
+    skip_opencode=1
+    skip_opencode_source="--skip-opencode"
+fi
+
 # Pre-flight: if verification is requested, reject tags older than the first
 # attested release before we download anything. This catches both explicit
 # `--version <old-tag>` and implicit `latest`-resolves-to-old-tag cases with
@@ -435,6 +618,95 @@ if [ "$verify_attestation" -eq 1 ]; then
     # pre-flight already ran and rejected old tags. At this point we know
     # the tag is attested and gh should find a bundle.
     if command -v gh >/dev/null 2>&1; then
+        # Credential-free path first (#1178): the attestations endpoint on
+        # api.github.com is world-readable for public repos, so fetch the
+        # Sigstore bundle anonymously and hand it to gh via --bundle. The
+        # authenticated path fetches the SAME endpoint with an Authorization
+        # header it does not need; dropping the login requirement avoids
+        # forcing a broadly-scoped plaintext token onto headless machines
+        # just to read public data. Single fetch attempt, deliberately never
+        # retried: the unauthenticated API allows 60 requests/hour per IP.
+        # Any failure on this path (no JSON extractor, network, rate limit,
+        # extraction failure, or a gh that cannot handle --bundle) falls
+        # back to gh's own authenticated fetch below — verification itself
+        # is never skipped.
+        #
+        # The response is { "attestations": [ { "bundle": {...}, ... } ] }.
+        # gh --bundle expects the bundle values themselves, one JSON document
+        # per line (the same JSONL format `gh attestation download` writes).
+        # The extraction needs a JSON tool: node, then python3, then jq —
+        # whichever is present. With none of the three, the credential-free
+        # path is unavailable and the fallback runs (M3: the message names
+        # that cause instead of blaming a fetch that never happened).
+        attestation_bundle=""
+        attestation_bundle_dir=""
+        bundle_fallback_reason=""
+        if ! command -v node >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+            bundle_fallback_reason="No JSON extractor found (the credential-free bundle path needs node, python3, or jq)"
+        else
+            _att_json=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+                "https://api.github.com/repos/${REPO}/attestations/sha256:${actual_checksum}" 2>/dev/null) || _att_json=""
+            if [ -z "$_att_json" ]; then
+                bundle_fallback_reason="Could not fetch the attestation bundle from the public API"
+            else
+                # Private temp dir with the bundle inside (M5): no
+                # rename-into-place of a predictable sibling path, and one
+                # rm -rf covers every exit. gh requires a .json/.jsonl
+                # extension on --bundle files. A mktemp failure degrades to
+                # the authenticated fallback, never aborts under set -e.
+                attestation_bundle_dir=$(mktemp -d 2>/dev/null) || attestation_bundle_dir=""
+                if [ -z "$attestation_bundle_dir" ]; then
+                    bundle_fallback_reason="Could not create a temporary directory for the attestation bundle"
+                else
+                    _att_bundle_file="$attestation_bundle_dir/bundle.jsonl"
+                    _att_extract_ok=0
+                    if command -v node >/dev/null 2>&1; then
+                        if printf '%s' "$_att_json" | node -e '
+let d = "";
+process.stdin.on("data", (c) => (d += c));
+process.stdin.on("end", () => {
+  let p;
+  try { p = JSON.parse(d); } catch { process.exit(1); }
+  const atts = Array.isArray(p.attestations) ? p.attestations : [];
+  const lines = atts.map((a) => a && a.bundle).filter(Boolean).map((b) => JSON.stringify(b));
+  if (!lines.length) process.exit(1);
+  process.stdout.write(lines.join("\n") + "\n");
+});
+' > "$_att_bundle_file" 2>/dev/null && [ -s "$_att_bundle_file" ]; then
+                            _att_extract_ok=1
+                        fi
+                    elif command -v python3 >/dev/null 2>&1; then
+                        if printf '%s' "$_att_json" | python3 -c '
+import json, sys
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+atts = p.get("attestations") or []
+lines = [json.dumps(a["bundle"], separators=(",", ":")) for a in atts if isinstance(a, dict) and a.get("bundle")]
+if not lines:
+    sys.exit(1)
+sys.stdout.write("\n".join(lines) + "\n")
+' > "$_att_bundle_file" 2>/dev/null && [ -s "$_att_bundle_file" ]; then
+                            _att_extract_ok=1
+                        fi
+                    else
+                        if printf '%s' "$_att_json" | jq -c '.attestations[]?.bundle | select(. != null)' > "$_att_bundle_file" 2>/dev/null && [ -s "$_att_bundle_file" ]; then
+                            _att_extract_ok=1
+                        fi
+                    fi
+                    if [ "$_att_extract_ok" -eq 1 ]; then
+                        attestation_bundle="$_att_bundle_file"
+                    else
+                        bundle_fallback_reason="Could not extract a bundle from the attestations API response"
+                        rm -rf "$attestation_bundle_dir"
+                        attestation_bundle_dir=""
+                    fi
+                    unset _att_bundle_file _att_extract_ok
+                fi
+            fi
+            unset _att_json
+        fi
         # Capture combined output so we can surface gh's actual error message
         # (auth, network, missing attestation, etc.) on failure instead of a
         # generic "verification failed" with no diagnostic detail.
@@ -443,23 +715,83 @@ if [ "$verify_attestation" -eq 1 ]; then
         # git ref the attestation was produced from; --signer-workflow pins
         # the workflow file that signed it. Together they prevent accepting
         # a misattached asset or an attestation from an unrelated workflow.
-        if gh_output=$(gh attestation verify "$tmp_file" \
-            --repo "$REPO" \
-            --source-ref "refs/tags/${latest_tag}" \
-            --signer-workflow "backnotprop/plannotator/.github/workflows/release.yml" 2>&1); then
-            echo "✓ verified build provenance (SLSA)"
+        gh_status=0
+        used_bundle=0
+        if [ -n "$attestation_bundle" ]; then
+            used_bundle=1
+            gh_output=$(gh attestation verify "$tmp_file" \
+                --bundle "$attestation_bundle" \
+                --repo "$REPO" \
+                --source-ref "refs/tags/${latest_tag}" \
+                --signer-workflow "backnotprop/plannotator/.github/workflows/release.yml" 2>&1) || gh_status=$?
+            if [ "$gh_status" -ne 0 ]; then
+                # H1: a --bundle failure is not necessarily a provenance
+                # failure (an older gh rejects the flag outright, a corrupted
+                # bundle write fails parsing, etc.). Retry once through the
+                # exact authenticated path before classifying anything; only
+                # the retry's verdict is reported. A real provenance failure
+                # fails again here, so nothing bad ever slips through.
+                echo "Bundle-based verification did not complete; retrying via gh's authenticated fetch."
+                used_bundle=0
+                gh_status=0
+                gh_output=$(gh attestation verify "$tmp_file" \
+                    --repo "$REPO" \
+                    --source-ref "refs/tags/${latest_tag}" \
+                    --signer-workflow "backnotprop/plannotator/.github/workflows/release.yml" 2>&1) || gh_status=$?
+            fi
+        else
+            echo "${bundle_fallback_reason}; falling back to gh's authenticated fetch."
+            gh_output=$(gh attestation verify "$tmp_file" \
+                --repo "$REPO" \
+                --source-ref "refs/tags/${latest_tag}" \
+                --signer-workflow "backnotprop/plannotator/.github/workflows/release.yml" 2>&1) || gh_status=$?
+        fi
+        if [ -n "$attestation_bundle_dir" ]; then rm -rf "$attestation_bundle_dir"; fi
+        if [ "$gh_status" -eq 0 ]; then
+            if [ "$used_bundle" -eq 1 ]; then
+                echo "✓ verified build provenance (SLSA, credential-free via the public attestations API)"
+            else
+                echo "✓ verified build provenance (SLSA)"
+            fi
         else
             echo "$gh_output" >&2
-            echo "Attestation verification failed!" >&2
-            echo "The binary's SHA256 matched, but no valid signed provenance was found" >&2
-            echo "for ${REPO}. Refusing to install." >&2
+            # Classification precedence: TUF connectivity first, then auth,
+            # then real provenance failure (matches install.cmd).
+            case "$gh_output" in
+                *"Sigstore verifiers"*)
+                    # gh could not initialize the Sigstore trusted root. The
+                    # TUF root is fetched on EVERY run (not embedded, not
+                    # cached), so this is a connectivity failure, not a
+                    # provenance failure — the two mean very different things.
+                    echo "Could not initialize the Sigstore trust root (TUF)." >&2
+                    echo "Provenance verification needs network access on every run; the trusted" >&2
+                    echo "root is fetched per-run, never cached. This is a connectivity failure," >&2
+                    echo "NOT evidence of a bad binary. Refusing to install unverified; retry" >&2
+                    echo "with network access or pass --skip-attestation." >&2
+                    ;;
+                *"gh auth login"*)
+                    # Only reachable on the authenticated path: the bundle
+                    # path was unavailable or did not complete AND gh has no
+                    # login to fetch the attestation itself. Environment
+                    # problem, not a provenance failure.
+                    echo "The credential-free bundle path did not complete and gh is not logged" >&2
+                    echo "in, so the authenticated fallback could not run. Retry with network" >&2
+                    echo "access to api.github.com, run 'gh auth login', or pass --skip-attestation." >&2
+                    ;;
+                *)
+                    echo "Attestation verification failed!" >&2
+                    echo "The binary's SHA256 matched, but no valid signed provenance was found" >&2
+                    echo "for ${REPO}. Refusing to install." >&2
+                    ;;
+            esac
             rm -f "$tmp_file"
             exit 1
         fi
     else
         echo "verifyAttestation is enabled but gh CLI was not found." >&2
-        echo "Install https://cli.github.com (and run 'gh auth login')," >&2
-        echo "or unset PLANNOTATOR_VERIFY_ATTESTATION / remove verifyAttestation from" >&2
+        echo "Install https://cli.github.com (no login is needed when the public" >&2
+        echo "attestation bundle fetch succeeds), or unset" >&2
+        echo "PLANNOTATOR_VERIFY_ATTESTATION / remove verifyAttestation from" >&2
         echo "~/.plannotator/config.json / pass --skip-attestation." >&2
         rm -f "$tmp_file"
         exit 1
@@ -652,7 +984,18 @@ if command -v kiro-cli >/dev/null 2>&1 || [ -d "$HOME/.kiro" ]; then
     kiro_available=1
 fi
 
-if [ "$codex_available" -eq 1 ]; then
+if [ "$codex_available" -eq 1 ] && [ "$skip_codex" -eq 1 ]; then
+    # HONEST three-state reporting (#1178): detected-but-skipped is its own
+    # state, never conflated with "not detected". Skip is do-not-write only:
+    # nothing under $CODEX_DIR is created, updated, or removed on this run.
+    echo ""
+    echo "Codex: detected, skipped (${skip_codex_source})."
+    if [ -f "$CODEX_DIR/hooks.json" ] && grep -q "plannotator" "$CODEX_DIR/hooks.json" 2>/dev/null; then
+        echo "An existing Codex integration at ${CODEX_DIR}/hooks.json was left untouched."
+    fi
+    echo "Note: the shared agent skills in ~/.agents/skills serve multiple agents"
+    echo "(Codex among them) and are still installed."
+elif [ "$codex_available" -eq 1 ]; then
     CODEX_CONFIG="$CODEX_DIR/config.toml"
     CODEX_HOOKS="$CODEX_DIR/hooks.json"
     PLANNOTATOR_BIN="${INSTALL_DIR}/plannotator"
@@ -867,8 +1210,14 @@ HOOKS_EOF
     echo "Updated plugin hooks at ${PLUGIN_HOOKS}"
 fi
 
-# Clear any cached OpenCode plugin to force fresh download on next run
-rm -rf "$HOME/.cache/opencode/node_modules/@plannotator" "$HOME/.cache/opencode/packages/@plannotator" "$HOME/.bun/install/cache/@plannotator" 2>/dev/null || true
+# Clear any cached OpenCode plugin to force fresh download on next run.
+# An OpenCode opt-out (#1178) leaves OpenCode's own cache directory alone;
+# the Bun package cache is a shared cache, not OpenCode's home, and is
+# always cleared.
+if [ "$skip_opencode" -eq 0 ]; then
+    rm -rf "$HOME/.cache/opencode/node_modules/@plannotator" "$HOME/.cache/opencode/packages/@plannotator" 2>/dev/null || true
+fi
+rm -rf "$HOME/.bun/install/cache/@plannotator" 2>/dev/null || true
 
 # Clear Pi jiti cache to force fresh download on next run
 rm -rf /tmp/jiti 2>/dev/null || true
@@ -1241,18 +1590,19 @@ checkout_failed=0
     # always installed when the checkout provides them. Guard the echo on
     # the same condition as the copy so old pinned tags don't report a
     # success that never happened (ps1/cmd already gate this way).
-    if [ -d "apps/opencode-plugin/commands" ] && [ -n "$(ls -A apps/opencode-plugin/commands 2>/dev/null)" ]; then
+    if [ "$skip_opencode" -eq 0 ] && [ -d "apps/opencode-plugin/commands" ] && [ -n "$(ls -A apps/opencode-plugin/commands 2>/dev/null)" ]; then
         copy_commands_if_present apps/opencode-plugin/commands "$OPENCODE_COMMANDS_DIR"
         echo "Installed OpenCode commands to ${OPENCODE_COMMANDS_DIR}/"
     fi
 
-    # Gemini native TOML commands — only when Gemini is present.
-    if [ -d "$HOME/.gemini" ] && [ -d "apps/gemini/commands" ] && [ -n "$(ls -A apps/gemini/commands 2>/dev/null)" ]; then
+    # Gemini native TOML commands — only when Gemini is present and not
+    # opted out (#1178; skip_gemini is inherited by this subshell).
+    if [ -d "$HOME/.gemini" ] && [ "$skip_gemini" -eq 0 ] && [ -d "apps/gemini/commands" ] && [ -n "$(ls -A apps/gemini/commands 2>/dev/null)" ]; then
         copy_commands_if_present apps/gemini/commands "$GEMINI_COMMANDS_DIR"
         echo "Installed Gemini commands to ${GEMINI_COMMANDS_DIR}/"
     fi
 
-    if [ "$kiro_available" -eq 1 ] && [ -d "apps/kiro-cli/skills" ] && [ -n "$(ls -A apps/kiro-cli/skills 2>/dev/null)" ]; then
+    if [ "$kiro_available" -eq 1 ] && [ "$skip_kiro" -eq 0 ] && [ -d "apps/kiro-cli/skills" ] && [ -n "$(ls -A apps/kiro-cli/skills 2>/dev/null)" ]; then
         mkdir -p "$KIRO_SKILLS_DIR"
         # Kiro-specific skills (origin baked in) come from apps/kiro-cli/skills.
         copy_skill_if_present apps/kiro-cli/skills/plannotator-review "$KIRO_SKILLS_DIR"
@@ -1292,14 +1642,19 @@ done
 # plannotator-archive no longer ships as a skill. Remove any stale installed
 # copy from every skill scope so upgraders don't keep a dead skill around.
 for scope in "$CLAUDE_SKILLS_DIR" "$AGENTS_SKILLS_DIR" "$KIRO_SKILLS_DIR"; do
+    # A Kiro opt-out leaves ~/.kiro entirely untouched — including this sweep.
+    if [ "$scope" = "$KIRO_SKILLS_DIR" ] && [ "$skip_kiro" -eq 1 ]; then
+        continue
+    fi
     if [ -d "$scope/plannotator-archive" ]; then
         rm -rf "$scope/plannotator-archive"
         echo "Removed stale plannotator-archive skill from ${scope}/plannotator-archive"
     fi
 done
 # The /plannotator-archive OpenCode command was removed too — sweep the stub
-# (only npm-plugin-postinstall users ever had it written here).
-if [ -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md" ]; then
+# (only npm-plugin-postinstall users ever had it written here). An OpenCode
+# opt-out suspends the sweep: skip means do-not-write, never remove.
+if [ "$skip_opencode" -eq 0 ] && [ -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md" ]; then
     rm -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md"
     echo "Removed stale plannotator-archive command from ${OPENCODE_COMMANDS_DIR}/"
 fi
@@ -1308,6 +1663,11 @@ fi
 # Core skills are removed only once their replacement exists; the stale
 # shared-agent extras were never Codex's and are removed unconditionally.
 for skill in plannotator-review plannotator-annotate plannotator-last plannotator-compound plannotator-setup-goal; do
+    # A Codex opt-out leaves $CODEX_DIR entirely untouched — including this
+    # stale-skill cleanup. Skip means do-not-write, never remove.
+    if [ "$skip_codex" -eq 1 ]; then
+        continue
+    fi
     if [ -d "$STALE_CODEX_SKILLS_DIR/$skill" ]; then
         case "$skill" in
             plannotator-review|plannotator-annotate|plannotator-last)
@@ -1346,7 +1706,15 @@ fi
 update_pi_extension_if_present
 
 # --- Gemini CLI support (only if Gemini is installed) ---
-if [ -d "$HOME/.gemini" ]; then
+if [ -d "$HOME/.gemini" ] && [ "$skip_gemini" -eq 1 ]; then
+    # HONEST three-state reporting (#1178): detected-but-skipped is its own
+    # state. Nothing under ~/.gemini is created, updated, or removed.
+    echo ""
+    echo "Gemini: detected, skipped (${skip_gemini_source})."
+    if [ -f "$HOME/.gemini/settings.json" ] && grep -q '"plannotator"' "$HOME/.gemini/settings.json" 2>/dev/null; then
+        echo "An existing Gemini integration at ~/.gemini/settings.json was left untouched."
+    fi
+elif [ -d "$HOME/.gemini" ]; then
     # Install policy file
     GEMINI_POLICIES_DIR="$HOME/.gemini/policies"
     mkdir -p "$GEMINI_POLICIES_DIR"
@@ -1423,11 +1791,17 @@ echo "=========================================="
 echo "  OPENCODE USERS"
 echo "=========================================="
 echo ""
-echo "Add the plugin to your opencode.json:"
-echo ""
-echo '  "plugin": ["@plannotator/opencode@latest"]'
-echo ""
-echo "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
+if [ "$skip_opencode" -eq 1 ]; then
+    echo "OpenCode: integration skipped (${skip_opencode_source})."
+    echo "No command stubs were written and OpenCode's plugin cache was left alone."
+    echo "Re-run without the opt-out to install the command stubs."
+else
+    echo "Add the plugin to your opencode.json:"
+    echo ""
+    echo '  "plugin": ["@plannotator/opencode@latest"]'
+    echo ""
+    echo "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
+fi
 echo ""
 echo "=========================================="
 echo "  PI USERS"
@@ -1441,20 +1815,34 @@ echo "=========================================="
 echo "  GEMINI CLI USERS"
 echo "=========================================="
 echo ""
-echo "Enable plan mode in Gemini settings, then run:"
-echo ""
-echo "  gemini"
-echo "  /plan"
-echo ""
-echo "Plans will open in your browser for review."
-echo "If settings.json was not auto-configured, see:"
-echo "  ~/.gemini/settings.json (add BeforeTool hook)"
+if [ -d "$HOME/.gemini" ] && [ "$skip_gemini" -eq 1 ]; then
+    echo "Gemini was detected, but the integration was skipped (${skip_gemini_source})."
+    echo "No files under ~/.gemini were written or removed. Re-run without the"
+    echo "opt-out to configure plan mode."
+elif [ -d "$HOME/.gemini" ]; then
+    echo "Enable plan mode in Gemini settings, then run:"
+    echo ""
+    echo "  gemini"
+    echo "  /plan"
+    echo ""
+    echo "Plans will open in your browser for review."
+    echo "If settings.json was not auto-configured, see:"
+    echo "  ~/.gemini/settings.json (add BeforeTool hook)"
+else
+    echo "Gemini was not detected. After installing the Gemini CLI, rerun this"
+    echo "installer to configure plan mode."
+fi
 echo ""
 echo "=========================================="
 echo "  CODEX USERS"
 echo "=========================================="
 echo ""
-if [ "$codex_available" -eq 1 ]; then
+if [ "$codex_available" -eq 1 ] && [ "$skip_codex" -eq 1 ]; then
+    echo "Codex was detected, but the integration was skipped (${skip_codex_source})."
+    echo "No files under ${CODEX_DIR} were written or removed. The shared agent"
+    echo "skills in ~/.agents/skills serve multiple agents and are still installed."
+    echo "Re-run without the opt-out to add the Stop hook."
+elif [ "$codex_available" -eq 1 ]; then
     echo "Restart Codex Desktop or CLI after installing."
     echo "Plan review is configured through the Codex Stop hook."
     echo ""
@@ -1471,7 +1859,11 @@ echo "=========================================="
 echo "  KIRO CLI USERS"
 echo "=========================================="
 echo ""
-if [ "$kiro_available" -eq 1 ]; then
+if [ "$kiro_available" -eq 1 ] && [ "$skip_kiro" -eq 1 ]; then
+    echo "Kiro was detected, but the integration was skipped (${skip_kiro_source})."
+    echo "No files under ~/.kiro were written or removed. Re-run without the"
+    echo "opt-out to add Kiro skills."
+elif [ "$kiro_available" -eq 1 ]; then
     echo "Kiro skills are installed to ~/.kiro/skills/"
     echo "The Plannotator agent is installed to ~/.kiro/agents/plannotator.json"
     echo "Launch it: kiro-cli chat --agent plannotator"
