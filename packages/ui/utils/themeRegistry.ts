@@ -136,6 +136,17 @@ export const BUILT_IN_THEMES: ThemeInfo[] = [
     },
   },
   {
+    id: 'colorblind',
+    name: 'Colorblind',
+    builtIn: true,
+    modeSupport: 'both',
+    syntaxHighlighting: true,
+    colors: {
+      dark: { primary: '#7fb0f2', secondary: '#2a2e37', accent: '#e5b84a', background: '#16181d', foreground: '#eaedf2' },
+      light: { primary: '#1a63b8', secondary: '#e7eaef', accent: '#946300', background: '#f8f9fb', foreground: '#22262e' },
+    },
+  },
+  {
     id: 'dark-plus',
     name: 'Dark+',
     builtIn: true,
