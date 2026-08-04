@@ -2590,10 +2590,12 @@ const ReviewApp: React.FC = () => {
     if (await copyTextToClipboard(feedbackMarkdown)) {
       setCopyFeedback('Feedback copied!');
       setTimeout(() => setCopyFeedback(null), 2000);
+      toast.success('Feedback copied');
     } else {
       console.error('Failed to copy');
       setCopyFeedback('Failed to copy');
       setTimeout(() => setCopyFeedback(null), 2000);
+      toast.error('Failed to copy');
     }
   }, [totalAnnotationCount, feedbackMarkdown]);
 
@@ -2905,6 +2907,25 @@ const ReviewApp: React.FC = () => {
     submitted, isSendingFeedback, isApproving, isExiting, isPlatformActioning,
     origin, platformMode, platformLabel, platformUser, prMetadata, totalAnnotationCount, openPlatformDialog,
     handleApprove, handleSendFeedback, handlePlatformAction
+  ]);
+
+  // Cmd/Ctrl+Shift+Y keyboard shortcut to copy feedback, mirroring the
+  // Copy Feedback button in the header.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== 'y' || isTypingTarget(e.target)) return;
+
+      if (platformCommentDialog || showExportModal || showNoAnnotationsDialog || showApproveWarning || showExitWarning) return;
+
+      e.preventDefault();
+      handleCopyFeedback();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    platformCommentDialog, showExportModal, showNoAnnotationsDialog, showApproveWarning, showExitWarning,
+    handleCopyFeedback
   ]);
 
   if (isLoading) {
