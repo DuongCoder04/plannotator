@@ -58,6 +58,9 @@ jobs:
           packages/review-editor/components/FileHeader.edit.test.tsx
           packages/review-editor/edit/useEditSession.recovery.test.tsx
           packages/review-editor/edit/selectionActionPopover.test.ts
+          packages/review-editor/components/AllFilesCodeView.lifecycle.test.tsx
+          packages/review-editor/components/guide/GuideSectionCard.test.tsx
+          packages/review-editor/components/guide/GuideView.test.tsx
           packages/review-editor/hooks/useReviewSearch.test.tsx
           packages/ui/components/AnnotationPanel.props.test.tsx
           packages/ui/components/Viewer.consumer.test.tsx

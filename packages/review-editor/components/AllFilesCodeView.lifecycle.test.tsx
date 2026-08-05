@@ -69,6 +69,10 @@ mock.module('@pierre/diffs/react', () => ({
     }));
     return <div ref={props.containerRef} className={props.className} />;
   }),
+  // AllFilesCodeView imports EditProvider alongside CodeView/useStableCallback.
+  // mock.module replaces the whole specifier, so every value export the
+  // component reads must be present here or the import throws at load time.
+  EditProvider: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   useStableCallback: <T extends (...args: never[]) => unknown>(callback: T): T => {
     const callbackRef = useRef(callback);
     callbackRef.current = callback;
