@@ -82,6 +82,9 @@ jobs:
   opencode-v2:
     name: OpenCode 2 installed package
     runs-on: ubuntu-latest
+    # The smoke's own budgets (health 120s, plugin activation 300s) are the real assertion;
+    # this is only a backstop so a genuinely wedged runner cannot idle for hours.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

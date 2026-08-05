@@ -8,6 +8,20 @@ if (!opencodeBin || !pluginTarball) {
   throw new Error("Usage: bun fixtures/v2-installed-smoke.ts <opencode2-bin> <packed-plugin.tgz>");
 }
 
+// OpenCode 2 installs the configured plugin (and its whole dependency closure, which the
+// `bun` peer dependency makes large) through the throwaway registry below before the plugin
+// can appear in /api/plugin, and it answers /api/health only once the server has finished
+// booting. On a warm macOS dev box that is ~0.8s to healthy and ~6s to activated; on a cold
+// Linux CI runner the measured numbers are ~9s and ~47s. These budgets are sized for the slow
+// path with headroom — the job's own timeout is the real backstop against a genuine hang.
+const HEALTH_TIMEOUT_MS = readTimeout("PLANNOTATOR_SMOKE_HEALTH_TIMEOUT_MS", 120_000);
+const PLUGIN_TIMEOUT_MS = readTimeout("PLANNOTATOR_SMOKE_PLUGIN_TIMEOUT_MS", 300_000);
+// Per-request cap so one wedged request can never swallow the whole budget: the loop has to
+// keep polling (and keep reporting) instead of blocking on a single fetch that never settles.
+const REQUEST_TIMEOUT_MS = readTimeout("PLANNOTATOR_SMOKE_REQUEST_TIMEOUT_MS", 15_000);
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+const PROGRESS_INTERVAL_MS = 15_000;
+
 const packageJson = JSON.parse(readFileSync(path.join(import.meta.dir, "..", "package.json"), "utf-8")) as {
   name: string;
   version: string;
@@ -71,6 +85,12 @@ const registry = Bun.serve({
   },
 });
 
+console.error(`opencode2 binary: ${opencodeBin} (${resolveOpencodeVersion()})`);
+console.error(`plugin tarball: ${path.resolve(pluginTarball)}`);
+console.error(`plugin package: ${packageJson.name}@${packageJson.version}`);
+console.error(`server ${url} · throwaway registry ${registryUrl} · sandbox ${root}`);
+
+const startedAt = Date.now();
 const server = Bun.spawn([
   opencodeBin,
   "serve",
@@ -84,8 +104,8 @@ const server = Bun.spawn([
   stdout: "pipe",
   stderr: "pipe",
 });
-const serverStdout = new Response(server.stdout).text();
-const serverStderr = new Response(server.stderr).text();
+const serverStdout = new Response(server.stdout).text().catch((error) => `<stdout unavailable: ${error}>`);
+const serverStderr = new Response(server.stderr).text().catch((error) => `<stderr unavailable: ${error}>`);
 let failed = false;
 
 try {
@@ -96,13 +116,14 @@ try {
   failed = true;
   throw error;
 } finally {
-  server.kill();
-  await server.exited;
-  await registry.stop();
-  const stdout = await serverStdout;
-  const stderr = await serverStderr;
+  await shutdown();
+  const stdout = await withTimeout(serverStdout, SHUTDOWN_TIMEOUT_MS, "<stdout drain timed out>");
+  const stderr = await withTimeout(serverStderr, SHUTDOWN_TIMEOUT_MS, "<stderr drain timed out>");
   if (failed) {
+    console.error(`--- opencode2 exit code: ${server.exitCode ?? "unknown"} ---`);
+    console.error("--- opencode2 stdout ---");
     console.error(stdout);
+    console.error("--- opencode2 stderr ---");
     console.error(stderr);
   }
   if (process.env.PLANNOTATOR_KEEP_SMOKE === "1") {
@@ -129,31 +150,55 @@ async function getFreePort(): Promise<number> {
 }
 
 async function waitForHealthyServer(url: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
+  let lastReport = Date.now();
+  let lastSeen = "no response yet";
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`${url}/api/health`, {
         headers: authHeaders(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (response.ok) return;
-    } catch {
-      // The server has not bound yet.
+      const body = (await response.text()).slice(0, 500);
+      if (response.ok) {
+        console.error(`healthy after ${elapsed()}`);
+        return;
+      }
+      lastSeen = `HTTP ${response.status}: ${body}`;
+    } catch (error) {
+      lastSeen = `${(error as Error).name}: ${(error as Error).message}`;
     }
-    await Bun.sleep(50);
+    if (Date.now() - lastReport >= PROGRESS_INTERVAL_MS) {
+      lastReport = Date.now();
+      console.error(`still waiting for /api/health after ${elapsed()} — last: ${lastSeen}`);
+    }
+    await Bun.sleep(250);
   }
-  throw new Error("OpenCode 2 smoke server did not become healthy.");
+  throw new Error(
+    `OpenCode 2 smoke server did not become healthy within ${HEALTH_TIMEOUT_MS}ms (waited ${elapsed()}). ` +
+      `Last /api/health result: ${lastSeen}`,
+  );
 }
 
 async function waitForPlugin(url: string): Promise<unknown> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + PLUGIN_TIMEOUT_MS;
+  let lastReport = Date.now();
   let lastOutput = "";
   while (Date.now() < deadline) {
-    const httpResponse = await fetch(`${url}/api/plugin`, {
-      headers: {
-        ...authHeaders(),
-        "x-opencode-directory": encodeURIComponent(process.cwd()),
-      },
-    });
+    let httpResponse: Response;
+    try {
+      httpResponse = await fetch(`${url}/api/plugin`, {
+        headers: {
+          ...authHeaders(),
+          "x-opencode-directory": encodeURIComponent(process.cwd()),
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      lastOutput = `${(error as Error).name}: ${(error as Error).message}`;
+      await Bun.sleep(250);
+      continue;
+    }
     lastOutput = await httpResponse.text();
     if (!httpResponse.ok) {
       throw new Error(`OpenCode plugin API returned ${httpResponse.status}: ${lastOutput}`);
@@ -161,10 +206,61 @@ async function waitForPlugin(url: string): Promise<unknown> {
     const response = JSON.parse(lastOutput) as { data?: Array<{ id?: string } | string> };
     if (response.data?.some((plugin) =>
       typeof plugin === "string" ? plugin === "plannotator" : plugin.id === "plannotator"
-    )) return response;
-    await Bun.sleep(50);
+    )) {
+      console.error(`plannotator activated after ${elapsed()}`);
+      return response;
+    }
+    if (Date.now() - lastReport >= PROGRESS_INTERVAL_MS) {
+      lastReport = Date.now();
+      console.error(
+        `still installing/activating the plugin after ${elapsed()} — ` +
+          `${response.data?.length ?? 0} plugins registered so far`,
+      );
+    }
+    await Bun.sleep(250);
   }
-  throw new Error(`Plannotator did not activate in OpenCode 2. Last response: ${lastOutput}`);
+  throw new Error(
+    `Plannotator did not activate in OpenCode 2 within ${PLUGIN_TIMEOUT_MS}ms (waited ${elapsed()}). ` +
+      `Last response: ${lastOutput}`,
+  );
+}
+
+// A stuck teardown used to turn a failing smoke into a multi-minute CI wall-clock burn that
+// hid the diagnostics behind the job timeout. Every step here is bounded and escalates.
+async function shutdown(): Promise<void> {
+  server.kill();
+  if (await withTimeout(server.exited.then(() => true), SHUTDOWN_TIMEOUT_MS, false) === false) {
+    console.error("opencode2 ignored SIGTERM; sending SIGKILL");
+    server.kill("SIGKILL");
+    await withTimeout(server.exited.then(() => true), SHUTDOWN_TIMEOUT_MS, false);
+  }
+  // `true` closes connections the in-flight plugin install may still be holding open.
+  await withTimeout(Promise.resolve(registry.stop(true)), SHUTDOWN_TIMEOUT_MS, undefined);
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return await Promise.race([promise, Bun.sleep(ms).then(() => fallback)]);
+}
+
+function resolveOpencodeVersion(): string {
+  try {
+    const result = Bun.spawnSync([opencodeBin, "--version"], { stdout: "pipe", stderr: "pipe" });
+    const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+    return output || `exit ${result.exitCode}`;
+  } catch (error) {
+    return `version lookup failed: ${(error as Error).message}`;
+  }
+}
+
+function elapsed(): string {
+  return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+}
+
+function readTimeout(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function authHeaders(): Record<string, string> {
