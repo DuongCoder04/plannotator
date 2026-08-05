@@ -295,6 +295,38 @@ export function useEditSession(params: UseEditSessionParams): EditSessionApi {
     item.edit = false;
     item.version = (item.version ?? 0) + 1;
     handle.updateItem(item);
+    // Pinned to @pierre/diffs 1.3.2: the updateItem above is NOT enough to
+    // repaint the pristine content. DiffHunksRenderer.renderDiff only swaps
+    // its render cache for new content while the cache is UNhighlighted; an
+    // ended edit session leaves `renderCache.highlighted === true`, so the
+    // teardown repaint keeps painting the stale edited `renderCache.result`
+    // and merely queues an async worker highlight of the pristine diff. That
+    // heal takes 30ms-seconds and never lands at all if the task is
+    // invalidated (e.g. workerPool's theme sync calling invalidateRenderTasks)
+    // — permanently stale pixels after Discard. Clearing the render cache on
+    // the live instance forces the next paint down the cold-render path:
+    // pristine plaintext immediately, then the normal async highlight — the
+    // same UX as any diff switch. This deliberately reaches past the edit
+    // adapter wall into the (protected) hunksRenderer, which upstream does
+    // not expose for this; remove once upstream's renderDiff honors
+    // newContent for highlighted caches.
+    try {
+      const rendered = handle
+        .getInstance()
+        ?.getRenderedItems()
+        .find((r) => r.id === session.itemId);
+      if (rendered != null && rendered.type === 'diff') {
+        const instance = rendered.instance as unknown as {
+          hunksRenderer?: { clearRenderCache(): void };
+          rerender(): void;
+        };
+        instance.hunksRenderer?.clearRenderCache();
+        instance.rerender();
+      }
+    } catch {
+      // Best-effort: a virtualized-away (not currently rendered) item is
+      // fine — it repaints pristine from item.fileDiff on remount.
+    }
   });
 
   /** End the current session. `suppress` skips suggestion creation (Cancel).
@@ -304,8 +336,12 @@ export function useEditSession(params: UseEditSessionParams): EditSessionApi {
    * two-step write (edit off first, restore later) races CodeView's own
    * session-teardown re-render — on large files the teardown render lands
    * after the deferred restore and leaves the edited content on screen. The
-   * completion callback still fires from this write with the session's final
-   * contents, which is all the suggestion derivation needs. */
+   * combined write alone is still not sufficient to REPAINT pristine,
+   * though: the renderer's highlighted cache ignores the new content on the
+   * teardown repaint, so writeRestore also clears the live instance's render
+   * cache (see the pinned note there). The completion callback still fires
+   * from this write with the session's final contents, which is all the
+   * suggestion derivation needs. */
   const endSession = useStableCallback((suppress: boolean) => {
     const session = sessionRef.current;
     if (!session) return;
