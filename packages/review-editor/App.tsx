@@ -103,6 +103,13 @@ import { ReviewSetupDialog } from './components/ReviewSetupDialog';
 import { needsReviewSetup, markReviewSetupSeen } from './utils/reviewSetup';
 import { GuideIntroDialog } from './components/GuideIntroDialog';
 import { needsGuideIntro, markGuideIntroSeen, needsGuideHint, markGuideHintSeen } from './utils/guideIntro';
+import { EditModeAnnouncementDialog } from './components/EditModeAnnouncementDialog';
+import {
+  editModeAnnouncementCanShow,
+  enableEditSuggestionsFromAnnouncement,
+  markEditModeAnnouncementSeen,
+  needsEditModeAnnouncement,
+} from './utils/editModeAnnouncement';
 import { DestinationSpotlight } from './components/DestinationSpotlight';
 import { needsDestinationSpotlight, markDestinationSpotlightSeen } from './utils/destinationSpotlight';
 import { TextShimmer } from '@plannotator/ui/components/TextShimmer';
@@ -665,11 +672,11 @@ const ReviewApp: React.FC = () => {
   // Guide click, even for users who dismissed the dialog without reading.
   const [showGuideIntro, setShowGuideIntro] = useState(needsGuideIntro);
   const [guideHintActive, setGuideHintActive] = useState(needsGuideHint);
-  // FIRST in the dialog chain (guide intro → look-and-feel → review setup).
-  // The intro only shows when a Guide button exists to point at
+  // FIRST in the dialog chain (guide intro → look-and-feel → review setup →
+  // edit mode). The intro only shows when a Guide button exists to point at
   // (hasSearchableFiles) — on an empty diff it is skipped WITHOUT consuming
   // the one-shot cookie, so the next session with files shows it. The other
-  // two dialogs' gates must use this same visibility (not the raw
+  // chain dialogs' gates must use this same visibility (not the raw
   // showGuideIntro), or an empty diff would block them forever.
   //
   // Eligibility is LATCHED at the first post-load render (dialogs only mount
@@ -691,6 +698,29 @@ const ReviewApp: React.FC = () => {
     markGuideHintSeen();
     setGuideHintActive(false);
   }, [guideOpen, guideHintActive]);
+  // One-time Edit Mode (edit-to-suggest) announcement. LAST in the dialog
+  // chain (guide intro → look-and-feel → review setup → edit mode) — the
+  // chain dialogs never stack. Skipped forever when the user already enabled
+  // the setting from Settings (latched at mount so enabling from the dialog
+  // itself doesn't unmount it mid-click).
+  const [editModeIntroPending, setEditModeIntroPending] = useState(
+    () => needsEditModeAnnouncement() && !configStore.get('editSuggestions'),
+  );
+  const editModeIntroVisible = editModeAnnouncementCanShow({
+    announcementPending: editModeIntroPending,
+    isLoading,
+    guideIntroVisible,
+    lookAndFeelVisible: showLookAndFeel,
+    reviewSetupVisible: showReviewSetup,
+  });
+  const dismissEditModeIntro = useCallback(() => {
+    markEditModeAnnouncementSeen();
+    setEditModeIntroPending(false);
+  }, []);
+  const enableEditModeIntro = useCallback(() => {
+    enableEditSuggestionsFromAnnouncement();
+    setEditModeIntroPending(false);
+  }, []);
   const aiChat = useAIChat({
     patch: diffData?.rawPatch ?? '',
     diffType,
@@ -3851,7 +3881,7 @@ const ReviewApp: React.FC = () => {
         {/* 0.20.0 look-and-feel / release announcement. Shared with the plan
             editor via a host-scoped cookie, so it shows once across both apps.
             Second in the dialog chain (guide intro → look-and-feel → review
-            setup) — the three never stack. */}
+            setup → edit mode) — the chain dialogs never stack. */}
         <LookAndFeelAnnouncementDialog
           isOpen={showLookAndFeel && !guideIntroVisible}
           gridEnabled={gridEnabled}
@@ -3860,8 +3890,8 @@ const ReviewApp: React.FC = () => {
         />
 
         {/* One-time guided-review intro. First in the dialog chain, ahead of
-            the look-and-feel announcement and the review setup — the three
-            never stack. */}
+            the look-and-feel announcement, the review setup, and the edit-mode
+            announcement — the chain dialogs never stack. */}
         {guideIntroVisible && (
           <GuideIntroDialog
             isOpen
@@ -3873,9 +3903,9 @@ const ReviewApp: React.FC = () => {
         )}
 
         {/* First-run review-view chooser (panel view + tree default diff).
-            Last in the dialog chain (guide intro → look-and-feel → review
-            setup) so the three never stack. On dismiss, apply the chosen
-            default to the current session. */}
+            Third in the dialog chain (guide intro → look-and-feel → review
+            setup → edit mode) so the chain dialogs never stack. On dismiss,
+            apply the chosen default to the current session. */}
         {showReviewSetup && !showLookAndFeel && !guideIntroVisible && (
           <ReviewSetupDialog
             isOpen
@@ -3895,12 +3925,24 @@ const ReviewApp: React.FC = () => {
           />
         )}
 
+        {/* One-time Edit Mode (edit-to-suggest) announcement. LAST in the
+            dialog chain (guide intro → look-and-feel → review setup → edit
+            mode) — editModeAnnouncementCanShow gates on all three, so the
+            chain dialogs never stack. */}
+        {editModeIntroVisible && (
+          <EditModeAnnouncementDialog
+            isOpen
+            onEnable={enableEditModeIntro}
+            onDismiss={dismissEditModeIntro}
+          />
+        )}
+
         {/* One-time PR feedback-destination spotlight. Strictly AFTER the
             first-run dialog chain (guide intro → look-and-feel → review
-            setup): it only mounts once none of the three is showing, so it
-            never stacks with them. PR mode only — the switcher it points at
-            doesn't render otherwise. */}
-        {showDestSpotlight && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !showReviewSetup && (
+            setup → edit mode): it only mounts once none of the four is
+            showing, so it never stacks with them. PR mode only — the switcher
+            it points at doesn't render otherwise. */}
+        {showDestSpotlight && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !showReviewSetup && !editModeIntroVisible && (
           <DestinationSpotlight
             targetRef={destToggleRef}
             platformLabel={platformLabel}
