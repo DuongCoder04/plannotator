@@ -217,6 +217,101 @@ describe("GitButler status contract", () => {
   });
 });
 
+describe("GitButler status JSON flag fallback", () => {
+  // 0.21.x accepts only `--format json` (gitbutlerapp/gitbutler#14061);
+  // 0.22.0+ accepts only `--json` (gitbutlerapp/gitbutler#15026). Each
+  // rejects the other spelling with clap's unexpected-argument error.
+  const formatRejected = commandResult(
+    "",
+    "error: unexpected argument '--format' found\n\nUsage: but [OPTIONS] [COMMAND]\n\nFor more information, try '--help'.\n",
+    2,
+  );
+  const jsonRejected = commandResult(
+    "",
+    "error: unexpected argument '--json' found\n\nUsage: but [OPTIONS] [COMMAND]\n\nFor more information, try '--help'.\n",
+    2,
+  );
+
+  test("falls back to `but --json status` once when the CLI rejects `--format`, then remembers it", async () => {
+    const fixture = createRuntime({ version: commandResult("but 0.22.0\n") });
+    const originalRunBut = fixture.runtime.runBut.bind(fixture.runtime);
+    fixture.runtime.runBut = async (args, options) => {
+      if (args.join(" ") === "--format json status") {
+        fixture.butCalls.push(args);
+        return formatRejected;
+      }
+      if (args.join(" ") === "--json status") {
+        fixture.butCalls.push(args);
+        return commandResult(statusJson());
+      }
+      return originalRunBut(args, options);
+    };
+
+    const context = await getGitButlerContext(fixture.runtime, ROOT);
+    expect(context).toMatchObject({ vcsType: "gitbutler", defaultBranch: MERGE_BASE });
+    const result = await runGitButlerDiff(fixture.runtime, GITBUTLER_WORKSPACE_DIFF, ROOT);
+    expect(result).toMatchObject({
+      patch: "diff --git a/file.txt b/file.txt\n-old\n+new\n",
+      label: "GitButler workspace (all applied changes)",
+    });
+    expect(fixture.butCalls.filter((args) => args.includes("status"))).toEqual([
+      ["--format", "json", "status"],
+      ["--json", "status"],
+    ]);
+
+    // The accepted spelling is remembered, so the next status call after the
+    // cache TTL does not pay the failed `--format` probe again.
+    await Bun.sleep(1_050);
+    await getGitButlerContext(fixture.runtime, ROOT);
+    expect(fixture.butCalls.filter((args) => args.includes("status"))).toEqual([
+      ["--format", "json", "status"],
+      ["--json", "status"],
+      ["--json", "status"],
+    ]);
+  });
+
+  test("a real status failure is never retried with the other syntax", async () => {
+    const fixture = createRuntime({ status: commandResult("", "database locked", 1) });
+    await expect(getGitButlerContext(fixture.runtime, ROOT)).rejects.toThrow(GitButlerContractError);
+    const failed = createRuntime({ status: commandResult("", "database locked", 1) });
+    await expect(getGitButlerContext(failed.runtime, ROOT)).rejects.toThrow(
+      "GitButler status (`but --format json status`) failed: database locked",
+    );
+    // The fixture's runBut throws for any unexpected invocation, so reaching
+    // this assertion also proves `--json status` was never attempted.
+    expect(failed.butCalls.filter((args) => args.includes("status"))).toEqual([
+      ["--format", "json", "status"],
+    ]);
+  });
+
+  test("rejecting both spellings yields a clear version-requirement contract error", async () => {
+    const fixture = createRuntime();
+    const originalRunBut = fixture.runtime.runBut.bind(fixture.runtime);
+    fixture.runtime.runBut = async (args, options) => {
+      if (args.join(" ") === "--format json status") {
+        fixture.butCalls.push(args);
+        return formatRejected;
+      }
+      if (args.join(" ") === "--json status") {
+        fixture.butCalls.push(args);
+        return jsonRejected;
+      }
+      return originalRunBut(args, options);
+    };
+
+    const pending = getGitButlerContext(fixture.runtime, ROOT);
+    await expect(pending).rejects.toThrow(GitButlerContractError);
+    await expect(pending).rejects.toThrow(
+      "GitButler rejected both `but --format json status` and `but --json status`; " +
+      "Plannotator requires GitButler 0.21.0 or newer.",
+    );
+    expect(fixture.butCalls.filter((args) => args.includes("status"))).toEqual([
+      ["--format", "json", "status"],
+      ["--json", "status"],
+    ]);
+  });
+});
+
 describe("GitButler detection and context", () => {
   test("detects only an active GitButler workspace ref, including from a subdirectory", async () => {
     const fixture = createRuntime();
@@ -622,7 +717,7 @@ describe("GitButler diffs and expansion", () => {
     const failedStatus = createRuntime({ status: commandResult("", "database locked", 1) });
     await expect(runGitButlerDiff(failedStatus.runtime, GITBUTLER_WORKSPACE_DIFF, ROOT)).resolves.toMatchObject({
       patch: "",
-      error: "GitButler status failed: database locked",
+      error: "GitButler status (`but --format json status`) failed: database locked",
     });
 
     const fixture = createRuntime();
