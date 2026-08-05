@@ -64,10 +64,8 @@
     "apps/opencode-plugin": {
       "name": "@plannotator/opencode",
       "version": "0.25.1",
-      "dependencies": {
-        "@opencode-ai/plugin": "0.0.0-next-16775",
-      },
       "devDependencies": {
+        "@opencode-ai/plugin": "0.0.0-next-16775",
         "@plannotator/server": "workspace:*",
         "@plannotator/shared": "workspace:*",
       },

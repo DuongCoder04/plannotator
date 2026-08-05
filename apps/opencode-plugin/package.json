@@ -40,10 +40,8 @@
     "postinstall": "mkdir -p ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/commands && cp ./commands/*.md ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/commands/ 2>/dev/null || true",
     "prepublishOnly": "bun run build"
   },
-  "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-16775"
-  },
   "devDependencies": {
+    "@opencode-ai/plugin": "0.0.0-next-16775",
     "@plannotator/server": "workspace:*",
     "@plannotator/shared": "workspace:*"
   },
