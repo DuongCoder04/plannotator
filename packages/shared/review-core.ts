@@ -148,6 +148,15 @@ export interface GitCommandOptions {
   stdin?: string;
   /** Whether the command may ask the user for credentials. Defaults to `"allow"`. */
   interaction?: "allow" | "forbid";
+  /**
+   * Extra Git configuration for this one command, injected through the
+   * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`
+   * environment variables at the process boundary (`prepareGitCommand`).
+   * Deliberately NOT passed as `-c` argv flags: callers and tests match on
+   * the exact argv a command was invoked with, so config must never change
+   * the argument vector.
+   */
+  config?: Record<string, string>;
 }
 
 /** Runtime-neutral Git arguments and subprocess policy produced at the process boundary. */
@@ -207,22 +216,50 @@ function usesPlink(
 }
 
 /**
+ * Translate `GitCommandOptions.config` into `GIT_CONFIG_*` environment
+ * variables. Entries append after any config already injected through the
+ * inherited environment (git reads keys `0..COUNT-1`), so a caller-provided
+ * `GIT_CONFIG_COUNT` keeps working. Returns null when there is nothing to add.
+ */
+function gitConfigEnvironment(
+  config: Record<string, string> | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> | null {
+  const entries = Object.entries(config ?? {});
+  if (entries.length === 0) return null;
+  const inheritedCount = Number(environment.GIT_CONFIG_COUNT ?? "0");
+  const offset =
+    Number.isSafeInteger(inheritedCount) && inheritedCount > 0 ? inheritedCount : 0;
+  const env: Record<string, string> = {
+    GIT_CONFIG_COUNT: String(offset + entries.length),
+  };
+  entries.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${offset + index}`] = key;
+    env[`GIT_CONFIG_VALUE_${offset + index}`] = value;
+  });
+  return env;
+}
+
+/**
  * Prepare one Git subprocess without mutating the parent environment.
  *
  * Commands that forbid interaction disable Git credential prompts, request SSH
  * batch mode (including PuTTY/plink), and request process-group isolation so
  * the runtime can terminate transport children on timeout. Interactive Git
- * commands retain the caller's exact authentication behavior.
+ * commands retain the caller's exact authentication behavior. Per-command
+ * config rides `GIT_CONFIG_*` environment variables, never argv.
  */
 export function prepareGitCommand(
   args: string[],
   options: GitCommandOptions | undefined,
   environment: Readonly<Record<string, string | undefined>>,
 ): PreparedGitCommand {
+  const configEnv = gitConfigEnvironment(options?.config, environment);
   const interaction = options?.interaction ?? "allow";
   if (interaction === "allow") {
     return {
       args: ["-c", "core.quotePath=false", ...args],
+      ...(configEnv ? { env: { ...environment, ...configEnv } } : {}),
       isolateProcessGroup: false,
     };
   }
@@ -243,6 +280,7 @@ export function prepareGitCommand(
     ],
     env: {
       ...environment,
+      ...configEnv,
       GIT_TERMINAL_PROMPT: "0",
       GIT_SSH_COMMAND: `${sshCommand} ${sshBatchOptions}`,
       SSH_ASKPASS_REQUIRE: "never",
@@ -782,23 +820,42 @@ function isGitlink(entry: RawDiffEntry): boolean {
   return entry.oldMode === "160000" || entry.newMode === "160000";
 }
 
+/**
+ * Batch-probe object sizes for the oversized-path preflight.
+ *
+ * Returns `null` when the batch command itself fails (locked or corrupt
+ * object database, resource exhaustion, a hung git killed by the timeout).
+ * Callers must then treat blob sizes as unknown-but-bounded and rely on the
+ * git-native `core.bigFileThreshold` bound applied to every rendered diff
+ * (`BOUNDED_DIFF_GIT_CONFIG`) — the old behavior of marking EVERY object
+ * oversized replaced the whole review with binary stubs on one failed probe.
+ * Working-tree sizes come from filesystem stat and never from this probe.
+ *
+ * The per-object doors stay conservative on a probe that ran: an object the
+ * batch reports as `missing`, omits from its output, or answers with an
+ * unparseable/negative size maps to infinity. That is evidence about one
+ * object only, and excluding just its path keeps the stub's rename/copy/mode
+ * metadata rendering while the rest of the diff stays intact.
+ */
 async function getGitObjectSizes(
   runtime: ReviewGitRuntime,
   objectIds: string[],
   cwd?: string,
-): Promise<Map<string, number>> {
+): Promise<Map<string, number> | null> {
   const uniqueObjectIds = [...new Set(objectIds.filter((objectId) => !isNullObjectId(objectId)))];
   const sizes = new Map<string, number>();
   if (uniqueObjectIds.length === 0) return sizes;
 
   const result = await runtime.runGit(
     ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-    { cwd, stdin: `${uniqueObjectIds.join("\n")}\n` },
+    {
+      cwd,
+      stdin: `${uniqueObjectIds.join("\n")}\n`,
+      timeoutMs: 5000,
+      interaction: "forbid",
+    },
   );
-  if (result.exitCode !== 0) {
-    for (const objectId of uniqueObjectIds) sizes.set(objectId, Number.POSITIVE_INFINITY);
-    return sizes;
-  }
+  if (result.exitCode !== 0) return null;
 
   for (const line of result.stdout.split("\n")) {
     const [objectId, objectType, objectSize] = line.split(" ");
@@ -891,12 +948,30 @@ interface BoundedTrackedDiff {
 }
 
 /**
+ * Git-native memory bound for rendered review diffs. `core.bigFileThreshold`
+ * makes git itself treat blobs above the review content cap as binary and
+ * emit tiny `Binary files ... differ` stubs instead of formatting their
+ * bytes, so patch output stays bounded even when the JS-side size probe
+ * cannot run. Injected as `GIT_CONFIG_*` environment entries (never `-c`
+ * argv flags) so every diff invocation keeps a byte-identical argv.
+ */
+const BOUNDED_DIFF_GIT_CONFIG: Record<string, string> = {
+  "core.bigFileThreshold": String(MAX_REVIEW_FILE_CONTENT_BYTES),
+};
+
+/**
  * Render a tracked diff without ever asking Git to format an oversized file.
  *
  * A raw, no-textconv preflight identifies changed paths and object sizes first.
  * Every over-limit path is then excluded with a top-level literal pathspec and
  * represented by a small, parseable binary stub. The stub's object ids retain
  * a content-sensitive fingerprint without putting file bytes in patch output.
+ *
+ * The size probe is best-effort: every rendered diff also carries
+ * `BOUNDED_DIFF_GIT_CONFIG`, so git itself never formats an oversized blob
+ * even when the probe fails and blob-side exclusion is skipped. Oversized
+ * working-tree sides are excluded from filesystem stat, independent of the
+ * probe.
  */
 async function buildBoundedTrackedDiff(
   runtime: ReviewGitRuntime,
@@ -922,7 +997,10 @@ async function buildBoundedTrackedDiff(
   const entries = parseRawDiffEntries(rawResult.stdout);
   if (entries.length === 0) {
     return {
-      patch: assertGitSuccess(await runtime.runGit(args, { cwd }), args).stdout,
+      patch: assertGitSuccess(
+        await runtime.runGit(args, { cwd, config: BOUNDED_DIFF_GIT_CONFIG }),
+        args,
+      ).stdout,
       fingerprintMetadata: [],
     };
   }
@@ -936,14 +1014,29 @@ async function buildBoundedTrackedDiff(
     nonGitlinks.flatMap((entry) => [entry.oldObjectId, entry.newObjectId]),
     cwd,
   );
+  // A failed batch probe (null) used to mark every object oversized, which
+  // replaced the ENTIRE review with binary stubs and no visible error. The
+  // memory bound no longer depends on the probe:
+  //  - Blob sides live in the object database, where BOUNDED_DIFF_GIT_CONFIG
+  //    makes git itself stub oversized content, so an unknown blob size reads
+  //    as "not oversized" and the file renders (git-bounded) instead of being
+  //    excluded.
+  //  - Working-tree sides are NOT covered by core.bigFileThreshold (git hashes
+  //    the file for the index line and content-based binary detection wins),
+  //    but their sizes come from filesystem stat, not the probe, so that
+  //    exclusion door keeps working below regardless of the probe outcome.
   for (const entry of entries) {
     if (isGitlink(entry)) continue;
     const oldSize = isNullObjectId(entry.oldObjectId)
       ? null
-      : objectSizes.get(entry.oldObjectId) ?? Number.POSITIVE_INFINITY;
+      : objectSizes === null
+        ? null
+        : objectSizes.get(entry.oldObjectId) ?? Number.POSITIVE_INFINITY;
     const newObjectSize = isNullObjectId(entry.newObjectId)
       ? null
-      : objectSizes.get(entry.newObjectId) ?? Number.POSITIVE_INFINITY;
+      : objectSizes === null
+        ? null
+        : objectSizes.get(entry.newObjectId) ?? Number.POSITIVE_INFINITY;
     const workingTreeInfo = isNullObjectId(entry.newObjectId)
       ? await getWorkingTreeFileInfo(runtime, root, entry.newPath)
       : null;
@@ -975,7 +1068,10 @@ async function buildBoundedTrackedDiff(
 
   if (oversized.length === 0) {
     return {
-      patch: assertGitSuccess(await runtime.runGit(args, { cwd }), args).stdout,
+      patch: assertGitSuccess(
+        await runtime.runGit(args, { cwd, config: BOUNDED_DIFF_GIT_CONFIG }),
+        args,
+      ).stdout,
       fingerprintMetadata,
     };
   }
@@ -987,7 +1083,10 @@ async function buildBoundedTrackedDiff(
       : []),
   ]);
   const patchArgs = [...args, "--", ...exclusions];
-  const boundedPatch = assertGitSuccess(await runtime.runGit(patchArgs, { cwd }), patchArgs).stdout;
+  const boundedPatch = assertGitSuccess(
+    await runtime.runGit(patchArgs, { cwd, config: BOUNDED_DIFF_GIT_CONFIG }),
+    patchArgs,
+  ).stdout;
   return {
     patch: boundedPatch + oversized.map(buildOversizedTrackedStub).join(""),
     fingerprintMetadata,

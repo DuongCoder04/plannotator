@@ -126,10 +126,16 @@ describe("runPRFullStackDiff", () => {
     const newObjectId = "b".repeat(40);
     const runtime: ReviewGitRuntime = {
       ...unavailableFileMethods,
-      async runGit(args) {
+      async runGit(args, options) {
         calls.push(args);
         if (args[0] === "show-ref") return result();
-        if (args[0] === "cat-file") return result(`${MAX_REVIEW_FILE_CONTENT_BYTES + 1}\n`);
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          return result(
+            (options?.stdin ?? "").trim().split("\n").filter(Boolean).map((objectId) =>
+              `${objectId} blob ${MAX_REVIEW_FILE_CONTENT_BYTES + 1}`,
+            ).join("\n"),
+          );
+        }
         if (args[0] === "diff" && args.includes("--raw")) {
           return result(
             `:100644 100644 ${oldObjectId} ${newObjectId} M\0large [*]?.txt\0`,
@@ -304,11 +310,18 @@ describe("runPRLayerLocalDiff", () => {
     const calls: string[][] = [];
     const runtime: ReviewGitRuntime = {
       ...unavailableFileMethods,
-      async runGit(args) {
+      async runGit(args, options) {
         calls.push(args);
         if (args[0] === "cat-file" && args[1] === "-t") return result();
         if (args[0] === "cat-file" && args[1] === "-s") {
           return result(`${MAX_REVIEW_FILE_CONTENT_BYTES + 1}\n`);
+        }
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          return result(
+            (options?.stdin ?? "").trim().split("\n").filter(Boolean).map((objectId) =>
+              `${objectId} blob ${MAX_REVIEW_FILE_CONTENT_BYTES + 1}`,
+            ).join("\n"),
+          );
         }
         if (args[0] === "diff" && args.includes("--raw")) {
           return result(

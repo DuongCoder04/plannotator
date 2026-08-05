@@ -33,6 +33,8 @@ import {
   runGitDiff,
   splitPorcelainRename,
   type DiffType,
+  type GitCommandOptions,
+  type GitCommandResult,
   type ReviewGitRuntime,
 } from "./review-core";
 
@@ -133,6 +135,40 @@ function makeRuntime(baseCwd: string): ReviewGitRuntime {
   };
 }
 
+/**
+ * Like `makeRuntime`, but routes every command through `prepareGitCommand`
+ * and forwards the prepared environment to git — the way the production Bun
+ * and Pi runtimes do — so per-command `config` (GIT_CONFIG_*) actually
+ * reaches the spawned process. `intercept` lets a test sabotage individual
+ * commands (e.g. force the cat-file size probe to fail).
+ */
+function makeConfigForwardingRuntime(
+  baseCwd: string,
+  intercept?: (args: string[]) => GitCommandResult | null,
+): ReviewGitRuntime {
+  const base = makeRuntime(baseCwd);
+  return {
+    ...base,
+    async runGit(args: string[], options?: GitCommandOptions) {
+      const intercepted = intercept?.(args);
+      if (intercepted) return intercepted;
+      const command = prepareGitCommand(args, options, process.env);
+      const result = spawnSync("git", command.args, {
+        cwd: options?.cwd ?? baseCwd,
+        encoding: "utf-8",
+        maxBuffer: MAX_REVIEW_FILE_CONTENT_BYTES * 4,
+        input: options?.stdin,
+        env: command.env as NodeJS.ProcessEnv | undefined,
+      });
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        exitCode: result.status ?? (result.error ? 1 : 0),
+      };
+    },
+  };
+}
+
 function initRepo(initialBranch = "main"): string {
   const repoDir = makeTempDir("plannotator-review-core-");
   git(repoDir, ["init"]);
@@ -220,6 +256,61 @@ describe("review-core", () => {
       args: ["-c", "core.quotePath=false", "fetch", "origin", "main"],
       isolateProcessGroup: false,
     });
+  });
+
+  test("per-command config rides GIT_CONFIG_* environment variables, never argv", () => {
+    const command = prepareGitCommand(
+      ["diff", "--no-ext-diff", "--cached"],
+      { config: { "core.bigFileThreshold": "5242880" } },
+      { PATH: "/usr/bin" },
+    );
+
+    // argv must stay byte-identical to the configless invocation: callers and
+    // test mocks match on the exact argument vector.
+    expect(command.args).toEqual(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
+    expect(command.env).toEqual({
+      PATH: "/usr/bin",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_0: "5242880",
+    });
+    expect(command.isolateProcessGroup).toBe(false);
+  });
+
+  test("per-command config appends after config inherited from the environment", () => {
+    const command = prepareGitCommand(
+      ["diff"],
+      { config: { "core.bigFileThreshold": "5242880" } },
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "user.name",
+        GIT_CONFIG_VALUE_0: "Env User",
+      },
+    );
+
+    expect(command.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "Env User",
+      GIT_CONFIG_KEY_1: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_1: "5242880",
+    });
+  });
+
+  test("per-command config combines with the noninteractive policy environment", () => {
+    const command = prepareGitCommand(
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      { timeoutMs: 5_000, interaction: "forbid", config: { "core.bigFileThreshold": "1" } },
+      { PATH: "/usr/bin" },
+    );
+
+    expect(command.env).toMatchObject({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_0: "1",
+      GIT_TERMINAL_PROMPT: "0",
+    });
+    expect(command.isolateProcessGroup).toBe(true);
   });
 
   test("remote-default discovery requests bounded noninteractive execution", async () => {
@@ -671,6 +762,182 @@ describe("review-core", () => {
     expect(batchCalls).toBe(1);
     expect(individualSizeCalls).toBe(0);
   });
+
+  test("a failed size probe renders the diff instead of blanking it with binary stubs", async () => {
+    const renderedPatch =
+      "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    const calls: Array<{ args: string[]; options?: GitCommandOptions }> = [];
+    const runtime: ReviewGitRuntime = {
+      ...unavailableFileMethods,
+      async runGit(args, options) {
+        calls.push({ args, options });
+        if (args[0] === "diff" && args.includes("--raw")) {
+          return {
+            stdout: `:100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} M\0x.ts\0`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          return { stdout: "", stderr: "fatal: unable to read object database", exitCode: 128 };
+        }
+        if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", exitCode: 0 };
+        if (args[0] === "diff") return { stdout: renderedPatch, stderr: "", exitCode: 0 };
+        throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      },
+      async readTextFile() {
+        return null;
+      },
+    };
+
+    const result = await runGitDiff(runtime, "staged", "main", "/repo");
+
+    // The review shows the real diff — not one binary stub per file.
+    expect(result.patch).toContain("+new");
+    expect(result.patch).not.toContain("Binary files");
+    expect(
+      calls.some(({ args }) => args.some((arg) => arg.startsWith(":(top,exclude,literal)"))),
+    ).toBe(false);
+
+    // The probe is timeout-guarded and noninteractive so a hung git cannot
+    // stall the review server.
+    const probe = calls.find(({ args }) => args[0] === "cat-file");
+    expect(probe?.options).toMatchObject({ timeoutMs: 5000, interaction: "forbid" });
+
+    // Memory stays bounded by git itself: the rendered diff carries the
+    // core.bigFileThreshold config while argv stays byte-identical.
+    const rendered = calls.filter(
+      ({ args }) => args[0] === "diff" && !args.includes("--raw"),
+    );
+    expect(rendered.length).toBeGreaterThan(0);
+    for (const { args, options } of rendered) {
+      expect(options?.config).toEqual({
+        "core.bigFileThreshold": String(MAX_REVIEW_FILE_CONTENT_BYTES),
+      });
+      expect(args.some((arg) => arg.includes("bigFileThreshold"))).toBe(false);
+    }
+  });
+
+  test("a single object the probe reports missing still excludes only that path", async () => {
+    const smallOld = "1".repeat(40);
+    const smallNew = "2".repeat(40);
+    const brokenOld = "3".repeat(40);
+    const brokenNew = "4".repeat(40);
+    const runtime: ReviewGitRuntime = {
+      ...unavailableFileMethods,
+      async runGit(args, options) {
+        if (args[0] === "diff" && args.includes("--raw")) {
+          return {
+            stdout: [
+              `:100644 100644 ${smallOld} ${smallNew} M\0small.ts\0`,
+              `:100644 100644 ${brokenOld} ${brokenNew} M\0broken.bin\0`,
+            ].join(""),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          const input = (options as { stdin?: string } | undefined)?.stdin ?? "";
+          return {
+            stdout: input.trim().split("\n").filter(Boolean).map((objectId) =>
+              objectId === brokenNew ? `${objectId} missing` : `${objectId} blob 10`,
+            ).join("\n"),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", exitCode: 0 };
+        if (args[0] === "diff") {
+          return { stdout: "diff --git a/small.ts b/small.ts\n-old\n+new\n", stderr: "", exitCode: 0 };
+        }
+        throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      },
+      async readTextFile() {
+        return null;
+      },
+    };
+
+    const result = await runGitDiff(runtime, "staged", "main", "/repo");
+
+    expect(result.patch).toContain("+new");
+    expect(result.patch).toContain("Binary files a/broken.bin and b/broken.bin differ");
+    expect(result.patch).not.toContain("Binary files a/small.ts");
+  });
+
+  test("a failed size probe keeps oversized committed blobs git-bounded", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+    git(repoDir, ["add", "big.txt", "tracked.txt"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "staged", "main");
+
+    // The small file's real diff survives — the review is not blanked.
+    expect(result.patch).toContain("+after");
+    // git's own core.bigFileThreshold stubs the oversized staged blob.
+    expect(result.patch).toContain("Binary files");
+    expect(result.patch).not.toContain("aaaaaaaaaa");
+    expect(result.patch.length).toBeLessThan(4_000);
+  }, 20_000);
+
+  test("a failed size probe still excludes oversized working-tree files by stat", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "big.txt"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+
+    // Dirty working tree: core.bigFileThreshold does NOT bound the worktree
+    // side of a diff (git hashes the file and content-based binary detection
+    // wins), so the stat-based exclusion door must work without the probe.
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("+after");
+    expect(result.patch).toContain("Binary files");
+    expect(result.patch).not.toContain("bbbbbbbbbb");
+    expect(result.patch.length).toBeLessThan(4_000);
+  }, 20_000);
+
+  test("staleness fingerprinting survives a failed size probe and still tracks content", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "big.txt"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize), "utf-8");
+    const first = await getGitDiffFingerprint(runtime, "uncommitted", "main");
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize + 1), "utf-8");
+    const second = await getGitDiffFingerprint(runtime, "uncommitted", "main");
+
+    // Best-effort semantics preserved: the probe failing must not turn the
+    // staleness poll into a permanent false all-clear.
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+  }, 20_000);
 
   test("synthesizes quoted rename and copy metadata from raw status details", async () => {
     const renamedFrom = 'old "rename" path';

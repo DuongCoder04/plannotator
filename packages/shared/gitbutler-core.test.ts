@@ -581,8 +581,12 @@ describe("GitButler diffs and expansion", () => {
           `:100644 100644 ${oldObjectId} ${newObjectId} M\0large [*]?.txt\0`,
         );
       }
-      if (commandArgs[0] === "cat-file") {
-        return commandResult(`${MAX_REVIEW_FILE_CONTENT_BYTES + 1}\n`);
+      if (commandArgs[0] === "cat-file" && commandArgs.some((arg) => arg.startsWith("--batch-check"))) {
+        return commandResult(
+          (options?.stdin ?? "").trim().split("\n").filter(Boolean).map((objectId) =>
+            `${objectId} blob ${MAX_REVIEW_FILE_CONTENT_BYTES + 1}`,
+          ).join("\n"),
+        );
       }
       if (commandArgs[0] === "diff" && commandArgs.some((arg) => arg.startsWith(":(top,exclude,literal)"))) {
         return commandResult();
