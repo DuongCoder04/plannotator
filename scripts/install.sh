@@ -56,14 +56,21 @@ SKIP_CODEX_FLAG=0
 SKIP_GEMINI_FLAG=0
 SKIP_KIRO_FLAG=0
 SKIP_OPENCODE_FLAG=0
+# Same shape, but scoped to the skills/slash-command sparse checkout rather
+# than one agent's home: --skip-skills turns the whole fetch into a no-op for
+# every scope it writes (Claude, ~/.agents, OpenCode, Gemini, Kiro), including
+# the extras and the skill-scope cleanup sweeps. Needed by any environment that
+# cannot reach github.com for the tag being installed — the release smoke test
+# installs a synthetic v9.9.9 whose tag has no GitHub counterpart.
+SKIP_SKILLS_FLAG=0
 
 usage() {
     cat <<'USAGE'
 Usage: install.sh [--version <tag>] [--verify-attestation | --skip-attestation]
                   [--extras | --no-extras] [--model-invocable <list>|none]
                   [--minimal | --no-minimal] [--skip-codex] [--skip-gemini]
-                  [--skip-kiro] [--skip-opencode] [--non-interactive]
-                  [--reconfigure] [--help]
+                  [--skip-kiro] [--skip-opencode] [--skip-skills]
+                  [--non-interactive] [--reconfigure] [--help]
        install.sh <tag>
 
 Options:
@@ -111,6 +118,15 @@ Options:
                          so this is a plain do-not-write switch. Env var:
                          PLANNOTATOR_SKIP_OPENCODE_INSTALL; config key:
                          skipInstall.opencode.
+  --skip-skills          Do not fetch or write the /plannotator-* skills and
+                         slash commands (the sparse checkout that feeds Claude
+                         Code, ~/.agents, OpenCode, Gemini, and Kiro), the
+                         extras, or the skill-scope cleanup sweeps. Nothing
+                         already installed is removed. The binary, hooks, and
+                         per-agent config still install. Use it where
+                         github.com cannot serve the tag being installed. Env
+                         var: PLANNOTATOR_SKIP_SKILLS_INSTALL; config key:
+                         skipInstall.skills.
   --non-interactive      Never prompt, even in a terminal. Uses flags, then
                          saved answers from a previous run, then the defaults
                          (no extras, nothing model-invocable).
@@ -275,6 +291,10 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-opencode)
             SKIP_OPENCODE_FLAG=1
+            shift
+            ;;
+        --skip-skills)
+            SKIP_SKILLS_FLAG=1
             shift
             ;;
         -h|--help)
@@ -461,6 +481,11 @@ skip_kiro=0
 skip_kiro_source=""
 skip_opencode=0
 skip_opencode_source=""
+# skipInstall.skills is not an agent — it opts out of the skills/slash-command
+# checkout for every scope at once — but it shares the same three layers and
+# the same key region, so it rides along in the loop below.
+skip_skills=0
+skip_skills_source=""
 _skip_install_block=""
 if [ -f "$_config_dir/config.json" ]; then
     _skip_install_block=$(awk '
@@ -488,7 +513,7 @@ if [ -f "$_config_dir/config.json" ]; then
         }' "$_config_dir/config.json" 2>/dev/null) || _skip_install_block=""
 fi
 if [ -n "$_skip_install_block" ]; then
-    for _agent in codex gemini kiro opencode; do
+    for _agent in codex gemini kiro opencode skills; do
         if printf '%s' "$_skip_install_block" | grep -q "\"$_agent\"[[:space:]]*:[[:space:]]*false"; then
             continue # explicit false is a veto, never a skip
         fi
@@ -509,6 +534,10 @@ if [ -n "$_skip_install_block" ]; then
                 opencode)
                     skip_opencode=1
                     skip_opencode_source="config skipInstall.opencode"
+                    ;;
+                skills)
+                    skip_skills=1
+                    skip_skills_source="config skipInstall.skills"
                     ;;
             esac
         fi
@@ -556,6 +585,16 @@ case "${PLANNOTATOR_SKIP_OPENCODE_INSTALL:-}" in
         skip_opencode_source=""
         ;;
 esac
+case "${PLANNOTATOR_SKIP_SKILLS_INSTALL:-}" in
+    1|true|yes|TRUE|YES|True|Yes)
+        skip_skills=1
+        skip_skills_source="PLANNOTATOR_SKIP_SKILLS_INSTALL"
+        ;;
+    0|false|no|FALSE|NO|False|No)
+        skip_skills=0
+        skip_skills_source=""
+        ;;
+esac
 if [ "$SKIP_CODEX_FLAG" -eq 1 ]; then
     skip_codex=1
     skip_codex_source="--skip-codex"
@@ -571,6 +610,10 @@ fi
 if [ "$SKIP_OPENCODE_FLAG" -eq 1 ]; then
     skip_opencode=1
     skip_opencode_source="--skip-opencode"
+fi
+if [ "$SKIP_SKILLS_FLAG" -eq 1 ]; then
+    skip_skills=1
+    skip_skills_source="--skip-skills"
 fi
 
 # Pre-flight: if verification is requested, reject tags older than the first
@@ -1483,7 +1526,9 @@ fi
 # Extras install is delegated to the skills CLI (its UI picks the agents).
 # Interactive only — the CLI needs the keyboard, so silent runs and CI get
 # the printed command instead. Never runs when the extras already exist.
-if [ "$extras_choice" = "yes" ] && [ "$extras_present" -eq 0 ]; then
+# The extras ARE skills, so --skip-skills suppresses them too — a saved
+# extras=yes preference must not smuggle a skill install past the opt-out.
+if [ "$skip_skills" -eq 0 ] && [ "$extras_choice" = "yes" ] && [ "$extras_present" -eq 0 ]; then
     if [ "$can_prompt" -eq 1 ] && command -v npx >/dev/null 2>&1; then
         echo "Launching the skills CLI for the extras (pick your agents in its UI)..."
         npx skills add backnotprop/plannotator/apps/skills/extra --global < /dev/tty || \
@@ -1493,14 +1538,29 @@ if [ "$extras_choice" = "yes" ] && [ "$extras_present" -eq 0 ]; then
     fi
 fi
 
+# Skills/commands opt-out. HONEST reporting like the per-agent family: the
+# skipped state is announced, and skip means do-not-write — nothing already on
+# disk in any skill or command scope is fetched, replaced, or removed on this
+# run. Announced here, before the checkout, so the reason precedes the silence.
+if [ "$skip_skills" -eq 1 ]; then
+    echo ""
+    echo "Skills: skipped (${skip_skills_source})."
+    echo "No skills or slash commands were fetched, and none already installed"
+    echo "were changed or removed. The /plannotator-* commands are NOT installed"
+    echo "by this run — re-run without the opt-out to install them."
+fi
+
 # Install skills and slash commands from a sparse checkout (requires git).
 # Hard requirement: without git we cannot install the /plannotator-* skills,
 # so fail loudly instead of leaving a partial install. Hook/config writing
 # above has already run by this point; the Pi update and Gemini config below
 # are skipped on failure and complete when the user re-runs the installer.
-if ! command -v git &>/dev/null; then
+# Nothing is fetched under --skip-skills, so git stops being a requirement
+# there — a git-less machine must still get the binary, hooks, and config.
+if [ "$skip_skills" -eq 0 ] && ! command -v git &>/dev/null; then
     echo "Error: git is required to install Plannotator's skills and slash commands." >&2
     echo "Install git, then run this installer again." >&2
+    echo "To install without them, re-run with --skip-skills." >&2
     exit 1
 fi
 
@@ -1545,14 +1605,34 @@ copy_commands_if_present() {
 # Push-Location/pushd for the same logic; a subshell is bash's
 # equivalent — the parent shell's CWD is inherited in, and any
 # cd inside the subshell disappears when the subshell exits.
+#
+# Do NOT rely on `set -e` in here. POSIX says -e is ignored for every
+# command of an AND-OR list except the last, and every shell we tested
+# (bash 3.2.57, which is what `curl | bash` gets on macOS, plus bash 5.3,
+# dash, zsh, and ksh) carries that suppression into the subshell. Writing
+# it as `if ! ( ... ); then` suppresses -e the same way. So the four fetch
+# steps below carry an explicit `|| exit 1`: without them a failed clone
+# ran the whole block anyway, the subshell exited 0 on its trailing `if`,
+# and the installer printed "YOU'RE ALL SET!" with no skills installed.
+# Everything after the checkout stays best-effort on purpose, matching
+# install.cmd, which only checks git clone and lets every xcopy run
+# unchecked. A local cp/mkdir/rm hiccup must not be reported through the
+# "network or git error" message below.
 checkout_failed=0
 (
-    set -e
-    cd "$skills_tmp"
+    # --skip-skills / PLANNOTATOR_SKIP_SKILLS_INSTALL / skipInstall.skills.
+    # Exit 0 BEFORE the clone so no network call is made and checkout_failed
+    # stays 0 — an opt-out is not a fetch failure and must not trip the guard
+    # below. The report was already printed above the git check.
+    if [ "$skip_skills" -eq 1 ]; then
+        exit 0
+    fi
+
+    cd "$skills_tmp" || exit 1
     git clone --depth 1 --filter=blob:none --sparse \
-        "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>/dev/null
-    cd repo
-    git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>/dev/null
+        "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>/dev/null || exit 1
+    cd repo || exit 1
+    git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>/dev/null || exit 1
 
     # Core skills -> Claude Code (also serve as /plannotator-* slash commands)
     # and the official OpenAI shared-agent path. SOFT guard: a tag pinned
@@ -1633,6 +1713,11 @@ fi
 # leaves users with neither the command nor the skill.
 CLAUDE_COMMANDS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/commands"
 for cmd in plannotator-review plannotator-annotate plannotator-last; do
+    # A skills opt-out installed no replacement this run, so it removes
+    # nothing either — skip means do-not-write, never remove.
+    if [ "$skip_skills" -eq 1 ]; then
+        continue
+    fi
     if [ -d "$CLAUDE_SKILLS_DIR/$cmd" ] && [ -f "$CLAUDE_COMMANDS_DIR/$cmd.md" ]; then
         rm -f "$CLAUDE_COMMANDS_DIR/$cmd.md"
         echo "Removed legacy Claude command ${CLAUDE_COMMANDS_DIR}/$cmd.md (replaced by the $cmd skill)"
@@ -1642,6 +1727,10 @@ done
 # plannotator-archive no longer ships as a skill. Remove any stale installed
 # copy from every skill scope so upgraders don't keep a dead skill around.
 for scope in "$CLAUDE_SKILLS_DIR" "$AGENTS_SKILLS_DIR" "$KIRO_SKILLS_DIR"; do
+    # A skills opt-out leaves every skill scope untouched, sweep included.
+    if [ "$skip_skills" -eq 1 ]; then
+        continue
+    fi
     # A Kiro opt-out leaves ~/.kiro entirely untouched — including this sweep.
     if [ "$scope" = "$KIRO_SKILLS_DIR" ] && [ "$skip_kiro" -eq 1 ]; then
         continue
@@ -1654,7 +1743,8 @@ done
 # The /plannotator-archive OpenCode command was removed too — sweep the stub
 # (only npm-plugin-postinstall users ever had it written here). An OpenCode
 # opt-out suspends the sweep: skip means do-not-write, never remove.
-if [ "$skip_opencode" -eq 0 ] && [ -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md" ]; then
+# A skills opt-out suspends it for the same reason.
+if [ "$skip_opencode" -eq 0 ] && [ "$skip_skills" -eq 0 ] && [ -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md" ]; then
     rm -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md"
     echo "Removed stale plannotator-archive command from ${OPENCODE_COMMANDS_DIR}/"
 fi
@@ -1664,8 +1754,9 @@ fi
 # shared-agent extras were never Codex's and are removed unconditionally.
 for skill in plannotator-review plannotator-annotate plannotator-last plannotator-compound plannotator-setup-goal; do
     # A Codex opt-out leaves $CODEX_DIR entirely untouched — including this
-    # stale-skill cleanup. Skip means do-not-write, never remove.
-    if [ "$skip_codex" -eq 1 ]; then
+    # stale-skill cleanup. Skip means do-not-write, never remove. A skills
+    # opt-out installed no replacement, so it suspends the sweep as well.
+    if [ "$skip_codex" -eq 1 ] || [ "$skip_skills" -eq 1 ]; then
         continue
     fi
     if [ -d "$STALE_CODEX_SKILLS_DIR/$skill" ]; then
@@ -1685,7 +1776,10 @@ done
 # sidecar's allow_implicit_invocation to match. Re-applied on every run
 # because installs replace the skill folders wholesale. Source files in the
 # repo never change.
-if [ -n "$invocable_choice" ] && [ "$invocable_choice" != "none" ]; then
+# A skills opt-out installed no skill copies this run, so there is nothing to
+# unlock — and rewriting a PREVIOUS run's SKILL.md would be a write the opt-out
+# promised not to make.
+if [ "$skip_skills" -eq 0 ] && [ -n "$invocable_choice" ] && [ "$invocable_choice" != "none" ]; then
     for skill in $(echo "$invocable_choice" | tr ',' ' '); do
         for scope in "$CLAUDE_SKILLS_DIR" "$AGENTS_SKILLS_DIR"; do
             skill_md="$scope/$skill/SKILL.md"
@@ -1795,6 +1889,14 @@ if [ "$skip_opencode" -eq 1 ]; then
     echo "OpenCode: integration skipped (${skip_opencode_source})."
     echo "No command stubs were written and OpenCode's plugin cache was left alone."
     echo "Re-run without the opt-out to install the command stubs."
+elif [ "$skip_skills" -eq 1 ]; then
+    # The stubs ship in the skills checkout, so this run installed none.
+    echo "Add the plugin to your opencode.json:"
+    echo ""
+    echo '  "plugin": ["@plannotator/opencode@latest"]'
+    echo ""
+    echo "Skills were skipped (${skip_skills_source}), so no /plannotator-* command"
+    echo "stubs were installed. Re-run without the opt-out to add them."
 else
     echo "Add the plugin to your opencode.json:"
     echo ""
@@ -1846,10 +1948,16 @@ elif [ "$codex_available" -eq 1 ]; then
     echo "Restart Codex Desktop or CLI after installing."
     echo "Plan review is configured through the Codex Stop hook."
     echo ""
-    echo "Core skills are installed to ~/.agents/skills/:"
-    echo "  \$plannotator-review"
-    echo "  \$plannotator-annotate <file|url|folder>"
-    echo "  \$plannotator-last"
+    if [ "$skip_skills" -eq 1 ]; then
+        echo "Skills were skipped (${skip_skills_source}), so no core skills were"
+        echo "installed to ~/.agents/skills/. The Stop hook works without them;"
+        echo "re-run without the opt-out to add \$plannotator-review and friends."
+    else
+        echo "Core skills are installed to ~/.agents/skills/:"
+        echo "  \$plannotator-review"
+        echo "  \$plannotator-annotate <file|url|folder>"
+        echo "  \$plannotator-last"
+    fi
 else
     echo "Codex was not detected. After installing Codex, rerun this installer to add"
     echo "the Stop hook."
@@ -1863,6 +1971,9 @@ if [ "$kiro_available" -eq 1 ] && [ "$skip_kiro" -eq 1 ]; then
     echo "Kiro was detected, but the integration was skipped (${skip_kiro_source})."
     echo "No files under ~/.kiro were written or removed. Re-run without the"
     echo "opt-out to add Kiro skills."
+elif [ "$kiro_available" -eq 1 ] && [ "$skip_skills" -eq 1 ]; then
+    echo "Kiro was detected, but skills were skipped (${skip_skills_source}), so no"
+    echo "Kiro skills or agent were installed. Re-run without the opt-out to add them."
 elif [ "$kiro_available" -eq 1 ]; then
     echo "Kiro skills are installed to ~/.kiro/skills/"
     echo "The Plannotator agent is installed to ~/.kiro/agents/plannotator.json"
@@ -1872,7 +1983,14 @@ else
 fi
 echo ""
 echo "=========================================="
-echo "  CLAUDE CODE USERS: YOU'RE ALL SET!"
+if [ "$skip_skills" -eq 1 ]; then
+    # Never claim the /plannotator-* commands are ready when nothing was
+    # installed — that false banner is exactly what the skills-checkout guard
+    # exists to prevent.
+    echo "  CLAUDE CODE USERS: BINARY INSTALLED"
+else
+    echo "  CLAUDE CODE USERS: YOU'RE ALL SET!"
+fi
 echo "=========================================="
 echo ""
 echo "Install the Claude Code plugin:"
@@ -1882,9 +2000,15 @@ echo ""
 echo "Upgrading from an older version? Also run /plugin marketplace update"
 echo "so the plugin drops its old plannotator:* command entries."
 echo ""
-echo "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!"
+if [ "$skip_skills" -eq 1 ]; then
+    echo "Skills were skipped (${skip_skills_source}), so the /plannotator-review,"
+    echo "/plannotator-annotate, and /plannotator-last commands are NOT installed."
+    echo "Re-run the installer without the opt-out to add them."
+else
+    echo "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!"
+fi
 
-if [ "$extras_choice" != "yes" ]; then
+if [ "$skip_skills" -eq 0 ] && [ "$extras_choice" != "yes" ]; then
     echo ""
     echo "Optional skills (compound planning, setup-goal, visual explainer):"
     echo "  npx skills add backnotprop/plannotator/apps/skills/extra --global"

@@ -14,7 +14,13 @@ param(
     [switch]$SkipCodex,
     [switch]$SkipGemini,
     [switch]$SkipKiro,
-    [switch]$SkipOpencode
+    [switch]$SkipOpencode,
+    # Same shape as the per-agent switches, but scoped to the skills/slash
+    # command sparse checkout rather than one agent's home: -SkipSkills turns
+    # the whole fetch into a no-op for every scope it writes (Claude,
+    # ~/.agents, OpenCode, Gemini, Kiro), including the extras and the
+    # skill-scope cleanup sweeps. Mirrors install.sh's --skip-skills.
+    [switch]$SkipSkills
 )
 
 $ErrorActionPreference = "Stop"
@@ -319,6 +325,9 @@ $skipCodexResolved = $false;  $skipCodexSource = ""
 $skipGeminiResolved = $false; $skipGeminiSource = ""
 $skipKiroResolved = $false;   $skipKiroSource = ""
 $skipOpencodeResolved = $false; $skipOpencodeSource = ""
+# skipInstall.skills is not an agent - it opts out of the skills/slash-command
+# checkout for every scope at once - but it shares the same three layers.
+$skipSkillsResolved = $false; $skipSkillsSource = ""
 if ($cfg -and $cfg.skipInstall) {
     if ($cfg.skipInstall.codex -is [bool] -and $cfg.skipInstall.codex) {
         $skipCodexResolved = $true; $skipCodexSource = "config skipInstall.codex"
@@ -331,6 +340,9 @@ if ($cfg -and $cfg.skipInstall) {
     }
     if ($cfg.skipInstall.opencode -is [bool] -and $cfg.skipInstall.opencode) {
         $skipOpencodeResolved = $true; $skipOpencodeSource = "config skipInstall.opencode"
+    }
+    if ($cfg.skipInstall.skills -is [bool] -and $cfg.skipInstall.skills) {
+        $skipSkillsResolved = $true; $skipSkillsSource = "config skipInstall.skills"
     }
 }
 if ($env:PLANNOTATOR_SKIP_CODEX_INSTALL -match '^(1|true|yes)$') {
@@ -353,10 +365,16 @@ if ($env:PLANNOTATOR_SKIP_OPENCODE_INSTALL -match '^(1|true|yes)$') {
 } elseif ($env:PLANNOTATOR_SKIP_OPENCODE_INSTALL -match '^(0|false|no)$') {
     $skipOpencodeResolved = $false; $skipOpencodeSource = ""
 }
+if ($env:PLANNOTATOR_SKIP_SKILLS_INSTALL -match '^(1|true|yes)$') {
+    $skipSkillsResolved = $true; $skipSkillsSource = "PLANNOTATOR_SKIP_SKILLS_INSTALL"
+} elseif ($env:PLANNOTATOR_SKIP_SKILLS_INSTALL -match '^(0|false|no)$') {
+    $skipSkillsResolved = $false; $skipSkillsSource = ""
+}
 if ($SkipCodex)  { $skipCodexResolved = $true;  $skipCodexSource = "-SkipCodex" }
 if ($SkipGemini) { $skipGeminiResolved = $true; $skipGeminiSource = "-SkipGemini" }
 if ($SkipKiro)   { $skipKiroResolved = $true;   $skipKiroSource = "-SkipKiro" }
 if ($SkipOpencode) { $skipOpencodeResolved = $true; $skipOpencodeSource = "-SkipOpencode" }
+if ($SkipSkills) { $skipSkillsResolved = $true; $skipSkillsSource = "-SkipSkills" }
 
 # Pre-flight: if verification is requested, reject tags older than the first
 # attested release before we download anything. Uses PowerShell's [version]
@@ -965,8 +983,10 @@ if ($runWizard -or $Extras -or $NoExtras -or $ModelInvocable) {
 
 # Extras install is delegated to the skills CLI (its UI picks the agents).
 # Interactive only - silent runs and CI get the printed command instead.
-# Never runs when the extras already exist.
-if (($extrasChoice -eq "yes") -and (-not $extrasPresent)) {
+# Never runs when the extras already exist. The extras ARE skills, so
+# -SkipSkills suppresses them too - a saved extras=yes preference must not
+# smuggle a skill install past the opt-out.
+if ((-not $skipSkillsResolved) -and ($extrasChoice -eq "yes") -and (-not $extrasPresent)) {
     if ($canPrompt -and (Get-Command npx -ErrorAction SilentlyContinue)) {
         Write-Host "Launching the skills CLI for the extras (pick your agents in its UI)..."
         npx skills add backnotprop/plannotator/apps/skills/extra --global
@@ -987,9 +1007,22 @@ if (($extrasChoice -eq "yes") -and (-not $extrasPresent)) {
 # /plannotator-* skills, so fail loudly instead of leaving a partial install.
 # Hook/config writing above has already run; the Pi update and Gemini config
 # below are skipped on failure and complete when the user re-runs.
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+#
+# Skills/commands opt-out (-SkipSkills / PLANNOTATOR_SKIP_SKILLS_INSTALL /
+# skipInstall.skills). HONEST reporting like the per-agent family: the skipped
+# state is announced, and skip means do-not-write - nothing already on disk in
+# any skill or command scope is fetched, replaced, or removed on this run.
+# Nothing is fetched, so git also stops being a requirement here.
+if ($skipSkillsResolved) {
+    Write-Host ""
+    Write-Host "Skills: skipped ($skipSkillsSource)."
+    Write-Host "No skills or slash commands were fetched, and none already installed"
+    Write-Host "were changed or removed. The /plannotator-* commands are NOT installed"
+    Write-Host "by this run - re-run without the opt-out to install them."
+} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "Error: git is required to install Plannotator's skills and slash commands."
     Write-Host "Install git, then run this installer again."
+    Write-Host "To install without them, re-run with -SkipSkills."
     exit 1
 }
 
@@ -1022,12 +1055,18 @@ try {
     # progress on stderr, so the clone "failed" on the message announcing it
     # started (#1162). Real failures stay detectable: the clone is verified
     # by Test-Path below, never by a throw.
-    & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$null }
+    if (-not $skipSkillsResolved) {
+        & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$null }
+    }
     # git is a native executable - it does not throw under
     # $ErrorActionPreference=Stop on non-zero exit. Guard with
     # Test-Path so we only Push-Location if the clone actually
     # produced a repo directory.
-    if (Test-Path "$skillsTmp\repo") {
+    if ($skipSkillsResolved) {
+        # Opt-out: no clone was attempted, so there is nothing to copy and
+        # $checkoutFailed stays $false - an opt-out is not a fetch failure
+        # and must not trip the guard below. Reported above the git check.
+    } elseif (Test-Path "$skillsTmp\repo") {
         Push-Location "$skillsTmp\repo"
         # Inner try/finally guarantees Pop-Location runs exactly once
         # after a successful Push-Location, regardless of whether the
@@ -1138,6 +1177,9 @@ if ($checkoutFailed) {
 # AFTER the install above guarantees a failed or skipped skill install never
 # leaves users with neither the command nor the skill.
 foreach ($cmd in @("plannotator-review", "plannotator-annotate", "plannotator-last")) {
+    # A skills opt-out installed no replacement this run, so it removes
+    # nothing either - skip means do-not-write, never remove.
+    if ($skipSkillsResolved) { continue }
     $cmdPath = Join-Path $claudeCommandsDir "$cmd.md"
     $skillPath = Join-Path $claudeSkillsDir $cmd
     if ((Test-Path $skillPath) -and (Test-Path $cmdPath)) {
@@ -1149,6 +1191,8 @@ foreach ($cmd in @("plannotator-review", "plannotator-annotate", "plannotator-la
 # plannotator-archive no longer ships as a skill. Remove any stale installed
 # copy from every skill scope so upgraders don't keep a dead skill around.
 foreach ($scope in @($claudeSkillsDir, $agentsSkillsDir, "$env:USERPROFILE\.kiro\skills")) {
+    # A skills opt-out leaves every skill scope untouched, sweep included.
+    if ($skipSkillsResolved) { continue }
     # A Kiro opt-out leaves ~/.kiro entirely untouched - including this sweep.
     if ($skipKiroResolved -and ($scope -eq "$env:USERPROFILE\.kiro\skills")) { continue }
     $staleArchivePath = Join-Path $scope "plannotator-archive"
@@ -1159,8 +1203,9 @@ foreach ($scope in @($claudeSkillsDir, $agentsSkillsDir, "$env:USERPROFILE\.kiro
 }
 # The /plannotator-archive OpenCode command was removed too - sweep the stub.
 # An OpenCode opt-out suspends the sweep: skip means do-not-write, never remove.
+# A skills opt-out suspends it for the same reason.
 $staleOpencodeArchive = "$env:USERPROFILE\.config\opencode\commands\plannotator-archive.md"
-if ((-not $skipOpencodeResolved) -and (Test-Path $staleOpencodeArchive)) {
+if ((-not $skipOpencodeResolved) -and (-not $skipSkillsResolved) -and (Test-Path $staleOpencodeArchive)) {
     Write-Host "Removing stale plannotator-archive command $staleOpencodeArchive"
     Remove-Item -Force $staleOpencodeArchive -ErrorAction SilentlyContinue
 }
@@ -1170,8 +1215,9 @@ if ((-not $skipOpencodeResolved) -and (Test-Path $staleOpencodeArchive)) {
 # shared-agent extras were never Codex's and are removed unconditionally.
 foreach ($skill in @("plannotator-review", "plannotator-annotate", "plannotator-last", "plannotator-compound", "plannotator-setup-goal")) {
     # A Codex opt-out leaves the Codex home entirely untouched - including
-    # this stale-skill cleanup. Skip means do-not-write, never remove.
-    if ($skipCodexResolved) { continue }
+    # this stale-skill cleanup. Skip means do-not-write, never remove. A
+    # skills opt-out installed no replacement, so it suspends the sweep too.
+    if ($skipCodexResolved -or $skipSkillsResolved) { continue }
     $staleSkillPath = Join-Path $staleCodexSkillsDir $skill
     if (Test-Path $staleSkillPath) {
         $isCore = $skill -in @("plannotator-review", "plannotator-annotate", "plannotator-last")
@@ -1187,7 +1233,10 @@ foreach ($skill in @("plannotator-review", "plannotator-annotate", "plannotator-
 # sidecar's allow_implicit_invocation to match. Re-applied on every run
 # because installs replace the skill folders wholesale. Repo sources never
 # change.
-if ($invocableChoice -and ($invocableChoice -ne "none")) {
+# A skills opt-out installed no skill copies this run, so there is nothing to
+# unlock - and rewriting a PREVIOUS run's SKILL.md would be a write the opt-out
+# promised not to make.
+if ((-not $skipSkillsResolved) -and $invocableChoice -and ($invocableChoice -ne "none")) {
     foreach ($skill in ($invocableChoice -split ",")) {
         foreach ($scope in @($claudeSkillsDir, $agentsSkillsDir)) {
             $skillMd = Join-Path $scope (Join-Path $skill "SKILL.md")
@@ -1308,6 +1357,14 @@ if ($skipOpencodeResolved) {
     Write-Host "OpenCode: integration skipped ($skipOpencodeSource)."
     Write-Host "No command stubs were written and OpenCode's plugin cache was left alone."
     Write-Host "Re-run without the opt-out to install the command stubs."
+} elseif ($skipSkillsResolved) {
+    # The stubs ship in the skills checkout, so this run installed none.
+    Write-Host "Add the plugin to your opencode.json:"
+    Write-Host ""
+    Write-Host '  "plugin": ["@plannotator/opencode@latest"]'
+    Write-Host ""
+    Write-Host "Skills were skipped ($skipSkillsSource), so no /plannotator-* command"
+    Write-Host "stubs were installed. Re-run without the opt-out to add them."
 } else {
     Write-Host "Add the plugin to your opencode.json:"
     Write-Host ""
@@ -1332,6 +1389,9 @@ if ($kiroAvailable -and $skipKiroResolved) {
     Write-Host "Kiro was detected, but the integration was skipped ($skipKiroSource)."
     Write-Host "No files under $env:USERPROFILE\.kiro were written or removed. Re-run"
     Write-Host "without the opt-out to add Kiro skills."
+} elseif ($kiroAvailable -and $skipSkillsResolved) {
+    Write-Host "Kiro was detected, but skills were skipped ($skipSkillsSource), so no"
+    Write-Host "Kiro skills or agent were installed. Re-run without the opt-out to add them."
 } elseif ($kiroAvailable) {
     Write-Host "Kiro skills are installed to $env:USERPROFILE\.kiro\skills\"
     Write-Host "The Plannotator agent is installed to $env:USERPROFILE\.kiro\agents\plannotator.json"
@@ -1341,7 +1401,14 @@ if ($kiroAvailable -and $skipKiroResolved) {
 }
 Write-Host ""
 Write-Host "=========================================="
-Write-Host "  CLAUDE CODE USERS: YOU ARE ALL SET!"
+if ($skipSkillsResolved) {
+    # Never claim the /plannotator-* commands are ready when nothing was
+    # installed - that false banner is exactly what the skills-checkout
+    # guard exists to prevent.
+    Write-Host "  CLAUDE CODE USERS: BINARY INSTALLED"
+} else {
+    Write-Host "  CLAUDE CODE USERS: YOU ARE ALL SET!"
+}
 Write-Host "=========================================="
 Write-Host ""
 Write-Host "Install the Claude Code plugin:"
@@ -1351,9 +1418,15 @@ Write-Host ""
 Write-Host "Upgrading from an older version? Also run /plugin marketplace update"
 Write-Host "so the plugin drops its old plannotator:* command entries."
 Write-Host ""
-Write-Host "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!"
+if ($skipSkillsResolved) {
+    Write-Host "Skills were skipped ($skipSkillsSource), so the /plannotator-review,"
+    Write-Host "/plannotator-annotate, and /plannotator-last commands are NOT installed."
+    Write-Host "Re-run the installer without the opt-out to add them."
+} else {
+    Write-Host "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!"
+}
 
-if ($extrasChoice -ne "yes") {
+if ((-not $skipSkillsResolved) -and ($extrasChoice -ne "yes")) {
     Write-Host ""
     Write-Host "Optional skills (compound planning, setup-goal, visual explainer):"
     Write-Host "  npx skills add backnotprop/plannotator/apps/skills/extra --global"

@@ -104,6 +104,25 @@ Precedence: flag over environment variable over config file.
 
 </details>
 
+<details>
+<summary><strong>Skipping the skills and slash commands</strong></summary>
+
+The `/plannotator-*` skills and slash commands are fetched with a sparse `git clone` of the release tag. `--skip-skills` turns that fetch into a no-op: nothing is written to `~/.claude/skills`, `~/.agents/skills`, the OpenCode or Gemini command directories, or `~/.kiro`, the extras are not offered, and the skill-scope cleanup sweeps stay suspended. The binary, hooks, and per-agent config still install, and git stops being a hard requirement. Use it where the tag being installed cannot be fetched from GitHub, or where you manage the skills yourself.
+
+```bash
+curl -fsSL https://plannotator.ai/install.sh | bash -s -- --skip-skills
+```
+
+PowerShell: `-SkipSkills`. Windows CMD: `--skip-skills`. For unattended runs set `PLANNOTATOR_SKIP_SKILLS_INSTALL=1`, or persist it:
+
+```json
+{ "skipInstall": { "skills": true } }
+```
+
+Same precedence: flag over environment variable over config file. The installer reports `Skills: skipped (...)` and stops claiming the `/plannotator-*` commands are ready, so a skipped run is never mistaken for a complete one.
+
+</details>
+
 ## Uninstall
 
 `plannotator uninstall` removes recognized installed components while

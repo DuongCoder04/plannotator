@@ -746,12 +746,21 @@ jobs:
           SH
           chmod +x "$fake_bin/curl"
 
+          # --skip-skills: this smoke installs a SYNTHETIC v9.9.9. The fake curl
+          # above serves the freshly built binary for any URL, but the skills and
+          # slash commands come from `git clone --branch v9.9.9` against real
+          # github.com, where that tag does not and cannot exist. The clone has
+          # always failed here; it only went unnoticed while a broken guard let
+          # the installer exit 0 anyway. This job checks the Codex hook config,
+          # not the skills, so opt out of the checkout rather than teach the test
+          # to ignore a real error. Both call sites below run through this
+          # function, so the flag applies to each of them.
           run_installer() {
             HOME="$tmp_home" \
               PATH="$fake_bin:$PATH" \
               SHELL=/bin/bash \
               ARTIFACT="$artifact" \
-              bash scripts/install.sh --version v9.9.9 --skip-attestation
+              bash scripts/install.sh --version v9.9.9 --skip-attestation --skip-skills
           }
 
           run_installer

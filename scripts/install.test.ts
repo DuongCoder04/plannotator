@@ -285,7 +285,12 @@ describe("install.sh", () => {
     // Missing git hard-fails the install, but the hook/config writes that
     // don't need git (plugin hooks, Codex hook config) must already have run
     // by then so a re-run after installing git completes the rest.
-    const gitGateIndex = script.indexOf("if ! command -v git &>/dev/null; then");
+    // The gate is now conditional: git is a hard requirement only when the
+    // skills checkout actually runs (see the --skip-skills test below), but
+    // the ordering invariant this test guards is unchanged.
+    const gitGateIndex = script.indexOf(
+      'if [ "$skip_skills" -eq 0 ] && ! command -v git &>/dev/null; then',
+    );
     expect(gitGateIndex).toBeGreaterThan(0);
     const pluginHooksIndex = script.indexOf('cat > "$PLUGIN_HOOKS"');
     const codexHooksIndex = script.indexOf('enable_codex_hooks_config || true');
@@ -381,7 +386,9 @@ describe("install.sh", () => {
     expect(script).toContain('"\\"$_agent\\"[[:space:]]*:[[:space:]]*true"');
     expect(script).toContain('"\\"$_agent\\"[[:space:]]*:[[:space:]]*false"');
     expect(script).toContain("continue # explicit false is a veto, never a skip");
-    expect(script).toContain("for _agent in codex gemini kiro opencode; do");
+    // skills rides the same loop: not an agent, but the same three layers
+    // and the same skipInstall key region.
+    expect(script).toContain("for _agent in codex gemini kiro opencode skills; do");
     // The old whole-file grep form is gone.
     expect(script).not.toContain('grep -q \'"codex"[[:space:]]*:[[:space:]]*true\' "$_config_dir/config.json"');
     // Precedence by textual layering (later assignment wins): config grep,
@@ -410,7 +417,10 @@ describe("install.sh", () => {
     expect(script).toContain("Kiro was detected, but the integration was skipped");
     // Skip means do-not-write, never remove: even plannotator's own
     // stale-skill cleanup in the skipped agent's home is suspended.
-    expect(script).toContain('if [ "$skip_codex" -eq 1 ]; then\n        continue');
+    // (A skills opt-out suspends the same sweep, hence the || arm.)
+    expect(script).toContain(
+      'if [ "$skip_codex" -eq 1 ] || [ "$skip_skills" -eq 1 ]; then\n        continue',
+    );
     expect(script).toContain('[ "$scope" = "$KIRO_SKILLS_DIR" ] && [ "$skip_kiro" -eq 1 ]');
     // The skip branch must not gain any removal command.
     const skipBlock = script.slice(
@@ -421,6 +431,83 @@ describe("install.sh", () => {
     expect(skipBlock).not.toContain("rm ");
     expect(skipBlock).not.toContain("mkdir");
     expect(skipBlock).not.toContain("cat >");
+  });
+
+  test("--skip-skills: flag, env var, config key, precedence (#1201)", () => {
+    // Same three-layer shape as the per-agent family, but scoped to the
+    // skills/slash-command checkout rather than one agent's home.
+    expect(script).toContain("--skip-skills)");
+    expect(script).toContain("SKIP_SKILLS_FLAG=0");
+    // Env var follows the existing PLANNOTATOR_SKIP_*_INSTALL naming.
+    expect(script).toContain('case "${PLANNOTATOR_SKIP_SKILLS_INSTALL:-}" in');
+    // Config layer rides the shared skipInstall object walk, so the same
+    // token check and explicit-false veto apply to skipInstall.skills.
+    expect(script).toContain('skip_skills_source="config skipInstall.skills"');
+    // Precedence by textual layering (later assignment wins): config, then
+    // env var, then flag - matching skip_codex.
+    const configIdx = script.indexOf('skip_skills_source="config skipInstall.skills"');
+    const envIdx = script.indexOf('skip_skills_source="PLANNOTATOR_SKIP_SKILLS_INSTALL"');
+    const flagIdx = script.indexOf('skip_skills_source="--skip-skills"');
+    expect(configIdx).toBeGreaterThan(0);
+    expect(envIdx).toBeGreaterThan(configIdx);
+    expect(flagIdx).toBeGreaterThan(envIdx);
+    // Advertised in the usage text alongside the per-agent opt-outs.
+    expect(script).toContain("[--skip-kiro] [--skip-opencode] [--skip-skills]");
+    expect(script).toContain("PLANNOTATOR_SKIP_SKILLS_INSTALL; config key:");
+  });
+
+  test("--skip-skills bails before the clone without tripping the guard (#1201)", () => {
+    // The bail sits INSIDE the checkout subshell but BEFORE the clone, and
+    // exits 0 - an opt-out is not a fetch failure, so checkout_failed stays 0.
+    const subshellIdx = script.indexOf("checkout_failed=0");
+    const skipExit = script.indexOf('    if [ "$skip_skills" -eq 1 ]; then\n        exit 0');
+    const cloneIdx = script.indexOf("git clone --depth 1 --filter=blob:none --sparse");
+    expect(subshellIdx).toBeGreaterThan(0);
+    expect(skipExit).toBeGreaterThan(subshellIdx);
+    expect(cloneIdx).toBeGreaterThan(skipExit);
+    // #1201's guard is untouched: a REAL fetch failure still exits 1 with the
+    // fetch error, which is the whole point of the commit this rides on.
+    expect(script).toContain('if [ "${checkout_failed:-0}" -eq 1 ]; then');
+    expect(script).toContain(
+      "Error: unable to fetch ${REPO} at ${latest_tag} (network or git error).",
+    );
+    // git stops being a hard requirement when nothing is fetched, and the
+    // hard-fail names the escape hatch.
+    expect(script).toContain("To install without them, re-run with --skip-skills.");
+  });
+
+  test("--skip-skills reports honestly and never claims the commands are ready (#1201)", () => {
+    expect(script).toContain('echo "Skills: skipped (${skip_skills_source})."');
+    // A false "YOU'RE ALL SET!" over an empty skills dir is exactly what the
+    // checkout guard exists to prevent, so the header changes too.
+    expect(script).toContain('echo "  CLAUDE CODE USERS: BINARY INSTALLED"');
+    // The "commands are ready" line is now the else arm of a skip check, so
+    // it cannot print when nothing was installed.
+    const readyIdx = script.indexOf(
+      "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!",
+    );
+    const bannerGateIdx = script.lastIndexOf(
+      'if [ "$skip_skills" -eq 1 ]; then',
+      readyIdx,
+    );
+    expect(readyIdx).toBeGreaterThan(0);
+    expect(bannerGateIdx).toBeGreaterThan(0);
+    expect(
+      script.slice(bannerGateIdx, readyIdx),
+    ).toContain("commands are NOT installed");
+    // The extras ARE skills, so a saved extras=yes cannot smuggle an install
+    // past the opt-out.
+    expect(script).toContain(
+      'if [ "$skip_skills" -eq 0 ] && [ "$extras_choice" = "yes" ] && [ "$extras_present" -eq 0 ]; then',
+    );
+    // Skip means do-not-write: the model-invocation rewrite and the
+    // skill-scope sweeps are all suspended, never partially applied.
+    expect(script).toContain(
+      'if [ "$skip_skills" -eq 0 ] && [ -n "$invocable_choice" ] && [ "$invocable_choice" != "none" ]; then',
+    );
+    expect(script).toContain(
+      'if [ "$skip_opencode" -eq 0 ] && [ "$skip_skills" -eq 0 ] && [ -f "$OPENCODE_COMMANDS_DIR/plannotator-archive.md" ]; then',
+    );
   });
 });
 
@@ -643,11 +730,59 @@ describe("install.ps1", () => {
     expect(script).toContain("Kiro was detected, but the integration was skipped");
     // Skip suspends even plannotator's own cleanup inside the skipped
     // agent's home (do-not-write, never remove).
-    expect(script).toContain("if ($skipCodexResolved) { continue }");
+    // (A skills opt-out suspends the same sweep, hence the -or arm.)
+    expect(script).toContain("if ($skipCodexResolved -or $skipSkillsResolved) { continue }");
     expect(script).toContain('if ($skipKiroResolved -and ($scope -eq "$env:USERPROFILE\\.kiro\\skills")) { continue }');
     // Gated install sites for the mirrored opt-outs.
     expect(script).toContain("-not $skipKiroResolved");
     expect(script).toContain("-not $skipGeminiResolved");
+  });
+
+  test("-SkipSkills: switch, env var, config key, precedence (#1201)", () => {
+    expect(script).toContain("[switch]$SkipSkills");
+    expect(script).toContain("PLANNOTATOR_SKIP_SKILLS_INSTALL");
+    expect(script).toContain("$cfg.skipInstall.skills -is [bool]");
+    // Precedence by textual layering (later assignment wins): config, then
+    // env var, then switch - matching skipCodex.
+    const configIdx = script.indexOf('$skipSkillsSource = "config skipInstall.skills"');
+    const envIdx = script.indexOf('$skipSkillsSource = "PLANNOTATOR_SKIP_SKILLS_INSTALL"');
+    const flagIdx = script.indexOf('$skipSkillsSource = "-SkipSkills"');
+    expect(configIdx).toBeGreaterThan(0);
+    expect(envIdx).toBeGreaterThan(configIdx);
+    expect(flagIdx).toBeGreaterThan(envIdx);
+  });
+
+  test("-SkipSkills skips the clone without tripping the guard (#1201)", () => {
+    // No clone is attempted, and the skip arm precedes the Test-Path leg so
+    // $checkoutFailed stays $false: an opt-out is not a fetch failure.
+    expect(script).toContain("if (-not $skipSkillsResolved) {");
+    const skipArm = script.indexOf('if ($skipSkillsResolved) {\n        # Opt-out: no clone was attempted');
+    const elseIfTestPath = script.indexOf('} elseif (Test-Path "$skillsTmp\\repo") {');
+    expect(skipArm).toBeGreaterThan(0);
+    expect(elseIfTestPath).toBeGreaterThan(skipArm);
+    // The fetch-failure guard is untouched.
+    expect(script).toContain("if ($checkoutFailed) {");
+    expect(script).toContain("Error: unable to fetch $repo at $latestTag (network or git error).");
+    // git stops being a hard requirement, and the hard-fail names the flag.
+    expect(script).toContain("} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {");
+    expect(script).toContain("To install without them, re-run with -SkipSkills.");
+  });
+
+  test("-SkipSkills reports honestly and suspends every skill write (#1201)", () => {
+    expect(script).toContain('Write-Host "Skills: skipped ($skipSkillsSource)."');
+    expect(script).toContain('Write-Host "  CLAUDE CODE USERS: BINARY INSTALLED"');
+    // Extras are skills too, so the opt-out covers them.
+    expect(script).toContain(
+      'if ((-not $skipSkillsResolved) -and ($extrasChoice -eq "yes") -and (-not $extrasPresent)) {',
+    );
+    // Do-not-write: model-invocation rewrite and the stale-stub sweep are
+    // both suspended rather than partially applied.
+    expect(script).toContain(
+      '(-not $skipSkillsResolved) -and $invocableChoice -and ($invocableChoice -ne "none")',
+    );
+    expect(script).toContain(
+      "(-not $skipOpencodeResolved) -and (-not $skipSkillsResolved) -and (Test-Path $staleOpencodeArchive)",
+    );
   });
 });
 
@@ -859,7 +994,7 @@ describe("install.cmd", () => {
     // findstr - so a "codex": true under some OTHER key can never opt
     // anyone out and an explicit false inside skipInstall is honored.
     expect(script).toContain("$c.skipInstall.$k");
-    expect(script).toContain("@('codex','gemini','kiro','opencode')");
+    expect(script).toContain("@('codex','gemini','kiro','opencode','skills')");
     expect(script).toContain("$v -is [bool] -and $v");
     expect(script).toContain("PLN_CONFIG_JSON");
     expect(script).toContain("skipInstall.codex");
@@ -895,11 +1030,68 @@ describe("install.cmd", () => {
     expect(script).toContain("Kiro was detected, but the integration was skipped");
     // Skip suspends even plannotator's own cleanup inside the skipped
     // agent's home (do-not-write, never remove).
-    expect(script).toContain('if "!SKIP_CODEX!"=="0" if exist "!STALE_CODEX_SKILLS_DIR!\\%%S"');
+    // (A skills opt-out suspends the same sweep, hence the extra guard.)
+    expect(script).toContain(
+      'if "!SKIP_CODEX!"=="0" if "!SKIP_SKILLS!"=="0" if exist "!STALE_CODEX_SKILLS_DIR!\\%%S"',
+    );
     expect(script).toContain('if /i "%%~D"=="!KIRO_SKILLS_DIR!" if "!SKIP_KIRO!"=="1" set "SCOPE_OK=0"');
     // Gated install sites for the mirrored opt-outs.
     expect(script).toContain('if "!KIRO_AVAILABLE!"=="1" if "!SKIP_KIRO!"=="0" if exist "apps\\kiro-cli\\skills"');
     expect(script).toContain('if exist "%USERPROFILE%\\.gemini" if "!SKIP_GEMINI!"=="0"');
+  });
+
+  test("--skip-skills: flag, env var, config key, precedence (#1201)", () => {
+    expect(script).toContain('if /i "%~1"=="--skip-skills"');
+    expect(script).toContain('set "SKIP_SKILLS_FLAG=0"');
+    expect(script).toContain("PLANNOTATOR_SKIP_SKILLS_INSTALL");
+    expect(script).toContain("skipInstall.skills");
+    // Precedence by textual layering (later assignment wins): config, then
+    // env var, then flag - matching SKIP_CODEX.
+    const configIdx = script.indexOf('set "SKIP_SKILLS_SOURCE=config skipInstall.skills"');
+    const envIdx = script.indexOf('set "SKIP_SKILLS_SOURCE=PLANNOTATOR_SKIP_SKILLS_INSTALL"');
+    const flagIdx = script.indexOf('set "SKIP_SKILLS_SOURCE=--skip-skills"');
+    expect(configIdx).toBeGreaterThan(0);
+    expect(envIdx).toBeGreaterThan(configIdx);
+    expect(flagIdx).toBeGreaterThan(envIdx);
+    // Advertised in the usage text alongside the per-agent opt-outs.
+    expect(script).toContain("[--skip-opencode] [--skip-skills]");
+  });
+
+  test("--skip-skills jumps past the clone without tripping the guard (#1201)", () => {
+    // The jump lands after the clone/copy block but before the cleanup, so
+    // CHECKOUT_FAILED stays 0: an opt-out is not a fetch failure.
+    const gotoIdx = script.indexOf('if "!SKIP_SKILLS!"=="1" goto skills_checkout_done');
+    const cloneIdx = script.indexOf("git clone --depth 1 --filter=blob:none --sparse");
+    const labelIdx = script.indexOf(":skills_checkout_done");
+    const guardIdx = script.indexOf('if "!CHECKOUT_FAILED!"=="1" (');
+    expect(gotoIdx).toBeGreaterThan(0);
+    expect(cloneIdx).toBeGreaterThan(gotoIdx);
+    expect(labelIdx).toBeGreaterThan(cloneIdx);
+    expect(guardIdx).toBeGreaterThan(labelIdx);
+    // The fetch-failure guard is untouched.
+    expect(script).toContain("echo Error: unable to fetch !REPO! at !TAG! ^(network or git error^). 1>&2");
+    // git stops being a hard requirement, and the hard-fail names the flag.
+    expect(script).toContain("echo To install without them, re-run with --skip-skills. 1>&2");
+  });
+
+  test("--skip-skills reports honestly and suspends every skill write (#1201)", () => {
+    expect(script).toContain("echo Skills: skipped ^(!SKIP_SKILLS_SOURCE!^).");
+    // The "skills are ready" line must not print when nothing was installed.
+    const readyIdx = script.indexOf(
+      "echo The /plannotator-review, /plannotator-annotate, and /plannotator-last skills are ready to use!",
+    );
+    const bannerGateIdx = script.lastIndexOf('if "!SKIP_SKILLS!"=="1" (', readyIdx);
+    expect(readyIdx).toBeGreaterThan(0);
+    expect(bannerGateIdx).toBeGreaterThan(0);
+    expect(script.slice(bannerGateIdx, readyIdx)).toContain("skills are NOT installed.");
+    // Extras are skills too, and the do-not-write sweeps are suspended.
+    expect(script).toContain(
+      'if "!SKIP_SKILLS!"=="0" if "!EXTRAS_CHOICE!"=="yes" if "!EXTRAS_PRESENT!"=="0" (',
+    );
+    expect(script).toContain(
+      'if "!SKIP_SKILLS!"=="0" if defined INVOCABLE_CHOICE if not "!INVOCABLE_CHOICE!"=="none" (',
+    );
+    expect(script).toContain('if "!SKIP_SKILLS!"=="1" set "SCOPE_OK=0"');
   });
 });
 
