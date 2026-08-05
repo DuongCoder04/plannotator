@@ -45,7 +45,7 @@
     "@plannotator/server": "workspace:*",
     "@plannotator/shared": "workspace:*"
   },
-  "peerDependencies": {
+  "engines": {
     "bun": ">=1.0.0"
   }
 }

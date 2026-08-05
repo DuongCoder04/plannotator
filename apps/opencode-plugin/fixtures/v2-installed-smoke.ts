@@ -8,8 +8,8 @@ if (!opencodeBin || !pluginTarball) {
   throw new Error("Usage: bun fixtures/v2-installed-smoke.ts <opencode2-bin> <packed-plugin.tgz>");
 }
 
-// OpenCode 2 installs the configured plugin (and its whole dependency closure, which the
-// `bun` peer dependency makes large) through the throwaway registry below before the plugin
+// OpenCode 2 installs the configured plugin through the throwaway registry below before the
+// plugin
 // can appear in /api/plugin, and it answers /api/health only once the server has finished
 // booting. On a warm macOS dev box that is ~0.8s to healthy and ~6s to activated; on a cold
 // Linux CI runner the measured numbers are ~9s and ~47s. These budgets are sized for the slow

@@ -69,9 +69,6 @@
         "@plannotator/server": "workspace:*",
         "@plannotator/shared": "workspace:*",
       },
-      "peerDependencies": {
-        "bun": ">=1.0.0",
-      },
     },
     "apps/paste-service": {
       "name": "@plannotator/paste-service",
