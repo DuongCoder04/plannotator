@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import {
+  isOversizedReviewStubPatch,
+  OVERSIZED_REVIEW_STUB_LIMIT_LABEL,
+} from "./diff-paths";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -390,6 +394,29 @@ describe("review-core", () => {
       deletions: 0,
     });
     expect(isBinaryPatchFile(result.patch, "large build.bin")).toBe(true);
+    // Marked so the UI can say WHY the card is empty. A genuine binary file
+    // produces the same `Binary files ... differ` line, so the marker is the
+    // only thing that tells the two apart.
+    expect(isOversizedReviewStubPatch(result.patch)).toBe(true);
+  });
+
+  test("the oversized-stub marker is absent from ordinary and genuinely binary diffs", async () => {
+    const repoDir = initRepo();
+    const runtime = makeRuntime(repoDir);
+    writeFileSync(join(repoDir, "notes.txt"), "hello\n", "utf-8");
+    // NUL bytes, well under the cap: git calls it binary on its own merits.
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 2, 0, 3]));
+
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("Binary files");
+    expect(isOversizedReviewStubPatch(result.patch)).toBe(false);
+  });
+
+  test("the UI's size-cap label matches the enforced byte cap", () => {
+    expect(OVERSIZED_REVIEW_STUB_LIMIT_LABEL).toBe(
+      `${MAX_REVIEW_FILE_CONTENT_BYTES / (1024 * 1024)} MB`,
+    );
   });
 
   test("large tracked text files render as binary in staged and working-tree diffs (#1120)", async () => {

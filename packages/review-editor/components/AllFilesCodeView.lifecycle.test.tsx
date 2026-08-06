@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
 import React, { act, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { DiffFile } from '../types';
@@ -6,6 +6,16 @@ import type { DiffFile } from '../types';
 let codeViewMounts = 0;
 let codeViewUnmounts = 0;
 let scrollTargets: Array<Record<string, unknown>> = [];
+
+// Captured BEFORE the mocks below replace the specifiers, so this file can put
+// the real modules back when it is done. `mock.module` is process global and
+// bun does not unwind it at file boundaries: without this, every later file in
+// the same run sees this file's stubs — a `getSingularPatch` with no hunks and
+// a `processFile` that returns null. That leaked into
+// DiffViewer.fullContentSwap.test.tsx on the Linux runner (and not on macOS),
+// where it presented as a diff that silently never rendered.
+const realPierreDiffs = await import('@pierre/diffs');
+const realPierreDiffsReact = await import('@pierre/diffs/react');
 
 mock.module('../workerPool', () => ({
   useIsWorkerPoolReadyOrDisabled: () => true,
@@ -136,6 +146,14 @@ afterEach(async () => {
   codeViewMounts = 0;
   codeViewUnmounts = 0;
   scrollTargets = [];
+});
+
+// Hand the real @pierre/diffs back to the process. Only the two library
+// specifiers are restored: the sibling-module mocks above name paths relative
+// to THIS file, so they cannot be reached by another file's imports.
+afterAll(() => {
+  mock.module('@pierre/diffs', () => realPierreDiffs);
+  mock.module('@pierre/diffs/react', () => realPierreDiffsReact);
 });
 
 describe('AllFilesCodeView guide mount state', () => {

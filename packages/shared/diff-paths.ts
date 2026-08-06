@@ -180,6 +180,36 @@ export function parseDiffFilePathLines(lines: string[]): DiffPathPair {
   return { oldPath, newPath };
 }
 
+/**
+ * Extended-header line the review core injects into the display-only stub it
+ * emits for a file whose bytes exceed the review size cap. Without it the stub
+ * is indistinguishable from a genuine binary file, and the UI could only show
+ * a header-only card with no counts and no explanation — which reads as broken.
+ *
+ * Lives here (rather than in review-core) so the browser bundle can detect the
+ * shape without pulling the whole node-facing review core in. Both server
+ * runtimes get it from review-core, which is vendored to Pi alongside this file.
+ *
+ * The `#` prefix is what makes detection unambiguous: diff CONTENT lines are
+ * always prefixed with `+`, `-`, or a space, so a bare match on this exact line
+ * can only come from the extended header we wrote. Git ignores unknown
+ * extended-header lines, and @pierre/diffs parses the stub identically with or
+ * without it.
+ */
+export const OVERSIZED_REVIEW_STUB_MARKER = "#plannotator-oversized-file";
+
+/**
+ * Human-readable form of the cap for UI copy. The authoritative byte value is
+ * `MAX_REVIEW_FILE_CONTENT_BYTES` in review-core, which is node-facing; a
+ * review-core test asserts the two never drift.
+ */
+export const OVERSIZED_REVIEW_STUB_LIMIT_LABEL = "5 MB";
+
+/** True when `patch` is one of our oversized-file stubs (see the marker above). */
+export function isOversizedReviewStubPatch(patch: string): boolean {
+  return patch.split("\n").some((line) => line === OVERSIZED_REVIEW_STUB_MARKER);
+}
+
 export function parseDiffMetadataPathLines(lines: string[]): DiffPathPair {
   let oldPath: string | undefined;
   let newPath: string | undefined;

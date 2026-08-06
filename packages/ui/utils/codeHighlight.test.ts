@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
-import { codeBlockClassName, CODE_BLOCK_CLASS, applyHighlight, highlightToHtml } from './codeHighlight';
+import {
+  codeBlockClassName,
+  CODE_BLOCK_CLASS,
+  applyHighlight,
+  highlightToHtml,
+  __resetCodeHighlightCacheForTests,
+} from './codeHighlight';
 import { resolveFenceTheme, resolveSyntaxTheme, DEFAULT_SYNTAX_THEME, SHIKI_THEME_MAP } from './syntaxTheme';
 
 const hasDom = typeof document !== 'undefined';
@@ -48,6 +54,11 @@ describe('fence theme resolution', () => {
 
 describe('highlightToHtml', () => {
   test('returns null until a grammar is attached, so callers render plain', () => {
+    // The attachment cache is MODULE state shared with every other test file in
+    // this bun process, and any file that renders a typescript fence attaches
+    // that grammar for good. Reset it so this test asserts the pre-attachment
+    // CONTRACT rather than whichever files happened to run first.
+    __resetCodeHighlightCacheForTests();
     expect(highlightToHtml('const x = 1', 'typescript', 'pierre-dark')).toBeNull();
   });
 });

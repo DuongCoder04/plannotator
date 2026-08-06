@@ -13,6 +13,7 @@ import {
   parseDiffFilePathLines,
   parseDiffGitHeader,
   parseDiffMetadataPathLines,
+  OVERSIZED_REVIEW_STUB_MARKER,
 } from "./diff-paths";
 
 export const JJ_TRUNK_REVSET = "trunk()";
@@ -911,8 +912,11 @@ function buildOversizedTrackedStub(entry: OversizedTrackedDiffEntry): string {
   const newToken = entry.newPath ? formatPatchPathToken("b", entry.newPath) : "/dev/null";
   const oldId = isNullObjectId(entry.oldObjectId) ? "000000000000" : entry.oldObjectId.slice(0, 12);
   const newId = isNullObjectId(entry.newObjectId) ? "000000000000" : entry.newObjectId.slice(0, 12);
+  // The marker tells the UI this is OUR size-cap stub rather than a real
+  // binary file, so the card can say why it has no contents.
   const lines = [
     `diff --git ${headerOldToken} ${headerNewToken}`,
+    OVERSIZED_REVIEW_STUB_MARKER,
   ];
 
   if (!entry.oldPath) lines.push(`new file mode ${entry.newMode}`);
@@ -1179,6 +1183,9 @@ async function getUntrackedFileDiffs(
         const newToken = formatPatchPathToken("b", file);
         return [
           `diff --git ${oldToken} ${newToken}`,
+          // Same size-cap marker the tracked stub carries (see
+          // buildOversizedTrackedStub) so the UI explains both the same way.
+          OVERSIZED_REVIEW_STUB_MARKER,
           `new file mode ${mode}`,
           `Binary files /dev/null and ${newToken} differ`,
           "",

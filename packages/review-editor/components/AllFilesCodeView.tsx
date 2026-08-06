@@ -29,6 +29,9 @@ import { buildFileTree, getVisualFileOrder } from '../utils/buildFileTree';
 import { buildCodeNavRequest } from '../utils/buildCodeNavRequest';
 import { getDiffSelection, getLineNumberFromNode, getSideFromNode } from '../utils/diffSelection';
 import { isContentConsistentWithPatch } from '../utils/patchConsistency';
+import { hashString } from '../utils/hashString';
+import { isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
+import { OversizedFileNotice } from './OversizedFileNotice';
 import { ToolbarHost, type ToolbarHostHandle } from './ToolbarHost';
 import { FileHeader } from './FileHeader';
 import { EditSessionHud } from './EditSessionHud';
@@ -305,18 +308,6 @@ interface ItemIdentity {
   /** Maps a CodeView item id to its originating DiffFile. Keyed by the unique
    * item id (not path) so duplicate display paths resolve to the correct file. */
   itemIdToFile: Map<string, DiffFile>;
-}
-
-// Cheap content hash (djb2 xor variant) for diff-change detection. Replaces
-// patch-LENGTH proxies: a same-length different-content patch set must still
-// remount CodeView (fileSetKey) and must not collide in highlight caches
-// (cacheKey). Not cryptographic — collision odds for this purpose are fine.
-function hashString(value: string): string {
-  let hash = 5381;
-  for (let i = 0; i < value.length; i++) {
-    hash = ((hash * 33) ^ value.charCodeAt(i)) >>> 0;
-  }
-  return hash.toString(36);
 }
 
 // The first rendered line of a file's diff, used to anchor file-scoped comments.
@@ -2184,6 +2175,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         }
         onCollapseToggle={() => toggleItemCollapsed(item.id)}
         />
+        {/* Files over the review size cap arrive as a contents-free stub, so
+            Pierre renders nothing below the header. Explain why rather than
+            leaving a bare header that reads as a broken diff. */}
+        {!collapsed && isOversizedReviewStubPatch(file.patch) && (
+          <OversizedFileNotice onHeightChange={() => refreshItem(item.id)} />
+        )}
         {/* EXPERIMENTAL edit-session HUD: session controls + state in a slim
             strip below the header, above the file content. Appears/disappears
             with session start/end, which both go through a version-bumped
