@@ -1,4 +1,4 @@
-// Allow side-effect CSS imports (highlight.js themes, overlayscrollbars, etc.)
+// Allow side-effect CSS imports (overlayscrollbars, fontsource, etc.)
 declare module '*.css';
 
 // Image asset imports (sprites, screenshots). Consumers compiling this shipped

@@ -3,50 +3,14 @@ import type { DiffLineBgIntensity } from '@plannotator/shared/config';
 import { useTheme } from '@plannotator/ui/components/ThemeProvider';
 import { useConfigValue } from '@plannotator/ui/config';
 
-export const SHIKI_THEME_MAP: Record<string, { dark: string | null; light: string | null }> = {
-  'andromeeda': { dark: 'andromeeda', light: null },
-  'aurora-x': { dark: 'aurora-x', light: null },
-  'ayu-dark': { dark: 'ayu-dark', light: null },
-  'catppuccin': { dark: 'catppuccin-mocha', light: 'catppuccin-latte' },
-  'colorblind': { dark: 'pierre-dark-protanopia-deuteranopia', light: 'pierre-light-protanopia-deuteranopia' },
-  'dark-plus': { dark: 'dark-plus', light: 'light-plus' },
-  'dracula': { dark: 'dracula', light: null },
-  'everforest': { dark: 'everforest-dark', light: 'everforest-light' },
-  'everforest-hard': { dark: 'everforest-dark', light: 'everforest-light' },
-  'everforest-soft': { dark: 'everforest-dark', light: 'everforest-light' },
-  'github': { dark: 'github-dark', light: 'github-light' },
-  'gruvbox': { dark: 'gruvbox-dark-medium', light: 'gruvbox-light-medium' },
-  'houston': { dark: 'houston', light: null },
-  'kanagawa-dragon': { dark: 'kanagawa-dragon', light: null },
-  'kanagawa-lotus': { dark: null, light: 'kanagawa-lotus' },
-  'kanagawa-wave': { dark: 'kanagawa-wave', light: null },
-  'laserwave': { dark: 'laserwave', light: null },
-  'material': { dark: 'material-theme', light: 'material-theme-lighter' },
-  'min': { dark: 'min-dark', light: 'min-light' },
-  'monokai-pro': { dark: 'monokai', light: null },
-  'night-owl': { dark: 'night-owl', light: null },
-  'nord': { dark: 'nord', light: null },
-  'one-dark-pro': { dark: 'one-dark-pro', light: null },
-  'one-light': { dark: null, light: 'one-light' },
-  'plastic': { dark: 'plastic', light: null },
-  'poimandres': { dark: 'poimandres', light: null },
-  'red': { dark: 'red', light: null },
-  'rose-pine': { dark: 'rose-pine', light: 'rose-pine-dawn' },
-  'slack': { dark: 'slack-dark', light: 'slack-ochin' },
-  'snazzy-light': { dark: null, light: 'snazzy-light' },
-  'solarized': { dark: 'solarized-dark', light: 'solarized-light' },
-  'synthwave-84': { dark: 'synthwave-84', light: null },
-  'tokyo-night': { dark: 'tokyo-night', light: null },
-  'vesper': { dark: 'vesper', light: null },
-  'vitesse': { dark: 'vitesse-dark', light: 'vitesse-light' },
-  'vitesse-black': { dark: 'vitesse-black', light: null },
-};
-
-export function resolveSyntaxTheme(colorTheme: string, mode: 'dark' | 'light'): { dark: string; light: string } | undefined {
-  const map = SHIKI_THEME_MAP[colorTheme];
-  if (!map || !map[mode]) return undefined;
-  return { dark: map.dark || 'pierre-dark', light: map.light || 'pierre-light' };
-}
+/**
+ * The (colorTheme, mode) -> Shiki theme mapping moved to
+ * `@plannotator/ui/utils/syntaxTheme` so the plan editor's markdown fences
+ * resolve the same theme this diff pane does. Re-exported here because it is
+ * the import path the review editor has always used.
+ */
+import { resolveSyntaxTheme } from '@plannotator/ui/utils/syntaxTheme';
+export { SHIKI_THEME_MAP, resolveSyntaxTheme } from '@plannotator/ui/utils/syntaxTheme';
 
 export interface PierreTheme {
   type: 'dark' | 'light';

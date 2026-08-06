@@ -55,7 +55,7 @@ function VimHarness({
           </tbody>
         </table>
       </div>
-      <div data-block-id="code"><pre><code className="hljs">const x = 1;</code></pre></div>
+      <div data-block-id="code"><pre><code className="pn-code">const x = 1;</code></pre></div>
       <a data-testid="native-link" href="#destination">Native link</a>
       <input data-testid="native-input" defaultValue="typing stays native" />
     </article>

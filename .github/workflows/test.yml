@@ -65,6 +65,8 @@ jobs:
           packages/review-editor/hooks/useReviewSearch.test.tsx
           packages/ui/components/AnnotationPanel.props.test.tsx
           packages/ui/components/Viewer.consumer.test.tsx
+          packages/ui/components/Viewer.codeBlockHighlightSwap.test.tsx
+          packages/ui/utils/codeBlockMark.test.ts
           packages/ui/components/InlineMarkdown.seam.test.tsx
           packages/ui/components/ImageThumbnail.seam.test.tsx
           packages/ui/hooks/useAnnotationHighlighter.test.tsx
@@ -101,6 +103,13 @@ jobs:
 
       - name: Build OpenCode plugin assets
         run: bun run build:review && bun run build:hook && bun run build:opencode
+
+      # This is the only job with the single-file bundles on disk, so it is the
+      # only place the built-artifact assertions in entry-assets can actually
+      # run (they skip on an unbuilt checkout). Chief among them: no inlined
+      # WebAssembly survived the bundle.
+      - name: Assert built bundles ship no inlined WASM
+        run: bun test tests/entry-assets.test.ts
 
       - name: Pack OpenCode plugin
         working-directory: apps/opencode-plugin

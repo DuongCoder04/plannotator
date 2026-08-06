@@ -609,7 +609,20 @@ Uses cookies (not localStorage) because each hook invocation runs on a random po
 
 ## Syntax Highlighting
 
-Code blocks use bundled `highlight.js`. Language is extracted from fence (```rust) and applied as `language-{lang}`class. Each block highlighted individually via`hljs.highlightElement()`.
+There is **one** highlighter in the app: the Shiki instance `@pierre/diffs` already runs for the code-review diff pane, driven by Shiki's **JavaScript regex engine** (`preferredHighlighter: 'shiki-js'`). `highlight.js` is gone. The wrapper is `packages/ui/utils/codeHighlight.ts`:
+
+- `applyHighlight(el, code, lang, theme)` — imperative drop-in for the old `hljs.highlightElement(el)`. Writes plain text immediately (final size on first paint, no layout shift), then swaps in highlighted markup once the grammar is attached; already-attached grammars highlight synchronously, so there is no flicker on cached highlights. It also enforces that the rendered text is byte-identical to the source and falls back to plain text otherwise, because the annotation layer addresses code blocks by text offset.
+- `highlightToHtml(code, lang, theme)` / `ensureHighlight(lang, theme)` — the sync/async pair behind it, for callers that need HTML strings (the code-file hover preview).
+- `codeBlockClassName(lang)` — the `pn-code font-mono language-{lang}` class every fenced `<code>` carries. **`pn-code` replaced the old `hljs` class** and is the structural hook `blockTargeting`, vim navigation and `print.css` use (`pre > code.pn-code`); `language-*` is how `blockTargeting` reads a block's language back out of the DOM.
+- `onCodeHighlightSwap(listener)` — observes every write `applyHighlight` makes, SYNCHRONOUSLY, immediately after it. Each write replaces the element's children, so it also destroys whatever the annotation layer wrapped inside the fence.
+
+**Code-block annotation marks and highlight swaps.** `web-highlighter` cannot select inside a `<pre>`, so a fenced block is annotated all-or-nothing: one `<mark data-bind-id>` that is the `<code>` element's only child, painted by `paintCodeBlockMark` (`packages/ui/utils/codeBlockMark.ts`) — which MOVES the token spans into the mark rather than flattening them to text, so annotating or re-theming a block never costs it its colours. `Viewer` subscribes to `onCodeHighlightSwap` and re-paints that mark right after any swap, which is what keeps a palette or dark/light change from wiping code-block annotations. Being driven by the swap is also what makes the share/draft restore race safe **by ordering rather than by timing**: a restore that painted before the swap is re-established in the same task the swap ran in, and one that runs after finds the mark already there. Do not "fix" a mark-eating swap by skipping the rewrite when a mark is present — that leaves annotated blocks in stale theme colours.
+
+**Language-less fences render as plain text and are never guessed at (#1212). There is no auto-detection anywhere.** `HighlightedCode` (review suggestions) derives its language from the caller's file path via `detectLanguage`; an unrecognised extension renders plain.
+
+**Theming:** fences resolve the SAME theme the diff pane resolves, via `resolveFenceTheme` / `resolveSyntaxTheme` in `packages/ui/utils/syntaxTheme.ts` (keyed on `(colorTheme, resolvedMode)`; `packages/review-editor/hooks/usePierreTheme.ts` re-exports them). `useFenceTheme()` (`packages/ui/hooks/useFenceTheme.ts`) feeds the components and re-highlights on palette or mode change. Palettes with no Shiki counterpart fall back to `@pierre/diffs`' own `pierre-dark` / `pierre-light`. Consequence: code blocks follow the active palette in both light and dark instead of always rendering github-dark, so **do not add per-theme `.hljs-*`-style token CSS** — pick the right Shiki theme in `SHIKI_THEME_MAP` instead.
+
+**Bundle note:** Pierre imports Shiki's full bundle, so every grammar and theme is already inlined in the single-file builds; reusing its shared highlighter costs no extra bytes and needs no CDN or runtime wasm fetch. The Oniguruma WASM engine is dead weight under `shiki-js` and is aliased to `build/shiki-wasm-stub.ts` in the review, hook and portal Vite configs (via `resolve.alias`, which — unlike `plugins` — is shared with Vite's worker build).
 
 ## Requirements
 
