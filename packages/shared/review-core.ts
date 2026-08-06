@@ -832,19 +832,25 @@ function isGitlink(entry: RawDiffEntry): boolean {
  * oversized replaced the whole review with binary stubs on one failed probe.
  * Working-tree sizes come from filesystem stat and never from this probe.
  *
- * The per-object doors stay conservative on a probe that ran: an object the
- * batch reports as `missing`, omits from its output, or answers with an
- * unparseable/negative size maps to infinity. That is evidence about one
- * object only, and excluding just its path keeps the stub's rename/copy/mode
- * metadata rendering while the rest of the diff stays intact.
+ * A probe that ran answers per object with a size or with `null`, which means
+ * "unknown", never "oversized": an object the batch reports as `missing`,
+ * omits from its output, or answers with an unparseable/negative size has no
+ * usable size. `missing` is routine for tree-vs-worktree diffs — every path
+ * pulled into rename/copy detection gets its WORKING-TREE content hashed by
+ * git and that hash printed in `--raw` output without ever being written to
+ * the object database — and it also happens in partial clones. Mapping those
+ * to infinity excluded files git can plainly diff, so a renamed-and-edited
+ * file rendered as an empty binary stub (#1167). Callers bound an unknown new
+ * side by filesystem stat, and every ODB blob stays bounded by
+ * `core.bigFileThreshold` (`BOUNDED_DIFF_GIT_CONFIG`).
  */
 async function getGitObjectSizes(
   runtime: ReviewGitRuntime,
   objectIds: string[],
   cwd?: string,
-): Promise<Map<string, number> | null> {
+): Promise<Map<string, number | null> | null> {
   const uniqueObjectIds = [...new Set(objectIds.filter((objectId) => !isNullObjectId(objectId)))];
-  const sizes = new Map<string, number>();
+  const sizes = new Map<string, number | null>();
   if (uniqueObjectIds.length === 0) return sizes;
 
   const result = await runtime.runGit(
@@ -862,13 +868,10 @@ async function getGitObjectSizes(
     const [objectId, objectType, objectSize] = line.split(" ");
     if (!objectId || objectType === "missing") continue;
     const size = Number(objectSize);
-    sizes.set(
-      objectId,
-      Number.isFinite(size) && size >= 0 ? size : Number.POSITIVE_INFINITY,
-    );
+    sizes.set(objectId, Number.isFinite(size) && size >= 0 ? size : null);
   }
   for (const objectId of uniqueObjectIds) {
-    if (!sizes.has(objectId)) sizes.set(objectId, Number.POSITIVE_INFINITY);
+    if (!sizes.has(objectId)) sizes.set(objectId, null);
   }
   return sizes;
 }
@@ -1029,19 +1032,28 @@ async function buildBoundedTrackedDiff(
   //    the file for the index line and content-based binary detection wins),
   //    but their sizes come from filesystem stat, not the probe, so that
   //    exclusion door keeps working below regardless of the probe outcome.
+  //  - An id the probe answered for but could not size (`missing`, omitted,
+  //    unparseable) is unknown, not oversized. git prints such an id for every
+  //    worktree path that rename/copy detection hashed, and for blobs a
+  //    partial clone has not fetched; a file git can plainly diff must never
+  //    be replaced by a content-free binary stub (#1167).
+  const probedSize = (objectId: string): number | null =>
+    isNullObjectId(objectId) || objectSizes === null
+      ? null
+      : objectSizes.get(objectId) ?? null;
   for (const entry of entries) {
     if (isGitlink(entry)) continue;
-    const oldSize = isNullObjectId(entry.oldObjectId)
-      ? null
-      : objectSizes === null
-        ? null
-        : objectSizes.get(entry.oldObjectId) ?? Number.POSITIVE_INFINITY;
-    const newObjectSize = isNullObjectId(entry.newObjectId)
-      ? null
-      : objectSizes === null
-        ? null
-        : objectSizes.get(entry.newObjectId) ?? Number.POSITIVE_INFINITY;
-    const workingTreeInfo = isNullObjectId(entry.newObjectId)
+    const oldSize = probedSize(entry.oldObjectId);
+    const newObjectSize = probedSize(entry.newObjectId);
+    // The working-tree file is what git formats whenever the new side has no
+    // readable object behind it: an unhashed worktree side (all-zero id), or
+    // an id the probe that RAN could not find. Either way its stat size is the
+    // authoritative bound. A probe that FAILED outright says nothing about any
+    // single object, so those ids keep relying on core.bigFileThreshold rather
+    // than on a working-tree file that may not be the diff's new side at all.
+    const newSideUnreadable = isNullObjectId(entry.newObjectId)
+      || (objectSizes !== null && newObjectSize === null);
+    const workingTreeInfo = newSideUnreadable
       ? await getWorkingTreeFileInfo(runtime, root, entry.newPath)
       : null;
     const newSize = newObjectSize ?? workingTreeInfo?.size ?? null;
@@ -1059,14 +1071,18 @@ async function buildBoundedTrackedDiff(
         `large:${entry.newPath}:${workingTreeInfo.size}:${workingTreeInfo.mtimeMs}`,
       );
     }
-    const workingObjectId = !fingerprintMode && workingTreeInfo && entry.newPath
+    // Only an all-zero new side needs a synthesized content-sensitive id. When
+    // git printed a real id it already hashed this exact working-tree content,
+    // so the stub keeps it instead of re-hashing an oversized file.
+    const workingObjectId = !fingerprintMode
+      && isNullObjectId(entry.newObjectId)
+      && workingTreeInfo
+      && entry.newPath
       ? await hashOversizedWorkingTreeFile(runtime, entry.newPath, workingTreeInfo, cwd)
       : null;
     oversized.push({
       ...entry,
-      newObjectId: newObjectSize === null && workingObjectId
-        ? workingObjectId
-        : entry.newObjectId,
+      newObjectId: workingObjectId ?? entry.newObjectId,
     });
   }
 

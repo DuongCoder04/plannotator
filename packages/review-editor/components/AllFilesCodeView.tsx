@@ -30,10 +30,11 @@ import { buildCodeNavRequest } from '../utils/buildCodeNavRequest';
 import { getDiffSelection, getLineNumberFromNode, getSideFromNode } from '../utils/diffSelection';
 import { isContentConsistentWithPatch } from '../utils/patchConsistency';
 import { hashString } from '../utils/hashString';
-import { isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
+import { isContentlessBinaryPatch, isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
 import { OversizedFileNotice } from './OversizedFileNotice';
 import { ToolbarHost, type ToolbarHostHandle } from './ToolbarHost';
 import { FileHeader } from './FileHeader';
+import { BinaryFileNotice } from './BinaryFileNotice';
 import { EditSessionHud } from './EditSessionHud';
 import { FileCommentBanner } from './FileCommentBanner';
 import { annotationMatchesPrScope, isFileScopedAnnotation, lineRangeForAnnotation } from '../utils/annotationScope';
@@ -2180,6 +2181,14 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
             leaving a bare header that reads as a broken diff. */}
         {!collapsed && isOversizedReviewStubPatch(file.patch) && (
           <OversizedFileNotice onHeightChange={() => refreshItem(item.id)} />
+        )}
+        {/* The general fallback under that specific case: any OTHER hunkless
+            binary chunk draws nothing either. Gated on the marker so a
+            marker-carrying stub is explained exactly once, by the line above. */}
+        {!collapsed
+          && !isOversizedReviewStubPatch(file.patch)
+          && isContentlessBinaryPatch(file.patch) && (
+          <BinaryFileNotice onHeightChange={() => refreshItem(item.id)} />
         )}
         {/* EXPERIMENTAL edit-session HUD: session controls + state in a slim
             strip below the header, above the file content. Appears/disappears

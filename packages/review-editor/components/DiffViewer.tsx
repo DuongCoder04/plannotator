@@ -13,9 +13,10 @@ import { ToolbarHost, type ToolbarHostHandle } from './ToolbarHost';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
 import { useOverlayViewport } from '@plannotator/ui/hooks/useOverlayViewport';
 import { FileHeader } from './FileHeader';
+import { BinaryFileNotice } from './BinaryFileNotice';
 import { FileCommentBanner } from './FileCommentBanner';
 import { OversizedFileNotice } from './OversizedFileNotice';
-import { isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
+import { isContentlessBinaryPatch, isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
 import { isFileScopedAnnotation, lineRangeForAnnotation } from '../utils/annotationScope';
 import { lineAnnotationMetadata } from '../utils/annotationDisplay';
 import type { AnnotationScrollTarget } from '../types';
@@ -686,6 +687,15 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   // renders as an empty body. Say so instead of showing a bare header.
   const isOversizedStub = useMemo(() => isOversizedReviewStubPatch(patch), [patch]);
 
+  // The general fallback under that specific case: any OTHER hunkless binary
+  // chunk (a genuine binary file, or a stub shape the marker does not cover)
+  // still renders an empty body and still has to say why. Gated on the marker
+  // so a marker-carrying stub is explained exactly once, by the message above.
+  const isContentlessBinary = useMemo(
+    () => !isOversizedStub && isContentlessBinaryPatch(patch),
+    [patch, isOversizedStub],
+  );
+
   // Replay a selected line/range comment's anchor as the controlled highlight so
   // clicking it (inline card or sidebar) lights up its lines. A live compose
   // selection (pendingSelection) wins while the toolbar is open; file-scoped
@@ -731,7 +741,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         overflowX="scroll"
         onViewportReady={onViewportReady}
       >
+        {/* Specific first, general second, and never both: whichever applies,
+            a card with no hunks to draw says why instead of reading as empty. */}
         {isOversizedStub && <OversizedFileNotice />}
+        {isContentlessBinary && <BinaryFileNotice />}
         <FileCommentBanner
           comments={fileComments}
           selectedAnnotationId={selectedAnnotationId}

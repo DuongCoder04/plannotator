@@ -210,6 +210,35 @@ export function isOversizedReviewStubPatch(patch: string): boolean {
   return patch.split("\n").some((line) => line === OVERSIZED_REVIEW_STUB_MARKER);
 }
 
+/**
+ * True when a single file's patch chunk carries a binary marker and no hunks,
+ * so a diff renderer has literally nothing to draw for it.
+ *
+ * The GENERAL case, of which `isOversizedReviewStubPatch` above is the one
+ * specific case we can name: git emits this shape for real binary files, and
+ * the review core emits it for files it declined to read. Either way the card
+ * renders as a bare header with no counts and no body, which reads as a broken
+ * or empty diff rather than as content that was deliberately not shown.
+ *
+ * Callers that can say something more specific should ask the marker predicate
+ * FIRST and fall back to this one, so a marker-carrying stub is explained once,
+ * by the message that knows why.
+ *
+ * Scanning stops at the first hunk header: content lines always carry a `+`,
+ * `-`, or space prefix, so a `Binary files ` line at column zero before any
+ * `@@ ` can only be the extended header git (or the stub builder) wrote.
+ */
+export function isContentlessBinaryPatch(patch: string): boolean {
+  let hasBinaryMarker = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@ ")) return false;
+    if (line.startsWith("Binary files ") || line === "GIT binary patch") {
+      hasBinaryMarker = true;
+    }
+  }
+  return hasBinaryMarker;
+}
+
 export function parseDiffMetadataPathLines(lines: string[]): DiffPathPair {
   let oldPath: string | undefined;
   let newPath: string | undefined;

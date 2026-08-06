@@ -845,11 +845,22 @@ describe("review-core", () => {
     }
   });
 
-  test("a single object the probe reports missing still excludes only that path", async () => {
+  test("a probed-oversized object excludes only its path, and a missing one none", async () => {
+    // Per-object evidence stays per-object: one oversized blob costs one path,
+    // never the whole review. An object the probe cannot SIZE is a different
+    // answer from one it sizes above the cap: `missing` is unknown, so that
+    // path keeps rendering under git's own core.bigFileThreshold bound.
     const smallOld = "1".repeat(40);
     const smallNew = "2".repeat(40);
-    const brokenOld = "3".repeat(40);
-    const brokenNew = "4".repeat(40);
+    const missingOld = "3".repeat(40);
+    const missingNew = "4".repeat(40);
+    const hugeOld = "5".repeat(40);
+    const hugeNew = "6".repeat(40);
+    const renderedPatch = [
+      "diff --git a/small.ts b/small.ts\n-old\n+new\n",
+      "diff --git a/unfetched.ts b/unfetched.ts\n-gone\n+restored\n",
+    ].join("");
+    const excludedPaths: string[] = [];
     const runtime: ReviewGitRuntime = {
       ...unavailableFileMethods,
       async runGit(args, options) {
@@ -857,7 +868,8 @@ describe("review-core", () => {
           return {
             stdout: [
               `:100644 100644 ${smallOld} ${smallNew} M\0small.ts\0`,
-              `:100644 100644 ${brokenOld} ${brokenNew} M\0broken.bin\0`,
+              `:100644 100644 ${missingOld} ${missingNew} M\0unfetched.ts\0`,
+              `:100644 100644 ${hugeOld} ${hugeNew} M\0huge.bin\0`,
             ].join(""),
             stderr: "",
             exitCode: 0,
@@ -866,16 +878,23 @@ describe("review-core", () => {
         if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
           const input = (options as { stdin?: string } | undefined)?.stdin ?? "";
           return {
-            stdout: input.trim().split("\n").filter(Boolean).map((objectId) =>
-              objectId === brokenNew ? `${objectId} missing` : `${objectId} blob 10`,
-            ).join("\n"),
+            stdout: input.trim().split("\n").filter(Boolean).map((objectId) => {
+              if (objectId === missingNew) return `${objectId} missing`;
+              if (objectId === hugeNew) {
+                return `${objectId} blob ${MAX_REVIEW_FILE_CONTENT_BYTES + 1}`;
+              }
+              return `${objectId} blob 10`;
+            }).join("\n"),
             stderr: "",
             exitCode: 0,
           };
         }
         if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", exitCode: 0 };
         if (args[0] === "diff") {
-          return { stdout: "diff --git a/small.ts b/small.ts\n-old\n+new\n", stderr: "", exitCode: 0 };
+          excludedPaths.push(
+            ...args.filter((arg) => arg.startsWith(":(top,exclude,literal)")),
+          );
+          return { stdout: renderedPatch, stderr: "", exitCode: 0 };
         }
         throw new Error(`Unexpected git command: ${args.join(" ")}`);
       },
@@ -887,7 +906,12 @@ describe("review-core", () => {
     const result = await runGitDiff(runtime, "staged", "main", "/repo");
 
     expect(result.patch).toContain("+new");
-    expect(result.patch).toContain("Binary files a/broken.bin and b/broken.bin differ");
+    expect(result.patch).toContain("Binary files a/huge.bin and b/huge.bin differ");
+    expect(excludedPaths).toEqual([":(top,exclude,literal)huge.bin"]);
+    // The unfetchable object's path is not stubbed away: git renders it, and
+    // a git that truly cannot read it fails loudly instead of blanking it.
+    expect(result.patch).toContain("+restored");
+    expect(result.patch).not.toContain("Binary files a/unfetched.ts");
     expect(result.patch).not.toContain("Binary files a/small.ts");
   });
 
@@ -965,6 +989,90 @@ describe("review-core", () => {
     expect(second).not.toBeNull();
     expect(second).not.toBe(first);
   }, 20_000);
+
+  test("renders a renamed file whose edited worktree blob the probe cannot find", async () => {
+    // Rename/copy detection makes git hash the WORKING-TREE content and print
+    // that hash in --raw output, but the blob is never written to the object
+    // database. The size probe answers `missing` for it. Treating that as
+    // "oversized" dropped the whole renamed file out of the review (#1167).
+    const repoDir = initRepo();
+    mkdirSync(join(repoDir, "src"));
+    const original = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n");
+    writeFileSync(join(repoDir, "src/Card.tsx"), `${original}\n`, "utf-8");
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "add card"]);
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    git(repoDir, ["mv", "src/Card.tsx", "src/Panel.tsx"]);
+    git(repoDir, ["commit", "-m", "rename card to panel"]);
+    writeFileSync(
+      join(repoDir, "src/Panel.tsx"),
+      `${original}\nline 41 unstaged\n`,
+      "utf-8",
+    );
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("+line 41 unstaged");
+    expect(patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("renders a tracked add whose worktree blob the probe cannot find", async () => {
+    // A delete/add pair also feeds rename detection, so the added path carries
+    // a real-but-unwritten worktree hash in --raw output.
+    const repoDir = initRepo();
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    writeFileSync(join(repoDir, "replacement.txt"), "fresh content\n", "utf-8");
+    git(repoDir, ["rm", "-q", "tracked.txt"]);
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "replace tracked file"]);
+    writeFileSync(join(repoDir, "replacement.txt"), "fresh content\nedited later\n", "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("+fresh content");
+    expect(patch).toContain("+edited later");
+    expect(patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("renders a file whose index blob is missing from the object database", async () => {
+    // Partial clones (and pruned object databases) can report `missing` for an
+    // index blob git can still diff perfectly well from the working tree.
+    const repoDir = initRepo();
+    writeFileSync(join(repoDir, "added.txt"), "content from the index\n", "utf-8");
+    git(repoDir, ["add", "added.txt"]);
+    const blobId = git(repoDir, ["rev-parse", ":added.txt"]);
+    rmSync(join(repoDir, ".git", "objects", blobId.slice(0, 2), blobId.slice(2)), { force: true });
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("+content from the index");
+    expect(result.patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("still stubs an oversized worktree file whose blob the probe cannot find", async () => {
+    // The size probe cannot bound this file (its hash is missing) and
+    // core.bigFileThreshold does not bound working-tree sides, so the
+    // filesystem stat has to be the authoritative bound.
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "old-big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    git(repoDir, ["mv", "old-big.txt", "new-big.txt"]);
+    git(repoDir, ["commit", "-m", "rename big file"]);
+    writeFileSync(join(repoDir, "new-big.txt"), "b".repeat(largeSize), "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("Binary files");
+    expect(patch).not.toContain("bbbbbbbbbb");
+    expect(patch.length).toBeLessThan(4_000);
+  }, 40_000);
 
   test("synthesizes quoted rename and copy metadata from raw status details", async () => {
     const renamedFrom = 'old "rename" path';
