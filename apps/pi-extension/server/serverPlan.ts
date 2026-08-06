@@ -255,10 +255,11 @@ export async function startPlanReviewServer(options: {
 			});
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
+				if (body.theme !== undefined) toSave.theme = body.theme;
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;

@@ -10,8 +10,8 @@ import { getPlannotatorDataDir } from "./data-dir";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { execSync } from "child_process";
 
-import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions } from '@plannotator/core/config-types';
-export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions };
+import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig } from '@plannotator/core/config-types';
+export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig };
 
 /** Single conventional comment label entry stored in config.json */
 export interface CCLabelConfig {
@@ -87,6 +87,13 @@ export function mergePromptConfig(
 export interface PlannotatorConfig {
   displayName?: string;
   diffOptions?: DiffOptions;
+  /**
+   * Appearance: which mode, plus the palette assigned to each half of the
+   * light/dark pair. Written by the UI through POST /api/config, so a choice
+   * made in one session is picked up by the next one (each hook invocation
+   * runs on its own random port).
+   */
+  theme?: ThemeConfig;
   prompts?: PromptConfig;
   conventionalComments?: boolean;
   /** null = explicitly cleared (use defaults), undefined = not set */
@@ -215,11 +222,15 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
     const mergedDiffOptions = (current.diffOptions || partial.diffOptions)
       ? { ...current.diffOptions, ...partial.diffOptions }
       : undefined;
+    const mergedTheme = (current.theme || partial.theme)
+      ? { ...current.theme, ...partial.theme }
+      : undefined;
     const mergedPrompts = mergePromptConfig(current.prompts, partial.prompts);
     const merged = {
       ...current,
       ...partial,
       diffOptions: mergedDiffOptions,
+      theme: mergedTheme,
       prompts: mergedPrompts,
     };
     mkdirSync(CONFIG_DIR, { recursive: true });
@@ -249,6 +260,7 @@ export function detectGitUser(): string | null {
 export function getServerConfig(gitUser: string | null): {
   displayName?: string;
   diffOptions?: DiffOptions;
+  theme?: ThemeConfig;
   gitUser?: string;
   conventionalComments?: boolean;
   conventionalLabels?: CCLabelConfig[] | null;
@@ -257,6 +269,7 @@ export function getServerConfig(gitUser: string | null): {
   return {
     displayName: cfg.displayName,
     diffOptions: cfg.diffOptions,
+    ...(cfg.theme !== undefined && { theme: cfg.theme }),
     gitUser: gitUser ?? undefined,
     ...(cfg.conventionalComments !== undefined && { conventionalComments: cfg.conventionalComments }),
     ...(cfg.conventionalLabels !== undefined && { conventionalLabels: cfg.conventionalLabels }),

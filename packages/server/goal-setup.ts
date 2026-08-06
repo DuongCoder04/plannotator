@@ -132,6 +132,7 @@ export async function startGoalSetupServer(
               const body = (await req.json()) as {
                 displayName?: string;
                 diffOptions?: Record<string, unknown>;
+                theme?: Record<string, unknown>;
                 conventionalComments?: boolean;
                 conventionalLabels?: unknown[] | null;
               };
@@ -141,6 +142,9 @@ export async function startGoalSetupServer(
               }
               if (body.diffOptions !== undefined) {
                 toSave.diffOptions = body.diffOptions;
+              }
+              if (body.theme !== undefined) {
+                toSave.theme = body.theme;
               }
               if (body.conventionalComments !== undefined) {
                 toSave.conventionalComments = body.conventionalComments;
