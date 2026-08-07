@@ -332,6 +332,7 @@ export const PlanCleanDiffView: React.FC<PlanCleanDiffViewProps> = ({
           initialText={commentPopover.initialText}
           onSubmit={handleCommentSubmit}
           onClose={handleCommentClose}
+          skillReferences
         />
       )}
 
