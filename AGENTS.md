@@ -306,7 +306,7 @@ User runs plannotator archive (CLI)
         ↓
 Server starts in mode:"archive", reads ~/.plannotator/plans/
         ↓
-Browser opens read-only archive viewer (sharing disabled)
+Browser opens read-only archive viewer
         ↓
 User browses saved plan decisions with approved/denied badges
         ↓
