@@ -14,8 +14,15 @@ let scrollTargets: Array<Record<string, unknown>> = [];
 // a `processFile` that returns null. That leaked into
 // DiffViewer.fullContentSwap.test.tsx on the Linux runner (and not on macOS),
 // where it presented as a diff that silently never rendered.
-const realPierreDiffs = await import('@pierre/diffs');
-const realPierreDiffsReact = await import('@pierre/diffs/react');
+//
+// The SPREAD is load-bearing, exactly as configure.test.ts documents. A
+// namespace object is a live view of the module record, and `mock.module`
+// rewrites that record in place — so holding `await import(...)` and handing it
+// back later re-installs the STUBS as themselves and restores nothing. Spread
+// snapshots the real export values into a plain object at capture time, before
+// any stub exists.
+const realPierreDiffs = { ...(await import('@pierre/diffs')) };
+const realPierreDiffsReact = { ...(await import('@pierre/diffs/react')) };
 
 mock.module('../workerPool', () => ({
   useIsWorkerPoolReadyOrDisabled: () => true,
@@ -149,11 +156,37 @@ afterEach(async () => {
 });
 
 // Hand the real @pierre/diffs back to the process. Only the two library
-// specifiers are restored: the sibling-module mocks above name paths relative
-// to THIS file, so they cannot be reached by another file's imports.
+// specifiers are restored. The sibling-module mocks above are NOT scoped to
+// this file — `mock.module` resolves a relative specifier to an absolute module
+// path, so any later file importing packages/review-editor/workerPool,
+// hooks/usePierreTheme or components/ToolbarHost sees these stubs too. They are
+// left in place because workerPool cannot be captured here at all: it imports
+// the Vite-only `?worker&inline` virtual module, which bun cannot resolve.
+// Files that need the real ones must not share this process — that is what the
+// isolated "diff-renderer DOM tests" step in .github/workflows/test.yml is for.
 afterAll(() => {
   mock.module('@pierre/diffs', () => realPierreDiffs);
   mock.module('@pierre/diffs/react', () => realPierreDiffsReact);
+});
+
+// Guards the capture idiom itself. If the spreads above are ever reduced back
+// to a bare `await import(...)`, the "real" handles become live views of the
+// mocked module records and the afterAll restore silently degrades to a no-op —
+// which is how discardRestoreRender.test.tsx started seeing `processFile()`
+// return null on the runs where the runner walked this file first.
+describe('the @pierre/diffs restore handles', () => {
+  test('hold the real exports, not the stubs installed over them', async () => {
+    const stubbed = await import('@pierre/diffs');
+    const stubbedReact = await import('@pierre/diffs/react');
+
+    // The live namespaces are this file's stubs: `processFile: () => null`.
+    expect(stubbed.processFile.length).toBe(0);
+
+    // The captured handles must not have followed them.
+    expect(realPierreDiffs.processFile).not.toBe(stubbed.processFile);
+    expect(realPierreDiffs.processFile.length).toBe(2);
+    expect(realPierreDiffsReact.CodeView).not.toBe(stubbedReact.CodeView);
+  });
 });
 
 describe('AllFilesCodeView guide mount state', () => {
