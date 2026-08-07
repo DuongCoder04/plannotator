@@ -122,12 +122,52 @@ const RESERVED_PATH_SEGMENTS = new Set([
 ]);
 
 /**
+ * Words that, when they immediately precede a `/`-triggered token on the same
+ * line, mark it as prose rather than a skill reference (reproduced false
+ * positives against real review comments — see #1229 hardening):
+ *
+ * - HTTP method verbs: "a POST /agents endpoint", "a GET /show route" — the
+ *   token reads as a route path.
+ * - Modal auxiliaries: "this step could /simplify a lot" — a modal is
+ *   followed by a bare verb, so the token reads as an emphasized verb, not a
+ *   skill noun.
+ *
+ * Deliberately narrow: ordinary verbs ("use /write-better here") and
+ * line-starting or post-newline tokens are untouched, `$name` is never
+ * affected, and menu insertion switches `/` to `$` when the reference would
+ * land after one of these words (see insertSkillReference), so an inserted
+ * reference always survives extraction.
+ */
+const SLASH_PROSE_PRECEDING_WORDS = new Set([
+  // HTTP method verbs
+  'get', 'head', 'post', 'put', 'delete', 'options', 'patch',
+  // Modal auxiliaries
+  'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would',
+]);
+
+/**
+ * True when the character run immediately before `triggerIndex` is same-line
+ * whitespace preceded by one of SLASH_PROSE_PRECEDING_WORDS. A newline (or
+ * any non-space boundary) between the word and the trigger breaks the pairing
+ * — a line-starting `/name` always reads as deliberate.
+ */
+function slashTokenReadsAsProse(text: string, triggerIndex: number): boolean {
+  const before = text.slice(0, triggerIndex);
+  const word = /([A-Za-z]+)[ \t]+$/.exec(before)?.[1];
+  return word !== undefined && SLASH_PROSE_PRECEDING_WORDS.has(word.toLowerCase());
+}
+
+/**
  * Replace the in-progress trigger token with the chosen skill (keeping the
  * trigger character the user typed) plus a trailing space, so the inserted
- * reference is always cleanly word-bounded. The one exception to "keep the
- * typed trigger": a `/` trigger on a skill whose name is a well-known absolute
- * path segment (`run`, `tmp`…) inserts `$` instead, because extraction reads
- * `/run` as a path and would drop the reference.
+ * reference is always cleanly word-bounded. The exceptions to "keep the
+ * typed trigger" all switch `/` to `$` because extraction would otherwise
+ * drop the inserted reference:
+ * - a skill whose name is a well-known absolute path segment (`run`, `tmp`…)
+ *   — extraction reads `/run` as a path;
+ * - a trigger immediately preceded by an HTTP verb or modal auxiliary
+ *   ("could /simplify") — extraction reads that `/name` as prose (see
+ *   SLASH_PROSE_PRECEDING_WORDS).
  */
 export function insertSkillReference(
   text: string,
@@ -136,7 +176,9 @@ export function insertSkillReference(
   skill: SkillCatalogEntry,
 ): { text: string; caret: number } {
   const triggerChar =
-    trigger.trigger === '/' && RESERVED_PATH_SEGMENTS.has(skill.name.toLowerCase())
+    trigger.trigger === '/' &&
+    (RESERVED_PATH_SEGMENTS.has(skill.name.toLowerCase()) ||
+      slashTokenReadsAsProse(text, trigger.start))
       ? '$'
       : trigger.trigger;
   const inserted = `${triggerChar}${skill.name} `;
@@ -161,11 +203,17 @@ export interface SkillReferenceToken {
  * name referenced twice highlights twice.
  *
  * A reference is a word-starting `/name` or `$name` whose name matches a
- * catalog entry case-insensitively, excluding path and link forms:
+ * catalog entry — an exact-case match wins, with case-insensitive matching as
+ * a fallback so a catalog holding two skills differing only by case (e.g.
+ * `Write-Better` and `write-better` from different roots) never swaps
+ * identities on an explicit pick. Path and prose forms are excluded:
  * - followed by `/` or `\` — a path continuation (`/docs/foo`, `$HOME/bin`);
  * - preceded by `](` — a markdown link destination (`[x](/write-better)`);
  * - a `/` token naming a well-known absolute path segment (`/run`, `/tmp`) —
- *   see RESERVED_PATH_SEGMENTS; `$run` still counts.
+ *   see RESERVED_PATH_SEGMENTS; `$run` still counts;
+ * - a `/` token immediately preceded on the same line by an HTTP verb or a
+ *   modal auxiliary ("GET /show", "could /simplify") — see
+ *   SLASH_PROSE_PRECEDING_WORDS; `$show` still counts.
  *
  * There is deliberately NO shell-redirect exclusion (`cat /run > out`): the
  * motivating case is already covered by the reserved-path rule, and excluding
@@ -177,7 +225,19 @@ export function findSkillReferenceTokens(
   catalog: SkillCatalogEntry[],
 ): SkillReferenceToken[] {
   if (!text || catalog.length === 0) return [];
-  const byName = new Map(catalog.map((s) => [s.name.toLowerCase(), s]));
+  // Exact-case entries win; the lowercase map is only a fallback, so two
+  // skills differing only by case never collapse into one identity (an
+  // explicit `$Write-Better` must never resolve to `write-better` — wrong
+  // skill, wrong humanOnly flag, wrong SKILL.md injected). First catalog
+  // entry wins each fallback slot, matching discovery's first-seen precedence.
+  const byExactName = new Map<string, SkillCatalogEntry>();
+  const byLowerName = new Map<string, SkillCatalogEntry>();
+  for (const s of catalog) {
+    if (!byExactName.has(s.name)) byExactName.set(s.name, s);
+    const lower = s.name.toLowerCase();
+    if (!byLowerName.has(lower)) byLowerName.set(lower, s);
+  }
+  const lookup = (n: string) => byExactName.get(n) ?? byLowerName.get(n.toLowerCase());
 
   const tokens: SkillReferenceToken[] = [];
   const re = /(^|[\s(])([$/])([A-Za-z0-9][A-Za-z0-9._-]*)/g;
@@ -194,8 +254,11 @@ export function findSkillReferenceTokens(
     // `/run`-style well-known absolute paths never count (only for `/`).
     if (m[2] === '/' && (RESERVED_PATH_SEGMENTS.has(name) || RESERVED_PATH_SEGMENTS.has(trimmedName)))
       continue;
-    const exact = byName.get(name);
-    const entry = exact ?? byName.get(trimmedName);
+    // Prose guard (only for `/`): "GET /show" is a route, "could /simplify"
+    // is an emphasized verb — never a skill reference.
+    if (m[2] === '/' && slashTokenReadsAsProse(text, m.index + m[1].length)) continue;
+    const exact = lookup(m[3]);
+    const entry = exact ?? lookup(trimmed);
     if (!entry) continue;
     const start = m.index + m[1].length;
     const nameLen = exact ? m[3].length : trimmed.length;
@@ -279,10 +342,29 @@ const HUMAN_ONLY_EXPORT_NOTE =
  * referenced, or forge a truncation notice pointing at an attacker-chosen
  * path. Skill bodies are user-installed — routinely from third-party repos —
  * so lookalike lines are neutralized before injection. Leading whitespace and
- * case variants count: a loose reader would still take them for markers.
+ * case variants count, as do lines dressed in markdown decoration (`> `,
+ * `**`, backticks, `#`), unicode-dash or `=` rules, and invisible format
+ * characters laced through the words: a loose reader would still take every
+ * one of them for markers. The match stays anchored to a leading dash/equals
+ * run (after optional decoration), so the words "BEGIN SKILL INSTRUCTIONS"
+ * appearing mid-sentence in ordinary prose are never touched.
  */
 const MARKER_LOOKALIKE_RE =
-  /^\s*(?:-{2,}\s*(?:BEGIN|END)\s+SKILL\s+INSTRUCTIONS\b|\[\s*Instructions\s+truncated\b)/i;
+  // Dash run: ASCII hyphen, `=`, the unicode hyphen/dash block U+2010–U+2015
+  // (incl. en/em dash), and the minus sign U+2212.
+  /^[\s>*_#`]*(?:[-=‐-―−]{2,}\s*(?:BEGIN|END)\s*SKILL\s*INSTRUCTIONS\b|\[\s*Instructions\s*truncated\b)/i;
+
+/**
+ * Invisible format characters (Unicode category Cf: zero-width space/joiners
+ * U+200B–U+200D, word joiner U+2060, BOM/zero-width no-break space U+FEFF,
+ * soft hyphens, bidi controls, …). JS `\s` matches none of these, so
+ * `---​BEGIN​SKILL​INSTRUCTIONS` slipped past the old regex
+ * while still reading as a marker to an LLM. They are stripped (removed, not
+ * replaced — an attacker can also lace them INSIDE a word) before matching;
+ * the ORIGINAL line is what gets neutralized. The inter-word `\s*` in the
+ * regex above is what keeps the stripped, jammed-together form matchable.
+ */
+const INVISIBLE_FORMAT_CHARS_RE = /\p{Cf}/gu;
 
 const NEUTRALIZED_LINE_PREFIX =
   '[plannotator: the following skill-body line matched an injection marker and was neutralized] ';
@@ -291,12 +373,17 @@ const NEUTRALIZED_LINE_PREFIX =
  * Neutralize body lines that match our own structural markers, visibly: each
  * matching line is kept verbatim but prefixed, never silently deleted, so the
  * line no longer parses as a marker while the reader can still see exactly
- * what the body contained.
+ * what the body contained. Matching runs against the line with invisible
+ * format characters stripped, but the original line is what is prefixed.
  */
 export function neutralizeSkillMarkerLines(body: string): string {
   return body
     .split('\n')
-    .map((line) => (MARKER_LOOKALIKE_RE.test(line) ? NEUTRALIZED_LINE_PREFIX + line : line))
+    .map((line) =>
+      MARKER_LOOKALIKE_RE.test(line.replace(INVISIBLE_FORMAT_CHARS_RE, ''))
+        ? NEUTRALIZED_LINE_PREFIX + line
+        : line,
+    )
     .join('\n');
 }
 

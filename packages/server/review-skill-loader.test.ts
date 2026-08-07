@@ -20,6 +20,7 @@ import {
   readCuratedSkillNames,
   readReferenceSkillContent,
   resolveRequestedReviewProfile,
+  SKILL_CONTENT_HEAD_BYTES,
   stripFrontmatter,
 } from "./review-skill-loader";
 
@@ -155,6 +156,66 @@ describe("discoverSkills — root resolution", () => {
 
     const matches = discoverSkills().filter((s) => s.name === "shared-skill");
     expect(matches).toHaveLength(1);
+  });
+});
+
+describe("discoverSkills — symlinked skill directories", () => {
+  test("a symlinked skill dir at the root level is discovered", () => {
+    // `~/.claude/skills/my-skill -> /elsewhere/my-skill` — a common layout
+    // (skills managed in a dotfiles repo). Dirents report isDirectory() false
+    // for symlinks, so discovery must follow them.
+    const target = writeSkill(join(home, "elsewhere"), "linked-skill");
+    const root = join(home, ".claude", "skills");
+    mkdirSync(root, { recursive: true });
+    symlinkSync(target, join(root, "linked-skill"));
+
+    const found = discoverSkills().find((s) => s.name === "linked-skill");
+    expect(found).toBeDefined();
+    expect(found!.root).toBe("claude");
+    // And it flows through to the reference catalog / picker.
+    expect(listReferenceSkills().map((s) => s.name)).toContain("linked-skill");
+  });
+
+  test("a symlinked category dir is walked for the nested layout", () => {
+    const category = join(home, "elsewhere-cat");
+    writeSkill(category, "nested-linked");
+    const root = join(home, ".claude", "skills");
+    mkdirSync(root, { recursive: true });
+    symlinkSync(category, join(root, "category-link"));
+
+    const found = discoverSkills().find((s) => s.name === "nested-linked");
+    expect(found).toBeDefined();
+  });
+
+  test("a broken symlink is skipped silently", () => {
+    const root = join(home, ".claude", "skills");
+    writeSkill(root, "real-skill");
+    symlinkSync(join(home, "does-not-exist"), join(root, "dangling"));
+
+    const names = discoverSkills().map((s) => s.name);
+    expect(names).toContain("real-skill");
+    expect(names).not.toContain("dangling");
+  });
+
+  test("a symlink to a FILE is not a skill dir", () => {
+    const root = join(home, ".claude", "skills");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(home, "some-file.md"), "not a dir");
+    symlinkSync(join(home, "some-file.md"), join(root, "file-link"));
+
+    expect(discoverSkills().map((s) => s.name)).not.toContain("file-link");
+  });
+
+  test("a symlink cycle neither hangs nor throws (depth-2 walk bounds it)", () => {
+    const root = join(home, ".claude", "skills");
+    writeSkill(root, "real-skill");
+    // A self-referential loop and a link back to the root itself.
+    symlinkSync(join(root, "loop"), join(root, "loop"));
+    symlinkSync(root, join(root, "up-link"));
+
+    const names = discoverSkills().map((s) => s.name);
+    expect(names).toContain("real-skill");
+    expect(names).not.toContain("loop");
   });
 });
 
@@ -722,6 +783,44 @@ describe("readReferenceSkillContent — human-only skill injection source", () =
       `---\nname: yaml-bomb\npadding: ${"y".repeat(400_000)}\n---\n# Real body`,
     );
     expect(readReferenceSkillContent("yaml-bomb")).toBeNull();
+  });
+
+  test("a file of exactly the read bound is NOT flagged truncated", () => {
+    // The old `bytes === maxBytes` check flagged an exactly-boundary file as
+    // truncated, producing a false "[Instructions truncated...]" note. A
+    // giant-but-closed frontmatter plus a small body keeps the char cap out
+    // of play so head truncation is the only signal.
+    const root = join(home, ".claude", "skills");
+    const dir = join(root, "exact-boundary");
+    mkdirSync(dir, { recursive: true });
+    const bodyText = "# Real body";
+    const prefix = "---\nname: exact-boundary\npadding: ";
+    const suffix = "\n---\n" + bodyText;
+    const padLen = SKILL_CONTENT_HEAD_BYTES - prefix.length - suffix.length;
+    writeFileSync(join(dir, "SKILL.md"), prefix + "y".repeat(padLen) + suffix);
+
+    const result = readReferenceSkillContent("exact-boundary")!;
+    expect(result).not.toBeNull();
+    expect(result.content).toBe(bodyText);
+    expect(result.truncated).toBe(false);
+  });
+
+  test("one byte past the read bound IS flagged truncated", () => {
+    const root = join(home, ".claude", "skills");
+    const dir = join(root, "boundary-plus-one");
+    mkdirSync(dir, { recursive: true });
+    const bodyText = "# Real body";
+    const prefix = "---\nname: boundary-plus-one\npadding: ";
+    const suffix = "\n---\n" + bodyText;
+    const padLen = SKILL_CONTENT_HEAD_BYTES - prefix.length - suffix.length + 1;
+    writeFileSync(join(dir, "SKILL.md"), prefix + "y".repeat(padLen) + suffix);
+
+    const result = readReferenceSkillContent("boundary-plus-one")!;
+    expect(result).not.toBeNull();
+    // The head read cut the file's last byte: the file continues past the
+    // read, so the truncation notice is honest.
+    expect(result.truncated).toBe(true);
+    expect(result.content).toBe(bodyText.slice(0, -1));
   });
 
   test("a complete file with genuinely unterminated frontmatter keeps its old behavior", () => {

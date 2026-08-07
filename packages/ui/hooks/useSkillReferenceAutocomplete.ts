@@ -47,7 +47,11 @@ export interface UseSkillReferenceAutocompleteResult {
  * not open — "This costs $" + Enter is a newline, "cd /" + Tab leaves the
  * field. A row becomes active ONLY via explicit keyboard navigation
  * (ArrowDown from none lands on the FIRST row, ArrowUp from none on the
- * LAST); only then do Enter and Tab insert. Pointer hover never activates a
+ * LAST) — and on a BARE trigger (zero query characters) even the arrows pass
+ * through to the textarea and dismiss the menu, because in a multi-line
+ * composer "cost: $" + ArrowUp means caret navigation, not menu navigation;
+ * arrows engage the menu only once a query character was typed. Only with an
+ * active row do Enter and Tab insert. Pointer hover never activates a
  * row (a menu rendered over the composer sits exactly where the mouse rests
  * while typing); a pointer CLICK inserts directly and never arms Enter.
  * Continuing to type re-filters the list and DISARMS any active row, so an
@@ -166,16 +170,27 @@ export function useSkillReferenceAutocomplete(options: {
       if (e.metaKey || e.ctrlKey || e.altKey) return false;
       switch (e.key) {
         case 'ArrowDown':
-          e.preventDefault();
-          setActiveIndex(boundedActive === null ? 0 : (boundedActive + 1) % items.length);
-          return true;
         case 'ArrowUp':
+          // BARE trigger, zero query, nothing active: the arrows were aimed
+          // at the textarea (proven regression: "first line\ncost: $" +
+          // ArrowUp must move the caret up, not arm the menu's last row so
+          // the next Enter inserts a skill). Dismiss the menu and pass the
+          // key through. Once the user has typed a query character — or
+          // engaged a row via a query — the arrows navigate the menu.
+          if (boundedActive === null && trigger.query.length === 0) {
+            setDismissedStart(trigger.start);
+            return false;
+          }
           e.preventDefault();
-          setActiveIndex(
-            boundedActive === null
-              ? items.length - 1
-              : (boundedActive - 1 + items.length) % items.length,
-          );
+          if (e.key === 'ArrowDown') {
+            setActiveIndex(boundedActive === null ? 0 : (boundedActive + 1) % items.length);
+          } else {
+            setActiveIndex(
+              boundedActive === null
+                ? items.length - 1
+                : (boundedActive - 1 + items.length) % items.length,
+            );
+          }
           return true;
         case 'Enter':
         case 'Tab':

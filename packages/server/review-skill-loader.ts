@@ -22,6 +22,7 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -142,7 +143,25 @@ function listSubdirs(dir: string): string[] {
     return [];
   }
   return entries
-    .filter((e) => e.isDirectory() && !SKIP_DIRS.has(e.name))
+    .filter((e) => {
+      if (SKIP_DIRS.has(e.name)) return false;
+      if (e.isDirectory()) return true;
+      // A symlinked skill dir (`~/.claude/skills/foo -> /elsewhere/foo`) has
+      // isDirectory() false on its dirent — follow it with statSync. A broken
+      // symlink (or any stat failure, e.g. an ELOOP symlink cycle) is skipped
+      // silently. No extra cycle detection is needed: statSync resolves to
+      // the final target (throwing on loops), and discovery is a fixed
+      // depth-2 walk with a hard cap, never a recursion that could follow a
+      // symlink back up the tree.
+      if (e.isSymbolicLink()) {
+        try {
+          return statSync(join(dir, e.name)).isDirectory();
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    })
     .map((e) => e.name);
 }
 
@@ -300,7 +319,11 @@ function readFileHead(
   try {
     const buf = Buffer.alloc(maxBytes);
     const bytes = readSync(fd, buf, 0, maxBytes, 0);
-    return { text: buf.subarray(0, bytes).toString("utf-8"), truncated: bytes === maxBytes };
+    // Truncation means the file CONTINUES past the read — judged from the
+    // real size (fstat on the already-open fd), not from `bytes === maxBytes`,
+    // which spuriously flagged a file of exactly maxBytes as truncated.
+    const truncated = fstatSync(fd).size > bytes;
+    return { text: buf.subarray(0, bytes).toString("utf-8"), truncated };
   } catch {
     return null;
   } finally {
@@ -450,9 +473,9 @@ export const MAX_INJECTED_SKILL_CONTENT_LEN = 20_000;
  * 4 bytes per capped content char (UTF-8 worst case) and slack, so any file
  * whose frontmatter fits the catalog bound always yields the full
  * MAX_INJECTED_SKILL_CONTENT_LEN characters of body — truncation detection is
- * unchanged for every such file.
+ * unchanged for every such file. Exported for the boundary tests only.
  */
-const SKILL_CONTENT_HEAD_BYTES =
+export const SKILL_CONTENT_HEAD_BYTES =
   SKILL_META_HEAD_BYTES + MAX_INJECTED_SKILL_CONTENT_LEN * 4 + 4_096;
 
 /** A referenced skill's SKILL.md body, prepared for feedback injection. */

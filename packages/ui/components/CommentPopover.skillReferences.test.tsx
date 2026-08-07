@@ -6,8 +6,12 @@
  * is active, every key behaves exactly as if the menu were not open. An
  * adversarial review PROVED the failure this prevents: "This costs $" + Enter
  * inserted a skill instead of a newline, "cd /" + Tab inserted a skill
- * instead of blurring. A row activates ONLY via arrow keys (never hover); a
- * click inserts directly without ever arming Enter. Also covers: IME
+ * instead of blurring. A row activates ONLY via arrow keys (never hover) —
+ * and on a BARE trigger with zero query characters even the arrows pass
+ * through to the textarea and dismiss the menu ("cost: $" + ArrowUp is caret
+ * navigation, another proven regression); arrows engage the menu only once a
+ * query character was typed. A click inserts directly without ever arming
+ * Enter. Also covers: IME
  * composition, disarm-on-typing, Escape semantics, the highlight overlay, and
  * skillReferences={false} inertness.
  *
@@ -188,13 +192,64 @@ describe('CommentPopover skill references — no-preselection keyboard state mac
     expect(menu()).toBeNull();
   });
 
-  test.skipIf(!hasDom)('ArrowUp from nothing-active activates the LAST row', async () => {
-    await mountPopover();
-    const el = textarea();
-    await type(el, '$');
-    await press(el, 'ArrowUp');
-    expect(activeRow()?.getAttribute('data-skill-item')).toBe('plannotator-review');
-  });
+  test.skipIf(!hasDom)(
+    'with a query, ArrowUp from nothing-active activates the LAST row',
+    async () => {
+      await mountPopover();
+      const el = textarea();
+      // prefix: animate, annotate-helper; substring: humanizer, plannotator-review
+      await type(el, '$a');
+      await press(el, 'ArrowUp');
+      expect(activeRow()?.getAttribute('data-skill-item')).toBe('plannotator-review');
+    },
+  );
+
+  test.skipIf(!hasDom)(
+    'bare-trigger menu: ArrowUp passes through to the textarea and dismisses the menu',
+    async () => {
+      // The reproduced regression: in a multi-line composer, "cost: $" opens
+      // the full catalog and ArrowUp was consumed — activating the LAST row so
+      // the next Enter inserted a skill instead of a newline.
+      await mountPopover();
+      const el = textarea();
+      await type(el, 'first line\ncost: $');
+      expect(menu()).not.toBeNull();
+      const up = await press(el, 'ArrowUp');
+      expect(up.defaultPrevented).toBe(false); // caret navigation goes through
+      expect(menu()).toBeNull(); // and the menu is dismissed
+      expect(activeRow()).toBeNull();
+      const enter = await press(el, 'Enter');
+      expect(enter.defaultPrevented).toBe(false); // Enter stays a newline
+      expect(el.value).toBe('first line\ncost: $'); // no skill text appeared
+    },
+  );
+
+  test.skipIf(!hasDom)(
+    'bare-trigger menu: ArrowDown also passes through and dismisses',
+    async () => {
+      await mountPopover();
+      const el = textarea();
+      await type(el, 'This costs $');
+      expect(menu()).not.toBeNull();
+      const down = await press(el, 'ArrowDown');
+      expect(down.defaultPrevented).toBe(false);
+      expect(menu()).toBeNull();
+      expect(activeRow()).toBeNull();
+    },
+  );
+
+  test.skipIf(!hasDom)(
+    'one query character re-arms the arrows: ArrowDown is consumed and activates a row',
+    async () => {
+      await mountPopover();
+      const el = textarea();
+      await type(el, 'use $h');
+      expect(menu()).not.toBeNull();
+      const down = await press(el, 'ArrowDown');
+      expect(down.defaultPrevented).toBe(true);
+      expect(activeRow()?.getAttribute('data-skill-item')).toBe('humanizer');
+    },
+  );
 
   test.skipIf(!hasDom)('Tab inserts once a row is active', async () => {
     await mountPopover();
@@ -304,7 +359,7 @@ describe('CommentPopover skill references — no-preselection keyboard state mac
     async () => {
       await mountPopover();
       const el = textarea();
-      await type(el, 'use $'); // bare trigger, then engage via arrows
+      await type(el, 'use $hum'); // typed query, then engage via arrows
       await press(el, 'ArrowDown');
       expect(activeRow()).not.toBeNull();
       await press(el, 'Escape');
@@ -313,7 +368,7 @@ describe('CommentPopover skill references — no-preselection keyboard state mac
       // The dismissed trigger does not reopen while the caret sits on it.
       const enter = await press(el, 'Enter');
       expect(enter.defaultPrevented).toBe(false);
-      expect(el.value).toBe('use $');
+      expect(el.value).toBe('use $hum');
     },
   );
 
