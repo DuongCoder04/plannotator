@@ -203,6 +203,48 @@ describe('primeSkillContentsForExport', () => {
     expect(requested).toEqual(['plannotator-review']);
   });
 
+  test('edge-triggered: a re-prime with already-registered content resolves false', async () => {
+    stubCatalogAndContent();
+    expect(await primeSkillContentsForExport(['$plannotator-review'])).toBe(true);
+    // The content stays registered — but it is no longer news, so re-priming
+    // must not signal "changed" again (a level-triggered true here re-render
+    // looped App.tsx's generation-bump effect).
+    expect(await primeSkillContentsForExport(['$plannotator-review'])).toBe(false);
+    expect(await primeSkillContentsForExport(['$plannotator-review again'])).toBe(false);
+
+    const block = skillReferenceExportBlock('Run $plannotator-review.');
+    expect(block).toContain('# Instructions for plannotator-review');
+  });
+
+  test('edge-triggered: a later prime that lands a NEW skill reports true exactly once', async () => {
+    setSkillCatalogTransport(async () => [
+      { name: 'alpha', root: 'claude', humanOnly: true, dir: '/skills/alpha' },
+      { name: 'beta', root: 'claude', humanOnly: true, dir: '/skills/beta' },
+    ] as SkillCatalogEntry[]);
+    setSkillContentTransport(async (name) => ({
+      name,
+      dir: `/skills/${name}`,
+      path: `/skills/${name}/SKILL.md`,
+      content: `# ${name}`,
+      truncated: false,
+      humanOnly: true,
+    }));
+
+    expect(await primeSkillContentsForExport(['$alpha'])).toBe(true);
+    expect(await primeSkillContentsForExport(['$alpha'])).toBe(false);
+    // beta's content landing is one new edge; alpha stays silent.
+    expect(await primeSkillContentsForExport(['$alpha and $beta'])).toBe(true);
+    expect(await primeSkillContentsForExport(['$alpha and $beta'])).toBe(false);
+  });
+
+  test('a cache reset re-arms the changed signal for the next session', async () => {
+    stubCatalogAndContent();
+    expect(await primeSkillContentsForExport(['$plannotator-review'])).toBe(true);
+    resetSkillCatalogCache();
+    expect(await primeSkillContentsForExport(['$plannotator-review'])).toBe(true);
+    expect(await primeSkillContentsForExport(['$plannotator-review'])).toBe(false);
+  });
+
   test('no human-only references → no requests, resolves false', async () => {
     const requested = stubCatalogAndContent();
     expect(await primeSkillContentsForExport(['Use /write-better only.'])).toBe(false);

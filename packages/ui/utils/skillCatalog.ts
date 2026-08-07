@@ -141,6 +141,7 @@ export function resetSkillCatalogCache(): void {
   cached = null;
   inflight = null;
   contentRequests.clear();
+  reportedContentNames.clear();
   setSkillCatalogForExport([]);
   resetSkillContentsForExport();
 }
@@ -189,6 +190,14 @@ function normalizeSkillContent(raw: unknown): SkillExportContent | null {
 // by resetSkillCatalogCache alongside the catalog itself.
 const contentRequests = new Map<string, Promise<boolean>>();
 
+// Names whose registered content has already been reported to a caller as
+// "changed". A cached request stays resolved-true forever, so the "changed"
+// signal must be edge-triggered: without this set, every re-prime re-reports
+// the same landing, and callers that bump a re-render generation on `true`
+// (packages/editor/App.tsx) spin into an unbounded render loop. Cleared by
+// resetSkillCatalogCache alongside the requests.
+const reportedContentNames = new Set<string>();
+
 /**
  * Fetch and register the SKILL.md contents for every HUMAN-ONLY skill the
  * given comment texts reference, so skillReferenceExportBlock can inject them.
@@ -196,8 +205,11 @@ const contentRequests = new Map<string, Promise<boolean>>();
  * invocable skills export as names the agent can invoke itself, so shipping
  * every body up front would be pure bloat.
  *
- * Resolves true when at least one awaited request registered content (callers
- * use that to re-render memoized exports). Never rejects.
+ * Resolves true only when content newly landed in the registry — i.e. at
+ * least one referenced skill's content is registered and has not been
+ * reported by a previous call (callers use that to re-render memoized
+ * exports, so the signal must be edge-triggered, never level-triggered).
+ * Never rejects.
  */
 export async function primeSkillContentsForExport(
   texts: Array<string | undefined | null>,
@@ -215,8 +227,9 @@ export async function primeSkillContentsForExport(
     }
     if (names.size === 0) return false;
 
+    const nameList = [...names];
     const results = await Promise.all(
-      [...names].map((name) => {
+      nameList.map((name) => {
         let request = contentRequests.get(name);
         if (!request) {
           const startedIn = generation;
@@ -238,7 +251,18 @@ export async function primeSkillContentsForExport(
         return request;
       }),
     );
-    return results.some(Boolean);
+    // Edge-triggered: only content that landed and has never been reported
+    // counts as a change. Concurrent callers awaiting the same request race
+    // for the report; exactly one wins, which is enough to bump the caller's
+    // generation once.
+    let changed = false;
+    for (let i = 0; i < nameList.length; i++) {
+      if (results[i] && !reportedContentNames.has(nameList[i])) {
+        reportedContentNames.add(nameList[i]);
+        changed = true;
+      }
+    }
+    return changed;
   } catch {
     return false;
   }
