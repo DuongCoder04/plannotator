@@ -43,14 +43,15 @@ const CommentPopover =
   popoverMod?.CommentPopover as typeof import('./CommentPopover')['CommentPopover'];
 
 // 12 filterable entries: `$` shows all 12 (natural height 480 under the 40px
-// row stub, so the 256px cap engages), `$zeb` narrows to exactly one.
+// row stub, so the 256px cap engages), `$zeb` narrows to exactly one. `zebra`
+// is human-only: the menu must render (and place) it exactly like the rest.
 const catalog: SkillCatalogEntry[] = [
   ...Array.from({ length: 11 }, (_, i) => ({
     name: `alpha-${String(i).padStart(2, '0')}`,
     root: 'claude' as const,
     humanOnly: false,
   })),
-  { name: 'zebra', root: 'universal', humanOnly: false },
+  { name: 'zebra', root: 'universal', humanOnly: true },
 ];
 
 /** Stubbed per-row height. Layout does not exist in happy-dom; the component
@@ -349,6 +350,50 @@ describe('SkillReferenceMenu adaptive placement', () => {
       const { direction, maxListHeight } = assertMenuInsideViewport();
       expect(direction).toBe('above');
       expect(maxListHeight).toBe(MAX_LIST);
+    },
+  );
+
+  test.skipIf(!hasDom)(
+    'REGRESSION (hover jitter): hovering any row, human-only included, changes neither the menu markup nor its committed placement',
+    async () => {
+      // The bug this pins down: hovering a human-only row used to disclose a
+      // warning footer, growing the bottom-anchored menu upward and shrinking
+      // the re-measured list clamp — the hovered row shifted out from under
+      // the pointer, hover ended, the footer collapsed, the row shifted back,
+      // and the cycle repeated every frame. Hover must not change any row's
+      // rendered output or the placement the component commits.
+      setInnerHeight(768);
+      await mountPopover();
+      const el = textarea();
+      await type(el, '$'); // all 12 rows, zebra (human-only) among them
+      stubGeometry({ top: 560, bottom: 750 });
+      await remeasure();
+      const menuEl = menu();
+      const before = menuEl.outerHTML;
+      const placementBefore = assertMenuInsideViewport();
+      for (const name of ['zebra', 'alpha-00']) {
+        const row = document.querySelector(`[data-skill-item="${name}"]`)!;
+        await act(async () => {
+          row.dispatchEvent(new Event('pointermove', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerenter', { bubbles: true }));
+        });
+        // Byte-identical markup: no class flip, no disclosed footer, no style
+        // change — nothing for the placement effect to re-measure differently.
+        expect(menu().outerHTML).toBe(before);
+        // And a forced re-measure with the pointer "resting" on the row still
+        // commits the same placement.
+        await remeasure();
+        const placementAfter = assertMenuInsideViewport();
+        expect(placementAfter.direction).toBe(placementBefore.direction);
+        expect(placementAfter.maxListHeight).toBe(placementBefore.maxListHeight);
+        expect(menu().outerHTML).toBe(before);
+        await act(async () => {
+          row.dispatchEvent(new Event('pointerout', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerleave', { bubbles: true }));
+        });
+        expect(menu().outerHTML).toBe(before);
+      }
     },
   );
 

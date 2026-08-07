@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { SkillCatalogEntry } from '../utils/skillReferences';
 
 /** Which skill root a row came from, shown as the right-aligned source column. */
@@ -65,14 +65,13 @@ function computeMenuPlacement(
  * below depending on available viewport space (see computeMenuPlacement), and
  * clamped so it never runs off screen. Each row: icon, bold name, dimmed
  * inline description (ellipsis-truncated), right-aligned source root.
- * Human-invocation-only skills stay listed and selectable at full strength,
- * carrying only a quiet "human-only" pill after the name — the state is a
- * property of the skill, not an error. The plain-language explanation (a model
- * cannot invoke it, so its instructions ride along with the feedback) is
- * disclosed progressively: it appears as a muted footer while such a row is
- * active (keyboard) or pointer-hovered, and is otherwise kept screen-reader
- * accessible via an sr-only description that human-only rows reference with
- * aria-describedby. Hover reveal is purely visual and never activates a row.
+ * Human-invocation-only skills render identically to every other row: their
+ * instructions are injected into the exported feedback automatically, so the
+ * distinction needs no surfacing at pick time. (A hover-disclosed warning
+ * used to live here; because it changed the menu's height while the pointer
+ * sat over a row of a bottom-anchored menu, it oscillated the row under the
+ * cursor every frame. Hover must never change any row's rendered size or the
+ * menu's measured geometry — color-only hover styling is fine.)
  *
  * Activation is KEYBOARD-ONLY (see useSkillReferenceAutocomplete): the menu
  * floats directly over the composer, exactly where the mouse rests while
@@ -86,20 +85,10 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const humanOnlyNoteId = useId();
-  // Visual-only pointer hover, for progressively disclosing the human-only
-  // footer to mouse users. NEVER feeds activeIndex — hover must not arm Enter.
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [placement, setPlacement] = useState<MenuPlacement>({
     direction: 'above',
     maxListHeight: MAX_LIST_HEIGHT,
   });
-
-  // The list identity changes on every re-filter; a stale hover index would
-  // point at whichever row slid under the resting cursor.
-  useEffect(() => {
-    setHoverIndex(null);
-  }, [items]);
 
   const measure = useCallback(() => {
     const menuEl = menuRef.current;
@@ -109,8 +98,9 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
     const anchor = menuEl?.parentElement;
     if (!menuEl || !listEl || !anchor) return;
     const rect = anchor.getBoundingClientRect();
-    // Non-list height the menu carries (border, human-only footer when
-    // disclosed; the sr-only variant is absolutely positioned and adds none).
+    // Non-list height the menu carries (border). This must stay constant
+    // while the pointer moves — hover-dependent chrome is what caused the
+    // jitter loop this component once shipped.
     const chrome = Math.max(0, menuEl.offsetHeight - listEl.offsetHeight);
     // scrollHeight reports full content height even while clamped.
     const next = computeMenuPlacement(rect, listEl.scrollHeight, chrome, window.innerHeight);
@@ -122,9 +112,9 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
   }, []);
 
   // Re-measure on EVERY commit: the popover re-renders on drag moves, flips,
-  // filtering (item-count changes), and human-only footer disclosure, and each
-  // of those can change the geometry without any window event firing. The
-  // setState above is equality-guarded, so this converges instead of looping.
+  // and filtering (item-count changes), and each of those can change the
+  // geometry without any window event firing. The setState above is
+  // equality-guarded, so this converges instead of looping.
   useLayoutEffect(() => {
     measure();
   });
@@ -146,14 +136,6 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
     const row = list?.children[activeIndex] as HTMLElement | undefined;
     row?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
-
-  const active = activeIndex !== null ? items[activeIndex] : undefined;
-  const hovered = hoverIndex !== null ? items[hoverIndex] : undefined;
-  const hasHumanOnly = items.some((item) => item.humanOnly);
-  // Progressive disclosure: the explanation surfaces while a human-only row is
-  // active (keyboard) or hovered (pointer); otherwise it stays sr-only so
-  // assistive tech can always reach it through aria-describedby.
-  const humanOnlyDisclosed = active?.humanOnly === true || hovered?.humanOnly === true;
 
   return (
     <div
@@ -177,29 +159,21 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
             type="button"
             data-skill-item={item.name}
             data-skill-item-active={index === activeIndex ? 'true' : undefined}
-            data-skill-item-human-only={item.humanOnly ? 'true' : undefined}
-            aria-describedby={item.humanOnly ? humanOnlyNoteId : undefined}
             // Insert on pointerdown so the textarea never loses focus. A
             // click is explicit selection; hover deliberately does NOT
-            // activate the row (see the component docblock) — enter/leave
-            // below only drive the visual footer disclosure.
+            // activate the row (see the component docblock), and its only
+            // styling is the color-only hover:bg — hover must never change
+            // a row's rendered size or the menu's geometry.
             onPointerDown={(e) => {
               e.preventDefault();
               onSelect(index);
             }}
-            onPointerEnter={() => setHoverIndex(index)}
-            onPointerLeave={() => setHoverIndex((prev) => (prev === index ? null : prev))}
             className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] leading-snug transition-colors ${
               index === activeIndex ? 'bg-muted' : 'hover:bg-muted/50'
             }`}
           >
             <SkillIcon />
             <span className="shrink-0 font-semibold text-foreground">{item.name}</span>
-            {item.humanOnly && (
-              <span className="shrink-0 px-1.5 py-px rounded-full bg-muted text-[9px] font-medium tracking-wide text-muted-foreground/80">
-                human-only
-              </span>
-            )}
             <span className="min-w-0 flex-1 truncate text-muted-foreground">
               {item.description ?? ''}
             </span>
@@ -209,20 +183,6 @@ export const SkillReferenceMenu: React.FC<SkillReferenceMenuProps> = ({
           </button>
         ))}
       </div>
-      {hasHumanOnly && (
-        <div
-          id={humanOnlyNoteId}
-          data-skill-menu-disclosure={humanOnlyDisclosed ? 'true' : 'hidden'}
-          className={
-            humanOnlyDisclosed
-              ? 'px-3 py-2 border-t border-border/40 text-[11px] leading-snug text-muted-foreground'
-              : 'sr-only'
-          }
-        >
-          This skill cannot be invoked by a model, so its instructions will be
-          included with your feedback for the agent to follow.
-        </div>
-      )}
     </div>
   );
 };

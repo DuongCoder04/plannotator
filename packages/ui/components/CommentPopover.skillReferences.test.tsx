@@ -373,54 +373,56 @@ describe('CommentPopover skill references — no-preselection keyboard state mac
   );
 
   test.skipIf(!hasDom)(
-    'the human-only explanation is disclosed only on engagement, but stays reachable by AT',
+    'human-only skills render identically to every other row: no badge, no disclosure, no ARIA note',
     async () => {
+      // The menu no longer surfaces humanOnly at pick time (the instructions
+      // ride along with the exported feedback automatically). The old
+      // hover-disclosed footer changed the bottom-anchored menu's height under
+      // the pointer and oscillated the hovered row every frame.
       await mountPopover();
       const el = textarea();
-      await type(el, '$plannotator-rev');
+      await type(el, '$a'); // animate, annotate-helper, humanizer, plannotator-review
       expect(menu()).not.toBeNull();
-      // Nothing active: the explanation is not VISIBLE, even though the only
-      // row is human-only...
-      expect(document.querySelector('[data-skill-menu-disclosure="true"]')).toBeNull();
-      // ...but it is in the DOM (sr-only) and the row references it, so the
-      // state is exposed to assistive tech, not just as a visual badge.
-      const note = document.querySelector('[data-skill-menu-disclosure]');
-      expect(note).not.toBeNull();
-      expect(note!.className).toContain('sr-only');
-      expect(note!.textContent).toContain('cannot be invoked by a model');
-      expect(note!.textContent).toContain('included with your feedback');
-      const row = document.querySelector('[data-skill-item="plannotator-review"]')!;
-      expect(row.getAttribute('data-skill-item-human-only')).toBe('true');
-      expect(row.getAttribute('aria-describedby')).toBe(note!.id);
-      // Keyboard activation discloses it visibly.
-      await press(el, 'ArrowDown');
-      expect(document.querySelector('[data-skill-menu-disclosure="true"]')).not.toBeNull();
+      expect(document.querySelector('[data-skill-menu-disclosure]')).toBeNull();
+      const humanOnlyRow = document.querySelector('[data-skill-item="plannotator-review"]')!;
+      const plainRow = document.querySelector('[data-skill-item="animate"]')!;
+      expect(humanOnlyRow.hasAttribute('data-skill-item-human-only')).toBe(false);
+      expect(humanOnlyRow.hasAttribute('aria-describedby')).toBe(false);
+      expect(humanOnlyRow.className).toBe(plainRow.className);
+      expect(menu()!.textContent).not.toContain('human-only');
+      expect(menu()!.textContent).not.toContain('cannot be invoked');
     },
   );
 
   test.skipIf(!hasDom)(
-    'pointer hover over a human-only row discloses the explanation WITHOUT arming Enter',
+    'REGRESSION (hover jitter): hovering any row, human-only included, leaves the menu markup untouched',
     async () => {
       await mountPopover();
       const el = textarea();
       await type(el, 'This costs $');
-      const row = document.querySelector('[data-skill-item="plannotator-review"]')!;
-      await act(async () => {
-        row.dispatchEvent(new Event('pointerover', { bubbles: true }));
-      });
-      // The disclosure is a visual affordance only: no activation, and Enter
-      // still means newline (the no-preselection invariant holds under hover).
-      expect(document.querySelector('[data-skill-menu-disclosure="true"]')).not.toBeNull();
-      expect(activeRow()).toBeNull();
+      const menuEl = menu() as HTMLElement;
+      const before = menuEl.outerHTML;
+      for (const name of ['plannotator-review', 'animate']) {
+        const row = document.querySelector(`[data-skill-item="${name}"]`)!;
+        await act(async () => {
+          row.dispatchEvent(new Event('pointermove', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerenter', { bubbles: true }));
+        });
+        // Hover must not change ANY rendered output — no class flip, no new
+        // element, no style change — so the menu cannot grow, re-measure, or
+        // shift the row out from under the pointer.
+        expect((menu() as HTMLElement).outerHTML).toBe(before);
+        expect(activeRow()).toBeNull(); // and it still never arms Enter
+        await act(async () => {
+          row.dispatchEvent(new Event('pointerout', { bubbles: true }));
+          row.dispatchEvent(new Event('pointerleave', { bubbles: true }));
+        });
+        expect((menu() as HTMLElement).outerHTML).toBe(before);
+      }
       const enter = await press(el, 'Enter');
       expect(enter.defaultPrevented).toBe(false);
       expect(el.value).toBe('This costs $');
-      // Leaving the row folds the explanation back to sr-only.
-      await act(async () => {
-        row.dispatchEvent(new Event('pointerout', { bubbles: true }));
-      });
-      expect(document.querySelector('[data-skill-menu-disclosure="true"]')).toBeNull();
-      expect(document.querySelector('[data-skill-menu-disclosure]')).not.toBeNull();
     },
   );
 
