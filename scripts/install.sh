@@ -1610,7 +1610,7 @@ copy_commands_if_present() {
 # command of an AND-OR list except the last, and every shell we tested
 # (bash 3.2.57, which is what `curl | bash` gets on macOS, plus bash 5.3,
 # dash, zsh, and ksh) carries that suppression into the subshell. Writing
-# it as `if ! ( ... ); then` suppresses -e the same way. So the four fetch
+# it as `if ! ( ... ); then` suppresses -e the same way. So the fetch
 # steps below carry an explicit `|| exit 1`: without them a failed clone
 # ran the whole block anyway, the subshell exited 0 on its trailing `if`,
 # and the installer printed "YOU'RE ALL SET!" with no skills installed.
@@ -1629,10 +1629,47 @@ checkout_failed=0
     fi
 
     cd "$skills_tmp" || exit 1
-    git clone --depth 1 --filter=blob:none --sparse \
-        "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>/dev/null || exit 1
+    # Capture git's stderr instead of discarding it (#1238): on failure the
+    # real error is surfaced below so incompatibilities self-diagnose instead
+    # of hiding behind the generic "network or git error" message.
+    git_err="$skills_tmp/git-stderr"
+    surface_git_error() {
+        echo "git reported:" >&2
+        tail -n 5 "$git_err" >&2
+    }
+    sparse_clone=1
+    if ! git clone --depth 1 --filter=blob:none --sparse \
+        "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>"$git_err"; then
+        # Capability probe, not a version parse (same philosophy as the
+        # GitButler flag probing in packages/shared/gitbutler-core.ts):
+        # `git clone --sparse` needs git >= 2.25, and an older git (macOS
+        # with stale Xcode CLT ships 2.23) rejects the flag instantly with
+        # "error: unknown option `sparse'" before any network call (#1238).
+        # Fall back to a plain shallow clone — it costs download size, not
+        # correctness: every path the copy steps below read is present in
+        # the full checkout, and `git sparse-checkout set` (equally missing
+        # on that git) is skipped because there is nothing to narrow.
+        if grep -qi "unknown option" "$git_err" && grep -qi "sparse" "$git_err"; then
+            echo "This git does not support 'git clone --sparse' (needs git >= 2.25) — falling back to a plain shallow clone."
+            sparse_clone=0
+            rm -rf repo
+            if ! git clone --depth 1 \
+                "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>"$git_err"; then
+                surface_git_error
+                exit 1
+            fi
+        else
+            surface_git_error
+            exit 1
+        fi
+    fi
     cd repo || exit 1
-    git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>/dev/null || exit 1
+    if [ "$sparse_clone" -eq 1 ]; then
+        if ! git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>"$git_err"; then
+            surface_git_error
+            exit 1
+        fi
+    fi
 
     # Core skills -> Claude Code (also serve as /plannotator-* slash commands)
     # and the official OpenAI shared-agent path. SOFT guard: a tag pinned

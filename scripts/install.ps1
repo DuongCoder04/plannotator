@@ -1047,6 +1047,13 @@ function Copy-SkillIfPresent {
     }
 }
 
+# Captured tail of git's stderr from the most recent failed clone attempt,
+# surfaced with the "network or git error" message below so the real failure
+# self-diagnoses instead of being swallowed (#1238). Read before $skillsTmp
+# is removed.
+$gitStderrTail = @()
+$sparseClone = $true
+
 try {
     # Scoped Continue preference: on PowerShell < 7.2 (and profiles that
     # restore the old behavior), redirecting a native command's stderr under
@@ -1054,9 +1061,32 @@ try {
     # terminating error, and git prints its normal "Cloning into ..."
     # progress on stderr, so the clone "failed" on the message announcing it
     # started (#1162). Real failures stay detectable: the clone is verified
-    # by Test-Path below, never by a throw.
+    # by Test-Path below, never by a throw. Stderr goes to a file instead of
+    # $null (#1238) so failures can be diagnosed.
+    $gitErrFile = Join-Path $skillsTmp "git-stderr.txt"
     if (-not $skipSkillsResolved) {
-        & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$null }
+        & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$gitErrFile }
+        if (-not (Test-Path "$skillsTmp\repo")) {
+            $cloneErr = ""
+            if (Test-Path $gitErrFile) { $cloneErr = [System.IO.File]::ReadAllText($gitErrFile) }
+            # Capability probe, not a version parse (same philosophy as the
+            # GitButler flag probing in packages/shared/gitbutler-core.ts):
+            # `git clone --sparse` needs git >= 2.25, and an older git rejects
+            # the flag instantly with "error: unknown option `sparse'" before
+            # any network call (#1238). Fall back to a plain shallow clone -
+            # it costs download size, not correctness: every path the copy
+            # steps below read is present in the full checkout, and
+            # `git sparse-checkout set` (equally missing on that git) is
+            # skipped because there is nothing to narrow.
+            if ($cloneErr -match '(?i)unknown option' -and $cloneErr -match '(?i)sparse') {
+                Write-Host "This git does not support 'git clone --sparse' (needs git >= 2.25) - falling back to a plain shallow clone."
+                $sparseClone = $false
+                & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$gitErrFile }
+            }
+        }
+        if ((-not (Test-Path "$skillsTmp\repo")) -and (Test-Path $gitErrFile)) {
+            $gitStderrTail = @(Get-Content $gitErrFile -ErrorAction SilentlyContinue | Select-Object -Last 5)
+        }
     }
     # git is a native executable - it does not throw under
     # $ErrorActionPreference=Stop on non-zero exit. Guard with
@@ -1076,8 +1106,12 @@ try {
         try {
             # Same scoped Continue as the clone above: sparse-checkout may
             # write advice to stderr, which must not become a terminating
-            # error on PowerShell < 7.2 (#1162).
-            & { $local:ErrorActionPreference = 'Continue'; git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>$null }
+            # error on PowerShell < 7.2 (#1162). Skipped entirely on the
+            # plain-clone fallback (#1238): that git has no sparse-checkout
+            # subcommand, and the full checkout needs no narrowing.
+            if ($sparseClone) {
+                & { $local:ErrorActionPreference = 'Continue'; git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands 2>$null }
+            }
 
             # Claude Code and Codex consume different skill bodies. Claude Code
             # reads apps/skills/claude/* (dynamic-context injection
@@ -1168,6 +1202,10 @@ Remove-Item -Recurse -Force $skillsTmp -ErrorAction SilentlyContinue
 
 if ($checkoutFailed) {
     Write-Host "Error: unable to fetch $repo at $latestTag (network or git error)."
+    if ($gitStderrTail.Count -gt 0) {
+        Write-Host "git reported:"
+        foreach ($line in $gitStderrTail) { Write-Host "  $line" }
+    }
     Write-Host "Something went wrong - run the installer again."
     exit 1
 }

@@ -1124,6 +1124,10 @@ set "KIRO_AGENTS_DIR=%USERPROFILE%\.kiro\agents"
 set "OPENCODE_COMMANDS_DIR=%USERPROFILE%\.config\opencode\commands"
 set "GEMINI_COMMANDS_DIR=%USERPROFILE%\.gemini\commands"
 set "SKILLS_TMP=%TEMP%\plannotator-skills-%RANDOM%"
+REM git's stderr is captured OUTSIDE SKILLS_TMP (which is removed before the
+REM failure message prints) so a failed clone can show the real git error
+REM (#1238) instead of only the generic "network or git error" line.
+set "GIT_ERR_FILE=%TEMP%\plannotator-git-stderr-%RANDOM%.txt"
 mkdir "!SKILLS_TMP!" >nul 2>&1
 
 REM Opt-out: jump past the clone so no network call is made and
@@ -1131,10 +1135,34 @@ REM CHECKOUT_FAILED stays 0 - an opt-out is not a fetch failure and must not
 REM trip the guard below. Reported above, next to the git check.
 if "!SKIP_SKILLS!"=="1" goto skills_checkout_done
 
-git clone --depth 1 --filter=blob:none --sparse "https://github.com/!REPO!.git" --branch "!TAG!" "!SKILLS_TMP!\repo" >nul 2>&1
-if !ERRORLEVEL! equ 0 (
+set "CLONE_OK=0"
+set "SPARSE_CLONE=1"
+git clone --depth 1 --filter=blob:none --sparse "https://github.com/!REPO!.git" --branch "!TAG!" "!SKILLS_TMP!\repo" >nul 2>"!GIT_ERR_FILE!"
+if !ERRORLEVEL! equ 0 set "CLONE_OK=1"
+
+REM Capability probe, not a version parse (same philosophy as the GitButler
+REM flag probing in packages/shared/gitbutler-core.ts): `git clone --sparse`
+REM needs git >= 2.25, and an older git rejects the flag instantly with
+REM "error: unknown option `sparse'" before any network call (#1238). Fall
+REM back to a plain shallow clone - it costs download size, not correctness:
+REM every path the copy steps below read is present in the full checkout, and
+REM `git sparse-checkout set` (equally missing on that git) is skipped
+REM because there is nothing to narrow.
+set "SPARSE_UNSUPPORTED=0"
+if "!CLONE_OK!"=="0" (
+    findstr /i /c:"unknown option" "!GIT_ERR_FILE!" >nul 2>&1 && findstr /i /c:"sparse" "!GIT_ERR_FILE!" >nul 2>&1 && set "SPARSE_UNSUPPORTED=1"
+)
+if "!SPARSE_UNSUPPORTED!"=="1" (
+    echo This git does not support "git clone --sparse" ^(needs git ^>= 2.25^) - falling back to a plain shallow clone.
+    set "SPARSE_CLONE=0"
+    if exist "!SKILLS_TMP!\repo" rmdir /s /q "!SKILLS_TMP!\repo" >nul 2>&1
+    git clone --depth 1 "https://github.com/!REPO!.git" --branch "!TAG!" "!SKILLS_TMP!\repo" >nul 2>"!GIT_ERR_FILE!"
+    if !ERRORLEVEL! equ 0 set "CLONE_OK=1"
+)
+
+if "!CLONE_OK!"=="1" (
     pushd "!SKILLS_TMP!\repo"
-    git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands >nul 2>&1
+    if "!SPARSE_CLONE!"=="1" git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands >nul 2>&1
 
     REM Claude Code reads apps\skills\claude\* (injection `!`plannotator ... $ARGUMENTS``
     REM + allowed-tools, so /plannotator-* run with no permission prompt); Codex
@@ -1218,9 +1246,15 @@ rmdir /s /q "!SKILLS_TMP!" >nul 2>&1
 
 if "!CHECKOUT_FAILED!"=="1" (
     echo Error: unable to fetch !REPO! at !TAG! ^(network or git error^). 1>&2
+    if exist "!GIT_ERR_FILE!" (
+        echo git reported: 1>&2
+        type "!GIT_ERR_FILE!" 1>&2
+        del /q "!GIT_ERR_FILE!" >nul 2>&1
+    )
     echo Something went wrong - run the installer again. 1>&2
     exit /b 1
 )
+del /q "!GIT_ERR_FILE!" >nul 2>&1
 
 REM Claude Code commands are deprecated in favor of skills. Remove a legacy
 REM command file only once its replacement skill is actually on disk - running
