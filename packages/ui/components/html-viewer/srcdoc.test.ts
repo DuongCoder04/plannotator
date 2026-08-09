@@ -758,6 +758,169 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     });
     document.body.replaceChildren();
   });
+
+  test("pinpoint click posts an anchored selection and never mutates the hovered element", async () => {
+    document.body.innerHTML = [
+      '<div id="hero"><p class="intro">Anchor target text</p><p>Second paragraph</p></div>',
+    ].join("");
+    postBridge({
+      type: "plannotator-bridge-set-vim-mode",
+      enabled: false,
+    });
+    postBridge({
+      type: "plannotator-bridge-set-input-method",
+      method: "pinpoint",
+    });
+    // Mode affordance: crosshair cursor attribute while pinpoint is active.
+    expect(document.body.hasAttribute("data-plannotator-pinpoint-cursor")).toBe(true);
+
+    const target = document.querySelector<HTMLElement>("p.intro");
+    if (!target) throw new Error("target paragraph missing");
+
+    // Hover: the overlay box appears; the page element gains no class/style.
+    target.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
+    const box = document.querySelector<HTMLElement>("[data-plannotator-pinpoint-box]");
+    if (!box) throw new Error("pinpoint hover box missing");
+    expect(box.style.display).toBe("block");
+    expect(target.className).toBe("intro");
+    expect(target.getAttribute("style")).toBeNull();
+
+    // Click-to-pin: posts a selection carrying a validated anchor + pinpoint flag.
+    // Flush selection posts queued by earlier tests before collecting.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const messages: Array<Record<string, unknown>> = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data?.type === "plannotator-bridge-selection") messages.push(data);
+    };
+    window.addEventListener("message", collect);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    target.dispatchEvent(click);
+    // postMessage delivery is task-queued — let it flush before collecting.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.removeEventListener("message", collect);
+
+    expect(click.defaultPrevented).toBe(true); // page behavior suppressed
+    expect(messages.length).toBe(1);
+    const posted = messages[0]!;
+    expect(posted.pinpoint).toBe(true);
+    expect(posted.text).toBe("Anchor target text");
+    const anchor = posted.anchor as { selector: string; tagName: string; text?: string };
+    expect(anchor.tagName).toBe("p");
+    expect(anchor.text).toBe("Anchor target text");
+    // The serialized selector must uniquely resolve back to the pinned element.
+    const matches = document.querySelectorAll(anchor.selector);
+    expect(matches.length).toBe(1);
+    expect(matches[0]).toBe(target);
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+
+    // Anchor-first restore: find-and-mark scoped to the resolved element.
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "pin-restore",
+      originalText: "Anchor target text",
+      annotationType: "comment",
+      anchor,
+    });
+    const mark = document.querySelector('[data-bind-id="pin-restore"]');
+    expect(mark?.textContent).toBe("Anchor target text");
+    expect(target.contains(mark)).toBe(true);
+    postBridge({ type: "plannotator-bridge-remove-mark", id: "pin-restore" });
+
+    // Text drift under a STABLE anchor (#id): the element still identifies
+    // itself, so when the text is gone everywhere it gets a numbered pin badge
+    // (still counts as restored).
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "pin-badge",
+      originalText: "Text that no longer exists anywhere",
+      annotationType: "comment",
+      anchor: { selector: "#hero", tagName: "div" },
+    });
+    const badge = document.querySelector<HTMLElement>("[data-plannotator-pin-badge]");
+    if (!badge) throw new Error("pin badge missing");
+    expect(badge.textContent).toBe("1");
+    expect(document.querySelector('[data-bind-id="pin-badge"]')).toBeNull();
+
+    // A weak anchor with NO text snapshot is rejected outright (a missing
+    // snapshot is a rejection, not an exemption): restoration falls back to
+    // the document-wide text search instead of trusting the element.
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "pin-no-snapshot",
+      originalText: "Second paragraph",
+      annotationType: "comment",
+      anchor: { selector: anchor.selector, tagName: "p" },
+    });
+    const fallbackMark = document.querySelector('[data-bind-id="pin-no-snapshot"]');
+    expect(fallbackMark?.textContent).toBe("Second paragraph");
+    expect(target.contains(fallbackMark)).toBe(false);
+    postBridge({ type: "plannotator-bridge-remove-mark", id: "pin-no-snapshot" });
+
+    // Fail-closed anchors: a weak selector whose text snapshot no longer
+    // matches must not resolve (falls back to document-wide text search).
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "pin-stale",
+      originalText: "Second paragraph",
+      annotationType: "comment",
+      anchor: { selector: anchor.selector, tagName: "p", text: "Stale snapshot" },
+    });
+    const staleMark = document.querySelector('[data-bind-id="pin-stale"]');
+    expect(staleMark?.textContent).toBe("Second paragraph");
+    expect(target.contains(staleMark)).toBe(false);
+
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+    postBridge({
+      type: "plannotator-bridge-set-input-method",
+      method: "drag",
+    });
+    expect(document.body.hasAttribute("data-plannotator-pinpoint-cursor")).toBe(false);
+    document.body.replaceChildren();
+  });
+
+  test("behavioral-attribute anchors never bypass the text check", () => {
+    // Regenerated page: the button kept its role but its meaning flipped; the
+    // annotated text moved into a sibling paragraph. The role anchor must NOT
+    // resolve (role names behavior, not content) — the annotation follows the
+    // text via the document-wide search, and no pin lands on the button.
+    document.body.innerHTML = [
+      '<button role="button">Delete everything</button>',
+      "<p>Save draft</p>",
+    ].join("");
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "role-anchor",
+      originalText: "Save draft",
+      annotationType: "comment",
+      anchor: { selector: 'button[role="button"]', tagName: "button", text: "Save draft" },
+    });
+    const mark = document.querySelector('[data-bind-id="role-anchor"]');
+    expect(mark?.textContent).toBe("Save draft");
+    expect(document.querySelector("button")?.contains(mark)).toBe(false);
+    expect(document.querySelector("p")?.contains(mark)).toBe(true);
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+
+    // data-* attributes ARE author-controlled identity: a data-testid anchor
+    // whose text drifted still resolves, and with the text gone everywhere the
+    // element gets the pin badge.
+    document.body.innerHTML = '<div data-testid="stats">New numbers</div>';
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "data-anchor",
+      originalText: "Old numbers",
+      annotationType: "comment",
+      anchor: { selector: 'div[data-testid="stats"]', tagName: "div", text: "Old numbers" },
+    });
+    expect(document.querySelector('[data-bind-id="data-anchor"]')).toBeNull();
+    const dataBadge = document.querySelector<HTMLElement>("[data-plannotator-pin-badge]");
+    expect(dataBadge).not.toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    document.body.replaceChildren();
+  });
 });
 
 describe("injectIntoHead", () => {

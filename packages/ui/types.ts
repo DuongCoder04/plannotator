@@ -79,9 +79,23 @@ export interface Annotation {
     displayMode: boolean;
   }>; // math elements covered by a mixed text+formula selection
   prUrl?: string; // code-review PR mode: the PR this note belongs to, so it isn't shown/exported against another PR after an in-place switch
+  htmlAnchor?: HtmlElementAnchor; // raw-HTML pinpoint: serialized element anchor for reliable restoration
   // web-highlighter metadata for cross-element selections
   startMeta?: AnnotationTextMeta;
   endMeta?: AnnotationTextMeta;
+}
+
+/**
+ * Serialized element anchor for annotations created on the raw-HTML surface
+ * (pinpoint mode). Built inside the sandboxed viewer bridge: a verified-unique
+ * CSS selector plus a fingerprint (tag + normalized text snapshot) used to
+ * fail closed when a weak selector no longer matches the same content.
+ * Additive — annotations without one restore via document-wide text search.
+ */
+export interface HtmlElementAnchor {
+  selector: string;
+  tagName: string;
+  text?: string;
 }
 
 export type AlertKind = 'note' | 'tip' | 'warning' | 'caution' | 'important';

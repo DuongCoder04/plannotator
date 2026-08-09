@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type RefObject } from "react";
-import { AnnotationType, type Annotation, type EditorMode, type ImageAttachment } from "../../types";
+import { AnnotationType, type Annotation, type EditorMode, type HtmlElementAnchor, type ImageAttachment } from "../../types";
 import type { QuickLabel } from "../../utils/quickLabels";
 import { getIdentity } from "../../utils/identity";
 import type {
@@ -23,6 +23,10 @@ interface BridgeSelectionMessage {
   text: string;
   rect: BridgeRect;
   modeOverride?: EditorMode;
+  /** Serialized element anchor (pinpoint clicks) — validated, size-capped. */
+  anchor?: HtmlElementAnchor;
+  /** True when the selection came from a pinpoint click on an element. */
+  pinpoint?: boolean;
 }
 
 interface BridgeRect {
@@ -70,6 +74,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+// Size caps for the anchor DTO — the bridge script runs inside a sandboxed
+// iframe rendering arbitrary HTML, so everything it posts is validated and
+// bounded before it can reach React state or the annotation model.
+const MAX_ANCHOR_SELECTOR_LENGTH = 1024;
+const MAX_ANCHOR_TAG_LENGTH = 64;
+const MAX_ANCHOR_TEXT_LENGTH = 400;
+// Selection text is page-controlled too (a pinpoint click posts the element's
+// entire textContent), so it gets the same treatment: truncated here — not
+// rejected, a legitimate huge selection still annotates — before it can reach
+// React state, drafts, exported feedback, or a share URL. Mirrors
+// MAX_SELECTION_TEXT in bridge-script.ts; this side is the authoritative one.
+export const MAX_SELECTION_TEXT_LENGTH = 10000;
+
+/** Validate a bridge-posted element anchor. Exported for protocol tests. */
+export function parseHtmlElementAnchor(value: unknown): HtmlElementAnchor | null {
+  if (!isRecord(value)) return null;
+  const { selector, tagName, text } = value;
+  if (
+    typeof selector !== "string"
+    || selector.length === 0
+    || selector.length > MAX_ANCHOR_SELECTOR_LENGTH
+    || typeof tagName !== "string"
+    || tagName.length === 0
+    || tagName.length > MAX_ANCHOR_TAG_LENGTH
+  ) {
+    return null;
+  }
+  if (text === undefined) return { selector, tagName };
+  if (typeof text !== "string" || text.length > MAX_ANCHOR_TEXT_LENGTH) return null;
+  return { selector, tagName, text };
+}
+
 function parseBridgeRect(value: unknown): BridgeRect | null {
   if (!isRecord(value)) return null;
   const { top, left, width, height } = value;
@@ -81,7 +117,8 @@ function parseBridgeRect(value: unknown): BridgeRect | null {
     : null;
 }
 
-function parseBridgeMessage(value: unknown): BridgeMessage | null {
+/** Validate any bridge message. Exported for protocol tests. */
+export function parseBridgeMessage(value: unknown): BridgeMessage | null {
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
@@ -90,9 +127,13 @@ function parseBridgeMessage(value: unknown): BridgeMessage | null {
       if (typeof value.text !== "string" || !rect) return null;
       return {
         type: value.type,
-        text: value.text,
+        text: value.text.length > MAX_SELECTION_TEXT_LENGTH
+          ? value.text.slice(0, MAX_SELECTION_TEXT_LENGTH)
+          : value.text,
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
+        anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
+        pinpoint: value.pinpoint === true,
       };
     }
     case `${PREFIX}selection-clear`:
@@ -141,6 +182,9 @@ export function useHtmlAnnotation({
   const [quickLabelPicker, setQuickLabelPicker] = useState<QuickLabelPickerState | null>(null);
 
   const pendingTextRef = useRef<string>("");
+  // Element anchor for the pending pinpoint selection — committed onto the
+  // annotation so restoration can resolve the exact element again.
+  const pendingAnchorRef = useRef<HtmlElementAnchor | null>(null);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const modeRef = useRef(mode);
@@ -208,6 +252,7 @@ export function useHtmlAnnotation({
 
       if (type === `${PREFIX}selection`) {
         pendingTextRef.current = message.text;
+        pendingAnchorRef.current = message.anchor ?? null;
         const anchor = positionAnchor(message.rect);
         if (!anchor) return;
 
@@ -225,9 +270,16 @@ export function useHtmlAnnotation({
             originalText: message.text,
             author: getIdentity(),
             createdA: Date.now(),
+            htmlAnchor: message.anchor,
           });
           pendingTextRef.current = "";
-        } else if (currentMode === "comment") {
+          pendingAnchorRef.current = null;
+        } else if (
+          currentMode === "comment"
+          // Pinpoint click-to-pin: the click already chose the target, so skip
+          // the intermediate toolbar and go straight to the comment composer.
+          || (message.pinpoint && currentMode === "selection")
+        ) {
           // Release iframe focus so the popover's textarea autofocus lands in the
           // parent (otherwise the iframe keeps focus and swallows further keys).
           iframeRef.current?.blur();
@@ -257,6 +309,7 @@ export function useHtmlAnnotation({
         // not drop the annotation on submit. It's overwritten on the next selection.
         if (!commentPopoverRef.current && !quickLabelPickerRef.current) {
           pendingTextRef.current = "";
+          pendingAnchorRef.current = null;
         }
       }
 
@@ -315,6 +368,7 @@ export function useHtmlAnnotation({
     setCommentPopover(null);
     setQuickLabelPicker(null);
     pendingTextRef.current = "";
+    pendingAnchorRef.current = null;
     anchorRef.current?.remove();
     anchorRef.current = null;
     postToIframe(iframeRef.current, { type: `${PREFIX}cancel-selection` });
@@ -351,10 +405,12 @@ export function useHtmlAnnotation({
         originalText: text,
         author: getIdentity(),
         createdA: Date.now(),
+        htmlAnchor: pendingAnchorRef.current ?? undefined,
       });
 
       setToolbarState(null);
       pendingTextRef.current = "";
+      pendingAnchorRef.current = null;
     },
     [iframeRef],
   );
@@ -392,10 +448,12 @@ export function useHtmlAnnotation({
         author: getIdentity(),
         createdA: Date.now(),
         images,
+        htmlAnchor: pendingAnchorRef.current ?? undefined,
       });
 
       setCommentPopover(null);
       pendingTextRef.current = "";
+      pendingAnchorRef.current = null;
     },
     [iframeRef],
   );
@@ -404,12 +462,14 @@ export function useHtmlAnnotation({
     postToIframe(iframeRef.current, { type: `${PREFIX}cancel-selection` });
     setCommentPopover(null);
     pendingTextRef.current = "";
+    pendingAnchorRef.current = null;
   }, [iframeRef]);
 
   const handleToolbarClose = useCallback(() => {
     postToIframe(iframeRef.current, { type: `${PREFIX}cancel-selection` });
     setToolbarState(null);
     pendingTextRef.current = "";
+    pendingAnchorRef.current = null;
   }, [iframeRef]);
 
   const applyQuickLabel = useCallback(
@@ -431,9 +491,11 @@ export function useHtmlAnnotation({
         quickLabelTip: label.tip,
         author: getIdentity(),
         createdA: Date.now(),
+        htmlAnchor: pendingAnchorRef.current ?? undefined,
       });
       clearState();
       pendingTextRef.current = "";
+      pendingAnchorRef.current = null;
     },
     [iframeRef],
   );
@@ -452,6 +514,7 @@ export function useHtmlAnnotation({
     postToIframe(iframeRef.current, { type: `${PREFIX}cancel-selection` });
     setQuickLabelPicker(null);
     pendingTextRef.current = "";
+    pendingAnchorRef.current = null;
   }, [iframeRef]);
 
   const removeHighlight = useCallback(
@@ -475,6 +538,9 @@ export function useHtmlAnnotation({
           id: ann.id,
           originalText: ann.originalText,
           annotationType: annType,
+          // Anchor-first restore: the bridge resolves the serialized element
+          // and scopes the text search to it, falling back to document-wide.
+          anchor: ann.htmlAnchor,
         });
       }
     },

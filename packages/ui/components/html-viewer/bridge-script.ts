@@ -40,6 +40,9 @@ export const ANNOTATION_HIGHLIGHT_CSS = `
 .annotation-highlight:hover {
   filter: brightness(1.2);
 }
+/* Vim pinpoint target tint. The MOUSE pinpoint path no longer mutates author
+ * elements — it draws the dedicated overlay box below — but keyboard (vim)
+ * navigation keeps this class-based visual. */
 .plannotator-pinpoint-hover {
   background-color: oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.12) !important;
   border-radius: 3px;
@@ -48,6 +51,69 @@ export const ANNOTATION_HIGHLIGHT_CSS = `
 /* SVG groups can't render a CSS background, so use a soft glow instead. */
 .plannotator-pinpoint-hover:is(g, svg) {
   filter: drop-shadow(0 0 4px oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.55));
+}
+/* Mouse pinpoint hover: a fixed-position outline box sized to the hovered
+ * element's rect. Never a class/style write on the page's own elements. */
+[data-plannotator-pinpoint-box] {
+  position: fixed;
+  z-index: 2147483643;
+  pointer-events: none;
+  display: none;
+  box-sizing: border-box;
+  border: 2px solid oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.85);
+  border-radius: 5px;
+  background: oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.06);
+}
+[data-plannotator-pinpoint-box].pn-pin-enter {
+  animation: pn-pinpoint-in 0.12s ease-out;
+}
+[data-plannotator-pinpoint-box][data-pinned] {
+  border-color: var(--pn-accent, #d97757);
+  background: oklch(from var(--pn-accent, #d97757) l c h / 0.08);
+}
+@keyframes pn-pinpoint-in {
+  from { opacity: 0; transform: scale(0.985); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* Numbered pin badges for committed element annotations. */
+[data-plannotator-pin-badge] {
+  position: fixed;
+  z-index: 2147483644;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: var(--pn-accent, #d97757);
+  color: #fff;
+  font: 700 10px/1 system-ui, -apple-system, sans-serif;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25), inset 0 0 0 1px rgba(0,0,0,.06);
+  pointer-events: auto;
+  cursor: pointer !important;
+  user-select: none;
+  animation: pn-pin-badge-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes pn-pin-badge-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+/* Pinpoint mode affordance: crosshair everywhere (existing marks and badges
+ * stay pointer via their own !important rules below). */
+body[data-plannotator-pinpoint-cursor],
+body[data-plannotator-pinpoint-cursor] * {
+  cursor: crosshair !important;
+}
+body[data-plannotator-pinpoint-cursor] .annotation-highlight,
+body[data-plannotator-pinpoint-cursor] [data-plannotator-pin-badge] {
+  cursor: pointer !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-plannotator-pinpoint-box].pn-pin-enter,
+  [data-plannotator-pin-badge] {
+    animation: none;
+  }
 }
 body[data-plannotator-vim-focus-owner]:focus {
   outline: none !important;
@@ -220,6 +286,8 @@ export const BRIDGE_SCRIPT = `(function() {
   // --- Selection ---
   var pendingSelection = null;
   var pendingRange = null; // live range for the pending selection (scroll tracking)
+  var pendingPinEl = null; // element pinned by a pinpoint click (outline + scroll tracking)
+  var pendingPinAnchor = null; // serialized anchor for the pending pin
   var currentInputMethod = 'drag'; // 'drag' = text selection, 'pinpoint' = click an element
   var pinpointHover = null;
   var vimEnabled = false;
@@ -247,7 +315,17 @@ export const BRIDGE_SCRIPT = `(function() {
     setTimeout(handleSelection, 10);
   });
 
-  function handleSelection(modeOverride) {
+  // The page fully controls element text, so everything posted as a selection
+  // is bounded here before it crosses the bridge (the parent enforces the same
+  // cap on its side of the trust boundary). One pinpoint click on a huge
+  // <pre>/<table> must not ship megabytes into drafts, feedback, or share URLs.
+  var MAX_SELECTION_TEXT = 10000;
+
+  function capSelectionText(text) {
+    return text.length > MAX_SELECTION_TEXT ? text.slice(0, MAX_SELECTION_TEXT) : text;
+  }
+
+  function handleSelection(modeOverride, extras) {
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) {
       // Trailing clear from a plain-click element annotation — consume it once.
@@ -256,12 +334,13 @@ export const BRIDGE_SCRIPT = `(function() {
         parent.postMessage({ type: PREFIX + 'selection-clear' }, '*');
         pendingSelection = null;
         pendingRange = null;
+        clearPendingPin();
       }
       return false;
     }
     skipNextClear = false; // a real text selection happened
     var range = sel.getRangeAt(0);
-    var text = sel.toString().trim();
+    var text = capSelectionText(sel.toString().trim());
     if (!text) return false;
 
     var rect = range.getBoundingClientRect();
@@ -278,6 +357,8 @@ export const BRIDGE_SCRIPT = `(function() {
       type: PREFIX + 'selection',
       text: text,
       modeOverride: modeOverride || undefined,
+      anchor: (extras && extras.anchor) || undefined,
+      pinpoint: (extras && extras.pinpoint) || undefined,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
     }, '*');
     return true;
@@ -289,13 +370,17 @@ export const BRIDGE_SCRIPT = `(function() {
   var scrollRaf = 0;
   function postSelectionRect() {
     scrollRaf = 0;
-    if (!pendingSelection || !pendingRange) return;
-    var r = pendingRange.getBoundingClientRect();
+    if (!pendingSelection) return;
+    // Element pins carry no live range — track the pinned element's box instead.
+    var tracked = pendingRange || (pendingPinEl && pendingPinEl.isConnected ? pendingPinEl : null);
+    if (!tracked) return;
+    var r = tracked.getBoundingClientRect();
     if (r.bottom < 0 || r.top > window.innerHeight) {
       // Selection scrolled out of view — close the toolbar (matches markdown).
       parent.postMessage({ type: PREFIX + 'selection-clear' }, '*');
       pendingSelection = null;
       pendingRange = null;
+      clearPendingPin();
       return;
     }
     parent.postMessage({
@@ -319,8 +404,8 @@ export const BRIDGE_SCRIPT = `(function() {
       var annType = e.data.annotationType || 'comment';
       if (pendingSelection) {
         // Text selections wrap a <mark>; element pinpoints (e.g. SVG nodes) carry
-        // no range, so there's no inline mark to apply — the annotation is still
-        // captured on the parent side from the posted text.
+        // no range, so there's no inline mark to apply — instead the pinned
+        // element gets a numbered pin badge anchored to its box.
         if (pendingSelection.startContainerPath) {
           applyMark(id, annType, pendingSelection);
           if (
@@ -329,16 +414,48 @@ export const BRIDGE_SCRIPT = `(function() {
           ) {
             vimActionReturn.range = committedMarkRange(id) || vimActionReturn.range;
           }
+        } else if (pendingPinEl) {
+          registerPin(id, pendingPinEl, pendingPinAnchor);
         }
         pendingSelection = null;
         pendingRange = null;
         window.getSelection().removeAllRanges();
       }
+      clearPendingPin();
       restoreVimSemanticTarget();
     }
 
     else if (type === PREFIX + 'find-and-mark') {
-      var found = findTextAndMark(e.data.id, e.data.originalText, e.data.annotationType || 'comment');
+      // Anchor-first restoration: resolve the serialized element anchor and scope
+      // the text search to it; a resolved element whose text drifted still gets a
+      // pin badge. Document-wide text search remains the fallback (and the only
+      // path for anchor-less annotations, e.g. from shared URLs).
+      var restoreType = e.data.annotationType || 'comment';
+      var anchorEl = resolveAnchorElement(e.data.anchor);
+      var found = false;
+      var isSvgAnchor = anchorEl && (anchorEl.ownerSVGElement || anchorEl.tagName.toLowerCase() === 'svg');
+      if (isSvgAnchor) {
+        // SVG content never takes an inline <mark> (it would un-render the
+        // text) — a resolved SVG anchor is always a pin, and the HTML-oriented
+        // text search below could only mis-mark unrelated HTML text.
+        registerPin(e.data.id, anchorEl, e.data.anchor);
+        found = true;
+      }
+      if (!found && anchorEl) {
+        found = findTextAndMark(e.data.id, e.data.originalText, restoreType, anchorEl);
+      }
+      if (!found) {
+        // Document-wide text search runs BEFORE the pin fallback: if the
+        // annotated text moved elsewhere in a regenerated page, the annotation
+        // follows the text rather than badging the stale container.
+        found = findTextAndMark(e.data.id, e.data.originalText, restoreType);
+      }
+      if (!found && anchorEl) {
+        // Element still resolves but its text is gone everywhere: badge the
+        // element itself as the last resort.
+        registerPin(e.data.id, anchorEl, e.data.anchor);
+        found = true;
+      }
       parent.postMessage({
         type: PREFIX + 'mark-applied',
         id: e.data.id,
@@ -348,17 +465,20 @@ export const BRIDGE_SCRIPT = `(function() {
 
     else if (type === PREFIX + 'remove-mark') {
       removeMark(e.data.id);
+      unregisterPin(e.data.id);
     }
 
     else if (type === PREFIX + 'clear-marks') {
       var marks = document.querySelectorAll('.annotation-highlight[data-bind-id]');
       for (var i = marks.length - 1; i >= 0; i--) unwrapMark(marks[i]);
+      clearAllPins();
     }
 
     else if (type === PREFIX + 'cancel-selection') {
       pendingSelection = null;
       pendingRange = null;
       skipNextClear = false;
+      clearPendingPin();
       window.getSelection().removeAllRanges();
       restoreVimSemanticTarget();
     }
@@ -369,6 +489,14 @@ export const BRIDGE_SCRIPT = `(function() {
         mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
         mark.classList.add('focused');
         setTimeout(function() { mark.classList.remove('focused'); }, 2000);
+      } else {
+        // Pin-only annotation (no inline mark): scroll its element into view and
+        // flash the pinned outline over it.
+        var pin = findPin(e.data.id);
+        if (pin && pin.element && pin.element.isConnected) {
+          pin.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          flashPinnedBox(pin.element);
+        }
       }
     }
 
@@ -383,9 +511,11 @@ export const BRIDGE_SCRIPT = `(function() {
 
     else if (type === PREFIX + 'set-input-method') {
       currentInputMethod = e.data.method === 'pinpoint' ? 'pinpoint' : 'drag';
-      if (currentInputMethod !== 'pinpoint') {
-        if (pinpointHover) { pinpointHover.classList.remove('plannotator-pinpoint-hover'); pinpointHover = null; }
-        if (pinpointLabelEl) pinpointLabelEl.style.display = 'none';
+      if (currentInputMethod === 'pinpoint') {
+        if (document.body) document.body.setAttribute('data-plannotator-pinpoint-cursor', '');
+      } else {
+        if (document.body) document.body.removeAttribute('data-plannotator-pinpoint-cursor');
+        clearPinpointHover();
       }
       if (vimEnabled) updateVimUi();
     }
@@ -423,10 +553,14 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   });
 
-  // --- Pinpoint: hover to outline a whole element, click to select its text ---
-  // Reuses the normal selection pipeline — a pinpoint click just sets the iframe
-  // selection over the element's text, then runs handleSelection() like a drag.
-  var PINPOINT_SKIP_SELECTOR = 'script,style,noscript,[data-plannotator-vim-ui],.annotation-highlight';
+  // --- Pinpoint: hover to outline a whole element, click to pin it ---
+  // Reuses the normal selection pipeline — a pinpoint click sets the iframe
+  // selection over the element's text, then runs handleSelection() like a drag —
+  // but the hover visual is a dedicated fixed-position outline box (never a
+  // class write on the page's own elements), the click also serializes a CSS
+  // anchor for later restoration, and element-only pins (SVG etc.) get a
+  // numbered badge. Modeled on app-notes-extension + agentation.
+  var PINPOINT_SKIP_SELECTOR = 'script,style,noscript,[data-plannotator-vim-ui],[data-plannotator-pin-badge],.annotation-highlight';
   var SEMANTIC_BLOCK_SELECTOR = 'h1,h2,h3,h4,h5,h6,p,li,pre,blockquote,figcaption,table,button,[data-annotate],svg g';
   var SEMANTIC_GROUP_SELECTOR = 'section,article,aside,nav,header,footer,ul,ol,figure,main';
   var SEMANTIC_INLINE_SELECTOR = 'a,em,strong,b,i,code,small,label,mark,sup,sub,u,abbr,time';
@@ -617,34 +751,357 @@ export const BRIDGE_SCRIPT = `(function() {
     return pointerSemanticGraph;
   }
 
-  document.addEventListener('mousemove', function(e) {
-    if (currentInputMethod !== 'pinpoint') return;
-    if (vimEnabled && vimPhase !== 'inactive') return;
-    var pointerGraph = graphForPointerFrame();
-    var pointerTarget = resolveSemanticTarget(pointerGraph, e.target);
-    var el = pointerTarget && pointerTarget.element;
-    if (el !== pinpointHover) {
-      if (pinpointHover) pinpointHover.classList.remove('plannotator-pinpoint-hover');
-      pinpointHover = el;
-      if (el) el.classList.add('plannotator-pinpoint-hover');
+  // Hover outline box: fixed-position, pointer-events none, sized to the
+  // hovered element's live rect. The page DOM is never touched for hover.
+  var pinpointBoxEl = null;
+  function getPinpointBoxEl() {
+    if (!pinpointBoxEl) {
+      pinpointBoxEl = document.createElement('div');
+      pinpointBoxEl.setAttribute('data-plannotator-pinpoint-box', '');
+      pinpointBoxEl.setAttribute('data-plannotator-vim-ui', '');
     }
-    if (!el) { hidePinpointLabel(); return; }
+    if (!pinpointBoxEl.isConnected) document.body.appendChild(pinpointBoxEl);
+    return pinpointBoxEl;
+  }
+  function positionPinpointBox(el) {
+    var r = el.getBoundingClientRect();
+    var box = getPinpointBoxEl();
+    box.style.display = 'block';
+    box.style.left = r.left + 'px';
+    box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px';
+    box.style.height = r.height + 'px';
+  }
+  function hidePinpointBox() {
+    if (pinpointBoxEl) {
+      pinpointBoxEl.style.display = 'none';
+      pinpointBoxEl.removeAttribute('data-pinned');
+      pinpointBoxEl.classList.remove('pn-pin-enter');
+    }
+  }
+  function clearPinpointHover() {
+    pinpointHover = null;
+    if (!pendingPinEl) hidePinpointBox();
+    hidePinpointLabel();
+  }
+  function positionPinpointLabel(el, labelText) {
     var r = el.getBoundingClientRect();
     var lbl = getPinpointLabelEl();
-    lbl.textContent = PINPOINT_LABELS[el.tagName] || el.tagName.toLowerCase();
+    lbl.textContent = labelText;
     lbl.style.display = 'block';
+    // Flip below the element when the pill would leave the viewport top.
     var top = r.top - 22;
-    lbl.style.top = (top < 2 ? r.top + 2 : top) + 'px';
-    lbl.style.left = Math.max(2, r.left) + 'px';
+    if (top < 2) top = Math.min(r.bottom + 4, window.innerHeight - 24);
+    lbl.style.top = top + 'px';
+    lbl.style.left = Math.max(2, Math.min(r.left, window.innerWidth - 120)) + 'px';
+  }
+
+  // Identity-gated hover update (only restyle when the resolved element
+  // changes); shared by mousemove and the scroll/resize reconcile pass.
+  function updatePinpointHover(node) {
+    var graph = graphForPointerFrame();
+    var target = resolveSemanticTarget(graph, node);
+    var el = target && target.element;
+    if (el !== pinpointHover) {
+      pinpointHover = el;
+      if (el && !pendingPinEl) {
+        var box = getPinpointBoxEl();
+        box.classList.remove('pn-pin-enter');
+        void box.offsetWidth; // restart the enter animation
+        box.classList.add('pn-pin-enter');
+        positionPinpointBox(el);
+      } else if (!pendingPinEl) {
+        hidePinpointBox();
+      }
+    } else if (el && !pendingPinEl) {
+      positionPinpointBox(el); // same element — keep the box glued while scrolling
+    }
+    if (!el || pendingPinEl) { hidePinpointLabel(); return; }
+    positionPinpointLabel(el, target.label || (PINPOINT_LABELS[el.tagName] || el.tagName.toLowerCase()));
+  }
+
+  var lastPointer = null;
+  document.addEventListener('mousemove', function(e) {
+    lastPointer = { x: e.clientX, y: e.clientY };
+    if (currentInputMethod !== 'pinpoint') return;
+    if (vimEnabled && vimPhase !== 'inactive') return;
+    // Hit-test at the pointer instead of trusting e.target so the same code
+    // path serves the scroll re-hit-test below.
+    updatePinpointHover(document.elementFromPoint(e.clientX, e.clientY) || e.target);
   });
 
-  // Pop the toolbar for a whole element: select its text if possible (so a <mark>
-  // can wrap it), else post its text + box directly so the toolbar still anchors
-  // (e.g. an SVG node, whose <text> doesn't select like HTML text).
-  function annotateElement(el, modeOverride) {
+  // rAF-coalesced reconcile: keeps the hover box under a stationary cursor
+  // while the page scrolls, tracks the pinned element, and repositions pin
+  // badges. Capture-phase scroll so inner scroll containers count too.
+  var pinpointReconcileRaf = 0;
+  function schedulePinpointReconcile() {
+    if (pinpointReconcileRaf) return;
+    pinpointReconcileRaf = requestAnimationFrame(function() {
+      pinpointReconcileRaf = 0;
+      renderPinBadges();
+      if (pendingPinEl && pendingPinEl.isConnected) {
+        positionPinpointBox(pendingPinEl);
+        return;
+      }
+      if (currentInputMethod !== 'pinpoint') return;
+      if (vimEnabled && vimPhase !== 'inactive') return;
+      if (lastPointer) {
+        updatePinpointHover(document.elementFromPoint(lastPointer.x, lastPointer.y));
+      }
+    });
+  }
+  window.addEventListener('scroll', schedulePinpointReconcile, { passive: true, capture: true });
+  window.addEventListener('resize', schedulePinpointReconcile, { passive: true });
+
+  // --- Pin badges: numbered markers for element-only annotations ---
+  var pinRegistry = []; // { id, element, anchor, badge }
+  function findPin(id) {
+    for (var i = 0; i < pinRegistry.length; i++) {
+      if (pinRegistry[i].id === id) return pinRegistry[i];
+    }
+    return null;
+  }
+  function registerPin(id, element, anchor) {
+    if (findPin(id)) return;
+    var badge = document.createElement('div');
+    badge.setAttribute('data-plannotator-pin-badge', '');
+    badge.setAttribute('data-plannotator-vim-ui', '');
+    badge.addEventListener('click', function(clickEvent) {
+      clickEvent.preventDefault();
+      clickEvent.stopPropagation();
+      parent.postMessage({ type: PREFIX + 'mark-click', id: id }, '*');
+    });
+    document.body.appendChild(badge);
+    pinRegistry.push({ id: id, element: element, anchor: anchor || null, badge: badge });
+    renderPinBadges();
+  }
+  function unregisterPin(id) {
+    for (var i = pinRegistry.length - 1; i >= 0; i--) {
+      if (pinRegistry[i].id === id) {
+        var badge = pinRegistry[i].badge;
+        if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+        pinRegistry.splice(i, 1);
+      }
+    }
+    renderPinBadges();
+  }
+  function clearAllPins() {
+    for (var i = 0; i < pinRegistry.length; i++) {
+      var badge = pinRegistry[i].badge;
+      if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+    }
+    pinRegistry = [];
+  }
+  function renderPinBadges() {
+    for (var i = 0; i < pinRegistry.length; i++) {
+      var pin = pinRegistry[i];
+      if ((!pin.element || !pin.element.isConnected) && pin.anchor) {
+        // The page re-rendered under the pin — re-acquire through the anchor.
+        pin.element = resolveAnchorElement(pin.anchor);
+      }
+      // Number by registry (creation) order, independent of visibility.
+      pin.badge.textContent = String(i + 1);
+      if (!pin.element || !pin.element.isConnected) {
+        pin.badge.style.display = 'none';
+        continue;
+      }
+      var r = pin.element.getBoundingClientRect();
+      // A 0x0 rect means the element isn't rendered (display:none) — but only
+      // in engines that lay out at all (body has size), so headless DOM test
+      // environments where every rect is 0x0 don't hide everything.
+      var zeroSize = !r.width && !r.height
+        && document.body.getBoundingClientRect().width > 0;
+      if (zeroSize || r.bottom < 0 || r.top > window.innerHeight) {
+        pin.badge.style.display = 'none';
+        continue;
+      }
+      pin.badge.style.display = 'flex';
+      pin.badge.style.left = Math.min(r.right, window.innerWidth - 4) + 'px';
+      pin.badge.style.top = Math.max(4, r.top) + 'px';
+    }
+  }
+  function flashPinnedBox(el) {
+    var box = getPinpointBoxEl();
+    box.setAttribute('data-pinned', '');
+    positionPinpointBox(el);
+    setTimeout(function() {
+      if (!pendingPinEl) hidePinpointBox();
+    }, 1200);
+  }
+
+  // --- Element anchors: verified-unique CSS selectors for restoration ---
+  // Semantic ladder (id → identity attribute → meaningful classes), each rung
+  // proved unique with a real query before acceptance; positional
+  // tag > tag:nth-of-type() path as the last resort. Restoration fails closed:
+  // a weak (positional/class) selector must also match the captured text
+  // snapshot, so a shifted list never mis-anchors an annotation.
+  var ANCHOR_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test', 'aria-label', 'name', 'role', 'href', 'alt'];
+
+  function anchorTextSnapshot(el) {
+    var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    return text.length > 180 ? text.slice(0, 180) : text;
+  }
+
+  function uniquelySelects(selector, el) {
+    try {
+      var matches = document.querySelectorAll(selector);
+      return matches.length === 1 && matches[0] === el;
+    } catch (ex) {
+      return false;
+    }
+  }
+
+  function escapeAttrValue(value) {
+    return '"' + value.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"';
+  }
+
+  function isLikelyGeneratedClass(name) {
+    if (name.length > 36) return true;
+    if (/^[a-f0-9]{8,}$/i.test(name)) return true;
+    if (/[A-Za-z]+[_-][A-Za-z]*[0-9]{4,}/.test(name)) return true;
+    return false;
+  }
+
+  function semanticSelectorFor(el) {
+    var tag = el.tagName.toLowerCase();
+    var canEscape = typeof CSS !== 'undefined' && CSS.escape;
+    if (el.id && canEscape) {
+      var idSel = '#' + CSS.escape(el.id);
+      if (uniquelySelects(idSel, el)) return idSel;
+    }
+    for (var i = 0; i < ANCHOR_IDENTITY_ATTRS.length; i++) {
+      var name = ANCHOR_IDENTITY_ATTRS[i];
+      var value = el.getAttribute && el.getAttribute(name);
+      if (!value) continue;
+      value = value.trim();
+      if (!value || value.length > 240 || value.indexOf('\\n') >= 0) continue;
+      var attrSel = tag + '[' + name + '=' + escapeAttrValue(value) + ']';
+      if (uniquelySelects(attrSel, el)) return attrSel;
+    }
+    if (canEscape && el.classList && el.classList.length) {
+      var meaningful = [];
+      for (var c = 0; c < el.classList.length && meaningful.length < 2; c++) {
+        var cls = el.classList[c];
+        if (isLikelyGeneratedClass(cls)) continue;
+        meaningful.push('.' + CSS.escape(cls));
+      }
+      if (meaningful.length) {
+        var classSel = tag + meaningful.join('');
+        if (uniquelySelects(classSel, el)) return classSel;
+      }
+    }
+    return null;
+  }
+
+  function buildAnchorSelector(el) {
+    var path = [];
+    var current = el;
+    while (current && current.nodeType === 1 && current !== document.body && current !== document.documentElement) {
+      var semantic = semanticSelectorFor(current);
+      if (semantic) {
+        path.unshift(semantic);
+        return path.join(' > ');
+      }
+      var segment = current.tagName.toLowerCase();
+      var parentEl = current.parentElement;
+      if (parentEl) {
+        var sameTag = [];
+        for (var i = 0; i < parentEl.children.length; i++) {
+          if (parentEl.children[i].tagName === current.tagName) sameTag.push(parentEl.children[i]);
+        }
+        if (sameTag.length > 1) segment += ':nth-of-type(' + (sameTag.indexOf(current) + 1) + ')';
+      }
+      path.unshift(segment);
+      var candidate = path.join(' > ');
+      if (uniquelySelects(candidate, el)) return candidate;
+      current = parentEl;
+    }
+    // Reaching here means every candidate — including the full body-rooted
+    // path — failed the uniqueness query. A known-ambiguous selector must not
+    // ship as an anchor: no anchor (text-search restoration) beats one that
+    // can bind to the wrong element after a re-render.
+    return null;
+  }
+
+  function buildElementAnchor(el) {
+    if (!el || el.nodeType !== 1) return null;
+    var selector = buildAnchorSelector(el);
+    if (!selector) return null;
+    return {
+      selector: selector,
+      tagName: el.tagName.toLowerCase(),
+      text: anchorTextSnapshot(el)
+    };
+  }
+
+  // Stable identity: the selector IS the resolved element's own #id or data-*
+  // rung, re-derived from the element itself and compared whole — never parsed
+  // out of the selector string (an attribute value containing ' > ' or '#'
+  // would fool a string parse). Behavioral attributes (role, href, aria-label,
+  // name, alt) identify what an element does, not what it says, so they never
+  // exempt an anchor from the text check: a regenerated page keeps its
+  // role="button" while the button's meaning changes completely.
+  var STABLE_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test'];
+
+  function anchorHasStableIdentity(selector, el) {
+    var canEscape = typeof CSS !== 'undefined' && CSS.escape;
+    if (el.id && canEscape && selector === '#' + CSS.escape(el.id)) return true;
+    var tag = el.tagName.toLowerCase();
+    for (var i = 0; i < STABLE_IDENTITY_ATTRS.length; i++) {
+      var name = STABLE_IDENTITY_ATTRS[i];
+      var value = el.getAttribute && el.getAttribute(name);
+      if (!value) continue;
+      if (selector === tag + '[' + name + '=' + escapeAttrValue(value.trim()) + ']') return true;
+    }
+    return false;
+  }
+
+  function resolveAnchorElement(anchor) {
+    if (!anchor || typeof anchor.selector !== 'string' || !anchor.selector || typeof anchor.tagName !== 'string') return null;
+    var matches;
+    try {
+      matches = document.querySelectorAll(anchor.selector);
+    } catch (ex) {
+      return null;
+    }
+    if (matches.length !== 1) return null;
+    var el = matches[0];
+    if (el.tagName.toLowerCase() !== anchor.tagName.toLowerCase()) return null;
+    if (!anchorHasStableIdentity(anchor.selector, el)) {
+      // Weak (positional / class / behavioral-attribute) anchor: the captured
+      // text snapshot must exist and still match, or the anchor is rejected and
+      // restoration falls back to text search. A missing or empty snapshot is a
+      // rejection, not an exemption.
+      if (typeof anchor.text !== 'string' || !anchor.text) return null;
+      if (anchorTextSnapshot(el) !== anchor.text) return null;
+    }
+    return el;
+  }
+
+  function clearPendingPin() {
+    pendingPinEl = null;
+    pendingPinAnchor = null;
+    hidePinpointBox();
+  }
+
+  // Pin an element: select its text if possible (so a <mark> can wrap it), else
+  // post its text + box directly so the toolbar still anchors (e.g. an SVG node,
+  // whose <text> doesn't select like HTML text). Either way the element stays
+  // outlined ("pinned") while the composer is open, and a serialized CSS anchor
+  // rides along so the annotation can restore to this exact element later.
+  function annotateElement(el, modeOverride, viaPinpoint) {
     if (!el) return false;
-    if (pinpointHover) { pinpointHover.classList.remove('plannotator-pinpoint-hover'); pinpointHover = null; }
+    pinpointHover = null;
     hidePinpointLabel();
+    pendingPinEl = el;
+    pendingPinAnchor = buildElementAnchor(el);
+    var extras = { anchor: pendingPinAnchor, pinpoint: !!viaPinpoint };
+    // Pinned outline: stronger accent box that tracks the element until the
+    // composer resolves (create-mark or cancel-selection).
+    var box = getPinpointBoxEl();
+    box.setAttribute('data-pinned', '');
+    box.classList.remove('pn-pin-enter');
+    positionPinpointBox(el);
     // SVG content can't hold an HTML <mark> wrapper — wrapping an SVG <text> in a
     // <mark> un-renders it (the text disappears). So never text-wrap SVG: treat it
     // as a whole-element annotation (post its text + box, no mark). HTML elements
@@ -660,23 +1117,30 @@ export const BRIDGE_SCRIPT = `(function() {
         txt = (sel.toString() || '').trim();
       } catch (ex) {}
     }
-    if (txt) return handleSelection(modeOverride);
-    var elText = (el.textContent || '').trim();
-    if (!elText) return false;
+    if (txt) {
+      var posted = handleSelection(modeOverride, extras);
+      if (!posted) clearPendingPin();
+      return posted;
+    }
+    var elText = capSelectionText((el.textContent || '').trim());
+    if (!elText) { clearPendingPin(); return false; }
     var r = el.getBoundingClientRect();
     pendingSelection = { element: true };
     pendingRange = null;
     skipNextClear = true; // don't let this click's mouseup clear the toolbar we just opened
     parent.postMessage({ type: PREFIX + 'selection', text: elText,
       modeOverride: modeOverride || undefined,
+      anchor: pendingPinAnchor || undefined,
+      pinpoint: !!viaPinpoint || undefined,
       rect: { top: r.top, left: r.left, width: r.width, height: r.height } }, '*');
     return true;
   }
 
   document.addEventListener('click', function(e) {
     if (currentInputMethod !== 'pinpoint') return;
-    // Existing marks are handled by the mark-click listener.
-    if (e.target && e.target.closest && e.target.closest('.annotation-highlight[data-bind-id]')) return;
+    // Existing marks are handled by the mark-click listener; pin badges own
+    // their clicks.
+    if (e.target && e.target.closest && e.target.closest('.annotation-highlight[data-bind-id],[data-plannotator-pin-badge]')) return;
     var clickGraph = buildSemanticTargetGraph();
     var clickTarget = resolveSemanticTarget(clickGraph, e.target);
     var el = clickTarget && clickTarget.element;
@@ -684,8 +1148,24 @@ export const BRIDGE_SCRIPT = `(function() {
     // Suppress the page's own behavior (links, buttons) — we're annotating.
     e.preventDefault();
     e.stopPropagation();
-    annotateElement(el);
+    annotateElement(el, undefined, true);
   }, true);
+
+  // Escape while pinpointing (outside vim, which has its own ladder): cancel a
+  // pending pin, else just drop the hover outline.
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape' || vimEnabled) return;
+    if (pendingSelection) {
+      parent.postMessage({ type: PREFIX + 'selection-clear' }, '*');
+      pendingSelection = null;
+      pendingRange = null;
+      skipNextClear = false;
+      clearPendingPin();
+      window.getSelection().removeAllRanges();
+    } else if (currentInputMethod === 'pinpoint') {
+      clearPinpointHover();
+    }
+  });
 
   // Author opt-in: a plain click on any element tagged [data-annotate] pops the
   // toolbar — no pinpoint mode. Lets an HTML doc (e.g. a flow graph) wire its own
@@ -1014,10 +1494,7 @@ export const BRIDGE_SCRIPT = `(function() {
   }
 
   function setVimPinpointTarget(target) {
-    if (pinpointHover) {
-      pinpointHover.classList.remove('plannotator-pinpoint-hover');
-      pinpointHover = null;
-    }
+    clearPinpointHover();
     if (vimPinpointEl) vimPinpointEl.classList.remove('plannotator-pinpoint-hover');
     vimVisualBlockAnchorEl = null;
     vimPinpointEl = target ? target.element : null;
@@ -1828,10 +2305,7 @@ export const BRIDGE_SCRIPT = `(function() {
   // then continue through their existing handlers.
   document.addEventListener('mousedown', function(e) {
     if (!vimEnabled || isVimEditableTarget(e.target)) return;
-    if (pinpointHover) {
-      pinpointHover.classList.remove('plannotator-pinpoint-hover');
-      pinpointHover = null;
-    }
+    clearPinpointHover();
     if (vimPinpointEl) vimPinpointEl.classList.remove('plannotator-pinpoint-hover');
     vimPinpointEl = null;
     vimVisualBlockAnchorEl = null;
@@ -1931,8 +2405,8 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   }
 
-  function findTextAndMark(id, originalText, annType) {
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+  function findTextAndMark(id, originalText, annType, root) {
+    var walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, null);
     var buffer = '';
     var nodes = [];
     while (walker.nextNode()) {
@@ -1997,6 +2471,7 @@ export const BRIDGE_SCRIPT = `(function() {
       new ResizeObserver(function() {
         postResize();
         scheduleVimUiUpdate();
+        schedulePinpointReconcile();
       }).observe(document.body);
     }
     parent.postMessage({ type: PREFIX + 'ready' }, '*');

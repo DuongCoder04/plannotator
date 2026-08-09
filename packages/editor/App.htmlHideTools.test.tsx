@@ -1,6 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import {
+  resetStorageBackend,
+  setStorageBackend,
+  type StorageBackend,
+} from "@plannotator/ui/utils/storage";
 
 const hasDom = typeof document !== "undefined";
 
@@ -16,6 +21,22 @@ const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
 
 const RAW_HTML = "<h1>Rendered page</h1><p>Body copy.</p>";
+
+// In-memory storage backend (the codebase-standard persistence-test pattern):
+// keeps values across mounts within a test, so a remount simulates the next
+// session with the same cookies.
+const memory = new Map<string, string>();
+const memoryBackend: StorageBackend = {
+  getItem: (key) => memory.get(key) ?? null,
+  setItem: (key, value) => void memory.set(key, value),
+  removeItem: (key) => void memory.delete(key),
+};
+
+function seedAnnouncementsSeen(): void {
+  memory.set("plannotator-look-feel-announcement-seen", "2");
+  memory.set("plannotator-vim-mode-announcement-seen", "2");
+  memory.set("plannotator-plan-ai-announcement-seen", "1");
+}
 
 class SilentEventSource {
   static readonly CONNECTING = 0;
@@ -82,7 +103,7 @@ async function settle(): Promise<void> {
   });
 }
 
-async function mountHtmlAnnotate(): Promise<void> {
+async function mountHtmlAnnotate(expectButton: string): Promise<void> {
   globalThis.fetch = annotateFetch;
   // SAFETY: the App only uses EventSource's constructor, handlers, and close;
   // this test double implements those browser-facing members without I/O.
@@ -93,24 +114,53 @@ async function mountHtmlAnnotate(): Promise<void> {
   await act(async () => {
     root?.render(<App />);
   });
-  for (let attempt = 0; attempt < 20 && !findButton("Hide tools"); attempt += 1) {
+  for (let attempt = 0; attempt < 20 && !findButton(expectButton); attempt += 1) {
     await settle();
   }
 }
 
-afterEach(async () => {
+async function unmountHtmlAnnotate(): Promise<void> {
   if (root) await act(async () => root?.unmount());
   root = null;
   host?.remove();
   host = null;
+}
+
+afterEach(async () => {
+  await unmountHtmlAnnotate();
   globalThis.fetch = originalFetch;
   globalThis.EventSource = originalEventSource;
+  memory.clear();
+  resetStorageBackend();
   if (hasDom) document.body.replaceChildren();
 });
 
-describe.if(hasDom)("HTML annotate hide-tools", () => {
+afterAll(() => {
+  resetStorageBackend();
+});
+
+describe.if(hasDom)("HTML annotate chrome (minimal-first render + persistence)", () => {
+  test("first-ever HTML session opens minimal: all chrome hidden, Show tools discoverable", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountHtmlAnnotate("Show tools");
+
+    // Nothing the hide-tools toggle controls may be mounted on first paint.
+    expect(sidebarTabs()).toBeNull();
+    const show = findButton("Show tools");
+    if (!show) throw new Error('"Show tools" affordance did not render on first run');
+
+    await act(async () => show.click());
+    expect(sidebarTabs()).not.toBeNull();
+    expect(findButton("Hide tools")).not.toBeUndefined();
+  });
+
   test("hiding tools removes the collapsed sidebar tab flags, showing tools restores them", async () => {
-    await mountHtmlAnnotate();
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    // Simulate a returning user who previously showed tools.
+    memory.set("plannotator-html-chrome", JSON.stringify({ toolsHidden: false, sidebarOpen: false }));
+    await mountHtmlAnnotate("Hide tools");
 
     const strip = sidebarTabs();
     if (!strip) throw new Error("Collapsed sidebar tab flags did not render");
@@ -131,12 +181,72 @@ describe.if(hasDom)("HTML annotate hide-tools", () => {
     expect(sidebarTabs()).not.toBeNull();
   });
 
-  test("the sidebar is still reachable by keyboard while tools are hidden", async () => {
-    await mountHtmlAnnotate();
+  test("the restore commit never writes stale pre-restore values to the cookie", async () => {
+    // The chrome writer runs in the same commit as the restore effect, before
+    // the restored state has landed. If it saved there, a returning user's
+    // remembered state would be transiently inverted in the cookie — and a
+    // page ending between the two writes would freeze the inversion. Instrument
+    // every chrome write: no write may ever carry a state other than the
+    // remembered one, because this session never changes any chrome.
+    const chromeWrites: string[] = [];
+    setStorageBackend({
+      getItem: (key) => memory.get(key) ?? null,
+      setItem: (key, value) => {
+        if (key === "plannotator-html-chrome") chromeWrites.push(value);
+        memory.set(key, value);
+      },
+      removeItem: (key) => void memory.delete(key),
+    });
+    seedAnnouncementsSeen();
+    const remembered = JSON.stringify({ toolsHidden: false, sidebarOpen: true });
+    memory.set("plannotator-html-chrome", remembered);
+    await mountHtmlAnnotate("Hide tools");
+    await settle();
+
+    for (const write of chromeWrites) {
+      expect(JSON.parse(write)).toEqual(JSON.parse(remembered));
+    }
+    expect(memory.get("plannotator-html-chrome")).toBe(remembered);
+  });
+
+  test("a 'user showed tools' state persists across a fresh mount", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountHtmlAnnotate("Show tools");
+
+    const show = findButton("Show tools");
+    if (!show) throw new Error('"Show tools" toggle did not render');
+    await act(async () => show.click());
+    expect(sidebarTabs()).not.toBeNull();
+
+    // Next session (fresh mount, same persisted prefs): opens exactly as left.
+    await unmountHtmlAnnotate();
+    await mountHtmlAnnotate("Hide tools");
+    expect(findButton("Hide tools")).not.toBeUndefined();
+    expect(sidebarTabs()).not.toBeNull();
+  });
+
+  test("a 'user re-hid everything' state persists across a fresh mount", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    memory.set("plannotator-html-chrome", JSON.stringify({ toolsHidden: false, sidebarOpen: false }));
+    await mountHtmlAnnotate("Hide tools");
 
     const hide = findButton("Hide tools");
     if (!hide) throw new Error('"Hide tools" toggle did not render');
     await act(async () => hide.click());
+    expect(sidebarTabs()).toBeNull();
+
+    await unmountHtmlAnnotate();
+    await mountHtmlAnnotate("Show tools");
+    expect(findButton("Show tools")).not.toBeUndefined();
+    expect(sidebarTabs()).toBeNull();
+  });
+
+  test("the sidebar is still reachable by keyboard while tools are hidden", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountHtmlAnnotate("Show tools");
     expect(sidebarTabs()).toBeNull();
 
     await act(async () => {
