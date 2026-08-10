@@ -15,31 +15,10 @@
  * viewer must never depend on — or collide with — the author's namespace.
  */
 export const ANNOTATION_HIGHLIGHT_CSS = `
-.annotation-highlight {
-  border-radius: 2px;
-  padding: 0 2px;
-  margin: 0 -2px;
-  cursor: pointer;
-}
-.annotation-highlight.deletion {
-  background: oklch(from var(--pn-destructive, #c0392b) l c h / 0.35);
-  text-decoration: line-through;
-  text-decoration-color: var(--pn-destructive, #c0392b);
-  text-decoration-thickness: 2px;
-}
-.annotation-highlight.comment {
-  background: oklch(0.70 0.18 60 / 0.3);
-  border-bottom: 2px solid var(--pn-accent, #d97757);
-}
-.annotation-highlight.focused {
-  background: oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.45) !important;
-  box-shadow: 0 0 8px oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.4);
-  border-bottom: 2px solid var(--pn-focus-highlight, #4493f8);
-  filter: none;
-}
-.annotation-highlight:hover {
-  filter: brightness(1.2);
-}
+/* Committed annotation visuals (highlight rectangles + numbered placed
+ * markers) render inside a shadow-rooted fixed overlay host — see OVERLAY_CSS
+ * in the bridge script. Nothing annotation-related is ever wrapped into or
+ * styled onto the author's own elements. */
 /* Vim pinpoint target tint. The MOUSE pinpoint path no longer mutates author
  * elements — it draws the dedicated overlay box below — but keyboard (vim)
  * navigation keeps this class-based visual. */
@@ -75,57 +54,36 @@ export const ANNOTATION_HIGHLIGHT_CSS = `
   from { opacity: 0; transform: scale(0.985); }
   to { opacity: 1; transform: scale(1); }
 }
-/* Numbered pin badges for committed element annotations. */
-[data-plannotator-pin-badge] {
-  position: fixed;
-  z-index: 2147483644;
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  transform: translate(-50%, -50%);
-  background: var(--pn-accent, #d97757);
-  color: #fff;
-  font: 700 10px/1 system-ui, -apple-system, sans-serif;
-  box-shadow: 0 2px 6px rgba(0,0,0,.25), inset 0 0 0 1px rgba(0,0,0,.06);
-  pointer-events: auto;
-  cursor: pointer !important;
-  user-select: none;
-  animation: pn-pin-badge-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes pn-pin-badge-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-}
-/* Pinpoint mode affordance: crosshair everywhere (existing marks and badges
- * stay pointer via their own !important rules below). */
+/* Pinpoint mode affordance: crosshair everywhere. Placed markers live in the
+ * shadow overlay and keep their own pointer cursor there. */
 body[data-plannotator-pinpoint-cursor],
 body[data-plannotator-pinpoint-cursor] * {
   cursor: crosshair !important;
 }
-body[data-plannotator-pinpoint-cursor] .annotation-highlight,
-body[data-plannotator-pinpoint-cursor] [data-plannotator-pin-badge] {
-  cursor: pointer !important;
-}
 @media (prefers-reduced-motion: reduce) {
-  [data-plannotator-pinpoint-box].pn-pin-enter,
-  [data-plannotator-pin-badge] {
+  [data-plannotator-pinpoint-box].pn-pin-enter {
     animation: none;
   }
 }
 @media print {
-  /* Viewer overlays are review chrome, not page content: never bake pin
-     badges, pinpoint boxes/labels, or vim UI into a printed page. The outer
-     app chrome is print-hidden by print.css, but this CSS lives inside the
-     iframe's own document and must carry its own rule. Inline annotation
-     <mark>s stay visible in print on purpose, matching markdown documents. */
+  /* Viewer overlays are review chrome, not page content: never bake pinpoint
+     boxes/labels or vim UI into a printed page. The outer app chrome is
+     print-hidden by print.css, but this CSS lives inside the iframe's own
+     document and must carry its own rule. The annotation overlay host carries
+     its own print rule inside its shadow root. */
   [data-plannotator-pinpoint-box],
   [data-plannotator-pinpoint-label],
-  [data-plannotator-pin-badge],
   [data-plannotator-vim-ui],
   [data-plannotator-vim-cursor] {
+    display: none !important;
+  }
+}
+/* Print-parity layer: committed highlight rects re-projected into an
+ * absolute-positioned light-DOM layer built on beforeprint and torn down on
+ * afterprint (the fixed overlay cannot paginate). Guarded here so it can
+ * never flash on screen even if an afterprint teardown is missed. */
+@media screen {
+  [data-plannotator-print-layer] {
     display: none !important;
   }
 }
@@ -304,6 +262,7 @@ export const BRIDGE_SCRIPT = `(function() {
   var pendingPinAnchor = null; // serialized anchor for the pending pin
   var pendingPinKey = null; // target key for the primary pinpoint target (multi-select)
   var pendingPinLabel = null; // semantic label captured for the primary target
+  var pendingPinPoint = null; // normalized {x,y} click point inside the pinned element's rect
   var pendingPinViaPinpoint = false; // pinpoint drafts survive scroll-out (see postSelectionRect)
   // Multi-select is ARMED EXPLICITLY by the parent (arm-multi-select), and only
   // when the comment composer owns the draft. The bridge must never accept a
@@ -338,7 +297,6 @@ export const BRIDGE_SCRIPT = `(function() {
 
   document.addEventListener('mouseup', function(e) {
     if (currentInputMethod === 'pinpoint') return; // pinpoint uses click, not drag-select
-    if (e.target && e.target.closest && e.target.closest('.annotation-highlight')) return;
     setTimeout(handleSelection, 10);
   });
 
@@ -369,6 +327,7 @@ export const BRIDGE_SCRIPT = `(function() {
         pendingRange = null;
         clearMultiTargets();
         clearPendingPin();
+        renderAnnotationOverlay();
       }
       return false;
     }
@@ -397,6 +356,7 @@ export const BRIDGE_SCRIPT = `(function() {
       targetLabel: (extras && extras.targetLabel) || undefined,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
     }, '*');
+    renderAnnotationOverlay(); // draft selection highlight (overlay-projected)
     return true;
   }
 
@@ -422,6 +382,7 @@ export const BRIDGE_SCRIPT = `(function() {
       pendingSelection = null;
       pendingRange = null;
       clearPendingPin();
+      renderAnnotationOverlay();
       return;
     }
     parent.postMessage({
@@ -444,24 +405,61 @@ export const BRIDGE_SCRIPT = `(function() {
       var id = e.data.id;
       var annType = e.data.annotationType || 'comment';
       if (pendingSelection) {
-        // Text selections wrap a <mark>; element pinpoints (e.g. SVG nodes) carry
-        // no range, so there's no inline mark to apply — instead the pinned
-        // element gets a numbered pin badge anchored to its box.
+        var record = null;
+        // Text selections register a live range (overlay highlight); element
+        // pinpoints (e.g. SVG nodes) carry no range and register the pinned
+        // element with the user's selected point. The page DOM is untouched.
         if (pendingSelection.startContainerPath) {
-          applyMark(id, annType, pendingSelection);
+          var committedRange = buildPendingRange(pendingSelection);
+          if (pendingPinEl) {
+            record = ensureAnnRecord(id, annType, {
+              originalText: pendingSelection.text || '',
+              anchor: pendingPinAnchor,
+              additionalAnchors: null
+            });
+            addElementTarget(record, pendingPinEl, pendingPinAnchor, pendingPinPoint);
+            if (committedRange) addRangeTarget(record, committedRange, pendingSelection.text || '', true);
+          } else if (committedRange) {
+            record = ensureAnnRecord(id, annType, {
+              originalText: pendingSelection.text || '',
+              anchor: null,
+              additionalAnchors: null
+            });
+            addRangeTarget(record, committedRange, pendingSelection.text || '', false);
+          }
           if (
             vimActionReturn
             && (vimActionReturn.phase === 'visual' || vimActionReturn.phase === 'visual-block')
           ) {
-            vimActionReturn.range = committedMarkRange(id) || vimActionReturn.range;
+            vimActionReturn.range = committedRangeClone(id) || vimActionReturn.range;
           }
         } else if (pendingPinEl) {
-          registerPin(id, pendingPinEl, pendingPinAnchor);
+          record = ensureAnnRecord(id, annType, {
+            originalText: '',
+            anchor: pendingPinAnchor,
+            additionalAnchors: null
+          });
+          addElementTarget(record, pendingPinEl, pendingPinAnchor, pendingPinPoint);
         }
-        // Every additional multi-select target gets a pin under the SAME
-        // annotation id — all of them share one badge number.
-        for (var mtIndex = 0; mtIndex < pendingMultiTargets.length; mtIndex++) {
-          registerPin(id, pendingMultiTargets[mtIndex].el, pendingMultiTargets[mtIndex].anchor);
+        // Every additional multi-select target registers under the SAME
+        // annotation id — all of its markers share one comment number.
+        if (pendingMultiTargets.length) {
+          if (!record) {
+            record = ensureAnnRecord(id, annType, {
+              originalText: '',
+              anchor: pendingPinAnchor,
+              additionalAnchors: null
+            });
+          }
+          var extraAnchorList = [];
+          for (var mtIndex = 0; mtIndex < pendingMultiTargets.length; mtIndex++) {
+            var mt = pendingMultiTargets[mtIndex];
+            addElementTarget(record, mt.el, mt.anchor, mt.point);
+            if (mt.anchor) extraAnchorList.push(mt.anchor);
+          }
+          if (record.params) {
+            record.params.additionalAnchors = extraAnchorList.length ? extraAnchorList : null;
+          }
         }
         pendingSelection = null;
         pendingRange = null;
@@ -470,54 +468,17 @@ export const BRIDGE_SCRIPT = `(function() {
       clearMultiTargets();
       clearPendingPin();
       restoreVimSemanticTarget();
+      renderAnnotationOverlay();
     }
 
     else if (type === PREFIX + 'find-and-mark') {
-      // Anchor-first restoration: resolve the serialized element anchor and scope
-      // the text search to it; a resolved element whose text drifted still gets a
-      // pin badge. Document-wide text search remains the fallback (and the only
-      // path for anchor-less annotations, e.g. from shared URLs).
-      var restoreType = e.data.annotationType || 'comment';
-      var anchorEl = resolveAnchorElement(e.data.anchor);
-      var found = false;
-      var isSvgAnchor = anchorEl && (anchorEl.ownerSVGElement || anchorEl.tagName.toLowerCase() === 'svg');
-      if (isSvgAnchor) {
-        // SVG content never takes an inline <mark> (it would un-render the
-        // text) — a resolved SVG anchor is always a pin, and the HTML-oriented
-        // text search below could only mis-mark unrelated HTML text.
-        registerPin(e.data.id, anchorEl, e.data.anchor);
-        found = true;
-      }
-      if (!found && anchorEl) {
-        found = findTextAndMark(e.data.id, e.data.originalText, restoreType, anchorEl);
-      }
-      if (!found) {
-        // Document-wide text search runs BEFORE the pin fallback: if the
-        // annotated text moved elsewhere in a regenerated page, the annotation
-        // follows the text rather than badging the stale container.
-        found = findTextAndMark(e.data.id, e.data.originalText, restoreType);
-      }
-      if (!found && anchorEl) {
-        // Element still resolves but its text is gone everywhere: badge the
-        // element itself as the last resort.
-        registerPin(e.data.id, anchorEl, e.data.anchor);
-        found = true;
-      }
-      // Multi-target annotations: every additional anchor that still resolves
-      // gets a pin under the same id (same badge number). Anchor-only — a
-      // stale anchor simply doesn't restore (fail closed), the primary's text
-      // fallback is never reused here because an excerpt search could mis-mark.
-      var extraAnchors = e.data.additionalAnchors;
-      if (extraAnchors && extraAnchors.length) {
-        var extraCount = Math.min(extraAnchors.length, MAX_MULTI_TARGETS);
-        for (var extraIndex = 0; extraIndex < extraCount; extraIndex++) {
-          var extraEl = resolveAnchorElement(extraAnchors[extraIndex]);
-          if (extraEl) {
-            registerPin(e.data.id, extraEl, extraAnchors[extraIndex]);
-            found = true;
-          }
-        }
-      }
+      var found = restoreAnnotation(
+        e.data.id,
+        e.data.annotationType || 'comment',
+        typeof e.data.originalText === 'string' ? e.data.originalText : '',
+        e.data.anchor,
+        e.data.additionalAnchors
+      );
       parent.postMessage({
         type: PREFIX + 'mark-applied',
         id: e.data.id,
@@ -526,14 +487,41 @@ export const BRIDGE_SCRIPT = `(function() {
     }
 
     else if (type === PREFIX + 'remove-mark') {
-      removeMark(e.data.id);
-      unregisterPin(e.data.id);
+      removeAnnRecord(e.data.id);
+      renderAnnotationOverlay();
     }
 
     else if (type === PREFIX + 'clear-marks') {
-      var marks = document.querySelectorAll('.annotation-highlight[data-bind-id]');
-      for (var i = marks.length - 1; i >= 0; i--) unwrapMark(marks[i]);
-      clearAllPins();
+      annRecords = [];
+      annNumbers = null; // stale synced numbers must not leak onto future records
+      focusedAnnotationId = null;
+      renderAnnotationOverlay();
+    }
+
+    else if (type === PREFIX + 'sync-annotations') {
+      // Parent-authoritative numbering: the ordered saved-annotation list
+      // (index + 1 in the panel's collection). Bounded and shape-checked —
+      // malformed entries are skipped, a malformed list is ignored outright.
+      var syncList = e.data.annotations;
+      if (syncList && typeof syncList.length === 'number') {
+        var nextNumbers = new Map();
+        var syncCount = Math.min(syncList.length, MAX_SYNC_ANNOTATIONS);
+        for (var syncIndex = 0; syncIndex < syncCount; syncIndex++) {
+          var syncEntry = syncList[syncIndex];
+          if (!syncEntry || typeof syncEntry.id !== 'string' || !syncEntry.id || syncEntry.id.length > 256) continue;
+          var syncNumber = syncEntry.number;
+          if (
+            typeof syncNumber !== 'number'
+            || !isFinite(syncNumber)
+            || syncNumber < 1
+            || syncNumber > 100000
+            || Math.floor(syncNumber) !== syncNumber
+          ) continue;
+          nextNumbers.set(syncEntry.id, syncNumber);
+        }
+        annNumbers = nextNumbers;
+        renderAnnotationOverlay();
+      }
     }
 
     else if (type === PREFIX + 'cancel-selection') {
@@ -544,6 +532,7 @@ export const BRIDGE_SCRIPT = `(function() {
       clearPendingPin();
       window.getSelection().removeAllRanges();
       restoreVimSemanticTarget();
+      renderAnnotationOverlay();
     }
 
     else if (type === PREFIX + 'arm-multi-select') {
@@ -572,29 +561,15 @@ export const BRIDGE_SCRIPT = `(function() {
     }
 
     else if (type === PREFIX + 'scroll-to') {
-      var mark = document.querySelector('[data-bind-id="' + e.data.id + '"]');
-      if (mark) {
-        mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        mark.classList.add('focused');
-        setTimeout(function() { mark.classList.remove('focused'); }, 2000);
-      } else {
-        // Pin-only annotation (no inline mark): scroll its element into view and
-        // flash the pinned outline over it.
-        var pin = findPin(e.data.id);
-        if (pin && pin.element && pin.element.isConnected) {
-          pin.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          flashPinnedBox(pin.element);
-        }
-      }
+      // Selecting an annotation scrolls its first resolved target into view
+      // and flashes the overlay focus highlight over EVERY rect of EVERY
+      // target — never a class write on page elements, and never only the
+      // first fragment of a multi-paragraph selection.
+      scrollToAnnotation(e.data.id);
     }
 
     else if (type === PREFIX + 'focus-mark') {
-      var all = document.querySelectorAll('.annotation-highlight');
-      for (var j = 0; j < all.length; j++) all[j].classList.remove('focused');
-      if (e.data.id) {
-        var target = document.querySelector('[data-bind-id="' + e.data.id + '"]');
-        if (target) target.classList.add('focused');
-      }
+      focusAnnotationRecord(typeof e.data.id === 'string' ? e.data.id : null, false);
     }
 
     else if (type === PREFIX + 'set-input-method') {
@@ -657,7 +632,7 @@ export const BRIDGE_SCRIPT = `(function() {
   // CSS anchor for later restoration, and element-only pins (SVG, icon
   // buttons) get a numbered badge. The semantic target graph below survives
   // as the vim-navigation vocabulary only; the pointer path never builds it.
-  var PINPOINT_SKIP_SELECTOR = 'script,style,noscript,[data-plannotator-vim-ui],[data-plannotator-pin-badge],.annotation-highlight';
+  var PINPOINT_SKIP_SELECTOR = 'script,style,noscript,[data-plannotator-vim-ui]';
 
   // Identity set of every overlay node the viewer creates inside the page
   // (pin badges, pinpoint box/label, vim UI). Hit-testing excludes overlay
@@ -719,13 +694,44 @@ export const BRIDGE_SCRIPT = `(function() {
     return el;
   }
 
+  // The placed-marker button the most recent raw (pre-yield) probe landed
+  // on, if any. Hover uses it to advertise the MARKER's identity instead of
+  // the page element beneath it — the marker owns the click, so the hover
+  // label must never promise an annotate action the click won't perform.
+  var lastRawHitMarker = null;
+
+  function committedMarkerButtonFrom(node) {
+    var current = node;
+    var guard = 0;
+    while (current && guard++ < 24) {
+      if (
+        current.nodeType === 1
+        && overlayNodes.has(current)
+        && current.hasAttribute
+        && current.hasAttribute('data-plannotator-marker')
+      ) return current;
+      current = current.parentElement
+        || (current.getRootNode && current.getRootNode().host)
+        || null;
+    }
+    return null;
+  }
+
   // Resolve the pinpoint target at a viewport point. The deepest rendered
   // element under the pointer wins; containers are selected by pointing at
   // their uncovered area (padding, gaps), exactly like the markdown surface.
   // fallbackNode covers engines without a real elementFromPoint (headless DOM
   // tests) and the scroll reconcile, which re-resolves under a still cursor.
   function resolvePinpointTargetAt(x, y, fallbackNode) {
+    lastRawHitMarker = null;
     var node = deepElementFromPoint(x, y);
+    if (node && isViewerOverlayNode(node)) {
+      lastRawHitMarker = committedMarkerButtonFrom(node);
+      // A placed marker owns its clicks, but hit-testing for a NEW selection
+      // must reach the page beneath it: temporarily yield marker hit targets
+      // and probe again (identity-gated, never selector-gated).
+      node = withMarkersYielded(function() { return deepElementFromPoint(x, y); });
+    }
     if (!node || node === document.documentElement || node === document.body) {
       node = fallbackNode || null;
     }
@@ -734,10 +740,6 @@ export const BRIDGE_SCRIPT = `(function() {
     if (node === document.documentElement || node === document.body) return null;
     if (isViewerOverlayNode(node)) return null;
     if (node.closest && node.closest('script,style,noscript')) return null;
-    // Annotation marks are viewer chrome wrapped around author text: treat
-    // them as transparent so hover names the author element beneath.
-    var mark = node.closest && node.closest('.annotation-highlight');
-    if (mark && mark.parentElement) node = mark.parentElement;
     // SVG shape primitives promote to their nearest group: a <g> is the
     // authored unit of an SVG diagram, and its <path> fragments are not
     // individually meaningful annotation targets.
@@ -765,10 +767,11 @@ export const BRIDGE_SCRIPT = `(function() {
       && now - lastPointerHit.t <= 16
       && (!lastPointerHit.el || lastPointerHit.el.isConnected)
     ) {
+      lastRawHitMarker = lastPointerHit.marker || null;
       return lastPointerHit.el;
     }
     var el = resolvePinpointTargetAt(x, y, fallbackNode);
-    lastPointerHit = { x: x, y: y, t: now, el: el };
+    lastPointerHit = { x: x, y: y, t: now, el: el, marker: lastRawHitMarker };
     return el;
   }
   function invalidatePointerHitCache() {
@@ -991,7 +994,14 @@ export const BRIDGE_SCRIPT = `(function() {
       pinpointLabelEl.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;display:none;font:600 11px/1.3 system-ui,-apple-system,sans-serif;padding:2px 7px;border-radius:5px;background:var(--pn-focus-highlight,#4493f8);color:#fff;white-space:nowrap;box-shadow:0 1px 5px rgba(0,0,0,.35);';
       overlayNodes.add(pinpointLabelEl);
     }
-    if (!pinpointLabelEl.isConnected) document.body.appendChild(pinpointLabelEl);
+    // Paint order at equal z-index follows DOM order: the label must sit
+    // AFTER the marker overlay host on the root element or marker bubbles
+    // occlude it. Re-append whenever it is not the last child (appendChild
+    // moves an already-connected node).
+    var labelRoot = document.documentElement || document.body;
+    if (labelRoot && (!pinpointLabelEl.isConnected || pinpointLabelEl.nextSibling)) {
+      labelRoot.appendChild(pinpointLabelEl);
+    }
     return pinpointLabelEl;
   }
   function hidePinpointLabel() { if (pinpointLabelEl) pinpointLabelEl.style.display = 'none'; }
@@ -1047,6 +1057,17 @@ export const BRIDGE_SCRIPT = `(function() {
   // Per-event hit-testing only — never builds the semantic graph.
   function updatePinpointHover(x, y, fallbackNode) {
     var el = pinpointLeafAt(x, y, fallbackNode);
+    // The 25px marker bubble owns clicks over it (they select its comment),
+    // so hover must advertise the MARKER's own identity — no annotate box,
+    // label "Comment N" — never the element beneath. Moving off the bubble
+    // restores normal element hover/annotate.
+    if (lastRawHitMarker && !pendingPinEl) {
+      var markerLabel = lastRawHitMarker.getAttribute('aria-label') || 'Comment';
+      pinpointHover = null;
+      hidePinpointBox();
+      positionPinpointLabel(lastRawHitMarker, markerLabel);
+      return;
+    }
     if (el !== pinpointHover) {
       pinpointHover = el;
       if (el && !pendingPinEl) {
@@ -1096,7 +1117,7 @@ export const BRIDGE_SCRIPT = `(function() {
       // layout-changing mutation (the body ResizeObserver also lands here) —
       // the last-position cache must never answer the next probe.
       invalidatePointerHitCache();
-      renderPinBadges();
+      renderAnnotationOverlay();
       positionMultiTargetBoxes();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
@@ -1112,94 +1133,857 @@ export const BRIDGE_SCRIPT = `(function() {
   window.addEventListener('scroll', schedulePinpointReconcile, { passive: true, capture: true });
   window.addEventListener('resize', schedulePinpointReconcile, { passive: true });
 
-  // --- Pin badges: numbered markers for element-only annotations ---
-  var pinRegistry = []; // { id, element, anchor, badge }
-  function findPin(id) {
-    for (var i = 0; i < pinRegistry.length; i++) {
-      if (pinRegistry[i].id === id) return pinRegistry[i];
+  // --- Annotation overlay: anchors are data, markers are projections ---
+  // Committed annotations never write into the visited page's DOM. Durable
+  // data (anchor selectors, original text, normalized selected point) is
+  // re-resolved to live targets on demand and projected as disposable
+  // artifacts — highlight rectangles and numbered placed-marker buttons —
+  // into a fixed, pointer-transparent, shadow-rooted overlay host appended
+  // to the root element (outside <body>, outside page layout). Only marker
+  // buttons accept pointer input; everything else is hit-transparent.
+  var MARKER_EDGE_INSET = 29;      // full marker stays reachable at viewport edges
+  var MARKER_SPREAD_STEP = 12.5;   // horizontal step for coincident markers
+  var MARKER_SPREAD_EDGE = 28.5;   // effective edge clamp while spreading
+  var MARKER_ASSOC_TOLERANCE = 16; // clamped point must stay this close to the visible target
+  var MAX_HIGHLIGHT_RECTS = 48;    // highlight rects drawn per range target
+  var MAX_SYNC_ANNOTATIONS = 512;  // parent-synced numbering entries
+
+  // Style isolation only (not a security boundary): the shadow root keeps the
+  // page's CSS off the overlay and the overlay's CSS off the page.
+  var OVERLAY_CSS = [
+    '.pn-layer { position: fixed; inset: 0; pointer-events: none; }',
+    '.pn-hl { position: fixed; pointer-events: none; border-radius: 2px; box-sizing: border-box; }',
+    '.pn-hl-comment { background: oklch(0.70 0.18 60 / 0.28); border-bottom: 2px solid var(--pn-accent, #d97757); }',
+    '.pn-hl-deletion { background: oklch(from var(--pn-destructive, #c0392b) l c h / 0.28); background-image: linear-gradient(to bottom, transparent calc(50% - 1px), var(--pn-destructive, #c0392b) calc(50% - 1px), var(--pn-destructive, #c0392b) calc(50% + 1px), transparent calc(50% + 1px)); }',
+    '.pn-hl-focus { background: oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.35); box-shadow: 0 0 8px oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.4); }',
+    '.pn-hl-draft { background: oklch(from var(--pn-focus-highlight, #4493f8) l c h / 0.22); }',
+    '.pn-marker { position: fixed; width: 25px; height: 25px; border: 0; padding: 0; margin: 0; background: transparent; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer; display: flex; align-items: center; justify-content: center; animation: pn-marker-in 0.2s ease-out both; }',
+    '.pn-marker[data-selected="true"] { transform: translate(-50%, -50%) scale(1.08); }',
+    '.pn-marker-icon { pointer-events: none; display: block; position: absolute; top: 0; left: 0; width: 100%; height: 100%; filter: drop-shadow(0 1px 3px rgba(0,0,0,.3)); }',
+    '.pn-marker-icon path { fill: var(--pn-accent, #d97757); stroke: #fff; stroke-width: 1.65; }',
+    '.pn-marker-num { pointer-events: none; position: relative; transform: translate(-0.5px, -1.5px); color: #fff; font: 700 10px/1 system-ui, -apple-system, sans-serif; user-select: none; }',
+    '@keyframes pn-marker-in { from { opacity: 0; } to { opacity: 1; } }',
+    '@media (prefers-reduced-motion: reduce) { .pn-marker { animation: none; } }',
+    ':host([data-pn-hittest]) .pn-marker, [data-plannotator-overlay-host][data-pn-hittest] .pn-marker { pointer-events: none !important; }',
+    '@media print { .pn-layer { display: none !important; } }'
+  ].join('\\n');
+
+  // Product-owned speech-bubble marker (26x25 box, accent fill, white stroke).
+  var MARKER_SVG = '<svg class="pn-marker-icon" viewBox="0 0 26 25" aria-hidden="true" focusable="false"><path d="M13 1.1C6.55 1.1 1.4 5.83 1.4 11.62c0 3.62 2.02 6.8 5.08 8.68l-0.85 3.5 4.28-2.02c1.01 0.25 2.05 0.38 3.09 0.38 6.45 0 11.6-4.73 11.6-10.54C24.6 5.83 19.45 1.1 13 1.1Z"/></svg>';
+
+  var overlayHostEl = null;
+  var overlayRootEl = null; // shadow root, or the host itself when unavailable
+  var highlightsLayerEl = null;
+  var markersLayerEl = null;
+
+  function ensureOverlayHost() {
+    if (!overlayHostEl) {
+      overlayHostEl = document.createElement('div');
+      overlayHostEl.setAttribute('data-plannotator-overlay-host', '');
+      var hostStyle = overlayHostEl.style;
+      hostStyle.setProperty('position', 'fixed', 'important');
+      hostStyle.setProperty('top', '0', 'important');
+      hostStyle.setProperty('left', '0', 'important');
+      hostStyle.setProperty('right', '0', 'important');
+      hostStyle.setProperty('bottom', '0', 'important');
+      hostStyle.setProperty('z-index', '2147483647', 'important');
+      hostStyle.setProperty('pointer-events', 'none', 'important');
+      overlayNodes.add(overlayHostEl);
+      var root = overlayHostEl;
+      if (overlayHostEl.attachShadow) {
+        try { root = overlayHostEl.attachShadow({ mode: 'open' }); } catch (ex) {}
+      }
+      overlayRootEl = root;
+      var style = document.createElement('style');
+      style.textContent = OVERLAY_CSS;
+      root.appendChild(style);
+      highlightsLayerEl = document.createElement('div');
+      highlightsLayerEl.className = 'pn-layer';
+      highlightsLayerEl.setAttribute('data-pn-highlights', '');
+      root.appendChild(highlightsLayerEl);
+      markersLayerEl = document.createElement('div');
+      markersLayerEl.className = 'pn-layer';
+      markersLayerEl.setAttribute('data-pn-markers', '');
+      root.appendChild(markersLayerEl);
+    }
+    // Host lives on the root element, not in <body>: the page's own layout
+    // never contains or reflows around it, and the body MutationObserver
+    // never sees overlay writes.
+    if (!overlayHostEl.isConnected) {
+      (document.documentElement || document.body).appendChild(overlayHostEl);
+      // Keep the pinpoint hover label painting ABOVE markers: it must stay
+      // after the host in DOM order (equal z-index resolves by paint order).
+      if (pinpointLabelEl && pinpointLabelEl.isConnected) {
+        (document.documentElement || document.body).appendChild(pinpointLabelEl);
+      }
+    }
+    return overlayHostEl;
+  }
+
+  // Hit-test yielding: marker buttons accept pointer input, so a bare
+  // elementFromPoint over one would resolve overlay chrome instead of the
+  // page. Temporarily disable marker hit targets so probes reach beneath.
+  function withMarkersYielded(fn) {
+    if (!overlayHostEl || !overlayHostEl.isConnected) return fn();
+    overlayHostEl.setAttribute('data-pn-hittest', '');
+    try {
+      return fn();
+    } finally {
+      overlayHostEl.removeAttribute('data-pn-hittest');
+    }
+  }
+
+  // One record per committed annotation. Its targets are live projections;
+  // its params are the durable data they re-resolve from after mutations.
+  var annRecords = []; // { id, annType, params: { originalText, anchor, additionalAnchors }, targets }
+  var annNumbers = null; // Map(id -> display number) synced from the parent's ordered collection
+  var focusedAnnotationId = null;
+  var focusFlashTimer = 0;
+  var markerButtons = new Map(); // "id::targetIndex" -> <button>
+
+  function findAnnRecord(id) {
+    for (var i = 0; i < annRecords.length; i++) {
+      if (annRecords[i].id === id) return annRecords[i];
     }
     return null;
   }
-  function registerPin(id, element, anchor) {
-    // One annotation may legitimately cover several elements (multi-select),
-    // so dedup by (id, element) — and by (id, anchor) so a re-resolved anchor
-    // can't double-badge the same logical target — never by id alone.
-    for (var existing = 0; existing < pinRegistry.length; existing++) {
-      if (pinRegistry[existing].id !== id) continue;
-      if (pinRegistry[existing].element === element) return;
-      if (anchor && anchorsEqual(pinRegistry[existing].anchor, anchor)) return;
+
+  function ensureAnnRecord(id, annType, params) {
+    var existing = findAnnRecord(id);
+    if (existing) return existing;
+    var record = { id: id, annType: annType || 'comment', params: params || null, targets: [] };
+    annRecords.push(record);
+    return record;
+  }
+
+  function removeAnnRecord(id) {
+    for (var i = annRecords.length - 1; i >= 0; i--) {
+      if (annRecords[i].id === id) annRecords.splice(i, 1);
     }
-    var badge = document.createElement('div');
-    badge.setAttribute('data-plannotator-pin-badge', '');
-    badge.setAttribute('data-plannotator-vim-ui', '');
-    badge.addEventListener('click', function(clickEvent) {
+    if (focusedAnnotationId === id) focusedAnnotationId = null;
+  }
+
+  function validNormalizedPoint(p) {
+    if (!p || typeof p.x !== 'number' || typeof p.y !== 'number') return null;
+    if (!isFinite(p.x) || !isFinite(p.y)) return null;
+    return { x: Math.max(0, Math.min(1, p.x)), y: Math.max(0, Math.min(1, p.y)) };
+  }
+
+  function normalizedPointOf(anchor, point) {
+    return validNormalizedPoint(point) || (anchor ? validNormalizedPoint(anchor.point) : null);
+  }
+
+  function addElementTarget(record, element, anchor, point) {
+    if (!element) return false;
+    // One annotation may cover several elements (multi-select): dedup by
+    // (id, element) and (id, anchor) so a re-resolved anchor can't
+    // double-mark the same logical target — never by id alone.
+    for (var i = 0; i < record.targets.length; i++) {
+      var t = record.targets[i];
+      if (t.kind !== 'element') continue;
+      if (t.element === element) return false;
+      if (anchor && anchorsEqual(t.anchor, anchor)) return false;
+    }
+    record.targets.push({
+      kind: 'element',
+      element: element,
+      anchor: anchor || null,
+      point: normalizedPointOf(anchor, point)
+    });
+    return true;
+  }
+
+  function addRangeTarget(record, range, text, markerless) {
+    if (!range) return false;
+    record.targets.push({ kind: 'range', range: range, text: text || '', markerless: !!markerless });
+    return true;
+  }
+
+  function rangeAlive(range) {
+    if (!range) return false;
+    try {
+      var s = range.startContainer;
+      var e = range.endContainer;
+      if (!s || !e) return false;
+      if (typeof s.isConnected === 'boolean' && !s.isConnected) return false;
+      if (typeof e.isConnected === 'boolean' && !e.isConnected) return false;
+      return true;
+    } catch (ex) {
+      return false;
+    }
+  }
+
+  // Resolve one contiguous document Range for the first occurrence of text.
+  // Overlay-owned text (labels, vim chrome) is skipped by IDENTITY so viewer
+  // chrome can never satisfy a page-text search.
+  function findTextRange(text, root) {
+    var scope = root || document.body;
+    if (!text || !scope) return null;
+    var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null);
+    var buffer = '';
+    var nodes = [];
+    while (walker.nextNode()) {
+      var current = walker.currentNode;
+      if (current.parentElement && isViewerOverlayNode(current.parentElement)) continue;
+      nodes.push({ node: current, start: buffer.length });
+      buffer += current.textContent;
+    }
+    var idx = buffer.indexOf(text);
+    if (idx === -1) return null;
+    var endIdx = idx + text.length;
+    var startEntry = null;
+    var endEntry = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var entry = nodes[i];
+      var nodeEnd = entry.start + entry.node.length;
+      if (!startEntry && idx < nodeEnd) startEntry = entry;
+      if (endIdx <= nodeEnd) { endEntry = entry; break; }
+    }
+    if (!startEntry || !endEntry) return null;
+    try {
+      var range = document.createRange();
+      range.setStart(startEntry.node, idx - startEntry.start);
+      range.setEnd(endEntry.node, endIdx - endEntry.start);
+      return range;
+    } catch (ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Restore ladder (fail-closed, matches the old find-and-mark contract):
+   * resolved SVG anchors are element targets; a resolved anchor scopes the
+   * text search (element marker + markerless highlight range); the
+   * document-wide text search runs BEFORE the element fallback so text that
+   * moved elsewhere is followed rather than pinning a stale container; a
+   * resolved element whose text is gone everywhere is the last resort.
+   * Additional anchors restore anchor-only — a stale anchor simply doesn't
+   * restore.
+   */
+  function restoreAnnotation(id, annType, originalText, anchor, additionalAnchors) {
+    removeAnnRecord(id); // a fresh restore is authoritative for its id
+    var record = ensureAnnRecord(id, annType, {
+      originalText: originalText || '',
+      anchor: anchor || null,
+      additionalAnchors: additionalAnchors || null
+    });
+    var found = false;
+    var anchorEl = resolveAnchorElement(anchor);
+    var isSvgAnchor = anchorEl && (anchorEl.ownerSVGElement || anchorEl.tagName.toLowerCase() === 'svg');
+    if (isSvgAnchor) {
+      found = addElementTarget(record, anchorEl, anchor, null);
+    } else if (anchorEl) {
+      var scopedRange = findTextRange(originalText, anchorEl);
+      if (scopedRange) {
+        // Pinpoint-with-text: the element owns the placed marker (at the
+        // stored selected point); the scoped range paints the highlight.
+        found = addElementTarget(record, anchorEl, anchor, null);
+        addRangeTarget(record, scopedRange, originalText, true);
+      }
+    }
+    if (!found) {
+      var docRange = findTextRange(originalText, null);
+      if (docRange) {
+        addRangeTarget(record, docRange, originalText, false);
+        found = true;
+      }
+    }
+    if (!found && anchorEl) {
+      found = addElementTarget(record, anchorEl, anchor, null);
+    }
+    if (additionalAnchors && additionalAnchors.length) {
+      var extraCount = Math.min(additionalAnchors.length, MAX_MULTI_TARGETS);
+      for (var extraIndex = 0; extraIndex < extraCount; extraIndex++) {
+        var extraEl = resolveAnchorElement(additionalAnchors[extraIndex]);
+        if (extraEl && addElementTarget(record, extraEl, additionalAnchors[extraIndex], null)) {
+          found = true;
+        }
+      }
+    }
+    if (!record.targets.length) removeAnnRecord(id);
+    renderAnnotationOverlay();
+    return found;
+  }
+
+  // Unresolvable-target re-search is GENERATION-gated: findTextRange is a
+  // whole-document TreeWalker sweep (and anchor re-resolution a document
+  // query + text snapshot), while refreshRecordTargets runs on every
+  // scroll/resize rAF and every body mutation. A page with one stale
+  // annotation plus scrolling must not do O(document-text) work per frame
+  // forever. The counter advances only on signals that can change text
+  // (page mutations, settle events, frame loads); scroll and resize alone
+  // never unlock a re-search — geometry changes, text doesn't.
+  var domGeneration = 1;
+
+  // Re-resolve stale live targets from durable data. Element targets
+  // re-acquire through their anchor; range targets re-run the text search
+  // (anchor-scoped first). Unresolvable targets stay hidden — never guessed
+  // — and cache the generation of their last failed search so they retry
+  // only after the document could actually have changed.
+  function refreshRecordTargets(record) {
+    for (var i = 0; i < record.targets.length; i++) {
+      var target = record.targets[i];
+      if (target.kind === 'element') {
+        if ((!target.element || !target.element.isConnected) && target.anchor) {
+          if (target.failedGeneration === domGeneration) continue;
+          target.element = resolveAnchorElement(target.anchor);
+          target.failedGeneration = target.element ? 0 : domGeneration;
+        }
+      } else if (!rangeAlive(target.range)) {
+        target.range = null;
+        if (target.text) {
+          if (target.failedGeneration === domGeneration) continue;
+          var scopeEl = record.params && record.params.anchor
+            ? resolveAnchorElement(record.params.anchor)
+            : null;
+          target.range = (scopeEl && findTextRange(target.text, scopeEl))
+            || findTextRange(target.text, null);
+          target.failedGeneration = target.range ? 0 : domGeneration;
+        }
+      }
+    }
+  }
+
+  function committedRangeClone(id) {
+    var record = findAnnRecord(id);
+    if (!record) return null;
+    for (var i = 0; i < record.targets.length; i++) {
+      var target = record.targets[i];
+      if (target.kind === 'range' && rangeAlive(target.range)) {
+        try { return target.range.cloneRange(); } catch (ex) {}
+      }
+    }
+    return null;
+  }
+
+  function buildPendingRange(selData) {
+    try {
+      var startNode = resolveNodePath(selData.startContainerPath);
+      var endNode = resolveNodePath(selData.endContainerPath);
+      if (!startNode || !endNode) return null;
+      var range = document.createRange();
+      range.setStart(startNode, selData.startOffset);
+      range.setEnd(endNode, selData.endOffset);
+      return range;
+    } catch (ex) {
+      return null;
+    }
+  }
+
+  function rectRight(r) { return typeof r.right === 'number' ? r.right : r.left + (r.width || 0); }
+  function rectBottom(r) { return typeof r.bottom === 'number' ? r.bottom : r.top + (r.height || 0); }
+
+  // Ancestors that establish the containing block for FIXED-position
+  // descendants (transform / perspective / filter / backdrop-filter /
+  // will-change of those). Overflow clipping only applies to a fixed target
+  // when the clipper is in its containing-block chain, so plain static
+  // clippers must be skipped for fixed targets — a fully visible
+  // position:fixed element inside an overflow:hidden ancestor would
+  // otherwise be intersected away and omitted forever.
+  function establishesFixedContainingBlock(style) {
+    if (!style) return false;
+    if (style.transform && style.transform !== 'none') return true;
+    if (style.perspective && style.perspective !== 'none') return true;
+    if (style.filter && style.filter !== 'none') return true;
+    var backdrop = style.backdropFilter || style.webkitBackdropFilter || '';
+    if (backdrop && backdrop !== 'none') return true;
+    var willChange = style.willChange || '';
+    if (
+      willChange.indexOf('transform') >= 0
+      || willChange.indexOf('perspective') >= 0
+      || willChange.indexOf('filter') >= 0
+    ) return true;
+    var containValue = ' ' + (style.contain || '') + ' ';
+    if (
+      containValue.indexOf(' layout ') >= 0
+      || containValue.indexOf(' paint ') >= 0
+      || containValue.indexOf(' strict ') >= 0
+      || containValue.indexOf(' content ') >= 0
+    ) return true;
+    var containerType = style.containerType || '';
+    if (containerType === 'size' || containerType === 'inline-size') return true;
+    return false;
+  }
+
+  // Viewport-space clip window from the element's clipping/scroll ancestor
+  // chain, or null when nothing clips. Shared by marker projection AND every
+  // painted highlight rect: content an inner scroll container has scrolled
+  // away must never paint stripes over unrelated content outside its box.
+  function clipBoundsFor(el) {
+    if (!layoutActive() || !el) return null;
+    var left = -Infinity;
+    var top = -Infinity;
+    var right = Infinity;
+    var bottom = Infinity;
+    var clipped = false;
+    var fixedSkip = false;
+    try {
+      var ownStyle = window.getComputedStyle(el);
+      fixedSkip = !!ownStyle && ownStyle.position === 'fixed';
+    } catch (exOwn) {}
+    var current = el.parentElement;
+    var guard = 0;
+    while (
+      current
+      && current !== document.body
+      && current !== document.documentElement
+      && guard++ < 200
+    ) {
+      var style = null;
+      try { style = window.getComputedStyle(current); } catch (ex) { break; }
+      // Once the fixed target's containing block is reached, that ancestor
+      // and everything above it clip normally (the containing block itself
+      // participates in ordinary flow).
+      if (fixedSkip && establishesFixedContainingBlock(style)) fixedSkip = false;
+      var overflowX = (style && (style.overflowX || style.overflow)) || '';
+      var overflowY = (style && (style.overflowY || style.overflow)) || '';
+      var clipsX = overflowX && overflowX !== 'visible';
+      var clipsY = overflowY && overflowY !== 'visible';
+      if ((clipsX || clipsY) && !fixedSkip) {
+        var cr = current.getBoundingClientRect();
+        if (clipsX) { left = Math.max(left, cr.left); right = Math.min(right, rectRight(cr)); clipped = true; }
+        if (clipsY) { top = Math.max(top, cr.top); bottom = Math.min(bottom, rectBottom(cr)); clipped = true; }
+      }
+      current = current.parentElement;
+    }
+    return clipped ? { left: left, top: top, right: right, bottom: bottom } : null;
+  }
+
+  // Intersect one paintable rect with a clip window; null when nothing
+  // visible survives (the rect is DROPPED, never painted degenerate).
+  function clipRect(rect, bounds) {
+    if (!bounds) return rect;
+    var left = Math.max(rect.left, bounds.left);
+    var top = Math.max(rect.top, bounds.top);
+    var right = Math.min(rectRight(rect), bounds.right);
+    var bottom = Math.min(rectBottom(rect), bounds.bottom);
+    if (right <= left || bottom <= top) return null;
+    return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+  }
+
+  // Intersect a target rect with its clip chain for MARKER projection. May
+  // return a degenerate rect — markerViewportPoint reads that as "no visible
+  // intersection" and omits.
+  function clippedTargetRect(el, rect) {
+    var bounds = clipBoundsFor(el);
+    if (!bounds) return rect;
+    var left = Math.max(rect.left, bounds.left);
+    var top = Math.max(rect.top, bounds.top);
+    var right = Math.min(rectRight(rect), bounds.right);
+    var bottom = Math.min(rectBottom(rect), bounds.bottom);
+    return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+  }
+
+  // Unresolved-for-display: a target whose box exists but is invisible
+  // (visibility:hidden/collapse, display:none) keeps a full-size rect, so
+  // without this gate markers, focus rects, and highlights would render over
+  // whatever visible content stacks in the same box (e.g. carousel slides
+  // toggled via visibility). display:none targets already report empty
+  // client rects, but visibility does not. Checked per reconcile frame, only
+  // for targets that passed the cheaper gates.
+  //
+  // Deliberately NO opacity:0 leg: computed opacity does not inherit, so a
+  // container faded to opacity:0 leaves descendants at computed 1 and would
+  // not be caught anyway — while the legitimate invisible-hit-target pattern
+  // (<input type=file style="opacity:0;position:absolute;inset:0"> over a
+  // styled control) SHOULD keep its marker exactly over the visible control.
+  function targetStyleHidden(el) {
+    if (!el || !layoutActive()) return false;
+    var style = null;
+    try { style = window.getComputedStyle(el); } catch (ex) { return false; }
+    if (!style) return false;
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+    if (style.display === 'none') return true;
+    return false;
+  }
+
+  /**
+   * Project a raw marker point against the target's visible geometry:
+   * omit when the target has no visible intersection with the viewport,
+   * clamp so the full marker stays reachable at viewport edges, and omit
+   * when the point is no longer visibly associated with the target
+   * (clipped/scrolled away). Never guesses a position.
+   */
+  function markerViewportPoint(visRect, rawX, rawY) {
+    if (!layoutActive()) return { x: rawX, y: rawY };
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var visLeft = Math.max(visRect.left, 0);
+    var visTop = Math.max(visRect.top, 0);
+    var visRight = Math.min(rectRight(visRect), vw);
+    var visBottom = Math.min(rectBottom(visRect), vh);
+    if (visRight <= visLeft || visBottom <= visTop) return null;
+    // Association is tested against the UNCLAMPED point: viewport edges CLAMP
+    // (never omit — a fully visible element flush against the edge keeps its
+    // marker even though the 29px inset moves it inward), while clip/scroll
+    // detachment — a raw point no longer near the visible target geometry —
+    // omits. The clamp below is rendering-only.
+    var dx = rawX < visLeft ? visLeft - rawX : rawX > visRight ? rawX - visRight : 0;
+    var dy = rawY < visTop ? visTop - rawY : rawY > visBottom ? rawY - visBottom : 0;
+    if (dx > MARKER_ASSOC_TOLERANCE || dy > MARKER_ASSOC_TOLERANCE) return null;
+    var x = Math.max(MARKER_EDGE_INSET, Math.min(rawX, vw - MARKER_EDGE_INSET));
+    var y = Math.max(MARKER_EDGE_INSET, Math.min(rawY, vh - MARKER_EDGE_INSET));
+    return { x: x, y: y };
+  }
+
+  // Containment filter: Range.getClientRects() returns BOTH a fully-contained
+  // element's border box AND its line rects, so multi-paragraph selections
+  // would double-paint stacked translucent rects (and redlines duplicate
+  // strike lines). Drop any rect that strictly contains a smaller rect in
+  // the same list.
+  function dropContainerRects(rects) {
+    if (rects.length < 2) return rects;
+    return rects.filter(function(a) {
+      var aArea = (a.width || 0) * (a.height || 0);
+      for (var i = 0; i < rects.length; i++) {
+        var b = rects[i];
+        if (b === a) continue;
+        var bArea = (b.width || 0) * (b.height || 0);
+        if (bArea >= aArea) continue; // only a STRICTLY larger box is a container
+        if (
+          a.left <= b.left
+          && a.top <= b.top
+          && rectRight(a) >= rectRight(b)
+          && rectBottom(a) >= rectBottom(b)
+        ) return false;
+      }
+      return true;
+    });
+  }
+
+  // Client rects for a range, BOUNDED at the source: a huge drag-selection or
+  // redline can yield thousands of client rects (only the selection TEXT is
+  // capped, never the Range extent), and this runs per range target per rAF
+  // reconcile and per click hit-test. Only the paintable prefix (at most
+  // MAX_HIGHLIGHT_RECTS) is ever materialized — so the zero-size and
+  // containment filters below operate on at most 48 entries — and the
+  // marker's TRUE last rect (m12) is read directly by index off the live
+  // DOMRectList, never by collecting the whole list.
+  function rangeClientRects(range) {
+    var out = [];
+    var lastRaw = null;
+    if (!range) return { rects: out, last: null };
+    if (typeof range.getClientRects === 'function') {
+      try {
+        var list = range.getClientRects();
+        for (var i = 0; i < list.length && out.length < MAX_HIGHLIGHT_RECTS; i++) out.push(list[i]);
+        if (list.length) lastRaw = list[list.length - 1];
+      } catch (ex) {}
+    }
+    if (!out.length && typeof range.getBoundingClientRect === 'function') {
+      try {
+        var bounds = range.getBoundingClientRect();
+        if (bounds) {
+          out.push(bounds);
+          if (!lastRaw) lastRaw = bounds;
+        }
+      } catch (ex2) {}
+    }
+    if (layoutActive()) {
+      out = out.filter(function(rect) {
+        return (rect.width || 0) > 0 || (rect.height || 0) > 0;
+      });
+      out = dropContainerRects(out);
+    }
+    return { rects: out, last: lastRaw };
+  }
+
+  // Range paint/projection geometry, shared by the overlay render, the print
+  // layer, and highlight click hit-testing: clip-tested painted rects
+  // (capped), the TRUE last client rect (marker anchor — never the capped
+  // list's 48th rect), and the clipped union (marker association; extended
+  // to the last rect so the tail of a cap-truncated selection still
+  // associates its marker).
+  function rangeVisualGeometry(range) {
+    var rangeEl = range && range.startContainer
+      ? (range.startContainer.nodeType === 1
+        ? range.startContainer
+        : range.startContainer.parentElement)
+      : null;
+    if (rangeEl && targetStyleHidden(rangeEl)) {
+      return { paint: [], last: null, vis: null, hidden: true };
+    }
+    var collected = rangeClientRects(range);
+    var all = collected.rects;
+    if (!all.length) return { paint: [], last: null, vis: null, hidden: false };
+    var bounds = clipBoundsFor(rangeEl);
+    var paint = [];
+    for (var i = 0; i < all.length && paint.length < MAX_HIGHLIGHT_RECTS; i++) {
+      var clipped = clipRect(all[i], bounds);
+      if (clipped) paint.push(clipped);
+    }
+    var last = collected.last;
+    if (layoutActive() && last && !(last.width || 0) && !(last.height || 0)) {
+      // A zero-size trailing rect (collapsed tail) has no visual anchor —
+      // fall back to the last collected paintable rect.
+      last = all[all.length - 1];
+    }
+    var union = unionOfRects(last ? all.concat([last]) : all);
+    var vis = bounds
+      ? {
+        left: Math.max(union.left, bounds.left),
+        top: Math.max(union.top, bounds.top),
+        right: Math.min(union.right, bounds.right),
+        bottom: Math.min(union.bottom, bounds.bottom)
+      }
+      : union;
+    return { paint: paint, last: last, vis: vis, hidden: false };
+  }
+
+  function unionOfRects(rects) {
+    var left = Infinity;
+    var top = Infinity;
+    var right = -Infinity;
+    var bottom = -Infinity;
+    for (var i = 0; i < rects.length; i++) {
+      left = Math.min(left, rects[i].left);
+      top = Math.min(top, rects[i].top);
+      right = Math.max(right, rectRight(rects[i]));
+      bottom = Math.max(bottom, rectBottom(rects[i]));
+    }
+    return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+  }
+
+  var highlightPool = [];
+  var highlightUsed = 0;
+  function takeHighlightRect(className, rect, annId) {
+    var div = highlightPool[highlightUsed];
+    if (!div) {
+      div = document.createElement('div');
+      overlayNodes.add(div);
+      highlightPool.push(div);
+      highlightsLayerEl.appendChild(div);
+    }
+    highlightUsed += 1;
+    div.className = 'pn-hl ' + className;
+    if (annId) div.setAttribute('data-annotation-id', annId);
+    else div.removeAttribute('data-annotation-id');
+    div.style.display = 'block';
+    div.style.left = rect.left + 'px';
+    div.style.top = rect.top + 'px';
+    div.style.width = (rect.width || 0) + 'px';
+    div.style.height = (rect.height || 0) + 'px';
+  }
+  function hideUnusedHighlights() {
+    for (var i = highlightUsed; i < highlightPool.length; i++) {
+      highlightPool[i].style.display = 'none';
+    }
+  }
+
+  function makeMarkerButton(annId) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pn-marker';
+    btn.setAttribute('data-plannotator-marker', '');
+    btn.setAttribute('data-annotation-id', annId);
+    btn.innerHTML = MARKER_SVG + '<span class="pn-marker-num"></span>';
+    btn.addEventListener('click', function(clickEvent) {
       clickEvent.preventDefault();
       clickEvent.stopPropagation();
-      parent.postMessage({ type: PREFIX + 'mark-click', id: id }, '*');
+      parent.postMessage({ type: PREFIX + 'mark-click', id: annId }, '*');
     });
-    overlayNodes.add(badge);
-    document.body.appendChild(badge);
-    pinRegistry.push({ id: id, element: element, anchor: anchor || null, badge: badge });
-    renderPinBadges();
+    overlayNodes.add(btn);
+    return btn;
   }
-  function unregisterPin(id) {
-    for (var i = pinRegistry.length - 1; i >= 0; i--) {
-      if (pinRegistry[i].id === id) {
-        var badge = pinRegistry[i].badge;
-        if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
-        overlayNodes.delete(badge);
-        pinRegistry.splice(i, 1);
-      }
+
+  function placeMarkers(markers) {
+    // Coincident markers (same rounded x:y) spread horizontally around the
+    // shared point, ordered deterministically by (number, id). This is a
+    // collision rule for coincident points only, not general label layout.
+    var groups = new Map();
+    var i;
+    for (i = 0; i < markers.length; i++) {
+      var m = markers[i];
+      if (m.hidden) continue;
+      var key = Math.round(m.x) + ':' + Math.round(m.y);
+      var group = groups.get(key);
+      if (!group) { group = []; groups.set(key, group); }
+      group.push(m);
     }
-    renderPinBadges();
-  }
-  function clearAllPins() {
-    for (var i = 0; i < pinRegistry.length; i++) {
-      var badge = pinRegistry[i].badge;
-      if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
-      overlayNodes.delete(badge);
-    }
-    pinRegistry = [];
-  }
-  function renderPinBadges() {
-    // Number by FIRST-SEEN annotation id, not by registry entry: a
-    // multi-target annotation has several pins that all share one number.
-    var pinNumbers = new Map();
-    for (var i = 0; i < pinRegistry.length; i++) {
-      var pin = pinRegistry[i];
-      if ((!pin.element || !pin.element.isConnected) && pin.anchor) {
-        // The page re-rendered under the pin — re-acquire through the anchor.
-        pin.element = resolveAnchorElement(pin.anchor);
+    groups.forEach(function(group) {
+      if (group.length < 2) return;
+      group.sort(function(a, b) {
+        if (a.number !== b.number) return a.number - b.number;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+      var vw = layoutActive() ? window.innerWidth : 0;
+      for (var gi = 0; gi < group.length; gi++) {
+        var spreadX = group[gi].x + (gi - (group.length - 1) / 2) * MARKER_SPREAD_STEP;
+        if (vw) spreadX = Math.max(MARKER_SPREAD_EDGE, Math.min(spreadX, vw - MARKER_SPREAD_EDGE));
+        group[gi].x = spreadX;
       }
-      // Number by registry (creation) order, independent of visibility.
-      if (!pinNumbers.has(pin.id)) pinNumbers.set(pin.id, pinNumbers.size + 1);
-      pin.badge.textContent = String(pinNumbers.get(pin.id));
-      if (!pin.element || !pin.element.isConnected) {
-        pin.badge.style.display = 'none';
+    });
+    var usedKeys = {};
+    for (i = 0; i < markers.length; i++) {
+      var marker = markers[i];
+      usedKeys[marker.key] = true;
+      var btn = markerButtons.get(marker.key);
+      if (marker.hidden) {
+        // Unresolved or visually detached target: omit the marker rather
+        // than leave a bubble floating over unrelated content.
+        if (btn) btn.style.display = 'none';
         continue;
       }
-      var r = pin.element.getBoundingClientRect();
-      // A 0x0 rect means the element isn't rendered (display:none) — but only
-      // in engines that lay out at all (body has size), so headless DOM test
-      // environments where every rect is 0x0 don't hide everything.
-      var zeroSize = !r.width && !r.height
-        && document.body.getBoundingClientRect().width > 0;
-      if (zeroSize || r.bottom < 0 || r.top > window.innerHeight) {
-        pin.badge.style.display = 'none';
-        continue;
+      if (!btn) {
+        btn = makeMarkerButton(marker.id);
+        markerButtons.set(marker.key, btn);
+        markersLayerEl.appendChild(btn);
       }
-      pin.badge.style.display = 'flex';
-      pin.badge.style.left = Math.min(r.right, window.innerWidth - 4) + 'px';
-      pin.badge.style.top = Math.max(4, r.top) + 'px';
+      btn.style.display = 'flex';
+      btn.style.left = marker.x + 'px';
+      btn.style.top = marker.y + 'px';
+      btn.setAttribute('data-selected', focusedAnnotationId === marker.id ? 'true' : 'false');
+      btn.setAttribute('aria-label', 'Comment ' + marker.number);
+      var num = btn.querySelector('.pn-marker-num');
+      if (num) num.textContent = String(marker.number);
+    }
+    markerButtons.forEach(function(btn, key) {
+      if (usedKeys[key]) return;
+      if (btn.parentNode) btn.parentNode.removeChild(btn);
+      overlayNodes.delete(btn);
+      markerButtons.delete(key);
+    });
+  }
+
+  function renderAnnotationOverlay() {
+    var hasDraftRange = !!(pendingSelection && pendingRange);
+    if (!annRecords.length && !hasDraftRange && !overlayHostEl) return;
+    ensureOverlayHost();
+    highlightUsed = 0;
+    var markers = [];
+    // Fallback numbering by first-seen registration order — used only until
+    // the parent's ordered sync arrives. Numbering NEVER derives from target
+    // count: every target of one annotation shares one number.
+    var fallbackNumbers = new Map();
+    for (var f = 0; f < annRecords.length; f++) {
+      if (!fallbackNumbers.has(annRecords[f].id)) {
+        fallbackNumbers.set(annRecords[f].id, fallbackNumbers.size + 1);
+      }
+    }
+    for (var recordIndex = 0; recordIndex < annRecords.length; recordIndex++) {
+      var record = annRecords[recordIndex];
+      refreshRecordTargets(record);
+      var number = annNumbers && annNumbers.has(record.id)
+        ? annNumbers.get(record.id)
+        : fallbackNumbers.get(record.id);
+      var focused = focusedAnnotationId === record.id;
+      // One PLACED marker per resolved element per record: two anchors of
+      // one annotation re-resolving to the same element must not render two
+      // coincident same-number markers that then spread apart. Dedup runs
+      // among placed (visible) markers only — a target whose own point is
+      // clipped away must not consume the element's slot and suppress a
+      // sibling target whose point IS visible.
+      var seenRecordElements = [];
+      for (var targetIndex = 0; targetIndex < record.targets.length; targetIndex++) {
+        var target = record.targets[targetIndex];
+        var markerKey = record.id + '::' + targetIndex;
+        if (target.kind === 'element') {
+          var el = target.element;
+          if (!el || !el.isConnected) {
+            markers.push({ key: markerKey, id: record.id, number: number, hidden: true });
+            continue;
+          }
+          var rect = el.getBoundingClientRect();
+          var zeroSize = layoutActive() && !(rect.width || 0) && !(rect.height || 0);
+          var styleHidden = !zeroSize && targetStyleHidden(el);
+          var point = target.point || { x: 0.5, y: 0.5 };
+          var placed = zeroSize || styleHidden ? null : markerViewportPoint(
+            clippedTargetRect(el, rect),
+            rect.left + point.x * (rect.width || 0),
+            rect.top + point.y * (rect.height || 0)
+          );
+          if (placed && seenRecordElements.indexOf(el) >= 0) placed = null;
+          if (placed) {
+            seenRecordElements.push(el);
+            markers.push({ key: markerKey, id: record.id, number: number, x: placed.x, y: placed.y });
+            if (focused) {
+              // The focus flash is a painted rect too: clip-test it like
+              // every other highlight so it never flashes over content
+              // outside the target's scroll container.
+              var focusRect = clipRect(rect, clipBoundsFor(el));
+              if (focusRect) takeHighlightRect('pn-hl-focus', focusRect, record.id);
+            }
+          } else {
+            markers.push({ key: markerKey, id: record.id, number: number, hidden: true });
+          }
+        } else {
+          var geometry = rangeVisualGeometry(target.range);
+          for (var rectIndex = 0; rectIndex < geometry.paint.length; rectIndex++) {
+            takeHighlightRect(
+              record.annType === 'deletion' ? 'pn-hl-deletion' : 'pn-hl-comment',
+              geometry.paint[rectIndex],
+              record.id
+            );
+            if (focused) takeHighlightRect('pn-hl-focus', geometry.paint[rectIndex], record.id);
+          }
+          if (!target.markerless) {
+            var rangePlaced = null;
+            if (geometry.last && geometry.vis) {
+              rangePlaced = markerViewportPoint(
+                geometry.vis,
+                rectRight(geometry.last),
+                geometry.last.top + (geometry.last.height || 0) / 2
+              );
+            }
+            if (rangePlaced) {
+              markers.push({ key: markerKey, id: record.id, number: number, x: rangePlaced.x, y: rangePlaced.y });
+            } else {
+              markers.push({ key: markerKey, id: record.id, number: number, hidden: true });
+            }
+          }
+        }
+      }
+    }
+    // Draft selection highlight: overlay-projected rectangles from the live
+    // pending range — the page's own DOM is never mutated for draft state.
+    // Clip-tested like committed rects (M1): a draft inside a scrolled inner
+    // container must not stripe content outside the container's box.
+    if (hasDraftRange) {
+      var draftGeometry = rangeVisualGeometry(pendingRange);
+      for (var draftIndex = 0; draftIndex < draftGeometry.paint.length; draftIndex++) {
+        takeHighlightRect('pn-hl-draft', draftGeometry.paint[draftIndex], '');
+      }
+    }
+    hideUnusedHighlights();
+    placeMarkers(markers);
+  }
+
+  function focusAnnotationRecord(id, flash) {
+    if (focusFlashTimer) {
+      clearTimeout(focusFlashTimer);
+      focusFlashTimer = 0;
+    }
+    focusedAnnotationId = id || null;
+    renderAnnotationOverlay();
+    if (id && flash) {
+      focusFlashTimer = setTimeout(function() {
+        focusFlashTimer = 0;
+        if (focusedAnnotationId === id) {
+          focusedAnnotationId = null;
+          renderAnnotationOverlay();
+        }
+      }, 2000);
     }
   }
-  function flashPinnedBox(el) {
-    var box = getPinpointBoxEl();
-    box.setAttribute('data-pinned', '');
-    positionPinpointBox(el);
-    setTimeout(function() {
-      if (!pendingPinEl) hidePinpointBox();
-    }, 1200);
+
+  function scrollToAnnotation(id) {
+    var record = findAnnRecord(id);
+    if (!record) return;
+    refreshRecordTargets(record);
+    var scrollEl = null;
+    for (var i = 0; i < record.targets.length && !scrollEl; i++) {
+      var target = record.targets[i];
+      if (target.kind === 'element' && target.element && target.element.isConnected) {
+        scrollEl = target.element;
+      } else if (target.kind === 'range' && rangeAlive(target.range)) {
+        var node = target.range.startContainer;
+        scrollEl = node.nodeType === 1 ? node : node.parentElement;
+      }
+    }
+    if (scrollEl) {
+      try { scrollEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (ex) {}
+    }
+    focusAnnotationRecord(id, true);
   }
 
   // --- Element anchors: verified-unique CSS selectors for restoration ---
@@ -1376,9 +2160,24 @@ export const BRIDGE_SCRIPT = `(function() {
     pendingPinAnchor = null;
     pendingPinKey = null;
     pendingPinLabel = null;
+    pendingPinPoint = null;
     pendingPinViaPinpoint = false;
     multiSelectArmed = false;
     hidePinpointBox();
+  }
+
+  /** Normalize a client-coordinate click into the element's rect (0..1 on
+   *  each axis; zero-size axes read 0.5). This is the durable "selected
+   *  point" a placed marker reprojects from after layout changes. */
+  function normalizePointInElement(el, clientPoint) {
+    if (!el || !clientPoint) return null;
+    if (typeof clientPoint.x !== 'number' || typeof clientPoint.y !== 'number') return null;
+    if (!isFinite(clientPoint.x) || !isFinite(clientPoint.y)) return null;
+    if (!layoutActive()) return null; // no geometry to normalize against
+    var r = el.getBoundingClientRect();
+    var x = (r.width || 0) === 0 ? 0.5 : (clientPoint.x - r.left) / r.width;
+    var y = (r.height || 0) === 0 ? 0.5 : (clientPoint.y - r.top) / r.height;
+    return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   }
 
   // --- Multi-select (shift-click): several elements, ONE draft comment ---
@@ -1466,6 +2265,7 @@ export const BRIDGE_SCRIPT = `(function() {
         clearMultiTargets();
         clearPendingPin();
         try { window.getSelection().removeAllRanges(); } catch (ex) {}
+        renderAnnotationOverlay();
         if (echo) parent.postMessage({ type: PREFIX + 'multi-target-removed', key: key }, '*');
         return;
       }
@@ -1475,6 +2275,7 @@ export const BRIDGE_SCRIPT = `(function() {
       pendingPinAnchor = next.anchor;
       pendingPinKey = next.key;
       pendingPinLabel = next.label;
+      pendingPinPoint = next.point || null;
       // A promoted primary commits as an element pin: the original text
       // selection belonged to the removed element and no longer applies.
       pendingSelection = { element: true };
@@ -1484,6 +2285,7 @@ export const BRIDGE_SCRIPT = `(function() {
       mainBox.setAttribute('data-pinned', '');
       mainBox.classList.remove('pn-pin-enter');
       if (pendingPinEl && pendingPinEl.isConnected) positionPinpointBox(pendingPinEl);
+      renderAnnotationOverlay();
       if (echo) parent.postMessage({ type: PREFIX + 'multi-target-removed', key: key }, '*');
       return;
     }
@@ -1500,7 +2302,7 @@ export const BRIDGE_SCRIPT = `(function() {
   /** Shift-click toggle: add the element to the draft, or remove it if it is
    *  already selected (dedup by DOM identity first, then by anchor equality
    *  so a re-rendered page cannot double-select the same logical element). */
-  function toggleMultiTarget(el) {
+  function toggleMultiTarget(el, clickPoint) {
     if (!el) return;
     if (el === pendingPinEl) {
       removeMultiTargetByKey(pendingPinKey, true);
@@ -1527,11 +2329,13 @@ export const BRIDGE_SCRIPT = `(function() {
     }
     // Cap at the source: never grow the draft past the parent-side DTO cap.
     if (pendingMultiTargets.length >= MAX_MULTI_TARGETS) return;
+    var point = normalizePointInElement(el, clickPoint);
+    if (anchor && point) anchor.point = point;
     var label = pinpointHoverLabel(el);
     var text = elementTargetText(el, label);
     var key = makeTargetKey();
     var box = createMultiTargetBox(el);
-    pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, box: box });
+    pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, point: point, box: box });
     parent.postMessage({
       type: PREFIX + 'multi-target-added',
       key: key,
@@ -1616,7 +2420,7 @@ export const BRIDGE_SCRIPT = `(function() {
   // whose <text> doesn't select like HTML text). Either way the element stays
   // outlined ("pinned") while the composer is open, and a serialized CSS anchor
   // rides along so the annotation can restore to this exact element later.
-  function annotateElement(el, modeOverride, viaPinpoint) {
+  function annotateElement(el, modeOverride, viaPinpoint, clickPoint) {
     if (!el) return false;
     pinpointHover = null;
     hidePinpointLabel();
@@ -1631,6 +2435,11 @@ export const BRIDGE_SCRIPT = `(function() {
     pendingPinAnchor = buildElementAnchor(el);
     pendingPinKey = makeTargetKey();
     pendingPinLabel = pinpointHoverLabel(el);
+    // The user's selected point, normalized inside the element's rect. It
+    // rides the durable anchor so restoration reprojects the marker at the
+    // same relative spot; keyboard entry (vim) has no pointer and defaults.
+    pendingPinPoint = normalizePointInElement(el, clickPoint);
+    if (pendingPinAnchor && pendingPinPoint) pendingPinAnchor.point = pendingPinPoint;
     pendingPinViaPinpoint = !!viaPinpoint;
     var extras = {
       anchor: pendingPinAnchor,
@@ -1684,11 +2493,9 @@ export const BRIDGE_SCRIPT = `(function() {
 
   document.addEventListener('click', function(e) {
     if (currentInputMethod !== 'pinpoint') return;
-    // Existing marks are handled by the mark-click listener.
-    if (e.target && e.target.closest && e.target.closest('.annotation-highlight[data-bind-id]')) return;
-    // Real pin badges (and any other viewer overlay) own their clicks —
+    // Real placed markers (and any other viewer overlay) own their clicks —
     // checked by IDENTITY, not selector, so a page element spoofing
-    // [data-plannotator-pin-badge] stays an ordinary annotatable target.
+    // [data-plannotator-marker] stays an ordinary annotatable target.
     if (isViewerOverlayNode(e.target)) return;
     // Shift-click while an ARMED pinpoint draft is open: toggle the element
     // in/out of the SAME draft comment instead of replacing the selection.
@@ -1700,7 +2507,7 @@ export const BRIDGE_SCRIPT = `(function() {
       hideMultiHoverBox();
       hidePinpointLabel();
       var multiEl = resolvePinpointTargetAt(e.clientX, e.clientY, e.target);
-      if (multiEl) toggleMultiTarget(multiEl);
+      if (multiEl) toggleMultiTarget(multiEl, { x: e.clientX, y: e.clientY });
       return;
     }
     // Click what the hover box shows: the currently hovered element is the
@@ -1713,7 +2520,7 @@ export const BRIDGE_SCRIPT = `(function() {
     // Suppress the page's own behavior (links, buttons) — we're annotating.
     e.preventDefault();
     e.stopPropagation();
-    annotateElement(el, undefined, true);
+    annotateElement(el, undefined, true, { x: e.clientX, y: e.clientY });
   }, true);
 
   // Escape while pinpointing (outside vim, which has its own ladder): cancel a
@@ -1728,6 +2535,7 @@ export const BRIDGE_SCRIPT = `(function() {
       clearMultiTargets();
       clearPendingPin();
       window.getSelection().removeAllRanges();
+      renderAnnotationOverlay();
     } else if (currentInputMethod === 'pinpoint') {
       clearPinpointHover();
     }
@@ -1736,27 +2544,62 @@ export const BRIDGE_SCRIPT = `(function() {
   // Author opt-in: a plain click on any element tagged [data-annotate] pops the
   // toolbar — no pinpoint mode. Lets an HTML doc (e.g. a flow graph) wire its own
   // nodes to Plannotator's toolbar. Bubble phase so the page's own click handlers
-  // run first; an active text selection is respected, not clobbered.
+  // run first; an active text selection is respected, not clobbered. A click on
+  // a committed highlight selects the annotation instead (the pre-overlay
+  // handler deferred to '.annotation-highlight' the same way).
   document.addEventListener('click', function(e) {
     if (currentInputMethod === 'pinpoint') return; // pinpoint handler covers this
+    if (isViewerOverlayNode(e.target)) return; // placed markers own their clicks
     var t = e.target && e.target.closest && e.target.closest('[data-annotate]');
     if (!t) return;
-    if (e.target.closest('.annotation-highlight[data-bind-id]')) return;
+    if (committedHighlightAt(e.clientX, e.clientY)) return; // mark-click handler owns it
     var s = window.getSelection();
     if (s && !s.isCollapsed && (s.toString() || '').trim()) return; // respect a drag-selection
-    annotateElement(t);
+    annotateElement(t, undefined, undefined, { x: e.clientX, y: e.clientY });
   });
 
   // --- Mark Click ---
-  document.addEventListener('click', function(e) {
-    var mark = e.target.closest ? e.target.closest('.annotation-highlight[data-bind-id]') : null;
-    if (mark) {
-      e.stopPropagation();
-      parent.postMessage({
-        type: PREFIX + 'mark-click',
-        id: mark.getAttribute('data-bind-id')
-      }, '*');
+  // Pre-overlay, committed highlights were inline marks with cursor:pointer
+  // and their own click handler: clicking anywhere on a highlighted passage
+  // posted mark-click and selected the annotation in the panel. Overlay
+  // highlight rects are pointer-transparent (page pass-through must remain),
+  // so the affordance is restored by hit-testing the click point against the
+  // painted committed range rects. Bubble phase, exactly like the old
+  // handler: the capture-phase pinpoint annotate click stopPropagation()s
+  // first (pinpoint flows keep owning their clicks, as pre-overlay), and
+  // marker buttons stop propagation before this can run.
+  function committedHighlightAt(x, y) {
+    var best = null;
+    for (var recordIndex = 0; recordIndex < annRecords.length; recordIndex++) {
+      var record = annRecords[recordIndex];
+      for (var targetIndex = 0; targetIndex < record.targets.length; targetIndex++) {
+        var target = record.targets[targetIndex];
+        if (target.kind !== 'range' || !rangeAlive(target.range)) continue;
+        var geometry = rangeVisualGeometry(target.range);
+        for (var i = 0; i < geometry.paint.length; i++) {
+          var rect = geometry.paint[i];
+          if ((rect.width || 0) <= 0 || (rect.height || 0) <= 0) continue;
+          if (x < rect.left || x > rectRight(rect) || y < rect.top || y > rectBottom(rect)) continue;
+          var area = (rect.width || 0) * (rect.height || 0);
+          // Smallest rect wins on overlap; ties go to the later-painted
+          // (topmost) annotation.
+          if (!best || area <= best.area) best = { id: record.id, area: area };
+        }
+      }
     }
+    return best ? best.id : null;
+  }
+
+  document.addEventListener('click', function(e) {
+    if (e.shiftKey) return; // shift belongs to multi-select
+    if (isViewerOverlayNode(e.target)) return; // markers own their clicks
+    if (pendingPinEl) return; // an open pinpoint draft owns the surface
+    var s = window.getSelection();
+    if (s && !s.isCollapsed && (s.toString() || '').trim()) return; // end of a drag-selection
+    var hitId = committedHighlightAt(e.clientX, e.clientY);
+    if (!hitId) return;
+    e.stopPropagation();
+    parent.postMessage({ type: PREFIX + 'mark-click', id: hitId }, '*');
   });
 
   // --- Optional Vim navigation ---
@@ -2189,21 +3032,6 @@ export const BRIDGE_SCRIPT = `(function() {
       visualBlockAnchorEl: vimVisualBlockAnchorEl,
       range: range
     };
-  }
-
-  function committedMarkRange(id) {
-    var marks = document.querySelectorAll('[data-bind-id="' + id + '"]');
-    if (!marks.length) return null;
-    var first = marks[0];
-    var last = marks[marks.length - 1];
-    var range = document.createRange();
-    try {
-      range.setStart(first, 0);
-      range.setEnd(last, last.childNodes.length);
-      return range;
-    } catch (ex) {
-      return null;
-    }
   }
 
   function beginVimAction(mode) {
@@ -2642,6 +3470,7 @@ export const BRIDGE_SCRIPT = `(function() {
         pendingSelection = null;
         pendingRange = null;
         restoreVimSemanticTarget();
+        renderAnnotationOverlay();
         handled = true;
       } else if (vimPhase === 'visual') {
         var visualSelection = window.getSelection();
@@ -2920,112 +3749,6 @@ export const BRIDGE_SCRIPT = `(function() {
     return path;
   }
 
-  function applyMark(id, annType, selData) {
-    try {
-      var startNode = resolveNodePath(selData.startContainerPath);
-      var endNode = resolveNodePath(selData.endContainerPath);
-      if (!startNode || !endNode) return;
-
-      var range = document.createRange();
-      range.setStart(startNode, selData.startOffset);
-      range.setEnd(endNode, selData.endOffset);
-      wrapRangeInMarks(range, id, annType);
-    } catch (ex) { /* range may be stale */ }
-  }
-
-  function wrapRangeInMarks(range, id, annType) {
-    var walker = document.createTreeWalker(
-      range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentNode,
-      NodeFilter.SHOW_TEXT,
-      null
-    );
-
-    var textNodes = [];
-    while (walker.nextNode()) {
-      if (range.intersectsNode(walker.currentNode)) {
-        textNodes.push(walker.currentNode);
-      }
-    }
-
-    for (var i = 0; i < textNodes.length; i++) {
-      var tn = textNodes[i];
-      var start = (tn === range.startContainer) ? range.startOffset : 0;
-      var end = (tn === range.endContainer) ? range.endOffset : tn.length;
-      if (start >= end) continue;
-
-      var markRange = document.createRange();
-      markRange.setStart(tn, start);
-      markRange.setEnd(tn, end);
-
-      var mark = document.createElement('mark');
-      mark.className = 'annotation-highlight ' + annType;
-      mark.setAttribute('data-bind-id', id);
-      markRange.surroundContents(mark);
-    }
-
-    var rect = document.querySelector('[data-bind-id="' + id + '"]');
-    if (rect) {
-      var r = rect.getBoundingClientRect();
-      parent.postMessage({
-        type: PREFIX + 'mark-created',
-        id: id,
-        rect: { top: r.top, left: r.left, width: r.width, height: r.height }
-      }, '*');
-    }
-  }
-
-  function findTextAndMark(id, originalText, annType, root) {
-    var walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, null);
-    var buffer = '';
-    var nodes = [];
-    while (walker.nextNode()) {
-      nodes.push({ node: walker.currentNode, start: buffer.length });
-      buffer += walker.currentNode.textContent;
-    }
-    var idx = buffer.indexOf(originalText);
-    if (idx === -1) return false;
-
-    var endIdx = idx + originalText.length;
-    var slices = [];
-    for (var i = 0; i < nodes.length; i++) {
-      var entry = nodes[i];
-      var nodeEnd = entry.start + entry.node.length;
-      if (nodeEnd <= idx) continue;
-      if (entry.start >= endIdx) break;
-
-      var start = Math.max(0, idx - entry.start);
-      var end = Math.min(entry.node.length, endIdx - entry.start);
-      if (start >= end) continue;
-      slices.push({ node: entry.node, start: start, end: end });
-    }
-    for (var j = slices.length - 1; j >= 0; j--) {
-      try {
-        var s = slices[j];
-        var markRange = document.createRange();
-        markRange.setStart(s.node, s.start);
-        markRange.setEnd(s.node, s.end);
-
-        var mark = document.createElement('mark');
-        mark.className = 'annotation-highlight ' + annType;
-        mark.setAttribute('data-bind-id', id);
-        markRange.surroundContents(mark);
-      } catch (ex) { /* node may have been mutated by a prior wrap */ }
-    }
-    return slices.length > 0;
-  }
-
-  function removeMark(id) {
-    var marks = document.querySelectorAll('[data-bind-id="' + id + '"]');
-    for (var i = marks.length - 1; i >= 0; i--) unwrapMark(marks[i]);
-  }
-
-  function unwrapMark(mark) {
-    var parent = mark.parentNode;
-    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-    parent.removeChild(mark);
-    parent.normalize();
-  }
-
   function resolveNodePath(path) {
     var node = document.body;
     for (var i = 0; i < path.length; i++) {
@@ -3033,6 +3756,186 @@ export const BRIDGE_SCRIPT = `(function() {
       node = node.childNodes[path[i]];
     }
     return node;
+  }
+
+  // Framework rerenders and inline edits invalidate resolved geometry.
+  // Coalesced through the same rAF reconcile as scroll/resize — never polled.
+  // Mutations whose targets are all viewer overlay nodes are ignored by
+  // IDENTITY: our own light-DOM box/label style writes must never schedule
+  // the frame that caused them (that would degenerate into a rAF loop).
+  var pageMutationObserver = null;
+
+  // A mutation is viewer-owned when its target is an overlay node OR it is a
+  // childList change whose added/removed nodes are ALL overlay nodes (the
+  // overlay host / hover label / print layer being appended to the root
+  // element, pinned boxes entering <body>). Those writes must neither bump
+  // the re-search generation nor schedule the reconcile frame that caused
+  // them.
+  function isOverlayOnlyMutation(mutation) {
+    if (isViewerOverlayNode(mutation.target)) return true;
+    if (mutation.type !== 'childList') return false;
+    var added = mutation.addedNodes || [];
+    var removed = mutation.removedNodes || [];
+    if (!added.length && !removed.length) return false;
+    for (var i = 0; i < added.length; i++) {
+      if (!isViewerOverlayNode(added[i])) return false;
+    }
+    for (var j = 0; j < removed.length; j++) {
+      if (!isViewerOverlayNode(removed[j])) return false;
+    }
+    return true;
+  }
+
+  function watchPageMutations() {
+    if (pageMutationObserver || typeof MutationObserver === 'undefined' || !document.documentElement) return;
+    pageMutationObserver = new MutationObserver(function(mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        if (!isOverlayOnlyMutation(mutations[i])) {
+          domGeneration += 1; // page text may have changed: unlock dead-target re-search
+          schedulePinpointReconcile();
+          return;
+        }
+      }
+    });
+    // Observe the ROOT element, not <body>: a page that swaps the <body>
+    // element itself (documentElement.replaceChild) produces no record on a
+    // body-scoped observer, permanently locking dead-target re-search behind
+    // a generation that never advances.
+    pageMutationObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true
+    });
+  }
+
+  // Animations/transitions move geometry without mutations or scroll events:
+  // reconcile when they settle (end or cancel), matching the reference
+  // invalidation set. Capture phase so non-bubbling targets still count.
+  // Viewer-owned light-DOM chrome (pin-enter, vim reticle) settling is
+  // identity-filtered out: our own overlay animations must never schedule
+  // redundant reconciles of the frames they themselves caused.
+  var settleEvents = ['animationend', 'animationcancel', 'transitionend', 'transitioncancel'];
+  for (var settleIndex = 0; settleIndex < settleEvents.length; settleIndex++) {
+    document.addEventListener(settleEvents[settleIndex], function(e) {
+      if (e && e.target && isViewerOverlayNode(e.target)) return;
+      domGeneration += 1; // a settled page animation can land text-affecting state
+      schedulePinpointReconcile();
+    }, { capture: true, passive: true });
+  }
+
+  // Reflow WITHOUT mutation/scroll/animation still moves geometry: a web-font
+  // swap or an image loading into a fixed-height container reflows silently.
+  // Both change GEOMETRY, not text — they schedule a reconcile but never bump
+  // the re-search generation (a dead target stays dead through them).
+  if (
+    document.fonts
+    && document.fonts.ready
+    && typeof document.fonts.ready.then === 'function'
+  ) {
+    document.fonts.ready.then(function() { schedulePinpointReconcile(); }).catch(function() {});
+  }
+  document.addEventListener('load', function(e) {
+    if (!e || !e.target || e.target === document || isViewerOverlayNode(e.target)) return;
+    // A (same-origin) frame load is a text-capable invalidation; image and
+    // media loads are geometry-only.
+    var tag = e.target.tagName || '';
+    if (tag === 'IFRAME' || tag === 'FRAME') domGeneration += 1;
+    schedulePinpointReconcile();
+  }, { capture: true, passive: true });
+
+  // --- Print parity ---
+  // Pre-overlay, inline annotation marks stayed visible in print ON PURPOSE
+  // (matching markdown documents); only pin badges were print-hidden. The
+  // fixed overlay cannot paginate (fixed-position layers repeat or clip per
+  // printed page), so print parity is restored by re-projecting the
+  // committed highlight rects into a temporary ABSOLUTE-positioned light-DOM
+  // layer in document coordinates (viewport rect + scroll offset), appended
+  // to <body> so it paginates with the content. Markers stay print-hidden —
+  // badges were print-hidden pre-overlay too; parity is highlights-print,
+  // markers-don't. Fail-safe: any error tears the layer down and printing
+  // proceeds without annotation visuals.
+  var PRINT_HL_COMMENT = 'background:oklch(0.70 0.18 60 / 0.28);border-bottom:2px solid var(--pn-accent, #d97757);';
+  var PRINT_HL_DELETION = 'background:oklch(from var(--pn-destructive, #c0392b) l c h / 0.28);background-image:linear-gradient(to bottom, transparent calc(50% - 1px), var(--pn-destructive, #c0392b) calc(50% - 1px), var(--pn-destructive, #c0392b) calc(50% + 1px), transparent calc(50% + 1px));';
+  var printLayerEl = null;
+  var retiredPrintLayerEl = null;
+
+  function teardownPrintLayer() {
+    // Deregister the PREVIOUSLY retired layer now: its removal's mutation
+    // record has long been delivered. The layer removed below must STAY
+    // overlay-registered until then — the observer's overlay-only filter
+    // sees removal records asynchronously and must still recognize the node.
+    if (retiredPrintLayerEl) {
+      overlayNodes.delete(retiredPrintLayerEl);
+      retiredPrintLayerEl = null;
+    }
+    if (!printLayerEl) return;
+    try {
+      if (printLayerEl.parentNode) printLayerEl.parentNode.removeChild(printLayerEl);
+    } catch (ex) {}
+    retiredPrintLayerEl = printLayerEl;
+    printLayerEl = null;
+  }
+
+  function buildPrintLayer() {
+    teardownPrintLayer();
+    try {
+      if (!annRecords.length || !document.body) return;
+      var layer = document.createElement('div');
+      layer.setAttribute('data-plannotator-print-layer', '');
+      layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;';
+      var sx = window.scrollX || 0;
+      var sy = window.scrollY || 0;
+      for (var recordIndex = 0; recordIndex < annRecords.length; recordIndex++) {
+        var record = annRecords[recordIndex];
+        refreshRecordTargets(record);
+        for (var targetIndex = 0; targetIndex < record.targets.length; targetIndex++) {
+          var target = record.targets[targetIndex];
+          if (target.kind !== 'range' || !rangeAlive(target.range)) continue;
+          var geometry = rangeVisualGeometry(target.range);
+          for (var i = 0; i < geometry.paint.length; i++) {
+            var rect = geometry.paint[i];
+            var div = document.createElement('div');
+            div.style.cssText = 'position:absolute;pointer-events:none;border-radius:2px;box-sizing:border-box;'
+              + (record.annType === 'deletion' ? PRINT_HL_DELETION : PRINT_HL_COMMENT);
+            div.style.left = (rect.left + sx) + 'px';
+            div.style.top = (rect.top + sy) + 'px';
+            div.style.width = (rect.width || 0) + 'px';
+            div.style.height = (rect.height || 0) + 'px';
+            layer.appendChild(div);
+          }
+        }
+      }
+      if (!layer.childNodes.length) return;
+      overlayNodes.add(layer);
+      printLayerEl = layer;
+      // Root element, NOT <body>: a page styling body { position: relative }
+      // would make body's padding box the containing block and shift every
+      // stripe by body's document offset. On <html> the containing block is
+      // the initial containing block (matching the viewport+scroll
+      // coordinates computed above) in the overwhelmingly common case where
+      // html itself is not positioned; a positioned documentElement is
+      // accepted as out of scope.
+      (document.documentElement || document.body).appendChild(layer);
+    } catch (exBuild) {
+      try { teardownPrintLayer(); } catch (exDown) {}
+    }
+  }
+
+  window.addEventListener('beforeprint', buildPrintLayer);
+  window.addEventListener('afterprint', teardownPrintLayer);
+  if (typeof window.matchMedia === 'function') {
+    // Safari fires the print media-query transition without beforeprint in
+    // some paths; mirror the layer lifecycle on it.
+    try {
+      var printMedia = window.matchMedia('print');
+      var onPrintMediaChange = function(mediaEvent) {
+        if (mediaEvent && mediaEvent.matches) buildPrintLayer();
+        else teardownPrintLayer();
+      };
+      if (printMedia.addEventListener) printMedia.addEventListener('change', onPrintMediaChange);
+      else if (printMedia.addListener) printMedia.addListener(onPrintMediaChange);
+    } catch (exMedia) {}
   }
 
   function onReady() {
@@ -3043,6 +3946,7 @@ export const BRIDGE_SCRIPT = `(function() {
         schedulePinpointReconcile();
       }).observe(document.body);
     }
+    watchPageMutations();
     parent.postMessage({ type: PREFIX + 'ready' }, '*');
   }
   if (document.readyState === 'loading') {
@@ -3050,4 +3954,24 @@ export const BRIDGE_SCRIPT = `(function() {
   } else {
     onReady();
   }
+
+  // Test-only introspection: the DOM suites assert committed-range EXTENT
+  // (which exact text a committed annotation's range binds), which has no
+  // other observable in the overlay model. Exposes nothing the same-realm
+  // page could not already derive — the overlay root is open, highlight
+  // geometry mirrors the ranges, and the text is the page's own content.
+  window.__plannotatorBridgeInternals = {
+    committedRanges: function(id) {
+      var record = findAnnRecord(id);
+      if (!record) return [];
+      var out = [];
+      for (var i = 0; i < record.targets.length; i++) {
+        var target = record.targets[i];
+        if (target.kind === 'range' && target.range) {
+          try { out.push(target.range.cloneRange()); } catch (ex) {}
+        }
+      }
+      return out;
+    }
+  };
 })();`;

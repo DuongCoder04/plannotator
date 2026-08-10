@@ -97,6 +97,15 @@ export interface HtmlElementAnchor {
   selector: string;
   tagName: string;
   text?: string;
+  /**
+   * The user's selected point inside the target element's rect, normalized to
+   * 0..1 on each axis. Placed comment markers reproject it against the
+   * element's CURRENT rect, so the marker follows the element through
+   * responsive movement instead of pinning stale pixels. Additive — anchors
+   * without one (older records, keyboard-driven selections) fall back to the
+   * target rect center.
+   */
+  point?: { x: number; y: number };
 }
 
 /**

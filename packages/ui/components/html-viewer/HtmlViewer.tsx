@@ -48,6 +48,12 @@ import {
 
 const PREFIX = "plannotator-bridge-";
 
+// Mirror of the bridge's MAX_SYNC_ANNOTATIONS: the bridge truncates the
+// synced numbering list at this bound, so the sender truncates AFTER the
+// stable sort too — the first 512 numbers then agree on both sides instead
+// of the bridge silently dropping an arbitrary tail.
+const MAX_SYNC_ANNOTATIONS = 512;
+
 function readThemeTokens(): Record<string, string> {
   const style = getComputedStyle(document.documentElement);
   const tokens: Record<string, string> = {};
@@ -436,6 +442,24 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
         hook.applyAnnotations(annotations);
       }
     }, [iframeReadyVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Placed-marker numbering is parent-authoritative: sync the ORDERED
+    // saved-annotation collection (the panel's createdA order, index + 1,
+    // global comments excluded — they have no page location) so every marker
+    // shows its annotation's display number, and renumbers on delete. The
+    // bridge's own registration order is only a pre-sync fallback.
+    useEffect(() => {
+      if (iframeReadyVersion === 0) return;
+      const ordered = annotations
+        .filter((ann) => ann.type !== AnnotationType.GLOBAL_COMMENT)
+        .sort((a, b) => a.createdA - b.createdA)
+        .slice(0, MAX_SYNC_ANNOTATIONS)
+        .map((ann, index) => ({ id: ann.id, number: index + 1 }));
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: `${PREFIX}sync-annotations`, annotations: ordered },
+        "*",
+      );
+    }, [iframeReadyVersion, annotations]);
 
     // Tell the bridge the current input method (drag vs pinpoint). Re-posts on
     // ready (fresh iframe) and whenever the user switches it in the toolstrip.

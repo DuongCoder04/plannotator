@@ -81,6 +81,42 @@ describe.if(hasDom)('parseHtmlElementAnchor (validated DTO)', () => {
       text: 'x'.repeat(401),
     })).toBeNull();
   });
+
+  test('carries a valid normalized marker point through validation', () => {
+    expect(hookModule!.parseHtmlElementAnchor({
+      selector: '#geo',
+      tagName: 'div',
+      point: { x: 0.25, y: 0.5 },
+    })).toEqual({ selector: '#geo', tagName: 'div', point: { x: 0.25, y: 0.5 } });
+  });
+
+  test('clamps out-of-range point values into 0..1', () => {
+    expect(hookModule!.parseHtmlElementAnchor({
+      selector: '#geo',
+      tagName: 'div',
+      point: { x: 7, y: -3 },
+    })).toEqual({ selector: '#geo', tagName: 'div', point: { x: 1, y: 0 } });
+  });
+
+  test('drops a malformed point without rejecting the anchor it rides on', () => {
+    for (const point of [
+      { x: 'left', y: 0.5 },
+      { x: Infinity, y: 0.5 },
+      { x: NaN, y: 0.5 },
+      { x: 0.5 },
+      'center',
+      42,
+      null,
+    ]) {
+      const parsed = hookModule!.parseHtmlElementAnchor({
+        selector: '#geo',
+        tagName: 'div',
+        point,
+      });
+      expect(parsed).toEqual({ selector: '#geo', tagName: 'div' });
+      expect((parsed as { point?: unknown }).point).toBeUndefined();
+    }
+  });
 });
 
 describe.if(hasDom)('parseBridgeMessage selection additions', () => {
@@ -247,6 +283,157 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     expect(added.length).toBe(1);
     expect(added[0]!.htmlAnchor).toBeUndefined();
   });
+
+  test('the anchor point (selected relative point) rides onto the committed annotation', async () => {
+    const added: Annotation[] = [];
+    const { postSelection } = await mountViewer({
+      mode: 'redline',
+      onAdd: (ann) => added.push(ann),
+    });
+    await postSelection({
+      ...selectionMessage,
+      anchor: { ...selectionMessage.anchor, point: { x: 0.75, y: 0.1 } },
+      pinpoint: true,
+    });
+    expect(added.length).toBe(1);
+    expect(added[0]!.htmlAnchor?.point).toEqual({ x: 0.75, y: 0.1 });
+  });
+
+  test('a hostile anchor point is dropped while the anchor itself commits', async () => {
+    const added: Annotation[] = [];
+    const { postSelection } = await mountViewer({
+      mode: 'redline',
+      onAdd: (ann) => added.push(ann),
+    });
+    await postSelection({
+      ...selectionMessage,
+      anchor: { ...selectionMessage.anchor, point: { x: 'evil', y: [1] } },
+      pinpoint: true,
+    });
+    expect(added.length).toBe(1);
+    expect(added[0]!.htmlAnchor).toEqual({
+      selector: 'p:nth-of-type(1)',
+      tagName: 'p',
+      text: 'Pinpoint target',
+    });
+    expect(added[0]!.htmlAnchor?.point).toBeUndefined();
+  });
+});
+
+describe.if(hasDom)('ordered saved-annotation sync (placed-marker numbering)', () => {
+  async function mountWithAnnotations(annotations: Annotation[]) {
+    if (!htmlViewerModule) throw new Error('DOM test environment is not registered');
+    const HtmlViewer = htmlViewerModule.HtmlViewer;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(
+        <HtmlViewer
+          rawHtml="<html><body><p>Sync target</p></body></html>"
+          annotations={annotations}
+          onAddAnnotation={() => {}}
+          onSelectAnnotation={() => {}}
+          selectedAnnotationId={null}
+          mode="selection"
+          inputMethod="pinpoint"
+        />,
+      );
+    });
+    const iframe = host.querySelector<HTMLIFrameElement>('iframe');
+    if (!iframe?.contentWindow) throw new Error('HTML iframe missing');
+    const postedToIframe: Array<Record<string, unknown>> = [];
+    const realPost = iframe.contentWindow.postMessage.bind(iframe.contentWindow);
+    (iframe.contentWindow as unknown as { postMessage: (data: unknown) => void }).postMessage =
+      ((data: unknown, ...rest: unknown[]) => {
+        if (data && typeof data === 'object') postedToIframe.push(data as Record<string, unknown>);
+        return (realPost as (...args: unknown[]) => unknown)(data, ...rest);
+      }) as typeof iframe.contentWindow.postMessage;
+    const postReady = async () => {
+      await act(async () => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: iframe.contentWindow,
+          data: { type: 'plannotator-bridge-ready' },
+        }));
+      });
+    };
+    return { postReady, postedToIframe };
+  }
+
+  function ann(id: string, createdA: number, type = 'COMMENT' as Annotation['type']): Annotation {
+    return {
+      id,
+      blockId: '',
+      startOffset: 0,
+      endOffset: 0,
+      type,
+      originalText: 'x',
+      createdA,
+    } as Annotation;
+  }
+
+  test('on bridge ready, the ordered collection syncs as index+1 numbers (globals excluded)', async () => {
+    const { AnnotationType } = await import('../../types');
+    const annotations = [
+      ann('global-1', 5, AnnotationType.GLOBAL_COMMENT),
+      ann('ann-late', 20),
+      ann('ann-early', 10),
+    ];
+    const { postReady, postedToIframe } = await mountWithAnnotations(annotations);
+    await postReady();
+    const syncs = postedToIframe.filter(
+      (m) => m.type === 'plannotator-bridge-sync-annotations',
+    );
+    expect(syncs.length).toBeGreaterThanOrEqual(1);
+    // Ordered by createdA (the panel's order), numbered index+1, no globals.
+    expect(syncs.at(-1)!.annotations).toEqual([
+      { id: 'ann-early', number: 1 },
+      { id: 'ann-late', number: 2 },
+    ]);
+  });
+
+  test('no sync is posted before the bridge is ready', async () => {
+    const { postedToIframe } = await mountWithAnnotations([ann('a', 1)]);
+    expect(
+      postedToIframe.some((m) => m.type === 'plannotator-bridge-sync-annotations'),
+    ).toBe(false);
+  });
+
+  test('the sync feed truncates to 512 entries AFTER the stable sort (m2)', async () => {
+    // The bridge caps its numbering map at 512; without a sender-side slice
+    // the bridge would keep an arbitrary tail whose numbers disagree with
+    // the panel. Slicing after the sort keeps the first 512 numbers equal on
+    // both sides. createdA descends here, so the sort must run before the
+    // slice for bulk-519 (oldest) to survive as number 1.
+    const annotations = Array.from({ length: 520 }, (_, i) => ann(`bulk-${i}`, 1000 - i));
+    const { postReady, postedToIframe } = await mountWithAnnotations(annotations);
+    await postReady();
+    const syncs = postedToIframe.filter(
+      (m) => m.type === 'plannotator-bridge-sync-annotations',
+    );
+    const list = syncs.at(-1)!.annotations as Array<{ id: string; number: number }>;
+    expect(list.length).toBe(512);
+    expect(list[0]).toEqual({ id: 'bulk-519', number: 1 });
+    expect(list[511]).toEqual({ id: 'bulk-8', number: 512 });
+  });
+});
+
+describe.if(hasDom)('mark-click validation (trust boundary)', () => {
+  test('mark-click ids are capped at 256 chars like the bridge sync cap (m1)', () => {
+    expect(hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-mark-click',
+      id: 'x'.repeat(256),
+    })).toEqual({ type: 'plannotator-bridge-mark-click', id: 'x'.repeat(256) });
+    expect(hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-mark-click',
+      id: 'x'.repeat(257),
+    })).toBeNull();
+    expect(hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-mark-click',
+      id: 42,
+    })).toBeNull();
+  });
 });
 
 describe.if(hasDom)('multi-target bridge message validation (trust boundary)', () => {
@@ -281,6 +468,24 @@ describe.if(hasDom)('multi-target bridge message validation (trust boundary)', (
       key: 'ht-2',
       text: 42,
     })).toBeNull();
+  });
+
+  test('multi-target-added: anchor point validates like the primary anchor point', () => {
+    const good = hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-multi-target-added',
+      key: 'ht-6',
+      text: 'Create',
+      anchor: { selector: 'span.btn', tagName: 'span', text: 'Create', point: { x: 0.9, y: 0.2 } },
+    }) as { anchor?: { point?: { x: number; y: number } } };
+    expect(good.anchor?.point).toEqual({ x: 0.9, y: 0.2 });
+    const bad = hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-multi-target-added',
+      key: 'ht-7',
+      text: 'Create',
+      anchor: { selector: 'span.btn', tagName: 'span', text: 'Create', point: { x: 'evil', y: 0.2 } },
+    }) as { anchor?: { selector: string; tagName: string; text?: string; point?: unknown } };
+    expect(bad.anchor).toEqual({ selector: 'span.btn', tagName: 'span', text: 'Create' });
+    expect(bad.anchor?.point).toBeUndefined();
   });
 
   test('multi-target-added: hostile label is truncated, hostile anchor dropped, text capped', () => {
