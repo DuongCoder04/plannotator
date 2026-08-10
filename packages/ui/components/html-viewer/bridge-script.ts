@@ -115,6 +115,20 @@ body[data-plannotator-pinpoint-cursor] [data-plannotator-pin-badge] {
     animation: none;
   }
 }
+@media print {
+  /* Viewer overlays are review chrome, not page content: never bake pin
+     badges, pinpoint boxes/labels, or vim UI into a printed page. The outer
+     app chrome is print-hidden by print.css, but this CSS lives inside the
+     iframe's own document and must carry its own rule. Inline annotation
+     <mark>s stay visible in print on purpose, matching markdown documents. */
+  [data-plannotator-pinpoint-box],
+  [data-plannotator-pinpoint-label],
+  [data-plannotator-pin-badge],
+  [data-plannotator-vim-ui],
+  [data-plannotator-vim-cursor] {
+    display: none !important;
+  }
+}
 body[data-plannotator-vim-focus-owner]:focus {
   outline: none !important;
 }
