@@ -1338,6 +1338,423 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     document.body.replaceChildren();
   });
 
+  // --- Shift-click multi-select: several elements, ONE draft comment ---
+
+  const MULTI_MARKUP = [
+    '<div id="hero">',
+    '<p class="alpha">Alpha text</p>',
+    '<p class="beta">Beta text</p>',
+    '<p class="gamma">Gamma text</p>',
+    "</div>",
+  ].join("");
+
+  type BridgeData = Record<string, unknown>;
+
+  /** Collect bridge messages of the given types across one synchronous action. */
+  async function collectMessages(
+    types: string[],
+    action: () => void,
+  ): Promise<BridgeData[]> {
+    await new Promise((resolve) => setTimeout(resolve, 0)); // flush queued posts
+    const messages: BridgeData[] = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data && types.includes(String(data.type))) messages.push(data);
+    };
+    window.addEventListener("message", collect);
+    action();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.removeEventListener("message", collect);
+    return messages;
+  }
+
+  function clickAt(el: Element, x: number, y: number, shift: boolean) {
+    el.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      shiftKey: shift,
+    }));
+  }
+
+  function pinnedBoxCount(): number {
+    return document.querySelectorAll("[data-plannotator-pinpoint-box][data-pinned]").length;
+  }
+
+  async function startMultiDraft(options?: { arm?: boolean }): Promise<{
+    primaryKey: string;
+    keys: Map<string, string>; // className -> target key
+  }> {
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+    const alpha = document.querySelector<HTMLElement>("p.alpha")!;
+    const selections = await collectMessages(
+      ["plannotator-bridge-selection"],
+      () => clickAt(alpha, 20, 20, false),
+    );
+    expect(selections.length).toBe(1);
+    expect(selections[0]!.pinpoint).toBe(true);
+    expect(typeof selections[0]!.targetKey).toBe("string");
+    expect(selections[0]!.targetLabel).toBe("Paragraph");
+    const primaryKey = String(selections[0]!.targetKey);
+    // The parent arms multi-select only when its comment composer mirrors the
+    // draft — replayed here unless the test wants an UNARMED draft.
+    if (options?.arm !== false) {
+      postBridge({ type: "plannotator-bridge-arm-multi-select", key: primaryKey });
+    }
+    const keys = new Map<string, string>();
+    keys.set("alpha", primaryKey);
+    return { primaryKey, keys };
+  }
+
+  test("shift-click adds targets to the SAME draft and toggles them off again", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    const { keys } = await startMultiDraft();
+    const beta = document.querySelector<HTMLElement>("p.beta")!;
+    const gamma = document.querySelector<HTMLElement>("p.gamma")!;
+
+    // Shift-click beta: joins the draft, posts a validated target DTO, and
+    // gets its own pinned outline box (primary keeps the main box).
+    const added = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(beta, 40, 40, true),
+    );
+    expect(added.length).toBe(1);
+    expect(added[0]!.label).toBe("Paragraph");
+    expect(added[0]!.text).toBe("Beta text");
+    const betaAnchor = added[0]!.anchor as { selector: string };
+    const betaMatches = document.querySelectorAll(betaAnchor.selector);
+    expect(betaMatches.length).toBe(1);
+    expect(betaMatches[0]).toBe(beta);
+    keys.set("beta", String(added[0]!.key));
+    expect(pinnedBoxCount()).toBe(2);
+
+    const addedGamma = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(gamma, 60, 60, true),
+    );
+    expect(addedGamma.length).toBe(1);
+    expect(pinnedBoxCount()).toBe(3);
+
+    // Shift-click beta AGAIN: toggle-off by DOM identity — the removal is
+    // echoed to the parent and beta's outline box disappears.
+    const removed = await collectMessages(
+      ["plannotator-bridge-multi-target-added", "plannotator-bridge-multi-target-removed"],
+      () => clickAt(beta, 40, 40, true),
+    );
+    expect(removed.length).toBe(1);
+    expect(removed[0]!.type).toBe("plannotator-bridge-multi-target-removed");
+    expect(removed[0]!.key).toBe(keys.get("beta"));
+    expect(pinnedBoxCount()).toBe(2);
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    expect(pinnedBoxCount()).toBe(0);
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("create-mark commits every draft target under ONE id with ONE badge number", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    await startMultiDraft();
+    clickAt(document.querySelector("p.beta")!, 40, 40, true);
+    clickAt(document.querySelector("p.gamma")!, 60, 60, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "multi-commit",
+      annotationType: "comment",
+    });
+
+    // Primary keeps its text mark (or pin); beta + gamma each get a pin —
+    // and every badge for this annotation shows the SAME number.
+    const badges = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-plannotator-pin-badge]"),
+    );
+    expect(badges.length).toBeGreaterThanOrEqual(2);
+    for (const badge of badges) expect(badge.textContent).toBe("1");
+    expect(pinnedBoxCount()).toBe(0); // draft state fully cleared
+
+    // A SECOND annotation numbers 2 — multi-target pins consumed only one slot.
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "second-ann",
+      originalText: "Text that exists nowhere on this page",
+      annotationType: "comment",
+      anchor: { selector: "#hero", tagName: "div" },
+    });
+    const allBadges = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-plannotator-pin-badge]"),
+    );
+    const numbers = allBadges.map((b) => b.textContent);
+    expect(numbers).toContain("2");
+    expect(numbers.filter((n) => n === "1").length).toBeGreaterThanOrEqual(2);
+    expect(numbers.filter((n) => n === "2").length).toBe(1);
+
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("removing the primary promotes the next target; removing the last cancels", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    const { primaryKey } = await startMultiDraft();
+    const beta = document.querySelector<HTMLElement>("p.beta")!;
+    clickAt(beta, 40, 40, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Shift-click the PRIMARY: it is removed and beta is promoted.
+    const removals = await collectMessages(
+      ["plannotator-bridge-multi-target-removed"],
+      () => clickAt(document.querySelector("p.alpha")!, 20, 20, true),
+    );
+    expect(removals.length).toBe(1);
+    expect(removals[0]!.key).toBe(primaryKey);
+    expect(pinnedBoxCount()).toBe(1); // only the promoted primary's main box
+
+    // Committing now pins the PROMOTED element (beta), not alpha.
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "promoted-commit",
+      annotationType: "comment",
+    });
+    const badge = document.querySelector<HTMLElement>("[data-plannotator-pin-badge]");
+    expect(badge).not.toBeNull();
+    expect(document.querySelector('[data-bind-id="promoted-commit"]')).toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+
+    // Fresh draft with ONLY a primary: shift-clicking it cancels the draft —
+    // a later create-mark must commit nothing.
+    const again = await startMultiDraft();
+    const cancel = await collectMessages(
+      ["plannotator-bridge-multi-target-removed"],
+      () => clickAt(document.querySelector("p.alpha")!, 20, 20, true),
+    );
+    expect(cancel.length).toBe(1);
+    expect(cancel[0]!.key).toBe(again.primaryKey);
+    expect(pinnedBoxCount()).toBe(0);
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "cancelled-commit",
+      annotationType: "comment",
+    });
+    expect(document.querySelector('[data-bind-id="cancelled-commit"]')).toBeNull();
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("UNARMED pinpoint drafts refuse the shift-toggle (D1: quickLabel-style modes)", async () => {
+    // The parent only mirrors targets while the comment composer owns the
+    // draft; quickLabel/redline drafts never send arm-multi-select. A
+    // shift-click on such a draft must NOT accumulate bridge-side targets the
+    // saved annotation would not carry — it behaves as a plain click.
+    document.body.innerHTML = MULTI_MARKUP;
+    await startMultiDraft({ arm: false });
+    const beta = document.querySelector<HTMLElement>("p.beta")!;
+
+    const messages = await collectMessages(
+      ["plannotator-bridge-multi-target-added", "plannotator-bridge-selection"],
+      () => clickAt(beta, 40, 40, true),
+    );
+    // No multi-target-added; the shift-click replaced the draft instead.
+    expect(messages.length).toBe(1);
+    expect(messages[0]!.type).toBe("plannotator-bridge-selection");
+    expect(messages[0]!.text).toBe("Beta text");
+    expect(pinnedBoxCount()).toBe(1); // only the (new) primary's main box
+
+    // Committing registers nothing beyond the new primary — no orphan pins.
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "unarmed-commit",
+      annotationType: "comment",
+    });
+    expect(
+      document.querySelectorAll("[data-plannotator-pin-badge]").length,
+    ).toBeLessThanOrEqual(1);
+
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("a stale or mismatched arm key never arms a draft", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    await startMultiDraft({ arm: false });
+    postBridge({ type: "plannotator-bridge-arm-multi-select", key: "not-the-primary" });
+    const messages = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(document.querySelector("p.beta")!, 40, 40, true),
+    );
+    expect(messages.length).toBe(0);
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("arming is per-draft: a NEW draft after an armed one starts unarmed (D1-R)", async () => {
+    // The stale-arm regression: comment-mode draft gets armed, the user
+    // switches to a mode the parent does not mirror (quick label posts
+    // nothing to the bridge), then starts a NEW draft with a plain click.
+    // Without a per-draft reset the old arm leaks into the new draft and the
+    // bridge accumulates outlines/pins the saved annotation will not carry.
+    document.body.innerHTML = MULTI_MARKUP;
+    const { primaryKey } = await startMultiDraft(); // armed comment draft
+    postBridge({ type: "plannotator-bridge-arm-multi-select", key: primaryKey });
+
+    // New draft via plain click (no cancel-selection, no re-arm) — exactly
+    // what a toolbar mode change followed by a pinpoint click produces.
+    const beta = document.querySelector<HTMLElement>("p.beta")!;
+    await collectMessages(["plannotator-bridge-selection"], () => clickAt(beta, 40, 40, false));
+
+    // Shift-click on the unarmed new draft must NOT add a target.
+    const added = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(document.querySelector("p.gamma") ?? document.querySelector("p.alpha")!, 40, 40, true),
+    );
+    expect(added.length).toBe(0);
+
+    // Committing the new draft registers at most its own primary: no orphans.
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "stale-arm-commit",
+      annotationType: "comment",
+    });
+    expect(
+      document.querySelectorAll("[data-plannotator-pin-badge]").length,
+    ).toBeLessThanOrEqual(1);
+
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("remove-target is idempotent and resyncs a forged primary removal (D4)", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    const { primaryKey } = await startMultiDraft();
+    const added = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(document.querySelector("p.beta")!, 40, 40, true),
+    );
+    const betaKey = String(added[0]!.key);
+    expect(pinnedBoxCount()).toBe(2);
+
+    // Forged-removal scenario: the parent believed the primary was removed
+    // (hostile multi-target-removed) and echoes remove-target back. The
+    // bridge, which never removed it, now performs the SAME promotion —
+    // both sides converge on beta as the primary.
+    postBridge({ type: "plannotator-bridge-remove-target", key: primaryKey });
+    expect(pinnedBoxCount()).toBe(1);
+
+    // Idempotency: the same removal again (double echo) is a no-op.
+    postBridge({ type: "plannotator-bridge-remove-target", key: primaryKey });
+    expect(pinnedBoxCount()).toBe(1);
+
+    // Committing pins the promoted element (beta), matching the parent model.
+    postBridge({
+      type: "plannotator-bridge-create-mark",
+      id: "resync-commit",
+      annotationType: "comment",
+    });
+    const badge = document.querySelector<HTMLElement>("[data-plannotator-pin-badge]");
+    expect(badge).not.toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    void betaKey;
+    document.body.replaceChildren();
+  });
+
+  test("parent-initiated remove-target mirrors without echoing back", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    await startMultiDraft();
+    const added = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => clickAt(document.querySelector("p.beta")!, 40, 40, true),
+    );
+    const betaKey = String(added[0]!.key);
+    expect(pinnedBoxCount()).toBe(2);
+
+    const echoes = await collectMessages(
+      ["plannotator-bridge-multi-target-removed"],
+      () => postBridge({ type: "plannotator-bridge-remove-target", key: betaKey }),
+    );
+    expect(echoes.length).toBe(0); // the parent already updated its own list
+    expect(pinnedBoxCount()).toBe(1);
+
+    // flash-target on the survivor must not throw or change draft state.
+    postBridge({ type: "plannotator-bridge-flash-target", key: betaKey });
+    expect(pinnedBoxCount()).toBe(1);
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("the multi-target draft is capped at 16 additional targets in the bridge", async () => {
+    const paragraphs: string[] = [];
+    for (let i = 0; i < 20; i++) paragraphs.push(`<p class="cap-${i}">Cap target ${i}</p>`);
+    document.body.innerHTML = `<div id="cap-stage">${paragraphs.join("")}</div>`;
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+    const primarySelections = await collectMessages(
+      ["plannotator-bridge-selection"],
+      () => clickAt(document.querySelector("p.cap-0")!, 10, 10, false), // primary
+    );
+    postBridge({
+      type: "plannotator-bridge-arm-multi-select",
+      key: String(primarySelections[0]!.targetKey),
+    });
+
+    const added = await collectMessages(
+      ["plannotator-bridge-multi-target-added"],
+      () => {
+        for (let i = 1; i < 20; i++) {
+          clickAt(document.querySelector(`p.cap-${i}`)!, 10 + i, 10, true);
+        }
+      },
+    );
+    expect(added.length).toBe(16);
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("find-and-mark restores additional anchors as same-numbered pins, fail-closed", async () => {
+    document.body.innerHTML = MULTI_MARKUP;
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "restore-multi",
+      originalText: "Alpha text",
+      annotationType: "comment",
+      anchor: { selector: "p.alpha", tagName: "p", text: "Alpha text" },
+      additionalAnchors: [
+        { selector: "p.beta", tagName: "p", text: "Beta text" },
+        // Stale snapshot: this anchor must NOT resolve (no pin, no mis-mark).
+        { selector: "p.gamma", tagName: "p", text: "Stale snapshot" },
+      ],
+    });
+
+    // Primary restored as an inline mark inside alpha.
+    const mark = document.querySelector('[data-bind-id="restore-multi"]');
+    expect(mark?.textContent).toBe("Alpha text");
+    // Beta restored as a pin sharing the annotation's number; gamma failed closed.
+    const badges = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-plannotator-pin-badge]"),
+    );
+    expect(badges.length).toBe(1);
+    expect(badges[0]!.textContent).toBe("1");
+
+    postBridge({ type: "plannotator-bridge-remove-mark", id: "restore-multi" });
+    expect(document.querySelector('[data-bind-id="restore-multi"]')).toBeNull();
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+    document.body.replaceChildren();
+  });
+
   test("hover hit-testing never storms document-wide queries per mousemove", () => {
     // The old hover path rebuilt the semantic target graph (three
     // document-wide querySelectorAll sweeps) on every pointer frame. The new

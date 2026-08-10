@@ -302,6 +302,19 @@ export const BRIDGE_SCRIPT = `(function() {
   var pendingRange = null; // live range for the pending selection (scroll tracking)
   var pendingPinEl = null; // element pinned by a pinpoint click (outline + scroll tracking)
   var pendingPinAnchor = null; // serialized anchor for the pending pin
+  var pendingPinKey = null; // target key for the primary pinpoint target (multi-select)
+  var pendingPinLabel = null; // semantic label captured for the primary target
+  var pendingPinViaPinpoint = false; // pinpoint drafts survive scroll-out (see postSelectionRect)
+  // Multi-select is ARMED EXPLICITLY by the parent (arm-multi-select), and only
+  // when the comment composer owns the draft. The bridge must never accept a
+  // shift-toggle the parent would not mirror (e.g. quickLabel-mode drafts):
+  // what the user sees pinned and what the annotation saves must never diverge.
+  var multiSelectArmed = false;
+  // Shift-click multi-select: additional elements joined to the SAME draft
+  // comment while the composer is open. Each entry owns a pinned outline box.
+  var pendingMultiTargets = []; // { key, el, anchor, label, text, box }
+  var multiTargetSeq = 0;
+  var MAX_MULTI_TARGETS = 16;
   var currentInputMethod = 'drag'; // 'drag' = text selection, 'pinpoint' = click an element
   var pinpointHover = null;
   var vimEnabled = false;
@@ -354,6 +367,7 @@ export const BRIDGE_SCRIPT = `(function() {
         parent.postMessage({ type: PREFIX + 'selection-clear' }, '*');
         pendingSelection = null;
         pendingRange = null;
+        clearMultiTargets();
         clearPendingPin();
       }
       return false;
@@ -379,6 +393,8 @@ export const BRIDGE_SCRIPT = `(function() {
       modeOverride: modeOverride || undefined,
       anchor: (extras && extras.anchor) || undefined,
       pinpoint: (extras && extras.pinpoint) || undefined,
+      targetKey: (extras && extras.targetKey) || undefined,
+      targetLabel: (extras && extras.targetLabel) || undefined,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
     }, '*');
     return true;
@@ -396,6 +412,11 @@ export const BRIDGE_SCRIPT = `(function() {
     if (!tracked) return;
     var r = tracked.getBoundingClientRect();
     if (r.bottom < 0 || r.top > window.innerHeight) {
+      // Pinpoint drafts survive scrolling: the user is expected to roam the
+      // page (especially to shift-click distant elements into the draft), so
+      // the pinned primary leaving the viewport must not tear the draft down.
+      // Drag selections keep the existing close-on-scroll-out behavior.
+      if (pendingPinViaPinpoint || pendingMultiTargets.length > 0) return;
       // Selection scrolled out of view — close the toolbar (matches markdown).
       parent.postMessage({ type: PREFIX + 'selection-clear' }, '*');
       pendingSelection = null;
@@ -437,10 +458,16 @@ export const BRIDGE_SCRIPT = `(function() {
         } else if (pendingPinEl) {
           registerPin(id, pendingPinEl, pendingPinAnchor);
         }
+        // Every additional multi-select target gets a pin under the SAME
+        // annotation id — all of them share one badge number.
+        for (var mtIndex = 0; mtIndex < pendingMultiTargets.length; mtIndex++) {
+          registerPin(id, pendingMultiTargets[mtIndex].el, pendingMultiTargets[mtIndex].anchor);
+        }
         pendingSelection = null;
         pendingRange = null;
         window.getSelection().removeAllRanges();
       }
+      clearMultiTargets();
       clearPendingPin();
       restoreVimSemanticTarget();
     }
@@ -476,6 +503,21 @@ export const BRIDGE_SCRIPT = `(function() {
         registerPin(e.data.id, anchorEl, e.data.anchor);
         found = true;
       }
+      // Multi-target annotations: every additional anchor that still resolves
+      // gets a pin under the same id (same badge number). Anchor-only — a
+      // stale anchor simply doesn't restore (fail closed), the primary's text
+      // fallback is never reused here because an excerpt search could mis-mark.
+      var extraAnchors = e.data.additionalAnchors;
+      if (extraAnchors && extraAnchors.length) {
+        var extraCount = Math.min(extraAnchors.length, MAX_MULTI_TARGETS);
+        for (var extraIndex = 0; extraIndex < extraCount; extraIndex++) {
+          var extraEl = resolveAnchorElement(extraAnchors[extraIndex]);
+          if (extraEl) {
+            registerPin(e.data.id, extraEl, extraAnchors[extraIndex]);
+            found = true;
+          }
+        }
+      }
       parent.postMessage({
         type: PREFIX + 'mark-applied',
         id: e.data.id,
@@ -498,9 +540,35 @@ export const BRIDGE_SCRIPT = `(function() {
       pendingSelection = null;
       pendingRange = null;
       skipNextClear = false;
+      clearMultiTargets();
       clearPendingPin();
       window.getSelection().removeAllRanges();
       restoreVimSemanticTarget();
+    }
+
+    else if (type === PREFIX + 'arm-multi-select') {
+      // Parent arms shift-multi-select for the draft it is mirroring in the
+      // comment composer. The key must name the CURRENT primary so a stale
+      // arm from a previous draft can never arm a new one.
+      if (
+        pendingPinEl
+        && pendingPinViaPinpoint
+        && typeof e.data.key === 'string'
+        && e.data.key === pendingPinKey
+      ) {
+        multiSelectArmed = true;
+      }
+    }
+
+    else if (type === PREFIX + 'remove-target') {
+      // Parent-initiated removal (chip X button), or the parent's echo of a
+      // bridge-side removal. Idempotent: an already-removed key is a no-op,
+      // which also resyncs the two sides after a forged removal message.
+      removeMultiTargetByKey(typeof e.data.key === 'string' ? e.data.key : '', false);
+    }
+
+    else if (type === PREFIX + 'flash-target') {
+      flashMultiTarget(typeof e.data.key === 'string' ? e.data.key : '');
     }
 
     else if (type === PREFIX + 'scroll-to') {
@@ -1005,6 +1073,15 @@ export const BRIDGE_SCRIPT = `(function() {
     // Hit-test at the pointer (e.target only backstops engines without
     // elementFromPoint) so the same code path serves the scroll re-hit-test.
     updatePinpointHover(e.clientX, e.clientY, e.target);
+    if (pendingPinEl && multiSelectArmed) {
+      // Composer yield needs the pointer even while it is inside this iframe;
+      // the shift state rides along because the parent cannot observe
+      // modifiers held while focus/pointer live in the sandbox.
+      schedulePointerRelay(e.clientX, e.clientY, e.shiftKey);
+      // Shift-hover preview: outline what the next shift-click would toggle.
+      if (e.shiftKey) updateMultiHover(e.clientX, e.clientY, e.target);
+      else hideMultiHoverBox();
+    }
   });
 
   // rAF-coalesced reconcile: keeps the hover box under a stationary cursor
@@ -1020,6 +1097,7 @@ export const BRIDGE_SCRIPT = `(function() {
       // the last-position cache must never answer the next probe.
       invalidatePointerHitCache();
       renderPinBadges();
+      positionMultiTargetBoxes();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
         return;
@@ -1043,7 +1121,14 @@ export const BRIDGE_SCRIPT = `(function() {
     return null;
   }
   function registerPin(id, element, anchor) {
-    if (findPin(id)) return;
+    // One annotation may legitimately cover several elements (multi-select),
+    // so dedup by (id, element) — and by (id, anchor) so a re-resolved anchor
+    // can't double-badge the same logical target — never by id alone.
+    for (var existing = 0; existing < pinRegistry.length; existing++) {
+      if (pinRegistry[existing].id !== id) continue;
+      if (pinRegistry[existing].element === element) return;
+      if (anchor && anchorsEqual(pinRegistry[existing].anchor, anchor)) return;
+    }
     var badge = document.createElement('div');
     badge.setAttribute('data-plannotator-pin-badge', '');
     badge.setAttribute('data-plannotator-vim-ui', '');
@@ -1077,6 +1162,9 @@ export const BRIDGE_SCRIPT = `(function() {
     pinRegistry = [];
   }
   function renderPinBadges() {
+    // Number by FIRST-SEEN annotation id, not by registry entry: a
+    // multi-target annotation has several pins that all share one number.
+    var pinNumbers = new Map();
     for (var i = 0; i < pinRegistry.length; i++) {
       var pin = pinRegistry[i];
       if ((!pin.element || !pin.element.isConnected) && pin.anchor) {
@@ -1084,7 +1172,8 @@ export const BRIDGE_SCRIPT = `(function() {
         pin.element = resolveAnchorElement(pin.anchor);
       }
       // Number by registry (creation) order, independent of visibility.
-      pin.badge.textContent = String(i + 1);
+      if (!pinNumbers.has(pin.id)) pinNumbers.set(pin.id, pinNumbers.size + 1);
+      pin.badge.textContent = String(pinNumbers.get(pin.id));
       if (!pin.element || !pin.element.isConnected) {
         pin.badge.style.display = 'none';
         continue;
@@ -1285,7 +1374,241 @@ export const BRIDGE_SCRIPT = `(function() {
   function clearPendingPin() {
     pendingPinEl = null;
     pendingPinAnchor = null;
+    pendingPinKey = null;
+    pendingPinLabel = null;
+    pendingPinViaPinpoint = false;
+    multiSelectArmed = false;
     hidePinpointBox();
+  }
+
+  // --- Multi-select (shift-click): several elements, ONE draft comment ---
+
+  function makeTargetKey() {
+    multiTargetSeq += 1;
+    return 'ht-' + multiTargetSeq;
+  }
+
+  function anchorsEqual(a, b) {
+    return !!a && !!b
+      && a.selector === b.selector
+      && a.tagName === b.tagName
+      && (a.text || '') === (b.text || '');
+  }
+
+  // Per-target pinned outline boxes. The primary keeps the main pinpoint box;
+  // each additional target gets its own (same attribute so the CSS applies,
+  // identity-tracked in overlayNodes like every viewer overlay).
+  function createMultiTargetBox(el) {
+    var box = document.createElement('div');
+    box.setAttribute('data-plannotator-pinpoint-box', '');
+    box.setAttribute('data-plannotator-vim-ui', '');
+    box.setAttribute('data-pinned', '');
+    overlayNodes.add(box);
+    document.body.appendChild(box);
+    positionBoxToEl(box, el);
+    return box;
+  }
+
+  function positionBoxToEl(box, el) {
+    var r = el.getBoundingClientRect();
+    box.style.display = 'block';
+    box.style.left = r.left + 'px';
+    box.style.top = r.top + 'px';
+    box.style.width = r.width + 'px';
+    box.style.height = r.height + 'px';
+  }
+
+  function destroyMultiTargetBox(box) {
+    if (!box) return;
+    if (box.parentNode) box.parentNode.removeChild(box);
+    overlayNodes.delete(box);
+  }
+
+  function clearMultiTargets() {
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      destroyMultiTargetBox(pendingMultiTargets[i].box);
+    }
+    pendingMultiTargets = [];
+    hideMultiHoverBox();
+  }
+
+  function positionMultiTargetBoxes() {
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      var entry = pendingMultiTargets[i];
+      if (entry.el && entry.el.isConnected) positionBoxToEl(entry.box, entry.el);
+      else entry.box.style.display = 'none';
+    }
+  }
+
+  // Element text for an additional target: same capping and text-less
+  // description used by the primary element path in annotateElement.
+  function elementTargetText(el, label) {
+    var text = capSelectionText((el.textContent || '').trim());
+    if (!text) text = capSelectionText('[element: ' + label + ']');
+    return text;
+  }
+
+  /**
+   * Remove one draft target by key. Removing the primary promotes the first
+   * remaining additional target to primary (it commits as an element pin);
+   * removing the final target cancels the whole draft. When echo is true
+   * (bridge-initiated toggle-off) the removal is posted to the parent, which
+   * performs the identical deterministic update on its chip list.
+   */
+  function removeMultiTargetByKey(key, echo) {
+    if (!key) return;
+    if (key === pendingPinKey) {
+      if (!pendingMultiTargets.length) {
+        // Last target gone — the draft is cancelled.
+        pendingSelection = null;
+        pendingRange = null;
+        skipNextClear = false;
+        clearMultiTargets();
+        clearPendingPin();
+        try { window.getSelection().removeAllRanges(); } catch (ex) {}
+        if (echo) parent.postMessage({ type: PREFIX + 'multi-target-removed', key: key }, '*');
+        return;
+      }
+      var next = pendingMultiTargets.shift();
+      destroyMultiTargetBox(next.box);
+      pendingPinEl = next.el;
+      pendingPinAnchor = next.anchor;
+      pendingPinKey = next.key;
+      pendingPinLabel = next.label;
+      // A promoted primary commits as an element pin: the original text
+      // selection belonged to the removed element and no longer applies.
+      pendingSelection = { element: true };
+      pendingRange = null;
+      try { window.getSelection().removeAllRanges(); } catch (ex2) {}
+      var mainBox = getPinpointBoxEl();
+      mainBox.setAttribute('data-pinned', '');
+      mainBox.classList.remove('pn-pin-enter');
+      if (pendingPinEl && pendingPinEl.isConnected) positionPinpointBox(pendingPinEl);
+      if (echo) parent.postMessage({ type: PREFIX + 'multi-target-removed', key: key }, '*');
+      return;
+    }
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      if (pendingMultiTargets[i].key === key) {
+        destroyMultiTargetBox(pendingMultiTargets[i].box);
+        pendingMultiTargets.splice(i, 1);
+        if (echo) parent.postMessage({ type: PREFIX + 'multi-target-removed', key: key }, '*');
+        return;
+      }
+    }
+  }
+
+  /** Shift-click toggle: add the element to the draft, or remove it if it is
+   *  already selected (dedup by DOM identity first, then by anchor equality
+   *  so a re-rendered page cannot double-select the same logical element). */
+  function toggleMultiTarget(el) {
+    if (!el) return;
+    if (el === pendingPinEl) {
+      removeMultiTargetByKey(pendingPinKey, true);
+      return;
+    }
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      if (pendingMultiTargets[i].el === el) {
+        removeMultiTargetByKey(pendingMultiTargets[i].key, true);
+        return;
+      }
+    }
+    var anchor = buildElementAnchor(el);
+    if (anchor) {
+      if (anchorsEqual(anchor, pendingPinAnchor)) {
+        removeMultiTargetByKey(pendingPinKey, true);
+        return;
+      }
+      for (var j = 0; j < pendingMultiTargets.length; j++) {
+        if (anchorsEqual(anchor, pendingMultiTargets[j].anchor)) {
+          removeMultiTargetByKey(pendingMultiTargets[j].key, true);
+          return;
+        }
+      }
+    }
+    // Cap at the source: never grow the draft past the parent-side DTO cap.
+    if (pendingMultiTargets.length >= MAX_MULTI_TARGETS) return;
+    var label = pinpointHoverLabel(el);
+    var text = elementTargetText(el, label);
+    var key = makeTargetKey();
+    var box = createMultiTargetBox(el);
+    pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, box: box });
+    parent.postMessage({
+      type: PREFIX + 'multi-target-added',
+      key: key,
+      label: label,
+      text: text,
+      anchor: anchor || undefined
+    }, '*');
+  }
+
+  /** Chip hover in the composer: flash the corresponding pinned outline. */
+  function flashMultiTarget(key) {
+    var el = null;
+    var box = null;
+    if (key && key === pendingPinKey) {
+      el = pendingPinEl;
+      box = getPinpointBoxEl();
+    } else {
+      for (var i = 0; i < pendingMultiTargets.length; i++) {
+        if (pendingMultiTargets[i].key === key) {
+          el = pendingMultiTargets[i].el;
+          box = pendingMultiTargets[i].box;
+          break;
+        }
+      }
+    }
+    if (!el || !el.isConnected || !box) return;
+    positionBoxToEl(box, el);
+    box.classList.remove('pn-pin-enter');
+    void box.offsetWidth; // restart the enter animation as the flash
+    box.classList.add('pn-pin-enter');
+    var r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) {
+      try { el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (ex) {}
+    }
+  }
+
+  // Shift-hover preview while a draft is pinned: shows what the next
+  // shift-click would add. A separate box — the main one tracks the primary.
+  var multiHoverBoxEl = null;
+  function getMultiHoverBoxEl() {
+    if (!multiHoverBoxEl) {
+      multiHoverBoxEl = document.createElement('div');
+      multiHoverBoxEl.setAttribute('data-plannotator-pinpoint-box', '');
+      multiHoverBoxEl.setAttribute('data-plannotator-vim-ui', '');
+      overlayNodes.add(multiHoverBoxEl);
+    }
+    if (!multiHoverBoxEl.isConnected) document.body.appendChild(multiHoverBoxEl);
+    return multiHoverBoxEl;
+  }
+  function hideMultiHoverBox() {
+    if (multiHoverBoxEl) multiHoverBoxEl.style.display = 'none';
+  }
+  function updateMultiHover(x, y, fallbackNode) {
+    var el = pinpointLeafAt(x, y, fallbackNode);
+    if (!el || el === pendingPinEl) { hideMultiHoverBox(); hidePinpointLabel(); return; }
+    positionBoxToEl(getMultiHoverBoxEl(), el);
+    positionPinpointLabel(el, pinpointHoverLabel(el));
+  }
+
+  // Composer-yield support: while a pinned draft is open the parent needs the
+  // pointer position even though the pointer is inside this iframe (the
+  // composer fades / becomes click-through as the pointer approaches it).
+  var pointerRelayRaf = 0;
+  var pointerRelayPos = null;
+  function schedulePointerRelay(x, y, shift) {
+    pointerRelayPos = { x: x, y: y, shift: !!shift };
+    if (pointerRelayRaf) return;
+    pointerRelayRaf = requestAnimationFrame(function() {
+      pointerRelayRaf = 0;
+      if (!pendingPinEl || !pointerRelayPos) return;
+      parent.postMessage({
+        type: PREFIX + 'pointer',
+        x: pointerRelayPos.x,
+        y: pointerRelayPos.y,
+        shift: pointerRelayPos.shift
+      }, '*');
+    });
   }
 
   // Pin an element: select its text if possible (so a <mark> can wrap it), else
@@ -1297,9 +1620,24 @@ export const BRIDGE_SCRIPT = `(function() {
     if (!el) return false;
     pinpointHover = null;
     hidePinpointLabel();
+    clearMultiTargets(); // a new primary starts a fresh draft
+    // Arming is per-draft, never sticky: the parent re-arms via
+    // arm-multi-select keyed to THIS draft's target key if (and only if) the
+    // comment composer owns it. Without this reset, a mode switch between
+    // drafts (comment -> quick label) leaves a stale arm and the bridge
+    // accumulates pins the saved annotation will not carry.
+    multiSelectArmed = false;
     pendingPinEl = el;
     pendingPinAnchor = buildElementAnchor(el);
-    var extras = { anchor: pendingPinAnchor, pinpoint: !!viaPinpoint };
+    pendingPinKey = makeTargetKey();
+    pendingPinLabel = pinpointHoverLabel(el);
+    pendingPinViaPinpoint = !!viaPinpoint;
+    var extras = {
+      anchor: pendingPinAnchor,
+      pinpoint: !!viaPinpoint,
+      targetKey: pendingPinKey,
+      targetLabel: pendingPinLabel
+    };
     // Pinned outline: stronger accent box that tracks the element until the
     // composer resolves (create-mark or cancel-selection).
     var box = getPinpointBoxEl();
@@ -1338,6 +1676,8 @@ export const BRIDGE_SCRIPT = `(function() {
       modeOverride: modeOverride || undefined,
       anchor: pendingPinAnchor || undefined,
       pinpoint: !!viaPinpoint || undefined,
+      targetKey: pendingPinKey || undefined,
+      targetLabel: pendingPinLabel || undefined,
       rect: { top: r.top, left: r.left, width: r.width, height: r.height } }, '*');
     return true;
   }
@@ -1350,6 +1690,19 @@ export const BRIDGE_SCRIPT = `(function() {
     // checked by IDENTITY, not selector, so a page element spoofing
     // [data-plannotator-pin-badge] stays an ordinary annotatable target.
     if (isViewerOverlayNode(e.target)) return;
+    // Shift-click while an ARMED pinpoint draft is open: toggle the element
+    // in/out of the SAME draft comment instead of replacing the selection.
+    // Unarmed drafts (modes the parent does not mirror, e.g. quickLabel)
+    // treat shift-click exactly like a plain click.
+    if (e.shiftKey && pendingPinEl && multiSelectArmed && pendingSelection) {
+      e.preventDefault();
+      e.stopPropagation();
+      hideMultiHoverBox();
+      hidePinpointLabel();
+      var multiEl = resolvePinpointTargetAt(e.clientX, e.clientY, e.target);
+      if (multiEl) toggleMultiTarget(multiEl);
+      return;
+    }
     // Click what the hover box shows: the currently hovered element is the
     // target the user aimed at. Fall back to a fresh hit-test at the click
     // point (e.g. a click with no preceding mousemove).
@@ -1372,6 +1725,7 @@ export const BRIDGE_SCRIPT = `(function() {
       pendingSelection = null;
       pendingRange = null;
       skipNextClear = false;
+      clearMultiTargets();
       clearPendingPin();
       window.getSelection().removeAllRanges();
     } else if (currentInputMethod === 'pinpoint') {

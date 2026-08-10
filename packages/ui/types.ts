@@ -80,6 +80,7 @@ export interface Annotation {
   }>; // math elements covered by a mixed text+formula selection
   prUrl?: string; // code-review PR mode: the PR this note belongs to, so it isn't shown/exported against another PR after an in-place switch
   htmlAnchor?: HtmlElementAnchor; // raw-HTML pinpoint: serialized element anchor for reliable restoration
+  htmlAdditionalTargets?: HtmlAnnotationTarget[]; // raw-HTML shift-click multi-select: extra elements this one comment covers (primary stays htmlAnchor/originalText)
   // web-highlighter metadata for cross-element selections
   startMeta?: AnnotationTextMeta;
   endMeta?: AnnotationTextMeta;
@@ -96,6 +97,22 @@ export interface HtmlElementAnchor {
   selector: string;
   tagName: string;
   text?: string;
+}
+
+/**
+ * One additional element covered by a multi-target raw-HTML pinpoint comment
+ * (shift-click multi-select). Carries what the export and composer chips need
+ * even when anchoring failed closed: the semantic label from the pinpoint
+ * hover cascade and the element's text (or `[element: …]` description).
+ * Additive — annotations without the array behave exactly as before.
+ */
+export interface HtmlAnnotationTarget {
+  /** Semantic label from the hover-label cascade (e.g. "Button", "rowchip"). */
+  label?: string;
+  /** The target element's capped text, or an element description when text-less. */
+  text: string;
+  /** Element anchor for restoration; absent when the bridge failed closed. */
+  anchor?: HtmlElementAnchor;
 }
 
 export type AlertKind = 'note' | 'tip' | 'warning' | 'caution' | 'important';
