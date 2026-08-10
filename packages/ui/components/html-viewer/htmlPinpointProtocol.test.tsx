@@ -373,7 +373,7 @@ describe.if(hasDom)('ordered saved-annotation sync (placed-marker numbering)', (
     } as Annotation;
   }
 
-  test('on bridge ready, the ordered collection syncs as index+1 numbers (globals excluded)', async () => {
+  test('on bridge ready, the ordered collection syncs export-matching numbers (globals occupy slots)', async () => {
     const { AnnotationType } = await import('../../types');
     const annotations = [
       ann('global-1', 5, AnnotationType.GLOBAL_COMMENT),
@@ -386,10 +386,16 @@ describe.if(hasDom)('ordered saved-annotation sync (placed-marker numbering)', (
       (m) => m.type === 'plannotator-bridge-sync-annotations',
     );
     expect(syncs.length).toBeGreaterThanOrEqual(1);
-    // Ordered by createdA (the panel's order), numbered index+1, no globals.
+    // Numbered by ARRAY position of the full list INCLUDING globals — the
+    // effective ordering exportAnnotations numbers the feedback with (its
+    // sort keys tie for every raw-HTML annotation, so its stable sort keeps
+    // array order; createdA is deliberately ignored because external
+    // annotations interleave server-stamped timestamps). The global (array
+    // position 1) has no page location and ships no entry: the on-page
+    // numbers start at 2, leaving the gap where the global sits.
     expect(syncs.at(-1)!.annotations).toEqual([
-      { id: 'ann-early', number: 1 },
       { id: 'ann-late', number: 2 },
+      { id: 'ann-early', number: 3 },
     ]);
   });
 
@@ -400,12 +406,12 @@ describe.if(hasDom)('ordered saved-annotation sync (placed-marker numbering)', (
     ).toBe(false);
   });
 
-  test('the sync feed truncates to 512 entries AFTER the stable sort (m2)', async () => {
-    // The bridge caps its numbering map at 512; without a sender-side slice
-    // the bridge would keep an arbitrary tail whose numbers disagree with
-    // the panel. Slicing after the sort keeps the first 512 numbers equal on
-    // both sides. createdA descends here, so the sort must run before the
-    // slice for bulk-519 (oldest) to survive as number 1.
+  test('the sync feed truncates to 512 entries in export (array) order (m2)', async () => {
+    // The bridge caps its numbering map at 512 entries; the sender ships the
+    // FIRST 512 non-global entries in array order — the same order
+    // exportAnnotations numbers — so both sides keep the same set. createdA
+    // descends here and must NOT reorder anything (external annotations
+    // interleave server-stamped timestamps).
     const annotations = Array.from({ length: 520 }, (_, i) => ann(`bulk-${i}`, 1000 - i));
     const { postReady, postedToIframe } = await mountWithAnnotations(annotations);
     await postReady();
@@ -414,8 +420,8 @@ describe.if(hasDom)('ordered saved-annotation sync (placed-marker numbering)', (
     );
     const list = syncs.at(-1)!.annotations as Array<{ id: string; number: number }>;
     expect(list.length).toBe(512);
-    expect(list[0]).toEqual({ id: 'bulk-519', number: 1 });
-    expect(list[511]).toEqual({ id: 'bulk-8', number: 512 });
+    expect(list[0]).toEqual({ id: 'bulk-0', number: 1 });
+    expect(list[511]).toEqual({ id: 'bulk-511', number: 512 });
   });
 });
 
