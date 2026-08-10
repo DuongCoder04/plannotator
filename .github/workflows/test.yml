@@ -66,6 +66,14 @@ jobs:
           packages/ui/annotationDraftPersistence.test.tsx
           packages/ui/codeAnnotationDraftPersistence.test.tsx
           packages/ui/components/html-viewer/srcdoc.test.ts
+          packages/ui/components/html-viewer/htmlPinpointProtocol.test.tsx
+          packages/ui/components/html-viewer/HtmlViewer.vimHud.test.tsx
+          packages/ui/components/Viewer.vimMode.integration.test.tsx
+          packages/ui/hooks/useVimSelection.test.tsx
+          packages/ui/utils/codeHighlight.test.ts
+          packages/ui/utils/htmlChrome.test.ts
+          packages/ui/utils/inputMethod.test.ts
+          packages/ui/utils/vimNavigation.test.ts
           packages/ui/utils/clipboard.test.ts
           packages/ui/utils/vimScroll.test.ts
           packages/ui/components/InlineMarkdown.resolveLinkedDoc.test.tsx
