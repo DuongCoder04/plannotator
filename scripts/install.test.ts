@@ -1909,8 +1909,11 @@ describe("install shared behavior", () => {
     // on stderr, so without the scope the skill install failed on the line
     // announcing the clone had started. See #1162. Failure detection must
     // stay exit-code/Test-Path based, never throw-based.
+    // The sparse-probe clone also pins LC_ALL=C inside the same scoped
+    // block (the "unknown option" capability match is English-only), so its
+    // expected prefix carries the env save alongside the preference.
     expect(ps).toContain(
-      "& { $local:ErrorActionPreference = 'Continue'; git clone",
+      "& { $local:ErrorActionPreference = 'Continue'; $prevLcAll = $env:LC_ALL; $env:LC_ALL = 'C'; git clone",
     );
     expect(ps).toContain(
       "& { $local:ErrorActionPreference = 'Continue'; git sparse-checkout set",

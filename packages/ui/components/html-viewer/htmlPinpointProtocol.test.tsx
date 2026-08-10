@@ -101,6 +101,30 @@ describe.if(hasDom)('parseBridgeMessage selection additions', () => {
     expect((parsed as { anchor?: unknown }).anchor).toBeUndefined();
   });
 
+  test('truncation never splits a surrogate pair at the cap boundary', () => {
+    // An astral character straddling the cut would leave a lone high
+    // surrogate that turns into U+FFFD once UTF-8-encoded (drafts, feedback,
+    // share URLs) — the cut must back off one unit instead.
+    const cap = hookModule!.MAX_SELECTION_TEXT_LENGTH;
+    const straddling = 'x'.repeat(cap - 1) + '\u{1F600}' + 'tail';
+    const parsed = hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-selection',
+      text: straddling,
+      rect,
+    }) as { text: string };
+    expect(parsed.text.length).toBe(cap - 1);
+    expect(parsed.text.endsWith('x')).toBe(true);
+    expect(/[\uD800-\uDBFF]$/.test(parsed.text)).toBe(false);
+    // A pair that fits entirely under the cap is untouched.
+    const fitting = 'y'.repeat(cap - 2) + '\u{1F600}';
+    const kept = hookModule!.parseBridgeMessage({
+      type: 'plannotator-bridge-selection',
+      text: fitting,
+      rect,
+    }) as { text: string };
+    expect(kept.text).toBe(fitting);
+  });
+
   test('selection text is truncated at the parse boundary, not rejected', () => {
     // The page controls element text entirely, so one pinpoint click on a huge
     // <pre> could otherwise ship an unbounded string into React state, drafts,

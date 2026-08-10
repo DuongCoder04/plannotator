@@ -881,6 +881,50 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     document.body.replaceChildren();
   });
 
+  test("deeply nested targets get no anchor instead of a quadratic selector walk", async () => {
+    // Each ancestor step costs a document-wide uniqueness query against a
+    // growing selector, so unbounded depth freezes the tab on one click
+    // (measured ~58s at depth 800 pre-cap). Past MAX_ANCHOR_PATH_DEPTH the
+    // anchor is abandoned and restoration falls back to text search.
+    // Two structurally identical chains: every positional selector along the
+    // walk matches both branches, so uniqueness cannot short-circuit before
+    // the depth cap fires (the branch point sits above it).
+    const DEPTH = 60;
+    let chainA = "<p>Deeply buried text</p>";
+    let chainB = "<p>Other branch text</p>";
+    for (let i = 0; i < DEPTH; i++) {
+      chainA = `<div>${chainA}</div>`;
+      chainB = `<div>${chainB}</div>`;
+    }
+    document.body.innerHTML = chainA + chainB;
+    const target = document.querySelector<HTMLElement>("p");
+    if (!target || target.textContent !== "Deeply buried text") throw new Error("deep target missing");
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const messages: Array<Record<string, unknown>> = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data?.type === "plannotator-bridge-selection") messages.push(data);
+    };
+    window.addEventListener("message", collect);
+    const started = performance.now();
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    const elapsed = performance.now() - started;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.removeEventListener("message", collect);
+
+    expect(messages.length).toBe(1);
+    expect(messages[0]!.text).toBe("Deeply buried text");
+    expect((messages[0] as { anchor?: unknown }).anchor).toBeUndefined();
+    // Bounded work: the capped walk must complete in interactive time even
+    // under happy-dom's slow selector engine.
+    expect(elapsed).toBeLessThan(2000);
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
   test("behavioral-attribute anchors never bypass the text check", () => {
     // Regenerated page: the button kept its role but its meaning flipped; the
     // annotated text moved into a sibling paragraph. The role anchor must NOT

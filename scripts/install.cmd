@@ -1137,8 +1137,16 @@ if "!SKIP_SKILLS!"=="1" goto skills_checkout_done
 
 set "CLONE_OK=0"
 set "SPARSE_CLONE=1"
+REM LC_ALL=C pins git's error strings to English for the capability probe
+REM below: a localized git would emit a translated "unknown option" message
+REM the findstr match misses, sending old-git non-English users to a hard
+REM failure instead of the fallback. Saved and restored around the probe.
+set "PLANNOTATOR_SAVED_LC_ALL=!LC_ALL!"
+set "LC_ALL=C"
 git clone --depth 1 --filter=blob:none --sparse "https://github.com/!REPO!.git" --branch "!TAG!" "!SKILLS_TMP!\repo" >nul 2>"!GIT_ERR_FILE!"
 if !ERRORLEVEL! equ 0 set "CLONE_OK=1"
+set "LC_ALL=!PLANNOTATOR_SAVED_LC_ALL!"
+set "PLANNOTATOR_SAVED_LC_ALL="
 
 REM Capability probe, not a version parse (same philosophy as the GitButler
 REM flag probing in packages/shared/gitbutler-core.ts): `git clone --sparse`

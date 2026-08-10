@@ -1065,7 +1065,13 @@ try {
     # $null (#1238) so failures can be diagnosed.
     $gitErrFile = Join-Path $skillsTmp "git-stderr.txt"
     if (-not $skipSkillsResolved) {
-        & { $local:ErrorActionPreference = 'Continue'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$gitErrFile }
+        # LC_ALL=C pins git's error strings to English for the capability
+        # probe below: a localized git would emit a translated "unknown
+        # option" message the match misses, sending old-git non-English
+        # users to a hard failure instead of the fallback. Saved/restored
+        # around the call because $env: changes are process-wide. Kept on
+        # one line for the install.test.ts scoped-git-call scanner.
+        & { $local:ErrorActionPreference = 'Continue'; $prevLcAll = $env:LC_ALL; $env:LC_ALL = 'C'; git clone --depth 1 --filter=blob:none --sparse "https://github.com/$repo.git" --branch $latestTag "$skillsTmp\repo" 2>$gitErrFile; if ($null -eq $prevLcAll) { Remove-Item Env:LC_ALL -ErrorAction SilentlyContinue } else { $env:LC_ALL = $prevLcAll } }
         if (-not (Test-Path "$skillsTmp\repo")) {
             $cloneErr = ""
             if (Test-Path $gitErrFile) { $cloneErr = [System.IO.File]::ReadAllText($gitErrFile) }

@@ -336,7 +336,13 @@ export const BRIDGE_SCRIPT = `(function() {
   var MAX_SELECTION_TEXT = 10000;
 
   function capSelectionText(text) {
-    return text.length > MAX_SELECTION_TEXT ? text.slice(0, MAX_SELECTION_TEXT) : text;
+    if (text.length <= MAX_SELECTION_TEXT) return text;
+    var cut = MAX_SELECTION_TEXT;
+    var last = text.charCodeAt(cut - 1);
+    // Never split a surrogate pair: a lone high surrogate at the cut point
+    // becomes U+FFFD the moment the string is UTF-8 encoded downstream.
+    if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+    return text.slice(0, cut);
   }
 
   function handleSelection(modeOverride, extras) {
@@ -1007,10 +1013,21 @@ export const BRIDGE_SCRIPT = `(function() {
     return null;
   }
 
+  // Each ancestor step runs a document-wide uniqueness query against a
+  // selector that grows with the path, so cost is quadratic in depth. Real
+  // documents anchor within a few levels; a degenerate deeply-wrapped chain
+  // (templated exports, generated markup) must not freeze the tab on a
+  // single pinpoint click. Past the cap the anchor is abandoned (fail
+  // closed): text-search restoration still works, and no anchor beats one
+  // that costs seconds of synchronous main-thread time.
+  var MAX_ANCHOR_PATH_DEPTH = 40;
+
   function buildAnchorSelector(el) {
     var path = [];
     var current = el;
+    var depth = 0;
     while (current && current.nodeType === 1 && current !== document.body && current !== document.documentElement) {
+      if (++depth > MAX_ANCHOR_PATH_DEPTH) return null;
       var semantic = semanticSelectorFor(current);
       if (semantic) {
         path.unshift(semantic);

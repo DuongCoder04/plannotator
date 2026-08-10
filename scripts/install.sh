@@ -1638,7 +1638,12 @@ checkout_failed=0
         tail -n 5 "$git_err" >&2
     }
     sparse_clone=1
-    if ! git clone --depth 1 --filter=blob:none --sparse \
+    # LC_ALL=C pins git's error strings to English: the capability probe below
+    # matches the literal "unknown option ... sparse" text, and a localized
+    # git (standard Linux NLS builds) would otherwise emit a translated
+    # message the match misses, sending old-git non-English users to a hard
+    # failure instead of the fallback.
+    if ! LC_ALL=C LANGUAGE=C git clone --depth 1 --filter=blob:none --sparse \
         "https://github.com/${REPO}.git" --branch "$latest_tag" repo 2>"$git_err"; then
         # Capability probe, not a version parse (same philosophy as the
         # GitButler flag probing in packages/shared/gitbutler-core.ts):

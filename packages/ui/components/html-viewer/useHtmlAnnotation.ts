@@ -87,6 +87,16 @@ const MAX_ANCHOR_TEXT_LENGTH = 400;
 // MAX_SELECTION_TEXT in bridge-script.ts; this side is the authoritative one.
 export const MAX_SELECTION_TEXT_LENGTH = 10000;
 
+/** Truncate to the cap without ever splitting a UTF-16 surrogate pair (a
+ * lone high surrogate becomes U+FFFD once UTF-8-encoded downstream). */
+export function capSelectionText(text: string): string {
+  if (text.length <= MAX_SELECTION_TEXT_LENGTH) return text;
+  let cut = MAX_SELECTION_TEXT_LENGTH;
+  const last = text.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return text.slice(0, cut);
+}
+
 /** Validate a bridge-posted element anchor. Exported for protocol tests. */
 export function parseHtmlElementAnchor(value: unknown): HtmlElementAnchor | null {
   if (!isRecord(value)) return null;
@@ -127,9 +137,7 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
       if (typeof value.text !== "string" || !rect) return null;
       return {
         type: value.type,
-        text: value.text.length > MAX_SELECTION_TEXT_LENGTH
-          ? value.text.slice(0, MAX_SELECTION_TEXT_LENGTH)
-          : value.text,
+        text: capSelectionText(value.text),
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
         anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
