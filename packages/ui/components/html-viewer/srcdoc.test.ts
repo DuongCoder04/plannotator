@@ -965,6 +965,411 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     postBridge({ type: "plannotator-bridge-clear-marks" });
     document.body.replaceChildren();
   });
+
+  test("data-test-id/data-cy/data-qa are author-controlled identity attrs", () => {
+    // Same trust class as data-testid: the anchor resolves without a text
+    // check even after the element's content drifted completely.
+    document.body.innerHTML = '<div data-cy="metrics">Fresh content</div>';
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "cy-anchor",
+      originalText: "Stale content gone from the page",
+      annotationType: "comment",
+      anchor: { selector: 'div[data-cy="metrics"]', tagName: "div", text: "Stale content gone from the page" },
+    });
+    expect(document.querySelector('[data-bind-id="cy-anchor"]')).toBeNull();
+    expect(document.querySelector("[data-plannotator-pin-badge]")).not.toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    document.body.replaceChildren();
+  });
+
+  // --- New hit-testing contract: hover targets the real element under the
+  // cursor (no tag whitelist, no has-text requirement). happy-dom has no
+  // layout, so document.elementFromPoint yields nothing and resolution runs
+  // from the event target — which in a real browser IS the deepest rendered
+  // element under the pointer, the exact geometry these tests model.
+
+  /** Signoff-page-shaped fixture: styled div/span chips, buttons, cards. */
+  const SIGNOFF_MARKUP = [
+    "<section><div class=\"frame\">",
+    "<div class=\"ihead\"><span class=\"dnum\">R1</span>",
+    "<span class=\"ibehav\">Empty library state</span></div>",
+    "<div class=\"rline\"><span class=\"rkey\">no-jargon</span>",
+    "<span class=\"rowchip\">adopted by 1</span></div>",
+    "<span class=\"btn primary\">Create</span>",
+    "</div></section>",
+  ].join("");
+
+  function hoverAt(el: Element, x: number, y: number) {
+    el.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+    }));
+  }
+
+  async function clickAndCollectSelection(el: Element, x: number, y: number) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const messages: Array<Record<string, unknown>> = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data?.type === "plannotator-bridge-selection") messages.push(data);
+    };
+    window.addEventListener("message", collect);
+    const click = new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+    });
+    el.dispatchEvent(click);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.removeEventListener("message", collect);
+    return { click, messages };
+  }
+
+  test("chips and small buttons on div/span markup are individually targetable", async () => {
+    document.body.innerHTML = SIGNOFF_MARKUP;
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const chip = document.querySelector<HTMLElement>("span.rowchip");
+    if (!chip) throw new Error("chip fixture missing");
+
+    // Hover resolves the chip itself — not the enclosing section.
+    hoverAt(chip, 100, 100);
+    const box = document.querySelector<HTMLElement>("[data-plannotator-pinpoint-box]");
+    expect(box?.style.display).toBe("block");
+    expect(
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent,
+    ).toBe("rowchip");
+    expect(chip.className).toBe("rowchip"); // page DOM untouched
+
+    const { click, messages } = await clickAndCollectSelection(chip, 100, 100);
+    expect(click.defaultPrevented).toBe(true);
+    expect(messages.length).toBe(1);
+    expect(messages[0]!.pinpoint).toBe(true);
+    expect(messages[0]!.text).toBe("adopted by 1");
+    const chipAnchor = messages[0]!.anchor as { selector: string; tagName: string; text?: string };
+    expect(chipAnchor.tagName).toBe("span");
+    const chipMatches = document.querySelectorAll(chipAnchor.selector);
+    expect(chipMatches.length).toBe(1);
+    expect(chipMatches[0]).toBe(chip);
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+
+    // The R1 chip and the small button resolve the same way.
+    const dnum = document.querySelector<HTMLElement>("span.dnum");
+    if (!dnum) throw new Error("dnum fixture missing");
+    hoverAt(dnum, 200, 100);
+    expect(
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent,
+    ).toBe("dnum");
+    const dnumResult = await clickAndCollectSelection(dnum, 200, 100);
+    expect(dnumResult.messages.length).toBe(1);
+    expect(dnumResult.messages[0]!.text).toBe("R1");
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+
+    const btn = document.querySelector<HTMLElement>("span.btn");
+    if (!btn) throw new Error("button fixture missing");
+    hoverAt(btn, 300, 100);
+    expect(
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent,
+    ).toBe("btn primary");
+    const btnResult = await clickAndCollectSelection(btn, 300, 100);
+    expect(btnResult.messages.length).toBe(1);
+    expect(btnResult.messages[0]!.text).toBe("Create");
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("pointing at a container's uncovered area selects the container", async () => {
+    // The geometric scope rule (matches the markdown surface): the deepest
+    // element under the pointer wins, so a pointer over the card's padding —
+    // where the card itself is the deepest rendered element — selects the
+    // card, no keyboard or cycling involved.
+    document.body.innerHTML = SIGNOFF_MARKUP;
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const frame = document.querySelector<HTMLElement>("div.frame");
+    if (!frame) throw new Error("frame fixture missing");
+    hoverAt(frame, 400, 150);
+    expect(
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent,
+    ).toBe("frame");
+    const { messages } = await clickAndCollectSelection(frame, 400, 150);
+    expect(messages.length).toBe(1);
+    expect((messages[0]!.anchor as { tagName: string }).tagName).toBe("div");
+    expect(String(messages[0]!.text)).toContain("no-jargon");
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("tiny elements promote to the nearest ancestor with a >=16px axis", () => {
+    document.body.innerHTML = '<div class="card"><span class="dot"></span></div>';
+    const card = document.querySelector<HTMLElement>("div.card");
+    const dot = document.querySelector<HTMLElement>("span.dot");
+    if (!card || !dot) throw new Error("promotion fixture missing");
+
+    const mockRect = (x: number, y: number, width: number, height: number) => ({
+      x, y, width, height,
+      top: y, left: x, right: x + width, bottom: y + height,
+      toJSON: () => ({}),
+    }) as DOMRect;
+    const originalBodyRect = document.body.getBoundingClientRect;
+    document.body.getBoundingClientRect = () => mockRect(0, 0, 800, 600);
+    dot.getBoundingClientRect = () => mockRect(10, 10, 8, 8);
+    card.getBoundingClientRect = () => mockRect(5, 5, 200, 100);
+
+    try {
+      postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+      postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+      hoverAt(dot, 12, 12);
+      const box = document.querySelector<HTMLElement>("[data-plannotator-pinpoint-box]");
+      // The 8x8 dot is under 16px on both axes — the hover box outlines the
+      // 200x100 card instead (a floor, not a whitelist).
+      expect(box?.style.display).toBe("block");
+      expect(box?.style.left).toBe("5px");
+      expect(box?.style.width).toBe("200px");
+      expect(
+        document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent,
+      ).toBe("card");
+    } finally {
+      document.body.getBoundingClientRect = originalBodyRect;
+      postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+      document.body.replaceChildren();
+    }
+  });
+
+  test("generic-container labels follow the aria-label/role/class/text cascade", () => {
+    document.body.innerHTML = [
+      '<div class="stage">',
+      '<div id="l-aria" aria-label="Close dialog" class="rowchip">x</div>',
+      '<div id="l-role" role="tablist" class="abc12345">x</div>',
+      '<div id="l-class" class="styles_Card_a1b2c3">x</div>',
+      '<span id="l-text">R9</span>',
+      '<div id="l-container"><span>This text is far too long to serve as a hover label for anything</span></div>',
+      '<div id="l-long" class="extraverboseclasstokennameone extraverboseclasstokennametwo">x</div>',
+      "<p id=\"l-known\">Paragraph text</p>",
+      "</div>",
+    ].join("");
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const label = () =>
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-label]")?.textContent;
+    const cases: Array<[string, string]> = [
+      ["#l-aria", "Close dialog"], // aria-label beats classes
+      ["#l-role", "tablist"], // role beats a hash-looking class
+      ["#l-class", "styles Card"], // meaningful tokens, hash token stripped
+      ["#l-text", "R9"], // short own text for class-less spans
+      ["#l-container", "container"], // nothing meaningful -> container
+      // Class-token labels obey the 40-char cap like every other rung.
+      ["#l-long", "extraverboseclasstokennameone extraverbo"],
+      ["#l-known", "Paragraph"], // known tags keep their names
+    ];
+    let x = 10;
+    for (const [selector, expected] of cases) {
+      const el = document.querySelector<HTMLElement>(selector);
+      if (!el) throw new Error(`label fixture ${selector} missing`);
+      hoverAt(el, (x += 50), 40);
+      expect(label()).toBe(expected);
+    }
+
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("text-less elements anchor only through a stable-identity rung", async () => {
+    // A text-less element has no snapshot to verify a weak anchor against, so
+    // it gets an anchor ONLY when the element itself carries stable identity
+    // (#id or an author-controlled data-* identity attribute). It is still
+    // annotatable either way — the selection describes the element.
+    document.body.innerHTML = [
+      '<div class="toolbar">',
+      '<span class="icon-close" data-testid="close-btn"></span>',
+      '<span class="icon-menu"></span>',
+      "<p>Sibling text</p></div>",
+    ].join("");
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const close = document.querySelector<HTMLElement>("span.icon-close");
+    if (!close) throw new Error("icon fixture missing");
+    hoverAt(close, 60, 60);
+    const { click, messages } = await clickAndCollectSelection(close, 60, 60);
+    expect(click.defaultPrevented).toBe(true);
+    expect(messages.length).toBe(1);
+    // No text to quote: the posted selection describes the element.
+    expect(messages[0]!.text).toBe("[element: icon close]");
+    const anchor = messages[0]!.anchor as { selector: string; tagName: string; text?: string };
+    expect(anchor.selector).toBe('span[data-testid="close-btn"]');
+    expect(anchor.text).toBe("");
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+
+    // Round trip: the stable-identity anchor resolves without a text check,
+    // so the icon gets a pin badge even though text search can never succeed.
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "identity-pin",
+      originalText: "[element: icon close]",
+      annotationType: "comment",
+      anchor,
+    });
+    expect(document.querySelector("[data-plannotator-pin-badge]")).not.toBeNull();
+    expect(document.querySelector('[data-bind-id="identity-pin"]')).toBeNull();
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+
+    // A text-less element with only classes (weak selector) ships NO anchor:
+    // there is nothing to verify against, and a wrong-binding anchor is
+    // worse than no anchor.
+    const menu = document.querySelector<HTMLElement>("span.icon-menu");
+    if (!menu) throw new Error("menu icon fixture missing");
+    hoverAt(menu, 90, 60);
+    const menuResult = await clickAndCollectSelection(menu, 90, 60);
+    expect(menuResult.messages.length).toBe(1);
+    expect(menuResult.messages[0]!.text).toBe("[element: icon menu]");
+    expect(menuResult.messages[0]!.anchor).toBeUndefined();
+
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("identical text-less siblings fail closed instead of rebinding (D1)", async () => {
+    // Two structurally identical icons: any structure-derived signature
+    // (tag/classes/child count/size) is identical across them, so a
+    // positional selector whose sibling was removed would resolve to the
+    // WRONG element and still "verify". The contract is therefore: no anchor
+    // at all for weak text-less targets, and a crafted positional anchor
+    // with no snapshot never resolves.
+    document.body.innerHTML = [
+      '<div class="strip">',
+      '<span class="icon"></span>',
+      '<span class="icon"></span>',
+      "</div>",
+    ].join("");
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const second = document.querySelectorAll<HTMLElement>("span.icon")[1];
+    if (!second) throw new Error("sibling fixture missing");
+    hoverAt(second, 120, 60);
+    const { messages } = await clickAndCollectSelection(second, 120, 60);
+    expect(messages.length).toBe(1);
+    expect(messages[0]!.anchor).toBeUndefined();
+    postBridge({ type: "plannotator-bridge-cancel-selection" });
+
+    // The old-world failure mode, replayed: after the first icon is removed,
+    // span.icon:nth-of-type(2) is gone and span.icon:nth-of-type(1) IS a
+    // different element. A crafted positional anchor (empty snapshot) must
+    // resolve nothing — no pin, no mark, anywhere.
+    second.parentElement!.removeChild(document.querySelectorAll("span.icon")[0]!);
+    for (const selector of ["div.strip > span:nth-of-type(2)", "div.strip > span:nth-of-type(1)"]) {
+      postBridge({
+        type: "plannotator-bridge-find-and-mark",
+        id: `rebind-${selector}`,
+        originalText: "[element: icon]",
+        annotationType: "comment",
+        anchor: { selector, tagName: "span", text: "" },
+      });
+    }
+    expect(document.querySelector("[data-plannotator-pin-badge]")).toBeNull();
+    expect(document.querySelector("[data-bind-id]")).toBeNull();
+
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("badge click ownership is identity-gated, not selector-gated (D5)", async () => {
+    // A page element spoofing our badge attribute is NOT a viewer overlay:
+    // it hovers and annotates like any other element.
+    document.body.innerHTML = "<div data-plannotator-pin-badge class=\"fake-badge\">7</div><p id=\"pin-me\">Pinned text</p>";
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const spoof = document.querySelector<HTMLElement>("div.fake-badge");
+    if (!spoof) throw new Error("spoof fixture missing");
+    hoverAt(spoof, 40, 40);
+    expect(
+      document.querySelector<HTMLElement>("[data-plannotator-pinpoint-box]")?.style.display,
+    ).toBe("block");
+    const { click, messages } = await clickAndCollectSelection(spoof, 40, 40);
+    expect(click.defaultPrevented).toBe(true);
+    expect(messages.length).toBe(1);
+    expect(messages[0]!.text).toBe("7");
+
+    // A REAL badge still owns its click: it posts mark-click, not a selection.
+    postBridge({
+      type: "plannotator-bridge-find-and-mark",
+      id: "badge-owner",
+      originalText: "Text that exists nowhere on this page",
+      annotationType: "comment",
+      anchor: { selector: "#pin-me", tagName: "p" },
+    });
+    const realBadge = document.querySelector<HTMLElement>(
+      "[data-plannotator-pin-badge]:not(.fake-badge)",
+    );
+    if (!realBadge) throw new Error("real badge missing");
+    const collected: Array<Record<string, unknown>> = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (
+        data?.type === "plannotator-bridge-selection"
+        || data?.type === "plannotator-bridge-mark-click"
+      ) collected.push(data);
+    };
+    window.addEventListener("message", collect);
+    realBadge.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.removeEventListener("message", collect);
+    expect(collected).toEqual([
+      { type: "plannotator-bridge-mark-click", id: "badge-owner" },
+    ]);
+
+    postBridge({ type: "plannotator-bridge-clear-marks" });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    document.body.replaceChildren();
+  });
+
+  test("hover hit-testing never storms document-wide queries per mousemove", () => {
+    // The old hover path rebuilt the semantic target graph (three
+    // document-wide querySelectorAll sweeps) on every pointer frame. The new
+    // path is per-event hit-testing: element identity plus closest() walks,
+    // zero document-wide queries. Graph builds remain click/vim-time only.
+    document.body.innerHTML = SIGNOFF_MARKUP;
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "pinpoint" });
+
+    const targets = Array.from(document.querySelectorAll<HTMLElement>("span, div, section"));
+    const originalQsa = document.querySelectorAll.bind(document);
+    let documentWideQueries = 0;
+    (document as { querySelectorAll: typeof document.querySelectorAll }).querySelectorAll = ((
+      ...args: Parameters<typeof document.querySelectorAll>
+    ) => {
+      documentWideQueries += 1;
+      return originalQsa(...args);
+    }) as typeof document.querySelectorAll;
+
+    try {
+      let x = 0;
+      for (let i = 0; i < 30; i++) {
+        const el = targets[i % targets.length]!;
+        hoverAt(el, (x += 23), 90);
+      }
+      expect(documentWideQueries).toBe(0);
+    } finally {
+      (document as { querySelectorAll: typeof document.querySelectorAll }).querySelectorAll = originalQsa;
+      postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+      document.body.replaceChildren();
+    }
+  });
 });
 
 describe("injectIntoHead", () => {

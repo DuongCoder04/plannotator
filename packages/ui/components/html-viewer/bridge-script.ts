@@ -573,14 +573,139 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   });
 
-  // --- Pinpoint: hover to outline a whole element, click to pin it ---
-  // Reuses the normal selection pipeline — a pinpoint click sets the iframe
-  // selection over the element's text, then runs handleSelection() like a drag —
-  // but the hover visual is a dedicated fixed-position outline box (never a
-  // class write on the page's own elements), the click also serializes a CSS
-  // anchor for later restoration, and element-only pins (SVG etc.) get a
-  // numbered badge. Modeled on app-notes-extension + agentation.
+  // --- Pinpoint: hover to outline the element under the cursor, click to pin ---
+  // Hover is pure per-event hit-testing: deep elementFromPoint (piercing open
+  // shadow roots) picks the REAL element under the pointer — no tag whitelist,
+  // no has-text requirement — so styled div/span prototypes (chips, icon
+  // buttons, cards) are individually targetable. Scope control is mouse-only
+  // and geometric, matching the markdown pinpoint feel: the deepest element
+  // directly under the pointer wins, and pointing at a container's padding or
+  // any area not covered by a child selects the container. Elements under
+  // 16px on both axes promote to the nearest ancestor at least 16px on one
+  // axis (agentation's MIN_CAPTURE_SIZE pattern). The click reuses the normal
+  // selection pipeline — select the element's text and run handleSelection()
+  // like a drag — the hover visual is a dedicated fixed-position outline box
+  // (never a class write on the page's own elements), the click serializes a
+  // CSS anchor for later restoration, and element-only pins (SVG, icon
+  // buttons) get a numbered badge. The semantic target graph below survives
+  // as the vim-navigation vocabulary only; the pointer path never builds it.
   var PINPOINT_SKIP_SELECTOR = 'script,style,noscript,[data-plannotator-vim-ui],[data-plannotator-pin-badge],.annotation-highlight';
+
+  // Identity set of every overlay node the viewer creates inside the page
+  // (pin badges, pinpoint box/label, vim UI). Hit-testing excludes overlay
+  // nodes by IDENTITY, never by selector match, so page markup carrying our
+  // attribute names cannot spoof its way out of (or into) targeting.
+  var overlayNodes = new Set();
+
+  // Floor for hover targets (not a whitelist): a decorative dot or hairline
+  // under 16px on BOTH axes promotes to the nearest ancestor that is at least
+  // 16px on one axis, so tiny leaves stay clickable without precision-mousing.
+  var MIN_CAPTURE_SIZE = 16;
+
+  // Headless DOM test environments lay nothing out (every rect is 0x0); size
+  // rules only apply when the body actually has a laid-out box.
+  function layoutActive() {
+    return !!document.body && document.body.getBoundingClientRect().width > 0;
+  }
+
+  function deepElementFromPoint(x, y) {
+    var el = typeof document.elementFromPoint === 'function'
+      ? document.elementFromPoint(x, y)
+      : null;
+    var guard = 0;
+    while (
+      el
+      && el.shadowRoot
+      && typeof el.shadowRoot.elementFromPoint === 'function'
+      && guard++ < 24
+    ) {
+      var inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  function isViewerOverlayNode(node) {
+    var current = node;
+    var guard = 0;
+    while (current && guard++ < 200) {
+      if (overlayNodes.has(current)) return true;
+      current = current.parentElement
+        || (current.getRootNode && current.getRootNode().host)
+        || null;
+    }
+    return false;
+  }
+
+  function promoteTinyTarget(el) {
+    if (!layoutActive()) return el;
+    var r = el.getBoundingClientRect();
+    if (r.width >= MIN_CAPTURE_SIZE || r.height >= MIN_CAPTURE_SIZE) return el;
+    var current = el.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      var cr = current.getBoundingClientRect();
+      if (cr.width >= MIN_CAPTURE_SIZE || cr.height >= MIN_CAPTURE_SIZE) return current;
+      current = current.parentElement;
+    }
+    return el;
+  }
+
+  // Resolve the pinpoint target at a viewport point. The deepest rendered
+  // element under the pointer wins; containers are selected by pointing at
+  // their uncovered area (padding, gaps), exactly like the markdown surface.
+  // fallbackNode covers engines without a real elementFromPoint (headless DOM
+  // tests) and the scroll reconcile, which re-resolves under a still cursor.
+  function resolvePinpointTargetAt(x, y, fallbackNode) {
+    var node = deepElementFromPoint(x, y);
+    if (!node || node === document.documentElement || node === document.body) {
+      node = fallbackNode || null;
+    }
+    while (node && node.nodeType === 3) node = node.parentNode;
+    if (!node || node.nodeType !== 1) return null;
+    if (node === document.documentElement || node === document.body) return null;
+    if (isViewerOverlayNode(node)) return null;
+    if (node.closest && node.closest('script,style,noscript')) return null;
+    // Annotation marks are viewer chrome wrapped around author text: treat
+    // them as transparent so hover names the author element beneath.
+    var mark = node.closest && node.closest('.annotation-highlight');
+    if (mark && mark.parentElement) node = mark.parentElement;
+    // SVG shape primitives promote to their nearest group: a <g> is the
+    // authored unit of an SVG diagram, and its <path> fragments are not
+    // individually meaningful annotation targets.
+    if (node.ownerSVGElement && node.closest) {
+      var svgGroup = node.closest('g');
+      if (svgGroup) node = svgGroup;
+    }
+    node = promoteTinyTarget(node);
+    if (node === document.body || node === document.documentElement) return null;
+    return node;
+  }
+
+  // Last-position reuse: a pointer that moved under 2px within 16ms resolves
+  // to the cached element instead of re-hit-testing. The scroll reconcile
+  // invalidates this cache — same point, different element after a scroll.
+  var lastPointerHit = null;
+  function pinpointLeafAt(x, y, fallbackNode) {
+    var now = typeof performance !== 'undefined' && performance.now
+      ? performance.now()
+      : Date.now();
+    if (
+      lastPointerHit
+      && Math.abs(x - lastPointerHit.x) <= 2
+      && Math.abs(y - lastPointerHit.y) <= 2
+      && now - lastPointerHit.t <= 16
+      && (!lastPointerHit.el || lastPointerHit.el.isConnected)
+    ) {
+      return lastPointerHit.el;
+    }
+    var el = resolvePinpointTargetAt(x, y, fallbackNode);
+    lastPointerHit = { x: x, y: y, t: now, el: el };
+    return el;
+  }
+  function invalidatePointerHitCache() {
+    lastPointerHit = null;
+  }
   var SEMANTIC_BLOCK_SELECTOR = 'h1,h2,h3,h4,h5,h6,p,li,pre,blockquote,figcaption,table,button,[data-annotate],svg g';
   var SEMANTIC_GROUP_SELECTOR = 'section,article,aside,nav,header,footer,ul,ol,figure,main';
   var SEMANTIC_INLINE_SELECTOR = 'a,em,strong,b,i,code,small,label,mark,sup,sub,u,abbr,time';
@@ -746,30 +871,62 @@ export const BRIDGE_SCRIPT = `(function() {
 
   // Floating label naming the element under the cursor (like the markdown overlay).
   var PINPOINT_LABELS = { H1:'Heading', H2:'Heading', H3:'Heading', H4:'Heading', H5:'Heading', H6:'Heading', P:'Paragraph', UL:'List', OL:'List', LI:'List item', A:'Link', BUTTON:'Button', IMG:'Image', TABLE:'Table', THEAD:'Table', TBODY:'Table', TR:'Row', TD:'Cell', TH:'Header cell', SECTION:'Section', NAV:'Navigation', HEADER:'Header', FOOTER:'Footer', ARTICLE:'Article', ASIDE:'Sidebar', BLOCKQUOTE:'Quote', PRE:'Code', CODE:'Code', FIGURE:'Figure', FIGCAPTION:'Caption', MAIN:'Main', FORM:'Form', INPUT:'Input', LABEL:'Label' };
+
+  var MAX_HOVER_LABEL = 40;
+  function truncateLabel(text) {
+    return text.length > MAX_HOVER_LABEL ? text.slice(0, MAX_HOVER_LABEL) : text;
+  }
+
+  // First 1-2 meaningful class tokens: split on whitespace/underscore/hyphen,
+  // drop tokens of 2 chars or fewer and CSS-module-hash-looking tokens, so a
+  // div.rowchip labels "rowchip" and styles_Card_ab12f labels "Card".
+  function meaningfulClassTokens(el) {
+    var out = [];
+    if (!el.classList || !el.classList.length) return out;
+    for (var i = 0; i < el.classList.length && out.length < 2; i++) {
+      var cls = el.classList[i];
+      if (isLikelyGeneratedClass(cls)) continue;
+      var parts = String(cls).split(/[\\s_-]+/);
+      for (var j = 0; j < parts.length && out.length < 2; j++) {
+        var token = parts[j];
+        if (token.length <= 2) continue;
+        if (/^[a-fA-F0-9]+$/.test(token) && token.length >= 5) continue;
+        if (/[0-9]{4,}/.test(token)) continue;
+        out.push(token);
+      }
+    }
+    return out;
+  }
+
+  // Label cascade for generic containers (div/span/custom elements):
+  // aria-label -> role -> meaningful class tokens -> own short text ->
+  // "container". Known semantic tags keep their human names above.
+  function pinpointHoverLabel(el) {
+    var known = PINPOINT_LABELS[el.tagName];
+    if (known) return known;
+    var aria = el.getAttribute && el.getAttribute('aria-label');
+    if (aria && aria.trim()) return truncateLabel(aria.trim());
+    var role = el.getAttribute && el.getAttribute('role');
+    if (role && role.trim()) return truncateLabel(role.trim());
+    var tokens = meaningfulClassTokens(el);
+    if (tokens.length) return truncateLabel(tokens.join(' '));
+    var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (text && text.length <= MAX_HOVER_LABEL) return text;
+    return 'container';
+  }
+
   var pinpointLabelEl = null;
   function getPinpointLabelEl() {
     if (!pinpointLabelEl) {
       pinpointLabelEl = document.createElement('div');
       pinpointLabelEl.setAttribute('data-plannotator-pinpoint-label', '');
       pinpointLabelEl.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;display:none;font:600 11px/1.3 system-ui,-apple-system,sans-serif;padding:2px 7px;border-radius:5px;background:var(--pn-focus-highlight,#4493f8);color:#fff;white-space:nowrap;box-shadow:0 1px 5px rgba(0,0,0,.35);';
-      document.body.appendChild(pinpointLabelEl);
+      overlayNodes.add(pinpointLabelEl);
     }
+    if (!pinpointLabelEl.isConnected) document.body.appendChild(pinpointLabelEl);
     return pinpointLabelEl;
   }
   function hidePinpointLabel() { if (pinpointLabelEl) pinpointLabelEl.style.display = 'none'; }
-
-  var pointerSemanticGraph = null;
-  var pointerSemanticGraphRaf = 0;
-  function graphForPointerFrame() {
-    if (!pointerSemanticGraph) pointerSemanticGraph = buildSemanticTargetGraph();
-    if (!pointerSemanticGraphRaf) {
-      pointerSemanticGraphRaf = requestAnimationFrame(function() {
-        pointerSemanticGraph = null;
-        pointerSemanticGraphRaf = 0;
-      });
-    }
-    return pointerSemanticGraph;
-  }
 
   // Hover outline box: fixed-position, pointer-events none, sized to the
   // hovered element's live rect. The page DOM is never touched for hover.
@@ -779,6 +936,7 @@ export const BRIDGE_SCRIPT = `(function() {
       pinpointBoxEl = document.createElement('div');
       pinpointBoxEl.setAttribute('data-plannotator-pinpoint-box', '');
       pinpointBoxEl.setAttribute('data-plannotator-vim-ui', '');
+      overlayNodes.add(pinpointBoxEl);
     }
     if (!pinpointBoxEl.isConnected) document.body.appendChild(pinpointBoxEl);
     return pinpointBoxEl;
@@ -818,10 +976,9 @@ export const BRIDGE_SCRIPT = `(function() {
 
   // Identity-gated hover update (only restyle when the resolved element
   // changes); shared by mousemove and the scroll/resize reconcile pass.
-  function updatePinpointHover(node) {
-    var graph = graphForPointerFrame();
-    var target = resolveSemanticTarget(graph, node);
-    var el = target && target.element;
+  // Per-event hit-testing only — never builds the semantic graph.
+  function updatePinpointHover(x, y, fallbackNode) {
+    var el = pinpointLeafAt(x, y, fallbackNode);
     if (el !== pinpointHover) {
       pinpointHover = el;
       if (el && !pendingPinEl) {
@@ -837,7 +994,7 @@ export const BRIDGE_SCRIPT = `(function() {
       positionPinpointBox(el); // same element — keep the box glued while scrolling
     }
     if (!el || pendingPinEl) { hidePinpointLabel(); return; }
-    positionPinpointLabel(el, target.label || (PINPOINT_LABELS[el.tagName] || el.tagName.toLowerCase()));
+    positionPinpointLabel(el, pinpointHoverLabel(el));
   }
 
   var lastPointer = null;
@@ -845,9 +1002,9 @@ export const BRIDGE_SCRIPT = `(function() {
     lastPointer = { x: e.clientX, y: e.clientY };
     if (currentInputMethod !== 'pinpoint') return;
     if (vimEnabled && vimPhase !== 'inactive') return;
-    // Hit-test at the pointer instead of trusting e.target so the same code
-    // path serves the scroll re-hit-test below.
-    updatePinpointHover(document.elementFromPoint(e.clientX, e.clientY) || e.target);
+    // Hit-test at the pointer (e.target only backstops engines without
+    // elementFromPoint) so the same code path serves the scroll re-hit-test.
+    updatePinpointHover(e.clientX, e.clientY, e.target);
   });
 
   // rAF-coalesced reconcile: keeps the hover box under a stationary cursor
@@ -858,6 +1015,10 @@ export const BRIDGE_SCRIPT = `(function() {
     if (pinpointReconcileRaf) return;
     pinpointReconcileRaf = requestAnimationFrame(function() {
       pinpointReconcileRaf = 0;
+      // Same point, possibly a different element after a scroll, resize, or
+      // layout-changing mutation (the body ResizeObserver also lands here) —
+      // the last-position cache must never answer the next probe.
+      invalidatePointerHitCache();
       renderPinBadges();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
@@ -866,7 +1027,7 @@ export const BRIDGE_SCRIPT = `(function() {
       if (currentInputMethod !== 'pinpoint') return;
       if (vimEnabled && vimPhase !== 'inactive') return;
       if (lastPointer) {
-        updatePinpointHover(document.elementFromPoint(lastPointer.x, lastPointer.y));
+        updatePinpointHover(lastPointer.x, lastPointer.y, pinpointHover);
       }
     });
   }
@@ -891,6 +1052,7 @@ export const BRIDGE_SCRIPT = `(function() {
       clickEvent.stopPropagation();
       parent.postMessage({ type: PREFIX + 'mark-click', id: id }, '*');
     });
+    overlayNodes.add(badge);
     document.body.appendChild(badge);
     pinRegistry.push({ id: id, element: element, anchor: anchor || null, badge: badge });
     renderPinBadges();
@@ -900,6 +1062,7 @@ export const BRIDGE_SCRIPT = `(function() {
       if (pinRegistry[i].id === id) {
         var badge = pinRegistry[i].badge;
         if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+        overlayNodes.delete(badge);
         pinRegistry.splice(i, 1);
       }
     }
@@ -909,6 +1072,7 @@ export const BRIDGE_SCRIPT = `(function() {
     for (var i = 0; i < pinRegistry.length; i++) {
       var badge = pinRegistry[i].badge;
       if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+      overlayNodes.delete(badge);
     }
     pinRegistry = [];
   }
@@ -955,7 +1119,7 @@ export const BRIDGE_SCRIPT = `(function() {
   // tag > tag:nth-of-type() path as the last resort. Restoration fails closed:
   // a weak (positional/class) selector must also match the captured text
   // snapshot, so a shifted list never mis-anchors an annotation.
-  var ANCHOR_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test', 'aria-label', 'name', 'role', 'href', 'alt'];
+  var ANCHOR_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test', 'data-test-id', 'data-cy', 'data-qa', 'aria-label', 'name', 'role', 'href', 'alt'];
 
   function anchorTextSnapshot(el) {
     var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
@@ -1058,10 +1222,19 @@ export const BRIDGE_SCRIPT = `(function() {
     if (!el || el.nodeType !== 1) return null;
     var selector = buildAnchorSelector(el);
     if (!selector) return null;
+    var snapshot = anchorTextSnapshot(el);
+    // Text-less elements anchor ONLY through a stable-identity rung (#id or
+    // an author-controlled data-* identity attribute). A weak (positional /
+    // class) selector has nothing to verify against — identical siblings
+    // share every structural trait, so any derived signature would validate
+    // the WRONG element after a sibling is inserted or removed. A
+    // wrong-binding anchor is worse than no anchor: ship none and fail
+    // closed (the pin simply doesn't restore).
+    if (!snapshot && !anchorHasStableIdentity(selector, el)) return null;
     return {
       selector: selector,
       tagName: el.tagName.toLowerCase(),
-      text: anchorTextSnapshot(el)
+      text: snapshot
     };
   }
 
@@ -1072,7 +1245,7 @@ export const BRIDGE_SCRIPT = `(function() {
   // name, alt) identify what an element does, not what it says, so they never
   // exempt an anchor from the text check: a regenerated page keeps its
   // role="button" while the button's meaning changes completely.
-  var STABLE_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test'];
+  var STABLE_IDENTITY_ATTRS = ['data-annotate', 'data-testid', 'data-test', 'data-test-id', 'data-cy', 'data-qa'];
 
   function anchorHasStableIdentity(selector, el) {
     var canEscape = typeof CSS !== 'undefined' && CSS.escape;
@@ -1154,7 +1327,9 @@ export const BRIDGE_SCRIPT = `(function() {
       return posted;
     }
     var elText = capSelectionText((el.textContent || '').trim());
-    if (!elText) { clearPendingPin(); return false; }
+    // Text-less elements (icon buttons, decorative chips, empty containers)
+    // are still annotatable: describe the element instead of quoting it.
+    if (!elText) elText = capSelectionText('[element: ' + pinpointHoverLabel(el) + ']');
     var r = el.getBoundingClientRect();
     pendingSelection = { element: true };
     pendingRange = null;
@@ -1169,12 +1344,18 @@ export const BRIDGE_SCRIPT = `(function() {
 
   document.addEventListener('click', function(e) {
     if (currentInputMethod !== 'pinpoint') return;
-    // Existing marks are handled by the mark-click listener; pin badges own
-    // their clicks.
-    if (e.target && e.target.closest && e.target.closest('.annotation-highlight[data-bind-id],[data-plannotator-pin-badge]')) return;
-    var clickGraph = buildSemanticTargetGraph();
-    var clickTarget = resolveSemanticTarget(clickGraph, e.target);
-    var el = clickTarget && clickTarget.element;
+    // Existing marks are handled by the mark-click listener.
+    if (e.target && e.target.closest && e.target.closest('.annotation-highlight[data-bind-id]')) return;
+    // Real pin badges (and any other viewer overlay) own their clicks —
+    // checked by IDENTITY, not selector, so a page element spoofing
+    // [data-plannotator-pin-badge] stays an ordinary annotatable target.
+    if (isViewerOverlayNode(e.target)) return;
+    // Click what the hover box shows: the currently hovered element is the
+    // target the user aimed at. Fall back to a fresh hit-test at the click
+    // point (e.g. a click with no preceding mousemove).
+    var el = pinpointHover && pinpointHover.isConnected
+      ? pinpointHover
+      : resolvePinpointTargetAt(e.clientX, e.clientY, e.target);
     if (!el) return;
     // Suppress the page's own behavior (links, buttons) — we're annotating.
     e.preventDefault();
@@ -1724,6 +1905,7 @@ export const BRIDGE_SCRIPT = `(function() {
       cursor = document.createElement('div');
       cursor.setAttribute('data-plannotator-vim-cursor', '');
       cursor.setAttribute('data-plannotator-vim-ui', '');
+      overlayNodes.add(cursor);
       document.body.appendChild(cursor);
     }
     return cursor;
@@ -1735,6 +1917,7 @@ export const BRIDGE_SCRIPT = `(function() {
       badge = document.createElement('div');
       badge.setAttribute('data-plannotator-vim-badge', '');
       badge.setAttribute('data-plannotator-vim-ui', '');
+      overlayNodes.add(badge);
       document.body.appendChild(badge);
     }
     return badge;
@@ -1754,6 +1937,7 @@ export const BRIDGE_SCRIPT = `(function() {
       '<div data-vim-reticle-corner="bottom-right"></div>',
       '<div data-vim-reticle-label></div>'
     ].join('');
+    overlayNodes.add(reticle);
     document.body.appendChild(reticle);
     return reticle;
   }

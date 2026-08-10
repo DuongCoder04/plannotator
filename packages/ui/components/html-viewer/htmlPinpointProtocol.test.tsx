@@ -45,6 +45,18 @@ describe.if(hasDom)('parseHtmlElementAnchor (validated DTO)', () => {
       .toEqual({ selector: 'main', tagName: 'main' });
   });
 
+  test('accepts an empty text snapshot (stable-identity text-less anchors)', () => {
+    // Text-less elements anchor only through a stable-identity selector
+    // (#id / data-* identity attrs) and carry an empty snapshot; the bridge
+    // treats an empty snapshot on a WEAK selector as a rejection at restore
+    // time, so passing it through the DTO is safe.
+    expect(hookModule!.parseHtmlElementAnchor({
+      selector: 'span[data-testid="close-btn"]',
+      tagName: 'span',
+      text: '',
+    })).toEqual({ selector: 'span[data-testid="close-btn"]', tagName: 'span', text: '' });
+  });
+
   test('rejects non-records and missing/empty fields', () => {
     expect(hookModule!.parseHtmlElementAnchor(null)).toBeNull();
     expect(hookModule!.parseHtmlElementAnchor('main')).toBeNull();
