@@ -333,6 +333,7 @@ describe("install.sh", () => {
     const minimalExit = script.indexOf('if [ "$minimal" -eq 1 ]; then');
     const semInstall = script.indexOf("install_sem_sidecar\n");
     const agentTerminal = script.indexOf("install_agent_terminal_runtime\n");
+    const callFlow = script.indexOf("install_call_flow_runtime\n");
     const codexBlock = script.indexOf(
       "# --- Codex CLI / Desktop app support",
     );
@@ -345,6 +346,7 @@ describe("install.sh", () => {
     // Everything the reporter called "trash" runs strictly after the exit gate.
     expect(semInstall).toBeGreaterThan(minimalExit);
     expect(agentTerminal).toBeGreaterThan(minimalExit);
+    expect(callFlow).toBeGreaterThan(minimalExit);
     expect(codexBlock).toBeGreaterThan(minimalExit);
     expect(skillsCheckout).toBeGreaterThan(minimalExit);
     // The gate really exits rather than falling through.
@@ -677,12 +679,14 @@ describe("install.ps1", () => {
     );
     const minimalExit = script.indexOf("if ($minimal) {");
     const semInstall = script.indexOf("Install-SemSidecar\n");
+    const callFlow = script.indexOf("Install-CallFlowRuntime\n");
     const pathAdvice = script.indexOf("function Show-PathAdvice");
 
     expect(binaryInstalled).toBeGreaterThan(0);
     expect(pathAdvice).toBeGreaterThan(binaryInstalled);
     expect(minimalExit).toBeGreaterThan(binaryInstalled);
     expect(semInstall).toBeGreaterThan(minimalExit);
+    expect(callFlow).toBeGreaterThan(minimalExit);
     // The gate exits rather than falling through.
     const gateBody = script.slice(minimalExit, minimalExit + 400);
     expect(gateBody).toContain("exit 0");
@@ -967,11 +971,13 @@ describe("install.cmd", () => {
     );
     const minimalExit = script.indexOf('if "!MINIMAL!"=="1" (');
     const semInstall = script.indexOf("call :InstallSemSidecar");
+    const callFlow = script.indexOf("call :InstallCallFlowRuntime");
     const printPathAdvice = script.indexOf(":PrintPathAdvice");
 
     expect(binaryInstalled).toBeGreaterThan(0);
     expect(minimalExit).toBeGreaterThan(binaryInstalled);
     expect(semInstall).toBeGreaterThan(minimalExit);
+    expect(callFlow).toBeGreaterThan(minimalExit);
     // The gate exits rather than falling through, and reuses :PrintPathAdvice.
     const gateBody = script.slice(minimalExit, minimalExit + 400);
     expect(gateBody).toContain("call :PrintPathAdvice");
@@ -1587,6 +1593,25 @@ describe("install shared behavior", () => {
     expect(cmdScript).toContain('"!INSTALL_PATH!" install-runtime agent-terminal');
     expect(cmdScript).toContain("Skipping agent terminal runtime install");
     expect(cmdScript).toContain("PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL");
+  });
+
+  test("all installers install the pinned CallDiff runtime as a non-fatal optional dependency", () => {
+    const cmdScript = readScript("install.cmd");
+
+    expect(sh).toContain("install_call_flow_runtime");
+    expect(sh).toContain('"$INSTALL_DIR/plannotator" install-runtime call-flow');
+    expect(sh).toContain("Skipping call-flow runtime install");
+    expect(sh).toContain("PLANNOTATOR_SKIP_CALLDIFF_INSTALL");
+
+    expect(ps).toContain("function Install-CallFlowRuntime");
+    expect(ps).toContain("& $plannotatorPath install-runtime call-flow");
+    expect(ps).toContain("Skipping call-flow runtime install");
+    expect(ps).toContain("PLANNOTATOR_SKIP_CALLDIFF_INSTALL");
+
+    expect(cmdScript).toContain("call :InstallCallFlowRuntime");
+    expect(cmdScript).toContain('"!INSTALL_PATH!" install-runtime call-flow');
+    expect(cmdScript).toContain("Skipping call-flow runtime install");
+    expect(cmdScript).toContain("PLANNOTATOR_SKIP_CALLDIFF_INSTALL");
   });
 
   test("install.sh and help text use vX.Y.Z placeholder not v0.17.1", () => {

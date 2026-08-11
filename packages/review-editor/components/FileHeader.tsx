@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SemanticFileBadge } from './SemanticFileBadge';
+import { CallFlowFileBadge } from './CallFlowFileBadge';
 import { OpenInAppButton } from '@plannotator/ui/components/OpenInAppButton';
 import { useReviewStateOptional } from '../dock/ReviewStateContext';
 import type { DiffFileStatus } from '../types';
@@ -272,6 +273,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
             {commentLabel && <span>{commentLabel}</span>}
           </button>
         )}
+        <CallFlowFileBadge filePath={filePath} oldPath={oldPath} />
         <SemanticFileBadge filePath={filePath} />
         {/* Edit entry lives at the far right of the row, next to the file
             actions dropdown, so the experimental affordance stays out of the

@@ -3,7 +3,7 @@ import { CodeAnnotation } from '@plannotator/ui/types';
 import type { AvailableBranches, CompareTargetConfig, RecentCommit, SinceBaseSections } from '@plannotator/shared/types';
 import { BaseBranchPicker } from './BaseBranchPicker';
 import { PanelViewToggle } from './PanelViewToggle';
-import { SemanticDiffRow, AllFilesRow } from './PanelNavRows';
+import { SemanticDiffRow, CallFlowRow, AllFilesRow } from './PanelNavRows';
 import { ViewedControl, ChangeTypeLetter, StageControl, AnnotationBadge, DiffCounts, CommittedDot, TruncatedPath } from './FileRowBits';
 import { SearchFileGroup } from './FileTree';
 import type { ReviewSearchFileGroup, ReviewSearchMatch } from '../utils/reviewSearch';
@@ -73,6 +73,11 @@ interface SectionsPanelProps {
   onSelectSemanticDiff?: () => void;
   isSemanticDiffActive?: boolean;
   semanticDiffAvailable?: boolean;
+  onSelectCallFlow?: () => void;
+  isCallFlowActive?: boolean;
+  callFlowEnabled?: boolean;
+  callFlowCount?: number;
+  callFlowLoading?: boolean;
   /** Footer copy-diffs. */
   onCopyRawDiff?: () => void;
   canCopyRawDiff?: boolean;
@@ -189,6 +194,11 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({
   onSelectSemanticDiff,
   isSemanticDiffActive,
   semanticDiffAvailable,
+  onSelectCallFlow,
+  isCallFlowActive,
+  callFlowEnabled,
+  callFlowCount,
+  callFlowLoading,
   onCopyRawDiff,
   canCopyRawDiff,
   copyRawDiffStatus = 'idle',
@@ -575,6 +585,9 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({
           ) : (
           <>
           {/* Nav rows — shared with the tree view, same order. */}
+          {callFlowEnabled && onSelectCallFlow && (
+            <CallFlowRow active={isCallFlowActive ?? false} onClick={onSelectCallFlow} count={callFlowCount} loading={callFlowLoading} />
+          )}
           {semanticDiffAvailable && onSelectSemanticDiff && (
             <SemanticDiffRow active={isSemanticDiffActive ?? false} onClick={onSelectSemanticDiff} />
           )}

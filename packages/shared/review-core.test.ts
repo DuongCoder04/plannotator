@@ -21,6 +21,7 @@ import {
   detectRemoteDefaultInfo,
   getDefaultBranch,
   getFileContentsForDiff,
+  getGitCallFlowMaterializationPatch,
   getGitContext,
   getGitDiffFingerprint,
   getWorkingTreeDiffFromBase,
@@ -411,6 +412,29 @@ describe("review-core", () => {
 
     expect(result.patch).toContain("Binary files");
     expect(isOversizedReviewStubPatch(result.patch)).toBe(false);
+  });
+
+  test("CallDiff gets an applyable binary patch without changing the UI patch", async () => {
+    const repoDir = initRepo();
+    const runtime = makeRuntime(repoDir);
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 2, 0, 3]));
+    git(repoDir, ["add", "logo.png"]);
+    git(repoDir, ["commit", "-m", "add tracked image"]);
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 9, 0, 3, 4]));
+    writeFileSync(join(repoDir, "new-logo.png"), Buffer.from([0, 5, 6, 0, 7]));
+
+    const visible = await runGitDiff(runtime, "uncommitted", "main");
+    const materialization = await getGitCallFlowMaterializationPatch(
+      runtime,
+      "uncommitted",
+      "main",
+      repoDir,
+    );
+
+    expect(visible.patch).toContain("Binary files");
+    expect(visible.patch).not.toContain("GIT binary patch");
+    expect(materialization?.match(/GIT binary patch/g)).toHaveLength(2);
+    expect(materialization).toMatch(/^index [0-9a-f]{40,64}\.\.[0-9a-f]{40,64}/m);
   });
 
   test("the UI's size-cap label matches the enforced byte cap", () => {

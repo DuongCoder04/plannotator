@@ -197,6 +197,15 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
     openToolbar(range, { top: mousePos.y + 10, left: mousePos.x });
   }, [onLineSelection, openToolbar]);
 
+  /** Open the ordinary code-review composer for a selection requested elsewhere. */
+  const openLineAnnotation = useCallback((range: SelectedLineRange) => {
+    tokenAnchorRef.current = null;
+    openToolbar(range, {
+      top: Math.max(80, window.innerHeight / 2 - 80),
+      left: window.innerWidth / 2,
+    });
+  }, [openToolbar]);
+
   // Handle annotation submission (create or update)
   const handleSubmitAnnotation = useCallback(() => {
     const hasComment = commentText.trim().length > 0;
@@ -376,6 +385,7 @@ export function useAnnotationToolbar({ patch, filePath, isFocused, onLineSelecti
     // Handlers
     handleMouseMove,
     handleLineSelectionEnd,
+    openLineAnnotation,
     handleTokenClick,
     handleSubmitAnnotation,
     handleDismiss,

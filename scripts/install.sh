@@ -41,7 +41,7 @@ MODEL_INVOCABLE_FLAG=""
 NON_INTERACTIVE=0
 RECONFIGURE=0
 # Binary-only mode. Installs just the plannotator binary (to $INSTALL_DIR) and
-# no persistent state elsewhere — no sem sidecar, no agent-terminal runtime, no
+# no persistent state elsewhere — no sem sidecar, no CallDiff or agent-terminal runtime, no
 # skills, hooks, slash commands, or per-agent config (Claude, Codex, OpenCode,
 # Gemini, Kiro). Set by --minimal (1) / --no-minimal (0); -1 = neither flag
 # given (fall through to the PLANNOTATOR_MINIMAL env var). Resolved after arg
@@ -90,7 +90,7 @@ Options:
                          "none". Skills are user-invoked-only by default.
   --minimal              Install only the plannotator binary (aliased
                          --binary-only). Skips the sem semantic-diff sidecar,
-                         the agent-terminal runtime, and every per-agent
+                         the CallDiff runtime, the agent-terminal runtime, and every per-agent
                          integration (skills, hooks, slash commands, and config
                          for Claude, Codex, OpenCode, Gemini, and Kiro). No
                          persistent state is written outside $HOME/.local/bin
@@ -1002,8 +1002,22 @@ install_agent_terminal_runtime() {
     fi
 }
 
+install_call_flow_runtime() {
+    case "${PLANNOTATOR_SKIP_CALLDIFF_INSTALL:-}" in
+        1|true|yes|TRUE|YES|True|Yes)
+            echo "Skipping call-flow runtime install (PLANNOTATOR_SKIP_CALLDIFF_INSTALL is set)"
+            return 0
+            ;;
+    esac
+
+    if ! "$INSTALL_DIR/plannotator" install-runtime call-flow; then
+        echo "Skipping call-flow runtime install (plannotator install-runtime failed)"
+    fi
+}
+
 install_sem_sidecar
 install_agent_terminal_runtime
+install_call_flow_runtime
 
 print_path_advice
 

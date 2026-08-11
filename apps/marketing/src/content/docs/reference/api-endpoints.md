@@ -76,6 +76,9 @@ Used during code review (`/plannotator-review`).
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/diff` | GET | Returns the diff and session info |
+| `/api/semantic-diff` | GET | Returns optional semantic analysis for the active patch |
+| `/api/call-flow` | GET | Returns snapshot-bound CallDiff trees, canonical colorless raw output, and per-file impacts (`?snapshot=<id>`) |
+| `/api/review-analysis` | POST | Persists independent `{ semanticDiff, callFlow }` flags and returns refreshed capability adverts |
 | `/api/feedback` | POST | Submit review feedback |
 | `/api/image` | GET | Serve a local image by path |
 | `/api/upload` | POST | Upload an image attachment |

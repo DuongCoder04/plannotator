@@ -21,6 +21,7 @@ import {
   parseWorktreeDiffType,
   resolveBaseBranch,
   getSinceBaseSections,
+  getGitCallFlowMaterializationPatch,
   detectRemoteDefaultInfo,
   isBinaryPatchFile,
   listPatchFiles,
@@ -47,6 +48,8 @@ import {
   SemanticDiffResponseCache,
 } from "@plannotator/shared/semantic-diff";
 import type { SemanticDiffAvailability, SemanticDiffResponse } from "@plannotator/shared/semantic-diff-types";
+import { CallFlowService } from "@plannotator/shared/call-flow";
+import type { CallFlowResponse } from "@plannotator/shared/call-flow-types";
 import {
   getPRDiffScopeOptions,
   getPRFullStackFingerprint,
@@ -94,7 +97,7 @@ import {
   extractMarkerNonce,
   type MarkerEngineId,
 } from "./marker-review";
-import { loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveCursorSandbox, resolveGuideHistory } from "./config";
+import { loadConfig, saveConfig, detectGitUser, getServerConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolveCursorSandbox, resolveGuideHistory } from "./config";
 import { type PRMetadata, type PRRef, type PRReviewFileComment, type PRStackTree, type PRListItem, fetchPR, fetchPRFileContent, fetchPRContext, submitPRReview, fetchPRViewedFiles, markPRFilesViewed, fetchPRStack, fetchPRList, getPRUser, parsePRUrl, prRefFromMetadata, isSameProject, getDisplayRepo, getMRLabel, getMRNumberLabel, prCommandRuntime } from "./pr";
 import {
   PR_CONTEXT_HEARTBEAT_COMMENT,
@@ -281,6 +284,9 @@ export async function startReviewServer(
   // one's snapshot and hand the client a self-consistent-but-wrong diff. A
   // superseded request writes nothing and returns { superseded: true }.
   let diffSwitchEpoch = 0;
+  // Analysis-setting requests can overlap each other and view switches. Older
+  // responses must never re-advertise capabilities for a superseded view.
+  let reviewAnalysisEpoch = 0;
   // Platform APIs withhold per-file patches on very large PRs. When the layer
   // patch is incomplete, a local recompute (exact merge-base diff, no size
   // limits) becomes available once the checkout warmup finishes — the layer
@@ -371,6 +377,16 @@ export async function startReviewServer(
     }
     return options.agentCwd;
   };
+  const ensurePRCallFlowCwd = async (meta: PRMetadata | undefined = prMetadata): Promise<string | undefined> => {
+    if (options.worktreePool && meta) {
+      try {
+        return (await options.worktreePool.ensure(gitRuntime, meta)).path;
+      } catch {
+        return undefined;
+      }
+    }
+    return resolvePRLocalCwd(meta);
+  };
 
   // --- Diff staleness fingerprint -------------------------------------------
   // Captured beside every patch snapshot (startup + every switch endpoint);
@@ -417,7 +433,11 @@ export async function startReviewServer(
   let fingerprintGeneration = 0;
   let pendingFingerprintCapture: Promise<string | null> | null = null;
   const fileContentFingerprintProbes = new SingleFlight<string | null>();
+  const callFlowService = new CallFlowService();
   const captureDiffFingerprint = (knownFingerprint?: string): void => {
+    // A fingerprint capture marks a committed review-view change. Stop work
+    // for the prior snapshot even when the new view cannot run CallDiff.
+    callFlowService.cancelAll();
     fileContentFingerprintProbes.clear();
     const generation = ++fingerprintGeneration;
     if (knownFingerprint !== undefined) {
@@ -772,6 +792,9 @@ export async function startReviewServer(
   const semanticDiffCache = new SemanticDiffResponseCache();
   const semanticDiffAvailabilityCache = new Map<string, Promise<SemanticDiffAvailability>>();
 
+  const semanticDiffEnabled = (): boolean => loadConfig().reviewAnalysis?.semanticDiff !== false;
+  const callFlowEnabled = (): boolean => loadConfig().reviewAnalysis?.callFlow === true;
+
   const createSemanticDiffRuntime = (cwd: string) => ({
     ...createDefaultSemanticDiffRuntime(),
     cwd,
@@ -790,7 +813,11 @@ export async function startReviewServer(
     return next;
   };
 
-  const getSemanticDiffAdvert = async (diffType: DiffType = currentDiffType as DiffType) => {
+  const getSemanticDiffAdvert = async (
+    diffType: DiffType = currentDiffType as DiffType,
+    enabled = semanticDiffEnabled(),
+  ) => {
+    if (!enabled) return { available: false, enabled: false };
     if (isGitButlerCommittedView(diffType)) return { available: false };
     const availability = await getSemanticDiffAvailabilityForCwd(resolveSemanticDiffCwd(diffType));
     return {
@@ -801,6 +828,9 @@ export async function startReviewServer(
   };
 
   const getSemanticDiff = async (url: URL): Promise<SemanticDiffResponse> => {
+    if (!semanticDiffEnabled()) {
+      return { status: "unavailable", reason: "disabled", message: "Semantic diff is disabled in Settings → Analysis." };
+    }
     if (isGitButlerCommittedView()) {
       return {
         status: "unavailable",
@@ -828,6 +858,91 @@ export async function startReviewServer(
       semanticDiffCache.setFailure(cacheKey, currentPatch, result);
     }
     return result;
+  };
+
+  const getCallFlowAdvert = (
+    diffType: DiffType = currentDiffType as DiffType,
+    enabled = callFlowEnabled(),
+  ) =>
+    callFlowService.getAdvert(enabled, {
+      vcsType: workspace ? "workspace" : sessionVcsType,
+      diffType,
+    });
+
+  const getCallFlow = async (url: URL): Promise<CallFlowResponse> => {
+    const requestedSnapshot = url.searchParams.get("snapshot");
+    if (!requestedSnapshot || requestedSnapshot !== currentSnapshotId()) {
+      return { status: "stale", reason: "snapshot-mismatch", message: "The review changed before call flow could start. Refresh and try again." };
+    }
+    if (!callFlowEnabled()) {
+      return { status: "disabled", reason: "disabled", message: "Call flow is disabled in Settings → Analysis." };
+    }
+    if (workspace) {
+      return { status: "unsupported", reason: "workspace-unsupported", message: "Call flow does not yet support multi-repository workspace reviews." };
+    }
+    const advert = await getCallFlowAdvert();
+    if (advert.state === "unsupported") {
+      return {
+        status: "unsupported",
+        reason: advert.reason ?? "view-unsupported",
+        message: advert.message ?? "Call flow is not available for this review view.",
+      };
+    }
+
+    let analysisCwd: string | undefined;
+    let analysisDiffType = currentDiffType as string;
+    let analysisBase = currentBase;
+    let prCommitPair: { from: string; to: string } | undefined;
+    if (isPRMode && prMetadata) {
+      if (currentPRDiffScope === "layer" && layerPatchIncomplete) {
+        return { status: "unsupported", reason: "incomplete-patch", message: "Call flow is unavailable until the complete PR layer diff is available locally." };
+      }
+      analysisCwd = await ensurePRCallFlowCwd();
+      if (!analysisCwd) {
+        return { status: "unavailable", reason: "checkout-unavailable", message: "Call flow needs a local PR checkout, which is not ready." };
+      }
+      if (currentPRDiffScope === "full-stack" && prMetadata.defaultBranch) {
+        const baseRef = await resolvePRFullStackBaseRef(gitRuntime, prMetadata.defaultBranch, analysisCwd);
+        if (!baseRef) return { status: "unavailable", reason: "base-unavailable", message: "The full-stack base commit is unavailable locally." };
+        analysisDiffType = "merge-base";
+        analysisBase = baseRef;
+      } else {
+        prCommitPair = { from: prMetadata.mergeBaseSha ?? prMetadata.baseSha, to: prMetadata.headSha };
+      }
+    } else {
+      analysisCwd = resolveVcsCwd(currentDiffType as DiffType, gitContext?.cwd)
+        ?? gitContext?.cwd
+        ?? options.agentCwd
+        ?? process.cwd();
+    }
+    if (!analysisCwd) {
+      return { status: "unavailable", reason: "checkout-unavailable", message: "Call flow requires a local Git checkout." };
+    }
+
+    const baseline = pendingFingerprintCapture ? await pendingFingerprintCapture : currentFingerprint;
+    const before = await computeDiffFingerprint();
+    if (requestedSnapshot !== currentSnapshotId() || (baseline && before && baseline !== before)) {
+      return { status: "stale", reason: "snapshot-stale", message: "The files changed before call flow could start. Refresh the review first." };
+    }
+    const materializationPatch = await getGitCallFlowMaterializationPatch(
+      gitRuntime,
+      analysisDiffType as DiffType,
+      analysisBase,
+      analysisCwd,
+    );
+    return callFlowService.analyze({
+      snapshotId: requestedSnapshot,
+      cwd: analysisCwd,
+      diffType: analysisDiffType,
+      base: analysisBase,
+      rawPatch: materializationPatch ?? currentPatch,
+      vcsType: isPRMode ? "git" : sessionVcsType,
+      ...(prCommitPair && { prCommitPair }),
+      verifySnapshot: async () => {
+        const after = await computeDiffFingerprint();
+        return requestedSnapshot === currentSnapshotId() && !(before && after && before !== after);
+      },
+    });
   };
 
   const agentJobs = createAgentJobHandler({
@@ -1601,6 +1716,7 @@ export async function startReviewServer(
               ...(baseBehindRemote && { baseBehindRemote: true }),
               ...(servedError && { error: servedError }),
               semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
+              callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
               serverConfig: getServerConfig(gitUser),
             });
           }
@@ -1712,6 +1828,51 @@ export async function startReviewServer(
             return Response.json(await getSemanticDiff(url));
           }
 
+          // API: Snapshot-bound call-stack impact analysis.
+          if (url.pathname === "/api/call-flow" && req.method === "GET") {
+            const result = await getCallFlow(url);
+            return Response.json(result, {
+              status: result.status === "stale" ? 409 : 200,
+              headers: { "Cache-Control": "no-store" },
+            });
+          }
+
+          // API: Persist analysis toggles and immediately re-advertise both
+          // independent capabilities. This makes enabling a layer live in the
+          // current review instead of requiring a reload.
+          if (url.pathname === "/api/review-analysis" && req.method === "POST") {
+            const analysisEpoch = ++reviewAnalysisEpoch;
+            const viewEpoch = diffSwitchEpoch;
+            const scopeEpoch = prScopeEpoch;
+            try {
+              const reviewAnalysis = parseReviewAnalysisConfig(await req.json());
+              if (!reviewAnalysis) {
+                return Response.json({ error: "Invalid analysis settings" }, { status: 400 });
+              }
+              if (analysisEpoch !== reviewAnalysisEpoch) {
+                return Response.json({ superseded: true });
+              }
+              const nextSemanticDiffEnabled = reviewAnalysis.semanticDiff ?? semanticDiffEnabled();
+              const nextCallFlowEnabled = reviewAnalysis.callFlow ?? callFlowEnabled();
+              const [semanticDiff, callFlow] = await Promise.all([
+                getSemanticDiffAdvert(currentDiffType as DiffType, nextSemanticDiffEnabled),
+                getCallFlowAdvert(currentDiffType as DiffType, nextCallFlowEnabled),
+              ]);
+              if (
+                analysisEpoch !== reviewAnalysisEpoch
+                || viewEpoch !== diffSwitchEpoch
+                || scopeEpoch !== prScopeEpoch
+              ) {
+                return Response.json({ superseded: true });
+              }
+              saveConfig({ reviewAnalysis });
+              if (!nextCallFlowEnabled) callFlowService.cancelAll();
+              return Response.json({ semanticDiff, callFlow });
+            } catch {
+              return Response.json({ error: "Invalid request" }, { status: 400 });
+            }
+          }
+
           // API: Linear commit history for the Commits panel. Git-local
           // sessions only — PR/workspace/jj/p4 don't offer the view (same
           // gate the client's commitsCapable applies). Computed against the
@@ -1807,6 +1968,7 @@ export async function startReviewServer(
                   hideWhitespace: currentHideWhitespace,
                   ...(currentError && { error: currentError }),
                   semanticDiff: await getSemanticDiffAdvert(),
+                  callFlow: await getCallFlowAdvert(),
                 });
               }
 
@@ -1896,7 +2058,10 @@ export async function startReviewServer(
               ).catch(() => false);
               const sections = await buildSectionsSidecar(nextBase, newDiffType as string);
               const commitInfo = await buildCommitInfoSidecar(newDiffType as string);
-              const switchSemanticDiff = await getSemanticDiffAdvert(newDiffType as DiffType);
+              const [switchSemanticDiff, switchCallFlow] = await Promise.all([
+                getSemanticDiffAdvert(newDiffType as DiffType),
+                getCallFlowAdvert(newDiffType as DiffType),
+              ]);
               // Final guard: if a newer switch took over during the trailing
               // awaits, don't emit — the client would misapply our stale body
               // over the newer one (which has its own response inbound).
@@ -1938,6 +2103,7 @@ export async function startReviewServer(
                 ...(updatedContext && { gitContext: updatedContext }),
                 ...(currentError && { error: currentError }),
                 semanticDiff: switchSemanticDiff,
+                callFlow: switchCallFlow,
               });
             } catch (err) {
               const message =
@@ -1963,7 +2129,10 @@ export async function startReviewServer(
               // was parked on an await: drop this request's writes and return
               // the newest state so the client converges on it.
               const supersededResponse = async () => {
-                const semanticDiff = await getSemanticDiffAdvert();
+                const [semanticDiff, callFlow] = await Promise.all([
+                  getSemanticDiffAdvert(),
+                  getCallFlowAdvert(),
+                ]);
                 return Response.json({
                   rawPatch: currentPatch,
                   aiReviewContext: buildCurrentAiReviewContext(),
@@ -1973,6 +2142,7 @@ export async function startReviewServer(
                   ...(layerPatchIncomplete && { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable }),
                   ...(currentError && { error: currentError }),
                   semanticDiff,
+                  callFlow,
                 });
               };
 
@@ -2028,6 +2198,7 @@ export async function startReviewServer(
                   ...(layerPatchIncomplete && { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable }),
                   ...((currentError ?? upgradeError) && { error: currentError ?? upgradeError }),
                   semanticDiff: await getSemanticDiffAdvert(),
+                  callFlow: await getCallFlowAdvert(),
                 });
               }
 
@@ -2072,6 +2243,7 @@ export async function startReviewServer(
                 snapshotId: currentSnapshotId(),
                 prDiffScope: currentPRDiffScope,
                 semanticDiff: await getSemanticDiffAdvert(),
+                callFlow: await getCallFlowAdvert(),
               });
             } catch (err) {
               const message =
@@ -2210,6 +2382,7 @@ export async function startReviewServer(
                 ...(switchedViewedFiles.length > 0 && { viewedFiles: switchedViewedFiles }),
                 ...(currentError ? { error: currentError } : {}),
                 semanticDiff: await getSemanticDiffAdvert(),
+                callFlow: await getCallFlowAdvert(),
               });
             } catch (err) {
               const message = err instanceof Error ? err.message : "Failed to switch PR";
@@ -2548,11 +2721,19 @@ export async function startReviewServer(
           // API: Update user config (write-back to ~/.plannotator/config.json)
           if (url.pathname === "/api/config" && req.method === "POST") {
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
               if (body.theme !== undefined) toSave.theme = body.theme;
+              if (body.reviewAnalysis !== undefined) {
+                const reviewAnalysis = parseReviewAnalysisConfig(body.reviewAnalysis);
+                if (!reviewAnalysis) {
+                  return Response.json({ error: "Invalid analysis settings" }, { status: 400 });
+                }
+                toSave.reviewAnalysis = reviewAnalysis;
+                if (reviewAnalysis.callFlow === false) callFlowService.cancelAll();
+              }
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
               if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
@@ -2940,6 +3121,7 @@ export async function startReviewServer(
     stop: () => {
       process.removeListener("exit", exitHandler);
       agentJobs.killAll();
+      callFlowService.cancelAll();
       aiRuntime?.dispose();
       server.stop();
       // Invoke cleanup callback (e.g., remove temp worktree)

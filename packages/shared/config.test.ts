@@ -9,8 +9,31 @@ import {
   resolveTodoProviderEnabled,
   resolveUrlHost,
   isValidUrlHost,
+  parseReviewAnalysisConfig,
 } from "./config";
 import type { PlannotatorConfig } from "./config";
+
+describe("parseReviewAnalysisConfig", () => {
+  test("accepts independent boolean analysis flags", () => {
+    expect(parseReviewAnalysisConfig({ semanticDiff: false })).toEqual({ semanticDiff: false });
+    expect(parseReviewAnalysisConfig({ callFlow: true })).toEqual({ callFlow: true });
+    expect(parseReviewAnalysisConfig({ semanticDiff: true, callFlow: false })).toEqual({
+      semanticDiff: true,
+      callFlow: false,
+    });
+  });
+
+  test("rejects non-object and non-boolean settings", () => {
+    expect(parseReviewAnalysisConfig(null)).toBeUndefined();
+    expect(parseReviewAnalysisConfig([])).toBeUndefined();
+    expect(parseReviewAnalysisConfig({ semanticDiff: "false" })).toBeUndefined();
+    expect(parseReviewAnalysisConfig({ callFlow: 1 })).toBeUndefined();
+  });
+
+  test("ignores unknown keys instead of persisting them", () => {
+    expect(parseReviewAnalysisConfig({ callFlow: true, futureFlag: true })).toEqual({ callFlow: true });
+  });
+});
 
 describe("resolveAIEnabled", () => {
   test("defaults to enabled", () => {

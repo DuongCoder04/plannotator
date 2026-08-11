@@ -822,6 +822,7 @@ if "!MINIMAL!"=="1" (
 
 call :InstallSemSidecar
 call :InstallAgentTerminalRuntime
+call :InstallCallFlowRuntime
 
 call :PrintPathAdvice
 
@@ -1562,6 +1563,30 @@ if /i "!PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL!"=="yes" (
 "!INSTALL_PATH!" install-runtime agent-terminal
 if !ERRORLEVEL! neq 0 (
     echo Skipping agent terminal runtime install ^(plannotator install-runtime failed^)
+)
+goto :eof
+
+REM ======================================================================
+REM Optional CallDiff runtime install. Non-fatal: call flow stays disabled
+REM when Node/npm or the pinned grammar install is unavailable.
+REM ======================================================================
+:InstallCallFlowRuntime
+if /i "!PLANNOTATOR_SKIP_CALLDIFF_INSTALL!"=="1" (
+    echo Skipping call-flow runtime install ^(PLANNOTATOR_SKIP_CALLDIFF_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_CALLDIFF_INSTALL!"=="true" (
+    echo Skipping call-flow runtime install ^(PLANNOTATOR_SKIP_CALLDIFF_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_CALLDIFF_INSTALL!"=="yes" (
+    echo Skipping call-flow runtime install ^(PLANNOTATOR_SKIP_CALLDIFF_INSTALL is set^)
+    goto :eof
+)
+
+"!INSTALL_PATH!" install-runtime call-flow
+if !ERRORLEVEL! neq 0 (
+    echo Skipping call-flow runtime install ^(plannotator install-runtime failed^)
 )
 goto :eof
 

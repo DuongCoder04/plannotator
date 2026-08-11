@@ -73,8 +73,9 @@ import {
   type FileBrowserSettings,
 } from '../utils/fileBrowser';
 import { requestVimDocumentFocus } from '../hooks/useVimDocumentFocus';
+import { AnalysisLayerToggle } from './AnalysisLayerToggle';
 
-type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'comments' | 'hooks';
+type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'comments' | 'hooks';
 
 interface SettingsProps {
   taterMode: boolean;
@@ -192,12 +193,17 @@ function ToggleSwitch({ checked, onChange, label, description, disabled = false 
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed ${
-          checked ? 'bg-primary' : 'bg-muted'
-        }`}
+        className="relative inline-flex h-11 w-11 shrink-0 items-center disabled:cursor-not-allowed"
       >
         <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+          aria-hidden="true"
+          className={`absolute inset-x-0 top-2.5 h-6 rounded-full transition-colors ${
+            checked ? 'bg-primary' : 'bg-muted'
+          }`}
+        />
+        <span
+          aria-hidden="true"
+          className={`absolute top-3.5 inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
             checked ? 'translate-x-6' : 'translate-x-1'
           }`}
         />
@@ -283,6 +289,63 @@ function VimSettingsTab({
             </p>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewAnalysisTab() {
+  const semanticDiffEnabled = useConfigValue('semanticDiffEnabled');
+  const callFlowEnabled = useConfigValue('callFlowEnabled');
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="text-sm font-semibold">Analysis layers</div>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Add structural context to the ordinary code diff. Each layer is independent and does no work while disabled.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-xl border border-border bg-muted/20 p-4">
+        <AnalysisLayerToggle
+          checked={semanticDiffEnabled}
+          onChange={(enabled) => configStore.set('semanticDiffEnabled', enabled)}
+          label="Semantic changes"
+          description="Organize added, changed, moved, and removed functions, classes, and other named code. Enabled by default."
+        />
+        <div className="border-t border-border" />
+        <AnalysisLayerToggle
+          checked={callFlowEnabled}
+          onChange={(enabled) => configStore.set('callFlowEnabled', enabled)}
+          label="Call flow"
+          description="Show complete inferred entry paths containing added or removed calls. Experimental and off by default."
+        />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-border p-3.5">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="grid h-6 w-6 place-items-center rounded-md bg-primary/10 font-mono text-primary">▣</span>
+            Dock
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Open the complete analysis from the file panel. Rows jump to the relevant code location.
+          </p>
+        </div>
+        <div className="rounded-xl border border-border p-3.5">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="grid h-6 w-6 place-items-center rounded-md bg-primary/10 font-mono text-primary">⌁</span>
+            File lens
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            File headers show compact counts and a focused popover for that file.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-warning/25 bg-warning/[0.05] p-4 text-xs leading-relaxed text-muted-foreground">
+        <span className="font-semibold text-foreground">Call flow is syntactic.</span>{' '}
+        It does not use type resolution or runtime traces, so treat it as navigation context—not proof that a path executes.
       </div>
     </div>
   );
@@ -835,6 +898,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     if (mode === 'review') {
       t.push({ id: 'git', label: 'Git' });
       t.push({ id: 'display', label: 'Editor' });
+      t.push({ id: 'analysis', label: 'Analysis' });
       t.push({ id: 'comments', label: 'Comments' });
       if (aiProviders.length > 0) {
         t.push({ id: 'ai', label: 'AI' });
@@ -1344,6 +1408,10 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 {/* === DISPLAY TAB === */}
                 {activeTab === 'display' && mode === 'review' && (
                   <ReviewDisplayTab />
+                )}
+
+                {activeTab === 'analysis' && mode === 'review' && (
+                  <ReviewAnalysisTab />
                 )}
 
                 {activeTab === 'display' && mode !== 'review' && (

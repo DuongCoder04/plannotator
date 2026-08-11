@@ -42,6 +42,28 @@ export function SemanticDiffRow({ active, onClick }: { active: boolean; onClick:
   );
 }
 
+export function CallFlowRow({
+  active,
+  onClick,
+  count,
+  loading,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count?: number;
+  loading?: boolean;
+}) {
+  return (
+    <SidebarActionRow active={active} onClick={onClick} title="Trace how changed calls affect entry paths">
+      <span className="w-3.5 h-3.5 flex flex-shrink-0 items-center justify-center font-mono" aria-hidden="true">⑂</span>
+      <span>Call flow</span>
+      <span className="ml-auto rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-muted-foreground">
+        {loading ? '…' : count ?? '—'}
+      </span>
+    </SidebarActionRow>
+  );
+}
+
 export function AllFilesRow({
   active,
   onClick,
@@ -71,4 +93,3 @@ export function AllFilesRow({
     </SidebarActionRow>
   );
 }
-

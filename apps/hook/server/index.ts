@@ -118,6 +118,7 @@ import { registerSession, unregisterSession, listSessions } from "@plannotator/s
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
 import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
+import { installCallFlowRuntime } from "@plannotator/shared/call-flow";
 import {
   createDefaultUninstallEnvironment,
   formatPurgeWarning,
@@ -363,11 +364,13 @@ if (args[0] === "uninstall") {
 
 if (args[0] === "install-runtime") {
   const runtime = args[1];
-  if (runtime !== "agent-terminal") {
-    console.error("Usage: plannotator install-runtime agent-terminal");
+  if (runtime !== "agent-terminal" && runtime !== "call-flow") {
+    console.error("Usage: plannotator install-runtime <agent-terminal|call-flow>");
     process.exit(1);
   }
-  const result = await installAgentTerminalRuntime();
+  const result = runtime === "call-flow"
+    ? await installCallFlowRuntime()
+    : await installAgentTerminalRuntime();
   console.log(result.message);
   process.exit(result.ok ? 0 : 1);
 }

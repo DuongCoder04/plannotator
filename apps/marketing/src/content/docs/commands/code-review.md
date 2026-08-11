@@ -124,6 +124,23 @@ The review UI shows your changes in a familiar diff format:
 - **Unified diff** showing additions and deletions in context
 - **Annotation tools** with the same annotation types as plan review (delete, comment, quick label, "looks good")
 
+### Optional analysis layers
+
+Open **Settings → Analysis** to control Semantic Changes and Call Flow independently. A one-time review welcome presents the same two switches side by side. Disabling either layer avoids its analysis work and leaves the ordinary patch unchanged.
+
+**Semantic Changes** summarizes added, modified, moved, and deleted named entities. **Call Flow** compares CallDiff's inferred call trees across the exact before/after Git snapshots behind the current review. Call Flow is off by default and appears in two places when enabled:
+
+- **Dock** — switch between expandable entry-path trees with source navigation and CallDiff's exact, copyable raw output.
+- **Lens** — a compact `flow N` badge in each impacted file header, opening the complete inferred entry trees that contain a changed call in that file, plus a link to the full Dock.
+
+In either structured tree, use the comment action on a changed call to open Plannotator's ordinary code-review annotation toolbar without leaving Call Flow. The resulting file-and-line annotation appears in the diff and sidebar and follows the normal feedback and hosted-review submission path. Unchanged context rows remain available for navigation but cannot become inline diff comments.
+
+The Dock and every Lens share one snapshot-bound result. CallDiff provenance is available from the Dock's info control rather than occupying the primary analysis heading.
+
+For working-tree modes, Plannotator creates temporary synthetic Git commits from the already-visible patch; it never stages files or changes the source repository. The analysis is snapshot-bound, cached per review, run in an isolated Node worker with time, memory, and output limits, and discarded if the underlying review changes while it runs.
+
+Call Flow is syntactic and does not resolve types, imports, runtime dispatch, or data flow. It currently requires a local Git checkout and is unavailable for multi-repository workspace reviews, GitButler committed views, jj, P4, and the baseline-free All Files mode.
+
 ### Panel views
 
 The left panel has three views. The header toggle is session-scoped — glancing at another view never changes your saved default (that's a Settings / setup-dialog decision).

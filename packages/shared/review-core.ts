@@ -1128,6 +1128,7 @@ async function getUntrackedFileDiffs(
   cwd?: string,
   options?: GitDiffOptions,
   failurePolicy: UntrackedFailurePolicy = "best-effort",
+  includeBinaryPayloads = false,
 ): Promise<{ diff: string; paths: string[] }> {
   // git ls-files scopes to the CWD subtree and returns CWD-relative paths,
   // unlike git diff HEAD which always covers the full repo with root-relative
@@ -1193,7 +1194,11 @@ async function getUntrackedFileDiffs(
         // Preserve the existing best-effort/strict behavior below: Git reports
         // the authoritative read error for files that disappear mid-snapshot.
       }
-      if (fileInfo?.isFile && fileInfo.size > MAX_REVIEW_FILE_CONTENT_BYTES) {
+      if (
+        !includeBinaryPayloads
+        && fileInfo?.isFile
+        && fileInfo.size > MAX_REVIEW_FILE_CONTENT_BYTES
+      ) {
         const mode = fileInfo.isExecutable ? "100755" : "100644";
         const oldToken = formatPatchPathToken("a", file);
         const newToken = formatPatchPathToken("b", file);
@@ -1212,6 +1217,7 @@ async function getUntrackedFileDiffs(
         [
           "diff",
           "--no-ext-diff",
+          ...(includeBinaryPayloads ? ["--binary", "--full-index"] : []),
           ...(options?.hideWhitespace ? ["-w"] : []),
           "--no-index",
           `--src-prefix=${srcPrefix}`,
@@ -1276,6 +1282,76 @@ export async function getWorkingTreeDiffFromBase(
     untrackedFailurePolicy,
   );
   return removeTrackedDeletions(trackedPatch, new Set(untracked.paths)) + untracked.diff;
+}
+
+/**
+ * Build the exact, applyable patch used only to materialize CallDiff snapshots.
+ *
+ * The ordinary review patch remains bounded and human-readable. This separate
+ * machine patch includes Git binary payloads and full object ids so a binary
+ * file elsewhere in the review cannot make `git apply --binary` reject the
+ * synthetic snapshot.
+ */
+export async function getGitCallFlowMaterializationPatch(
+  runtime: ReviewGitRuntime,
+  diffType: DiffType,
+  defaultBranch: string = "main",
+  externalCwd?: string,
+): Promise<string | null> {
+  let cwd = externalCwd;
+  let effectiveDiffType = diffType as string;
+  const worktree = parseWorktreeDiffType(effectiveDiffType);
+  if (effectiveDiffType.startsWith("worktree:")) {
+    if (!worktree) throw new Error("Could not parse the worktree call-flow snapshot.");
+    cwd = worktree.path;
+    effectiveDiffType = worktree.subType;
+  }
+  if (
+    effectiveDiffType !== "since-base"
+    && effectiveDiffType !== "uncommitted"
+    && effectiveDiffType !== "staged"
+    && effectiveDiffType !== "unstaged"
+  ) {
+    return null;
+  }
+
+  const binaryDiff = async (args: string[]): Promise<string> =>
+    assertGitSuccess(await runtime.runGit(args, { cwd }), args).stdout;
+  const common = [
+    "diff",
+    "--no-ext-diff",
+    "--binary",
+    "--full-index",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+  ];
+  const untracked = async (): Promise<{ diff: string; paths: string[] }> =>
+    getUntrackedFileDiffs(runtime, "a/", "b/", cwd, undefined, "strict", true);
+
+  if (effectiveDiffType === "staged") {
+    return binaryDiff([...common, "--staged"]);
+  }
+  if (effectiveDiffType === "unstaged") {
+    const files = await untracked();
+    const tracked = await binaryDiff(common);
+    return removeTrackedDeletions(tracked, new Set(files.paths)) + files.diff;
+  }
+
+  const hasHead = (await runtime.runGit(["rev-parse", "--verify", "HEAD"], { cwd })).exitCode === 0;
+  const files = await untracked();
+  if (!hasHead) return files.diff;
+  if (effectiveDiffType === "uncommitted") {
+    const tracked = await binaryDiff([...common, "HEAD"]);
+    return removeTrackedDeletions(tracked, new Set(files.paths)) + files.diff;
+  }
+
+  const mergeBaseResult = await runtime.runGit(
+    ["merge-base", "--end-of-options", defaultBranch, "HEAD"],
+    { cwd },
+  );
+  const mergeBase = mergeBaseResult.exitCode === 0 ? mergeBaseResult.stdout.trim() : "HEAD";
+  const tracked = await binaryDiff([...common, "--end-of-options", mergeBase]);
+  return removeTrackedDeletions(tracked, new Set(files.paths)) + files.diff;
 }
 
 /**

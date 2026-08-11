@@ -19,6 +19,7 @@ import { formatLineRange, formatTokenContext } from '../utils/formatLineRange';
 
 export interface ToolbarHostHandle {
   handleLineSelectionEnd: (range: SelectedLineRange | null) => void;
+  openLineAnnotation: (range: SelectedLineRange) => void;
   handleTokenClick: (props: DiffTokenEventBaseProps, event: MouseEvent) => void;
   startEdit: (annotation: CodeAnnotation) => void;
 }
@@ -45,7 +46,7 @@ interface ToolbarHostProps {
     conventionalLabel?: ConventionalLabel | null,
     decorations?: ConventionalDecoration[],
   ) => void;
-  // AI props (optional — only DiffViewer wires these today)
+  // AI props (optional — DiffViewer and external source-selection bridges wire these)
   aiAvailable?: boolean;
   onAskAI?: (question: string) => void;
   isAILoading?: boolean;
@@ -99,10 +100,11 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
     ref,
     () => ({
       handleLineSelectionEnd: toolbar.handleLineSelectionEnd,
+      openLineAnnotation: toolbar.openLineAnnotation,
       handleTokenClick: toolbar.handleTokenClick,
       startEdit: toolbar.startEdit,
     }),
-    [toolbar.handleLineSelectionEnd, toolbar.handleTokenClick, toolbar.startEdit],
+    [toolbar.handleLineSelectionEnd, toolbar.openLineAnnotation, toolbar.handleTokenClick, toolbar.startEdit],
   );
 
   const handleCloseCodeModal = useCallback(() => toolbar.setShowCodeModal(false), [toolbar.setShowCodeModal]);

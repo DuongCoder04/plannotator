@@ -42,7 +42,7 @@ if ($Minimal -and $NoMinimal) {
 }
 
 # Binary-only mode. Installs just the plannotator binary and no persistent state
-# elsewhere - no sem sidecar, agent-terminal runtime, skills, hooks, or per-agent
+# elsewhere - no sem sidecar, CallDiff or agent-terminal runtime, skills, hooks, or per-agent
 # config. Precedence: -Minimal / -NoMinimal switch > PLANNOTATOR_MINIMAL env var
 # > default (off). Mirrors install.sh's --minimal / --no-minimal.
 $minimal = $false
@@ -280,6 +280,23 @@ function Install-AgentTerminalRuntime {
         }
     } catch {
         Write-Host "Skipping agent terminal runtime install ($($_.Exception.Message))"
+    }
+}
+
+function Install-CallFlowRuntime {
+    if ($env:PLANNOTATOR_SKIP_CALLDIFF_INSTALL -match '^(1|true|yes)$') {
+        Write-Host "Skipping call-flow runtime install (PLANNOTATOR_SKIP_CALLDIFF_INSTALL is set)"
+        return
+    }
+
+    $plannotatorPath = Join-Path $installDir "plannotator.exe"
+    try {
+        & $plannotatorPath install-runtime call-flow
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Skipping call-flow runtime install (plannotator install-runtime failed)"
+        }
+    } catch {
+        Write-Host "Skipping call-flow runtime install ($($_.Exception.Message))"
     }
 }
 
@@ -620,7 +637,7 @@ function Show-PathAdvice {
 # Binary-only mode stops here (see the $minimal resolution near the top): the
 # binary is installed, so add it to PATH and exit before any sidecar download,
 # agent integration, skill checkout, config write, or cleanup runs. Only the
-# binary and its PATH entry are added - none of the sem sidecar, agent-terminal
+# binary and its PATH entry are added - none of the sem sidecar, CallDiff, agent-terminal
 # runtime, or per-agent skills, hooks, or config.
 if ($minimal) {
     Show-PathAdvice
@@ -632,6 +649,7 @@ if ($minimal) {
 
 Install-SemSidecar
 Install-AgentTerminalRuntime
+Install-CallFlowRuntime
 
 Show-PathAdvice
 

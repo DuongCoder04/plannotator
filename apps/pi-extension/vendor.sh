@@ -29,10 +29,17 @@ for f in config-types storage-types workspace-status-types; do
 done
 
 # Everything else in the original flat list stays sourced from packages/shared.
-for f in prompts review-core diff-paths cli-pagination jj-core gitbutler-core vcs-core review-args draft annotate-history pr-types pr-context-live pr-artifact-document pr-provider pr-stack pr-github pr-gitlab checklist integrations-common repo reference-common resolve-file annotate-reference-roots-node worktree worktree-pool html-to-markdown html-diff html-assets html-assets-node url-to-markdown tour annotate-args annotate-target at-reference review-workspace-node review-workspace pfm-reminder improvement-hooks code-nav data-dir semantic-diff-types semantic-diff single-flight source-save-node review-profiles guide guide-store guide-instructions-store commit-avatars commit-history port-range annotate-client-lease annotate-decision archive-mode; do
+for f in prompts review-core diff-paths cli-pagination jj-core gitbutler-core vcs-core review-args draft annotate-history pr-types pr-context-live pr-artifact-document pr-provider pr-stack pr-github pr-gitlab checklist integrations-common repo reference-common resolve-file annotate-reference-roots-node worktree worktree-pool html-to-markdown html-diff html-assets html-assets-node url-to-markdown tour annotate-args annotate-target at-reference review-workspace-node review-workspace pfm-reminder improvement-hooks code-nav data-dir semantic-diff-types semantic-diff call-flow-types call-flow single-flight source-save-node review-profiles guide guide-store guide-instructions-store commit-avatars commit-history port-range annotate-client-lease annotate-decision archive-mode; do
   src="../../packages/shared/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/shared/%s.ts\n' "$f" | cat - "$src" > "generated/$f.ts"
 done
+
+# call-flow.ts imports the repository-owned npm manifest and lock that are
+# written into the managed runtime. Keep those verified install inputs beside
+# the vendored module so raw-TS Pi distributions use the identical bytes.
+mkdir -p generated/call-flow-runtime
+cp ../../packages/shared/call-flow-runtime/package.json generated/call-flow-runtime/package.json
+cp ../../packages/shared/call-flow-runtime/package-lock.json generated/call-flow-runtime/package-lock.json
 
 # Vendor review agent modules from packages/server/ — rewrite imports for generated/ layout
 for f in agent-review-message codex-review claude-review review-findings marker-review path-utils review-skill-loader; do
