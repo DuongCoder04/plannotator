@@ -1,10 +1,22 @@
-import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startReviewServer as startBunReviewServer } from './review';
 import { startReviewServer as startPiReviewServer } from '../../apps/pi-extension/server';
+
+// The server imports above freeze shared/config.ts's CONFIG_PATH before any
+// per-test PLANNOTATOR_DATA_DIR override can take effect. Snapshot that exact
+// file so settings POSTs cannot leak into the developer's real configuration.
+const { getPlannotatorDataDir } = await import('@plannotator/shared/data-dir');
+const realConfigPath = join(getPlannotatorDataDir(), 'config.json');
+let realConfigSnapshot: Buffer | null = null;
+try {
+  realConfigSnapshot = readFileSync(realConfigPath);
+} catch {
+  realConfigSnapshot = null;
+}
 
 const originalDataDir = process.env.PLANNOTATOR_DATA_DIR;
 const originalPort = process.env.PLANNOTATOR_PORT;
@@ -45,6 +57,17 @@ afterEach(() => {
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  // Restore the exact bytes present before this suite, or restore absence
+  // when no config existed. This mirrors call-flow-install-endpoint.test.ts.
+  try {
+    if (realConfigSnapshot === null) rmSync(realConfigPath, { force: true });
+    else writeFileSync(realConfigPath, realConfigSnapshot);
+  } catch {
+    // Best effort: an unwritable config directory must not fail the suite.
+  }
 });
 
 describe('Call flow endpoint capability guards', () => {
@@ -126,6 +149,107 @@ describe('Call flow endpoint capability guards', () => {
 
         writeFileSync(releasePath, 'release\n', 'utf8');
         await expect(older.then((response) => response.json())).resolves.toEqual({ superseded: true });
+      } finally {
+        if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8');
+        server.stop();
+      }
+    }, 10_000);
+
+    test.skipIf(process.platform === 'win32')(`${runtime} read-only advert refresh begun during a settings mutation yields`, async () => {
+      const dataDir = makeDataDir();
+      const binDir = mkdtempSync(join(tmpdir(), 'plannotator-call-flow-read-node-'));
+      tempDirs.push(binDir);
+      const startedPath = join(binDir, 'started');
+      const releasePath = join(binDir, 'release');
+      const nodePath = join(binDir, 'node');
+      writeFileSync(nodePath, [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `: > ${JSON.stringify(startedPath)}`,
+        `while [ ! -f ${JSON.stringify(releasePath)} ]; do sleep 0.02; done`,
+        'echo v24.0.0',
+        '',
+      ].join('\n'), 'utf8');
+      chmodSync(nodePath, 0o755);
+      process.env.PLANNOTATOR_DATA_DIR = dataDir;
+      process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+      if (runtime === 'Pi') process.env.PLANNOTATOR_PORT = String(await reservePort());
+      const server = await startServer({
+        rawPatch: '',
+        gitRef: 'Working tree',
+        diffType: 'uncommitted',
+        origin: runtime === 'Pi' ? 'pi' : 'claude-code',
+        htmlContent: '<!doctype html><html><body>review</body></html>',
+      });
+
+      try {
+        const mutation = fetch(`${server.url}/api/review-analysis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ semanticDiff: false, callFlow: true }),
+        });
+        await waitForFile(startedPath);
+        const refresh = fetch(`${server.url}/api/review-analysis`);
+        writeFileSync(releasePath, 'release\n', 'utf8');
+        const [mutationBody, refreshBody] = await Promise.all([
+          mutation.then((response) => response.json()) as Promise<{ superseded?: boolean; callFlow?: { enabled: boolean } }>,
+          refresh.then((response) => response.json()) as Promise<{ superseded?: boolean; callFlow?: { enabled: boolean } }>,
+        ]);
+        expect(mutationBody.superseded).toBeUndefined();
+        expect(mutationBody.callFlow?.enabled).toBe(true);
+        expect(refreshBody).toEqual({ superseded: true });
+      } finally {
+        if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8');
+        server.stop();
+      }
+    }, 10_000);
+
+    test.skipIf(process.platform === 'win32')(`${runtime} stale read-only advert refresh yields to a newer settings mutation`, async () => {
+      const dataDir = makeDataDir();
+      const binDir = mkdtempSync(join(tmpdir(), 'plannotator-call-flow-stale-read-node-'));
+      tempDirs.push(binDir);
+      const startedPath = join(binDir, 'started');
+      const releasePath = join(binDir, 'release');
+      const nodePath = join(binDir, 'node');
+      writeFileSync(nodePath, [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        `: > ${JSON.stringify(startedPath)}`,
+        `while [ ! -f ${JSON.stringify(releasePath)} ]; do sleep 0.02; done`,
+        'echo v24.0.0',
+        '',
+      ].join('\n'), 'utf8');
+      chmodSync(nodePath, 0o755);
+      process.env.PLANNOTATOR_DATA_DIR = dataDir;
+      process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+      if (runtime === 'Pi') process.env.PLANNOTATOR_PORT = String(await reservePort());
+      const server = await startServer({
+        rawPatch: '',
+        gitRef: 'Working tree',
+        diffType: 'uncommitted',
+        origin: runtime === 'Pi' ? 'pi' : 'claude-code',
+        htmlContent: '<!doctype html><html><body>review</body></html>',
+      });
+
+      try {
+        const refresh = fetch(`${server.url}/api/review-analysis`);
+        await waitForFile(startedPath);
+        const mutation = fetch(`${server.url}/api/review-analysis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ semanticDiff: false, callFlow: true }),
+        });
+        // Let the server accept the mutation and advance its epoch while the
+        // older GET remains blocked in the shared runtime probe.
+        await Bun.sleep(50);
+        writeFileSync(releasePath, 'release\n', 'utf8');
+        const [refreshBody, mutationBody] = await Promise.all([
+          refresh.then((response) => response.json()) as Promise<{ superseded?: boolean }>,
+          mutation.then((response) => response.json()) as Promise<{ superseded?: boolean; callFlow?: { enabled: boolean } }>,
+        ]);
+        expect(refreshBody).toEqual({ superseded: true });
+        expect(mutationBody.superseded).toBeUndefined();
+        expect(mutationBody.callFlow?.enabled).toBe(true);
       } finally {
         if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8');
         server.stop();

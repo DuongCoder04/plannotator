@@ -88,7 +88,7 @@ import {
 	readDraftGenerationFromUrl,
 	handleUploadRequest,
 } from "./handlers.ts";
-import { handleApiNotFound, html, json, parseBody, requestUrl, send } from "./helpers.ts";
+import { handleApiNotFound, html, json, parseBody, parseJsonBody, requestUrl, send } from "./helpers.ts";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
@@ -158,6 +158,8 @@ import {
 } from "../generated/semantic-diff.ts";
 import type { SemanticDiffAvailability, SemanticDiffResponse } from "../generated/semantic-diff-types.ts";
 import { CallFlowService } from "../generated/call-flow.ts";
+import { CallFlowInstallCoordinator, callFlowInstallOriginAllowed } from "../generated/call-flow-install.ts";
+import { parseCallFlowInstallRequest, resolveCallFlowInstallTargets } from "../generated/call-flow-languages.ts";
 import type { CallFlowResponse } from "../generated/call-flow-types.ts";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "../generated/review-skill-loader.ts";
 import { readGuideInstructions, writeGuideInstructions } from "../generated/guide-instructions-store.ts";
@@ -393,6 +395,7 @@ export async function startReviewServer(options: {
 	let diffSwitchEpoch = 0;
 	// Older analysis-setting responses must not describe a superseded view.
 	let reviewAnalysisEpoch = 0;
+	let reviewAnalysisMutationEpoch: number | null = null;
 	// Tracks the base branch the user picked from the UI. Agent review prompts
 	// read this (not gitContext.defaultBranch) so they analyze the same diff
 	// the reviewer is currently looking at. Honors an explicit initialBase from
@@ -494,6 +497,14 @@ export async function startReviewServer(options: {
 	let pendingFingerprintCapture: Promise<string | null> | null = null;
 	const fileContentFingerprintProbes = new SingleFlight<string | null>();
 	const callFlowService = new CallFlowService();
+	// In-app opt-in runtime install (mirrors Bun review.ts). Completion
+	// invalidates the service's 30 second runtime probe cache so the very
+	// next capability advert resolves available without a server restart.
+	const callFlowInstall = new CallFlowInstallCoordinator({
+		onSettled: (ok) => {
+			if (ok) callFlowService.invalidateRuntimeState();
+		},
+	});
 	const captureDiffFingerprint = (knownFingerprint?: string): void => {
 		// A fingerprint capture marks a committed review-view change. Stop work
 		// for the prior snapshot even when the new view cannot run CallDiff.
@@ -919,6 +930,7 @@ export async function startReviewServer(options: {
 		return callFlowService.getAdvert(enabled, {
 			vcsType: workspace ? "workspace" : sessionVcsType,
 			diffType,
+			rawPatch: currentPatch,
 		});
 	}
 
@@ -1802,8 +1814,69 @@ export async function startReviewServer(options: {
 			const result = await getCallFlow(url);
 			res.setHeader("Cache-Control", "no-store");
 			json(res, result, result.status === "stale" ? 409 : 200);
+		} else if (url.pathname === "/api/call-flow/install" && req.method === "POST") {
+			// Opt-in CallDiff runtime install (mirrors Bun review.ts).
+			// Single-flighted: concurrent POSTs join the in-flight install.
+			// Node preflight runs before any download, and a cross-origin
+			// POST is rejected because this endpoint starts a large
+			// download and build.
+			// requestUrl() parses against a fixed localhost base, so the real
+			// request authority is the Host header, not url.host.
+			if (!callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "")) {
+				json(res, { error: "Cross-origin install requests are not allowed" }, 403);
+				return;
+			}
+			let installRequest: ReturnType<typeof parseCallFlowInstallRequest>;
+			try {
+				installRequest = parseCallFlowInstallRequest(await parseJsonBody(req));
+			} catch {
+				installRequest = null;
+			}
+			if (!installRequest) return json(res, { error: "Invalid call-flow install request" }, 400);
+			const advert = await getCallFlowAdvert(currentDiffType as DiffType, true);
+			const languageIds = resolveCallFlowInstallTargets(
+				installRequest.languageIds,
+				advert.installPlan?.languageIds,
+				advert.available,
+			);
+			if (!advert.installable || languageIds.length === 0) {
+				return json(res, { error: advert.message ?? "No call-flow language support needs installation." }, 409);
+			}
+			const status = await callFlowInstall.start(languageIds);
+			res.setHeader("Cache-Control", "no-store");
+			json(res, status);
+		} else if (url.pathname === "/api/call-flow/install-status" && req.method === "GET") {
+			// Poll the in-app runtime install. done persists until the runtime
+			// advert resolves available; error persists until the next POST.
+			res.setHeader("Cache-Control", "no-store");
+			json(res, callFlowInstall.getStatus());
+		} else if (url.pathname === "/api/review-analysis" && req.method === "GET") {
+			// Read-only capability refresh. It must not participate in the
+			// settings mutation epoch or supersede a concurrent toggle write.
+			if (reviewAnalysisMutationEpoch !== null) {
+				res.setHeader("Cache-Control", "no-store");
+				return json(res, { superseded: true });
+			}
+			const analysisEpoch = reviewAnalysisEpoch;
+			const viewEpoch = diffSwitchEpoch;
+			const scopeEpoch = prScopeEpoch;
+			const [semanticDiff, callFlow] = await Promise.all([
+				getSemanticDiffAdvert(),
+				getCallFlowAdvert(),
+			]);
+			if (
+				analysisEpoch !== reviewAnalysisEpoch
+				|| reviewAnalysisMutationEpoch !== null
+				|| viewEpoch !== diffSwitchEpoch
+				|| scopeEpoch !== prScopeEpoch
+			) {
+				return json(res, { superseded: true });
+			}
+			res.setHeader("Cache-Control", "no-store");
+			json(res, { semanticDiff, callFlow });
 		} else if (url.pathname === "/api/review-analysis" && req.method === "POST") {
 			const analysisEpoch = ++reviewAnalysisEpoch;
+			reviewAnalysisMutationEpoch = analysisEpoch;
 			const viewEpoch = diffSwitchEpoch;
 			const scopeEpoch = prScopeEpoch;
 			try {
@@ -1828,6 +1901,11 @@ export async function startReviewServer(options: {
 				json(res, { semanticDiff, callFlow });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
+			} finally {
+				// Mark the mutation settled. A read-only refresh that began while
+				// it was active must yield rather than publish stale capabilities.
+				if (reviewAnalysisEpoch === analysisEpoch) reviewAnalysisEpoch++;
+				if (reviewAnalysisMutationEpoch === analysisEpoch) reviewAnalysisMutationEpoch = null;
 			}
 		} else if (url.pathname === "/api/commits" && req.method === "GET") {
 			// Linear commit history for the Commits panel (mirrors Bun review.ts).

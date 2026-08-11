@@ -49,6 +49,8 @@ import {
 } from "@plannotator/shared/semantic-diff";
 import type { SemanticDiffAvailability, SemanticDiffResponse } from "@plannotator/shared/semantic-diff-types";
 import { CallFlowService } from "@plannotator/shared/call-flow";
+import { CallFlowInstallCoordinator, callFlowInstallOriginAllowed } from "@plannotator/shared/call-flow-install";
+import { parseCallFlowInstallRequest, resolveCallFlowInstallTargets } from "@plannotator/shared/call-flow-languages";
 import type { CallFlowResponse } from "@plannotator/shared/call-flow-types";
 import {
   getPRDiffScopeOptions,
@@ -287,6 +289,7 @@ export async function startReviewServer(
   // Analysis-setting requests can overlap each other and view switches. Older
   // responses must never re-advertise capabilities for a superseded view.
   let reviewAnalysisEpoch = 0;
+  let reviewAnalysisMutationEpoch: number | null = null;
   // Platform APIs withhold per-file patches on very large PRs. When the layer
   // patch is incomplete, a local recompute (exact merge-base diff, no size
   // limits) becomes available once the checkout warmup finishes — the layer
@@ -434,6 +437,14 @@ export async function startReviewServer(
   let pendingFingerprintCapture: Promise<string | null> | null = null;
   const fileContentFingerprintProbes = new SingleFlight<string | null>();
   const callFlowService = new CallFlowService();
+  // In-app opt-in runtime install. Completion invalidates the service's
+  // 30 second runtime probe cache so the very next capability advert
+  // resolves available without a server restart.
+  const callFlowInstall = new CallFlowInstallCoordinator({
+    onSettled: (ok) => {
+      if (ok) callFlowService.invalidateRuntimeState();
+    },
+  });
   const captureDiffFingerprint = (knownFingerprint?: string): void => {
     // A fingerprint capture marks a committed review-view change. Stop work
     // for the prior snapshot even when the new view cannot run CallDiff.
@@ -867,6 +878,7 @@ export async function startReviewServer(
     callFlowService.getAdvert(enabled, {
       vcsType: workspace ? "workspace" : sessionVcsType,
       diffType,
+      rawPatch: currentPatch,
     });
 
   const getCallFlow = async (url: URL): Promise<CallFlowResponse> => {
@@ -1837,11 +1849,72 @@ export async function startReviewServer(
             });
           }
 
+          // API: Opt-in CallDiff runtime install. Single-flighted: concurrent
+          // POSTs join the in-flight install. Node preflight runs before any
+          // download, and a cross-origin POST is rejected because this
+          // endpoint starts a native runtime download and build.
+          if (url.pathname === "/api/call-flow/install" && req.method === "POST") {
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+              return Response.json({ error: "Cross-origin install requests are not allowed" }, { status: 403 });
+            }
+            let request: ReturnType<typeof parseCallFlowInstallRequest>;
+            try {
+              request = parseCallFlowInstallRequest(await req.json());
+            } catch {
+              request = null;
+            }
+            if (!request) return Response.json({ error: "Invalid call-flow install request" }, { status: 400 });
+            const advert = await getCallFlowAdvert(currentDiffType as DiffType, true);
+            const languageIds = resolveCallFlowInstallTargets(
+              request.languageIds,
+              advert.installPlan?.languageIds,
+              advert.available,
+            );
+            if (!advert.installable || languageIds.length === 0) {
+              return Response.json({ error: advert.message ?? "No call-flow language support needs installation." }, { status: 409 });
+            }
+            const status = await callFlowInstall.start(languageIds);
+            return Response.json(status, { headers: { "Cache-Control": "no-store" } });
+          }
+
+          // API: Poll the in-app runtime install. done persists until the
+          // runtime advert resolves available; error persists until the next
+          // install POST retries.
+          if (url.pathname === "/api/call-flow/install-status" && req.method === "GET") {
+            return Response.json(callFlowInstall.getStatus(), { headers: { "Cache-Control": "no-store" } });
+          }
+
+          // Read-only capability refresh. It deliberately does not share the
+          // settings mutation epoch, so install completion cannot supersede a
+          // concurrent toggle write.
+          if (url.pathname === "/api/review-analysis" && req.method === "GET") {
+            if (reviewAnalysisMutationEpoch !== null) {
+              return Response.json({ superseded: true }, { headers: { "Cache-Control": "no-store" } });
+            }
+            const analysisEpoch = reviewAnalysisEpoch;
+            const viewEpoch = diffSwitchEpoch;
+            const scopeEpoch = prScopeEpoch;
+            const [semanticDiff, callFlow] = await Promise.all([
+              getSemanticDiffAdvert(),
+              getCallFlowAdvert(),
+            ]);
+            if (
+              analysisEpoch !== reviewAnalysisEpoch
+              || reviewAnalysisMutationEpoch !== null
+              || viewEpoch !== diffSwitchEpoch
+              || scopeEpoch !== prScopeEpoch
+            ) {
+              return Response.json({ superseded: true });
+            }
+            return Response.json({ semanticDiff, callFlow }, { headers: { "Cache-Control": "no-store" } });
+          }
+
           // API: Persist analysis toggles and immediately re-advertise both
           // independent capabilities. This makes enabling a layer live in the
           // current review instead of requiring a reload.
           if (url.pathname === "/api/review-analysis" && req.method === "POST") {
             const analysisEpoch = ++reviewAnalysisEpoch;
+            reviewAnalysisMutationEpoch = analysisEpoch;
             const viewEpoch = diffSwitchEpoch;
             const scopeEpoch = prScopeEpoch;
             try {
@@ -1870,6 +1943,13 @@ export async function startReviewServer(
               return Response.json({ semanticDiff, callFlow });
             } catch {
               return Response.json({ error: "Invalid request" }, { status: 400 });
+            } finally {
+              // A read-only advert refresh that began during this mutation
+              // must not publish capabilities computed from the old config
+              // after the mutation response. The second transition marks the
+              // write as settled without allowing GET to supersede it.
+              if (reviewAnalysisEpoch === analysisEpoch) reviewAnalysisEpoch++;
+              if (reviewAnalysisMutationEpoch === analysisEpoch) reviewAnalysisMutationEpoch = null;
             }
           }
 

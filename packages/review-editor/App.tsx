@@ -38,6 +38,7 @@ import { useAIChat } from './hooks/useAIChat';
 import { toast, Toaster } from 'sonner';
 import { useCodeNav, type CodeNavRequest } from './hooks/useCodeNav';
 import { useCallFlowAnalysis } from './hooks/useCallFlowAnalysis';
+import { useCallFlowInstall } from './hooks/useCallFlowInstall';
 import { extractLinesFromPatch, isLineRangeInPatch } from './utils/patchParser';
 import {
   shouldHandleReviewSearchShortcut,
@@ -1353,6 +1354,28 @@ const ReviewApp: React.FC = () => {
     if (!callFlow) return;
     setCallFlowAdvert(callFlow);
   }, []);
+
+  // Re-advertise both capabilities through the read-only endpoint. Keeping
+  // this separate from the settings mutation prevents install completion
+  // from superseding a concurrent toggle write.
+  const refreshAnalysisAdverts = useCallback(async (): Promise<void> => {
+    const response = await fetch('/api/review-analysis', { method: 'GET' });
+    if (!response.ok) throw new Error('Analysis capabilities could not be refreshed.');
+    const data = await response.json() as {
+      semanticDiff?: SemanticDiffAdvert;
+      callFlow?: CallFlowAdvert;
+      superseded?: boolean;
+    };
+    if (data.superseded) throw new Error('The review changed while capabilities were refreshed.');
+    if (data.callFlow?.state === 'unavailable' && data.callFlow.installable) {
+      throw new Error(data.callFlow.message ?? 'The Call flow install is not visible yet.');
+    }
+    applySemanticDiffAdvert(data.semanticDiff);
+    applyCallFlowAdvert(data.callFlow);
+    retryCallFlowAnalysis();
+  }, [applyCallFlowAdvert, applySemanticDiffAdvert, retryCallFlowAnalysis]);
+
+  const callFlowInstall = useCallFlowInstall(refreshAnalysisAdverts);
 
   useEffect(() => {
     if (!semanticDiffEnabled) {
@@ -2724,6 +2747,7 @@ const ReviewApp: React.FC = () => {
     isCallFlowNodeInPatch,
     isCallFlowActive,
     openCallFlowPanel,
+    callFlowInstall,
     openTourPanel: handleOpenTour,
     openGuide: handleOpenGuide,
     onCodeNavRequest: canUseLiveWorkspaceActions ? handleCodeNavRequest : undefined,
@@ -2752,7 +2776,7 @@ const ReviewApp: React.FC = () => {
     isPRContextLoading, prContextError, fetchPRContext, platformUser, openDiffFile,
     handleOpenTour, handleOpenGuide, isAllFilesActive, allFilesOrder, allFilesAllCollapsed, onToggleAllFilesCollapsed, registerAllFilesCollapseToggle, commitInfo, isSemanticDiffActive, semanticDiffUsable,
     handleSemanticDiffUnavailable, handleSemanticDiffLoadError, handleSemanticDiffLoadSuccess, handleAddAnnotationForFile,
-    callFlowAvailable, callFlowAdvert, callFlowAnalysis, retryCallFlowAnalysis, isCallFlowNodeInPatch, isCallFlowActive, openCallFlowPanel,
+    callFlowAvailable, callFlowAdvert, callFlowAnalysis, retryCallFlowAnalysis, isCallFlowNodeInPatch, isCallFlowActive, openCallFlowPanel, callFlowInstall,
     editSuggestionsEnabled, handleAddSuggestionsForFile, handleAddEditorCommentForFile,
     handleCodeNavRequest, codeNav.result, codeNav.isLoading, codeNav.activeSymbol,
   ]);
