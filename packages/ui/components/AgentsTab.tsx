@@ -872,7 +872,12 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
       ? { effort: tourClaudeEffort }
       : { reasoningEffort: tourCodexReasoning, ...(tourCodexFast && { fastMode: true }) }),
   });
-  const buildGuideLaunch = (): LaunchParams => {
+  // Guide extra instructions (#1265) are server-stored: this surface has no
+  // editor, so it sends none and the server applies the stored standing
+  // instructions itself, keeping sidebar launches identical to launch-page
+  // ones without a second read path.
+  const buildGuideLaunch = (): LaunchParams => buildGuideEngineParams();
+  const buildGuideEngineParams = (): LaunchParams => {
     if (guideEngine === 'cursor') {
       // Same omission rules as buildReviewLaunch: auto/empty ⇒ engine default.
       // Guide-scoped model — deliberately NOT the shared cursorModel (see
