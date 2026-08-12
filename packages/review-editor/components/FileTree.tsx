@@ -7,7 +7,7 @@ import { BaseBranchPicker } from './BaseBranchPicker';
 import { EvoLogPicker } from './EvoLogPicker';
 import { DiffTypePicker } from './DiffTypePicker';
 import { WorktreePicker } from './WorktreePicker';
-import { PanelViewToggle } from './PanelViewToggle';
+import { PanelViewToggle, type ReviewPanelView } from './PanelViewToggle';
 import { getReviewSearchSideLabel, type ReviewSearchFileGroup, type ReviewSearchMatch } from '../utils/reviewSearch';
 import type { DiffFile } from '../types';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
@@ -15,6 +15,7 @@ import { GitHubIcon } from '@plannotator/ui/components/GitHubIcon';
 import { Paperclip } from 'lucide-react';
 
 import { SidebarActionRow, SemanticDiffRow, CallFlowRow, AllFilesRow } from './PanelNavRows';
+import { PanelControlsRow, CopyDiffFooter } from './PanelChrome';
 
 interface FileTreeProps {
   files: DiffFile[];
@@ -92,10 +93,16 @@ interface FileTreeProps {
   scrollHighlightIndex?: number;
   /** Absolute repo root for the "Copy full path" context menu item. Null/undefined hides the option (e.g. PR review mode). */
   repoRoot?: string | null;
+  /** Current panel-view selection. The tree also renders as the FALLBACK for a
+   * latent 'sections'/'commits' selection the session can't offer, so the
+   * toggle must reflect the real selection, not assume 'tree'. */
+  panelView?: ReviewPanelView;
   /** When the since-base sections view is available, renders a nav row back to it. */
   onSwitchToSections?: () => void;
   /** When the commit-history view is available, offers its toggle segment. */
   onSwitchToCommits?: () => void;
+  /** Selects the tree view through the app's shared panel-view funnel. */
+  onSwitchToTree?: () => void;
   /** Sections sidecar while the since-base diff is displayed as a tree —
    * powers per-row U/staged markers and the stage button. */
   sinceBaseSections?: SinceBaseSections | null;
@@ -168,8 +175,10 @@ export const FileTree: React.FC<FileTreeProps> = ({
   isAllFilesActive = false,
   scrollHighlightIndex,
   repoRoot,
+  panelView = 'tree',
   onSwitchToSections,
   onSwitchToCommits,
+  onSwitchToTree,
   sinceBaseSections,
   onStageFile,
   stagingFile,
@@ -298,87 +307,30 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   return (
     <aside className="border-r border-border/50 bg-card/30 flex flex-col flex-shrink-0 overflow-hidden" style={{ width: width ?? 256 }}>
-      {/* Header — panel label left, controls right. The viewed counter sits
-          immediately AFTER the hide-viewed eye toggle it relates to. */}
+      {/* Header — the view toggle owns the entire top row (full width). The
+          controls that used to share it render as PanelControlsRow above the
+          tree, below the All files entry. */}
       <div className="px-3 flex items-center border-b border-border/50" style={{ height: 'var(--panel-header-h)' }}>
-        <div className="w-full flex items-center justify-between">
-          {searchQuery.trim() ? (
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Results
-            </span>
-          ) : onSwitchToSections || onSwitchToCommits ? (
-            <PanelViewToggle
-              view="tree"
-              showSections={!!onSwitchToSections}
-              showCommits={!!onSwitchToCommits}
-              onSelect={(view) => {
-                if (view === 'sections') onSwitchToSections?.();
-                else if (view === 'commits') onSwitchToCommits?.();
-              }}
-            />
-          ) : (
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Files
-            </span>
-          )}
-          <div className="flex items-center gap-1.5">
-            {stagedFiles.size > 0 && (
-              <span className="text-xs text-primary font-medium">
-                {stagedFiles.size} added
-              </span>
-            )}
-            {onOpenSearch && (
-              <button
-                onClick={onOpenSearch}
-                className={`p-1 rounded transition-colors ${isSearchVisible ? 'bg-primary/15 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
-                title="Search diff (Cmd/Ctrl+F)"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.85-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-                </svg>
-              </button>
-            )}
-            <button
-              onClick={handleToggleAllFolders}
-              disabled={allFolderPaths.length === 0}
-              className="p-1 rounded transition-colors hover:bg-muted text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed"
-              title={areAllFoldersExpanded ? 'Collapse all folders' : 'Expand all folders'}
-            >
-              {areAllFoldersExpanded ? (
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 2l7 6 7-6" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 22l7-6 7 6" />
-                </svg>
-              ) : (
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 8l7-6 7 6" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 16l7 6 7-6" />
-                </svg>
-              )}
-            </button>
-            {onToggleHideViewed && (
-              <button
-                onClick={onToggleHideViewed}
-                className={`p-1 rounded transition-colors ${hideViewedFiles ? 'bg-primary/15 text-primary' : 'hover:bg-muted text-muted-foreground'}`}
-                title={hideViewedFiles ? "Show viewed files" : "Hide viewed files"}
-              >
-                {hideViewedFiles ? (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
-                ) : (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                )}
-              </button>
-            )}
-            <span className="text-xs text-muted-foreground">
-              {viewedFiles.size}/{files.length}
-            </span>
-          </div>
-        </div>
+        {searchQuery.trim() ? (
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Results
+          </span>
+        ) : onSwitchToSections || onSwitchToCommits ? (
+          <PanelViewToggle
+            view={panelView}
+            showSections={!!onSwitchToSections}
+            showCommits={!!onSwitchToCommits}
+            onSelect={(view) => {
+              if (view === 'sections') onSwitchToSections?.();
+              else if (view === 'commits') onSwitchToCommits?.();
+              else onSwitchToTree?.();
+            }}
+          />
+        ) : (
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Files
+          </span>
+        )}
       </div>
 
       {/* Search input */}
@@ -575,6 +527,18 @@ export const FileTree: React.FC<FileTreeProps> = ({
               deletions={files.reduce((s, f) => s + f.deletions, 0)}
             />
           )}
+          <PanelControlsRow
+            stagedCount={stagedFiles.size}
+            isSearchVisible={isSearchVisible}
+            onOpenSearch={onOpenSearch}
+            onToggleAllFolders={handleToggleAllFolders}
+            areAllFoldersExpanded={areAllFoldersExpanded}
+            collapseDisabled={allFolderPaths.length === 0}
+            onToggleHideViewed={onToggleHideViewed}
+            hideViewedFiles={hideViewedFiles}
+            viewedCount={viewedFiles.size}
+            totalCount={files.length}
+          />
           {tree.map(node => (
             <FileTreeNodeItem
               key={node.type === 'file' ? node.path : `folder:${node.path}`}
@@ -601,44 +565,14 @@ export const FileTree: React.FC<FileTreeProps> = ({
       </div>
       </OverlayScrollArea>
 
-      {/* Footer */}
-      <div className="px-2 py-1.5 border-t border-border/50 text-xs text-muted-foreground">
-        <div className="flex items-center justify-between">
-          {onCopyRawDiff ? (
-            <button
-              onClick={onCopyRawDiff}
-              disabled={!canCopyRawDiff}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Copy all raw diffs to clipboard (Cmd/Ctrl+Shift+C)"
-            >
-              {copyRawDiffStatus === 'success' ? (
-                <svg className="w-3 h-3 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              ) : copyRawDiffStatus === 'error' ? (
-                <svg className="w-3 h-3 text-destructive" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              ) : (
-                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              )}
-              {copyRawDiffStatus === 'success' ? 'Copied' : copyRawDiffStatus === 'error' ? 'Failed' : 'Copy diffs'}
-            </button>
-          ) : (
-            <span />
-          )}
-          <span className="file-stats inline-flex items-center gap-1.5">
-            <span className="additions">
-              +{files.reduce((sum, f) => sum + f.additions, 0)}
-            </span>
-            <span className="deletions">
-              -{files.reduce((sum, f) => sum + f.deletions, 0)}
-            </span>
-          </span>
-        </div>
-      </div>
+      {/* Footer — the diff count IS the copy trigger (see CopyDiffFooter). */}
+      <CopyDiffFooter
+        additions={files.reduce((sum, f) => sum + f.additions, 0)}
+        deletions={files.reduce((sum, f) => sum + f.deletions, 0)}
+        onCopyRawDiff={onCopyRawDiff}
+        canCopyRawDiff={canCopyRawDiff}
+        copyRawDiffStatus={copyRawDiffStatus}
+      />
     </aside>
   );
 };

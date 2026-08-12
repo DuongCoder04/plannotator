@@ -205,6 +205,29 @@ export const SETTINGS = {
     serverKey: undefined, fromServer: undefined, toServer: undefined,
   },
 
+  // The view the user last SELECTED via the in-review header toggle. Layered
+  // between the session state and the persisted reviewPanelView default, so a
+  // new session opens on what the user was actually using. Cookie-only.
+  // null = no last-used recorded (fall through to reviewPanelView).
+  //
+  // 'commits' is never recorded here for the same reason reviewPanelView
+  // rejects it: the Commits view is session-only and never an opening view.
+  reviewPanelViewLastUsed: {
+    defaultValue: null as 'sections' | 'tree' | null,
+    fromCookie: () => {
+      const v = storage.getItem('plannotator-review-panel-view-last-used');
+      return v === 'tree' || v === 'sections' ? v : undefined;
+    },
+    toCookie: (v: 'sections' | 'tree' | null) => {
+      // The null default seeds through here on first load — "unrecorded" has
+      // no cookie representation, so write nothing.
+      if (v === 'sections' || v === 'tree') {
+        storage.setItem('plannotator-review-panel-view-last-used', v);
+      }
+    },
+    serverKey: undefined, fromServer: undefined, toServer: undefined,
+  },
+
   defaultDiffType: {
     defaultValue: 'since-base' as 'since-base' | 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all',
     fromCookie: () => {

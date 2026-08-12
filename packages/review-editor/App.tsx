@@ -111,6 +111,7 @@ import { CommitsPanel } from './components/CommitsPanel';
 import { useCommitsView } from './hooks/useCommitsView';
 import { ReviewSetupDialog } from './components/ReviewSetupDialog';
 import { needsReviewSetup, markReviewSetupSeen } from './utils/reviewSetup';
+import { resolvePanelView } from './utils/resolvePanelView';
 import { GuideIntroDialog } from './components/GuideIntroDialog';
 import { needsGuideIntro, markGuideIntroSeen, needsGuideHint, markGuideHintSeen } from './utils/guideIntro';
 import { EditModeAnnouncementDialog } from './components/EditModeAnnouncementDialog';
@@ -380,15 +381,20 @@ const ReviewApp: React.FC = () => {
   const [isFetchingBase, setIsFetchingBase] = useState(false);
   // Which left panel is showing. The persisted value (Settings / first-run
   // dialog, written through the coupled setters in config/reviewView)
-  // decides what a review OPENS on; the header toggle is a pure session
-  // control layered over it — it NEVER writes config. Changing the default
-  // is an explicit Settings/setup-dialog act, not a side effect of looking
-  // at another view mid-review.
+  // decides what a review OPENS on unless a last-used view is recorded; the
+  // header toggle is a session control layered over both — it NEVER writes
+  // the persisted view/diff pair. Changing the default is an explicit
+  // Settings/setup-dialog act, not a side effect of looking at another view
+  // mid-review; the toggle only records its choice as the last-used memo.
   const persistedPanelView = useConfigValue('reviewPanelView');
+  const lastUsedPanelView = useConfigValue('reviewPanelViewLastUsed');
   const [sessionPanelView, setSessionPanelView] = useState<'sections' | 'commits' | 'tree' | null>(null);
-  const panelView: 'sections' | 'commits' | 'tree' = sessionPanelView ?? persistedPanelView;
+  const panelView: 'sections' | 'commits' | 'tree' = sessionPanelView ?? lastUsedPanelView ?? persistedPanelView;
   const selectPanelView = useCallback((view: 'sections' | 'commits' | 'tree') => {
     setSessionPanelView(view);
+    // Commits is session-only by design (never an opening view), so it is
+    // never recorded — picking it leaves last-used at its previous value.
+    if (view !== 'commits') configStore.set('reviewPanelViewLastUsed', view);
   }, []);
   // First-run review-setup chooser (panel view + tree default diff).
   const [showReviewSetup, setShowReviewSetup] = useState(false);
@@ -1668,6 +1674,10 @@ const ReviewApp: React.FC = () => {
           data.gitContext.vcsType === 'git' && sinceBaseAvailable && needsReviewSetup()
         ) {
           setReviewPanelView('sections'); // coupled setter — also sets since-base
+          // Mark seen at reset time, not only on "Got it": closing the tab
+          // without dismissing must not re-fire the reset (and its config
+          // writes) over the user's preferences every session.
+          markReviewSetupSeen();
           reviewSetupIsFirstRun.current = true;
           setShowReviewSetup(true);
         }
@@ -1959,9 +1969,15 @@ const ReviewApp: React.FC = () => {
     ? activeDiffBase.slice('commit:'.length)
     : null;
 
+  // The view actually RENDERED for the current selection — a latent
+  // 'sections'/'commits' selection the session can't offer resolves to the
+  // tree, so the toggle highlights the panel on screen. Surfaces that render
+  // by view must read this, never the raw panelView.
+  const effectivePanelView = resolvePanelView(panelView, { sectionsAvailable, commitsCapable });
+
   // The all-files surface mirrors whichever left panel is showing: sections
   // order when the sections view is active, tree order otherwise.
-  const allFilesOrder: 'tree' | 'list' = sectionsAvailable && panelView === 'sections' ? 'list' : 'tree';
+  const allFilesOrder: 'tree' | 'list' = effectivePanelView === 'sections' ? 'list' : 'tree';
 
   // Git add/staging logic
   const handleFileViewedFromStage = useCallback(
@@ -2270,11 +2286,12 @@ const ReviewApp: React.FC = () => {
   }, [diffType, activeWorktreePath, fetchDiffSwitch, gitContext]);
 
   // Toggling to Sections means "show me the since-base review" — if another
-  // mode is active, switch the LIVE diff back along with the view. No config
-  // writes: the toggle is session-only, so there is no persisted view/diff
-  // pair to keep consistent here (Settings and the setup dialog, which do
-  // persist, enforce the sections ⟺ since-base coupling via the shared
-  // setters in config/reviewView).
+  // mode is active, switch the LIVE diff back along with the view. No writes
+  // to the persisted view/diff pair: the toggle only records the last-used
+  // memo (via selectPanelView), so there is no pair to keep consistent here
+  // (Settings and the setup dialog, which do persist, enforce the
+  // sections ⟺ since-base coupling via the shared setters in
+  // config/reviewView).
   const handleSwitchToSections = useCallback(() => {
     selectPanelView('sections');
     if (activeDiffBase !== 'since-base') void handleDiffSwitch('since-base');
@@ -2355,8 +2372,9 @@ const ReviewApp: React.FC = () => {
     healedPanelPairOnLoad.current = true;
     if (configStore.get('defaultDiffType') !== 'since-base') {
       // Re-assert the pair through the coupled setter (repairs cookie +
-      // config.json), then bring the live session along.
-      setReviewPanelView('sections');
+      // config.json), then bring the live session along. This is a repair,
+      // not a user choice — it must not overwrite the last-used memo.
+      setReviewPanelView('sections', { recordLastUsed: false });
       if (activeDiffBase !== 'since-base') void handleDiffSwitch('since-base');
     }
   }, [isLoading, diffData, sectionsCapable, persistedPanelView, activeDiffBase, handleDiffSwitch]);
@@ -3806,8 +3824,10 @@ const ReviewApp: React.FC = () => {
                 onSelectSearchMatch={hasSearchableFiles ? handleSelectSearchMatch : undefined}
                 onStepSearchMatch={hasSearchableFiles ? stepSearchMatch : undefined}
                 repoRoot={prMetadata ? null : (activeWorktreePath ?? agentCwd ?? gitContext?.cwd ?? null)}
+                panelView={effectivePanelView}
                 onSwitchToSections={sectionsCapable ? handleSwitchToSections : undefined}
                 onSwitchToCommits={commitsCapable ? () => handlePanelViewSelect('commits') : undefined}
+                onSwitchToTree={() => handlePanelViewSelect('tree')}
                 sinceBaseSections={activeDiffBase === 'since-base' ? sections : null}
                 onStageFile={canStageFiles ? stageFile : undefined}
                 stagingFile={stagingFile}
