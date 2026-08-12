@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from 'react';
-import type { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, ArtifactAnnotationMeta } from '@plannotator/ui/types';
+import type { CallFlowAnnotationTarget, CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, ArtifactAnnotationMeta } from '@plannotator/ui/types';
 import type { CommentAskAIHandler } from '@plannotator/ui/components/CommentPopover';
 import type { AgentJobInfo } from '@plannotator/ui/types';
 import type { DiffFile, AnnotationScrollTarget } from '../types';
@@ -73,6 +73,11 @@ export interface ReviewState {
   onLineSelection: (range: SelectedLineRange | null) => void;
   /** Resolve a source path and open the native line-annotation composer. */
   onRequestLineAnnotation: (filePath: string, range: SelectedLineRange) => void;
+  /** Commit one Call Flow comment with a primary inline anchor and related targets. */
+  onAddCallFlowAnnotation: (
+    targets: readonly CallFlowAnnotationTarget[],
+    text: string,
+  ) => boolean;
   onAddAnnotation: (type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
   onAddAnnotationForFile: (filePath: string, type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel, decorations?: ConventionalDecoration[], tokenMeta?: TokenAnnotationMeta) => void;
   /** EXPERIMENTAL edit-to-suggestion flag (cookie setting, default OFF). Only

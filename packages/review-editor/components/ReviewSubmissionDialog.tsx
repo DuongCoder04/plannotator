@@ -2,7 +2,11 @@ import React from 'react';
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import type { PRReviewSubmissionPartial } from '@plannotator/shared/pr-types';
 import { CopyButton } from './CopyButton';
-import { exportReviewFeedback, formatConventionalPrefix } from '../utils/exportFeedback';
+import {
+  exportReviewFeedback,
+  formatCallFlowAnnotationTargets,
+  formatConventionalPrefix,
+} from '../utils/exportFeedback';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +82,7 @@ function buildAnnotationFileComments(
     .map(ann => {
       const ccPrefix = formatConventionalPrefix(ann.conventionalLabel, ann.decorations);
       let body = ccPrefix + (ann.text ?? '');
+      body += formatCallFlowAnnotationTargets(ann);
       if (ann.suggestedCode) {
         body += `\n\n\`\`\`suggestion\n${ann.suggestedCode}\n\`\`\``;
       }
@@ -101,8 +106,12 @@ function buildFileScopedBody(annotations: CodeAnnotation[]): string {
   const parts: string[] = [];
   for (const a of annotations) {
     const scope = a.scope ?? 'line';
-    if (scope === 'file' && a.text) parts.push(`**${a.filePath}:** ${a.text}`);
-    else if (scope === 'general' && a.text) parts.push(a.text);
+    const callFlowContext = formatCallFlowAnnotationTargets(a);
+    if (scope === 'file' && (a.text || callFlowContext)) {
+      parts.push(`**${a.filePath}:** ${a.text ?? ''}${callFlowContext}`.trim());
+    } else if (scope === 'general' && (a.text || callFlowContext)) {
+      parts.push(`${a.text ?? ''}${callFlowContext}`.trim());
+    }
   }
   return parts.join('\n\n');
 }

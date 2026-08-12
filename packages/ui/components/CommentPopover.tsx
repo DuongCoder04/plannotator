@@ -225,6 +225,7 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   // Click-outside for popover mode
   useEffect(() => {
     if (mode !== 'popover') return;
+    const shiftSelectionActive = Boolean(targetChips?.length);
 
     const handlePointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
@@ -234,12 +235,16 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
       const el = target as HTMLElement;
       if (el.closest?.('[data-popover-layer]')) return;
       if (hasUnsavedContentRef.current) return;
+      // A same-document multi-select target receives pointerdown before click.
+      // Preserve the existing draft so the following Shift-click can extend
+      // it instead of silently replacing it with a new one.
+      if (shiftSelectionActive && e.shiftKey) return;
       onClose();
     };
 
     document.addEventListener('pointerdown', handlePointerDown, true);
     return () => document.removeEventListener('pointerdown', handlePointerDown, true);
-  }, [mode, onClose]);
+  }, [mode, onClose, targetChips?.length]);
 
   // Focus choreography (multi-select): after a shift-click adds/removes a
   // target, focus returns to the textarea so typing continues uninterrupted.

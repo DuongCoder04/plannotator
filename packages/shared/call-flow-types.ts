@@ -16,10 +16,26 @@ export interface CallFlowNode {
   children: CallFlowNode[];
 }
 
-export interface CallFlowTree {
+interface CallFlowTreeBase {
   entry: string;
   tree: CallFlowNode;
 }
+
+interface CallFlowTreeWithRaw extends CallFlowTreeBase {
+  /** Canonical colorless CallDiff rendering for this complete entry tree. */
+  raw: string;
+  /** One-based line where `raw` begins inside the response-level raw output. */
+  rawLineStart: number;
+}
+
+interface CallFlowTreeWithoutRaw extends CallFlowTreeBase {
+  /** Omitted when upstream's per-entry rendering cannot be aligned safely. */
+  raw?: undefined;
+  rawLineStart?: undefined;
+}
+
+/** One structured inferred entry tree, optionally aligned to canonical raw output. */
+export type CallFlowTree = CallFlowTreeWithRaw | CallFlowTreeWithoutRaw;
 
 export interface CallFlowFileImpact {
   entry: string;
@@ -236,11 +252,27 @@ export function parseCallDiffWorkerResult(value: unknown): ParsedCallDiffWorkerR
     };
   };
 
+  const raw = boundedRaw(value.result.ascii);
   const trees = value.result.trees.map((candidate): CallFlowTree => {
     if (!isRecord(candidate)) throw new Error("CallDiff worker returned an invalid tree.");
+    const entry = boundedString(candidate.entry, "tree entry");
+    const tree = parseNode(candidate.tree, 0);
+    const treeRaw = typeof candidate.ascii === "string"
+      && candidate.ascii.length > 0
+      && candidate.ascii.length <= MAX_RAW_LENGTH
+        ? candidate.ascii
+        : undefined;
+    const rawOffset = treeRaw ? raw.indexOf(treeRaw) : -1;
+    if (treeRaw === undefined || rawOffset === -1) return { entry, tree };
+    let rawLineStart = 1;
+    for (let index = 0; index < rawOffset; index += 1) {
+      if (raw.charCodeAt(index) === 10) rawLineStart += 1;
+    }
     return {
-      entry: boundedString(candidate.entry, "tree entry"),
-      tree: parseNode(candidate.tree, 0),
+      entry,
+      raw: treeRaw,
+      rawLineStart,
+      tree,
     };
   });
 
@@ -262,7 +294,7 @@ export function parseCallDiffWorkerResult(value: unknown): ParsedCallDiffWorkerR
     ...(typeof value.result.message === "string" && value.result.message.length > 0
       ? { message: value.result.message.slice(0, MAX_TEXT_LENGTH) }
       : {}),
-    raw: boundedRaw(value.result.ascii),
+    raw,
     trees,
     diagnostics,
   };

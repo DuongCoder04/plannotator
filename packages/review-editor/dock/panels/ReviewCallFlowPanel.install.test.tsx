@@ -52,6 +52,7 @@ function stateWith(
     openDiffFile: () => {},
     onLineSelection: () => {},
     onRequestLineAnnotation: () => {},
+    onAddCallFlowAnnotation: () => true,
   } as unknown as ReviewState;
 }
 
@@ -74,6 +75,18 @@ async function render(state: ReviewState) {
 function installButton(): HTMLButtonElement | null {
   return [...(host?.querySelectorAll('button') ?? [])]
     .find((button) => /retry install/i.test(button.textContent ?? '')) ?? null;
+}
+
+async function openLanguagesMenu(): Promise<HTMLElement> {
+  const trigger = host?.querySelector<HTMLButtonElement>('.call-flow-languages-trigger');
+  expect(trigger).not.toBeNull();
+  await act(async () => {
+    trigger?.click();
+    await Promise.resolve();
+  });
+  const popup = document.querySelector<HTMLElement>('.call-flow-languages-popover');
+  expect(popup).not.toBeNull();
+  return popup!;
 }
 
 afterEach(async () => {
@@ -297,7 +310,8 @@ describe('ReviewCallFlowPanel install funnel', () => {
       },
     } as unknown as ReviewState);
 
-    const languageRows = [...(host?.querySelectorAll('.call-flow-languages li') ?? [])];
+    const languageMenu = await openLanguagesMenu();
+    const languageRows = [...languageMenu.querySelectorAll('li')];
     expect(languageRows).toHaveLength(2);
     expect(languageRows[0]?.querySelector('button')?.textContent).toBe('Retry');
     expect(languageRows[1]?.querySelector('button')?.textContent).toBe('Install');
@@ -366,8 +380,14 @@ describe('ReviewCallFlowPanel install funnel', () => {
     } as unknown as ReviewState);
 
     expect(host?.textContent).toContain('Installing support in the background…');
-    expect(host?.textContent).toContain('Languages · ~5 MB installed');
-    const install = [...(host?.querySelectorAll('button') ?? [])]
+    const trigger = host?.querySelector('.call-flow-header-actions .call-flow-languages-trigger');
+    expect(trigger?.textContent).toContain('Languages');
+    expect(trigger?.textContent).toContain('1/2');
+    expect(host?.querySelector('details.call-flow-languages')).toBeNull();
+
+    const languageMenu = await openLanguagesMenu();
+    expect(languageMenu.textContent).toContain('~5 MB installed');
+    const install = [...languageMenu.querySelectorAll('button')]
       .find((button) => button.textContent?.trim() === 'Install');
     expect(install).toBeUndefined();
   });

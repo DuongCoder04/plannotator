@@ -228,6 +228,31 @@ export const SETTINGS = {
     serverKey: undefined, fromServer: undefined, toServer: undefined,
   },
 
+  // Compact left-panel preferences. These are deliberately cookie-only: they
+  // shape the local file-list chrome without changing review semantics or the
+  // repository state, and should follow the reviewer across review sessions.
+  reviewShowViewedControls: {
+    defaultValue: true as boolean,
+    fromCookie: () => {
+      const value = storage.getItem('plannotator-review-show-viewed-controls');
+      return value === 'true' ? true : value === 'false' ? false : undefined;
+    },
+    toCookie: (value: boolean) =>
+      storage.setItem('plannotator-review-show-viewed-controls', String(value)),
+    serverKey: undefined, fromServer: undefined, toServer: undefined,
+  },
+
+  reviewShowStageControls: {
+    defaultValue: true as boolean,
+    fromCookie: () => {
+      const value = storage.getItem('plannotator-review-show-stage-controls');
+      return value === 'true' ? true : value === 'false' ? false : undefined;
+    },
+    toCookie: (value: boolean) =>
+      storage.setItem('plannotator-review-show-stage-controls', String(value)),
+    serverKey: undefined, fromServer: undefined, toServer: undefined,
+  },
+
   defaultDiffType: {
     defaultValue: 'since-base' as 'since-base' | 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all',
     fromCookie: () => {

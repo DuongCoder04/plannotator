@@ -15,10 +15,10 @@ describe("parseCallDiffWorkerResult", () => {
       result: {
         from: "abc",
         to: "def",
-        ascii: "calldiff diff abc → def\n\nmain\n└─ + save  src/main.ts:5",
+        ascii: "calldiff diff abc → def\n\n  main  src/main.ts:1\n+ └─ save  src/main.ts:5",
         trees: [{
           entry: "main",
-          ascii: "also omitted",
+          ascii: "  main  src/main.ts:1\n+ └─ save  src/main.ts:5",
           tree: {
             key: "main",
             label: "main",
@@ -40,8 +40,70 @@ describe("parseCallDiffWorkerResult", () => {
 
     expect(parsed.trees).toHaveLength(1);
     expect(parsed.trees[0].tree.children[0].status).toBe("added");
+    expect(parsed.trees[0]).toMatchObject({
+      raw: "  main  src/main.ts:1\n+ └─ save  src/main.ts:5",
+      rawLineStart: 3,
+    });
     expect(parsed.raw).toContain("src/main.ts:5");
     expect(parsed.diagnostics).toEqual([{ level: "warning", message: "one file was skipped" }]);
+  });
+
+  test("keeps structured analysis when an entry raw slice cannot be aligned", () => {
+    const parsed = parseCallDiffWorkerResult({
+      protocol: 1,
+      ok: true,
+      version: "0.4.1",
+      result: {
+        from: "abc",
+        to: "def",
+        ascii: "calldiff diff abc → def\n\n+ canonical()",
+        trees: [{
+          entry: "canonical",
+          ascii: "+ differently-rendered()",
+          tree: {
+            key: "canonical",
+            label: "canonical()",
+            status: "added",
+            file: "src/main.ts",
+            line: 1,
+            children: [],
+          },
+        }],
+      },
+    });
+
+    expect(parsed.trees).toHaveLength(1);
+    expect(parsed.trees[0]?.tree.label).toBe("canonical()");
+    expect(parsed.trees[0]?.raw).toBeUndefined();
+    expect(parsed.raw).toContain("canonical()");
+  });
+
+  test("aligns entry raw slices without assuming tree-array order", () => {
+    const parsed = parseCallDiffWorkerResult({
+      protocol: 1,
+      ok: true,
+      version: "0.4.1",
+      result: {
+        from: "abc",
+        to: "def",
+        ascii: "header\n\n+ first()\n\n+ second()",
+        trees: [
+          {
+            entry: "second",
+            ascii: "+ second()",
+            tree: { key: "second", label: "second()", status: "added", children: [] },
+          },
+          {
+            entry: "first",
+            ascii: "+ first()",
+            tree: { key: "first", label: "first()", status: "added", children: [] },
+          },
+        ],
+      },
+    });
+
+    expect(parsed.trees[0]).toMatchObject({ raw: "+ second()", rawLineStart: 5 });
+    expect(parsed.trees[1]).toMatchObject({ raw: "+ first()", rawLineStart: 3 });
   });
 
   test("rejects malformed nodes at the process boundary", () => {
@@ -100,7 +162,7 @@ describe("parseCallDiffWorkerResult", () => {
 
 describe("indexCallFlowImpacts", () => {
   test("indexes only changed nodes by source file", () => {
-    const result = indexCallFlowImpacts([{ entry: "main", tree: {
+    const result = indexCallFlowImpacts([{ entry: "main", raw: "main", rawLineStart: 1, tree: {
       key: "main", label: "main", status: "same", file: "src/main.ts", children: [
         { key: "old", label: "old", status: "removed", file: "src/main.ts", line: 4, children: [] },
         { key: "new", label: "new", status: "added", file: "src/new.ts", line: 9, children: [] },
@@ -120,8 +182,8 @@ describe("indexCallFlowImpacts", () => {
       children: [],
     };
     const result = indexCallFlowImpacts([
-      { entry: "checkout", tree: { key: "checkout", label: "checkout", status: "same", children: [changed] } },
-      { entry: "submitOrder", tree: { key: "submitOrder", label: "submitOrder", status: "same", children: [changed] } },
+      { entry: "checkout", raw: "checkout", rawLineStart: 1, tree: { key: "checkout", label: "checkout", status: "same", children: [changed] } },
+      { entry: "submitOrder", raw: "submitOrder", rawLineStart: 3, tree: { key: "submitOrder", label: "submitOrder", status: "same", children: [changed] } },
     ]);
 
     expect(result.summary).toMatchObject({ entries: 2, changedNodes: 1, added: 1 });
@@ -134,6 +196,8 @@ describe("getCallFlowTreesForFiles", () => {
   test("returns complete entry trees instead of pruning to changed nodes", () => {
     const trees = [{
       entry: "checkout",
+      raw: "checkout",
+      rawLineStart: 1,
       tree: {
         key: "checkout",
         label: "checkout",
@@ -156,6 +220,8 @@ describe("getCallFlowTreesForFiles", () => {
       },
     }, {
       entry: "healthcheck",
+      raw: "healthcheck",
+      rawLineStart: 3,
       tree: {
         key: "healthcheck",
         label: "healthcheck",

@@ -26,7 +26,7 @@ import {
   markLookAndFeelAnnouncementSeen,
   needsLookAndFeelAnnouncement,
 } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
-import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, AgentJobInfo, type ArtifactAnnotationMeta } from '@plannotator/ui/types';
+import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, AgentJobInfo, type ArtifactAnnotationMeta, type CallFlowAnnotationTarget } from '@plannotator/ui/types';
 import type { CommentAskAIHandler } from '@plannotator/ui/components/CommentPopover';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { useCodeAnnotationDraft } from '@plannotator/ui/hooks/useCodeAnnotationDraft';
@@ -41,6 +41,7 @@ import { useCallFlowAnalysis } from './hooks/useCallFlowAnalysis';
 import { useCallFlowInstall } from './hooks/useCallFlowInstall';
 import { useCallFlowAutoInstall } from './hooks/useCallFlowAutoInstall';
 import { extractLinesFromPatch, isLineRangeInPatch } from './utils/patchParser';
+import { resolveCallFlowAnnotationPlacement } from './utils/callFlowAnnotations';
 import {
   shouldHandleReviewSearchShortcut,
   isTypingTarget,
@@ -286,6 +287,8 @@ const ReviewApp: React.FC = () => {
   const diffFontFamily = useConfigValue('diffFontFamily');
   const diffFontSize = useConfigValue('diffFontSize');
   const diffTabSize = useConfigValue('diffTabSize');
+  const reviewShowViewedControls = useConfigValue('reviewShowViewedControls');
+  const reviewShowStageControls = useConfigValue('reviewShowStageControls');
   // EXPERIMENTAL: edit code in place to author suggestions (default OFF).
   const editSuggestionsEnabled = useConfigValue('editSuggestions');
   const semanticDiffEnabled = useConfigValue('semanticDiffEnabled');
@@ -1750,6 +1753,36 @@ const ReviewApp: React.FC = () => {
     clearPendingSelection();
   }, [pendingSelection, identity, withPRContext, clearPendingSelection]);
 
+  const handleAddCallFlowAnnotation = useCallback((
+    targets: readonly CallFlowAnnotationTarget[],
+    text: string,
+  ): boolean => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+
+    // The review can refresh while a composer is open. Resolve the strongest
+    // native anchor against the current patch, but retain every selected Call
+    // Flow step: out-of-hunk and source-less rows become file/review feedback
+    // instead of disappearing or masquerading as postable inline comments.
+    const placement = resolveCallFlowAnnotationPlacement(targets, files);
+    if (!placement) return false;
+    const annotation: CodeAnnotation = {
+      id: generateId(),
+      type: 'comment',
+      scope: placement.scope,
+      filePath: placement.filePath,
+      lineStart: placement.lineStart,
+      lineEnd: placement.lineEnd,
+      side: placement.side,
+      text: trimmed,
+      callFlowTargets: [...placement.targets],
+      createdAt: Date.now(),
+      author: identity,
+    };
+    setAnnotations((previous) => [...previous, withPRContext(annotation)]);
+    return true;
+  }, [files, identity, withPRContext]);
+
   // Sink for the experimental edit-to-suggestion flow: a completed edit
   // session delivers one hunk per contiguous changed region, each becoming a
   // normal suggestion annotation (same shape SuggestionModal produces —
@@ -2616,6 +2649,14 @@ const ReviewApp: React.FC = () => {
       setSelectedAnnotationId(null);
       return;
     }
+    // Call-Flow-native feedback has no honest inline diff destination. Return
+    // it to the analysis surface instead of opening an unrelated file row and
+    // issuing a scroll request that cannot resolve.
+    if (annotation.callFlowTargets?.length && (annotation.scope ?? 'line') !== 'line') {
+      openCallFlowPanel();
+      setSelectedAnnotationId(id);
+      return;
+    }
     // While the guide takeover is open, the dock's active file is meaningless
     // (guide renders its own per-section diffs) — skip the dock file-switch
     // mutation so leaving the guide doesn't land on an unexpected file, and
@@ -2632,7 +2673,7 @@ const ReviewApp: React.FC = () => {
     }
     setSelectedAnnotationId(id);
     setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
-  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen]);
+  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel]);
 
   // Diff context bundled into local-mode feedback headers so the receiving
   // agent knows which diff the annotations are anchored to. Uses committedBase
@@ -2705,6 +2746,7 @@ const ReviewApp: React.FC = () => {
     pendingSelection,
     onLineSelection: handleLineSelection,
     onRequestLineAnnotation: handleRequestLineAnnotation,
+    onAddCallFlowAnnotation: handleAddCallFlowAnnotation,
     onAddAnnotation: handleAddAnnotation,
     onAddAnnotationForFile: handleAddAnnotationForFile,
     editSuggestionsEnabled,
@@ -2805,7 +2847,7 @@ const ReviewApp: React.FC = () => {
     visibleCommentAnnotations, selectedCommentAnnotationId, handleAddCommentAnnotation,
     handleSelectCommentAnnotation, handleDeleteCommentAnnotation, handleAskAIForComment, commentScrollTarget,
     selectedAnnotationId, scrollTargetAnnotation, pendingSelection, handleLineSelection,
-    handleRequestLineAnnotation,
+    handleRequestLineAnnotation, handleAddCallFlowAnnotation,
     handleAddAnnotation, handleAddFileComment, handleAddFileCommentForFile, handleEditAnnotation,
     handleSelectAnnotation, handleNavigateToAnnotation, handleDeleteAnnotation, viewedFiles,
     handleToggleViewed, stagedFiles, stagingFile, stageFile,
@@ -2837,6 +2879,14 @@ const ReviewApp: React.FC = () => {
       setTimeout(() => setCopyRawDiffStatus('idle'), 2000);
     }
   }, [diffData]);
+
+  const handleToggleReviewViewedControls = useCallback(() => {
+    configStore.set('reviewShowViewedControls', !reviewShowViewedControls);
+  }, [reviewShowViewedControls]);
+
+  const handleToggleReviewStageControls = useCallback(() => {
+    configStore.set('reviewShowStageControls', !reviewShowStageControls);
+  }, [reviewShowStageControls]);
 
   const feedbackMarkdown = useMemo(() => {
     // Only include the code-review section when there ARE code annotations —
@@ -3693,10 +3743,14 @@ const ReviewApp: React.FC = () => {
                 onToggleViewed={handleToggleViewed}
                 hideViewedFiles={hideViewedFiles}
                 onToggleHideViewed={() => setHideViewedFiles(prev => !prev)}
+                showViewedControls={reviewShowViewedControls}
+                onToggleShowViewedControls={handleToggleReviewViewedControls}
                 stagedFiles={stagedFiles}
                 stagingFile={stagingFile}
                 canStage={canStageFiles}
                 onStageFile={stageFile}
+                showStageControls={reviewShowStageControls}
+                onToggleShowStageControls={handleToggleReviewStageControls}
                 isLoadingDiff={isLoadingDiff}
                 availableBranches={gitContext?.availableBranches}
                 selectedBase={selectedBase ?? undefined}
@@ -3788,6 +3842,8 @@ const ReviewApp: React.FC = () => {
                 onToggleViewed={handleToggleViewed}
                 hideViewedFiles={hideViewedFiles}
                 onToggleHideViewed={() => setHideViewedFiles(prev => !prev)}
+                showViewedControls={reviewShowViewedControls}
+                onToggleShowViewedControls={handleToggleReviewViewedControls}
                 enableKeyboardNav={!showExportModal && hasSearchableFiles}
                 diffOptions={reviewMode === 'workspace' ? (workspaceDiffOptions ?? undefined) : gitContext?.diffOptions}
                 activeDiffType={activeDiffBase}
@@ -3807,6 +3863,8 @@ const ReviewApp: React.FC = () => {
                 jjEvologs={prMetadata ? undefined : gitContext?.jjEvologs}
                 detectedEvoBase={prMetadata ? undefined : gitContext?.jjEvologs?.[1]?.commitId}
                 stagedFiles={stagedFiles}
+                showStageControls={reviewShowStageControls}
+                onToggleShowStageControls={handleToggleReviewStageControls}
                 onCopyRawDiff={handleCopyDiff}
                 canCopyRawDiff={!!diffData?.rawPatch}
                 copyRawDiffStatus={copyRawDiffStatus}

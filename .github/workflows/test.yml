@@ -96,6 +96,12 @@ jobs:
           packages/review-editor/hooks/useCallFlowInstall.test.tsx
           packages/review-editor/hooks/useCallFlowAutoInstall.test.tsx
           packages/review-editor/dock/panels/ReviewCallFlowPanel.install.test.tsx
+          packages/review-editor/dock/panels/ReviewCallFlowPanel.raw.test.tsx
+          packages/review-editor/components/CallFlowFileBadge.interaction.test.tsx
+          packages/review-editor/components/CallFlowTreeView.interaction.test.tsx
+          packages/review-editor/components/PanelChrome.test.tsx
+          packages/review-editor/components/FileTree.search-placement.test.tsx
+          packages/review-editor/components/FileTreeNode.controls.test.tsx
           packages/review-editor/components/ReviewAnalysisIntroDialog.test.tsx
           packages/ui/components/Settings.analysis.test.tsx
           packages/ui/components/AnnotationPanel.props.test.tsx
