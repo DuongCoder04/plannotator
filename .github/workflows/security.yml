@@ -1,0 +1,259 @@
+name: Security Scanning
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "23 15 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scanning-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: 8.30.0
+  GITLEAKS_LINUX_X64_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+  ZIZMOR_VERSION: 1.29.0
+  ZIZMOR_LINUX_X64_SHA256: dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read # Required by upload-sarif to read workflow-run metadata.
+      security-events: write # Required only for the final SARIF upload.
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch all branches and tags
+        run: git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Install verified Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          install_dir="$RUNNER_TEMP/gitleaks-bin"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --tlsv1.2 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$GITLEAKS_LINUX_X64_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" gitleaks
+          "$install_dir/gitleaks" version
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Verify Gitleaks detector health
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Build the fixture at runtime so the repository never contains a
+          # token-shaped string that GitHub push protection could misclassify.
+          synthetic_prefix='glpat'
+          synthetic_body='abcdefghijklmnopqrst'
+          set +e
+          printf 'token = "%s-%s"\n' "$synthetic_prefix" "$synthetic_body" \
+            | gitleaks stdin --config .gitleaks.toml --no-banner --redact=100 >/dev/null 2>&1
+          detector_exit=$?
+          set -e
+          if [[ "$detector_exit" -ne 1 ]]; then
+            echo "Gitleaks failed its synthetic detection test (exit $detector_exit)." >&2
+            exit 1
+          fi
+
+          # Confirm the exact, reviewed RFC 6455 example is allowlisted without
+          # suppressing the token-shaped fixture above.
+          websocket_example='dGhlIHNhbXBsZSBub25jZQ=='
+          printf 'Sec-WebSocket-Key: %s\n' "$websocket_example" \
+            | gitleaks stdin --config .gitleaks.toml --no-banner --redact=100 >/dev/null
+
+      - name: Scan repository history
+        id: scan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p security-results
+
+          log_options='--all'
+          scan_scope='all branches and tags'
+
+          if [[ "$EVENT_NAME" == 'pull_request' ]]; then
+            if [[ -z "$PR_BASE_SHA" || -z "$PR_HEAD_SHA" ]]; then
+              echo 'The pull request commit range is missing.' >&2
+              exit 1
+            fi
+            git cat-file -e "${PR_BASE_SHA}^{commit}"
+            git cat-file -e "${PR_HEAD_SHA}^{commit}"
+            log_options="--all ${PR_BASE_SHA}..${PR_HEAD_SHA}"
+            scan_scope='pull request commit range'
+          elif [[ "$EVENT_NAME" == 'push' ]]; then
+            zero_sha='0000000000000000000000000000000000000000'
+            if [[ -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]] \
+              && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
+              git cat-file -e "${CURRENT_SHA}^{commit}"
+              log_options="--all ${PUSH_BEFORE_SHA}..${CURRENT_SHA}"
+              scan_scope='push commit range'
+            else
+              echo 'Push base is unavailable; conservatively scanning all branches and tags.'
+            fi
+          fi
+
+          # Findings are informational during rollout (--exit-code 0), while
+          # an actual scanner/configuration error still fails this step.
+          gitleaks git . \
+            --config .gitleaks.toml \
+            --log-opts="$log_options" \
+            --exit-code 0 \
+            --redact=100 \
+            --report-format sarif \
+            --report-path security-results/gitleaks.sarif \
+            --no-banner
+
+          jq -e '.version == "2.1.0" and (.runs | type == "array")' \
+            security-results/gitleaks.sarif >/dev/null
+          finding_count=$(jq '[.runs[].results[]?] | length' security-results/gitleaks.sarif)
+
+          {
+            echo '### Gitleaks'
+            echo "- Scope: $scan_scope"
+            echo "- Findings: $finding_count"
+            echo '- Enforcement: monitor mode; scanner failures still fail the job'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'report-ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload Gitleaks SARIF
+        if: >-
+          always() &&
+          steps.scan.outputs.report-ready == 'true' &&
+          (github.event_name != 'pull_request' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'))
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: security-results/gitleaks.sarif
+          category: gitleaks
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # Required by upload-sarif to read workflow-run metadata.
+      security-events: write # Required only for the final SARIF upload.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install verified zizmor
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zizmor.tar.gz"
+          install_dir="$RUNNER_TEMP/zizmor-bin"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --tlsv1.2 \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$ZIZMOR_LINUX_X64_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" zizmor
+          "$install_dir/zizmor" --version
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Verify zizmor detector health
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Construct an attacker-controlled expression at runtime so this
+          # workflow remains safe while testing that zizmor catches it.
+          unsafe_expression='$'"{{ github.event.issue.title }}"
+          set +e
+          printf '%s\n' \
+            'name: Synthetic unsafe workflow' \
+            'on: issues' \
+            'jobs:' \
+            '  test:' \
+            '    runs-on: ubuntu-latest' \
+            '    steps:' \
+            "      - run: echo \"$unsafe_expression\"" \
+            | zizmor --offline --persona regular --strict-collection \
+                --format=json --no-progress --color=never - \
+                > "$RUNNER_TEMP/zizmor-health.json" 2>/dev/null
+          detector_exit=$?
+          set -e
+
+          if [[ "$detector_exit" -lt 11 || "$detector_exit" -gt 14 ]] \
+            || ! jq -e 'any(.ident == "template-injection")' \
+              "$RUNNER_TEMP/zizmor-health.json" >/dev/null; then
+            echo "zizmor failed its synthetic detection test (exit $detector_exit)." >&2
+            exit 1
+          fi
+
+      - name: Audit GitHub configuration
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p security-results
+
+          # SARIF mode reports findings without a non-zero exit. Internal,
+          # collection, or configuration failures still fail the step.
+          zizmor --offline \
+            --persona regular \
+            --strict-collection \
+            --format=sarif \
+            --no-progress \
+            --color=never \
+            . > security-results/zizmor.sarif
+
+          jq -e '.version == "2.1.0" and (.runs | type == "array")' \
+            security-results/zizmor.sarif >/dev/null
+          finding_count=$(jq '[.runs[].results[]?] | length' security-results/zizmor.sarif)
+
+          {
+            echo '### zizmor'
+            echo '- Scope: all workflows, local actions, and Dependabot configuration'
+            echo "- Findings: $finding_count"
+            echo '- Network mode: offline'
+            echo '- Enforcement: monitor mode; scanner failures still fail the job'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'report-ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload zizmor SARIF
+        if: >-
+          always() &&
+          steps.scan.outputs.report-ready == 'true' &&
+          (github.event_name != 'pull_request' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'))
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: security-results/zizmor.sarif
+          category: zizmor
