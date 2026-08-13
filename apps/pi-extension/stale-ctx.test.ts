@@ -85,6 +85,10 @@ function createHarness(cwd: string) {
 	const ctx = {
 		cwd,
 		hasUI: false,
+		isProjectTrusted: () => {
+			assertActive();
+			return true;
+		},
 		get mode() {
 			assertActive();
 			return "print";

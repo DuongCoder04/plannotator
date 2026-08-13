@@ -30,7 +30,7 @@ describe("plannotator config", () => {
     const cwdDir = makeTempDir("plannotator-config-base-");
     process.env.HOME = makeTempDir("plannotator-config-home-base-");
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
     const planning = resolvePhaseProfile(loaded.config, "planning");
 
     expect(loaded.warnings).toEqual([]);
@@ -56,10 +56,28 @@ describe("plannotator config", () => {
     writeFileSync(join(globalConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "external" }), "utf-8");
     writeFileSync(join(projectConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "automatic" }), "utf-8");
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
 
     expect(loaded.warnings).toEqual([]);
     expect(resolveExecutionMode(loaded.config)).toBe("automatic");
+  });
+
+  test("ignores project config when Pi denies project trust", () => {
+    const homeDir = makeTempDir("plannotator-config-home-untrusted-");
+    const cwdDir = makeTempDir("plannotator-config-cwd-untrusted-");
+    process.env.HOME = homeDir;
+
+    const globalConfigDir = join(homeDir, ".pi", "agent");
+    const projectConfigDir = join(cwdDir, ".pi");
+    mkdirSync(globalConfigDir, { recursive: true });
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(join(globalConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "external" }), "utf-8");
+    writeFileSync(join(projectConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "automatic" }), "utf-8");
+
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: false });
+
+    expect(loaded.warnings).toEqual([]);
+    expect(resolveExecutionMode(loaded.config)).toBe("external");
   });
 
   test("allows a project config to clear inherited external execution with null", () => {
@@ -74,7 +92,7 @@ describe("plannotator config", () => {
     writeFileSync(join(globalConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "external" }), "utf-8");
     writeFileSync(join(projectConfigDir, "plannotator.json"), JSON.stringify({ executionMode: null }), "utf-8");
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
 
     expect(loaded.warnings).toEqual([]);
     expect(resolveExecutionMode(loaded.config)).toBe("automatic");
@@ -89,7 +107,7 @@ describe("plannotator config", () => {
     mkdirSync(projectConfigDir, { recursive: true });
     writeFileSync(join(projectConfigDir, "plannotator.json"), JSON.stringify({ executionMode: "handoff" }), "utf-8");
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
 
     expect(loaded.warnings).toHaveLength(1);
     expect(loaded.warnings[0]).toContain('Ignoring unknown executionMode "handoff"');
@@ -121,7 +139,7 @@ describe("plannotator config", () => {
       "utf-8",
     );
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
     const planning = resolvePhaseProfile(loaded.config, "planning");
 
     expect(loaded.warnings).toEqual([]);
@@ -158,7 +176,7 @@ describe("plannotator config", () => {
       "utf-8",
     );
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
     const planning = resolvePhaseProfile(loaded.config, "planning");
 
     expect(loaded.warnings).toEqual([]);
@@ -229,7 +247,7 @@ describe("plannotator config", () => {
     const cwdDir = makeTempDir("plannotator-config-shipped-instructions-");
     process.env.HOME = makeTempDir("plannotator-config-home-shipped-instructions-");
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
     const planning = resolvePhaseProfile(loaded.config, "planning");
     const executing = resolvePhaseProfile(loaded.config, "executing");
 
@@ -262,7 +280,7 @@ describe("plannotator config", () => {
       "utf-8",
     );
 
-    const loaded = loadPlannotatorConfig(cwdDir);
+    const loaded = loadPlannotatorConfig(cwdDir, { projectTrusted: true });
     const executing = resolvePhaseProfile(loaded.config, "executing");
 
     // The obsolete key is ignored: the shipped instructions still apply.

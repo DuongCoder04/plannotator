@@ -1601,7 +1601,17 @@ Mark completed steps with [DONE:n] in your response.`
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		const loadedConfig = loadPlannotatorConfig(ctx.cwd);
+		const trustFn = ctx.isProjectTrusted as (() => boolean) | undefined;
+		const projectTrusted = typeof trustFn === "function" ? trustFn.call(ctx) : false;
+		if (typeof trustFn !== "function") {
+			ctx.ui.notify(
+				"Plannotator requires Pi 0.79.1 or newer. Update Pi; project-local config is disabled on this host.",
+				"warning",
+			);
+		}
+		const loadedConfig = loadPlannotatorConfig(ctx.cwd, {
+			projectTrusted,
+		});
 		plannotatorConfig = loadedConfig.config;
 		for (const warning of loadedConfig.warnings) {
 			ctx.ui.notify(`Plannotator config: ${warning}`, "warning");

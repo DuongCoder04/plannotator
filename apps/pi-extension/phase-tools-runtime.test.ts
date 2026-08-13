@@ -58,6 +58,7 @@ function createContext(options: { cwd?: string; entries?: SessionEntry[] } = {})
 	return {
 		cwd: options.cwd ?? process.cwd(),
 		hasUI: false,
+		isProjectTrusted: () => true,
 		isIdle: () => true,
 		model: undefined,
 		modelRegistry: { find: () => undefined },

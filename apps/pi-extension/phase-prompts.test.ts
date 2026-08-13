@@ -67,12 +67,13 @@ function makeWorkspace(projectConfig?: unknown): string {
 	return cwd;
 }
 
-function createContext(options: { cwd?: string; entries?: SessionEntry[] } = {}) {
+function createContext(options: { cwd?: string; entries?: SessionEntry[]; projectTrusted?: boolean } = {}) {
 	const entries = options.entries ?? [];
 	const notifications: Array<{ message: string; level: string | undefined }> = [];
 	return {
 		cwd: options.cwd ?? process.cwd(),
 		hasUI: false,
+		isProjectTrusted: () => options.projectTrusted ?? true,
 		isIdle: () => true,
 		model: undefined,
 		modelRegistry: { find: () => undefined },
@@ -368,6 +369,47 @@ describe("Plannotator phase framing messages", () => {
 		const warnings = templateWarnings(context);
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]?.message).toContain("bogus");
+	});
+
+	test("ignores project Plannotator config when Pi denies project trust", async () => {
+		const cwd = makeWorkspace({
+			phases: { planning: { instructions: "untrusted-project-instructions" } },
+		});
+		const runtime = createRuntime();
+		const context = createContext({ cwd, projectTrusted: false });
+		await runtime.run("session_start", context);
+		await runtime.commands.get("plannotator-plan-mode")?.handler("", context);
+
+		const result = await startAgent(runtime, context);
+		expect(result?.message?.content).toContain("[PLANNOTATOR - PLANNING PHASE]");
+		expect(result?.message?.content).not.toContain("untrusted-project-instructions");
+	});
+
+	test("fails closed with an update warning when an older Pi host lacks project trust", async () => {
+		const cwd = makeWorkspace({
+			phases: { planning: { instructions: "untrusted-project-instructions" } },
+		});
+		const globalConfigDir = process.env.PI_CODING_AGENT_DIR!;
+		mkdirSync(globalConfigDir, { recursive: true });
+		writeFileSync(
+			join(globalConfigDir, "plannotator.json"),
+			JSON.stringify({ phases: { planning: { instructions: "trusted-global-instructions" } } }),
+			"utf-8",
+		);
+		const runtime = createRuntime();
+		const context = createContext({ cwd });
+		delete (context as { isProjectTrusted?: () => boolean }).isProjectTrusted;
+
+		await runtime.run("session_start", context);
+		await runtime.commands.get("plannotator-plan-mode")?.handler("", context);
+
+		const result = await startAgent(runtime, context);
+		expect(result?.message?.content).toContain("trusted-global-instructions");
+		expect(result?.message?.content).not.toContain("untrusted-project-instructions");
+		expect(context.notifications).toContainEqual({
+			message: "Plannotator requires Pi 0.79.1 or newer. Update Pi; project-local config is disabled on this host.",
+			level: "warning",
+		});
 	});
 
 	test("persistState records the framing latch on both sides", async () => {

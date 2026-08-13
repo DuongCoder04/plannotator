@@ -23,6 +23,22 @@ pi install ./plannotator/apps/pi-extension
 pi -e npm:@plannotator/pi-extension
 ```
 
+## Pi version and project trust
+
+Plannotator requires **Pi 0.79.1 or newer**. Updating only the Plannotator
+extension does not repair the security behavior of an older Pi host; update Pi
+itself before loading the extension.
+
+Pi 0.79 introduced project trust for repository-local inputs. In interactive
+sessions, Pi asks before loading project settings, instructions, resources, and
+packages, and can save the decision for that working directory. Plannotator
+honors the same decision for `.pi/plannotator.json`.
+
+Noninteractive sessions ignore project-local inputs unless the project already
+has a saved trust decision or Pi is started with `--approve` (`-a`). Use
+`--no-approve` (`-na`) to disable project inputs for a run even when the project
+was previously trusted.
+
 ## Uninstall
 
 Remove a standalone Pi installation with:

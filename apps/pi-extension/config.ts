@@ -44,6 +44,11 @@ export interface LoadedPlannotatorConfig {
   warnings: string[];
 }
 
+export interface LoadPlannotatorConfigOptions {
+  /** Whether Pi approved project-local inputs for this working directory. */
+  projectTrusted: boolean;
+}
+
 export interface ResolvedPhaseProfile {
   model?: PhaseModelRef;
   thinking?: ThinkingLevel;
@@ -232,7 +237,10 @@ function loadConfigSource(path: string): { config: PlannotatorConfig; warnings: 
   return { config, warnings };
 }
 
-export function loadPlannotatorConfig(cwd: string): LoadedPlannotatorConfig {
+export function loadPlannotatorConfig(
+  cwd: string,
+  options: LoadPlannotatorConfigOptions,
+): LoadedPlannotatorConfig {
   const warnings: string[] = [];
 
   // The bundled config carries the planning rules and phase instructions. A
@@ -253,7 +261,9 @@ export function loadPlannotatorConfig(cwd: string): LoadedPlannotatorConfig {
   warnings.push(...globalConfig.warnings);
 
   const projectPath = join(cwd, ".pi", "plannotator.json");
-  const projectConfig = loadConfigSource(projectPath);
+  const projectConfig = options.projectTrusted
+    ? loadConfigSource(projectPath)
+    : { config: {}, warnings: [] };
   warnings.push(...projectConfig.warnings);
 
   const merged = mergeConfig(mergeConfig(internal.config, globalConfig.config), projectConfig.config);
