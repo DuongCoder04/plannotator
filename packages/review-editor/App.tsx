@@ -111,7 +111,7 @@ import { SectionsPanel } from './components/SectionsPanel';
 import { CommitsPanel } from './components/CommitsPanel';
 import { useCommitsView } from './hooks/useCommitsView';
 import { ReviewSetupDialog } from './components/ReviewSetupDialog';
-import { needsReviewSetup, markReviewSetupSeen } from './utils/reviewSetup';
+import { initializeReviewSetup, markReviewSetupSeen } from './utils/reviewSetup';
 import { resolvePanelView } from './utils/resolvePanelView';
 import { isCommitDiffType, resolveCommitExitDiff, type CommitViewRestoreTarget } from './utils/commitViewRestore';
 import { GuideIntroDialog } from './components/GuideIntroDialog';
@@ -1666,10 +1666,11 @@ const ReviewApp: React.FC = () => {
         setCommitInfo(data.commitInfo ?? null);
         setBaseBehindRemote(data.baseBehindRemote === true);
         // First-run: offer the review-view chooser for a plain local git
-        // session (not workspace/PR/jj/p4), once. On this first showing we
-        // RESET to the recommended default (Git status + All changes), overriding
-        // any prior diff-type/panel preference — the user's explicit choice in
-        // the dialog then sticks. Applied to the live session on dismiss.
+        // session (not workspace/PR/jj/p4), once. An unseen reviewer's panel
+        // is initialized to Tree while inheriting the resolved diff default;
+        // the seen gate leaves returning reviewers' persisted and last-used
+        // views untouched. The user's explicit choice in the dialog then
+        // sticks. Applied to the live session on dismiss.
         //
         // Only when since-base is actually AVAILABLE (base ref resolves). On a
         // repo where getGitContext omits it (trunk / no origin/HEAD), forcing
@@ -1682,13 +1683,8 @@ const ReviewApp: React.FC = () => {
         );
         if (
           data.gitContext && data.mode !== 'workspace' && !data.prMetadata &&
-          data.gitContext.vcsType === 'git' && sinceBaseAvailable && needsReviewSetup()
+          data.gitContext.vcsType === 'git' && sinceBaseAvailable && initializeReviewSetup()
         ) {
-          setReviewPanelView('sections'); // coupled setter — also sets since-base
-          // Mark seen at reset time, not only on "Got it": closing the tab
-          // without dismissing must not re-fire the reset (and its config
-          // writes) over the user's preferences every session.
-          markReviewSetupSeen();
           reviewSetupIsFirstRun.current = true;
           setShowReviewSetup(true);
         }
