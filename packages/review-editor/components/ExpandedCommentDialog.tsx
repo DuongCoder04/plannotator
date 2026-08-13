@@ -92,7 +92,7 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
               : false
             }
             finalFocus={false}
-            className="pn-responsive-composer-dialog relative pointer-events-auto overflow-hidden bg-popover border border-border rounded-xl shadow-2xl flex flex-col"
+            className="pn-responsive-composer-dialog pn-review-composer-dialog relative pointer-events-auto overflow-hidden bg-popover border border-border rounded-xl shadow-2xl flex flex-col"
           >
           <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border/50">
             <Dialog.Title className="text-xs font-normal text-muted-foreground truncate">{title}</Dialog.Title>

@@ -94,6 +94,7 @@ jobs:
           packages/ui/components/sidebar/FileBrowser.test.ts
           packages/editor/editableDocumentsHook.test.tsx
           packages/review-editor/components/ReviewSubmissionDialog.ui.test.tsx
+          packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
           packages/review-editor/components/FileHeader.edit.test.tsx
           packages/review-editor/edit/useEditSession.recovery.test.tsx
           packages/review-editor/edit/discardRestoreRender.test.tsx

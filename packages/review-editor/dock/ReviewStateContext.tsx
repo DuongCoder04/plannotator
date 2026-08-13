@@ -36,6 +36,10 @@ export interface ReviewState {
   focusedFileIndex: number;
   focusedFilePath: string | null;
   diffStyle: 'split' | 'unified';
+  /** Compact touch shells use a session-only style so desktop preferences stay untouched. */
+  onDiffStyleChange: (style: 'split' | 'unified') => void;
+  /** True only for coarse-pointer phone/tablet layouts, never narrow desktop windows. */
+  isCompactTouchLayout: boolean;
   diffOverflow?: 'scroll' | 'wrap';
   diffIndicators?: 'bars' | 'classic' | 'none';
   lineDiffType?: 'word-alt' | 'word' | 'char' | 'none';

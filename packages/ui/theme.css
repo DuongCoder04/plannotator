@@ -814,6 +814,15 @@ body:has([data-pn-document-scroll="true"]) > #root {
   .pn-responsive-composer-dialog {
     height: 100%;
   }
+
+  /* Code review often promotes a line selection straight into the expanded
+   * composer. Keep its idle surface proportional to the content instead of
+   * covering the whole phone; once the keyboard reduces the visible viewport,
+   * the same cap naturally yields to all available space. Plan's explicit
+   * expanded-composer treatment remains unchanged. */
+  .pn-responsive-composer-dialog.pn-review-composer-dialog {
+    height: min(28rem, 100%);
+  }
 }
 
 /* iOS zooms focused text controls below 16px. Scope the correction to
@@ -840,6 +849,13 @@ html:has([data-pn-compact-touch-layout='true']) [data-pn-touch-target] {
 html:has([data-pn-compact-touch-layout='true'])
   [data-pn-touch-target][data-pn-touch-target-icon] {
   min-inline-size: var(--pn-touch-target);
+}
+
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-compact-diff-options]
+  button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
 }
 
 html:has([data-pn-compact-touch-layout='true'])

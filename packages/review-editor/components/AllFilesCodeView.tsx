@@ -143,11 +143,11 @@ import {
  *  - Safari scroll guardian: NOT carried forward. The old DiffViewer guardian
  *    targeted the OverlayScrollbars viewport wrapping many separate FileDiff
  *    shadow nodes and restored scrollTop on a ">200 -> 0" jump heuristic.
- *    CodeView owns its own scroll model and DELIBERATELY rebases the container's
- *    DOM scrollTop into a bounded 12M-px paged window, so that heuristic would
- *    misfire against CodeView's own rebasing. CodeView is the scroll authority
- *    here; we rely on it rather than a guardian that would fight it. (Still
- *    needs real WebKit validation.)
+ *    CodeView owns its own scroll model and deliberately rebases its DOM
+ *    scrollTop, so that heuristic would fight Pierre. CodeView therefore keeps
+ *    its native bounded scroll viewport on every form factor. A page-scroll
+ *    proxy was physically rejected on iPhone because the document could outrun
+ *    Pierre's virtual window and expose a large blank tail.
  *
  * The worker pool remains a later phase.
  *
@@ -179,6 +179,9 @@ interface AllFilesCodeViewProps {
   pendingSelection: SelectedLineRange | null;
   reviewBase?: string;
   reviewSnapshotId?: string;
+  /** Compact coarse-pointer shell. Adjusts custom-header chrome and Pierre's
+   * matching virtualization metric without changing desktop geometry. */
+  compactTouchLayout?: boolean;
   // Annotation / toolbar wiring (P2). Mirrors AllFilesDiffView's surface so the
   // toolbar opens against the file CodeView reports for a selection.
   onLineSelection: (range: SelectedLineRange | null) => void;
@@ -301,7 +304,7 @@ interface AllFilesCodeViewProps {
 // common case. Pathological patches (e.g. a delete + re-add of the same path,
 // or repeated paths) would otherwise collapse two files onto one CodeView item,
 // breaking selection/scroll identity — so a per-base suffix disambiguates them
-// while still keeping a filePath <-> itemId map for the bridge.
+// while still keeping filePath <-> itemId maps for constant-time lookups.
 interface ItemIdentity {
   items: CodeViewItem<DiffAnnotationMetadata>[];
   /** Maps a file path to the CodeView item id that owns it. */
@@ -459,6 +462,7 @@ function buildItemIdentity(
 // internally responsive (ResizeObserver shrinks labels) but its OUTER box height
 // is fixed, so the responsive label changes never alter the row height.
 const PANEL_HEADER_HEIGHT = 33; // --panel-header-h
+const COMPACT_PANEL_HEADER_HEIGHT = 44;
 // Hunk separator height forced by usePierreTheme unsafeCSS:
 //   [data-separator='line-info'] { height: 24px; margin-block: 4px; }
 // => 24 + 4*2 = 32. Pierre's own 'line-info' default metric is also 32, so
@@ -490,6 +494,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   pendingSelection,
   reviewBase,
   reviewSnapshotId,
+  compactTouchLayout,
   onLineSelection,
   onAddAnnotationForFile,
   onEditAnnotation,
@@ -579,6 +584,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     observer.observe(el);
     return () => observer.disconnect();
   }, [scrollEl, leadingContent]);
+
   const toolbarHostRef = useRef<ToolbarHostHandle>(null);
 
   // NOTE: no center split dragger on this surface (parity with the legacy
@@ -2151,6 +2157,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     return (
       <div className="flex flex-col">
         <FileHeader
+        compactTouchLayout={compactTouchLayout}
         filePath={filePath}
         patch={file.patch}
         status={file.status}
@@ -2186,6 +2193,8 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
               e.stopPropagation();
               toggleItemCollapsed(item.id);
             }}
+            data-pn-touch-target={compactTouchLayout || undefined}
+            data-pn-touch-target-icon={compactTouchLayout || undefined}
             className="flex items-center justify-center w-6 h-6 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
             title={collapsed ? 'Expand diff' : 'Collapse diff'}
           >
@@ -2286,7 +2295,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       // description card) so items start below it and it scrolls with them.
       layout: { gap: 0, paddingTop: 8 + leadingHeight, paddingBottom: 8 },
       itemMetrics: {
-        diffHeaderHeight: PANEL_HEADER_HEIGHT,
+        diffHeaderHeight: compactTouchLayout ? COMPACT_PANEL_HEADER_HEIGHT : PANEL_HEADER_HEIGHT,
         hunkSeparatorHeight: HUNK_SEPARATOR_HEIGHT,
         ...(customLineHeight != null && { lineHeight: customLineHeight }),
       },
@@ -2346,6 +2355,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       disableBackground,
       expandUnchanged,
       customLineHeight,
+      compactTouchLayout,
       leadingHeight,
       handleLineSelectionEnd,
       handleGutterUtilityClick,

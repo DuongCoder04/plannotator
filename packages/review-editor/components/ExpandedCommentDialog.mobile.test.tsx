@@ -56,6 +56,7 @@ describe('ExpandedCommentDialog mobile composition', () => {
     expect(dialog).not.toBeNull();
     expect(overlay).not.toBeNull();
     expect(dialog?.classList.contains('pn-responsive-composer-dialog')).toBe(true);
+    expect(dialog?.classList.contains('pn-review-composer-dialog')).toBe(true);
     expect(textarea).not.toBeNull();
     expect(document.querySelector('button[aria-label="Collapse expanded comment"]')).toBeNull();
     expect(document.activeElement).not.toBe(textarea);

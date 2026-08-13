@@ -748,6 +748,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       {!collapsed && <OverlayScrollArea
         className={`flex-1 min-h-0 relative ${isDraggingSplit ? 'select-none' : ''}`}
         overflowX="scroll"
+        overflowY="auto"
         onViewportReady={onViewportReady}
       >
         {/* Specific first, general second, and never both: whichever applies,

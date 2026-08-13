@@ -1,9 +1,11 @@
 # Synthesis: Mobile Feedback Triage and Phase Sequence
 
 Date: 2026-08-12
-Status: Phase 1B accepted; Phase 1C implemented with physical-device gate pending
+Status: Phase 2A implementation accepted as the working mobile baseline;
+filename micro-gate pending, Phase 2B specified
 Source dossier: [`SPIKE-mobile-web-compatibility-20260812.md`](./SPIKE-mobile-web-compatibility-20260812.md)
 Foundation spec: [`mobile-platform-foundation-phase1-20260812.md`](../specs/mobile-platform-foundation-phase1-20260812.md)
+Phase 2B spec: [`mobile-plan-shell-phase2b-20260813.md`](../specs/mobile-plan-shell-phase2b-20260813.md)
 
 ## Decision
 
@@ -181,6 +183,133 @@ reachable without narrowing the artifact, keep the destination decision fully
 visible, and support a complete single-line comment and approve/send journey.
 Multi-line touch selection is explicitly evaluated in Phase 3, not used as a
 gate for the shell.
+
+### Phase 2A implementation checkpoint
+
+The first implementation is complete on `codex-mobile-phase-2a-review-shell`.
+The initial physical iPhone pass did not pass the phase gate: it confirmed the
+artifact-first direction, but exposed review chrome and Safari-stage problems
+that responsive Chromium could not reproduce. The iteration keeps the same
+artifact-first option
+while keeping the existing Guided Review takeover directly reachable from the
+compact Options menu, so both candidate reading compositions can be compared
+against the same review.
+
+The compact shell activates only when the viewport is at most 1024 px wide and
+the device exposes a coarse pointer. A narrow fine-pointer desktop window keeps
+the desktop workspace. Within the compact shell:
+
+- PR and local reviews arrive in full-width All Files instead of opening the
+  tree or PR overview beside the diff;
+- Unified is the initial session presentation, but changing it on the phone is
+  session-only and never writes the saved desktop Split/Unified preference;
+- Git status, Tree, Commits, PR context, and file navigation occupy one
+  full-stage transient navigator and close after a destination is chosen;
+- annotations, AI, and Review Agents occupy a separate full-stage transient
+  surface instead of becoming a fixed flex sibling;
+- the header is one 52 px three-column row: navigation, a geometrically centered
+  review location, and Options. Destination, Exit, Send/Post, Approve, Guide,
+  and secondary tools move into that menu instead of competing for phone width;
+- the 33 px dock strip contains tabs only on compact touch. Its prior 44 px cog
+  target physically overflowed the strip into the first file header;
+- compact file headers are 44 px rows containing collapse, path, status, and
+  change counts only. Viewed, Git Add, semantic/call-flow badges, experimental
+  Edit, and Open-in-app remain desktop actions rather than mobile file chrome;
+- the destination coachmark is not mounted on compact touch because its
+  destination decision now lives directly in Options;
+- the platform submission dialog uses the shared visible-viewport Dialog,
+  does not raise the software keyboard on arrival, keeps authoring text at
+  16 px, scrolls long recovery detail, and pins its terminal actions; and
+- the expanded review composer is capped at 28 rem while idle and expands only
+  as the visible keyboard viewport requires, instead of covering the full phone
+  before authoring begins;
+- raw diffs retain Pierre's bounded, nested scroll viewport. A compact-only
+  page-scroll proxy was implemented and then rejected during the physical
+  iPhone pass: the document advanced while Pierre's virtual window stopped,
+  leaving a frozen diff followed by a large blank region, and the sticky review
+  stage preserved the opaque Safari top extension. The proxy was removed
+  immediately to restore reliable file scrolling. Safari chrome contraction
+  for a virtualized review remains open design work rather than a shipped claim;
+  and
+- PR overview uses Summary/Comments as mutually exclusive compact regions.
+  Empty discussion renders no Comments region at all. This last removal also
+  intentionally improves desktop by eliminating an empty structural panel.
+
+No Pierre library source, line mapping, touch range selection, suggestion
+editor, server, Tailscale, or persisted desktop panel-default code changed. The
+All Files integration supplies a compact-only 44 px header metric while its
+existing nested CodeView scroller remains the source of truth. Tree remains the
+desktop first-use default.
+
+Automated proof includes the compact-touch detector and listener cleanup,
+session-only diff-style routing, visible-viewport destination/submission
+surfaces, exact PR discussion inclusion rules, empty desktop discussion, and
+single-region compact PR context. The production Review build, shared
+typecheck, focused DOM tests, and diff whitespace checks pass.
+
+Rendered preflight covered 320×568 and 390×844 phone stages, an 820×1180 tablet
+stage, and a 1280×720 fine-pointer desktop control. The compact header remained
+52 px, both transient surfaces exactly occupied the remaining app stage, file
+selection closed navigation, and no page-width overflow was measured. The
+desktop control retained its 37 px header and 256 px file tree. Browser
+preflight cannot close the real touch, Safari chrome, tailnet PR, or hybrid
+iPad gate; those remain the reviewer's acceptance pass.
+
+#### Physical review script
+
+Open the same GitHub PR through Tailscale on iPhone, then iPad if available:
+
+1. Confirm arrival is All Files, full width, and Unified; the tree and PR panels
+   must not already be open. Scroll continuously through several files. There
+   must be no frozen virtual window, large blank tail, snap to the beginning, or
+   loss of touch scrolling. Safari's top chrome and opaque extension are a
+   recorded open blocker for the next design iteration, not a pass condition
+   for this rollback check.
+2. Confirm the phone header contains only Review navigation, a centered review
+   location, and Options. Open Options and verify destination, Exit,
+   Send/Post (when feedback exists), and Approve are reachable there.
+3. Confirm the dock tab row has no cog/collapse cluster overlapping the first
+   file. The compact file header should show only collapse, path, status, and
+   change counts — no Open-in-app dropdown or desktop badges/actions.
+4. Open Review navigation, move between a file, All Files, and PR overview, and
+   confirm each choice returns to a full-width primary surface.
+5. In PR overview, confirm an empty discussion has no Comments control; when
+   discussion exists, switch between Summary and Comments without splitting
+   the screen.
+6. Open Options → Guided Review, read one chapter, then return to the raw diff.
+7. Open Annotations (and AI/Agents if available) from Options, confirm the
+   surface replaces rather than squeezes the diff, then close it.
+8. Select one code line and open a comment. Before focusing the textarea, the
+   expanded composer should occupy a useful card-height region rather than the
+   entire phone. After focus, confirm it yields to the keyboard, text stays at
+   16 px, and the terminal action remains reachable. Save the comment, then
+   open Post Comments or Approve.
+9. Rotate once and confirm no rail or prior transient surface reappears. On a
+   desktop reload, confirm Tree and the saved diff style are unchanged.
+
+Range accumulation and multi-line touch selection are observations only in
+this gate; they remain Phase 3 work.
+
+#### Phase 2A physical closeout status
+
+The physical iPhone iteration established a stable baseline:
+
+- the page-scroll proxy failed decisively (frozen virtual window plus a large
+  blank tail) and was removed rather than patched around;
+- the restored Pierre-owned scroller was judged “much, much better,” and
+  continuous file scrolling works again;
+- the reviewer characterized the resulting application behavior as “pretty
+  good” and accepted the remaining Safari top-chrome behavior as a deferred,
+  isolated experiment rather than grounds for another renderer migration;
+- compact app/dock/file chrome and the comment composer remain in the Phase 2A
+  baseline; and
+- the final filename complaint was addressed by replacing the hard 14–32
+  character basename cut with Diffshub-style full-path, leading-ellipsis
+  treatment. That visible filename treatment is the only remaining micro-gate.
+
+Do not reopen the rejected scroll architecture during Phase 2B. A future
+document-native Pierre Virtualizer experiment, if pursued, must remain isolated
+and earn promotion through complete interaction parity plus physical testing.
 
 ## Why selection is not bundled into layout
 

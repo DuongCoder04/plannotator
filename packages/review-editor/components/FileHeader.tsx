@@ -43,6 +43,8 @@ interface FileHeaderProps {
   isEditing?: boolean;
   /** When set, the Edit button is disabled with this tooltip. */
   editDisabledReason?: string | null;
+  /** Compact coarse-pointer treatment. Defaults to the enclosing review state. */
+  compactTouchLayout?: boolean;
 }
 
 function splitFilePath(filePath: string): { directory: string; name: string } {
@@ -124,9 +126,11 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   onEditFile,
   isEditing = false,
   editDisabledReason,
+  compactTouchLayout,
 }) => {
   const [headerWidth, setHeaderWidth] = useState<number>(0);
   const state = useReviewStateOptional();
+  const isCompactTouchLayout = compactTouchLayout ?? state?.isCompactTouchLayout ?? false;
   const headerRef = useRef<HTMLDivElement>(null);
   const fileCommentRef = useRef<HTMLButtonElement>(null);
   const { directory, name } = splitFilePath(filePath);
@@ -160,18 +164,18 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   return (
     <div
       ref={headerRef}
-      className="flex-shrink-0 px-3 border-b border-border/50 flex items-center justify-between gap-2 transition-colors duration-150 hover:bg-muted/30"
-      style={{ height: 'var(--panel-header-h)' }}
+      className={`flex-shrink-0 border-b border-border/50 flex items-center justify-between gap-2 transition-colors duration-150 hover:bg-muted/30 ${isCompactTouchLayout ? 'pr-3' : 'px-3'}`}
+      style={{ height: isCompactTouchLayout ? '44px' : 'var(--panel-header-h)' }}
     >
       <div className="min-w-0 flex flex-1 items-center" onClick={onCollapseToggle} style={onCollapseToggle ? { cursor: 'pointer' } : undefined}>
         {collapseToggle}
         <span
-          className="min-w-0 flex items-center text-xs font-semibold leading-normal whitespace-nowrap"
+          className={`min-w-0 flex items-center text-xs font-semibold leading-normal whitespace-nowrap ${isCompactTouchLayout ? 'flex-1' : ''}`}
           title={status === 'renamed' && oldPath ? `${oldPath} → ${filePath}` : filePath}
         >
           {/* Rename: dimmed old path → new path (diffshub treatment). Dropped
               under tight widths — the icon + tooltip still carry it. */}
-          {status === 'renamed' && oldPath && !showFilenameOnly && (
+          {status === 'renamed' && oldPath && !showFilenameOnly && !isCompactTouchLayout && (
             <>
               <span className="min-w-0 overflow-hidden text-ellipsis text-muted-foreground/60">
                 {oldPath}
@@ -187,16 +191,30 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
               </svg>
             </>
           )}
-          {!showFilenameOnly && directory && (
-            <span className="min-w-0 overflow-hidden text-ellipsis text-muted-foreground/70">
-              {directory}
+          {isCompactTouchLayout ? (
+            /* Match Diffshub's filename treatment: retain the complete path in
+             * the accessible DOM and place the ellipsis at the leading edge so
+             * the basename/extension receive the available phone width. */
+            <span
+              data-pn-compact-file-path
+              className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-foreground [direction:rtl]"
+            >
+              <bdi>{filePath}</bdi>
             </span>
+          ) : (
+            <>
+              {!showFilenameOnly && directory && (
+                <span className="min-w-0 overflow-hidden text-ellipsis text-muted-foreground/70">
+                  {directory}
+                </span>
+              )}
+              <span
+                className={showFilenameOnly ? 'block min-w-0 overflow-hidden whitespace-nowrap text-foreground' : 'flex-none whitespace-nowrap text-foreground'}
+              >
+                {truncatedName}
+              </span>
+            </>
           )}
-          <span
-            className={showFilenameOnly ? 'block min-w-0 overflow-hidden whitespace-nowrap text-foreground' : 'flex-none whitespace-nowrap text-foreground'}
-          >
-            {truncatedName}
-          </span>
         </span>
         {(additions > 0 || deletions > 0 || (status && status !== 'modified')) && (
           <span className="flex-none ml-2 flex items-center gap-1.5 text-xs leading-none">
@@ -206,7 +224,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
           </span>
         )}
       </div>
-      <div className={`flex flex-shrink-0 items-center pl-2 ${isCompact ? 'gap-1' : 'gap-2'}`}>
+      {!isCompactTouchLayout && <div className={`flex flex-shrink-0 items-center pl-2 ${isCompact ? 'gap-1' : 'gap-2'}`}>
         {showViewedControl && onToggleViewed && (
           <button
             onClick={onToggleViewed}
@@ -321,7 +339,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
             status !== 'deleted'
           }
         />
-      </div>
+      </div>}
     </div>
   );
 };

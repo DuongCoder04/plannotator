@@ -14,12 +14,16 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
+const realResolveSyntaxTheme = (await import('@plannotator/ui/utils/syntaxTheme')).resolveSyntaxTheme;
+
 mock.module('../workerPool', () => ({
   useIsWorkerPoolReadyOrDisabled: () => true,
   useWorkerPoolThemeSync: () => {},
 }));
 
 mock.module('../hooks/usePierreTheme', () => ({
+  buildLineBgOverrides: () => '',
+  resolveSyntaxTheme: realResolveSyntaxTheme,
   usePierreTheme: () => ({ type: 'light', css: '' }),
 }));
 
@@ -128,4 +132,5 @@ describe.if(hasDom)('header control visibility (DOM)', () => {
     expect(el.querySelector(STAGE_BUTTON)).toBeNull();
     expect(el.querySelector(VIEWED_BUTTON)).not.toBeNull();
   });
+
 });
