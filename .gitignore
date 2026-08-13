@@ -57,6 +57,9 @@ plannotator-local
 /goals/
 *.bun-build
 
+# Local/CI security scanner reports are generated artifacts.
+security-results/
+
 # Local meta notes (not upstream)
 /meta/
 

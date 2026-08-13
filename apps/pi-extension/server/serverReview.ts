@@ -20,6 +20,7 @@ import {
 	getMRNumberLabel,
 	isSameProject,
 	type PRMetadata,
+	type PRListItem,
 	type PRRef,
 	type PRReviewFileComment,
 	prRefFromMetadata,
@@ -310,7 +311,7 @@ export async function startReviewServer(options: {
 		? getPRDiffScopeOptions(prMeta, !!(options.worktreePool || options.agentCwd))
 		: [];
 
-	let prListCache: import("../generated/pr-types.ts").PRListItem[] | null = null;
+	let prListCache: PRListItem[] | null = null;
 	let prListCacheTime = 0;
 	// Platform APIs withhold per-file patches on very large PRs. When the layer
 	// patch is incomplete, a local recompute (exact merge-base diff, no size

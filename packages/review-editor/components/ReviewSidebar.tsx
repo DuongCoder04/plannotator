@@ -12,7 +12,7 @@ import { AITab } from './AITab';
 import { AgentsTab, type AgentLaunchParams, type AgentLaunchResult } from '@plannotator/ui/components/AgentsTab';
 import type { PRMetadata } from '@plannotator/shared/pr-types';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
-import type { AIChatEntry } from '../hooks/useAIChat';
+import type { AIChatEntry, PendingPermission } from '../hooks/useAIChat';
 import type { AgentJobInfo, AgentCapabilities } from '@plannotator/ui/types';
 import type { DiffFile } from '../types';
 import type { AIProviderOption } from '@plannotator/ui/utils/aiProvider';
@@ -58,7 +58,7 @@ interface ReviewSidebarProps {
   activeFilePath?: string;
   scrollToQuestionId?: string | null;
   onAskGeneral?: (question: string) => void;
-  aiPermissionRequests?: import('../hooks/useAIChat').PendingPermission[];
+  aiPermissionRequests?: PendingPermission[];
   onRespondToPermission?: (requestId: string, allow: boolean) => void;
   aiProviders?: AIProviderOption[];
   aiConfig?: { providerId: string | null; model: string | null; reasoningEffort?: string | null };
