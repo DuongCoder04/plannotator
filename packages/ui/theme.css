@@ -627,6 +627,13 @@
    * the surface/sidebar-aware components expect. Themes that pin explicit
    * values (e.g. "simple") override these. */
   :root {
+    /* Mobile browser environment. Safe areas are CSS-owned because they are
+     * available before React mounts; the observed viewport values are written
+     * by useViewportEnvironment and fall back cleanly in the utilities below. */
+    --pn-safe-top: env(safe-area-inset-top, 0px);
+    --pn-safe-right: env(safe-area-inset-right, 0px);
+    --pn-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --pn-safe-left: env(safe-area-inset-left, 0px);
     --surface-0: color-mix(in oklch, var(--muted) 40%, var(--background));
     --surface-1: var(--muted);
     --surface-2: color-mix(in oklch, var(--muted) 70%, var(--foreground));
@@ -702,6 +709,46 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-feature-settings: "ss01", "ss02", "cv01";
+}
+
+/* The application stage owns the top and lateral safe areas. Bottom-edge
+ * surfaces opt into `.pn-safe-bottom` themselves so the home-indicator inset
+ * is never counted twice. The ordered height declarations preserve desktop
+ * behavior and old-browser support before the observer publishes a value. */
+.pn-app-viewport {
+  box-sizing: border-box;
+  height: 100vh;
+  height: 100dvh;
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: var(--pn-safe-top);
+  padding-right: var(--pn-safe-right);
+  padding-left: var(--pn-safe-left);
+}
+
+.pn-safe-top {
+  padding-top: var(--pn-safe-top);
+}
+
+.pn-safe-inline {
+  padding-right: var(--pn-safe-right);
+  padding-left: var(--pn-safe-left);
+}
+
+.pn-safe-bottom {
+  padding-bottom: var(--pn-safe-bottom);
+}
+
+.pn-viewport-bounded {
+  max-height: calc(
+    var(--pn-viewport-height, 100vh) - var(--pn-safe-top) - var(--pn-safe-bottom)
+  );
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .plan-look-choice-option[aria-pressed='false']:hover {
+    border-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+    background: color-mix(in srgb, var(--muted) 35%, transparent);
+  }
 }
 
 .math-inline {

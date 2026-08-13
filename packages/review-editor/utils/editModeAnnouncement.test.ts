@@ -60,7 +60,6 @@ describe('editModeAnnouncementCanShow (never-stack chain gate)', () => {
     guideIntroVisible: false,
     lookAndFeelVisible: false,
     reviewSetupVisible: false,
-    analysisIntroVisible: false,
   };
 
   test('shows when pending and no other chain dialog is open', () => {
@@ -79,12 +78,11 @@ describe('editModeAnnouncementCanShow (never-stack chain gate)', () => {
     expect(editModeAnnouncementCanShow({ ...openState, guideIntroVisible: true })).toBe(false);
     expect(editModeAnnouncementCanShow({ ...openState, lookAndFeelVisible: true })).toBe(false);
     expect(editModeAnnouncementCanShow({ ...openState, reviewSetupVisible: true })).toBe(false);
-    expect(editModeAnnouncementCanShow({ ...openState, analysisIntroVisible: true })).toBe(false);
   });
 
   test('shows for an existing user who has already seen every other chain dialog', () => {
-    // Existing users have consumed the guide-intro, look-and-feel,
-    // review-setup, and analysis-intro cookies, so all earlier visibilities are false on load and
+    // Existing users have consumed the guide-intro, look-and-feel, and
+    // review-setup cookies, so all earlier visibilities are false on load and
     // the announcement stands alone.
     expect(
       editModeAnnouncementCanShow({
@@ -93,7 +91,6 @@ describe('editModeAnnouncementCanShow (never-stack chain gate)', () => {
         guideIntroVisible: false,
         lookAndFeelVisible: false,
         reviewSetupVisible: false,
-        analysisIntroVisible: false,
       }),
     ).toBe(true);
   });

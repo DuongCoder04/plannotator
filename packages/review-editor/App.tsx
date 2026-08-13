@@ -22,10 +22,7 @@ import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/u
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
-import {
-  markLookAndFeelAnnouncementSeen,
-  needsLookAndFeelAnnouncement,
-} from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { markLookAndFeelChoiceResolved, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, AgentJobInfo, type ArtifactAnnotationMeta, type CallFlowAnnotationTarget } from '@plannotator/ui/types';
 import type { CommentAskAIHandler } from '@plannotator/ui/components/CommentPopover';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
@@ -62,6 +59,7 @@ import type { ReviewSidebarTab } from './components/ReviewSidebar';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
 import { useSidebar } from '@plannotator/ui/hooks/useSidebar';
+import { useViewportEnvironment } from '@plannotator/ui/hooks/useViewportEnvironment';
 import { FileTree } from './components/FileTree';
 import { StackedPRLabel } from './components/StackedPRLabel';
 import { PRSelector } from './components/PRSelector';
@@ -123,13 +121,7 @@ import {
   markEditModeAnnouncementSeen,
   needsEditModeAnnouncement,
 } from './utils/editModeAnnouncement';
-import { ReviewAnalysisIntroDialog } from './components/ReviewAnalysisIntroDialog';
 import { ExternalLineAnnotationComposer } from './components/ExternalLineAnnotationComposer';
-import {
-  markReviewAnalysisIntroSeen,
-  needsReviewAnalysisIntro,
-  reviewAnalysisIntroCanShow,
-} from './utils/reviewAnalysisIntro';
 import { DestinationSpotlight } from './components/DestinationSpotlight';
 import { needsDestinationSpotlight, markDestinationSpotlightSeen } from './utils/destinationSpotlight';
 import { TextShimmer } from '@plannotator/ui/components/TextShimmer';
@@ -217,6 +209,7 @@ function orderFilesBySections(files: DiffFile[], sections?: SinceBaseSections | 
 const RESIZE_HANDLE_TOOLTIP = 'Click to close · Drag to resize';
 
 const ReviewApp: React.FC = () => {
+  useViewportEnvironment();
   const { resolvedMode } = useTheme();
   const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [files, setFiles] = useState<DiffFile[]>([]);
@@ -295,8 +288,8 @@ const ReviewApp: React.FC = () => {
   const semanticDiffEnabled = useConfigValue('semanticDiffEnabled');
   const callFlowEnabled = useConfigValue('callFlowEnabled');
   const confirmedAnalysisSettings = useRef({ semanticDiff: semanticDiffEnabled, callFlow: callFlowEnabled });
-  // Global plan-look preference; surfaced here only by the shared 0.20.0
-  // look-and-feel announcement (the grid/clean chooser applies to plan review).
+  // Global plan-look preference. Code review can resolve this shared first-use
+  // choice even though the visual result applies to plan/document surfaces.
   const gridEnabled = useConfigValue('gridEnabled');
 
   // Load custom diff font and override --font-mono for surrounding review elements
@@ -734,21 +727,21 @@ const ReviewApp: React.FC = () => {
       setAiDefaultProvider(defaultProvider);
     },
   });
-  // The 0.20.0 release / look-and-feel announcement also runs in code review.
-  // Seen-state is a shared cookie (host-scoped), so dismissing it in either app
-  // suppresses it in the other — it appears once across both.
+  // The explicit choice marker is shared, so resolving this in either app
+  // suppresses the chooser everywhere without release-version milestones.
   const [showLookAndFeel, setShowLookAndFeel] = useState(needsLookAndFeelAnnouncement);
   const dismissLookAndFeel = useCallback(() => {
-    markLookAndFeelAnnouncementSeen();
+    configStore.set('gridEnabled', gridEnabled);
+    markLookAndFeelChoiceResolved();
     setShowLookAndFeel(false);
-  }, []);
+  }, [gridEnabled]);
   // One-time guided-review intro dialog + header Guide-button hint. The hint
   // (shimmer + dot) is independent of the dialog: it runs until the first
   // Guide click, even for users who dismissed the dialog without reading.
   const [showGuideIntro, setShowGuideIntro] = useState(needsGuideIntro);
   const [guideHintActive, setGuideHintActive] = useState(needsGuideHint);
   // FIRST in the dialog chain (guide intro → look-and-feel → review setup →
-  // analysis → edit mode). The intro only shows when a Guide button exists to point at
+  // edit mode). The intro only shows when a Guide button exists to point at
   // (hasSearchableFiles) — on an empty diff it is skipped WITHOUT consuming
   // the one-shot cookie, so the next session with files shows it. The other
   // chain dialogs' gates must use this same visibility (not the raw
@@ -773,24 +766,8 @@ const ReviewApp: React.FC = () => {
     markGuideHintSeen();
     setGuideHintActive(false);
   }, [guideOpen, guideHintActive]);
-  // One-time review-analysis chooser. Fourth in the no-stack chain, after
-  // review setup and before the Edit Mode announcement. The values are the
-  // real reviewAnalysis settings, so this chooser and Settings stay in sync.
-  const [analysisIntroPending, setAnalysisIntroPending] = useState(needsReviewAnalysisIntro);
-  const analysisIntroVisible = reviewAnalysisIntroCanShow({
-    introPending: analysisIntroPending,
-    isLoading,
-    guideIntroVisible,
-    lookAndFeelVisible: showLookAndFeel,
-    reviewSetupVisible: showReviewSetup,
-  });
-  const dismissAnalysisIntro = useCallback(() => {
-    markReviewAnalysisIntroSeen();
-    setAnalysisIntroPending(false);
-  }, []);
-
   // One-time Edit Mode (edit-to-suggest) announcement. LAST in the dialog
-  // chain (guide intro → look-and-feel → review setup → analysis → edit mode) — the
+  // chain (guide intro → look-and-feel → review setup → edit mode) — the
   // chain dialogs never stack. Skipped forever when the user already enabled
   // the setting from Settings (latched at mount so enabling from the dialog
   // itself doesn't unmount it mid-click).
@@ -803,7 +780,6 @@ const ReviewApp: React.FC = () => {
     guideIntroVisible,
     lookAndFeelVisible: showLookAndFeel,
     reviewSetupVisible: showReviewSetup,
-    analysisIntroVisible,
   });
   const dismissEditModeIntro = useCallback(() => {
     markEditModeAnnouncementSeen();
@@ -1394,10 +1370,11 @@ const ReviewApp: React.FC = () => {
   }, [applyCallFlowAdvert, applySemanticDiffAdvert, retryCallFlowAnalysis]);
 
   const callFlowInstall = useCallFlowInstall(refreshAnalysisAdverts);
-  // A version bump to the analysis intro re-establishes consent for automatic
-  // installs. Existing Call flow users do not start background work until the
-  // updated disclosure has appeared in the normal no-stack dialog chain.
-  useCallFlowAutoInstall(callFlowEnabled, !analysisIntroPending, callFlowAdvert, callFlowInstall);
+  // Call flow is off by default. Enabling it in Settings is the explicit
+  // consent gesture for its server-authored managed install; an enabled saved
+  // preference keeps that consent across review sessions without another
+  // startup dialog.
+  useCallFlowAutoInstall(callFlowEnabled, true, callFlowAdvert, callFlowInstall);
   const callFlowSetupPending = callFlowEnabled
     && callFlowAdvert.installable === true
     && callFlowAdvert.installPlan !== undefined
@@ -3338,7 +3315,7 @@ const ReviewApp: React.FC = () => {
   if (isLoading) {
     return (
       <ThemeProvider defaultTheme="dark">
-        <div className="h-screen flex items-center justify-center bg-background">
+        <div className="pn-app-viewport flex items-center justify-center bg-background">
           <div className="text-muted-foreground text-sm">Loading diff...</div>
         </div>
       </ThemeProvider>
@@ -3351,7 +3328,7 @@ const ReviewApp: React.FC = () => {
       <ReviewStateProvider value={reviewStateValue}>
       <JobLogsProvider value={jobLogsValue}>
       {isSwitchingPRScope && <PRSwitchOverlay />}
-      <div className="h-screen flex flex-col bg-background overflow-hidden">
+      <div className="pn-app-viewport flex flex-col bg-background overflow-hidden">
         {/* Header */}
         <header className="py-1 flex flex-col min-[480px]:flex-row items-stretch min-[480px]:items-center min-[480px]:justify-between gap-1 min-[480px]:gap-0 px-2 lg:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl z-50">
           <div className="min-w-0 flex flex-1 items-center gap-2 lg:gap-3">
@@ -4277,10 +4254,10 @@ const ReviewApp: React.FC = () => {
           showCancel
         />
 
-        {/* 0.20.0 look-and-feel / release announcement. Shared with the plan
-            editor via a host-scoped cookie, so it shows once across both apps.
+        {/* First-use Grid/Clean choice. Its explicit-choice marker is shared
+            with the plan editor, so resolving it in either app suppresses it everywhere.
             Second in the dialog chain (guide intro → look-and-feel → review
-            setup → analysis → edit mode) — the chain dialogs never stack. */}
+            setup → edit mode) — the chain dialogs never stack. */}
         <LookAndFeelAnnouncementDialog
           isOpen={showLookAndFeel && !guideIntroVisible}
           gridEnabled={gridEnabled}
@@ -4289,7 +4266,7 @@ const ReviewApp: React.FC = () => {
         />
 
         {/* One-time guided-review intro. First in the dialog chain, ahead of
-            the look-and-feel announcement, review setup, analysis chooser, and edit-mode
+            the look-and-feel chooser, review setup, and edit-mode
             announcement — the chain dialogs never stack. */}
         {guideIntroVisible && (
           <GuideIntroDialog
@@ -4303,7 +4280,7 @@ const ReviewApp: React.FC = () => {
 
         {/* First-run review-view chooser (panel view + tree default diff).
             Third in the dialog chain (guide intro → look-and-feel → review
-            setup → analysis → edit mode) so the chain dialogs never stack. On dismiss,
+            setup → edit mode) so the chain dialogs never stack. On dismiss,
             apply the chosen default to the current session. */}
         {showReviewSetup && !showLookAndFeel && !guideIntroVisible && (
           <ReviewSetupDialog
@@ -4324,22 +4301,8 @@ const ReviewApp: React.FC = () => {
           />
         )}
 
-        {/* One-time analysis-layer chooser. Fourth in the dialog chain. Its
-            switches write the same reviewAnalysis settings used by Settings
-            and the live server capability handshake. */}
-        {analysisIntroVisible && (
-          <ReviewAnalysisIntroDialog
-            isOpen
-            semanticChangesEnabled={semanticDiffEnabled}
-            callFlowEnabled={callFlowEnabled}
-            onSemanticChangesChange={(enabled) => configStore.set('semanticDiffEnabled', enabled)}
-            onCallFlowChange={(enabled) => configStore.set('callFlowEnabled', enabled)}
-            onDismiss={dismissAnalysisIntro}
-          />
-        )}
-
         {/* One-time Edit Mode (edit-to-suggest) announcement. LAST in the
-            dialog chain (guide intro → look-and-feel → review setup → analysis
+            dialog chain (guide intro → look-and-feel → review setup
             → edit mode) — editModeAnnouncementCanShow gates on every earlier dialog, so the
             chain dialogs never stack. */}
         {editModeIntroVisible && (
@@ -4352,10 +4315,10 @@ const ReviewApp: React.FC = () => {
 
         {/* One-time PR feedback-destination spotlight. Strictly AFTER the
             first-run dialog chain (guide intro → look-and-feel → review
-            setup → analysis → edit mode): it only mounts once none of the five is
+            setup → edit mode): it only mounts once none of the four is
             showing, so it never stacks with them. PR mode only — the switcher
             it points at doesn't render otherwise. */}
-        {showDestSpotlight && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !showReviewSetup && !analysisIntroVisible && !editModeIntroVisible && (
+        {showDestSpotlight && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !showReviewSetup && !editModeIntroVisible && (
           <DestinationSpotlight
             targetRef={destToggleRef}
             platformLabel={platformLabel}

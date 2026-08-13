@@ -30,9 +30,7 @@ import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { configStore, useConfigValue } from '@plannotator/ui/config';
 import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay';
 import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
-import { PlanAIAnnouncementDialog } from '@plannotator/ui/components/PlanAIAnnouncementDialog';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
-import { VimModeAnnouncementDialog } from '@plannotator/ui/components/VimModeAnnouncementDialog';
 import { getObsidianSettings, getEffectiveVaultPath, isObsidianConfigured, CUSTOM_PATH_SENTINEL } from '@plannotator/ui/utils/obsidian';
 import { getBearSettings } from '@plannotator/ui/utils/bear';
 import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils/octarine';
@@ -42,9 +40,7 @@ import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
 import { type AIProviderOption } from '@plannotator/ui/utils/aiProvider';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
-import { markPlanAIAnnouncementSeen, needsPlanAIAnnouncement } from '@plannotator/ui/utils/planAIAnnouncement';
-import { markLookAndFeelAnnouncementSeen, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
-import { markVimModeAnnouncementSeen, needsVimModeAnnouncement } from '@plannotator/ui/utils/vimModeAnnouncement';
+import { markLookAndFeelChoiceResolved, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
 import { buildDefaultPrompt, useAIChat } from '@plannotator/ui/hooks/useAIChat';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
@@ -59,6 +55,7 @@ import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea'
 import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
 import { useOverlayViewport } from '@plannotator/ui/hooks/useOverlayViewport';
 import { useIsMobile } from '@plannotator/ui/hooks/useIsMobile';
+import { useViewportEnvironment } from '@plannotator/ui/hooks/useViewportEnvironment';
 import {
   getPermissionModeSettings,
   needsPermissionModeSetup,
@@ -280,6 +277,7 @@ type SourceFileEditWarningAction = 'send-feedback' | 'approve' | 'close';
 const RESIZE_HANDLE_TOOLTIP = 'Click to close · Drag to resize';
 
 const App: React.FC = () => {
+  useViewportEnvironment();
   const [markdown, setMarkdown] = useState(DEMO_PLAN_CONTENT);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const annotationsRef = useRef<Annotation[]>(annotations);
@@ -517,9 +515,7 @@ const App: React.FC = () => {
       setAiDefaultProvider(defaultProvider);
     },
   });
-  const [showPlanAIAnnouncement, setShowPlanAIAnnouncement] = useState(needsPlanAIAnnouncement);
   const [showLookAndFeelAnnouncement, setShowLookAndFeelAnnouncement] = useState(needsLookAndFeelAnnouncement);
-  const [showVimModeAnnouncement, setShowVimModeAnnouncement] = useState(needsVimModeAnnouncement);
   const isMobile = useIsMobile();
 
   const viewerRef = useRef<ViewerHandle>(null);
@@ -635,23 +631,15 @@ const App: React.FC = () => {
     setIsPanelOpen(prev => rightSidebarTab === 'annotations' ? !prev : true);
   }, [exitWideMode, rightSidebarTab, wideModeType]);
 
-  const dismissPlanAIAnnouncement = useCallback(() => {
-    markPlanAIAnnouncementSeen();
-    setShowPlanAIAnnouncement(false);
-  }, []);
-
   const dismissLookAndFeelAnnouncement = useCallback(() => {
-    markLookAndFeelAnnouncementSeen();
+    // Persist even when the user accepts the displayed default without first
+    // clicking its already-selected card, then record the explicit decision.
+    configStore.set('gridEnabled', gridEnabled);
+    markLookAndFeelChoiceResolved();
     setShowLookAndFeelAnnouncement(false);
-  }, []);
-
-  const dismissVimModeAnnouncement = useCallback(() => {
-    markVimModeAnnouncementSeen();
-    setShowVimModeAnnouncement(false);
-  }, []);
+  }, [gridEnabled]);
 
   const handleAIChatToggle = useCallback(() => {
-    dismissPlanAIAnnouncement();
     if (wideModeType !== null) {
       exitWideMode({ restore: false, panelOpen: true });
       setRightSidebarTab('ai');
@@ -659,7 +647,7 @@ const App: React.FC = () => {
     }
     setRightSidebarTab('ai');
     setIsPanelOpen(prev => rightSidebarTab === 'ai' ? !prev : true);
-  }, [dismissPlanAIAnnouncement, exitWideMode, rightSidebarTab, wideModeType]);
+  }, [exitWideMode, rightSidebarTab, wideModeType]);
 
   const hideAgentTerminal = useCallback(() => {
     setIsAgentTerminalOpen(false);
@@ -3669,15 +3657,9 @@ const App: React.FC = () => {
     setIsPanelOpen(true);
   }, [exitWideMode, wideModeType]);
 
-  const handleOpenAIAnnouncement = useCallback(() => {
-    dismissPlanAIAnnouncement();
-    openAIChat();
-  }, [dismissPlanAIAnnouncement, openAIChat]);
-
   const handleAskAI = useCallback((question: string, context?: CommentAskAIContext): boolean => {
     if (isAgentTerminalReady) {
       if (sendToAgentTerminal(buildAgentAskPrompt(question, context))) {
-        dismissPlanAIAnnouncement();
         return true;
       }
       handleAgentTerminalReadyChange(false);
@@ -3691,7 +3673,6 @@ const App: React.FC = () => {
       toast.error('Ask AI is unavailable');
       return false;
     }
-    dismissPlanAIAnnouncement();
     openAIChat();
     askAI({
       prompt: question,
@@ -3711,7 +3692,6 @@ const App: React.FC = () => {
     askAI,
     buildAgentAskPrompt,
     canUseAI,
-    dismissPlanAIAnnouncement,
     handleAgentTerminalReadyChange,
     isAgentTerminalReady,
     openAIChat,
@@ -4219,7 +4199,6 @@ const App: React.FC = () => {
     return widths[uiPrefs.planWidth] ?? 832;
   }, [uiPrefs.planWidth]);
   const annotateReaderMaxWidth = canUseWideMode && wideModeType === 'wide' ? null : planMaxWidth;
-  const selectedAIProvider = aiProviders.find(provider => provider.id === aiConfig.providerId) ?? null;
   const showAgentTerminalControls =
     annotateMode &&
     annotateSource !== 'message' &&
@@ -4238,32 +4217,10 @@ const App: React.FC = () => {
     !isSharedSession &&
     !goalSetupMode &&
     !showPermissionModeSetup;
-  const shouldShowVimModeAnnouncement =
-    showVimModeAnnouncement &&
-    !shouldShowLookAndFeelAnnouncement &&
-    !isSharedSession &&
-    !archive.archiveMode &&
-    !goalSetupMode &&
-    !showPermissionModeSetup &&
-    !submitted;
-  const shouldShowPlanAIAnnouncement =
-    showPlanAIAnnouncement &&
-    !shouldShowLookAndFeelAnnouncement &&
-    !shouldShowVimModeAnnouncement &&
-    canUseAI &&
-    aiSessionEnabled &&
-    isApiMode &&
-    !isSharedSession &&
-    !archive.archiveMode &&
-    !goalSetupMode &&
-    !showPermissionModeSetup &&
-    !submitted;
-
-
   if (isLoading && !isSharedSession) {
     return (
       <ThemeProvider defaultTheme="dark">
-        <div className="h-screen bg-background" />
+        <div className="pn-app-viewport bg-background" />
       </ThemeProvider>
     );
   }
@@ -4271,7 +4228,7 @@ const App: React.FC = () => {
   return (
     <ThemeProvider defaultTheme="dark">
       <TooltipProvider delayDuration={900} skipDelayDuration={200} disableHoverableContent>
-      <div data-print-region="root" className="h-screen flex flex-col bg-background overflow-hidden">
+      <div data-print-region="root" className="pn-app-viewport flex flex-col bg-background overflow-hidden">
         <AppHeader
           htmlSurface={isHtmlSurface}
           htmlToolsHidden={htmlToolsHidden}
@@ -5203,30 +5160,11 @@ const App: React.FC = () => {
           agentLabel={agentName}
         />
 
-        <PlanAIAnnouncementDialog
-          isOpen={shouldShowPlanAIAnnouncement}
-          origin={origin}
-          providerName={selectedAIProvider?.name ?? null}
-          providers={aiProviders}
-          onSelectProvider={(providerId) => handleAIConfigChange({ providerId })}
-          onOpenAI={handleOpenAIAnnouncement}
-          onDismiss={dismissPlanAIAnnouncement}
-        />
-
         <LookAndFeelAnnouncementDialog
           isOpen={shouldShowLookAndFeelAnnouncement}
           gridEnabled={gridEnabled}
           onToggleGrid={(v) => configStore.set('gridEnabled', v)}
           onDismiss={dismissLookAndFeelAnnouncement}
-        />
-
-        <VimModeAnnouncementDialog
-          isOpen={shouldShowVimModeAnnouncement}
-          vimModeEnabled={vimModeEnabled}
-          vimHudEnabled={vimHudEnabled}
-          onVimModeChange={(enabled) => configStore.set('vimModeEnabled', enabled)}
-          onVimHudChange={(enabled) => configStore.set('vimHudEnabled', enabled)}
-          onDismiss={dismissVimModeAnnouncement}
         />
 
         {/* Image Annotator for pasted images */}

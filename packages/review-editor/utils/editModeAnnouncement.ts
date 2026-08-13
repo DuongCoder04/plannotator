@@ -41,13 +41,11 @@ export interface EditModeAnnouncementGateState {
   lookAndFeelVisible: boolean;
   /** Review setup chooser is open (third in the chain). */
   reviewSetupVisible: boolean;
-  /** Review-analysis chooser is open (fourth in the chain). */
-  analysisIntroVisible: boolean;
 }
 
 /**
  * Chain gate for the announcement dialog. It is LAST in the first-run dialog
- * chain (guide intro, then look-and-feel, review setup, analysis, then this) and
+ * chain (guide intro, then look-and-feel, review setup, then this) and
  * must never stack with any of them. Waiting for isLoading to clear matters:
  * showReviewSetup only latches during the initial diff load, so rendering
  * earlier could flash this dialog under a chain that is about to open.
@@ -58,7 +56,6 @@ export function editModeAnnouncementCanShow(state: EditModeAnnouncementGateState
     !state.isLoading &&
     !state.guideIntroVisible &&
     !state.lookAndFeelVisible &&
-    !state.reviewSetupVisible &&
-    !state.analysisIntroVisible
+    !state.reviewSetupVisible
   );
 }

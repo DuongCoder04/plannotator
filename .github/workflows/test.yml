@@ -112,7 +112,6 @@ jobs:
           packages/review-editor/components/PanelChrome.test.tsx
           packages/review-editor/components/FileTree.search-placement.test.tsx
           packages/review-editor/components/FileTreeNode.controls.test.tsx
-          packages/review-editor/components/ReviewAnalysisIntroDialog.test.tsx
           packages/ui/components/Settings.analysis.test.tsx
           packages/ui/components/AnnotationPanel.props.test.tsx
           packages/ui/components/Viewer.consumer.test.tsx

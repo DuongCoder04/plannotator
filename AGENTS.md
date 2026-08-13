@@ -220,7 +220,7 @@ The default code-review diff is **`since-base`** — a composite of `merge-base(
 
 **Staging display invariant:** `useGitAdd`'s `stagedFiles` is the EFFECTIVE staged set (sections-sidecar snapshot + session stage/unstage overrides) and is the only source any surface may render staging state from. The sidecar entry's `staged` flag is a snapshot — ORing it back in makes files unstaged mid-session render as staged (and inverts the next toggle).
 
-`since-base` is only offered when the base ref actually resolves — on a repo whose trunk isn't discoverable (`trunk`, no `origin/HEAD`) `getGitContext` omits it and the default falls through to `uncommitted`, so committed branch work is never silently hidden. The since-base patch/sections/fingerprint/file-content paths all degrade to `HEAD` together when merge-base fails for a resolvable-but-unrelated base. First-run shows `ReviewSetupDialog` (replaces the removed `DiffTypeSetupDialog`), which initializes an unseen reviewer's panel to Tree once while preserving the resolved diff default, and is reopenable from the review header menu. The versioned one-time dialog chain is guide intro → look-and-feel → review setup → analysis layers → Edit Mode; none of the dialogs stack.
+`since-base` is only offered when the base ref actually resolves — on a repo whose trunk isn't discoverable (`trunk`, no `origin/HEAD`) `getGitContext` omits it and the default falls through to `uncommitted`, so committed branch work is never silently hidden. The since-base patch/sections/fingerprint/file-content paths all degrade to `HEAD` together when merge-base fails for a resolvable-but-unrelated base. First-run shows `ReviewSetupDialog` (replaces the removed `DiffTypeSetupDialog`), which initializes an unseen reviewer's panel to Tree once while preserving the resolved diff default, and is reopenable from the review header menu. The one-time dialog chain is guide intro → look-and-feel → review setup → Edit Mode; none of the dialogs stack. Analysis layers no longer add a startup dialog: Semantic Changes retains its enabled default, while Call Flow remains disabled until the user explicitly enables it in Settings, which is also consent for its managed runtime installation.
 
 ### GitButler review invariants
 
@@ -249,7 +249,7 @@ Ask AI providers are detected independently from installed/authenticated local C
 | `copilot-cli` | no dedicated provider; fallback to saved/server default |
 | `gemini-cli` | no dedicated provider; fallback to saved/server default |
 
-Per-origin choices are persisted in cookies, so a user can override the automatic match for one agent without changing the default for another.
+Automatic resolution is session-only and never writes a preference. Explicit per-origin choices are persisted in cookies, so a user can override the automatic match for one agent without changing the default for another.
 
 > **Codex transport note:** the `codex-sdk` provider id is a stable identifier only — it no longer uses `@openai/codex-sdk` / `codex exec`. It drives a long-lived `codex app-server` process over JSON-RPC (`packages/ai/providers/codex-app-server.ts`), which respects the user's/enterprise-managed approval policy and supports interactive Allow/Deny approvals. The id stays `codex-sdk` to preserve saved cookie preferences, the `agents.ts` mapping, and the UI reasoning-effort gate.
 
