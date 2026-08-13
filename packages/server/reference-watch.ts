@@ -166,6 +166,9 @@ function ensureWatcher(target: WatchTarget): WatchEntry {
 		entry.gitWatcher = chokidar.watch(gitWatchPaths, {
 			ignoreInitial: true,
 			persistent: true,
+			// These are exact metadata files. Keep this non-recursive so a future
+			// target cannot make startup walk the repository's entire refs tree.
+			depth: 0,
 			awaitWriteFinish: {
 				stabilityThreshold: 80,
 				pollInterval: 30,
