@@ -49,7 +49,7 @@ import {
 	resolveAllowedDocPath,
 	type FolderAnnotateHistory,
 } from "./reference.ts";
-import { handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
+import { closeAllFileBrowserWatchers, handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
 import { getExtraMarkdownExtensions, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
 import { createExternalAnnotationHandler } from "./external-annotations.ts";
 import { createNodeAgentTerminalBridge } from "./agent-terminal.ts";
@@ -288,10 +288,11 @@ export async function startAnnotateServer(options: {
 	// when rendering HTML. Only single local files (not URLs/folders/messages).
 	const annotateProjectName = options.project ?? "_unknown";
 	const annotateHistoryEnabled = resolveAnnotateHistory(loadConfig());
-	// Single local file sessions are the only ones the annotate-history contract
-	// covers: URL / folder / agent-message sessions never write session content
-	// to the data dir. Both the version history below and the durable submit
-	// records share this gate.
+	// Single local file sessions are the only ones this eager gate covers.
+	// URL and agent-message sessions never write session content to the data
+	// dir. Folder sessions do participate in per-file version history, but
+	// lazily through /api/doc (see computeFolderAnnotateHistory below), not
+	// here. The durable submit records stay single-local-file only.
 	const singleFileLocalAnnotate =
 		(options.mode || "annotate") === "annotate" && !/^https?:\/\//i.test(options.filePath);
 	let annotateHistory: AnnotateHistoryResult | null = null;
@@ -344,10 +345,11 @@ export async function startAnnotateServer(options: {
 	// stopped reading), so there is no narrower condition to key off.
 	//
 	// Scope: identical to the version-history gate above — single local files
-	// only. annotate-last / URL / folder sessions were stateless before this
-	// record existed and STAY stateless: their submissions quote agent messages
-	// or fetched pages, which the documented annotateHistory contract never
-	// covered writing to disk.
+	// only. annotate-last / URL / folder sessions never wrote submit
+	// records and still do not: their submissions quote agent messages or
+	// fetched pages, which this record was never meant to persist. (Folder
+	// sessions do write lazy per-file version history via /api/doc; that is
+	// a separate, documented pipeline with its own gate.)
 	//
 	// Returns whether the draft delete may proceed: true when the record was
 	// written, when there was no user content to lose, or when the session
@@ -933,6 +935,9 @@ export async function startAnnotateServer(options: {
 		stop: () => {
 			// try/finally: a throwing dispose must never leave the listener bound.
 			try {
+				// First: watchers hold the embedded host process alive, and a
+				// throwing disposal below must not strand them.
+				closeAllFileBrowserWatchers();
 				clientLease.cancel();
 				// Long-lived host process: an unclosed lease stream would keep its
 				// heartbeat timer and socket alive past the session, and would keep

@@ -53,7 +53,7 @@ import {
 	handleObsidianFilesRequest,
 	handleObsidianVaultsRequest,
 } from "./reference.ts";
-import { handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
+import { closeAllFileBrowserWatchers, handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
 import { warmFileListCache } from "../generated/resolve-file.ts";
 import { isArchiveDocumentMutation } from "../generated/archive-mode.ts";
 
@@ -485,6 +485,7 @@ export async function startPlanReviewServer(options: {
 		stop: () => {
 			// try/finally: a throwing dispose must never leave the listener bound.
 			try {
+				closeAllFileBrowserWatchers();
 				aiRuntime?.dispose();
 			} finally {
 				server.close();

@@ -16,7 +16,7 @@ import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
-import { handleFileBrowserFilesStream } from "./reference-watch";
+import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
 import { getExtraMarkdownExtensions, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash, deleteDraft } from "./draft";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
@@ -215,10 +215,11 @@ export async function startAnnotateServer(
   // when rendering HTML. Only single local files (not URLs/folders/messages).
   const annotateProjectName = project ?? "_unknown";
   const annotateHistoryEnabled = resolveAnnotateHistory(loadConfig());
-  // Single local file sessions are the only ones the annotate-history contract
-  // covers: URL / folder / agent-message sessions never write session content
-  // to the data dir. Both the version history below and the durable submit
-  // records share this gate.
+  // Single local file sessions are the only ones this eager gate covers.
+  // URL and agent-message sessions never write session content to the data
+  // dir. Folder sessions do participate in per-file version history, but
+  // lazily through /api/doc (see computeFolderAnnotateHistory below), not
+  // here. The durable submit records stay single-local-file only.
   const singleFileLocalAnnotate = mode === "annotate" && !/^https?:\/\//i.test(filePath);
   let annotateHistory: AnnotateHistoryResult | null = null;
   {
@@ -275,10 +276,11 @@ export async function startAnnotateServer(
   // stopped reading), so there is no narrower condition to key off.
   //
   // Scope: identical to the version-history gate above — single local files
-  // only. annotate-last / URL / folder sessions were stateless before this
-  // record existed and STAY stateless: their submissions quote agent messages
-  // or fetched pages, which the documented annotateHistory contract never
-  // covered writing to disk.
+  // only. annotate-last / URL / folder sessions never wrote submit
+  // records and still do not: their submissions quote agent messages or
+  // fetched pages, which this record was never meant to persist. (Folder
+  // sessions do write lazy per-file version history via /api/doc; that is
+  // a separate, documented pipeline with its own gate.)
   //
   // Returns whether the draft delete may proceed: true when the record was
   // written, when there was no user content to lose, or when the session
@@ -1012,11 +1014,16 @@ export async function startAnnotateServer(
   void warmFileListCache(process.cwd(), "code");
 
   const stop = () => {
-    clientLease.cancel();
-    clientLease.closeSessions();
-    aiRuntime?.dispose();
-    agentTerminal.dispose();
-    server.stop();
+    // try/finally: a throwing disposal must never leave the listener bound.
+    try {
+      closeAllFileBrowserWatchers();
+      clientLease.cancel();
+      clientLease.closeSessions();
+      aiRuntime?.dispose();
+      agentTerminal.dispose();
+    } finally {
+      server.stop();
+    }
   };
 
   // Notify caller that server is ready. An async ready handler that rejects
