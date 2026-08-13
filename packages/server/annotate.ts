@@ -17,7 +17,7 @@ import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
 import { handleFileBrowserFilesStream } from "./reference-watch";
-import { resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
+import { getExtraMarkdownExtensions, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash, deleteDraft } from "./draft";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
@@ -521,6 +521,10 @@ export async function startAnnotateServer(
               repoInfo,
               projectRoot: folderPath || process.cwd(),
               isWSL: wslFlag,
+              // Extra extensions the user registered as markdown (#1307).
+              // The renderer needs them to linkify relative/wiki links to
+              // sibling docs the same way it linkifies .md ones.
+              markdownExtensions: getExtraMarkdownExtensions(),
               serverConfig: getServerConfig(gitUser),
               agentTerminal: agentTerminal.capability,
               ...(recentMessages ? { recentMessages } : {}),

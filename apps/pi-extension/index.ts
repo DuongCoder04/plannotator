@@ -111,8 +111,8 @@ async function loadAnnotateCommandModules() {
 		hasMarkdownFiles: resolveFile.hasMarkdownFiles,
 		resolveUserPath: resolveFile.resolveUserPath,
 		isAnnotatableTextPath: resolveFile.isAnnotatableTextPath,
-		ANNOTATABLE_DOC_REGEX: resolveFile.ANNOTATABLE_DOC_REGEX,
-		ANNOTATABLE_EXTENSIONS_HINT: resolveFile.ANNOTATABLE_EXTENSIONS_HINT,
+		getAnnotatableDocRegex: resolveFile.getAnnotatableDocRegex,
+		getAnnotatableExtensionsHint: resolveFile.getAnnotatableExtensionsHint,
 		MAX_ANNOTATABLE_FILE_BYTES: resolveFile.MAX_ANNOTATABLE_FILE_BYTES,
 		FILE_BROWSER_EXCLUDED: referenceCommon.FILE_BROWSER_EXCLUDED,
 	};
@@ -676,8 +676,8 @@ export default function plannotator(pi: ExtensionAPI): void {
 				resolveAtReference,
 				resolveUserPath,
 				isAnnotatableTextPath,
-				ANNOTATABLE_DOC_REGEX,
-				ANNOTATABLE_EXTENSIONS_HINT,
+				getAnnotatableDocRegex,
+				getAnnotatableExtensionsHint,
 				MAX_ANNOTATABLE_FILE_BYTES,
 			} = await loadAnnotateCommandModules();
 			// Split known annotate flags from the path. --json is silently
@@ -780,7 +780,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 				}
 
 				if (isFolder) {
-					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, ANNOTATABLE_DOC_REGEX)) {
+					if (!hasMarkdownFiles(absolutePath, FILE_BROWSER_EXCLUDED, getAnnotatableDocRegex())) {
 						ctx.ui.notify(`No annotatable files (markdown, plain-text, config, or HTML) found in ${absolutePath}`, "error");
 						return;
 					}
@@ -803,7 +803,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 				} else {
 					if (!isAnnotatableTextPath(absolutePath)) {
-						ctx.ui.notify(`File type not supported. Supported types: ${ANNOTATABLE_EXTENSIONS_HINT}`, "error");
+						ctx.ui.notify(`File type not supported. Supported types: ${getAnnotatableExtensionsHint()}`, "error");
 						return;
 					}
 					if (statSync(absolutePath).size > MAX_ANNOTATABLE_FILE_BYTES) {

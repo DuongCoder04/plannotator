@@ -22,8 +22,11 @@ import { loadConfig, resolveUseJina } from "@plannotator/shared/config";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
 import { FILE_BROWSER_EXCLUDED } from "@plannotator/shared/reference-common";
 import {
-  ANNOTATABLE_DOC_REGEX,
-  ANNOTATABLE_EXTENSIONS_HINT,
+  buildAnnotatableDocRegex,
+  buildAnnotatableExtensionsHint,
+} from "@plannotator/shared/annotatable";
+import {
+  getExtraMarkdownExtensions,
   MAX_ANNOTATABLE_FILE_BYTES,
   hasMarkdownFiles,
   resolveMarkdownFile,
@@ -59,9 +62,17 @@ export async function resolveAnnotateTarget(options: {
   projectRoot: string;
   noJina: boolean;
   renderMarkdown: boolean;
+  /**
+   * Extra extensions the user registered as markdown (#1307). Defaults to the
+   * process-wide set resolved from config.json; passed explicitly by callers
+   * that already hold a resolved list.
+   */
+  extraMarkdownExtensions?: readonly string[];
   log?: (line: string) => void;
 }): Promise<AnnotateResolutionResult> {
   const { rawFilePath, projectRoot, noJina, renderMarkdown } = options;
+  const extraMarkdownExtensions =
+    options.extraMarkdownExtensions ?? getExtraMarkdownExtensions();
   const log = options.log ?? ((line: string) => console.error(line));
 
   // Primary resolution strips the `@` reference marker; rawFilePath is
@@ -119,7 +130,7 @@ export async function resolveAnnotateTarget(options: {
   if (folderCandidate !== null) {
     const resolvedArg = resolveUserPath(folderCandidate, projectRoot);
     // Folder annotation mode (markdown/plain text/config + HTML files)
-    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, ANNOTATABLE_DOC_REGEX)) {
+    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex(extraMarkdownExtensions))) {
       return {
         ok: false,
         notFound: false,
@@ -174,9 +185,9 @@ export async function resolveAnnotateTarget(options: {
 
   // Single markdown/plain-text file annotation mode
   // Strip-first with literal-@ fallback (scoped-package-style names).
-  let resolved = resolveMarkdownFile(filePath, projectRoot);
+  let resolved = resolveMarkdownFile(filePath, projectRoot, { extraMarkdownExtensions });
   if (resolved.kind === "not_found" && rawFilePath !== filePath) {
-    resolved = resolveMarkdownFile(rawFilePath, projectRoot);
+    resolved = resolveMarkdownFile(rawFilePath, projectRoot, { extraMarkdownExtensions });
   }
 
   if (resolved.kind === "ambiguous") {
@@ -201,7 +212,7 @@ export async function resolveAnnotateTarget(options: {
         notFound: false,
         message:
           `File type not supported: ${ext}\n` +
-          `Supported types: ${ANNOTATABLE_EXTENSIONS_HINT}\n` +
+          `Supported types: ${buildAnnotatableExtensionsHint(extraMarkdownExtensions)}\n` +
           `For code review, use: plannotator review [file]`,
       };
     }

@@ -50,7 +50,7 @@ import {
 	type FolderAnnotateHistory,
 } from "./reference.ts";
 import { handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
-import { resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
+import { getExtraMarkdownExtensions, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
 import { createExternalAnnotationHandler } from "./external-annotations.ts";
 import { createNodeAgentTerminalBridge } from "./agent-terminal.ts";
 import {
@@ -579,6 +579,10 @@ export async function startAnnotateServer(options: {
 				pasteApiUrl,
 				repoInfo,
 				projectRoot: options.folderPath || process.cwd(),
+				// Extra extensions the user registered as markdown (#1307).
+				// The renderer needs them to linkify relative/wiki links to
+				// sibling docs the same way it linkifies .md ones.
+				markdownExtensions: getExtraMarkdownExtensions(),
 				serverConfig: getServerConfig(gitUser),
 				agentTerminal: agentTerminalCapability,
 				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
