@@ -172,12 +172,17 @@ interface DiffViewerProps {
   onDeleteAnnotation: (id: string) => void;
   isViewed?: boolean;
   onToggleViewed?: () => void;
+  /** Chrome preference (#1277): false hides the header Viewed button; the `V`
+   *  shortcut and viewed state are unaffected. */
+  showViewedControls?: boolean;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   isStaged?: boolean;
   isStaging?: boolean;
   onStage?: () => void;
   canStage?: boolean;
+  /** Same preference for the header Git Add button (`A` shortcut still works). */
+  showStageControls?: boolean;
   stageError?: string | null;
   searchQuery?: string;
   searchMatches?: ReviewSearchMatch[];
@@ -227,12 +232,14 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onDeleteAnnotation,
   isViewed = false,
   onToggleViewed,
+  showViewedControls = true,
   collapsed = false,
   onToggleCollapsed,
   isStaged = false,
   isStaging = false,
   onStage,
   canStage = false,
+  showStageControls = true,
   stageError,
   searchQuery = '',
   searchMatches = [],
@@ -716,6 +723,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         oldPath={oldPath}
         isViewed={isViewed}
         onToggleViewed={onToggleViewed}
+        showViewedControl={showViewedControls}
         collapseToggle={onToggleCollapsed && (
           <svg
             className={`mr-1.5 h-3.5 w-3.5 flex-none text-muted-foreground transition-transform ${collapsed ? '-rotate-90' : 'rotate-0'}`}
@@ -732,6 +740,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         isStaging={isStaging}
         onStage={onStage}
         canStage={canStage}
+        showStageControl={showStageControls}
         stageError={stageError}
         onFileComment={setFileCommentAnchor}
       />

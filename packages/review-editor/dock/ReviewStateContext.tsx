@@ -128,6 +128,11 @@ export interface ReviewState {
   // Viewed / staged
   viewedFiles: Set<string>;
   onToggleViewed: (filePath: string) => void;
+  /** Cookie-only chrome preference (#1277): hide the Viewed controls everywhere
+   *  they render. Shortcuts and viewed state itself are unaffected. */
+  showViewedControls: boolean;
+  /** Same preference for the Git-add (stage) controls. */
+  showStageControls: boolean;
   stagedFiles: Set<string>;
   stagingFile: string | null;
   onStage: (filePath: string) => void;

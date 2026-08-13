@@ -14,10 +14,15 @@ interface FileHeaderProps {
   oldPath?: string;
   isViewed?: boolean;
   onToggleViewed?: () => void;
+  /** Chrome preference: false hides the Viewed button (the `V` shortcut and
+   *  viewed state are unaffected). */
+  showViewedControl?: boolean;
   isStaged?: boolean;
   isStaging?: boolean;
   onStage?: () => void;
   canStage?: boolean;
+  /** Same preference for the Git Add button (the `A` shortcut still works). */
+  showStageControl?: boolean;
   stageError?: string | null;
   onFileComment?: (anchorEl: HTMLElement) => void;
   /**
@@ -105,10 +110,12 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   oldPath,
   isViewed = false,
   onToggleViewed,
+  showViewedControl = true,
   isStaged = false,
   isStaging = false,
   onStage,
   canStage = false,
+  showStageControl = true,
   stageError,
   onFileComment,
   fileCommentButtonRef,
@@ -200,7 +207,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
         )}
       </div>
       <div className={`flex flex-shrink-0 items-center pl-2 ${isCompact ? 'gap-1' : 'gap-2'}`}>
-        {onToggleViewed && (
+        {showViewedControl && onToggleViewed && (
           <button
             onClick={onToggleViewed}
             className={`text-xs rounded transition-colors flex items-center ${viewedLabel ? 'gap-1 px-2 py-1' : 'px-1.5 py-1'} ${
@@ -222,7 +229,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
             {viewedLabel && <span>{viewedLabel}</span>}
           </button>
         )}
-        {canStage && onStage && (
+        {showStageControl && canStage && onStage && (
           <button
             onClick={onStage}
             disabled={isStaging}

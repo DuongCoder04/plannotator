@@ -206,9 +206,14 @@ interface AllFilesCodeViewProps {
   onAddFileCommentForFile?: (filePath: string, text: string) => void;
   viewedFiles?: Set<string>;
   onToggleViewed?: (filePath: string) => void;
+  /** Chrome preference (#1277): false hides the header Viewed buttons; the `v`
+   *  shortcut and viewed state are unaffected. */
+  showViewedControls?: boolean;
   stagedFiles?: Set<string>;
   onStage?: (filePath: string) => void;
   canStageFiles?: boolean;
+  /** Same preference for the header Git Add buttons (`a` shortcut still works). */
+  showStageControls?: boolean;
   /** Per-file staging gate — false for committed files in since-base mode. The
    * All-files surface lists committed files too, so mode-level canStageFiles is
    * not enough; without this the `a` shortcut / header would `git add` a
@@ -493,9 +498,11 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   onAddFileCommentForFile,
   viewedFiles,
   onToggleViewed,
+  showViewedControls = true,
   stagedFiles,
   onStage,
   canStageFiles = false,
+  showStageControls = true,
   canStagePath,
   stagingFile,
   stageError,
@@ -1701,6 +1708,23 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     }
   }, [viewedFiles, stagedFiles, stagingFile, stageError, filePathToItemIds, refreshItem]);
 
+  // The control-visibility preferences affect every header at once, so a
+  // toggle refreshes all items (same slot-portal republish constraint as the
+  // per-file sync above).
+  const prevShowViewedRef = useRef(showViewedControls);
+  const prevShowStageRef = useRef(showStageControls);
+  useEffect(() => {
+    const changed =
+      prevShowViewedRef.current !== showViewedControls ||
+      prevShowStageRef.current !== showStageControls;
+    prevShowViewedRef.current = showViewedControls;
+    prevShowStageRef.current = showStageControls;
+    if (!changed || viewerRef.current == null) return;
+    for (const itemIds of filePathToItemIds.values()) {
+      for (const itemId of itemIds) refreshItem(itemId);
+    }
+  }, [showViewedControls, showStageControls, filePathToItemIds, refreshItem]);
+
   // --- Line selection through CodeView (replaces geometry-based inference) ---
 
   const handleSelectedLinesChange = useStableCallback(
@@ -2136,10 +2160,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         editDisabledReason={editDisabledReason}
         isViewed={viewedFiles?.has(filePath)}
         onToggleViewed={onToggleViewed ? () => handleToggleViewedAndCollapse(filePath, item.id) : undefined}
+        showViewedControl={showViewedControls}
         isStaged={stagedFiles?.has(filePath)}
         isStaging={stagingFile === filePath}
         onStage={onStage ? () => onStage(filePath) : undefined}
         canStage={canStagePath ? canStagePath(filePath) : canStageFiles}
+        showStageControl={showStageControls}
         stageError={stagingFile === filePath ? stageError : null}
         onFileComment={onAddFileCommentForFile ? (anchorEl) => handleFileComment(filePath, anchorEl) : undefined}
         // Eager registration so the `c` shortcut can anchor the popover for a
