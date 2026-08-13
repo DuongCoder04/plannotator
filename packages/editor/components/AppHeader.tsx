@@ -11,6 +11,9 @@ import type { UIPreferences } from '@plannotator/ui/utils/uiPreferences';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 
 interface AppHeaderProps {
+  /** Mobile document-scroll surfaces let Safari own the top edge and scroll
+   * this header with the page. Desktop keeps the incumbent sticky header. */
+  sticky?: boolean;
   /** HTML annotate surface: show a Hide/Show annotation-tools toggle in the header,
    *  so hiding leaves the rendered HTML completely free of overlay controls. */
   htmlSurface?: boolean;
@@ -94,6 +97,7 @@ interface AppHeaderProps {
 }
 
 export const AppHeader = React.memo<AppHeaderProps>(({
+  sticky = true,
   htmlSurface,
   htmlToolsHidden,
   onToggleHtmlTools,
@@ -163,7 +167,10 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   octarineConfigured,
 }) => {
   return (
-    <header data-app-header="true" className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-[50]">
+    <header
+      data-app-header="true"
+      className={`h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl z-[50] ${sticky ? 'sticky top-0' : 'relative'}`}
+    >
       <div className="flex items-center gap-2">
         <AppHeaderLogo />
         {htmlSurface && onToggleHtmlTools && (

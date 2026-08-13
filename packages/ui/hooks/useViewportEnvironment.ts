@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 export interface VisualViewportSnapshot {
   width: number;
@@ -22,6 +22,37 @@ export interface ViewportEnvironment {
   keyboardInset: number;
 }
 
+export interface ViewportEdgeInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export interface VisibleViewportBounds {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+const ZERO_ENVIRONMENT: ViewportEnvironment = {
+  width: 0,
+  height: 0,
+  offsetTop: 0,
+  offsetLeft: 0,
+  keyboardInset: 0,
+};
+
+const ZERO_INSETS: ViewportEdgeInsets = {
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+};
+
 const VIEWPORT_PROPERTIES = [
   '--pn-viewport-width',
   '--pn-viewport-height',
@@ -34,6 +65,8 @@ type ViewportProperty = (typeof VIEWPORT_PROPERTIES)[number];
 
 let subscriberCount = 0;
 let stopObserving: (() => void) | null = null;
+let currentEnvironment: ViewportEnvironment | null = null;
+const environmentListeners = new Set<() => void>();
 
 function finiteOr(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
@@ -102,6 +135,61 @@ export function calculateViewportEnvironment({
   };
 }
 
+/**
+ * Converts the observed viewport into usable fixed-position bounds. Padding
+ * and safe-area insets are inputs so positioning remains deterministic and
+ * testable instead of reading CSS environment variables in every overlay.
+ */
+export function calculateVisibleViewportBounds(
+  environment: ViewportEnvironment,
+  edgePadding = 0,
+  insets: Partial<ViewportEdgeInsets> = ZERO_INSETS,
+): VisibleViewportBounds {
+  const padding = Math.max(0, finiteOr(edgePadding, 0));
+  const safeInsets = {
+    top: Math.max(0, finiteOr(insets.top ?? 0, 0)),
+    right: Math.max(0, finiteOr(insets.right ?? 0, 0)),
+    bottom: Math.max(0, finiteOr(insets.bottom ?? 0, 0)),
+    left: Math.max(0, finiteOr(insets.left ?? 0, 0)),
+  };
+  const left = environment.offsetLeft + padding + safeInsets.left;
+  const top = environment.offsetTop + padding + safeInsets.top;
+  const right = Math.max(
+    left,
+    environment.offsetLeft + environment.width - padding - safeInsets.right,
+  );
+  const bottom = Math.max(
+    top,
+    environment.offsetTop + environment.height - padding - safeInsets.bottom,
+  );
+
+  return {
+    top: rounded(top),
+    right: rounded(right),
+    bottom: rounded(bottom),
+    left: rounded(left),
+    width: rounded(Math.max(0, right - left)),
+    height: rounded(Math.max(0, bottom - top)),
+  };
+}
+
+export function shouldUseExpandedComposer({
+  bounds,
+  coarsePointer,
+}: {
+  bounds: VisibleViewportBounds;
+  coarsePointer: boolean;
+}): boolean {
+  return coarsePointer || bounds.width < 640 || bounds.height < 420;
+}
+
+/** Returns whether the device's primary pointing input is coarse. */
+export function hasPrimaryCoarsePointer(targetWindow?: Window): boolean {
+  const resolvedWindow = targetWindow ?? (typeof window === 'undefined' ? undefined : window);
+  if (!resolvedWindow?.matchMedia) return false;
+  return resolvedWindow.matchMedia('(pointer: coarse)').matches;
+}
+
 function readViewportEnvironment(targetWindow: Window): ViewportEnvironment {
   const visualViewport = targetWindow.visualViewport;
   return calculateViewportEnvironment({
@@ -117,6 +205,25 @@ function readViewportEnvironment(targetWindow: Window): ViewportEnvironment {
         }
       : null,
   });
+}
+
+function environmentsEqual(
+  left: ViewportEnvironment | null,
+  right: ViewportEnvironment,
+): boolean {
+  return !!left
+    && left.width === right.width
+    && left.height === right.height
+    && left.offsetTop === right.offsetTop
+    && left.offsetLeft === right.offsetLeft
+    && left.keyboardInset === right.keyboardInset;
+}
+
+function getViewportEnvironmentSnapshot(): ViewportEnvironment {
+  if (currentEnvironment) return currentEnvironment;
+  if (typeof window === 'undefined') return ZERO_ENVIRONMENT;
+  currentEnvironment = readViewportEnvironment(window);
+  return currentEnvironment;
 }
 
 function cssValues(environment: ViewportEnvironment): Record<ViewportProperty, string> {
@@ -144,13 +251,17 @@ function startViewportEnvironmentObserver(
 
   const write = () => {
     animationFrame = null;
-    const nextValues = cssValues(readViewportEnvironment(targetWindow));
+    const nextEnvironment = readViewportEnvironment(targetWindow);
+    const changed = !environmentsEqual(currentEnvironment, nextEnvironment);
+    currentEnvironment = nextEnvironment;
+    const nextValues = cssValues(nextEnvironment);
     for (const property of VIEWPORT_PROPERTIES) {
       const nextValue = nextValues[property];
       if (writtenValues.get(property) === nextValue) continue;
       rootStyle.setProperty(property, nextValue);
       writtenValues.set(property, nextValue);
     }
+    if (changed) environmentListeners.forEach(listener => listener());
   };
 
   const scheduleWrite = () => {
@@ -200,6 +311,16 @@ function acquireViewportEnvironment(): () => void {
     if (subscriberCount !== 0) return;
     stopObserving?.();
     stopObserving = null;
+    currentEnvironment = null;
+  };
+}
+
+function subscribeViewportEnvironment(listener: () => void): () => void {
+  environmentListeners.add(listener);
+  const release = acquireViewportEnvironment();
+  return () => {
+    environmentListeners.delete(listener);
+    release();
   };
 }
 
@@ -209,4 +330,21 @@ function acquireViewportEnvironment(): () => void {
  */
 export function useViewportEnvironment(): void {
   useEffect(() => acquireViewportEnvironment(), []);
+}
+
+/**
+ * Reactive bounds for fixed overlays. It shares the root observer and its
+ * animation-frame coalescing, so composer consumers do not add parallel
+ * Visual Viewport listeners.
+ */
+export function useVisibleViewportBounds(edgePadding = 0): VisibleViewportBounds {
+  const environment = useSyncExternalStore(
+    subscribeViewportEnvironment,
+    getViewportEnvironmentSnapshot,
+    () => ZERO_ENVIRONMENT,
+  );
+  return useMemo(
+    () => calculateVisibleViewportBounds(environment, edgePadding),
+    [edgePadding, environment],
+  );
 }

@@ -18,6 +18,14 @@ function nextHtmlAnnId(): string {
   return `html-ann-${Date.now().toString(36)}-${(htmlAnnSeq++).toString(36)}`;
 }
 
+function htmlCommentDraftKey(
+  text: string,
+  anchor?: HtmlElementAnchor | null,
+  targetKey?: string,
+): string {
+  return `html-selection:${targetKey ?? JSON.stringify(anchor ?? null)}:${text}`;
+}
+
 interface BridgeSelectionMessage {
   type: `${typeof PREFIX}selection`;
   text: string;
@@ -481,6 +489,7 @@ export function useHtmlAnnotation({
             anchorEl: anchor,
             contextText: message.text,
             selectedText: message.text,
+            draftKey: htmlCommentDraftKey(message.text, message.anchor, message.targetKey),
           });
           // Pinpoint drafts arm shift-click multi-select: the clicked element
           // becomes the primary target of the (single) draft comment. The
@@ -585,7 +594,13 @@ export function useHtmlAnnotation({
         // the typing) — otherwise the iframe keeps focus and the bridge eats keys.
         iframeRef.current?.blur();
         setToolbarState(null);
-        setCommentPopover({ anchorEl: anchor, contextText: text, selectedText: text, initialText: key });
+        setCommentPopover({
+          anchorEl: anchor,
+          contextText: text,
+          selectedText: text,
+          initialText: key,
+          draftKey: htmlCommentDraftKey(text, pendingAnchorRef.current),
+        });
       }
 
       if (type === `${PREFIX}mark-click`) {
@@ -672,7 +687,13 @@ export function useHtmlAnnotation({
       if (!text) return;
       const anchor = anchorRef.current ?? getOrCreateAnchor();
       setToolbarState(null);
-      setCommentPopover({ anchorEl: anchor, contextText: text, selectedText: text, initialText: initialChar });
+      setCommentPopover({
+        anchorEl: anchor,
+        contextText: text,
+        selectedText: text,
+        initialText: initialChar,
+        draftKey: htmlCommentDraftKey(text, pendingAnchorRef.current),
+      });
     },
     [getOrCreateAnchor],
   );

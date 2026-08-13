@@ -711,6 +711,44 @@ body {
   font-feature-settings: "ss01", "ss02", "cv01";
 }
 
+/* Safari extends the page canvas beneath its floating browser controls. The
+ * plan document is a card-colored nested scroller, so leaving the outer canvas
+ * on `--background` produces an opaque dark band around those controls. Match
+ * the browser canvas to the active surface while preserving the incumbent
+ * background for grid, HTML, Review, loading, and non-editor consumers. */
+html:has([data-pn-browser-canvas="card"]),
+body:has([data-pn-browser-canvas="card"]) {
+  background-color: var(--card);
+}
+
+html:has([data-pn-browser-canvas="background"]),
+body:has([data-pn-browser-canvas="background"]) {
+  background-color: var(--background);
+}
+
+/* Mobile Safari only collapses its browser controls for page scrolling; it
+ * deliberately leaves them expanded when a gesture scrolls a nested element.
+ * Plan opts compact coarse-pointer layouts into document scrolling while the
+ * fixed application-stage architecture remains unchanged everywhere else. */
+html:has([data-pn-document-scroll="true"]),
+body:has([data-pn-document-scroll="true"]) {
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: auto;
+}
+
+body:has([data-pn-document-scroll="true"]) > #root {
+  height: auto;
+  overflow: visible;
+}
+
+.pn-app-viewport[data-pn-document-scroll="true"] {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
 /* The application stage owns the top and lateral safe areas. Bottom-edge
  * surfaces opt into `.pn-safe-bottom` themselves so the home-indicator inset
  * is never counted twice. The ordered height declarations preserve desktop
@@ -742,6 +780,50 @@ body {
   max-height: calc(
     var(--pn-viewport-height, 100vh) - var(--pn-safe-top) - var(--pn-safe-bottom)
   );
+}
+
+/* Portaled overlays cannot inherit the application root's safe-area padding.
+ * This utility gives them the same observed visible stage without assuming
+ * that the software keyboard is a rectangular bottom inset. */
+.pn-visible-viewport-overlay {
+  position: fixed;
+  top: var(--pn-viewport-offset-top, 0px);
+  left: var(--pn-viewport-offset-left, 0px);
+  box-sizing: border-box;
+  width: var(--pn-viewport-width, 100vw);
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: max(1rem, var(--pn-safe-top));
+  padding-right: max(1rem, var(--pn-safe-right));
+  padding-bottom: max(1rem, var(--pn-safe-bottom));
+  padding-left: max(1rem, var(--pn-safe-left));
+}
+
+/* Existing expanded composers keep their 85dvh desktop proportion. Compact
+ * and touch layouts use the full safe visible stage so the keyboard cannot
+ * strand the footer below an ornamental desktop margin. */
+.pn-responsive-composer-dialog {
+  width: 100%;
+  height: min(36rem, 85vh);
+  height: min(36rem, 85dvh);
+  max-width: 42rem;
+  max-height: 100%;
+}
+
+@media (any-pointer: coarse), (max-width: 639px), (max-height: 419px) {
+  .pn-responsive-composer-dialog {
+    height: 100%;
+  }
+}
+
+/* iOS zooms focused text controls below 16px. Scope the correction to
+ * user-authored primary inputs so labels, counters, and diff text stay at the
+ * established desktop scale. The mirror selector keeps skill-token glyphs
+ * metrically identical to the transparent textarea above it. */
+@media (any-pointer: coarse), (max-width: 639px) {
+  [data-pn-mobile-editable],
+  [data-pn-mobile-editable-mirror] {
+    font-size: 1rem !important;
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {

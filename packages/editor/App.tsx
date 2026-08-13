@@ -52,9 +52,12 @@ import { requestVimDocumentFocus } from '@plannotator/ui/hooks/useVimDocumentFoc
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
-import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
+import {
+  getDocumentScrollViewport,
+  ScrollViewportProvider,
+} from '@plannotator/ui/hooks/useScrollViewport';
 import { useOverlayViewport } from '@plannotator/ui/hooks/useOverlayViewport';
-import { useIsMobile } from '@plannotator/ui/hooks/useIsMobile';
+import { useCompactTouchLayout, useIsMobile } from '@plannotator/ui/hooks/useIsMobile';
 import { useViewportEnvironment } from '@plannotator/ui/hooks/useViewportEnvironment';
 import {
   getPermissionModeSettings,
@@ -517,17 +520,30 @@ const App: React.FC = () => {
   });
   const [showLookAndFeelAnnouncement, setShowLookAndFeelAnnouncement] = useState(needsLookAndFeelAnnouncement);
   const isMobile = useIsMobile();
+  const usesDocumentScroll = useCompactTouchLayout();
 
   const viewerRef = useRef<ViewerHandle>(null);
-  // containerRef + scrollViewport both point at the OverlayScrollbars
-  // viewport element (the node that actually scrolls), not the <main>
-  // host. Consumers: useActiveSection (IntersectionObserver root) and
-  // everything reading ScrollViewportContext.
+  // Desktop uses the main document element as its native scroll viewport.
+  // Compact coarse-pointer browsers use the page scroller so Mobile Safari
+  // receives the document scroll gesture it requires to collapse its chrome.
   const {
-    ref: containerRef,
     viewport: scrollViewport,
     onViewportReady: handleViewportReady,
   } = useOverlayViewport();
+  const mainViewportRef = useRef<HTMLElement | null>(null);
+  const handleDocumentViewportReady = useCallback((next: HTMLElement | null) => {
+    mainViewportRef.current = next;
+    handleViewportReady(next && usesDocumentScroll
+      ? getDocumentScrollViewport()
+      : next);
+  }, [handleViewportReady, usesDocumentScroll]);
+
+  useEffect(() => {
+    if (!mainViewportRef.current) return;
+    handleViewportReady(usesDocumentScroll
+      ? getDocumentScrollViewport()
+      : mainViewportRef.current);
+  }, [handleViewportReady, usesDocumentScroll]);
 
   usePrintMode();
 
@@ -1383,7 +1399,7 @@ const App: React.FC = () => {
 
   // Track active section for TOC highlighting
   const headingCount = useMemo(() => blocks.filter(b => b.type === 'heading').length, [blocks]);
-  const activeSection = useActiveSection(containerRef, headingCount, scrollViewport);
+  const activeSection = useActiveSection(planAreaRef, headingCount, scrollViewport);
 
   const { editorAnnotations, deleteEditorAnnotation } = useEditorAnnotations();
   const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<Annotation>({
@@ -4217,6 +4233,10 @@ const App: React.FC = () => {
     !isSharedSession &&
     !goalSetupMode &&
     !showPermissionModeSetup;
+  // Mobile Safari paints the browser-controls backdrop from the document/app
+  // canvas, not from the nested document scroller. Keep that canvas continuous
+  // with the active surface so a card-backed plan does not end in a dark band.
+  const browserCanvas = isHtmlSurface || gridEnabled ? 'background' : 'card';
   if (isLoading && !isSharedSession) {
     return (
       <ThemeProvider defaultTheme="dark">
@@ -4228,8 +4248,15 @@ const App: React.FC = () => {
   return (
     <ThemeProvider defaultTheme="dark">
       <TooltipProvider delayDuration={900} skipDelayDuration={200} disableHoverableContent>
-      <div data-print-region="root" className="pn-app-viewport flex flex-col bg-background overflow-hidden">
+      <div
+        data-print-region="root"
+        data-pn-browser-canvas={browserCanvas}
+        data-pn-compact-touch-layout={usesDocumentScroll ? 'true' : undefined}
+        data-pn-document-scroll={usesDocumentScroll ? 'true' : undefined}
+        className={`pn-app-viewport flex flex-col ${usesDocumentScroll ? 'overflow-visible' : 'overflow-hidden'} ${browserCanvas === 'card' ? 'bg-card' : 'bg-background'}`}
+      >
         <AppHeader
+          sticky={!usesDocumentScroll}
           htmlSurface={isHtmlSurface}
           htmlToolsHidden={htmlToolsHidden}
           onToggleHtmlTools={() => setHtmlToolsHidden((v) => !v)}
@@ -4360,7 +4387,7 @@ const App: React.FC = () => {
 
         {/* Main Content */}
         <ScrollViewportProvider viewport={scrollViewport}>
-        <div data-print-region="content" className={`flex-1 flex overflow-hidden relative z-0 ${isResizing ? 'select-none' : ''}`}>
+        <div data-print-region="content" className={`flex-1 flex ${usesDocumentScroll ? 'overflow-visible' : 'overflow-hidden'} relative z-0 ${isResizing ? 'select-none' : ''}`}>
           {/* Tater sprites — inside content wrapper so z-0 stacking context applies */}
           {taterMode && <TaterSpriteRunning />}
           {shouldRenderAgentTerminal && agentTerminalCapability && (
@@ -4499,7 +4526,9 @@ const App: React.FC = () => {
             element="main"
             className={`flex-1 min-w-0 ${isHtmlSurface ? 'bg-background' : `${gridEnabled ? "bg-grid " : "bg-card "}${!goalSetupMode && !sidebar.isOpen && !isAgentTerminalOpen && wideModeType === null ? 'lg:pl-[30px]' : ''}`}`}
             data-print-region="document"
-            onViewportReady={handleViewportReady}
+            overflowX={usesDocumentScroll ? 'visible' : 'hidden'}
+            overflowY={usesDocumentScroll ? 'visible' : 'auto'}
+            onViewportReady={handleDocumentViewportReady}
           >
             <ConfirmDialog
               isOpen={!!draftBanner}
@@ -4519,7 +4548,7 @@ const App: React.FC = () => {
                   sticky actions are disabled. remountToken re-anchors the
                   ResizeObserver when Viewer swaps content (linked docs or
                   message switches). */}
-              {!goalSetupMode && !isPlanDiffActive && !isHtmlSurface && !archive.archiveMode && !isEditingMarkdown && uiPrefs.stickyActionsEnabled && (
+              {!usesDocumentScroll && !goalSetupMode && !isPlanDiffActive && !isHtmlSurface && !archive.archiveMode && !isEditingMarkdown && uiPrefs.stickyActionsEnabled && (
                 <StickyHeaderLane
                   inputMethod={inputMethod}
                   onInputMethodChange={handleInputMethodChange}
@@ -4779,7 +4808,7 @@ const App: React.FC = () => {
                     onAddGlobalAttachment={handleAddGlobalAttachment}
                     onRemoveGlobalAttachment={handleRemoveGlobalAttachment}
                     repoInfo={repoInfo}
-                    stickyActions={uiPrefs.stickyActionsEnabled}
+                    stickyActions={uiPrefs.stickyActionsEnabled && !usesDocumentScroll}
                     planDiffStats={planDiff.diffStats}
                     isPlanDiffActive={isPlanDiffActive}
                     onPlanDiffToggle={() => setIsPlanDiffActive(!isPlanDiffActive)}

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
+  calculateVisibleViewportBounds,
   calculateViewportEnvironment,
+  shouldUseExpandedComposer,
   useViewportEnvironment,
 } from './useViewportEnvironment';
 
@@ -102,6 +104,69 @@ describe('calculateViewportEnvironment', () => {
       offsetLeft: 0,
       keyboardInset: 0,
     });
+  });
+});
+
+describe('calculateVisibleViewportBounds', () => {
+  test('applies viewport offsets, safe insets, and edge padding', () => {
+    expect(calculateVisibleViewportBounds(
+      {
+        width: 390,
+        height: 510,
+        offsetTop: 44,
+        offsetLeft: 0,
+        keyboardInset: 290,
+      },
+      16,
+      { top: 3, right: 4, bottom: 5, left: 6 },
+    )).toEqual({
+      top: 63,
+      right: 370,
+      bottom: 533,
+      left: 22,
+      width: 348,
+      height: 470,
+    });
+  });
+
+  test('clamps over-constrained bounds without producing negative dimensions', () => {
+    expect(calculateVisibleViewportBounds(
+      {
+        width: 24,
+        height: 20,
+        offsetTop: 8,
+        offsetLeft: 4,
+        keyboardInset: 0,
+      },
+      16,
+    )).toEqual({
+      top: 24,
+      right: 20,
+      bottom: 24,
+      left: 20,
+      width: 0,
+      height: 0,
+    });
+  });
+
+  test('expands composition only for touch, compact width, or short keyboard geometry', () => {
+    const desktopBounds = calculateVisibleViewportBounds({
+      width: 1280,
+      height: 720,
+      offsetTop: 0,
+      offsetLeft: 0,
+      keyboardInset: 0,
+    });
+    expect(shouldUseExpandedComposer({ bounds: desktopBounds, coarsePointer: false })).toBe(false);
+    expect(shouldUseExpandedComposer({ bounds: desktopBounds, coarsePointer: true })).toBe(true);
+    expect(shouldUseExpandedComposer({
+      bounds: { ...desktopBounds, width: 639 },
+      coarsePointer: false,
+    })).toBe(true);
+    expect(shouldUseExpandedComposer({
+      bounds: { ...desktopBounds, height: 419 },
+      coarsePointer: false,
+    })).toBe(true);
   });
 });
 

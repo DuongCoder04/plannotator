@@ -1,9 +1,9 @@
 # Spec: Mobile Platform Foundation — Phase 1
 
 Date: 2026-08-12
-Status: Checkpoint 1A implemented; iPhone stage review complete, iPad or explicit deferral pending
-Baseline: `origin/main` at `ef49c701c23b867cec2a5d78343813ba89d2a025`
-Implementation branch: `codex/mobile-phase-1-foundation`
+Status: Checkpoints 1A and 1B implemented; 1B accepted on physical iPhone; 1C next
+Baseline: started from `origin/main` at `ef49c701c23b867cec2a5d78343813ba89d2a025`; refreshed through `356b628b6fd0e956e058ec684b103e1e68311999` before the 1B closeout
+Implementation branches: `codex-mobile-phase-1-foundation`, then stacked `codex-mobile-phase-1b-input`
 
 Related research: [`adr/research/SPIKE-mobile-web-compatibility-20260812.md`](../research/SPIKE-mobile-web-compatibility-20260812.md)
 
@@ -394,6 +394,100 @@ The first tailnet-published iPhone pass completed on 2026-08-12:
 Product hierarchy, selection, and onboarding findings from this pass are
 tracked in the related research inventory and assigned to their owning surface
 phase instead of being pulled into the viewport foundation.
+
+## Checkpoint 1B implementation record
+
+Checkpoint 1B establishes one input and overlay contract for the primary Plan
+and Code Review writing journeys without changing either desktop information
+architecture:
+
+- the existing viewport observer now exposes reactive, pure visible-viewport
+  bounds to overlays without installing a second set of Visual Viewport
+  listeners;
+- `data-pn-mobile-editable` guarantees 16 px user-authored text on compact or
+  coarse-pointer surfaces, including the Plan skill-token mirror, while fine
+  desktop inputs retain their incumbent scale;
+- compact/coarse Plan composition uses the existing expanded comment surface,
+  while Code Review line selection uses its existing expanded comment dialog;
+  both remain bounded when the visible height changes;
+- touch-opened composition does not force textarea focus, hardware Escape
+  remains available, and fine-pointer desktop preserves its existing autofocus;
+- Plan selection, code-block, global, Plan-diff, and HTML comment targets now
+  receive stable draft keys; Code Review retains its existing per-range draft
+  store. Backdrop/Escape dismissal preserves those drafts and explicit submit
+  clears them;
+- the mobile Code Review overlay keeps the existing Suggest Code route by
+  handing off to the already-shipped suggestion modal rather than duplicating
+  source editing inside the comment dialog.
+
+Automated and rendered-browser preflight evidence:
+
+- focused viewport/composer suite: 52 passed, including coarse-pointer focus,
+  draft recovery, skill-mirror parity, and visible-bound geometry;
+- repository typecheck and strict `@plannotator/ui` consumer: passed;
+- Plan and Code Review production builds: passed;
+- Plan checks at 320×568, 390×844, 568×320, 820×1180, 1180×820, and a
+  390×500 keyboard-sized viewport kept the surface and submission control in
+  bounds with zero page-level horizontal overflow;
+- Code Review at 390×844 opened the expanded composer directly from a Pierre
+  line tap without focusing the textarea. At 390×500 the 468 px dialog and its
+  submit control remained fully visible; Escape closed it and reopening the
+  same line restored the multi-line draft;
+- desktop controls at 1440×900 retained the 384 px / 14 px Plan popover and
+  the incumbent floating Review toolbar and focus behavior;
+- no new Plan console warnings or errors were observed.
+
+The first physical iPhone composer pass confirmed legible input, intentional
+touch focus, and successful save, then exposed Safari-only follow-ups that
+responsive Chromium did not reproduce. The entry body still claimed a
+`100vh` minimum while the application used the smaller Visual Viewport,
+allowing Safari to scroll the entire app upward into a blank body region when
+browser chrome was visible. Hook and Review entries now lock outer overflow
+and delegate scrolling exclusively to their application viewports. The next
+physical pass showed that the remaining boundary around Safari's floating
+bottom controls was not cosmetic. Matching the outer canvas removed the black
+color, but the document still ended above browser chrome and Safari never
+collapsed its controls because the gesture scrolled a nested `<main>`, not the
+page. WebKit documents that body scrolling shifts Safari UI while scrolling a
+vertical element intentionally leaves it still
+([WebKit #240861](https://bugs.webkit.org/show_bug.cgi?id=240861)). Compact
+coarse-pointer Plan layouts now use `document.scrollingElement`; shared
+viewport consumers distinguish that page viewport for scroll events,
+IntersectionObserver roots, geometry, TOC/hash navigation, Pinpoint, and Vim
+motion. The fixed nested application shell remains the desktop path, and Code
+Review keeps its existing workspace shell pending its own mobile-composition
+phase. The next iPhone pass confirmed that the Plan reaches the bottom and
+Safari dismisses its bottom controls, then isolated a top-edge counterpart:
+the app's 48 px sticky header was partly obscured and caused Safari to preserve
+an opaque background extension. WebKit documents this extension as intentional
+for fixed/sticky elements adjoining an obscured browser edge
+([WebKit #301756](https://bugs.webkit.org/show_bug.cgi?id=301756#c2)). On the
+compact touch Plan path, the app header now scrolls in normal document flow and
+both duplicate sticky action treatments are disabled; desktop retains them.
+The Plan composer also suppresses its hardware-keyboard submit hint when any
+coarse pointer is present; the explicit Save action remains the mobile
+instruction.
+
+### Checkpoint 1B physical-device acceptance
+
+The final Tailscale-published iPhone pass closed the Safari-specific blocker:
+
+- ordinary document scrolling now collapses both Safari chrome regions and
+  lets the Plan continue beneath the translucent browser controls instead of
+  ending at an opaque application boundary;
+- the compact touch header scrolls away with the page, so Safari no longer
+  preserves the solid top-edge extension associated with sticky edge chrome;
+- the Plan composer is legible, opens without forcing the software keyboard,
+  does not trigger focus zoom after an explicit textarea tap, and submits
+  successfully;
+- the user confirmed that the other previously requested input checks were
+  behaving acceptably and explicitly declined a redundant checklist rerun.
+
+Checkpoint 1B is therefore accepted for the tested physical iPhone path. This
+acceptance does not erase the separately inventoried Plan-selection, Review
+composition, or hierarchy defects; they belong to later product phases. A
+separate physical iPad pass was not performed and remains part of the final
+Phase 1 / 1C device matrix rather than reopening 1B.
 
 ## Phase 1 gate
 

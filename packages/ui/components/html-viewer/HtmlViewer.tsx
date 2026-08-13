@@ -716,6 +716,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
               contextText={hook.commentPopover.contextText}
               initialText={hook.commentPopover.initialText}
               isGlobal={false}
+              draftKey={`html:${hook.commentPopover.draftKey}`}
               onSubmit={hook.handleCommentSubmit}
               onClose={hook.handleCommentClose}
               skillReferences

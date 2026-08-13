@@ -493,6 +493,7 @@ const AnnotationCard: React.FC<{
   const editComposer = (
     <div onClick={(e: React.MouseEvent) => e.stopPropagation()}>
       <textarea
+        data-pn-mobile-editable="true"
         ref={textareaRef}
         value={editText}
         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditText(e.target.value)}
@@ -724,6 +725,7 @@ const CodeAnnotationCard: React.FC<{
       {isEditing ? (
         <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
           <textarea
+            data-pn-mobile-editable="true"
             ref={textareaRef}
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
