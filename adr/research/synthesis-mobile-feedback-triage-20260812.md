@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 Status: Phase 2A implementation accepted as the working mobile baseline;
-filename micro-gate pending, Phase 2B specified
+filename micro-gate pending in parallel, Phase 2B.2 ready for physical review
 Source dossier: [`SPIKE-mobile-web-compatibility-20260812.md`](./SPIKE-mobile-web-compatibility-20260812.md)
 Foundation spec: [`mobile-platform-foundation-phase1-20260812.md`](../specs/mobile-platform-foundation-phase1-20260812.md)
 Phase 2B spec: [`mobile-plan-shell-phase2b-20260813.md`](../specs/mobile-plan-shell-phase2b-20260813.md)
@@ -44,6 +44,41 @@ and prevents a phone workaround from mutating desktop preferences.
 | Guided Review intro | Preserve | The reviewer found the initial Guide explanation useful. Guide is a strong candidate for mobile comprehension, not noise to remove. |
 | Edit Code to Suggest | Preserve | The tested dialog was acceptable; suggestion editing is not pulled into the next layout phase. |
 | All Files | Preserve and learn from | It was the cleanest Code Review presentation observed on the phone. |
+
+## Phase 2B physical feedback incorporated
+
+The first 2B.1 phone pass clarified that restoring folder navigation was not
+enough: once a file was selected, the Plan still exposed its entire desktop
+annotation matrix plus Wide / Focus / Edit micro-links. The reviewer also asked
+for Plan completion decisions to follow the Code Review pattern and move into
+Options.
+
+This feedback is assigned to 2B.2 and implemented as one compact document-
+chrome contract:
+
+- arrival shows one `Annotate · <method>` entry instead of Select / Pinpoint
+  beside Markup / Comment / Redline / Label;
+- compact targeting is always presented through Markup semantics, with Select
+  text and Pinpoint as the only up-front acquisition choices;
+- compact method choices remain session-only, protecting desktop preferences;
+- Wide and Focus are removed from compact touch entirely;
+- Edit moves into Options and gains a normal-flow Save / Done / Cancel row while
+  active; and
+- terminal decisions move into Options while calling the exact incumbent
+  handlers and warning paths.
+
+No Phase 3 multi-block or multi-line selection semantics are claimed by this
+cleanup. Pinpoint one-block targeting and native drag selection remain the
+known input foundations for the 2B.2 physical gate.
+
+The next iPhone folder pass exposed one state-transition defect inside 2B.1:
+file selection closed the navigator, then asynchronous linked-document
+activation replayed the desktop “open Files sidebar” behavior and resurrected
+the compact navigator. That close/reopen sequence caused the visible flashing
+and forced the reviewer to use X before seeing the selected document. Compact
+activation now suppresses that desktop-only side effect; the selected filename
+and document render with the navigator remaining closed, while fine-pointer
+desktop keeps its incumbent sidebar activation.
 
 ## Triage matrix
 
@@ -310,6 +345,60 @@ The physical iPhone iteration established a stable baseline:
 Do not reopen the rejected scroll architecture during Phase 2B. A future
 document-native Pierre Virtualizer experiment, if pursued, must remain isolated
 and earn promotion through complete interaction parity plus physical testing.
+
+## Phase 2B.1 implementation checkpoint
+
+Checkpoint 2B.1 is implemented on `codex/mobile-phase-2b-plan-shell`. It keeps
+the Phase 1 document-scroll owner and introduces a session-only compact
+foreground state instead of reusing desktop rail booleans.
+
+- Compact touch arrives on the artifact even when the remembered desktop right
+  panel is open. Annotation and AI buttons/panels remain out of the compact
+  arrival composition; their dedicated foreground states belong to 2B.3.
+- A leading **Plan** disclosure opens one full-stage navigator. It is bounded
+  by the observed visual viewport and safe areas, contains focus/Escape,
+  restores the trigger on explicit close, and gives its tabs and destination
+  rows 44 px touch targets.
+- The navigator reuses `SidebarContainer`, `TableOfContents`, `FileBrowser`,
+  `VersionBrowser`, `MessagesBrowser`, and `ArchiveBrowser`. Desktop keeps the
+  incumbent sticky/resizable presentation; there is no second browser model.
+- Contents, file, message, archive, and linked-document destinations return to
+  the artifact. Tab changes remain inside the navigator. File loading listens
+  to the compact Files state without writing `sidebar.activeTab`, so opening
+  Files on a phone does not alter the desktop sidebar state.
+- Folder annotation no longer instructs a phone user to find a hidden sidebar.
+  Its empty state has a touch-safe **Choose a file** action that opens Files.
+- The Plan header remains in normal page flow on compact touch. No fixed or
+  sticky mobile edge bar, Safari scroll proxy, selection semantic, server,
+  Tailscale, or Pierre code changed.
+
+Focused proof covers the foreground reducer, compact-arrival desktop-panel
+gate, header disclosure, shared navigator desktop/overlay presentations,
+visible-viewport and touch CSS, focus and tab behavior, and the folder empty
+state. Shared typecheck, production UI CSS, and the production Hook build pass.
+A 1440×900 fine-pointer browser control retained the 48 px sticky header,
+240 px sticky Contents rail, 288 px right panel, and zero root/main horizontal
+overflow. Responsive Chromium does not expose a coarse pointer in this run, so
+it deliberately retained desktop presentation at phone width; physical Safari
+remains the authoritative compact checkpoint.
+
+### Phase 2B.1 physical review script
+
+1. Open the folder checkpoint on iPhone. Arrival should show the empty artifact
+   and **Choose a file**, not a sidebar or Ask AI.
+2. Tap **Choose a file**, select any fixture, and confirm the navigator closes
+   to the selected document. Tap **Plan**, return to Files, and choose a second
+   file; the same close-to-artifact behavior should repeat.
+3. Open **Plan** → Contents and choose a heading. Confirm it returns to the same
+   document at that heading without changing Safari's accepted page scrolling.
+4. Close the navigator with its close button, reopen it, and rotate once. No
+   right rail, AI panel, or stale navigator should squeeze the artifact.
+5. Open the ordinary document checkpoint separately. The document—not Ask AI,
+   annotations, or navigation—must be the first surface.
+
+This gate judges navigation and arrival only. Persistent annotation chrome,
+direct-edit controls, auxiliary surfaces, completion, and multi-block selection
+remain checkpoints 2B.2, 2B.3, and Phase 3 respectively.
 
 ## Why selection is not bundled into layout
 

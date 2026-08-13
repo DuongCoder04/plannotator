@@ -3,7 +3,8 @@
  *   - readOnly hides every mutation affordance (delete/edit on all card kinds)
  *   - renderCardFooter renders a per-card slot whose interactions do NOT
  *     select the card
- * Both default to today's behavior (mutable, no footer).
+ *   - embedded presentation leaves stage geometry and chrome to its host
+ * All default to today's behavior (mutable panel, no footer).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import React from 'react';
@@ -133,5 +134,14 @@ describe('AnnotationPanel consumer props', () => {
   test.skipIf(!hasDom)('no footer prop → no slot rendered', async () => {
     await mount(<AnnotationPanel {...baseProps} />);
     expect(document.querySelector('[data-annotation-card-footer="true"]')).toBeNull();
+  });
+
+  test.skipIf(!hasDom)('embedded presentation keeps the timeline and omits panel chrome', async () => {
+    await mount(<AnnotationPanel {...baseProps} presentation="embedded" />);
+    const panel = document.querySelector<HTMLElement>('[data-annotation-panel="true"]');
+    expect(panel?.className).toContain('h-full min-h-0 w-full flex-1');
+    expect(document.body.textContent).not.toContain('Annotations');
+    expect(document.querySelector('[data-annotation-id="a1"]')).not.toBeNull();
+    expect(document.querySelector('.fixed.inset-0')).toBeNull();
   });
 });

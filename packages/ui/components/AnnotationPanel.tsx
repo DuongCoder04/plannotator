@@ -86,6 +86,9 @@ interface PanelProps {
     *  gates what belongs in it. Selection and scrolling still work.
     *  Default false — today's behavior. */
   readOnly?: boolean;
+  /** Embed only the timeline body in a host-owned stage. The host owns the
+    *  title, close control, visible-viewport geometry, and focus boundary. */
+  presentation?: 'panel' | 'embedded';
 }
 
 export const AnnotationPanel: React.FC<PanelProps> = ({
@@ -111,8 +114,11 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   directEdits = null,
   renderCardFooter,
   readOnly = false,
+  presentation = 'panel',
 }) => {
   const isMobile = useIsMobile();
+  const embedded = presentation === 'embedded';
+  const mobilePanel = isMobile && !embedded;
   const [copiedText, setCopiedText] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const sortedAnnotations = [...annotations].sort((a, b) => a.createdA - b.createdA);
@@ -138,47 +144,61 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
     <aside
       data-annotation-panel="true"
       data-plan-sidebar="right"
-      className={`border-l border-border/50 bg-card flex flex-col flex-shrink-0 ${
-        isMobile ? 'fixed top-12 bottom-0 right-0 z-[60] w-full max-w-sm shadow-2xl bg-card' : ''
+      className={`bg-card flex flex-col ${embedded ? 'h-full min-h-0 w-full flex-1' : 'flex-shrink-0 border-l border-border/50'} ${
+        mobilePanel ? 'fixed top-12 bottom-0 right-0 z-[60] w-full max-w-sm shadow-2xl bg-card' : ''
       }`}
-      style={isMobile ? undefined : { width: width ?? 288 }}
+      style={embedded || mobilePanel ? undefined : { width: width ?? 288 }}
     >
       {/* Header */}
-      <div className="border-b border-border/50">
-        <div className="flex h-10 items-center justify-between px-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xs font-medium text-foreground">
-              Annotations
-            </h2>
-            {totalCount > 0 && (
-              <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[10px] font-medium tabular-nums text-primary">
-                {totalCount}
-              </span>
+      {!embedded && (
+        <div className="border-b border-border/50">
+          <div className="flex h-10 items-center justify-between px-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs font-medium text-foreground">
+                Annotations
+              </h2>
+              {totalCount > 0 && (
+                <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[10px] font-medium tabular-nums text-primary">
+                  {totalCount}
+                </span>
+              )}
+            </div>
+            {mobilePanel && onClose && (
+              <button
+                onClick={onClose}
+                className="relative rounded-md p-1.5 text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] hover:text-foreground md:hidden"
+                title="Close panel"
+                aria-label="Close panel"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             )}
           </div>
-          {isMobile && onClose && (
+          {otherFileAnnotations && otherFileAnnotations.count > 0 && (
             <button
-              onClick={onClose}
-              className="relative rounded-md p-1.5 text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] hover:text-foreground md:hidden"
-              title="Close panel"
-              aria-label="Close panel"
+              onClick={onOtherFileAnnotationsClick}
+              className="px-3 pb-2 text-[10px] text-primary/70 hover:text-primary transition-colors cursor-pointer"
+              title="Show annotated files in sidebar"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              +{otherFileAnnotations.count} in {otherFileAnnotations.files} other file{otherFileAnnotations.files === 1 ? '' : 's'}
             </button>
           )}
         </div>
-        {otherFileAnnotations && otherFileAnnotations.count > 0 && (
-          <button
-            onClick={onOtherFileAnnotationsClick}
-            className="px-3 pb-2 text-[10px] text-primary/70 hover:text-primary transition-colors cursor-pointer"
-            title="Show annotated files in sidebar"
-          >
-            +{otherFileAnnotations.count} in {otherFileAnnotations.files} other file{otherFileAnnotations.files === 1 ? '' : 's'}
-          </button>
-        )}
-      </div>
+      )}
+
+      {embedded && otherFileAnnotations && otherFileAnnotations.count > 0 && (
+        <button
+          type="button"
+          data-pn-touch-target="true"
+          onClick={onOtherFileAnnotationsClick}
+          className="min-h-11 flex-shrink-0 border-b border-border/50 px-3 text-left text-xs text-primary/80 active:bg-muted"
+          title="Show annotated files in navigator"
+        >
+          {otherFileAnnotations.count} more in {otherFileAnnotations.files} other file{otherFileAnnotations.files === 1 ? '' : 's'}
+        </button>
+      )}
 
       {/* List */}
       <OverlayScrollArea className="flex-1 min-h-0">
@@ -297,7 +317,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
     </aside>
   );
 
-  if (isMobile) {
+  if (mobilePanel) {
     return (
       <>
         <div

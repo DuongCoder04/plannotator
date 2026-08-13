@@ -799,6 +799,52 @@ body:has([data-pn-document-scroll="true"]) > #root {
   padding-left: max(1rem, var(--pn-safe-left));
 }
 
+/* Full-stage compact surfaces (for example the Plan navigator) use the same
+ * observed visual viewport as portaled dialogs without inheriting their 1rem
+ * ornamental margin. The stage owns its safe areas and contains scroll-chain
+ * gestures so the document beneath it does not move at a list boundary. */
+.pn-visible-viewport-stage {
+  position: fixed;
+  top: var(--pn-viewport-offset-top, 0px);
+  left: var(--pn-viewport-offset-left, 0px);
+  box-sizing: border-box;
+  width: var(--pn-viewport-width, 100vw);
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: var(--pn-safe-top);
+  padding-right: var(--pn-safe-right);
+  padding-bottom: var(--pn-safe-bottom);
+  padding-left: var(--pn-safe-left);
+  overscroll-behavior: contain;
+}
+
+/* The navigator reuses information-dense desktop browser content, but its
+ * interactive rows become physical controls on touch. Scope both the 44px
+ * target and the TOC's legible type lift to the compact stage only. */
+[data-pn-plan-navigator="true"] button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
+[data-pn-plan-navigator="true"] nav button {
+  font-size: 0.8125rem;
+}
+
+[data-pn-plan-navigator="true"] .file-browser-filter-field {
+  height: var(--pn-touch-target);
+}
+
+[data-pn-plan-navigator="true"] .file-browser-filter-clear {
+  min-inline-size: var(--pn-touch-target);
+}
+
+/* Compact Plan auxiliary stages reuse dense desktop panel contents, but every
+ * nested action remains a physical touch control. This selector is stage-only,
+ * so the incumbent desktop panel geometry stays pixel-identical. */
+[data-pn-compact-plan-stage="true"] button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
 /* Existing expanded composers keep their 85dvh desktop proportion. Compact
  * and touch layouts use the full safe visible stage so the keyboard cannot
  * strand the footer below an ornamental desktop margin. */
