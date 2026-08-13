@@ -4503,6 +4503,10 @@ const ReviewApp: React.FC = () => {
               !!gitContext && gitContext.vcsType === 'git' && !prMetadata &&
               reviewMode !== 'workspace' && !sectionsCapable
             }
+            // The compact shell renders a session-only unified diff, so the
+            // Display tab hides the Split/Unified control rather than writing
+            // the desktop preference from a phone.
+            isCompactTouchLayout={isCompactTouchLayout}
           />
         </div>
 

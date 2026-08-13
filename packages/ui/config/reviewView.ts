@@ -1,4 +1,5 @@
 import { configStore } from './configStore';
+import { SETTINGS } from './settings';
 
 /**
  * The ONLY writers for the coupled setting pair (reviewPanelView,
@@ -40,6 +41,16 @@ export function setReviewPanelView(
   if (view === 'sections' && store.get('defaultDiffType') !== 'since-base') {
     store.set('defaultDiffType', 'since-base');
   }
+}
+
+/**
+ * The panel view the reviewer has actually persisted, or `undefined` when they
+ * never chose one. Distinct from `configStore.get('reviewPanelView')`, which
+ * cannot tell a stored choice apart from the built-in default, which is the
+ * difference first-run seeding has to respect before it writes over anything.
+ */
+export function getPersistedReviewPanelView(): 'sections' | 'tree' | undefined {
+  return SETTINGS.reviewPanelView.fromCookie();
 }
 
 export type ReviewDefaultDiffType =

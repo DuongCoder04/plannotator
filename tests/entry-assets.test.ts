@@ -15,7 +15,10 @@ describe('review entry assets', () => {
     },
   );
 
-  test.each(['apps/hook/index.html', 'apps/review/index.html'])(
+  // The portal mounts the same @plannotator/editor App as the hook, so it needs
+  // the identical shell: without it the mobile layout's safe-area tokens are
+  // inert and the document scrolls behind the app's own scroll ownership.
+  test.each(['apps/hook/index.html', 'apps/review/index.html', 'apps/portal/index.html'])(
     '%s leaves scrolling to the visible-viewport application shell',
     (path) => {
       const html = read(path);

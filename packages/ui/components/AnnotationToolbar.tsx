@@ -197,7 +197,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
           to { opacity: 0; transform: translateY(8px)${translateX}; }
         }
       `}</style>
-      <div className="flex items-center p-1 gap-0.5">
+      <div data-pn-annotation-toolbar-row="true" className="flex items-center p-1 gap-0.5">
         {!hideCopyButton && (
           <>
             <ToolbarButton
@@ -306,6 +306,11 @@ const ToolbarButton = React.forwardRef<HTMLButtonElement, {
 }>(({ onClick, icon, label, className }, ref) => (
   <button
     ref={ref}
+    // Icon-only controls: the markers are inert outside the compact touch
+    // scope, where theme.css grows them to var(--pn-touch-target). Desktop
+    // geometry is unchanged.
+    data-pn-touch-target="true"
+    data-pn-touch-target-icon="true"
     onClick={onClick}
     title={label}
     className={`p-1.5 rounded-md transition-colors ${className}`}

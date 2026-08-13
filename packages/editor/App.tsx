@@ -2767,8 +2767,13 @@ const App: React.FC = () => {
         }
         if (data.origin) {
           setOrigin(data.origin);
-          // For Claude Code, check if user needs to configure permission mode
-          if (data.origin === 'claude-code' && data.mode !== 'goal-setup' && needsPermissionModeSetup()) {
+          // For Claude Code, check if user needs to configure permission mode.
+          // Plan review only: the setting decides what happens after a plan is
+          // APPROVED, which is meaningless in annotate / annotate-last /
+          // annotate-folder / archive / goal-setup sessions. Plan review is the
+          // absence of a mode field (the plan server sends `mode` only for
+          // archive; annotate and goal-setup always name themselves).
+          if (data.origin === 'claude-code' && data.mode === undefined && needsPermissionModeSetup()) {
             setShowPermissionModeSetup(true);
           }
           // Load saved permission mode preference
@@ -4853,6 +4858,13 @@ const App: React.FC = () => {
           octarineConfigured={isOctarineConfigured()}
         />
 
+        {/* The provider is render-transparent (context only, no DOM), so it can
+            open here without changing the shell's element structure or order.
+            It has to: the compact navigator renders the SAME TableOfContents as
+            the desktop rail, and a TOC outside this provider resolves a null
+            viewport, which makes every "jump to heading" tap a silent no-op. */}
+        <ScrollViewportProvider viewport={scrollViewport}>
+
         {isCompactNavigatorOpen && compactNavigatorAvailable && renderPlanSidebar('overlay')}
 
         {isCompactAnnotationsOpen && (
@@ -4960,7 +4972,6 @@ const App: React.FC = () => {
         )}
 
         {/* Main Content */}
-        <ScrollViewportProvider viewport={scrollViewport}>
         <div data-print-region="content" className={`flex-1 flex ${usesDocumentScroll ? 'overflow-visible' : 'overflow-hidden'} relative z-0 ${isResizing ? 'select-none' : ''}`}>
           {/* Tater sprites — inside content wrapper so z-0 stacking context applies */}
           {taterMode && <TaterSpriteRunning />}

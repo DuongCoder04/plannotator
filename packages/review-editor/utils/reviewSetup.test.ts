@@ -47,6 +47,38 @@ describe('initializeReviewSetup', () => {
     expect(store.get('defaultDiffType')).toBe('uncommitted');
   });
 
+  test('an explicit persisted view survives a session that never tripped the seen gate', () => {
+    // Non-git / workspace / PR / no-since-base sessions never reach the
+    // initializer, so a reviewer can persist a view from Settings while
+    // "seen" stays unset. The next plain git session must not seed over it.
+    installMemoryBackend({
+      'plannotator-review-panel-view': 'sections',
+      'plannotator-default-diff-type': 'since-base',
+    });
+    const store = makeStore();
+
+    expect(initializeReviewSetup(store)).toBe(false);
+    expect(store.get('reviewPanelView')).toBe('sections');
+    expect(store.get('defaultDiffType')).toBe('since-base');
+    // The one-time setup is consumed, so this cannot be re-evaluated later.
+    expect(needsReviewSetup()).toBe(false);
+  });
+
+  test('a persisted Tree view is left alone rather than re-written', () => {
+    installMemoryBackend({
+      'plannotator-review-panel-view': 'tree',
+      'plannotator-review-panel-view-last-used': 'sections',
+    });
+    const store = makeStore();
+
+    expect(initializeReviewSetup(store)).toBe(false);
+    expect(store.get('reviewPanelView')).toBe('tree');
+    // The seeding path would have stamped 'tree' here; the memo is the
+    // reviewer's, so a skipped seed must not touch it.
+    expect(store.get('reviewPanelViewLastUsed')).toBe('sections');
+    expect(needsReviewSetup()).toBe(false);
+  });
+
   test('a returning reviewer keeps both the persisted view and last-used memo', () => {
     installMemoryBackend({
       'plannotator-review-setup-seen': 'true',

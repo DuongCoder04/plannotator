@@ -62,6 +62,11 @@ export const CompactPlanStage: React.FC<CompactPlanStageProps> = ({
     <section
       id={id}
       data-pn-compact-plan-stage="true"
+      // A transient task surface is never part of the printed document. Without
+      // this, printing with Settings / Versions / Archive open on a touch device
+      // puts the full-viewport overlay over the plan (print.css hides
+      // [data-print-hide]).
+      data-print-hide
       role="dialog"
       aria-modal="true"
       aria-label={title}

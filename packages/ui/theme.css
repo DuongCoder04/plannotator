@@ -904,6 +904,14 @@ html:has([data-pn-compact-touch-layout='true'])
   touch-action: manipulation;
 }
 
+/* The selection toolbar packs its controls at desktop density (2px gaps), so
+ * 44px targets alone would still leave adjacent destructive and comment
+ * actions a mis-tap apart. Space them only inside the compact scope. */
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-annotation-toolbar-row] {
+  gap: 0.5rem;
+}
+
 html:has([data-pn-compact-touch-layout='true'])
   [data-pn-touch-target]:not(:disabled):not([aria-disabled='true']):active {
   filter: brightness(0.92);

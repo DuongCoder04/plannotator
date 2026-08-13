@@ -173,6 +173,14 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   const [mode, setMode] = useState<'popover' | 'dialog'>(() =>
     prefersExpandedComposer ? 'dialog' : 'popover'
   );
+  // Dialog mode has two very different origins. Either the viewport PREFERS an
+  // expanded composer (phones, small windows), or the anchor simply has no room
+  // for a popover and the geometry FORCED it. Only the forced kind can bounce:
+  // collapsing recomputes the same geometry and immediately re-expands, which
+  // ate Escape and made the Collapse button a no-op. Track which one we are in.
+  const [dialogIsForced, setDialogIsForced] = useState(false);
+  // A preference-driven dialog is never the forced kind.
+  const forcedDialog = dialogIsForced && !prefersExpandedComposer;
   const initialDraft = draftKey ? draftStore.get(draftKey) : undefined;
   const [text, setText] = useState(initialDraft?.text ?? initialText);
   const [images, setImages] = useState<ImageAttachment[]>(allowImages ? initialDraft?.images ?? [] : []);
@@ -224,6 +232,7 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
       if (!rect) return;
       const nextPosition = computeCommentPopoverPosition(rect, visibleBounds);
       if (nextPosition.requiresExpanded) {
+        setDialogIsForced(true);
         setMode('dialog');
         return;
       }
@@ -480,7 +489,10 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
     if (e.key === 'Escape') {
       e.stopPropagation();
       if (mode === 'dialog') {
-        if (prefersExpandedComposer) handleClose();
+        // Collapsing a forced dialog is geometrically impossible, so Escape
+        // closes it (draft-preserving) instead of being swallowed by the
+        // re-expand.
+        if (prefersExpandedComposer || forcedDialog) handleClose();
         else setMode('popover');
       } else {
         handleClose();
@@ -554,9 +566,9 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
               {headerLabel}
             </span>
             <div className="flex items-center gap-1">
-              {!prefersExpandedComposer && (
+              {!prefersExpandedComposer && !forcedDialog && (
                 <button
-                  onClick={() => setMode('popover')}
+                  onClick={() => { setDialogIsForced(false); setMode('popover'); }}
                   className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                   title="Collapse"
                 >
@@ -702,7 +714,7 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
         </span>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setMode('dialog')}
+            onClick={() => { setDialogIsForced(false); setMode('dialog'); }}
             className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             title="Expand"
           >
