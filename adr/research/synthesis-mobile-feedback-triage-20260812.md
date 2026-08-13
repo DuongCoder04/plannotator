@@ -1,7 +1,7 @@
 # Synthesis: Mobile Feedback Triage and Phase Sequence
 
 Date: 2026-08-12
-Status: Phase 1B accepted; Phase 1C scoped for implementation review
+Status: Phase 1B accepted; Phase 1C implemented with physical-device gate pending
 Source dossier: [`SPIKE-mobile-web-compatibility-20260812.md`](./SPIKE-mobile-web-compatibility-20260812.md)
 Foundation spec: [`mobile-platform-foundation-phase1-20260812.md`](../specs/mobile-platform-foundation-phase1-20260812.md)
 
@@ -120,6 +120,32 @@ The checkpoint is ready for review when:
 The reviewer should expect a short physical-device check of representative
 controls and one shared dialog—not another end-to-end Plan or Code Review
 critique.
+
+### Phase 1C implementation checkpoint
+
+Implementation is complete on `codex/mobile-phase-1c-touch-dialog` and ready
+for the short physical-device gate above. The shared contract now:
+
+- marks both incumbent button primitives and the shared dialog close control;
+- applies the 44 px minimum and immediate press feedback only when a coarse
+  pointer exists, with a non-animated reduced-motion state;
+- guards touched hover treatments behind hover-capable fine pointers;
+- centers portaled shared dialogs inside the reactive visible-viewport and
+  safe-area stage from Phase 1A/1B; and
+- migrates `ConfirmDialog` to that shared primitive while preserving its
+  non-dismissible backdrop and Command/Ctrl+Enter behavior. The migration also
+  intentionally improves desktop accessibility by containing focus, focusing
+  the safe Cancel action first when present, and restoring the opening control.
+
+Responsive browser preflight found no horizontal overflow and kept the real
+Plan confirmation popup within 16 px visible-stage padding at 320×568,
+390×844, 390×500 keyboard-height, 844×390 phone landscape, 768×1024 iPad
+portrait, and 1180×820 iPad landscape. At 1280×720 with a fine pointer, the
+incumbent Plan header controls remained 138.17×28 px and 92.54×28 px, matching
+the pre-change measurements. Browser emulation does not expose a coarse input
+device, so the 44×44 hit region, touch-down state, and hybrid iPad path remain
+the deliberate physical-device acceptance check rather than a claimed browser
+result.
 
 ## Phase 2A preview: mobile Code Review shell and arrival
 
