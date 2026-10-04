@@ -13,6 +13,7 @@
  *   pid          the CLI's pid, for the liveness check
  *   exit         the CLI's exit code, written after it exits
  *   revision.json / revision.json.ack   plan revisions pushed into an open review
+ *   messages.json  PLANNOTATOR_HOST_MESSAGES_FILE: `last`'s recent assistant messages, for the picker
  *
  * No listener in the mod: it looks at these files on a timer.
  */
@@ -43,6 +44,7 @@ export const LAUNCH_FILES = {
   pid: 'pid',
   exit: 'exit',
   revision: 'revision.json',
+  messages: 'messages.json',
   overflow: 'feedback.md',
 } as const
 
@@ -241,13 +243,101 @@ export function subjectFor(kind: SessionKind, args: string | readonly string[], 
   }
 }
 
-/** The text of the last assistant message that has any. */
-export function lastAssistantText(messages: readonly { role: string; text: string }[]): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message && message.role === 'assistant' && message.text.trim()) return message.text
+/**
+ * `last`'s subject when the reviewer can pick among several messages: the
+ * feedback may be about an older one (its excerpt rides in the feedback).
+ */
+export const RECENT_MESSAGES_SUBJECT = "Claude's recent messages"
+
+/** The classic `annotate-last` picker's limit (RECENT_MESSAGES_LIMIT in the CLI). */
+export const RECENT_MESSAGES_LIMIT = 25
+/** The CLI's limits on the messages file (`apps/hook/server/host-messages.ts`): raw text per message. */
+export const MAX_PICKER_MESSAGE_BYTES = 2 * 1024 * 1024
+/** The CLI's cap on the whole SERIALIZED file. */
+export const MAX_PICKER_FILE_BYTES = 8 * 1024 * 1024
+/**
+ * What the mod lets the serialized file reach: under the CLI's cap with a
+ * margin. Measured on the JSON as written, since escaping inflates text
+ * (quotes and newlines double, a control character such as ESC becomes
+ * `\u001b`, six bytes).
+ */
+export const PICKER_FILE_BUDGET_BYTES = MAX_PICKER_FILE_BYTES - 256 * 1024
+
+/**
+ * The assistant messages that have text, newest first, at most `limit`.
+ * Consecutive assistant rows (no user row between them) are one response, so
+ * their texts are joined, as the transcript path groups chunks by message id.
+ */
+export function recentAssistantTexts(
+  messages: readonly { role: string; text: string }[],
+  limit: number = RECENT_MESSAGES_LIMIT,
+): string[] {
+  const texts: string[] = []
+  let run: string[] = []
+  const flush = () => {
+    const text = run.join('\n')
+    run = []
+    if (text.trim()) texts.push(text)
   }
-  return null
+  for (let index = messages.length - 1; index >= 0 && texts.length < limit; index -= 1) {
+    const message = messages[index]
+    if (!message) continue
+    if (message.role === 'assistant') {
+      if (message.text.trim()) run.unshift(message.text)
+    } else {
+      flush()
+    }
+  }
+  if (texts.length < limit) flush()
+  return texts
+}
+
+export interface PickerMessage {
+  messageId: string
+  text: string
+}
+
+export interface PickerFile {
+  messages: PickerMessage[]
+  /** Exactly what is written to `messages.json`, within PICKER_FILE_BUDGET_BYTES. */
+  json: string
+}
+
+/**
+ * The picker list the CLI reads from `messages.json`: `texts` newest first,
+ * each with an id derived from its content (stable across launches, so a
+ * message keeps its id as newer ones arrive), and the file text itself. The
+ * budget is the serialized size: older messages that would push the file past
+ * it (or are over the CLI's per-message limit) are left out. When the newest
+ * alone does not fit, the list is empty and the launch hands over stdin alone.
+ */
+export async function pickerFile(
+  texts: readonly string[],
+  sha256: (text: string) => Promise<string>,
+  budgetBytes: number = PICKER_FILE_BUDGET_BYTES,
+): Promise<PickerFile> {
+  const encoder = new TextEncoder()
+  const size = (text: string) => encoder.encode(text).length
+  const empty = { messages: [], json: JSON.stringify({ v: 1, messages: [] }) }
+  const picked: PickerMessage[] = []
+  const used = new Map<string, number>()
+  // `{"v":1,"messages":[]}`, then each entry's JSON plus a comma between entries.
+  let total = size(empty.json)
+  for (const [index, text] of texts.entries()) {
+    const fits = size(text) <= MAX_PICKER_MESSAGE_BYTES
+    const base = fits ? `cc-${(await sha256(text)).slice(0, 16)}` : ''
+    const seen = used.get(base) ?? 0
+    const message = { messageId: seen === 0 ? base : `${base}-${seen + 1}`, text }
+    const cost = size(JSON.stringify(message)) + (picked.length > 0 ? 1 : 0)
+    if (!fits || total + cost > budgetBytes) {
+      if (index === 0) return empty
+      continue
+    }
+    total += cost
+    used.set(base, seen + 1)
+    picked.push(message)
+  }
+  return { messages: picked, json: JSON.stringify({ v: 1, messages: picked }) }
 }
 
 /** The command's own output once the server is up. */
