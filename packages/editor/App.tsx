@@ -72,6 +72,14 @@ import {
   needsTerminalToolsAnnouncement,
   terminalToolsAnnouncementCanShow,
 } from '@plannotator/ui/utils/terminalToolsAnnouncement';
+import { AskSessionAnnouncementDialog } from '@plannotator/ui/components/AskSessionAnnouncementDialog';
+import {
+  askSessionAnnouncementEligible,
+  askSessionAnnouncementPendingThisLoad,
+  connectedAskSessionAgent,
+  markAskSessionAnnouncementSeen,
+} from '@plannotator/ui/utils/askSessionAnnouncement';
+import { useFirstRunAnnouncementWindow } from '@plannotator/ui/hooks/useFirstRunAnnouncementWindow';
 import { buildDefaultPrompt, useAIChat } from '@plannotator/ui/hooks/useAIChat';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
@@ -783,6 +791,11 @@ const App: React.FC = () => {
   const [terminalToolsIntroPending, setTerminalToolsIntroPending] = useState(
     needsTerminalToolsAnnouncement,
   );
+  // One-time "Ask this session" announcement, after the terminal-tools one
+  // (never on the same load). Latched at mount for the same reason.
+  const [askSessionIntroPending, setAskSessionIntroPending] = useState(
+    askSessionAnnouncementPendingThisLoad,
+  );
   const isMobile = useIsMobile();
   const isBelowAgentTerminalBreakpoint = useIsMobile(AGENT_TERMINAL_LG_BREAKPOINT);
   const isCompactTouchLayout = useCompactTouchLayout();
@@ -1145,6 +1158,11 @@ const App: React.FC = () => {
   const dismissTerminalToolsAnnouncement = useCallback(() => {
     markTerminalToolsAnnouncementSeen();
     setTerminalToolsIntroPending(false);
+  }, []);
+
+  const dismissAskSessionAnnouncement = useCallback(() => {
+    markAskSessionAnnouncementSeen();
+    setAskSessionIntroPending(false);
   }, []);
 
   const dismissLookAndFeelAnnouncement = useCallback(() => {
@@ -6214,6 +6232,29 @@ const App: React.FC = () => {
     otherFirstRunDialogVisible:
       shouldShowLookAndFeelAnnouncement || goalSetupMode || showPermissionModeSetup,
   });
+  // After the terminal-tools announcement, and only while this session is
+  // actually connected to its agent (Claude Code, Pi, OpenCode) and Ask AI is
+  // reachable here (not taken over by the annotate agent terminal). It may
+  // only open before the reader starts working (useFirstRunAnnouncementWindow);
+  // otherwise it waits for a later load. Same deferrals as the one above.
+  const askSessionAgent = connectedAskSessionAgent(aiProviders);
+  const showAskSessionAnnouncement = useFirstRunAnnouncementWindow({
+    pending: askSessionIntroPending,
+    armed: !isLoading,
+    eligible: askSessionAnnouncementEligible({
+      announcementPending: askSessionIntroPending,
+      isLoading,
+      connectedAgent: askSessionAgent,
+      askAIUsable: canUseAI && !isAgentTerminalReady,
+      readOnlySession: isSharedSession || archive.archiveMode || !isApiMode,
+      compact: isCompactTouchLayout,
+      otherFirstRunDialogVisible:
+        shouldShowLookAndFeelAnnouncement
+        || goalSetupMode
+        || showPermissionModeSetup
+        || shouldShowTerminalToolsAnnouncement,
+    }),
+  });
   const compactNavigatorTabs: SidebarTab[] = [
     ...(hasTocEntries ? ['toc' as const] : []),
     ...(!isHtmlSurface && activeDiffVersionInfo !== null && activeDiffVersionInfo.totalVersions > 1
@@ -7430,6 +7471,15 @@ const App: React.FC = () => {
           <TerminalToolsAnnouncementDialog
             isOpen
             onDismiss={dismissTerminalToolsAnnouncement}
+          />
+        )}
+
+        {/* One-time "Ask this session" announcement, last in the chain. */}
+        {showAskSessionAnnouncement && askSessionAgent && (
+          <AskSessionAnnouncementDialog
+            isOpen
+            agent={askSessionAgent}
+            onDismiss={dismissAskSessionAnnouncement}
           />
         )}
 

@@ -909,6 +909,50 @@ construction. `@plannotator/ui` exposes no first-run-suppression seam on
 `configurePlannotatorUI`; a host that wants the announcement off installs its
 own `storageBackend` (the documented escape hatch) and pre-seeds the key.
 
+### First-run "Ask this session" announcement
+
+A one-time panel for 0.28.0's integrated sessions: Ask AI answered by the agent session that opened
+Plannotator, and reviews that no longer hold that session. Same shape as the terminal-tools
+announcement above: `packages/ui/components/AskSessionAnnouncementDialog.tsx` (portal, `z-[100]`,
+Escape / Tab wrap / focus restore, backdrop dismiss, capture-phase keydown that swallows
+`Mod+Enter`, `data-ask-session-announcement-dialog`) and `packages/ui/utils/askSessionAnnouncement.ts`
+(one plain cookie, `plannotator-announce-ask-session-seen` = `'1'`, shared by every surface; not a
+settings-registry entry, for the same seeding reason).
+
+**Who sees it:** only a plan review, annotate or code review session that is actually connected
+right now: `/api/ai/capabilities` lists the session-bridge provider for `claude-code`, `pi` or
+`opencode` and its status is not `gone` (`connectedAskSessionAgent`), and Ask AI is reachable on
+the surface (the plan editor's `canUseAI` and not taken over by the annotate agent terminal; code
+review's AI button). Everything else defers WITHOUT writing the cookie, so the reader sees it in a
+session where it is true: no bridge (remote, `--tailscale`, Windows, the mod off, `-p`, Pi's
+event-API path, OpenCode 1, an older CLI), a gone session, other origins, `PLANNOTATOR_AI=disabled`,
+archive / shared / no-server sessions, the compact touch shell and the initial load. The headline
+names the connected host and the footer always says "This session is connected"; there is no
+setup variant. OpenCode's copy says "code review and annotate no longer hold the session" because
+its plan review still does.
+
+**Timing:** `useFirstRunAnnouncementWindow` (`packages/ui/hooks/`) lets it open only before the
+reader's first pointer press, key press or focus into a text field, within 4 s of the initial load,
+and never while a text field (a comment composer) or an iframe has focus. Work inside the raw-HTML
+and live-app iframes never reaches the parent's listeners, so a window `blur` after the first
+second (the viewer's own startup may focus its iframe) also closes the window. Capabilities can answer late (model
+discovery), and a dialog that opened then would take focus mid-comment and be dismissed unread by
+the next Space or Enter; instead it misses the load, cookie unwritten. Once open it stays until
+dismissed.
+
+**Ordering:** after the terminal-tools announcement and never on the same load
+(`askSessionAnnouncementPendingThisLoad` is false while that cookie is unset), so a fresh browser
+sees terminal tools first and this one on the next load; behind every chain dialog in both apps
+(the permission-mode setup included). Code review's destination spotlight, auto-viewed toast and
+history-shortcut guard defer behind it like they do behind terminal tools.
+
+**Media:** real footage, hosted like the terminal-tools demos:
+`apps/marketing/public/assets/ask-this-session-demo.{mp4,webm}` + `ask-this-session-poster.jpg`
+(1280x800, ~35 s). Recorded from a real Claude Code 2.1.289 session (real plugin and mod, real
+compiled CLI, real review app) whose model calls went to a scripted local stand-in for the
+Messages API, so the question, the Read tool call and the streamed answer are real traffic with
+scripted model text. Offline it says the video could not load; reduced motion waits on the poster.
+
 ### Review drafts and PR pushes (#1590)
 
 Code-review drafts (`/api/draft`) are keyed by `contentHash(rawPatch)`, so a local review whose diff changes still starts without its old draft (unchanged, out of scope). **PR mode only** additionally stores the draft under a stable target key, `prDraftTargetKey(meta, scope)` = `pr-` + hash of platform + host + repo (`owner/repo` or GitLab `projectPath`, lower-cased) + PR number + diff scope (`layer` / `full-stack` are different patches). All of it lives in `packages/shared/review-draft.ts` (vendored to Pi); both review servers hold one `createReviewDraftSession()` and route `/api/draft`, `/api/feedback` and `/api/exit` through it (without a target key every call is the plain `draft.ts` call, including the historical always-`ok` save response).
