@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { createTestEnvironment } from "../../tests/helpers/environment";
 import PlannotatorPlugin from "./index";
 
@@ -75,6 +77,88 @@ describe("OpenCode 1 command interception", () => {
         expect(output.parts).toBe(parts);
       });
     }
+  }
+
+  // OpenCode runs a model turn for the command's own message whatever the hook
+  // does, so feedback sent as a separate prompt ran a SECOND turn that answered
+  // the same review again. Failure caught: the feedback leaving the command's
+  // own message, or that message being answered by a different agent, model
+  // or variant than the separate prompt was.
+  const routing = [
+    {
+      name: "a review agent switch answers on that agent's model and variant",
+      outcome: { decision: "annotated", feedback: "Rename the helper.", agentSwitch: "reviewer" },
+      expected: { agent: "reviewer", model: { providerID: "acme", modelID: "careful-1", variant: "max" } },
+    },
+    {
+      // The old prompt named no agent, so OpenCode's default agent answered on
+      // the session's model, whatever the TUI had picked for the command.
+      name: "no agent named: OpenCode's default agent on the session's model",
+      outcome: { decision: "annotated", feedback: "Rename the helper." },
+      expected: { agent: "build", model: { providerID: "acme", modelID: "everyday-1" } },
+    },
+  ];
+  for (const { name, outcome, expected } of routing) {
+    test.skipIf(process.platform === "win32")(`feedback becomes the command's own message: ${name}`, async () => {
+      environment.reset();
+      const root = environment.makeTempDir();
+      process.env.PLANNOTATOR_DATA_DIR = root;
+      const binary = path.join(root, "fake-cli.ts");
+      writeFileSync(binary, `#!/usr/bin/env bun
+await Bun.stdin.text();
+console.log(${JSON.stringify(JSON.stringify(outcome))});
+`, { mode: 0o755 });
+      process.env.PLANNOTATOR_BIN = binary;
+
+      const client: any = makeClient();
+      const sent: unknown[] = [];
+      client.session.prompt = async (request: unknown) => {
+        sent.push(request);
+        return {};
+      };
+      client.session.get = async () => ({ data: { id: "ses_1", model: { id: "everyday-1", providerID: "acme", variant: "default" } } });
+      client.app.agents = async () => ({
+        data: [
+          { name: "build", mode: "primary" },
+          { name: "reviewer", mode: "primary", model: { providerID: "acme", modelID: "careful-1" }, variant: "max" },
+        ],
+      });
+      client.config.providers = async () => ({
+        data: { providers: [{ id: "acme", models: { "careful-1": { variants: { max: {} } }, "everyday-1": {} } }] },
+      });
+      const plugin = await PlannotatorPlugin(
+        { client, directory: root } as never,
+        { runtime: "cli" } as never,
+      ) as Record<string, any>;
+
+      const parts: any[] = [{ type: "text", text: "stub body" }];
+      await plugin["command.execute.before"](
+        { command: "plannotator-review", sessionID: "ses_1", arguments: "" },
+        { parts },
+      );
+
+      expect(sent).toHaveLength(0);
+      expect(parts).toHaveLength(1);
+      expect(parts[0].text).toContain("Rename the helper.");
+
+      // OpenCode then builds the command's message from those parts, with the
+      // agent and model the TUI picked for the command.
+      const tuiPick = { agent: "plan", model: { providerID: "acme", modelID: "tui-pick", variant: "low" } };
+      const message = structuredClone(tuiPick);
+      await plugin["chat.message"](
+        { sessionID: "ses_1", agent: "plan" },
+        { message, parts: [{ ...parts[0], id: "prt_1" }] },
+      );
+      expect(message).toEqual(expected as never);
+
+      // One-shot: the next message in the session is the user's own.
+      const next = structuredClone(tuiPick);
+      await plugin["chat.message"](
+        { sessionID: "ses_1", agent: "plan" },
+        { message: next, parts: [{ ...parts[0], id: "prt_2" }] },
+      );
+      expect(next).toEqual(tuiPick);
+    }, 20_000);
   }
 
   test("an unrelated command keeps its parts untouched", async () => {

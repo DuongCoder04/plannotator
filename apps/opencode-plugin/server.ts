@@ -26,6 +26,7 @@ import { switchV2SessionAgent } from "./agent-switch";
 import { registerNativeCommands } from "./native-commands";
 import {
   createV2BridgeClient,
+  dropSessionUrlNotices,
   formatSessionUrlNotice,
   normalizeAgentList,
   type V2ContextLike,
@@ -111,7 +112,27 @@ const serverPlugin = {
       console.error(`[Plannotator] Could not register the OpenCode 2 slash commands: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    if (shouldModifyPrompts(workflowOptions)) {
+    // OpenCode 1.18 also runs this setup, with its Promise-plugin context that
+    // has no `session` or `tool` domain (and posts no notices). Every use of
+    // those domains is probed, so setup completes there instead of throwing.
+    const hasSessionHooks = typeof (ctx.session as { hook?: unknown } | undefined)?.hook === "function";
+    const hasToolTransform = typeof (ctx.tool as { transform?: unknown } | undefined)?.transform === "function";
+
+    // The session-URL notice is for the person, never the model: once promoted
+    // it could land after a plan decision's tool result and be answered
+    // instead of the decision. Registered for every workflow, since the
+    // notice is posted by the slash commands too. See `dropSessionUrlNotices`.
+    if (hasSessionHooks) {
+      try {
+        await ctx.session.hook("context", (event) => {
+          dropSessionUrlNotices(event.messages as unknown[]);
+        });
+      } catch (error) {
+        console.error(`[Plannotator] Could not register the session-URL notice filter: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (hasSessionHooks && shouldModifyPrompts(workflowOptions)) {
       await ctx.session.hook("context", async (event) => {
         if (
           workflowOptions.workflow === "plan-agent"
@@ -168,7 +189,7 @@ const serverPlugin = {
       });
     }
 
-    if (!shouldRegisterSubmitPlan(workflowOptions)) return;
+    if (!hasToolTransform || !shouldRegisterSubmitPlan(workflowOptions)) return;
 
     await ctx.tool.transform((tools) => {
       tools.add({

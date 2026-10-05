@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import packageJson from "./package.json";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 describe("OpenCode package entrypoints", () => {
   test("keeps V1 on main and exposes V2 from the package root", () => {
