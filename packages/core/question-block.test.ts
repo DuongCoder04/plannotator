@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildQuestionAnswerAnnotation,
+  canonicalQuestionAnswer,
   formatQuestionAnswerText,
   formatQuestionAnswersSection,
   indexQuestionBlocks,
@@ -357,6 +358,86 @@ describe("plain-bullet choices keep their wrapped lines", () => {
       ["**Remote:** costly", undefined],
     ]);
     expect(q.context).toBe("Trailing prose");
+  });
+});
+
+// 0.28.2 pre-tag smoke: 0.28.1 read a wrapped plain bullet's first line as
+// its label, so an answer saved then quotes that line. It must still show the
+// choice it picked (and export as it), under the label 0.28.2 gives it.
+describe("answers saved under an older label", () => {
+  const OLD_LABEL = '**One per session:** "ramos · cloud-3", "ramos · cloud-4". Each agent shows';
+  const index = indexQuestionBlocks([{ id: "b", type: "directive", directiveKind: "question", content: WRAPPED_PLAIN_BULLETS, startLine: 1 }]);
+  const q = index[0].question;
+  const saved: QuestionAnswer = { v: 1, key: q.key, kind: "single", prompt: q.prompt, selected: [OLD_LABEL] };
+
+  test("canonicalQuestionAnswer maps a 0.28.1 label to the current one", () => {
+    expect(canonicalQuestionAnswer(q, saved).selected).toEqual(["One per session"]);
+    // The key is the prompt's, unchanged.
+    expect(index[0].question.key).toBe(questionKey("single", q.prompt));
+    // A current label, or one naming no choice, is left alone.
+    const current = { ...saved, selected: ["One per person"] };
+    expect(canonicalQuestionAnswer(q, current)).toBe(current);
+    expect(canonicalQuestionAnswer(q, { ...saved, selected: ["Gone"] }).selected).toEqual(["Gone"]);
+  });
+
+  test("the export prints the current label, marked as the recommendation", () => {
+    const out = formatQuestionAnswersSection(questionExportItems(index), [saved]);
+    expect(out).toContain("Answer: One per session (your recommendation)");
+    expect(out).not.toContain("Each agent shows");
+  });
+
+  // #1702 review: a stored label more than one choice could claim stays as
+  // stored, never quietly becomes the first of them.
+  test("an ambiguous stored label stays as stored; an exact match beats a normalized one", () => {
+    const sharedFirstLine = parseQuestionBlock(
+      "question",
+      `Pick\n\n- Keep the cache\n  for reads\n- Keep the cache\n  for writes`,
+    )!;
+    expect(sharedFirstLine.choices.map((c) => c.label)).toEqual(["Keep the cache for reads", "Keep the cache for writes"]);
+    const stored = (label: string): QuestionAnswer => ({ v: 1, key: "q-00000001", kind: "single", prompt: "Pick", selected: [label] });
+    expect(canonicalQuestionAnswer(sharedFirstLine, stored("Keep the cache")).selected).toEqual(["Keep the cache"]);
+
+    const lookalikes = parseQuestionBlock("question", `Pick\n\n- **Alpha:** more\n- alpha\n  for reads\n- Alpha — x`)!;
+    expect(lookalikes.choices.map((c) => c.label)).toEqual(["**Alpha:** more", "alpha for reads", "Alpha"]);
+    // "alpha" is exactly the second bullet's first line, its 0.28.1 label.
+    expect(canonicalQuestionAnswer(lookalikes, stored("alpha")).selected).toEqual(["alpha for reads"]);
+    // "ALPHA" matches several choices only after normalization: ambiguous.
+    expect(canonicalQuestionAnswer(lookalikes, stored("ALPHA")).selected).toEqual(["ALPHA"]);
+    // A current label is never remapped.
+    expect(canonicalQuestionAnswer(lookalikes, stored("Alpha")).selected).toEqual(["Alpha"]);
+  });
+
+  test("the lettered rule: plain bullets only, case-sensitive, per part on a multi question", () => {
+    const plain = (rec: string, kind = "question-multi") =>
+      parseQuestionBlock(kind, `Pick\n\n- a. Local, kept on the device\n- b. Server, kept per user\n- c. Nowhere at all\n\nRecommended: ${rec}`)!
+        .choices.map((c) => c.recommended);
+    expect(plain("a. Local, b. Server")).toEqual([true, true, false]);
+    expect(plain("a. Local and b. Server")).toEqual([true, true, false]);
+    expect(plain("a. Local; c. Nowhere")).toEqual([true, false, true]);
+    expect(plain("b. Default off; launch can allow it", "question")).toEqual([false, true, false]);
+    expect(plain("A. Smith's proposal is better", "question")).toEqual([false, false, false]);
+
+    // Task lists match exactly as on main (0.28.1): the letter alone names
+    // nothing, and a multi list is split as before.
+    const tasks = (rec: string, kind = "question-multi") =>
+      parseQuestionBlock(kind, `Pick\n\n- [ ] a. Local\n- [ ] b. Server\n- [ ] c. Nowhere\n\nRecommended: ${rec}`)!;
+    expect(tasks("a. Local, b. Server").choices.map((c) => c.recommended)).toEqual([true, true, false]);
+    expect(tasks("a. Local; c. Nowhere").choices.map((c) => c.recommended)).toEqual([true, false, true]);
+    const single = tasks("b. Default off", "question");
+    expect(single.choices.map((c) => c.recommended)).toEqual([false, false, false]);
+    expect(single.suggestedText).toBe("b. Default off");
+    expect(tasks("A. Local", "question").choices.map((c) => c.recommended)).toEqual([true, false, false]);
+  });
+
+  test("a recommendation naming a lettered option matches the option with that letter", () => {
+    const lettered = parseQuestionBlock(
+      "question",
+      `Merge?\n\n- **a. It stops at "ready".** It waits.\n- **b. "May merge when green", a checkbox.** Off by default.\n\n**Recommendation:** b. Default off; the launcher can allow it.`,
+    )!;
+    expect(lettered.choices.map((c) => c.recommended)).toEqual([false, true]);
+    // Two labels sharing the letter: no guess.
+    const twice = parseQuestionBlock("question", `Merge?\n\n- a. One\n- a) Two\n\nRecommended: a. whichever`)!;
+    expect(twice.choices.every((c) => !c.recommended)).toBe(true);
   });
 });
 
