@@ -120,6 +120,8 @@ import { usePlanDiff, type VersionInfo, type VersionEntry, type PlanDiffFetchers
 import { useLinkedDoc, type LinkedDocSessionState } from '@plannotator/ui/hooks/useLinkedDoc';
 import { useCodeFilePopout } from '@plannotator/ui/hooks/useCodeFilePopout';
 import { useAnnotationDraft, type DraftEditedDocument, type DraftSavedFileChange } from '@plannotator/ui/hooks/useAnnotationDraft';
+import { useDocumentDrafts } from './hooks/useDocumentDrafts';
+import { composeSessionDraft } from './documentDrafts';
 import { useArchive } from '@plannotator/ui/hooks/useArchive';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
@@ -461,6 +463,9 @@ const App: React.FC = () => {
   // an empty note. Always true in plan review.
   const notesSaveAvailable = displayedMarkdown.trim().length > 0;
   const [sourceFilePath, setSourceFilePath] = useState<string | undefined>();
+  // Per-document draft copies (/api/draft/document), advertised by local-file
+  // and folder annotate servers. See hooks/useDocumentDrafts.ts.
+  const [documentDraftsEnabled, setDocumentDraftsEnabled] = useState(false);
   // Mirrors linkedDocHook.filepath (declared later) so the parse memos below
   // can key frontmatter behavior off the ACTIVE document's path. Kept in sync
   // by an effect after the hook is created.
@@ -711,6 +716,8 @@ const App: React.FC = () => {
   // The agent that opened this review closed it (POST /api/host/close); the
   // reviewer's unsent comments stay in the draft for a reopen.
   const [agentClosed, setAgentClosed] = useState<{ unsentAnnotations: number } | null>(null);
+  // Set below once the draft hooks exist; read by the session-closed handler.
+  const flushPendingDraftsRef = useRef<() => void>(() => {});
   const [pendingPasteImage, setPendingPasteImage] = useState<{ file: File; blobUrl: string; initialName: string } | null>(null);
   const [showPermissionModeSetup, setShowPermissionModeSetup] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
@@ -2160,6 +2167,9 @@ const App: React.FC = () => {
   const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<Annotation>({
     enabled: isApiMode && !goalSetupMode && !documentReadOnly,
     onSessionClosed: (event) => {
+      // The agent close keeps the draft, so a comment typed in the last
+      // debounce window is sent before the session reads as closed.
+      flushPendingDraftsRef.current();
       setAgentClosed(event);
       setSubmitted((current) => current ?? 'exited');
     },
@@ -2558,11 +2568,52 @@ const App: React.FC = () => {
     return getEditedMarkdown();
   }, [editableDocuments, getEditedMarkdown]);
 
-  // Auto-save annotation drafts
-  const { draftBanner, restoreDraft, scheduleDraftSave, scheduleDraftSaveAfterSubmitFailure, getDraftGeneration, dismissDraft } = useAnnotationDraft({
-    annotations: allAnnotations,
-    codeAnnotations,
+  // Every other document's comments, saved under that document's own path.
+  const { unbackedPaths: unbackedDraftDocuments, flushPendingWrite: flushDocumentDrafts } = useDocumentDrafts({
+    enabled: documentDraftsEnabled && isApiMode && !isSharedSession && !goalSetupMode && !documentReadOnly,
+    submitted: !!submitted || isSubmitting,
+    activePath: linkedDocHook.filepath,
+    rootPath: sourceFilePath ?? null,
+    getFeedbackDocuments: linkedDocHook.getFeedbackDocuments,
+    annotations,
     globalAttachments,
+    setAnnotations,
+    setGlobalAttachments,
+    updateStoredAnnotations: linkedDocHook.updateStoredAnnotations,
+    viewerRef,
+    onBeforeMerge: annotationHistory.clear,
+    onRestored: (path, count) => {
+      const name = path.split(/[\\/]/).pop() || path;
+      toast(`Restored ${count} saved ${count === 1 ? 'comment' : 'comments'} on ${name}`, { duration: 4000 });
+    },
+  });
+
+
+  // What the session draft carries. With per-document copies the session
+  // draft is the ROOT document's (the file under review, or the folder's own
+  // comments) even while another document is open: that document's comments
+  // are saved under its own path by useDocumentDrafts. A document the server
+  // keeps no path copy for (outside the session's roots, such as an Obsidian
+  // vault document, or a copy of the root opened through a self-link) rides
+  // the session draft too, so it stays crash-recoverable as before. Without
+  // per-document copies it is the open document's, as it always was.
+  const { annotations: draftAnnotations, globalAttachments: draftGlobalAttachments } = useMemo(
+    () => composeSessionDraft({
+      enabled: documentDraftsEnabled,
+      live: { annotations: allAnnotations, globalAttachments },
+      feedbackDocuments: linkedDocHook.getFeedbackDocuments(),
+      externalAnnotations,
+      rootPath: sourceFilePath ?? null,
+      unbackedPaths: unbackedDraftDocuments,
+    }),
+    [documentDraftsEnabled, linkedDocHook.getFeedbackDocuments, externalAnnotations, allAnnotations, globalAttachments, sourceFilePath, unbackedDraftDocuments],
+  );
+
+  // Auto-save annotation drafts
+  const { draftBanner, restoreDraft, scheduleDraftSave, scheduleDraftSaveAfterSubmitFailure, getDraftGeneration, dismissDraft, flushPendingSave: flushSessionDraft } = useAnnotationDraft({
+    annotations: draftAnnotations,
+    codeAnnotations,
+    globalAttachments: draftGlobalAttachments,
     getEditedMarkdown: getDraftEditedMarkdown,
     getEditedDocuments: editableDocuments.getDraftDocuments,
     getSavedFileChanges: editableDocuments.getDraftSavedFileChanges,
@@ -2573,6 +2624,10 @@ const App: React.FC = () => {
     // banner into the next session for this plan. Saving resumes if it fails.
     submitted: !!submitted || isSubmitting,
   });
+  flushPendingDraftsRef.current = () => {
+    flushSessionDraft();
+    flushDocumentDrafts();
+  };
 
   // Fetch available agents for OpenCode (for validation on approve)
   const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin);
@@ -3551,7 +3606,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Extra extensions the user registered as markdown (#1307) — the
@@ -3646,6 +3701,7 @@ const App: React.FC = () => {
           setSelectedMessageId(null);
         }
         setSourceInfo(data.sourceInfo ?? undefined);
+        setDocumentDraftsEnabled(data.documentDrafts === true);
         setFeedbackTemplates(data.feedbackTemplates ?? null);
         setSourceConverted(!!data.sourceConverted);
         if (data.filePath) {
@@ -7456,7 +7512,14 @@ const App: React.FC = () => {
           }
           subtitle={
             submitted === 'exited' && agentClosed
-              ? agentClosedSubtitle(agentClosed.unsentAnnotations, 'document')
+              ? agentClosedSubtitle(
+                  agentClosed.unsentAnnotations,
+                  // Path-keyed drafts (documentDrafts) follow a local file
+                  // through edits; URL and agent-message drafts do not.
+                  liveApp ? 'app'
+                    : documentDraftsEnabled ? (annotateSource === 'folder' ? 'folder' : 'file')
+                    : 'document',
+                )
             : submitted === 'exited'
               ? 'Annotation session closed without feedback.'
               : archive.archiveMode
