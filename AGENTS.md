@@ -367,7 +367,34 @@ approved-with-notes prompts OpenCode and Pi use; plan: `composePlanDeniedMessage
 unchanged for every caller. `noop` marks what never starts a turn: Done with
 nothing to send, review LGTM, Close, and a review posted straight to the PR
 platform (`platform: true`, logged plus a `$.prompt.suggest` to address the
-comments).
+comments). An annotate Done with nothing to send still posts the legacy
+zero-state sentence ("User reviewed the document and has no feedback.") as
+`feedback`, because plain stdout, `--json` and the OpenCode/Pi consumers print
+or deliver those bytes; the editor additionally marks that body
+`nothingToSend: true`, which both annotate servers carry onto the decision only
+alongside empty `annotations`/`codeAnnotations` (`isNothingToSendFeedbackBody`,
+`packages/shared/annotate-decision.ts`), and `annotateHostResult` turns it into
+a `noop` record. Every plugin host that turns a decision into an agent message
+skips it the same way: Pi's
+`classifyAnnotateOutcome` reads it as "Annotation closed (no feedback).", the
+OpenCode embedded handlers (`commands.ts`) send no prompt (on OpenCode 1 the
+command's own message still runs its one empty turn, the known OC1 limit; no
+second turn is added), and the OpenCode CLI bridge (OpenCode 1 CLI runtime and
+OpenCode 2 native commands) reads the additive `nothingToSend: true` the CLI
+adds to its `--json` / `opencode-annotate-last` record in that case only, as do
+the Amp plugin (`formatAnnotationFeedback`) and the Droid plugin
+(`emitAnnotateDecision`), which also read `annotate --json`. Skill-run hosts
+(the classic Claude Code skill, Codex, Gemini, Copilot, Vibe, Kiro) still hand
+the model the plain-stdout sentence, which is the unchanged stdout contract. The
+feedback archive still records a bare Done as `feedback` with the sentence.
+Multi-message annotate-last merges SSE external (agent / WebMCP) comments into
+the current message's entry (`mergeExternalsIntoMessageEntries`), so they reach
+the exported feedback, the submit body and the nothing-to-send check. The mod's `legacyResult` recognizes the two zero-state
+sentences printed by a CLI older than the result file (#1701). The submit
+body's `annotations` carries every document's comments (folder sessions,
+linked documents, every message in multi-message annotate-last;
+`collectSubmittedAnnotations` in `packages/editor/feedbackDocuments.ts`), so
+`annotationCount` matches the feedback text.
 
 **Version skew.** The plugin installs from the repo's main branch and the
 binary updates separately, so with the mod on by default it routinely runs
@@ -1171,7 +1198,7 @@ The bang prefix in the Claude Code skill is deliberate: #872 (commit `aac5aacb`,
 
 ### Strict direct annotate results
 
-Direct `plannotator annotate` invocations may add `--require-approval` and/or `--result-file <path>` only with `--gate --json`; both reject `--hook` and are not shared with OpenCode/Pi slash-command parsing. When neither strict option is present, single-target invocations keep the legacy plaintext, JSON, hook, and exit behavior unchanged; multi-token invocations go through the tolerant tiers described under "Tolerant argument resolution" above.
+Direct `plannotator annotate` invocations may add `--require-approval` and/or `--result-file <path>` only with `--gate --json`; both reject `--hook` and are not shared with OpenCode/Pi slash-command parsing. When neither strict option is present, single-target invocations keep the legacy plaintext, JSON, hook, and exit behavior unchanged, with one additive JSON field: a non-gated Done with nothing to send prints `{"decision":"annotated","feedback":"User reviewed the document and has no feedback.","nothingToSend":true}` (the field appears only in that case and only on the non-strict `--json` record and the `opencode-annotate-last` record; decision values, the feedback text, plaintext, `--hook` output, the strict-gate record and every exit code are unchanged; the OpenCode CLI bridge, Amp and Droid read it; #1701). Multi-token invocations go through the tolerant tiers described under "Tolerant argument resolution" above.
 
 Strict decisions use one newline-terminated JSON record on stdout and, when requested, identical bytes in the result file. Exit codes follow the grep convention: approval exits `0`; with `--require-approval`, annotated and dismissed decisions are published before exiting `1` (negative human outcome); usage/startup/validation failures — bad flag combinations, strict flags outside `annotate --gate --json`, a missing `--result-file` parent, a pre-existing or dangling-symlink destination, and every annotate startup failure (missing path, unreachable URL, empty folder, ambiguous name, missing file, oversized file) — exit `2` (the gate itself was misconfigured or could not start). Those startup sites exit `1` as before for non-strict invocations, with one deliberate exception: the multi-token zero-resolve handoff is not a startup failure, so in plain non-strict mode it prints on stdout and exits `0` (under `--json`/`--hook` it stays stderr + exit `1`). Under a strict flag `1` is reserved for "the reviewer did not approve", so a typo'd path must never masquerade as a rejection. Post-decision publication failures (destination appears between validation and publish, hard links unavailable) also exit `2`: the result *file* was not published, so they present as environment errors — "the gate could not publish its result" — never as a reviewer outcome, and never as approval (still fail-closed, since only `0` means approved). The stdout decision record is written **before** result-file publication and is still emitted whenever the decision itself completed; only a stdout write failure leaves no record anywhere. Signal deaths keep `128+n`. Result paths resolve from the invocation working directory, require an existing parent and absent destination, and publish via a flushed/closed `0600` same-directory temporary file plus an atomic no-clobber hard link—never copy or overwrite fallback (the `0600` mode is a no-op on Windows, and the atomic link/rename is not followed by a parent-directory fsync, so publication is atomic but not crash-durable). Keep reviewed sources at stable project paths; unique result and diagnostic log files may use a narrow temporary directory. Explicit Close emits `dismissed`; missing results or process/browser failures are recovery cases, never approval.
 
@@ -1456,8 +1483,11 @@ Details that surprise people:
   would signal a real shape change rather than the arrival of new keys.
 - **Folder-session records name the folder, not the open document.** A folder
   annotate session submits one body of feedback for the session, so
-  `target.filePath` is the session's folder; the per-document path is not part
-  of the record.
+  `target.filePath` is the session's folder. The record's `annotations` hold
+  every document's comments (not only the open one's), and each comment made
+  on a document other than the session's own target carries the additive
+  `documentPath` field naming that document (absent means the session's own
+  target or message; distinct from `file`, a code annotation's file).
 - **URL-session records store the full URL, query string included**, because
   that is the page that was reviewed. A URL carrying a token in its query is
   therefore written to disk; the opt-out is the control for that.

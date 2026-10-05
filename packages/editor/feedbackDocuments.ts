@@ -18,6 +18,7 @@ import {
   LINKED_DOC_EXPORT_HEADING,
   type LinkedDocAnnotationEntry,
   type LinkedDocExportHeading,
+  type MessageAnnotationEntry,
 } from '@plannotator/ui/utils/parser';
 import { diagramRenderKindForPath, isDiagramRenderKind, shouldStripFrontmatter } from '@plannotator/shared/annotatable';
 
@@ -110,4 +111,64 @@ export function resolveFeedbackSections(input: FeedbackSectionsInput): FeedbackS
       ? FOLDER_DOC_EXPORT_HEADING
       : LINKED_DOC_EXPORT_HEADING,
   };
+}
+
+/**
+ * Multi-message annotate-last: the per-message entries are built from each
+ * message's LOCAL annotations, so SSE externals (agent / WebMCP comments)
+ * reached neither the export nor the submit body. They are about what is on
+ * screen, so they ride the CURRENT message's entry (the first entry, the
+ * latest message, when the current one is not among them), deduped against
+ * draft-restored copies exactly like the single-document path.
+ */
+export function mergeExternalsIntoMessageEntries(
+  entries: MessageAnnotationEntry[],
+  currentMessageId: string | null | undefined,
+  externalAnnotations: Annotation[],
+): MessageAnnotationEntry[] {
+  if (externalAnnotations.length === 0 || entries.length === 0) return entries;
+  const found = entries.findIndex((entry) => entry.messageId === currentMessageId);
+  const index = found === -1 ? 0 : found;
+  return entries.map((entry, i) => i === index
+    ? { ...entry, annotations: mergeExternalAnnotations(entry.annotations, externalAnnotations) }
+    : entry);
+}
+
+/**
+ * One submitted annotation. `documentPath` is set on comments made on a
+ * document OTHER than the session's own (a folder session's files, a linked
+ * document); absent means the session's own document or message. Additive:
+ * the server and the feedback archive read it, nothing else does.
+ */
+export type SubmittedAnnotation = Annotation & { documentPath?: string };
+
+/**
+ * The `annotations` array a submit body carries: every annotation the
+ * feedback export covers, so the count a host reports and the archive records
+ * matches the text the agent reads. It used to be the OPEN document's
+ * annotations only, so a folder session with comments in two files reported
+ * "1 comment".
+ */
+export function collectSubmittedAnnotations(
+  sections: Pick<FeedbackSections, 'annotations' | 'linkedDocuments'>,
+  messageEntries?: readonly MessageAnnotationEntry[],
+): SubmittedAnnotation[] {
+  const out: SubmittedAnnotation[] = [];
+  const addDocuments = (documents: ReadonlyMap<string, LinkedDocAnnotationEntry> | undefined) => {
+    if (!documents) return;
+    for (const [documentPath, entry] of documents) {
+      for (const annotation of entry.annotations) out.push({ ...annotation, documentPath });
+    }
+  };
+  if (messageEntries) {
+    // Multi-message annotate-last: the export walks every message.
+    for (const entry of messageEntries) {
+      out.push(...entry.annotations);
+      addDocuments(entry.linkedDocs);
+    }
+    return out;
+  }
+  out.push(...sections.annotations);
+  addDocuments(sections.linkedDocuments);
+  return out;
 }

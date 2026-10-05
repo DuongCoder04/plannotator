@@ -263,13 +263,14 @@ import {
   buildSavedFileChangePanelItems,
   buildSavedFileChangesSection,
   computeEditStats,
+  isEmptyFeedbackSentinel,
   normalizeEditedMarkdown,
 } from './directEdits';
 import {
   buildAnnotateApprovalBody,
   buildCompleteAnnotateFeedback,
 } from './annotateSubmission';
-import { blocksForDocument, mergeExternalAnnotations, resolveFeedbackSections } from './feedbackDocuments';
+import { blocksForDocument, collectSubmittedAnnotations, mergeExternalAnnotations, mergeExternalsIntoMessageEntries, resolveFeedbackSections } from './feedbackDocuments';
 import { buildDecisionSpec, type DecisionActionId, type DecisionMenuItem } from '@plannotator/ui/utils/decisionSpec';
 import { DecisionNoteDialog, type DecisionHandler } from '@plannotator/ui/components/DecisionControl';
 import {
@@ -2175,6 +2176,14 @@ const App: React.FC = () => {
     [annotations, externalAnnotations],
   );
 
+  // Multi-message annotate-last entries for the export and the submit body.
+  // Each message's entry is built from LOCAL annotations only, so SSE
+  // externals (agent / WebMCP comments) ride the current message's entry.
+  const buildFeedbackMessageEntries = useCallback(
+    () => mergeExternalsIntoMessageEntries(buildMessageAnnotationEntries(), selectedMessageId, externalAnnotations),
+    [buildMessageAnnotationEntries, selectedMessageId, externalAnnotations],
+  );
+
   // Plan diff state — memoize filtered annotation lists to avoid new references per render
   const diffAnnotations = useMemo(() => allAnnotations.filter(a => !!a.diffContext), [allAnnotations]);
   const viewerAnnotations = useMemo(() => allAnnotations.filter(a => !a.diffContext), [allAnnotations]);
@@ -2183,7 +2192,7 @@ const App: React.FC = () => {
   const messageMultiSelectMode = annotateSource === 'message' && recentMessages.length > 1;
   const hasAnyAnnotations = useMemo(
     () => messageMultiSelectMode
-      ? messageFeedbackAnnotationCount > 0 || editorAnnotations.length > 0
+      ? messageFeedbackAnnotationCount > 0 || externalAnnotations.length > 0 || editorAnnotations.length > 0
       : allAnnotations.length > 0
         || codeAnnotations.length > 0
         || editorAnnotations.length > 0
@@ -2192,6 +2201,7 @@ const App: React.FC = () => {
     [
       messageMultiSelectMode,
       messageFeedbackAnnotationCount,
+      externalAnnotations.length,
       allAnnotations.length,
       codeAnnotations.length,
       editorAnnotations.length,
@@ -3253,14 +3263,14 @@ const App: React.FC = () => {
       directEditsSection: buildEditsSection(),
       savedFileChangesSection: buildSavedChangesSection(checkedSavedFileChanges),
       ...(messageMultiSelectMode && !discard
-        ? { messageEntries: buildMessageAnnotationEntries() }
+        ? { messageEntries: buildFeedbackMessageEntries() }
         : {}),
       ...(options?.approvalFraming ? { approvalFraming: true } : {}),
     });
   }, [
     annotateSource,
     buildEditsSection,
-    buildMessageAnnotationEntries,
+    buildFeedbackMessageEntries,
     buildSavedChangesSection,
     codeAnnotations,
     editorAnnotations,
@@ -3268,6 +3278,14 @@ const App: React.FC = () => {
     messageMultiSelectMode,
     savedFileChanges,
   ]);
+
+  // The submit body's `annotations`: every document's (and, in multi-message
+  // annotate-last, every message's) comments — the same set the feedback text
+  // exports, so host counts and the feedback archive match it.
+  const getSubmittedAnnotations = useCallback(() => collectSubmittedAnnotations(
+    getFeedbackSections(),
+    messageMultiSelectMode ? buildFeedbackMessageEntries() : undefined,
+  ), [getFeedbackSections, messageMultiSelectMode, buildFeedbackMessageEntries]);
 
   const withDraftGeneration = useCallback((path: string): string => {
     const separator = path.includes('?') ? '&' : '?';
@@ -4235,9 +4253,13 @@ const App: React.FC = () => {
         body: JSON.stringify({
           draftGeneration: getDraftGeneration(),
           feedback,
-          annotations: discard ? [] : allAnnotations,
+          annotations: discard ? [] : getSubmittedAnnotations(),
           codeAnnotations: discard ? [] : codeAnnotations,
           ...getFeedbackMessageScope(),
+          // Done with nothing to send: `feedback` stays the legacy zero-state
+          // sentence (CLI stdout and --json print it), and this marks it so a
+          // host that must not start an agent turn for it can tell (#1701).
+          ...(isEmptyFeedbackSentinel(feedback) ? { nothingToSend: true } : {}),
         }),
       });
       if (!res.ok) throw new Error('Failed to send feedback');
@@ -4279,7 +4301,7 @@ const App: React.FC = () => {
           supported: approvalNotesSupported,
           draftGeneration: getDraftGeneration(),
           feedback,
-          annotations: discard ? [] : allAnnotations,
+          annotations: discard ? [] : getSubmittedAnnotations(),
           codeAnnotations: discard ? [] : codeAnnotations,
           ...getFeedbackMessageScope(),
         })),
