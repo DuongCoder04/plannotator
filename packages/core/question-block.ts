@@ -38,12 +38,20 @@
  *   from the description. `- [x]` marks a choice as already SETTLED (the
  *   agent echoing an earlier decision), exactly what a checked box means on
  *   GitHub. A `question` / `question-multi` block with no task-list items
- *   treats plain `- label` bullets as its choices.
+ *   treats plain `- label` bullets as its choices. A plain bullet keeps its
+ *   wrapped lines the way CommonMark reads a list item (indented lines, lazy
+ *   unindented lines, an indented paragraph after a blank line), and a bold
+ *   name set off by punctuation (`- **Name:** prose`, `**` only) is its
+ *   label, unless two bullets would then share a label.
  * - Recommendation: `Recommended: <text>` (aliases `Recommendation:`,
  *   `➡️`, `->`, `=>`, `→`). Text that names a choice label (normalized,
  *   case-insensitive; a `label — reason` tail is allowed) marks that choice
  *   recommended; on a multi question a `,` / `;` / `and` list may name
- *   several. Anything else is a suggested free-text answer.
+ *   several. Anything else is a suggested free-text answer. A line right
+ *   under it continues it only when it wraps the same sentence (the line
+ *   ends without sentence punctuation and the next starts in lower case);
+ *   a reason on its own line stays context, and a choice is matched on the
+ *   `Recommended:` line itself first.
  * - Decision: a `Decision:` line after the prompt, at the start of a line,
  *   says what answering means for the asker's project. `Decision: when
  *   answered` (case-insensitive, optional trailing period) flags the question:
@@ -136,6 +144,45 @@ const LABEL_DESC_SEP_RE = /\s+(?:—|–|-)\s+/;
 const DECISION_RE = /^decision\s*:\s*(.*?)\s*$/i;
 const DECISION_FLAG_RE = /^when answered\.?$/i;
 const DECISION_LINK_RE = /^\[([^\]]+)\]\((\S+)\)\.?$/;
+// A line (leading whitespace aside) that opens a block of its own (list item, heading,
+// quote, fence, directive, table row, HTML, rule) ends a plain bullet instead
+// of continuing it lazily.
+const STARTS_OTHER_BLOCK_RE = /^(?:[-*+]\s|\d{1,9}[.)]\s|#{1,6}(?:\s|$)|>|```|~~~|:::|\||<[A-Za-z/!]|(?:[-*_]\s*){3,}$)/;
+
+/** A line under a `Recommended:` line that wraps it (a continuation of the
+ *  same sentence) rather than starting a reason or new prose: the line so
+ *  far ends without sentence punctuation and this one starts in lower case,
+ *  and it starts no other block. Anything else stays context, as before. */
+const isRecommendationWrap = (soFar: string, line: string): boolean => {
+  const next = line.trim();
+  if (PLAIN_BULLET_RE.test(line) || STARTS_OTHER_BLOCK_RE.test(next)) return false;
+  if (/[.!?:;]["'”’)\]*_]*$/.test(soFar)) return false;
+  return /^\p{Ll}/u.test(next);
+};
+
+/** `line` without its first `columns` columns of leading whitespace (tabs
+ *  expanded to 4-column stops). */
+const dedent = (line: string, columns: number): string => {
+  let width = 0;
+  let i = 0;
+  while (i < line.length && width < columns && (line[i] === ' ' || line[i] === '\t')) {
+    width += line[i] === '\t' ? 4 - (width % 4) : 1;
+    i++;
+  }
+  // A tab that ran past the cut leaves its remaining columns as spaces.
+  return ' '.repeat(Math.max(0, width - columns)) + line.slice(i);
+};
+
+/** Leading whitespace width in columns (a tab counts 4). */
+const indentWidth = (line: string): number => {
+  let width = 0;
+  for (const ch of line) {
+    if (ch === ' ') width += 1;
+    else if (ch === '\t') width += 4 - (width % 4);
+    else break;
+  }
+  return width;
+};
 
 /** The decision link a `Decision:` value names, or null when the value is not
  *  exactly one markdown link to an absolute http(s) URL. */
@@ -162,6 +209,85 @@ const splitLabel = (raw: string): { label: string; description?: string } => {
   return {
     label: raw.slice(0, idx).trim(),
     ...(description ? { description } : {}),
+  };
+};
+
+// `**` only: `__init__: …` names a Python method, not a bold lead.
+const BOLD_LEAD_RE = /^\*\*(.+?)\*\*(.*)$/s;
+
+/** A choice written as a bold name and then prose (`**One per session:**
+ *  "ramos · cloud-3", …`): the bold name is the label and the rest the
+ *  description. Only when the name is set off by punctuation (a `:` `.` `?`
+  *  `!` closing the bold text, or `:` `,` `;` or a dash after it), so
+ *  `**Fast** mode with cache` and `**Fast** (cached)` stay one label. */
+const splitBoldLead = (raw: string): { label: string; description: string } | null => {
+  const m = raw.trim().match(BOLD_LEAD_RE);
+  if (!m) return null;
+  const inner = m[1].trim();
+  const rest = m[2];
+  if (!/[:.?!]$/.test(inner) && !/^\s*[:,;—–]/.test(rest) && !/^\s+-\s/.test(rest)) return null;
+  const label = inner.replace(/\s*:$/, '').trim();
+  const description = rest.replace(/^\s*[:,;—–-]?\s*/, '').trim();
+  if (!label || !description) return null;
+  return { label, description };
+};
+
+/** A label longer than an answer may quote (`MAX_QUESTION_CHOICE_LABEL_CHARS`)
+ *  could never show as picked, so it is cut at its first sentence end (else
+ *  its last space) within the cap; the rest leads the description. Nothing
+ *  is dropped. */
+const capChoiceLabel = (split: { label: string; description?: string }): { label: string; description?: string } => {
+  const { label, description } = split;
+  if (label.length <= MAX_QUESTION_CHOICE_LABEL_CHARS) return split;
+  const head = label.slice(0, MAX_QUESTION_CHOICE_LABEL_CHARS);
+  const sentence = head.match(/^.+?[.!?]["'”’)\]]?(?=\s)/);
+  const space = head.lastIndexOf(' ');
+  const at = sentence ? sentence[0].length : space > 0 ? space : MAX_QUESTION_CHOICE_LABEL_CHARS;
+  const tail = label.slice(at).trim();
+  const desc = [tail, description].filter(Boolean).join(' — ');
+  return { label: label.slice(0, at).trim(), ...(desc ? { description: desc } : {}) };
+};
+
+type ChoiceSplit = { label: string; description?: string };
+
+/** Labels and descriptions for plain-bullet choices. Each bullet prefers a
+ *  bold-name label, cut to the answer cap, then the uncut label, then the
+ *  plain dash split (what a task-list item uses); a bullet whose label
+ *  collides with another's steps down that list, so two choices never share
+ *  a label (both would show as picked, and the answer could not tell them
+ *  apart). Also returns every name a recommendation may use per choice,
+ *  including the bullet's first line and its dash-split label (what the
+ *  label was before wrapped lines joined it), so a recommendation that
+ *  matched before still matches. */
+const plainBulletSplits = (bullets: { text: string; first: string }[]): { splits: ChoiceSplit[]; names: string[][] } => {
+  const texts = bullets.map((b) => b.text);
+  const options = texts.map((text) => {
+    const plain = splitLabel(text);
+    const preferred = splitBoldLead(text) ?? plain;
+    const list: ChoiceSplit[] = [capChoiceLabel(preferred), preferred, plain];
+    return list.filter((o, i) => list.findIndex((p) => p.label === o.label && p.description === o.description) === i);
+  });
+  const pick = options.map(() => 0);
+  for (let changed = true; changed; ) {
+    changed = false;
+    const owners = new Map<string, number[]>();
+    pick.forEach((p, i) => {
+      const key = normalizeQuestionText(options[i][p].label);
+      owners.set(key, [...(owners.get(key) ?? []), i]);
+    });
+    for (const group of owners.values()) {
+      if (group.length < 2) continue;
+      for (const i of group) {
+        if (pick[i] < options[i].length - 1) {
+          pick[i]++;
+          changed = true;
+        }
+      }
+    }
+  }
+  return {
+    splits: pick.map((p, i) => options[i][p]),
+    names: options.map((list, i) => [...list.map((o) => o.label), bullets[i].first, splitLabel(bullets[i].first).label]),
   };
 };
 
@@ -197,18 +323,33 @@ const QUESTION_KEY_RE = /^q-[0-9a-f]{8}(?:-\d{1,3})?$/;
 
 /** Resolve a recommendation's text against the choices. Returns the matched
  *  choice indices (empty when it names none). */
-const matchRecommendation = (text: string, raws: string[], choices: QuestionChoice[], multi: boolean): number[] => {
+const matchRecommendation = (
+  text: string,
+  raws: string[],
+  choices: QuestionChoice[],
+  multi: boolean,
+  names: string[][] = [],
+): number[] => {
   const match = (candidate: string): number => {
     const target = normalizeQuestionText(candidate);
     if (!target) return -1;
     return choices.findIndex(
-      (c, i) => normalizeQuestionText(c.label) === target || normalizeQuestionText(raws[i]) === target,
+      (c, i) =>
+        normalizeQuestionText(c.label) === target
+        || normalizeQuestionText(raws[i]) === target
+        || (names[i] ?? []).some((name) => normalizeQuestionText(name) === target),
     );
   };
   const whole = match(text);
   if (whole !== -1) return [whole];
   const head = match(splitLabel(text).label);
   if (head !== -1) return [head];
+  // `**Name:** why` and `Name. Why…` (a recommendation that wraps on into its
+  // reasons) name a choice by their lead.
+  for (const lead of [splitBoldLead(text)?.label, text.match(/^.+?[.!?](?=\s)/)?.[0]]) {
+    const hit = lead ? match(lead) : -1;
+    if (hit !== -1) return [hit];
+  }
   if (!multi) return [];
   for (const sep of [/\s*;\s*/, /\s*,\s*|\s+(?:and|&|\+)\s+/i]) {
     const parts = text.split(sep).map((p) => p.trim()).filter(Boolean);
@@ -237,9 +378,29 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
   const contextLines: string[] = [];
   const choices: QuestionChoice[] = [];
   const raws: string[] = [];
-  const plainBullets: { text: string; contextIndex: number }[] = [];
+  // Further names a recommendation may use per choice (plain bullets only).
+  const choiceNames: string[][] = [];
+  // A plain bullet's context lines: its own line plus every continuation
+  // line, so all of them leave the context when the bullets become choices.
+  const plainBullets: { text: string; first: string; contextIndices: number[] }[] = [];
+  // Context lines to drop at the end: plain bullets that became choices, and
+  // the lines that wrap the final recommendation.
+  const dropContext = new Set<number>();
+  // The current recommendation's wrapped lines (their context indices). They
+  // sit in the context until the end, so a later `Recommended:` that
+  // replaces this one leaves them there instead of losing them.
+  let recommendationWrapIndices: number[] = [];
+  // The recommendation as its line reads, and with the lines that wrap it
+  // (see isRecommendationWrap). A choice is matched on the line first.
   let recommendation: string | undefined;
+  let recommendationWrapped: string | undefined;
+  let recommendationOpen = false;
   let lastChoice = -1;
+  // The plain bullet the next line may continue (CommonMark list-item
+  // paragraph rules): an indented line, or an unindented "lazy" line that
+  // starts no other block, continues it; after a blank line only a line
+  // indented to the bullet's content column does (a further paragraph).
+  let openBullet: { index: number; contentColumn: number; afterBlank: boolean } | null = null;
   let decisionFlag = false;
   let decision: QuestionDecisionLink | undefined;
 
@@ -251,6 +412,8 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
     const line = lines[i];
     if (line.trim() === '') {
       lastChoice = -1;
+      if (openBullet) openBullet.afterBlank = true;
+      recommendationOpen = false;
       if (contextLines.length > 0 && contextLines[contextLines.length - 1] !== '') pushContext('');
       continue;
     }
@@ -268,13 +431,20 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
       });
       raws.push(raw);
       lastChoice = choices.length - 1;
+      openBullet = null;
+      recommendationOpen = false;
       continue;
     }
     const rec = line.match(RECOMMENDED_RE) ?? line.match(ARROW_RE);
     if (rec) {
       const text = rec[1].replace(/[*_]{1,2}$/, '').trim();
-      if (text) recommendation = text;
+      if (text) {
+        recommendation = recommendationWrapped = text;
+        recommendationWrapIndices = [];
+      }
+      recommendationOpen = !!text;
       lastChoice = -1;
+      openBullet = null;
       continue;
     }
     if (!prompt) {
@@ -288,14 +458,27 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
       if (!decisionFlag && DECISION_FLAG_RE.test(decisionLine[1])) {
         decisionFlag = true;
         lastChoice = -1;
+        openBullet = null;
+        recommendationOpen = false;
         continue;
       }
       const link = decision ? null : parseDecisionLink(decisionLine[1]);
       if (link) {
         decision = link;
         lastChoice = -1;
+        openBullet = null;
+        recommendationOpen = false;
         continue;
       }
+    }
+    if (recommendationOpen) {
+      if (recommendationWrapped && isRecommendationWrap(recommendationWrapped, line)) {
+        recommendationWrapped = `${recommendationWrapped} ${line.trim().replace(/[*_]{1,2}$/, '').trim()}`;
+        recommendationWrapIndices.push(contextLines.length);
+        pushContext(line.trimEnd());
+        continue;
+      }
+      recommendationOpen = false;
     }
     // An indented line right under a choice continues that choice.
     if (lastChoice !== -1 && /^\s+\S/.test(line)) {
@@ -308,26 +491,51 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
     }
     lastChoice = -1;
     const bullet = line.match(PLAIN_BULLET_RE);
-    if (bullet && bullet[1].trim()) {
-      plainBullets.push({ text: bullet[1].trim(), contextIndex: contextLines.length });
+    if (openBullet && !bullet) {
+      // Indentation is compared with the bullet's own content column, never
+      // with zero: a question inside a list item has every body line indented.
+      const inItem = indentWidth(line) >= openBullet.contentColumn;
+      const continues = openBullet.afterBlank
+        ? inItem
+        : inItem || !STARTS_OTHER_BLOCK_RE.test(line.trimStart());
+      if (continues) {
+        const target = plainBullets[openBullet.index];
+        target.text = `${target.text} ${line.trim()}`;
+        target.contextIndices.push(contextLines.length);
+        openBullet.afterBlank = false;
+        pushContext(line.trimEnd());
+        continue;
+      }
     }
-    pushContext(line.trim());
+    openBullet = null;
+    if (bullet && bullet[1].trim()) {
+      plainBullets.push({ text: bullet[1].trim(), first: bullet[1].trim(), contextIndices: [contextLines.length] });
+      openBullet = {
+        index: plainBullets.length - 1,
+        contentColumn: indentWidth(line) + (line.trimStart().length - bullet[1].length),
+        afterBlank: false,
+      };
+    }
+    pushContext(line.trimEnd());
   }
 
   if (!prompt) return null;
 
   // A pick question written with plain bullets: the bullets are the choices.
   if (choices.length === 0 && directiveKind !== 'question-text' && plainBullets.length > 0) {
-    const taken = new Set<number>();
-    for (const bullet of plainBullets.slice(0, MAX_QUESTION_CHOICES)) {
-      const { label, description } = splitLabel(bullet.text);
-      if (!label) continue;
+    const bullets = plainBullets.slice(0, MAX_QUESTION_CHOICES);
+    const { splits, names } = plainBulletSplits(bullets);
+    bullets.forEach((bullet, i) => {
+      const { label, description } = splits[i];
+      if (!label) return;
       choices.push({ label, ...(description ? { description } : {}), settled: false, recommended: false });
       raws.push(bullet.text);
-      taken.add(bullet.contextIndex);
-    }
-    for (let i = contextLines.length - 1; i >= 0; i--) if (taken.has(i)) contextLines.splice(i, 1);
+      choiceNames.push(names[i]);
+      for (const index of bullet.contextIndices) dropContext.add(index);
+    });
   }
+  for (const index of recommendationWrapIndices) dropContext.add(index);
+  for (let i = contextLines.length - 1; i >= 0; i--) if (dropContext.has(i)) contextLines.splice(i, 1);
 
   const kind: QuestionKind = choices.length === 0 || directiveKind === 'question-text'
     ? 'text'
@@ -335,15 +543,29 @@ export const parseQuestionBlock = (directiveKind: string | undefined, body: stri
 
   let suggestedText: string | undefined;
   if (recommendation) {
-    const hits = kind === 'text' ? [] : matchRecommendation(recommendation, raws, choices, kind === 'multi');
+    const wrapped = recommendationWrapped ?? recommendation;
+    let hits: number[] = [];
+    if (kind !== 'text') {
+      hits = matchRecommendation(recommendation, raws, choices, kind === 'multi', choiceNames);
+      if (hits.length === 0 && wrapped !== recommendation) {
+        hits = matchRecommendation(wrapped, raws, choices, kind === 'multi', choiceNames);
+      }
+    }
     if (hits.length > 0) for (const hit of hits) choices[hit].recommended = true;
-    else suggestedText = recommendation;
+    else suggestedText = wrapped;
+    recommendation = wrapped;
   }
 
+  // Context keeps each line's indentation (a nested list, a wrapped list item,
+  // a code fence), less the indentation every line shares, so it renders as
+  // the markdown it was written as.
+  const shared = Math.min(...contextLines.filter((l) => l.trim() !== '').map(indentWidth));
   const context = contextLines
+    .map((l) => (Number.isFinite(shared) && shared > 0 ? dedent(l, shared) : l))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(/^\n+/, '')
+    .trimEnd();
 
   return {
     kind,
