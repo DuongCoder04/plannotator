@@ -79,6 +79,7 @@
 import {
   startPlannotatorServer as startPlannotatorServerUnguarded,
   handleServerReady,
+  setServerReadyTarget,
 } from "@plannotator/server";
 import {
   startReviewServer as startReviewServerUnguarded,
@@ -124,6 +125,8 @@ import { enableTailscaleServe } from "@plannotator/server/tailscale-serve";
 import { discardEnvPullSessionBridgeConfig, takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
 import { writeUrlQr } from "@plannotator/server/qr";
 import { resolveAnnotateTarget } from "./annotate-resolution";
+import { annotateDecisionTarget, reviewDecisionTarget, takeHostReviewId, targetText } from "./decision-target";
+import { formatSessionsJson, formatSessionsTable } from "./sessions-output";
 import {
   annotateContextLine,
   annotateHostResult,
@@ -250,6 +253,8 @@ takeEnvPullSessionBridgeConfig();
 takeHostResultPath();
 // The Claude Code mod's recent-messages file for `annotate-last --stdin`.
 takeHostMessagesPath();
+// The `pn-` id a host gave this review, for the `sessions/` registry.
+const hostReviewId = takeHostReviewId();
 
 const rawArgs = process.argv.slice(2);
 let parsedStrictAnnotateOptions;
@@ -644,7 +649,11 @@ function registerCliSession(info: SessionInfo): void {
   // environment every process it starts inherits, so a session it launched can
   // be matched back to it.
   const hostSession = process.env.PLANNOTATOR_SESSION_TAG;
-  registerSession(hostSession ? { ...info, hostSession } : info);
+  registerSession({
+    ...info,
+    ...(hostSession ? { hostSession } : {}),
+    ...(hostReviewId ? { reviewId: hostReviewId } : {}),
+  });
   scheduleAutoUpdateCheck(getCliVersion());
 }
 
@@ -823,9 +832,12 @@ if (args[0] === "sessions") {
   }
 
   const sessions = listSessions();
+  const sessionsJson = jsonFlag;
 
   if (sessions.length === 0) {
-    console.error("No active Plannotator sessions.");
+    // --json: an empty list on stdout, so a script never parses a sentence.
+    if (sessionsJson) console.log("[]");
+    else console.error("No active Plannotator sessions.");
     process.exit(0);
   }
 
@@ -844,15 +856,14 @@ if (args[0] === "sessions") {
     process.exit(0);
   }
 
-  // List sessions as a table
-  console.error("Active Plannotator sessions:\n");
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i];
-    const age = Math.round((Date.now() - new Date(s.startedAt).getTime()) / 60000);
-    const ageStr = age < 60 ? `${age}m` : `${Math.floor(age / 60)}h ${age % 60}m`;
-    console.error(`  #${i + 1}  ${s.mode.padEnd(9)} ${s.project.padEnd(20)} ${s.url.padEnd(28)} ${ageStr} ago`);
+  if (sessionsJson) {
+    console.log(formatSessionsJson(sessions));
+    process.exit(0);
   }
-  console.error(`\nReopen with: plannotator sessions --open [N]`);
+
+  // List sessions as a table (stderr, as before): mode, pn- id, project,
+  // url, age and the FULL target, so same-named files are told apart.
+  console.error(formatSessionsTable(sessions));
   process.exit(0);
 
 } else if (args[0] === "setup-goal") {
@@ -1273,6 +1284,15 @@ if (args[0] === "sessions") {
   }
 
   const reviewProject = (await detectProjectName(reviewCwd)) ?? "_unknown";
+  // What this review is of, in full: named by the ready file, the registry
+  // and every decision record, so a host never guesses it from words.
+  const reviewTarget = reviewDecisionTarget({
+    prUrl: urlArg,
+    patchFile: reviewArgs.patchFile,
+    cwd: reviewCwd,
+    invocationCwd: process.env.PLANNOTATOR_CWD || process.cwd(),
+  });
+  setServerReadyTarget(reviewTarget);
 
   // Start review server (even if empty - user can switch diff types in local mode)
   const server = await startReviewServer({
@@ -1326,6 +1346,7 @@ if (args[0] === "sessions") {
     project: reviewProject,
     startedAt: new Date().toISOString(),
     label: isPRMode ? `${getMRLabel(prMetadata!).toLowerCase()}-review-${getDisplayRepo(prMetadata!)}${getMRNumberLabel(prMetadata!)}` : `review-${reviewProject}`,
+    ...(reviewTarget ? { target: reviewTarget } : {}),
   });
 
   // Wait for user feedback
@@ -1340,7 +1361,9 @@ if (args[0] === "sessions") {
   // Output feedback (captured by slash command)
   result.feedback = withReviewDirectory(result.feedback, result.reviewDirectory);
   const output = buildReviewOutput(result, detectedOrigin);
-  publishHostResult(reviewHostResult(result, output));
+  // The server names the target as it stands at decision time (an in-place
+  // PR switch or a worktree diff moves it); a static patch keeps the file.
+  publishHostResult(reviewHostResult(result, output, { target: result.target ?? reviewTarget }));
   console.log(jsonFlag ? JSON.stringify(output) : output.message);
   process.exit(0);
 
@@ -1551,6 +1574,10 @@ if (args[0] === "sessions") {
   }
 
   const annotateProject = (await detectProjectName()) ?? "_unknown";
+  // What this session is of, in full: named by the ready file, the registry,
+  // the --json record and the host result, never guessed from the words.
+  const annotateTarget = annotateDecisionTarget({ bundlePaths, folderPath, absolutePath });
+  setServerReadyTarget(annotateTarget);
 
   // Start the annotate server (reuses plan editor HTML)
   const server = await startAnnotateServer({
@@ -1623,6 +1650,7 @@ if (args[0] === "sessions") {
       : folderPath
         ? `annotate-${path.basename(folderPath)}`
         : `annotate-${isUrl ? hostnameOrFallback(absolutePath) : path.basename(absolutePath)}`,
+    ...(targetText(annotateTarget) ? { target: targetText(annotateTarget) } : {}),
   });
 
   await completeAnnotateCommand({
@@ -1640,7 +1668,7 @@ if (args[0] === "sessions") {
             origin: detectedOrigin,
           };
       publishHostResult(annotateHostResult(outcome, hostContext));
-      emitAnnotateOutcome(outcome, { runtime: detectedOrigin, context: annotateContextLine(hostContext) });
+      emitAnnotateOutcome(outcome, { runtime: detectedOrigin, context: annotateContextLine(hostContext), target: annotateTarget });
     },
   });
 
@@ -2181,6 +2209,15 @@ if (args[0] === "sessions") {
   const bridgeSharingEnabled = getBridgeSharingEnabled(input);
   const bridgeShareBaseUrl = getBridgeShareBaseUrl(input);
   const reviewProject = (await detectProjectName(reviewDirectory ? reviewCwd : undefined)) ?? "_unknown";
+  // What this review is of, in full: the ready file and the JSON record name
+  // it, so the plugin's decision message never guesses it from words.
+  const reviewTarget = reviewDecisionTarget({
+    prUrl: urlArg,
+    patchFile: reviewArgs.patchFile,
+    cwd: reviewCwd,
+    invocationCwd: process.env.PLANNOTATOR_CWD || process.cwd(),
+  });
+  setServerReadyTarget(reviewTarget);
 
   const server = await startReviewServer({
     rawPatch,
@@ -2231,6 +2268,7 @@ if (args[0] === "sessions") {
     label: isPRMode && prMetadata
       ? `${getMRLabel(prMetadata).toLowerCase()}-review-${getDisplayRepo(prMetadata)}${getMRNumberLabel(prMetadata)}`
       : `review-${reviewProject}`,
+    ...(reviewTarget ? { target: reviewTarget } : {}),
   });
 
   const result = await server.waitForDecision();
@@ -2252,6 +2290,9 @@ if (args[0] === "sessions") {
     ...(result.agentSwitch && { agentSwitch: result.agentSwitch }),
     // Additive: the plugin's decision heading names the count ("· 3 comments").
     ...(!result.exit && Array.isArray(result.annotations) && { annotationCount: result.annotations.length }),
+    // Additive: what was reviewed, in full, for the decision message's Target
+    // line, as the server shows it at decision time (after any PR switch).
+    ...((result.target ?? reviewTarget) ? { target: result.target ?? reviewTarget } : {}),
   }));
   process.exit(0);
 
@@ -2568,6 +2609,7 @@ if (args[0] === "sessions") {
 
   const planProject = (await detectProjectName()) ?? "_unknown";
   let currentPlan = input.plan;
+  setServerReadyTarget(input.planFilePath);
   const server = await startPlannotatorServer({
     plan: input.plan,
     origin: "claude-code",
@@ -2594,6 +2636,7 @@ if (args[0] === "sessions") {
     project: planProject,
     startedAt: new Date().toISOString(),
     label: `plan-${planProject}`,
+    ...(input.planFilePath ? { target: input.planFilePath } : {}),
   });
 
   let lastRevisionSeq = 0;

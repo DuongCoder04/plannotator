@@ -9,6 +9,7 @@ import { basename, resolve as resolvePath } from "node:path";
 import { SingleFlight } from "../generated/single-flight.ts";
 import { contentHash } from "../generated/draft.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
+import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "../generated/review-draft.ts";
 import { agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
@@ -316,6 +317,12 @@ export interface ReviewServerResult {
 		unsentAnnotations?: number;
 		/** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
 		platform?: true;
+		/**
+		 * What the decision is about, as the server shows it NOW: the active PR's
+		 * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+		 * working tree the active diff reads. Absent for a static patch.
+		 */
+		target?: string;
 	}>;
 	stop: () => void;
 	/** Host-only status and close (packages/shared/host-control.ts), for Pi to call in-process. */
@@ -925,6 +932,17 @@ export async function startReviewServer(options: {
 	// hostname must not break local agent jobs).
 	let serverUrl = "";
 	let agentApiUrl = "";
+	/**
+	 * The review's target as it stands at decision time (named in every
+	 * decision a host delivers): the active PR's URL, the workspace root, or
+	 * the working tree the active diff reads. A static patch has none here.
+	 */
+	function activeReviewTarget(): string | undefined {
+		if (isPRMode) return prMeta?.url;
+		if (isStaticPatchMode) return undefined;
+		if (workspace) return workspace.root;
+		return resolveVcsCwd(currentDiffType as DiffType, options.gitContext?.cwd) ?? options.gitContext?.cwd ?? undefined;
+	}
 	function resolveAgentCwd(): string {
 		if (workspace) return workspace.root;
 		if (options.worktreePool && prMeta) {
@@ -1842,6 +1860,11 @@ export async function startReviewServer(options: {
 	// Session-constant capability advert; rides every diff payload (see the
 	// option's doc). Absent option = false, so old callers advertise honestly.
 	const approvalNotesSupported = options.approvalNotesSupported === true;
+	// Stale-tab guard (packages/core/server-session.ts): advertised beside
+	// approvalNotesSupported on every diff payload and echoed by every
+	// decision; a different nonce is refused with 409 session_mismatch.
+	// Missing is accepted (older clients).
+	const serverSession = createServerSessionNonce();
 	// Static patch mode (`--patch-file`): caller-supplied diff bytes, no repo,
 	// no working tree. Advertised as `sourceKind: "patch"` on every diff payload
 	// (absent reads as "vcs") and enforced by 400ing the endpoints that would
@@ -1874,6 +1897,12 @@ export async function startReviewServer(options: {
 		unsentAnnotations?: number;
 		/** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
 		platform?: true;
+		/**
+		 * What the decision is about, as the server shows it NOW: the active PR's
+		 * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+		 * working tree the active diff reads. Absent for a static patch.
+		 */
+		target?: string;
 	}) => void;
 	const decisionPromise = new Promise<{
 		approved: boolean;
@@ -1888,10 +1917,17 @@ export async function startReviewServer(options: {
 		unsentAnnotations?: number;
 		/** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
 		platform?: true;
+		/**
+		 * What the decision is about, as the server shows it NOW: the active PR's
+		 * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+		 * working tree the active diff reads. Absent for a static patch.
+		 */
+		target?: string;
 	}>((r) => {
 		resolveDecision = (result) => {
 			reviewDecided = true;
-			r(result);
+			const target = result.target ?? activeReviewTarget();
+			r(target ? { ...result, target } : result);
 		};
 	});
 
@@ -2276,6 +2312,7 @@ export async function startReviewServer(options: {
 				gitContext: hasLocalAccess ? servedGitContext : undefined,
 				sharingEnabled,
 				approvalNotesSupported,
+				serverSession,
 				imagePreviewSupported,
 				...sourceKindAdvert,
 				// Mount is the only place the pin matters, so it rides /api/diff
@@ -2615,6 +2652,7 @@ export async function startReviewServer(options: {
 						gitRef: currentGitRef,
 						snapshotId: currentSnapshotId(),
 						approvalNotesSupported,
+						serverSession,
 						imagePreviewSupported,
 						...sourceKindAdvert,
 						diffType: currentDiffType,
@@ -2767,6 +2805,7 @@ export async function startReviewServer(options: {
 					gitRef: currentGitRef,
 					snapshotId: currentSnapshotId(),
 					approvalNotesSupported,
+					serverSession,
 					imagePreviewSupported,
 					...sourceKindAdvert,
 					diffType: currentDiffType,
@@ -2832,6 +2871,7 @@ export async function startReviewServer(options: {
 						snapshotId: currentSnapshotId(),
 						draftState: reviewDrafts.state(currentDraftKeys()),
 						approvalNotesSupported,
+						serverSession,
 						imagePreviewSupported,
 						...sourceKindAdvert,
 						prDiffScope: currentPRDiffScope,
@@ -2902,6 +2942,7 @@ export async function startReviewServer(options: {
 						snapshotId: currentSnapshotId(),
 						draftState: reviewDrafts.state(currentDraftKeys()),
 						approvalNotesSupported,
+						serverSession,
 						imagePreviewSupported,
 						...sourceKindAdvert,
 						prDiffScope: currentPRDiffScope,
@@ -2946,6 +2987,7 @@ export async function startReviewServer(options: {
 					snapshotId: currentSnapshotId(),
 					draftState: reviewDrafts.state(currentDraftKeys()),
 					approvalNotesSupported,
+					serverSession,
 					imagePreviewSupported,
 					...sourceKindAdvert,
 					prDiffScope: currentPRDiffScope,
@@ -3035,6 +3077,7 @@ export async function startReviewServer(options: {
 					snapshotId: currentSnapshotId(),
 					draftState: reviewDrafts.state(currentDraftKeys()),
 					approvalNotesSupported,
+					serverSession,
 					imagePreviewSupported,
 					...sourceKindAdvert,
 					prMetadata: pr.metadata,
@@ -3161,6 +3204,12 @@ export async function startReviewServer(options: {
 			}
 			try {
 				const body = await parseBody(req);
+				// Stale-tab guard: a tab of an earlier session on this port must
+				// not post a review to the platform as if it were this one's.
+				if (checkServerSession(body, serverSession) === "mismatch") {
+					json(res, serverSessionMismatchBody(), 409);
+					return;
+				}
 				const action = parsePRReviewAction(body.action);
 				if (!action) {
 					json(res, { error: "action must be one of approve, comment, request_changes" }, 400);
@@ -3839,6 +3888,11 @@ export async function startReviewServer(options: {
 			handleApiNotFound(res, url.pathname);
 			return;
 		} else if (url.pathname === "/api/exit" && req.method === "POST") {
+			// Exit posts carry no body: the nonce rides the query string.
+			if (checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, serverSession) === "mismatch") {
+				json(res, serverSessionMismatchBody(), 409);
+				return;
+			}
 			// Already decided (the host closed it, or another tab decided):
 			// archiving or settling now would delete a draft the close kept.
 			if (reviewDecided) {
@@ -3854,6 +3908,10 @@ export async function startReviewServer(options: {
 		} else if (url.pathname === "/api/feedback" && req.method === "POST") {
 			try {
 				const body = await parseBody(req);
+				if (checkServerSession(body, serverSession) === "mismatch") {
+					json(res, serverSessionMismatchBody(), 409);
+					return;
+				}
 				// Checked after the body is read: a host close can land while
 				// it streams. A decided session must not archive, delete the
 				// draft, or answer ok for feedback nobody will receive.

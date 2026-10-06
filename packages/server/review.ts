@@ -154,6 +154,7 @@ import {
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
+import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isWSL } from "./browser";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
@@ -314,6 +315,13 @@ export interface ReviewServerResult {
     unsentAnnotations?: number;
     /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
     platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }>;
   /** Stop the server */
   stop: () => void;
@@ -338,6 +346,11 @@ export async function startReviewServer(
   // Session-constant capability advert; rides every diff payload (see the
   // option's doc). Absent option = false, so old callers advertise honestly.
   const approvalNotesSupported = options.approvalNotesSupported === true;
+  // Stale-tab guard (packages/core/server-session.ts): advertised beside
+  // approvalNotesSupported on every diff payload and echoed by every
+  // decision; a different nonce is refused with 409 session_mismatch before
+  // anything settles. Missing is accepted (older clients).
+  const serverSession = createServerSessionNonce();
   // Static patch mode (`plannotator review --patch-file`): the diff is
   // caller-supplied bytes, so there is no repo, no working tree and no VCS
   // behind it. Advertised to the client as `sourceKind: "patch"` on every diff
@@ -955,6 +968,17 @@ export async function startReviewServer(
   // hostname must not break local agent jobs).
   let serverUrl = "";
   let agentApiUrl = "";
+  /**
+   * The review's target as it stands at decision time (named in every
+   * decision a host delivers): the active PR's URL, the workspace root, or
+   * the working tree the active diff reads. A static patch has none here.
+   */
+  const activeReviewTarget = (): string | undefined => {
+    if (isPRMode) return prMetadata?.url;
+    if (isStaticPatchMode) return undefined;
+    if (workspace) return workspace.root;
+    return resolveVcsCwd(currentDiffType as DiffType, gitContext?.cwd) ?? gitContext?.cwd ?? undefined;
+  };
   const resolveAgentCwd = (): string => {
     if (workspace) return workspace.root;
     if (options.worktreePool && prMetadata) {
@@ -1921,6 +1945,13 @@ export async function startReviewServer(
     unsentAnnotations?: number;
     /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
     platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }) => void;
   const decisionPromise = new Promise<{
     approved: boolean;
@@ -1935,10 +1966,18 @@ export async function startReviewServer(
     unsentAnnotations?: number;
     /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
     platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }>((resolve) => {
     resolveDecision = (result) => {
       reviewDecided = true;
-      resolve(result);
+      const target = result.target ?? activeReviewTarget();
+      resolve(target ? { ...result, target } : result);
     };
   });
 
@@ -2277,6 +2316,8 @@ export async function startReviewServer(
               gitContext: hasLocalAccess ? servedGitContext : undefined,
               sharingEnabled,
               approvalNotesSupported,
+
+              serverSession,
               imagePreviewSupported,
               ...sourceKindAdvert,
               // Mount is the only place the pin matters, so it rides /api/diff
@@ -2694,6 +2735,8 @@ export async function startReviewServer(
                   gitRef: currentGitRef,
                   snapshotId: currentSnapshotId(),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
                   ...sourceKindAdvert,
                   diffType: currentDiffType,
@@ -2864,6 +2907,8 @@ export async function startReviewServer(
                 gitRef: currentGitRef,
                 snapshotId: currentSnapshotId(),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
                 ...sourceKindAdvert,
                 diffType: currentDiffType,
@@ -2932,6 +2977,8 @@ export async function startReviewServer(
                   snapshotId: currentSnapshotId(),
                   draftState: reviewDrafts.state(currentDraftKeys()),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
                   ...sourceKindAdvert,
                   prDiffScope: currentPRDiffScope,
@@ -2993,6 +3040,8 @@ export async function startReviewServer(
                   snapshotId: currentSnapshotId(),
                   draftState: reviewDrafts.state(currentDraftKeys()),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
                   ...sourceKindAdvert,
                   prDiffScope: currentPRDiffScope,
@@ -3045,6 +3094,8 @@ export async function startReviewServer(
                 snapshotId: currentSnapshotId(),
                 draftState: reviewDrafts.state(currentDraftKeys()),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
                 ...sourceKindAdvert,
                 prDiffScope: currentPRDiffScope,
@@ -3178,6 +3229,8 @@ export async function startReviewServer(
                 snapshotId: currentSnapshotId(),
                 draftState: reviewDrafts.state(currentDraftKeys()),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
                 ...sourceKindAdvert,
                 prMetadata: pr.metadata,
@@ -3901,6 +3954,10 @@ export async function startReviewServer(
           if (url.pathname === "/api/exit" && req.method === "POST") {
             // Already decided (the host closed it, or another tab decided):
             // archiving or settling now would delete a draft the close kept.
+            // Exit posts carry no body: the nonce rides the query string.
+            if (checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, serverSession) === "mismatch") {
+              return Response.json(serverSessionMismatchBody(), { status: 409 });
+            }
             if (reviewDecided) return reviewAlreadyDecided();
             // Decision-only line: a dismissal carries no content, and how
             // often reviews are closed without feedback is exactly the
@@ -3922,6 +3979,9 @@ export async function startReviewServer(
                 draftGeneration?: number;
                 platform?: unknown;
               };
+              if (checkServerSession(body, serverSession) === "mismatch") {
+                return Response.json(serverSessionMismatchBody(), { status: 409 });
+              }
 
               // Checked after the body is read: a host close can land while
               // it streams. A decided session must not archive, delete the
@@ -3979,6 +4039,11 @@ export async function startReviewServer(
                 fileLevelComments?: unknown;
                 targetPrUrl?: string;
               };
+              // Stale-tab guard: a tab of an earlier session on this port must
+              // not post a review to the platform as if it were this one's.
+              if (checkServerSession(body, serverSession) === "mismatch") {
+                return Response.json(serverSessionMismatchBody(), { status: 409 });
+              }
               const action = parsePRReviewAction(body.action);
               if (!action) {
                 return Response.json(

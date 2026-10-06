@@ -67,6 +67,8 @@ import { getBearSettings } from '@plannotator/ui/utils/bear';
 import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils/octarine';
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
+import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
 import {
   isSessionBridgeProvider,
@@ -3743,9 +3745,11 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
+        // Stale-tab guard: every decision echoes this server's nonce.
+        adoptServerSession(data.serverSession);
         // Extra extensions the user registered as markdown (#1307) — the
         // renderer needs them to treat links to sibling `.livemd`-style docs
         // as openable local documents rather than external links.
@@ -4359,8 +4363,12 @@ const App: React.FC = () => {
       const res = await fetch('/api/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(withServerSession(body)),
       });
+      if (await noteServerSessionMismatch(res)) {
+        setIsSubmitting(false);
+        return;
+      }
       if (res.status === 409) {
         handleStaleRevisionRefusal();
         return;
@@ -4384,7 +4392,7 @@ const App: React.FC = () => {
       const res = await fetch('/api/deny', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withServerSession({
           draftGeneration: getDraftGeneration(),
           ...planRevisionBodyField(),
           // Answers only: `answersOnly` makes the server answer the agent
@@ -4394,8 +4402,12 @@ const App: React.FC = () => {
             enabled: planSaveSettings.enabled,
             ...(planSaveSettings.customPath && { customPath: planSaveSettings.customPath }),
           },
-        })
+        }))
       });
+      if (await noteServerSessionMismatch(res)) {
+        setIsSubmitting(false);
+        return;
+      }
       if (res.status === 409) {
         handleStaleRevisionRefusal();
         return;
@@ -4483,8 +4495,14 @@ const App: React.FC = () => {
       const res = await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(withServerSession(body)),
       });
+      if (await noteServerSessionMismatch(res)) {
+        // Another session owns this address now: nothing was submitted, and
+        // the draft must not be saved into that session either.
+        setIsSubmitting(false);
+        return false;
+      }
       if (!res.ok) throw new Error('Failed to send feedback');
       dismissDraft();
       // The completion screen must not claim feedback went out when nothing
@@ -4523,15 +4541,19 @@ const App: React.FC = () => {
       const res = await fetch('/api/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildAnnotateApprovalBody({
+        body: JSON.stringify(withServerSession(buildAnnotateApprovalBody({
           supported: approvalNotesSupported,
           draftGeneration: getDraftGeneration(),
           feedback,
           annotations: discard ? [] : getSubmittedAnnotations(),
           codeAnnotations: discard ? [] : codeAnnotations,
           ...getFeedbackMessageScope(),
-        })),
+        }))),
       });
+      if (await noteServerSessionMismatch(res)) {
+        setIsSubmitting(false);
+        return false;
+      }
       if (!res.ok) throw new Error('Failed to approve');
       dismissDraft();
       setSubmitted('approved');
@@ -4548,7 +4570,11 @@ const App: React.FC = () => {
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch(withDraftGeneration('/api/exit'), { method: 'POST' });
+      const res = await fetch(withServerSessionQuery(withDraftGeneration('/api/exit')), { method: 'POST' });
+      if (await noteServerSessionMismatch(res)) {
+        setIsExiting(false);
+        return;
+      }
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -7714,6 +7740,8 @@ const App: React.FC = () => {
           />,
           document.body,
         )}
+
+        <ServerSessionReplacedBanner />
 
         <Toaster
           position="top-right"

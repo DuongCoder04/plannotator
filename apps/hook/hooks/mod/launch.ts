@@ -7,7 +7,7 @@
  * itself does the rest through files in the launch directory:
  *
  *   stdin        what the CLI reads on stdin (plan JSON, the last message)
- *   ready        PLANNOTATOR_READY_FILE: one JSON line { url, isRemote, port } once listening
+ *   ready        PLANNOTATOR_READY_FILE: one JSON line { url, isRemote, port, target? } once listening
  *   result.json  PLANNOTATOR_HOST_RESULT_FILE: the decision record, written atomically
  *   stdout/stderr  the CLI's own output (startup errors land in stderr)
  *   pid          the CLI's pid, for the liveness check
@@ -109,10 +109,79 @@ export function dataDirOf(env: { home?: string; dataDir?: string; xdgDataHome?: 
 /**
  * Creates a launch directory owner-only (0700, and any parent it has to
  * create) before anything is written into it: it holds the plan or message on
- * stdin and the reviewer's feedback in stdout and result.json.
+ * stdin and the reviewer's feedback in stdout and result.json. Prints the
+ * working directory the CLI will run in (the session's), which the mod
+ * resolves relative targets against.
  */
 export function privateDirArgv(dir: string): string[] {
-  return ['/bin/sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1"', 'plannotator-mkdir', dir]
+  return ['/bin/sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1" && pwd', 'plannotator-mkdir', dir]
+}
+
+/** `/a/b/../c/./d` → `/a/c/d` (no symlinks resolved: nothing is looked up). */
+function normalizeAbsolute(path: string): string {
+  const out: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') out.pop()
+    else out.push(segment)
+  }
+  return `/${out.join('/')}`
+}
+
+/** An absolute path word (`/a/b`, `@/a/b`), normalized; anything else (relative, `~`) is undefined. */
+function absoluteWord(word: string): string | undefined {
+  const path = word.replace(/^@/, '')
+  return path.startsWith('/') ? normalizeAbsolute(path) : undefined
+}
+
+/**
+ * The mod's own idea of what a launch shows, only for a CLI that predates
+ * naming its target in the ready file and result record. It never guesses:
+ * the CLI may resolve a bare or relative name somewhere else (it searches the
+ * project) and reads prose around a review directory as words to ignore, so a
+ * confidently wrong path would be worse than none. Only what the words state
+ * exactly counts: a URL or PR URL, an absolute path, and a review with no
+ * words at all (the session's directory, which the CLI reviews then). In
+ * every other case there is no fallback and the message carries no Target
+ * line from the mod.
+ */
+export function modTargetFor(
+  kind: SessionKind,
+  args: string | readonly string[],
+  cwd: string | undefined,
+): string | string[] | undefined {
+  const all = wordsOf(args)
+  const words: string[] = []
+  for (let index = 0; index < all.length; index += 1) {
+    const word = all[index] as string
+    // `--base <ref>` / `--diff-type <id>` take a value that is not a target.
+    if (word === '--base' || word === '--diff-type') {
+      index += 1
+      continue
+    }
+    if (!word.startsWith('-')) words.push(word)
+  }
+  switch (kind) {
+    case 'plan':
+    case 'last':
+      return undefined
+    case 'review': {
+      const pr = words.find((word) => PR_URL.test(word))
+      if (pr) return pr
+      if (words.length === 0) return cwd && cwd.startsWith('/') ? normalizeAbsolute(cwd) : undefined
+      return words.length === 1 ? absoluteWord(words[0] as string) : undefined
+    }
+    case 'annotate': {
+      if (isSeveralFilePaths(words)) {
+        const paths = [...new Set(words)].map(absoluteWord)
+        return paths.every((path): path is string => path !== undefined) ? paths : undefined
+      }
+      if (words.length !== 1) return undefined
+      const target = words[0] as string
+      if (/^https?:\/\//i.test(target)) return target
+      return absoluteWord(target)
+    }
+  }
 }
 
 /**
@@ -301,6 +370,16 @@ export interface ReadyInfo {
   url: string
   port: number
   isRemote: boolean
+  /** What the server shows, in full, as the CLI resolved it (absent from an older CLI). */
+  target?: string | string[]
+}
+
+function readyTargetOf(value: unknown): string | string[] | undefined {
+  if (typeof value === 'string') return value.trim() ? value : undefined
+  if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string' && item.trim() !== '')) {
+    return value as string[]
+  }
+  return undefined
 }
 
 /** The first well-formed line of the ready file. */
@@ -310,7 +389,8 @@ export function parseReadyFile(text: string): ReadyInfo | null {
     try {
       const value = JSON.parse(line) as Record<string, unknown>
       if (typeof value.url === 'string' && typeof value.port === 'number') {
-        return { url: value.url, port: value.port, isRemote: value.isRemote === true }
+        const target = readyTargetOf(value.target)
+        return { url: value.url, port: value.port, isRemote: value.isRemote === true, ...(target !== undefined ? { target } : {}) }
       }
     } catch {
       // A partial line: not ready yet.
