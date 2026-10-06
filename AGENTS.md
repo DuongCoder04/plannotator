@@ -150,6 +150,7 @@ claude --plugin-dir ./apps/hook
 | `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal). Default: `https://share.plannotator.ai`. |
 | `PLANNOTATOR_PASTE_URL` | Base URL of the paste service API for short URL sharing. Default: `https://plannotator-paste.plannotator.workers.dev`. |
 | `PLANNOTATOR_CLAUDE_MOD` | Switch for the Claude Code mod (non-blocking plan review, annotate, code review and annotate-last, the `plannotator` tool, the take-over of agent-run Bash `plannotator` commands, plus Ask this session; see "Claude Code mod"). **Default: on** wherever Claude Code runs hooks modules (2.1.287+, interactive CLI sessions; the mod still stands down by itself in `-p` / SDK sessions and where `/bin/sh` is missing, i.e. Windows). Set to `0` / `false` / `off` / `disabled` to turn it off, which leaves the module inert (every hook passes through, no command or tool is registered, no Bash command is taken over, no environment is set) so the classic PermissionRequest hook and `/plannotator-*` skills run exactly as before; `1` / `true` / `on` force it on, and empty or unrecognized counts as unset (on). Can also be turned off via `~/.plannotator/config.json` (`{ "claudeCodeMod": false }`, read from the data dir); the env var takes precedence (`resolveClaudeCodeMod` in `packages/shared/config.ts`, mirrored by `apps/hook/hooks/mod/enabled.ts` because a hooks module can import only its own files; `enabled.test.ts` keeps them in step). Read once when Claude Code starts, so a change applies to the next session start. Set it in the shell that starts Claude Code or in Claude Code's `settings.json` `env`. The plugin installs from the repo and the `plannotator` binary updates separately, so the mod also runs against older binaries; see "Version skew" in the mod section for what degrades. |
+| `PLANNOTATOR_AGENT_TOOL` | Switch for the `plannotator` agent tool (`packages/shared/plannotator-tool.ts`) on the hosts that register it. **Default per host** (owner's call, one table: `AGENT_TOOL_DEFAULTS` in `packages/shared/config.ts`): **on for the Claude Code mod** (the tool is deferred behind tool search there, so it costs about its name until used), **off on Pi and OpenCode 2** (a full tool definition in every request). `1` / `true` / `on` turn it on and `0` / `false` / `off` / `disabled` turn it off on every host, overriding the host default in both directions; empty or unrecognized counts as unset. Off removes ONLY the tool: the `/plannotator-*` slash commands, plan review, Ask this session and (Claude Code) the take-over of agent-run Bash `plannotator` commands, which adds nothing to the model's context, are unchanged, and an agent that wants Plannotator runs the CLI. Can also be set via `~/.plannotator/config.json` (`{ "agentTool": true }` / `false`, read from the data dir; allowlisted, boolean only, on `POST /api/config` in both runtimes, which refuses a cross-origin write with `403` on every plan, review and annotate server: `isSameOriginOrNoOrigin` in `packages/shared/request-origin.ts`, the guard the other state-changing endpoints use (review progress, guide share links, the CallDiff install), since a page on another site can send a preflight-free `text/plain` POST. It passes a request with no Origin, an Origin naming the request host, or the browser's own `Sec-Fetch-Site: same-origin`, and refuses `Origin: null`, `same-site` and `cross-site`. The `Sec-Fetch-Site` leg is what lets the VS Code panel write: its cookie proxy serves the page from `http://127.0.0.1:<proxy port>` and rewrites Host to the server, so Origin and Host differ. Before it, `/api/review-progress` and `/api/call-flow/install` were already refused in the VS Code panel (silently: the client ignores the failure); they work there now too. `cookie-proxy.ts` additionally re-anchors an Origin equal to its own origin onto the upstream, for browsers without Fetch Metadata; `vscode-proxy-writes.test.ts` (Bun and Pi) covers both shapes); the env var takes precedence (`resolveAgentTool(config, env, host)` in `packages/shared/config.ts`; the mod's mirror `resolveAgentToolEnabled` lives in `apps/hook/hooks/mod/enabled.ts`, kept equal to the claude-code row by `enabled.test.ts`). `getServerConfig(gitUser, agentToolIntegration)` advertises it for a later Settings toggle / one-time "turn it on" offer, but only where the integration that started the server registers the tool: `agentToolHost` is the session-bridge host, not the agent origin (Bun: `agentToolHostForServer` in `packages/server/ai-runtime.ts`, an in-process bridge's host, else `launchingSessionHost()`, the `PLANNOTATOR_SESSION_BRIDGE_HOST` the Claude Code mod / OpenCode 2 plugin hand the CLI, read once at startup and kept in remote mode and after the `--tailscale` discard, where Ask this session is off but the integration still started the session; Pi: always `pi`, since its servers run inside the extension). With no such integration (the classic Claude Code hook, the mod off, `-p`, Windows, OpenCode 1, a person at a shell) every `agentTool*` field is absent except an `agentTool` config.json sets. Known gap: OpenCode 2's embedded plan review passes its bridge only when the host has `session.generate`, so on an older V2 host that one review advertises nothing. Fields: `agentTool` (the config value, or the host default while unset), `agentToolConfigured` (config.json holds an explicit choice), `agentToolEnv` (present when the env var overrides the file) and `agentToolEnabled` (the effective value, for the NEXT session). **Read once per session start and never mid-session**, because the tool list is part of every request's prompt prefix and changing it would miss the prompt cache: a change applies to the next session (Pi: the next session or `/reload`; OpenCode 2: the next OpenCode start; Claude Code: the next Claude Code start). |
 | `PLANNOTATOR_HOST_RESULT_FILE` | Set by a host that starts the CLI detached (the Claude Code mod): when a review, annotate, annotate-last or `claude-mod-plan` session settles, the CLI writes one JSON decision record there atomically (mode 0600), with the agent message composed from the configured prompts. Only a path named `result.json` inside `<data dir>/claude-code-mod/` is accepted (`isAllowedHostResultPath`); anything else is ignored with a stderr warning, so the variable cannot make the CLI create or replace an arbitrary file. Taken at startup and removed from the environment. Stdout is unchanged. See "Claude Code mod". |
 | `PLANNOTATOR_HOST_MESSAGES_FILE` | Set by the Claude Code mod for `annotate-last --stdin` (ignored without `--stdin`): a `messages.json` inside `<data dir>/claude-code-mod/` (`isAllowedHostMessagesPath`; anything else is ignored with a stderr warning) holding `{ v: 1, messages: [{ messageId, text, timestamp? }] }`, newest first, which the CLI shows as the message picker instead of the single stdin message. Validated fail-closed (1..25 entries, string fields, unique ids, 2 MiB per message, 8 MiB file); a malformed file exits 1 with the reason. Taken at startup and removed from the environment. A CLI that predates it ignores it and opens the stdin text. See "Claude Code mod". |
 | `PLANNOTATOR_SESSION_TAG` | Set by the Claude Code mod in its session's environment (`claude-code:<session id>`), so processes the session starts can be matched to it; recorded as `hostSession` in the `sessions/` registry. Not meant to be set by hand. |
@@ -294,6 +295,35 @@ the peer floor; `plannotator-tool.test.ts` runs the installed Pi's
 `validateToolArguments` against it). `executionMode: "sequential"` (#1622: an
 "edit, then open" batch opens the edited file).
 
+**Registration and activation are decided once per session.** The tool is
+OFF by default on Pi and registered only when the agent tool switch turns it on
+(`PLANNOTATOR_AGENT_TOOL=1` / `{ "agentTool": true }`, `resolveAgentTool(...,
+"pi")` read once when the extension instance loads; Pi builds a new instance
+per session and per `/reload`). Off, nothing is registered and the slash
+commands are unchanged. It is registered with
+`defaultActive: false` (Pi 0.99+ then leaves it inactive; older Pi ignores the
+key and activates every registered tool), and the first `session_start`
+(`settleAgentToolActivation`) makes it active when `ctx.hasUI`, inactive in
+print/JSON mode, before the session's first request, and never touches it
+again. Plan mode's `setActiveTools` calls add and release only the tools they
+own, so `plannotator` stays in the tool list (and the prompt prefix) through
+planning, execution, completion, leaving plan mode, `/tree` and `/reload`:
+`agent-tool-stability.test.ts` drives that whole lifecycle over a fake Pi that
+models both activation rules and fails on any request without the tool or any
+`setActiveTools` that flips it after the start; it also pins the registered
+description/parameters to the shared constants, no `promptSnippet` /
+`promptGuidelines` on any Plannotator tool, and no `systemPrompt` from
+`before_agent_start`.
+
+**The bundled knowledge skill is user-invoked only.** `vendor.sh` adds
+`disable-model-invocation: true` to the vendored copy's frontmatter (the
+source `apps/skills/core/plannotator` stays model-invocable for the installers
+that ask, #1377), so an npm-only Pi install keeps the #842 promise of no
+Plannotator skill in Pi's system prompt; `/skill:plannotator` still loads it,
+and the model learns the tool from the tool's own description. A CLI install's
+`~/.agents/skills` copy still wins when present (#1642) and carries the
+installer's model-invocation choice.
+
 **One launch path.** `/plannotator-review`, `/plannotator-annotate`,
 `/plannotator-last` and the tool share `launchCodeReview` / `launchAnnotate` /
 `launchLastMessage` in `apps/pi-extension/index.ts` (in-process server,
@@ -319,10 +349,9 @@ spaces survive), only the `bundle` selection opens (a missing entry answers
 tool never opens fewer files than named), `resolveAnnotateBundleFiles` checks
 types and size, and the subject is `plannotatorBundleSubject` (`2 files:
 spec.md, notes.md`) in the result, list, close and decision heading; feedback
-names every file (`Files:` + `annotateBundleTargetText`). `reply` answers
-`PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT` until live comments land; a session
-without UI (print/JSON mode) is refused, since nothing could deliver the
-decision later.
+names every file (`Files:` + `annotateBundleTargetText`). A session without
+UI (print/JSON mode) never has the tool active (see above), and a call that
+reaches it anyway is refused, since nothing could deliver the decision later.
 
 **Sessions, list and close.** Every review the extension opens (tool,
 commands, `plannotator_submit_plan`) is recorded in ONE process-wide registry
@@ -622,9 +651,15 @@ classic path, which falls back to the pre-compaction file.
 blocks and gives Ask AI a separate AI. The mod registers a real tool instead:
 `$.tool.register({ name: "plannotator", description, inputSchema })` at
 `session.start`, right after the commands, and only when the mod is on (the
-knob not turned off, an interactive session, `/bin/sh` present); with the switch off,
-in `-p`/SDK runs and on Windows nothing is registered and Claude keeps the CLI
-through the `plannotator` skill. The engine names it `mcp__plannotator__plannotator`
+knob not turned off, an interactive session, `/bin/sh` present) and the agent tool
+switch is on (on by default here; `PLANNOTATOR_AGENT_TOOL=0` / `{ "agentTool": false }` turn it off; `resolveAgentToolEnabled`
+in `hooks/mod/enabled.ts`, read with the mod switch at the first `session.start`
+of the process, never re-read); with either switch off, in `-p`/SDK runs and on
+Windows nothing is registered and Claude keeps the CLI through the `plannotator`
+skill. With only the agent tool off, the rest of the mod runs: the slash
+commands, non-blocking ExitPlanMode, Ask this session, and the Bash take-over
+below, which stays because it adds nothing to Claude's context (it changes only
+what a `plannotator` command Claude already chose to run does). The engine names it `mcp__plannotator__plannotator`
 (the register call returns the full name, which `register.ts` keeps) and serves
 it through a loopback MCP server; the mod's `tool.call` hook answers every call
 itself (`{ result }` / `{ deny }`), so no other hook or permission prompt runs
@@ -701,10 +736,9 @@ several paths with its ambiguity error WITHOUT the bundle hint line
 a copy of `ANNOTATE_BUNDLE_HINT` pinned equal by `annotate-target.test.ts`); the
 mod then answers `PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT` ("update Plannotator
 to open several files at once") for the tool, and for `/plannotator-annotate`
-when every word reads as a file path (`isSeveralFilePaths`). `action: "reply"`
-(`session`, `comment`, `text`, `resolve`) stays reserved for live comments: the
-mod answers it with `PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT`, launching nothing,
-and the description does not advertise it yet. Design:
+when every word reads as a file path (`isSeveralFilePaths`). There is no
+`reply` action: it was reserved for live comments and always errored, so it
+was taken out of the schema; it comes back with the comment loop. Design:
 `.product/drafts/agent-sessions-0.29/DESIGN.md`.
 
 **Agent-run CLI commands are taken over (Bash).** Because the tool is deferred
@@ -861,7 +895,10 @@ registers the same `plannotator` tool the Claude Code mod does, through
 (`PLANNOTATOR_TOOL_NAME` / `_DESCRIPTION` / `_INPUT_SCHEMA` and
 `parsePlannotatorToolInput` from `packages/shared/plannotator-tool.ts`, never a
 copy; `plannotator-tool.test.ts` checks the registered schema IS the shared
-object). It is registered for every workflow (`manual` included), and not at
+object). It is OFF by default on OpenCode 2; turned on (`PLANNOTATOR_AGENT_TOOL=1`
+/ `{ "agentTool": true }`, `resolveAgentTool(loadConfig(), process.env,
+"opencode")`, read once at plugin setup; a change applies when OpenCode
+restarts) it is registered for every workflow (`manual` included), and not at
 all where the decision could never come back: a tool draft without `add` (an
 older V2 host, probed inside the callback like the native commands' draft) or
 a session domain without `prompt`. OpenCode 1 gets no tool in 0.29 (design
@@ -889,8 +926,7 @@ several words), the subject is `plannotatorBundleSubject` (`2 files: a.md,
 b.html`) in the result, `list` and the decision heading, and the feedback is
 framed under `Files: …` as the slash command's bundle is. An older CLI's
 several-paths ambiguity error (`isOlderCliBundleRefusal`) makes the result
-`PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT`. `reply` answers
-`PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT`, launching nothing. When a launch
+`PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT`. When a launch
 answered "starting" and its CLI then fails before the page opens, the session
 gets one message (`plannotatorLateFailureText`: `Plannotator: notes.md (pn-…) —
 Did not open.` plus the CLI's error), delivered with `session.prompt`

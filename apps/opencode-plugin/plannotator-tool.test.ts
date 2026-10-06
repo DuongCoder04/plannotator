@@ -8,7 +8,6 @@ import {
   PLANNOTATOR_TOOL_DESCRIPTION,
   PLANNOTATOR_TOOL_INPUT_SCHEMA,
   PLANNOTATOR_TOOL_NAME,
-  PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT,
 } from "@plannotator/shared/plannotator-tool";
 import { classifyHostCloseAnswer } from "@plannotator/shared/host-control";
 import serverPlugin, { registerPlannotatorTool, resolveRootSession } from "./server";
@@ -248,29 +247,58 @@ describe("registration", () => {
     expect(await registerPlannotatorTool(undefined, { session: { prompt: async () => ({}) } }, deps())).toBe(false);
   });
 
+  async function setupAddedTools(workflow: "plan-agent" | "manual"): Promise<string[]> {
+    const added: string[] = [];
+    await serverPlugin.setup({
+      options: { workflow },
+      agent: { list: async () => ({ data: [] }) },
+      session: {
+        get: async () => ({ location: { directory: root } }),
+        prompt: async () => ({}),
+        hook: async () => ({ dispose: async () => {} }),
+      },
+      tool: {
+        transform: async (apply: (tools: any) => void) => {
+          apply({ add: (tool: { name: string }) => added.push(tool.name) });
+          return { dispose: async () => {} };
+        },
+      },
+    } as never);
+    return added;
+  }
+
+  /** Run `fn` with PLANNOTATOR_AGENT_TOOL set (or unset), restoring it after. */
+  async function withAgentToolEnv<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.PLANNOTATOR_AGENT_TOOL;
+    if (value === undefined) delete process.env.PLANNOTATOR_AGENT_TOOL;
+    else process.env.PLANNOTATOR_AGENT_TOOL = value;
+    try {
+      return await fn();
+    } finally {
+      if (saved === undefined) delete process.env.PLANNOTATOR_AGENT_TOOL;
+      else process.env.PLANNOTATOR_AGENT_TOOL = saved;
+    }
+  }
+
   // Failure caught: the tool registered only for some workflows, or setup
-  // wiring that never reaches it.
+  // wiring that never reaches it, once the user turned it on.
   for (const workflow of ["plan-agent", "manual"] as const) {
-    test(`${workflow}: plugin setup registers the plannotator tool`, async () => {
-      const added: string[] = [];
-      await serverPlugin.setup({
-        options: { workflow },
-        agent: { list: async () => ({ data: [] }) },
-        session: {
-          get: async () => ({ location: { directory: root } }),
-          prompt: async () => ({}),
-          hook: async () => ({ dispose: async () => {} }),
-        },
-        tool: {
-          transform: async (apply: (tools: any) => void) => {
-            apply({ add: (tool: { name: string }) => added.push(tool.name) });
-            return { dispose: async () => {} };
-          },
-        },
-      } as never);
-      expect(added).toContain(PLANNOTATOR_TOOL_NAME);
+    test(`${workflow}: plugin setup registers the plannotator tool when it is turned on`, async () => {
+      expect(await withAgentToolEnv("1", () => setupAddedTools(workflow))).toContain(PLANNOTATOR_TOOL_NAME);
     });
   }
+
+  // Failure caught: the owner's default (off on OpenCode 2) regresses, or the
+  // config key / env var stops deciding it. PLANNOTATOR_DATA_DIR is the
+  // sandbox beforeEach set up, so config.json here is a temp file.
+  test("off by default; agentTool in config.json turns it on; the env var wins over the file", async () => {
+    await withAgentToolEnv(undefined, async () => {
+      expect(await setupAddedTools("plan-agent")).not.toContain(PLANNOTATOR_TOOL_NAME);
+      writeFileSync(path.join(process.env.PLANNOTATOR_DATA_DIR!, "config.json"), JSON.stringify({ agentTool: true }));
+      expect(await setupAddedTools("manual")).toContain(PLANNOTATOR_TOOL_NAME);
+    });
+    expect(await withAgentToolEnv("0", () => setupAddedTools("manual"))).not.toContain(PLANNOTATOR_TOOL_NAME);
+  });
 });
 
 describe("calls answered without opening anything", () => {
@@ -281,7 +309,7 @@ describe("calls answered without opening anything", () => {
 
     expect(await runPlannotatorTool({ action: "annotate" }, { sessionID: "ses_a" }, deps)).toContain("Invalid plannotator call");
     expect(await runPlannotatorTool({ action: "reply", session: "pn-abcdef", comment: "c1", text: "done" }, { sessionID: "ses_a" }, deps))
-      .toBe(PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT);
+      .toContain("Invalid plannotator call");
     // `last` reads the main session's messages, which a subagent did not write.
     expect(await runPlannotatorTool({ action: "last" }, { sessionID: "ses_child" }, deps)).toBe(PLANNOTATOR_TOOL_SUBAGENT_LAST_TEXT);
     expect(launch).not.toHaveBeenCalled();

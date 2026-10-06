@@ -238,6 +238,16 @@ export interface PlannotatorConfig {
    */
   claudeCodeMod?: boolean;
   /**
+   * The `plannotator` agent tool (packages/shared/plannotator-tool.ts) on the
+   * hosts that register it: the Claude Code mod, Pi and OpenCode 2. `true`
+   * puts it in the agent's tool list, `false` keeps it out (the slash commands
+   * are unchanged either way). Read once when a session starts, so a change
+   * applies to the next session. PLANNOTATOR_AGENT_TOOL wins over this key.
+   * Unset: the host's default, AGENT_TOOL_DEFAULTS (on for the Claude Code
+   * mod, off on Pi and OpenCode 2).
+   */
+  agentTool?: boolean;
+  /**
    * Inject a Plannotator Flavored Markdown reminder into every EnterPlanMode
    * call so the agent is aware it can enrich plans with code-file links,
    * callouts, tables, diagrams, task lists, and the other PFM extensions.
@@ -614,7 +624,7 @@ export function detectGitUser(cwd?: string): string | null {
  * Build the serverConfig payload for API responses.
  * Reads config.json fresh each call so the response reflects the latest file on disk.
  */
-export function getServerConfig(gitUser: string | null): {
+export function getServerConfig(gitUser: string | null, agentToolIntegration?: string | null): {
   displayName?: string;
   diffOptions?: DiffOptions;
   theme?: ThemeConfig;
@@ -627,9 +637,16 @@ export function getServerConfig(gitUser: string | null): {
   agentTerminalDefaultAgent?: string;
   autoUpdate: boolean;
   autoUpdateEnv?: boolean;
+  agentTool?: boolean;
+  agentToolConfigured?: boolean;
+  agentToolEnv?: boolean;
+  agentToolHost?: AgentToolHost;
+  agentToolEnabled?: boolean;
 } {
   const cfg = loadConfig();
   const autoUpdateEnv = parseAutoUpdateEnv();
+  const agentToolEnv = parseAgentToolEnv();
+  const agentToolHost = agentToolHostOf(agentToolIntegration);
   return {
     displayName: cfg.displayName,
     diffOptions: cfg.diffOptions,
@@ -655,6 +672,45 @@ export function getServerConfig(gitUser: string | null): {
     // autoUpdateEnv carries PLANNOTATOR_AUTO_UPDATE when it overrides the file.
     autoUpdate: coerceConfigBoolean(cfg.autoUpdate, false),
     ...(autoUpdateEnv !== undefined && { autoUpdateEnv }),
+    ...agentToolAdvert(cfg, agentToolEnv, agentToolHost),
+  };
+}
+
+/**
+ * What a Settings toggle or a one-time "turn the tool on" offer needs about
+ * the `plannotator` agent tool (see getServerConfig):
+ *  - agentToolHost: the integration that started this server, when it is one
+ *    that registers the tool (`agentToolIntegration`: the session-bridge host,
+ *    see agentToolHostOf); absent otherwise, and then so are the fields below
+ *    except a value config.json sets;
+ *  - agentTool: the config-file value, or the host's default while unset
+ *    (always explicit when the host is known, like autoUpdate);
+ *  - agentToolConfigured: whether config.json holds an explicit choice;
+ *  - agentToolEnv: PLANNOTATOR_AGENT_TOOL when it overrides the file;
+ *  - agentToolEnabled: the effective value for this host (env, then file,
+ *    then default). It describes the NEXT session: a running session read the
+ *    setting when it started and never re-reads it.
+ */
+function agentToolAdvert(
+  cfg: PlannotatorConfig,
+  env: boolean | undefined,
+  host: AgentToolHost | null,
+): {
+  agentTool?: boolean;
+  agentToolConfigured?: boolean;
+  agentToolEnv?: boolean;
+  agentToolHost?: AgentToolHost;
+  agentToolEnabled?: boolean;
+} {
+  const configured = parseConfigBoolean(cfg.agentTool);
+  if (!host) return configured !== undefined ? { agentTool: configured, agentToolConfigured: true } : {};
+  const value = configured ?? AGENT_TOOL_DEFAULTS[host];
+  return {
+    agentTool: value,
+    agentToolConfigured: configured !== undefined,
+    ...(env !== undefined && { agentToolEnv: env }),
+    agentToolHost: host,
+    agentToolEnabled: env ?? value,
   };
 }
 
@@ -695,13 +751,18 @@ export function resolveDefaultDiffType(cfg?: PlannotatorConfig): DefaultDiffType
  * plus "true"/"false"/"1"/"0" strings; anything else falls back to the default.
  */
 function coerceConfigBoolean(value: unknown, fallback: boolean): boolean {
+  return parseConfigBoolean(value) ?? fallback;
+}
+
+/** `coerceConfigBoolean` without a fallback: undefined when the value is not a recognizable boolean. */
+function parseConfigBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
     if (v === "true" || v === "1") return true;
     if (v === "false" || v === "0") return false;
   }
-  return fallback;
+  return undefined;
 }
 
 /**
@@ -828,6 +889,63 @@ export function resolveClaudeCodeMod(
   if (v === "1" || v === "true" || v === "on") return true;
   if (v === "0" || v === "false" || v === "off" || v === "disabled") return false;
   return coerceConfigBoolean(config.claudeCodeMod, true);
+}
+
+/** The hosts that register the `plannotator` agent tool. */
+export type AgentToolHost = "claude-code" | "pi" | "opencode";
+
+/**
+ * Whether each host registers the `plannotator` agent tool when nothing is
+ * set: the owner's call, and the one place it lives. On for the Claude Code
+ * mod (the tool is deferred behind tool search there, so it costs only its
+ * name until used), off on Pi and OpenCode 2 (a full tool definition in every
+ * request). The mod's mirror (`apps/hook/hooks/mod/enabled.ts`) is kept equal
+ * to the claude-code entry by `enabled.test.ts`.
+ */
+export const AGENT_TOOL_DEFAULTS: Readonly<Record<AgentToolHost, boolean>> = {
+  "claude-code": true,
+  pi: false,
+  opencode: false,
+};
+
+/**
+ * The tool host for a server's launching integration, or null. Callers pass
+ * the session-bridge host that started the server (the Claude Code mod and
+ * the OpenCode 2 plugin hand one to the CLI; Pi's servers run inside the Pi
+ * extension), never the agent origin: an origin of claude-code or opencode
+ * also covers the classic hook and OpenCode 1, which have no tool.
+ */
+export function agentToolHostOf(host: string | null | undefined): AgentToolHost | null {
+  return host === "claude-code" || host === "pi" || host === "opencode" ? host : null;
+}
+
+/** The PLANNOTATOR_AGENT_TOOL override, or undefined when it does not decide. */
+export function parseAgentToolEnv(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const v = env.PLANNOTATOR_AGENT_TOOL?.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "off" || v === "disabled") return false;
+  return undefined;
+}
+
+/**
+ * Resolve whether `host` registers the `plannotator` agent tool.
+ *
+ * Priority (highest wins):
+ *   PLANNOTATOR_AGENT_TOOL env var  →  config.agentTool  →  AGENT_TOOL_DEFAULTS[host]
+ *
+ * Env `1` / `true` / `on` turn it on and `0` / `false` / `off` / `disabled`
+ * turn it off; an empty or unrecognized value counts as unset. The env var and
+ * the config key override the host default in both directions. Hosts call it
+ * ONCE per session start and never again for that session: the tool list is
+ * part of the model's prompt, so changing it mid-session would change the
+ * prompt prefix (and miss the cache). A change applies to the next session.
+ */
+export function resolveAgentTool(
+  config: PlannotatorConfig,
+  env: NodeJS.ProcessEnv,
+  host: AgentToolHost,
+): boolean {
+  return parseAgentToolEnv(env) ?? parseConfigBoolean(config.agentTool) ?? AGENT_TOOL_DEFAULTS[host];
 }
 
 /** The PLANNOTATOR_AUTO_UPDATE override, or undefined when it does not decide. */

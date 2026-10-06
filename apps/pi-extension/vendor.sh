@@ -29,7 +29,7 @@ for f in config-types storage-types workspace-status-types; do
 done
 
 # Everything else in the original flat list stays sourced from packages/shared.
-for f in annotate-bundle plannotator-tool prompts review-core review-image review-progress generated-files feedback-archive cli-pagination jj-core gitbutler-core vcs-core review-args review-open-state draft review-draft annotate-draft annotate-history pr-types pr-context-live pr-artifact-document pr-provider pr-stack pr-github pr-gitlab pr-bitbucket checklist integrations-common repo reference-common markdown-extensions resolve-file doc-resolve file-browser-watch-core annotate-reference-roots-node worktree worktree-pool html-to-markdown html-diff html-assets html-assets-node app-html url-to-markdown tour annotate-args annotate-target at-reference review-workspace-node review-workspace pfm-reminder improvement-hooks code-nav data-dir semantic-diff-types semantic-diff call-flow-types call-flow-languages call-flow-pack-locks call-flow-install-lock call-flow call-flow-install single-flight source-save-node review-profiles guide-store guide-instructions-store commit-avatars commit-history port-range annotate-client-lease annotate-decision archive-mode tailscale live-proxy-core live-probe live-proxy-node loopback-host host-control; do
+for f in annotate-bundle plannotator-tool prompts review-core review-image review-progress generated-files feedback-archive cli-pagination jj-core gitbutler-core vcs-core review-args review-open-state draft review-draft annotate-draft annotate-history pr-types pr-context-live pr-artifact-document pr-provider pr-stack pr-github pr-gitlab pr-bitbucket checklist integrations-common repo reference-common markdown-extensions resolve-file doc-resolve file-browser-watch-core annotate-reference-roots-node worktree worktree-pool html-to-markdown html-diff html-assets html-assets-node app-html url-to-markdown tour annotate-args annotate-target at-reference review-workspace-node review-workspace pfm-reminder improvement-hooks code-nav data-dir semantic-diff-types semantic-diff call-flow-types call-flow-languages call-flow-pack-locks call-flow-install-lock call-flow call-flow-install single-flight source-save-node review-profiles guide-store guide-instructions-store commit-avatars commit-history port-range annotate-client-lease annotate-decision archive-mode tailscale live-proxy-core live-probe live-proxy-node loopback-host host-control request-origin; do
   src="../../packages/shared/$f.ts"
   # Shared modules that import browser-safe siblings from @plannotator/core
   # (e.g. guide-store → core/guide-format): generated/ is flat and vendors the
@@ -173,6 +173,15 @@ done
 # comment makes the skill unparseable to every loader that reads it. The copy
 # is kept honest the same way plannotator.html and call-flow-runtime/ are —
 # it is gitignored, so the only copy that can ever exist is this one.
+#
+# The copy is user-invoked only (`disable-model-invocation: true`, added to its
+# frontmatter here; the source stays model-invocable for the hosts whose
+# installer asks the user, #1377). An npm-only Pi install never answered that
+# question, so the #842 promise holds: no Plannotator skill in Pi's system
+# prompt unless the user chose it. `/skill:plannotator` still loads it, and the
+# `plannotator` tool's own description is what the model sees.
 rm -rf skills
 mkdir -p skills
 cp -R ../skills/core/plannotator skills/plannotator
+awk 'NR == 1 && $0 != "---" { exit 1 } NR == 2 && $0 !~ /^name: / { exit 1 } { print } NR == 2 { print "disable-model-invocation: true" }' \
+  ../skills/core/plannotator/SKILL.md > skills/plannotator/SKILL.md

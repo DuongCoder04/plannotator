@@ -1,3 +1,4 @@
+import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -2060,7 +2061,7 @@ export async function startReviewServer(options: {
 			return;
 		}
 		if (guideShareMatch && guideShareMatch[2] === "share" && (req.method === "POST" || req.method === "DELETE")) {
-			if (!callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "")) {
+			if (!callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
 				json(res, { error: "Cross-origin share requests are not allowed" }, 403);
 				return;
 			}
@@ -2311,7 +2312,7 @@ export async function startReviewServer(options: {
 				...(servedError && { error: servedError }),
 				semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
 				callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
-				serverConfig: getServerConfig(gitUser),
+				serverConfig: getServerConfig(gitUser, "pi"),
 			});
 		} else if (url.pathname === "/api/fetch-base" && req.method === "POST") {
 			// Fetch the remote default branch so the local baseline catches up
@@ -2428,7 +2429,7 @@ export async function startReviewServer(options: {
 			// download and build.
 			// requestUrl() parses against a fixed localhost base, so the real
 			// request authority is the Host header, not url.host.
-			if (!callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "")) {
+			if (!callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
 				json(res, { error: "Cross-origin install requests are not allowed" }, 403);
 				return;
 			}
@@ -3529,14 +3530,20 @@ export async function startReviewServer(options: {
 				json(res, { error: "File not found" }, 404);
 			}
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
+			if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
+				json(res, { error: "Cross-origin config writes are not allowed" }, 403);
+				return;
+			}
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean };
 				const toSave: Record<string, unknown> = {};
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.theme !== undefined) toSave.theme = body.theme;
 				if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
 				if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;
+				// The agent tool switch: boolean only; it applies to the next session.
+				if (typeof body.agentTool === "boolean") toSave.agentTool = body.agentTool;
 				if (body.reviewAnalysis !== undefined) {
 					const reviewAnalysis = parseReviewAnalysisConfig(body.reviewAnalysis);
 					if (!reviewAnalysis) return json(res, { error: "Invalid analysis settings" }, 400);
@@ -3745,7 +3752,7 @@ export async function startReviewServer(options: {
 				);
 			}
 		} else if (url.pathname === "/api/review-progress") {
-			if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "")) {
+			if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
 				json(res, { error: "Cross-origin progress updates are not allowed" }, 403);
 				return;
 			}

@@ -32,7 +32,6 @@ import {
 	PLANNOTATOR_TOOL_DESCRIPTION,
 	PLANNOTATOR_TOOL_INPUT_SCHEMA,
 	PLANNOTATOR_TOOL_NAME,
-	PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT,
 } from "./generated/plannotator-tool.ts";
 import type { PlanReviewDecision } from "./plannotator-browser.ts";
 import { getProcessPiReviewRegistry } from "./plannotator-tool-host.ts";
@@ -41,7 +40,7 @@ import { startReviewServer } from "./server/serverReview.ts";
 
 const MINIMAL_HTML = "<html><body>Plannotator</body></html>";
 const PATCH = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
-const ENV_KEYS = ["PLANNOTATOR_DATA_DIR", "PLANNOTATOR_AI", "PLANNOTATOR_PORT", "PLANNOTATOR_REMOTE", "PLANNOTATOR_FEEDBACK_HISTORY", "PLANNOTATOR_ANNOTATE_HISTORY"] as const;
+const ENV_KEYS = ["PLANNOTATOR_DATA_DIR", "PLANNOTATOR_AI", "PLANNOTATOR_PORT", "PLANNOTATOR_REMOTE", "PLANNOTATOR_FEEDBACK_HISTORY", "PLANNOTATOR_ANNOTATE_HISTORY", "PLANNOTATOR_AGENT_TOOL"] as const;
 
 const tempDirs: string[] = [];
 const servers: Array<{ stop: () => void }> = [];
@@ -56,6 +55,8 @@ beforeEach(() => {
 	process.env.PLANNOTATOR_REMOTE = "0";
 	process.env.PLANNOTATOR_FEEDBACK_HISTORY = "0";
 	process.env.PLANNOTATOR_ANNOTATE_HISTORY = "0";
+	// The tool is off by default on Pi; these tests are about the tool itself.
+	process.env.PLANNOTATOR_AGENT_TOOL = "1";
 	delete process.env.PLANNOTATOR_PORT;
 });
 
@@ -554,7 +555,7 @@ describe("plannotator tool on Pi", () => {
 	test("refuses what it cannot open: bad calls, reply, no UI, a missing file", async () => {
 		const harness = createHarness();
 		await expect(harness.call({ action: "list", target: "x.md" })).rejects.toThrow('action "list" takes no target');
-		await expect(harness.call({ action: "reply", session: "pn-abcdef", comment: "c1", text: "done" })).rejects.toThrow(PLANNOTATOR_TOOL_REPLY_UNAVAILABLE_TEXT);
+		await expect(harness.call({ action: "reply", session: "pn-abcdef", comment: "c1", text: "done" })).rejects.toThrow("Invalid plannotator call");
 		await expect(harness.call({ action: "annotate", target: "missing.md" })).rejects.toThrow("Plannotator did not open: File not found");
 		// One target is one argument: words are never split into a tolerant search.
 		harness.writeFile("notes.md", "# Notes\n");

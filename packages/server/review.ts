@@ -9,6 +9,7 @@
  *   PLANNOTATOR_PORT   - Fixed port or inclusive range (default: random locally, 19432 for remote)
  */
 
+import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import type { Origin } from "@plannotator/shared/agents";
@@ -150,7 +151,7 @@ import {
   fetchPRArtifactDocument,
   PRArtifactDocumentError,
 } from "@plannotator/shared/pr-artifact-document";
-import { createAIRuntime } from "./ai-runtime";
+import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
@@ -2094,7 +2095,7 @@ export async function startReviewServer(
             });
           }
           if (guideShareMatch && guideShareMatch[2] === "share" && (req.method === "POST" || req.method === "DELETE")) {
-            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin share requests are not allowed" }, { status: 403 });
             }
             const jobId = decodeURIComponent(guideShareMatch[1]);
@@ -2311,7 +2312,7 @@ export async function startReviewServer(
               ...(servedError && { error: servedError }),
               semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
               callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
-              serverConfig: getServerConfig(gitUser),
+              serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge)),
               ...getAutoUpdateAdvert(),
             });
           }
@@ -2475,7 +2476,7 @@ export async function startReviewServer(
           // download, and a cross-origin POST is rejected because this
           // endpoint starts a native runtime download and build.
           if (url.pathname === "/api/call-flow/install" && req.method === "POST") {
-            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin install requests are not allowed" }, { status: 403 });
             }
             let request: ReturnType<typeof parseCallFlowInstallRequest>;
@@ -3635,14 +3636,19 @@ export async function startReviewServer(
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
           if (url.pathname === "/api/config" && req.method === "POST") {
+            if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+              return Response.json({ error: "Cross-origin config writes are not allowed" }, { status: 403 });
+            }
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
               if (body.theme !== undefined) toSave.theme = body.theme;
               if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
               if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;
+              // The agent tool switch: boolean only; it applies to the next session.
+              if (typeof body.agentTool === "boolean") toSave.agentTool = body.agentTool;
               if (body.reviewAnalysis !== undefined) {
                 const reviewAnalysis = parseReviewAnalysisConfig(body.reviewAnalysis);
                 if (!reviewAnalysis) {
@@ -3762,7 +3768,7 @@ export async function startReviewServer(
 
           // API: Durable viewed-file progress
           if (url.pathname === "/api/review-progress") {
-            if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin progress updates are not allowed" }, { status: 403 });
             }
             let body: unknown;
