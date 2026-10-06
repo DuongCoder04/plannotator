@@ -1880,6 +1880,46 @@ Pinned by `components/DiagramBlock.askAI.test.tsx` and
 
 ---
 
+## Ask AI names a text selection's source lines (unreleased; additive, no core change)
+
+An Ask AI question asked from a markdown text selection now says which
+source lines the selection is on, so a phrase that occurs more than once in
+the document is no longer ambiguous (#1731). Nothing to pass; a host that
+ignores the new fields keeps working.
+
+- **`CommentAskAIContext.lineStart?` / `lineEnd?`** and
+  **`AIQuestion.scope.lineStart?` / `lineEnd?`** (1-based, additive). `Viewer`
+  fills them on the context its text-selection composer and its code-block
+  composer hand to `onAskAI`: the span of the enclosing block, which for a
+  selection within one block is the same span the exported annotation from
+  that selection prints as `(line 41)` / `(lines 41–44)`. A selection over
+  several blocks gives a range from the first block's start line to the last
+  block's end line, while the export names only the first block. The global
+  composer, HTML / live-app
+  pinpoints and diagram comments carry none (diagrams already send their line
+  in `detail`).
+- **`buildDefaultPrompt`** appends them to the `Source:` line:
+  `Source: /docs/plan.md, line 41` or `Source: /docs/plan.md, lines 41–44`
+  (`Source: line 41` with no `sourcePath`). A scope without them, or with a
+  value that is not a positive integer, prints exactly what it printed before.
+  A host that maps `CommentAskAIContext` onto `AIQuestion.scope` field by
+  field must copy the two fields to get the line into the question.
+- **New pure helper `selectionSourceLines(blocks, blockIds)`** (`utils/parser`)
+  returns `{ lineStart, lineEnd }` or `null`.
+- **`CommentPopoverState.blockIds?`** (`hooks/useAnnotationHighlighter`,
+  additive): the `data-block-id`s the pending selection covers, which is what
+  `Viewer` maps to lines.
+
+Lines are document lines of the markdown the `Viewer` was given (frontmatter
+counted). Plannotator drops them for a converted HTML / URL source, whose
+converted markdown lines do not exist in the original file (its mapping is
+`packages/editor/askScope.ts`, pinned by `askScope.test.ts`). Pinned by
+`components/Viewer.askAISelectionLine.test.tsx` (DOM-gated),
+`utils/parser.selectionLines.test.ts` (including parity with the export
+heading for single-block selections) and `utils/aiPrompt.test.ts`.
+
+---
+
 ## `CompletionOverlay` `done` state (unreleased; additive)
 
 `submitted` accepts a new value, `'done'`: the session finished with nothing

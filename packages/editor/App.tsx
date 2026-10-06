@@ -102,6 +102,7 @@ import {
 import { useAgentToolSetting } from '@plannotator/ui/hooks/useAgentToolSetting';
 import { useLatchedTrue } from '@plannotator/ui/hooks/useLatchedTrue';
 import { buildDefaultPrompt, useAIChat } from '@plannotator/ui/hooks/useAIChat';
+import { askScopeFromContext as askScopeFromContextFor } from './askScope';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
 import { getInputMethod, refreshInputMethodStamp, saveInputMethod } from '@plannotator/ui/utils/inputMethod';
@@ -5368,17 +5369,18 @@ const App: React.FC = () => {
     return null;
   }, [fileBrowser.activeFile, linkedDocHook.filepath, linkedDocHook.isActive, sourceFilePath]);
 
+  // One mapping for both Ask AI paths (agent terminal and side chat / Ask this
+  // session); see `askScope.ts`.
+  const askScopeFromContext = useCallback(
+    (context?: CommentAskAIContext) =>
+      askScopeFromContextFor(context, { documentPath: aiDocumentPath, sourceConverted: aiSourceConverted }),
+    [aiDocumentPath, aiSourceConverted],
+  );
+
   const buildAgentAskPrompt = useCallback((question: string, context?: CommentAskAIContext) => {
-    const scope = context ? {
-      kind: context.kind,
-      label: context.label,
-      text: context.text,
-      sourcePath: context.sourcePath ?? aiDocumentPath,
-      ...(context.detail ? { detail: context.detail } : {}),
-    } : undefined;
     const scopedQuestion = buildDefaultPrompt({
       prompt: question,
-      scope,
+      scope: askScopeFromContext(context),
     });
     return buildTerminalAskPrompt({
       scopedQuestion,
@@ -5392,7 +5394,7 @@ const App: React.FC = () => {
             content: aiRenderAs === 'html' && rawHtml ? rawHtml : displayedMarkdown,
           },
     });
-  }, [aiAnnotationsContext, aiDocumentPath, aiRenderAs, displayedMarkdown, rawHtml, terminalAskReadableFilePath]);
+  }, [aiAnnotationsContext, aiDocumentPath, aiRenderAs, askScopeFromContext, displayedMarkdown, rawHtml, terminalAskReadableFilePath]);
 
   const aiDocumentKey = aiContext
     ? `${aiDocumentMode ? 'document' : 'plan'}:${aiRenderAs}:${aiDocumentPath}:${versionInfo?.version ?? 'current'}`
@@ -5472,21 +5474,15 @@ const App: React.FC = () => {
     openAIChat();
     askAI({
       prompt: question,
-      scope: context ? {
-        kind: context.kind,
-        label: context.label,
-        text: context.text,
-        sourcePath: context.sourcePath ?? aiDocumentPath,
-        ...(context.detail ? { detail: context.detail } : {}),
-      } : undefined,
+      scope: askScopeFromContext(context),
       contextUpdate: aiSessionId ? aiAnnotationsContext : undefined,
     });
     return true;
   }, [
     aiAnnotationsContext,
-    aiDocumentPath,
     aiSessionId,
     askAI,
+    askScopeFromContext,
     buildAgentAskPrompt,
     canUseAI,
     handleAgentTerminalReadyChange,
