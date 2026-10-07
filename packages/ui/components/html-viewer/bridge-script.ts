@@ -2693,7 +2693,86 @@ export const BRIDGE_SCRIPT = `(function() {
 
   function anchorTextSnapshot(el) {
     var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!text) return anchorSourceSnapshot(el);
     return text.length > 180 ? text.slice(0, 180) : text;
+  }
+
+  // Media snapshots. An image, video or frame has no text to verify a weak
+  // selector against, but its source says what it shows the way text says
+  // what a paragraph says, and unlike the structure-derived signatures D1
+  // ruled out, two siblings showing different files never share it. The key
+  // is the author's reference to the resource: relative to the document's
+  // base when it lies under it (a host may re-root assets per session, through
+  // a <base> on its own asset route or by rewriting attributes to a session
+  // host), else its root-relative path on the document's own origin (a live
+  // app's proxy port changes per session), else origin and path. The query
+  // and the fragment are part of what a source shows (/_next/image?url=a.jpg,
+  // proto.html?step=2, icons.svg#close), so they count, but only as a digest:
+  // they can carry per-visit state (signed URLs, tokens) that must never be
+  // stored in plain text in an annotation. A source whose query changes per
+  // load therefore does not restore, which fails closed. Inline sources
+  // (data:, blob:) name no resource and get no key.
+  var ANCHOR_SOURCE_PREFIX = 'src:';
+  var ANCHOR_SOURCE_MAX = 176;
+
+  // FNV-1a, 32 bits, as 8 hex digits: an identity check, not a secret.
+  function anchorDigest(value) {
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return ('0000000' + hash.toString(16)).slice(-8);
+  }
+
+  function anchorSourceKey(el) {
+    var raw = descRawSource(el);
+    if (!raw || /^(data|blob):/i.test(raw)) return '';
+    var path = raw;
+    var variant = '';
+    var url = null;
+    try { url = new URL(raw, document.baseURI); } catch (ex) {}
+    if (!url || !/^https?:$/i.test(url.protocol)) {
+      var mark = raw.search(/[?#]/);
+      if (mark >= 0) {
+        path = raw.slice(0, mark);
+        variant = raw.slice(mark);
+      }
+    } else {
+      variant = url.search + url.hash;
+      var base = null;
+      try { base = new URL('.', document.baseURI); } catch (ex2) {}
+      if (base && url.origin === base.origin && url.pathname.indexOf(base.pathname) === 0) {
+        path = url.pathname.slice(base.pathname.length);
+      } else if (base && url.origin === base.origin) {
+        path = url.pathname;
+      } else {
+        path = url.origin + url.pathname;
+      }
+    }
+    if (!path) return '';
+    return variant ? path + '?' + anchorDigest(variant) : path;
+  }
+
+  function sourceSnapshotOf(el) {
+    var key = anchorSourceKey(el);
+    if (!key) return '';
+    // A long key keeps its head for readability and a digest of the whole,
+    // so two sources that differ only past the cut never compare equal.
+    if (key.length > ANCHOR_SOURCE_MAX) key = key.slice(0, ANCHOR_SOURCE_MAX - 9) + '~' + anchorDigest(key);
+    return ANCHOR_SOURCE_PREFIX + key;
+  }
+
+  // A source that another element of the same kind shares cannot tell the two
+  // apart, which is the D1 failure again: no snapshot, so no anchor.
+  function anchorSourceSnapshot(el) {
+    var snapshot = sourceSnapshotOf(el);
+    if (!snapshot) return '';
+    var sameKind = document.getElementsByTagName(el.tagName);
+    for (var i = 0; i < sameKind.length; i++) {
+      if (sameKind[i] !== el && sourceSnapshotOf(sameKind[i]) === snapshot) return '';
+    }
+    return snapshot;
   }
 
   function uniquelySelects(selector, el) {
@@ -2794,12 +2873,13 @@ export const BRIDGE_SCRIPT = `(function() {
     if (!selector) return null;
     var snapshot = anchorTextSnapshot(el);
     // Text-less elements anchor ONLY through a stable-identity rung (#id or
-    // an author-controlled data-* identity attribute). A weak (positional /
-    // class) selector has nothing to verify against — identical siblings
-    // share every structural trait, so any derived signature would validate
-    // the WRONG element after a sibling is inserted or removed. A
-    // wrong-binding anchor is worse than no anchor: ship none and fail
-    // closed (the pin simply doesn't restore).
+    // an author-controlled data-* identity attribute), or, for media, through
+    // a source no other element of its kind shows (anchorSourceSnapshot).
+    // Otherwise a weak (positional / class) selector has nothing to verify
+    // against — identical siblings share every structural trait, so any
+    // derived signature would validate the WRONG element after a sibling is
+    // inserted or removed. A wrong-binding anchor is worse than no anchor:
+    // ship none and fail closed (the pin simply doesn't restore).
     if (!snapshot && !anchorHasStableIdentity(selector, el)) return null;
     return {
       selector: selector,
@@ -2832,6 +2912,26 @@ export const BRIDGE_SCRIPT = `(function() {
 
   function resolveAnchorElement(anchor) {
     if (!anchor || typeof anchor.selector !== 'string' || !anchor.selector || typeof anchor.tagName !== 'string') return null;
+    return resolveAnchorSelector(anchor) || relocateBySource(anchor);
+  }
+
+  // A media anchor whose selector no longer lands on its element (a sibling
+  // was inserted or removed, a refresh reordered the page) finds it again by
+  // its source, the way a text annotation falls back to searching for its
+  // text. Exactly one element may match: two resolve nothing.
+  function relocateBySource(anchor) {
+    if (typeof anchor.text !== 'string' || anchor.text.indexOf(ANCHOR_SOURCE_PREFIX) !== 0) return null;
+    var found = null;
+    var candidates = document.getElementsByTagName(anchor.tagName);
+    for (var i = 0; i < candidates.length; i++) {
+      if (sourceSnapshotOf(candidates[i]) !== anchor.text) continue;
+      if (found) return null;
+      found = candidates[i];
+    }
+    return found;
+  }
+
+  function resolveAnchorSelector(anchor) {
     var matches;
     try {
       matches = document.querySelectorAll(anchor.selector);
