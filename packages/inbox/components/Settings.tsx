@@ -19,6 +19,57 @@ export interface SettingsPageProps {
   context: ConnectContext | null;
   error: string | null;
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
+  permission: NotificationPermission | 'unsupported';
+  onToggleNotifications: (next: boolean) => void;
+}
+
+const PERMISSION_LABEL: Record<NotificationPermission | 'unsupported', string> = {
+  granted: 'Allowed in this browser',
+  default: 'Not allowed in this browser yet',
+  denied: 'Blocked in this browser',
+  unsupported: 'This browser cannot show notifications',
+};
+
+/**
+ * Notifications (record 7.2): one switch, for questions and stops. Turning it
+ * on asks the browser when it has not decided yet.
+ */
+function NotificationsBlock({
+  settings,
+  permission,
+  onToggle,
+}: {
+  settings: SettingsModel['notifications'];
+  permission: NotificationPermission | 'unsupported';
+  onToggle: (next: boolean) => void;
+}) {
+  const on = settings.enabled && permission === 'granted';
+  return (
+    <div className="ib-sblock" data-settings-notifications="">
+      <h2>Notifications</h2>
+      <div className="ib-srow" style={{ paddingTop: 0 }}>
+        {PERMISSION_LABEL[permission]}
+        <span className="ib-d">for questions and stops</span>
+        <span className="ib-r">
+          <button
+            type="button"
+            role="switch"
+            className="ib-sw"
+            aria-checked={on}
+            aria-label="Desktop notifications"
+            disabled={permission === 'unsupported' || permission === 'denied'}
+            onClick={() => onToggle(!on)}
+          />
+        </span>
+      </div>
+      {permission === 'denied' && (
+        <div className="ib-note">
+          <Icon name="info" />
+          This browser blocks notifications for this page: allow them in its site settings.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StoreTable({ store, threadCounts }: { store: SettingsModel['store']; threadCounts: (id: string) => number }) {
@@ -79,8 +130,15 @@ function StoreTable({ store, threadCounts }: { store: SettingsModel['store']; th
   );
 }
 
-/** Settings (record 7.1, 7.2): the agent tool knob, Connect an agent, and the store on disk. */
-export function SettingsPage({ settings, context, error, onToggleTool }: SettingsPageProps) {
+/** Settings (record 7.1, 7.2): the agent tool knob, Connect an agent, the store on disk, notifications. */
+export function SettingsPage({
+  settings,
+  context,
+  error,
+  onToggleTool,
+  permission,
+  onToggleNotifications,
+}: SettingsPageProps) {
   const env = settings?.inbox_tool.env ?? null;
   return (
     <div className="ib-spage" aria-label="Settings">
@@ -139,6 +197,13 @@ export function SettingsPage({ settings, context, error, onToggleTool }: Setting
               Delete thread and delete project come in the next step.
             </div>
           </div>
+        )}
+        {settings && (
+          <NotificationsBlock
+            settings={settings.notifications}
+            permission={permission}
+            onToggle={onToggleNotifications}
+          />
         )}
       </div>
     </div>
