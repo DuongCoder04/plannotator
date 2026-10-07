@@ -57,6 +57,54 @@ export function isInboxId(prefix: InboxIdPrefix, value: unknown): value is strin
   return typeof value === "string" && ID_RE[prefix].test(value);
 }
 
+// ─────────────────────────────── Thread names ───────────────────────────────
+
+/** The longest `thread` name send_message takes, in characters. */
+export const INBOX_THREAD_NAME_MAX = 120;
+
+const THREAD_NAME_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+/**
+ * Bidi controls (LRE..RLO, LRI..PDI, LRM, RLM, ALM) reorder the text around
+ * them, so a name holding one can draw as another name in the list.
+ */
+const THREAD_NAME_BIDI = /\p{Bidi_Control}/u;
+/** Code points that draw as nothing (zero-width space and joiners, BOM, variation selectors...). */
+const THREAD_NAME_INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
+
+/**
+ * A `thread` name as sent: trimmed, 1..120 characters, no control characters
+ * or line breaks, no bidi controls, and something visible in it (a name made
+ * only of zero-width characters is empty).
+ */
+export function checkInboxThreadName(value: unknown): { ok: true; name: string } | { ok: false; message: string } {
+  if (typeof value !== "string") return { ok: false, message: "must be a string." };
+  const name = value.trim();
+  const length = [...name].length;
+  if (length === 0 || inboxThreadNameKey(name) === "") return { ok: false, message: "must not be empty." };
+  if (length > INBOX_THREAD_NAME_MAX) return { ok: false, message: `at most ${INBOX_THREAD_NAME_MAX} characters.` };
+  if (THREAD_NAME_CONTROL.test(name)) return { ok: false, message: "must not contain control characters or line breaks." };
+  if (THREAD_NAME_BIDI.test(name)) return { ok: false, message: "must not contain bidirectional control characters." };
+  return { ok: true, name };
+}
+
+/**
+ * What two thread names are compared by: compatibility-normalized (NFKC, so
+ * a full-width "\uff41\uff55\uff54\uff48" is "auth"), invisible code points dropped (a
+ * zero-width space cannot make a second thread that looks like the first),
+ * runs of whitespace as one space, case folded (upper then lower, so "\u00df" is
+ * "ss"). "Auth refactor" and "auth  Refactor" are one thread. The stored
+ * name keeps the first sender's spelling.
+ */
+export function inboxThreadNameKey(name: string): string {
+  return name
+    .normalize("NFKC")
+    .replace(THREAD_NAME_INVISIBLE, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase()
+    .toLowerCase();
+}
+
 // ─────────────────────────────── Records ───────────────────────────────
 
 /** One row of the window: the repository or folder an agent works in. */
@@ -98,6 +146,26 @@ export interface InboxMessage {
   resolved_at: string | null;
   /** The sender's idempotency key, when one was given. */
   idempotency_key: string | null;
+  /**
+   * The `thread` name the agent sent this message with (send_message's
+   * `thread`), else absent or null. On a root it is the thread's name: a
+   * named thread is joined by name across sessions; an unnamed root is its
+   * session's default thread. Added after step 1: older records lack it.
+   */
+  thread_name?: string | null;
+  /**
+   * On a root: the event-log seq up to which the person has looked at the
+   * thread (the window's "seen"). Agent messages after it are "New since you
+   * looked". Absent until the first look.
+   */
+  person_seen_seq?: number | null;
+  /**
+   * On a root: the seq up to which the asking agent has read the person's
+   * replies (wait_for_reply returned one, or read_thread read the thread),
+   * and when. A Sent row moves to Quiet once its reply is checked.
+   */
+  agent_checked_seq?: number | null;
+  agent_checked_at?: string | null;
 }
 
 /** One choice as the wire serves it (Workspaces' `QuestionChoice`). */
@@ -210,10 +278,51 @@ export interface InboxThreadSummary {
   waiting_on_person: boolean;
 }
 
+/** The list's sections, in the approved order (Workspaces' inbox model). */
+export type InboxSectionId = "stopped" | "holding" | "waiting" | "sent" | "new" | "quiet";
+
+export const INBOX_SECTIONS: readonly { readonly id: InboxSectionId; readonly label: string }[] = [
+  { id: "stopped", label: "Stopped on you" },
+  { id: "holding", label: "Holding up work" },
+  { id: "waiting", label: "Waiting on you" },
+  { id: "sent", label: "Sent" },
+  { id: "new", label: "New since you looked" },
+  { id: "quiet", label: "Quiet" },
+];
+
+/**
+ * One row of the list: a thread (owner ruling 2026-10-07, "a row is a
+ * thread"), with its project as a label and a filter, placed in its section.
+ */
+export interface InboxListRow extends InboxThreadSummary {
+  project: { id: string; name: string };
+  /** The thread's name (send_message's `thread`), or null for a session's default thread. */
+  thread_name: string | null;
+  section: InboxSectionId;
+  /** Waiting on the person or new to them: drawn bold. */
+  unread: boolean;
+  /** No question is open, some are picked and not sent: it waits only for Send. */
+  answered_not_sent: boolean;
+  /** When the oldest open question was asked, or null when none is open. */
+  waiting_since: string | null;
+  /** Agent messages after the person's last look (a reply of theirs counts as a look). */
+  unseen: number;
+  /** The person's reply is the last message: when, and when the agent read it (null until it has). */
+  sent: { at: string; checked_at: string | null } | null;
+}
+
+export interface InboxListSection {
+  id: InboxSectionId;
+  label: string;
+  threads: InboxListRow[];
+}
+
 export interface InboxThread {
   thread_id: string;
   project: InboxProject;
   subject: string | null;
+  /** The thread's name, or null for a session's default thread. */
+  thread_name: string | null;
   resolved_at: string | null;
   messages: InboxMessageWire[];
 }

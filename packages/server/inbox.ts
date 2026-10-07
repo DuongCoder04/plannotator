@@ -26,8 +26,10 @@ import { timingSafeEqual } from "node:crypto";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import {
   INBOX_APP_ID,
+  isInboxId,
   type InboxHealth,
   type InboxLine,
+  type InboxListRow,
   type InboxProject,
 } from "@plannotator/core/inbox-types";
 import { toInboxQuestion } from "@plannotator/core/inbox-questions";
@@ -38,6 +40,7 @@ import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import { InboxStore } from "@plannotator/shared/inbox/store";
+import { inboxListSections } from "@plannotator/shared/inbox/list";
 import {
   createInboxToken,
   readInboxRegistry,
@@ -230,14 +233,41 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
   const health = (): InboxHealth => ({ ok: true, app: INBOX_APP_ID, version, serverSession, pid: process.pid, update });
 
-  const listModel = () => ({
-    serverSession,
-    version,
-    cursor: store.cursor(),
-    update,
-    notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
-    projects: store.listProjects().map((project) => ({ project, threads: store.threadsOf(project.id) })),
-  });
+  /** The sidebar's folders: every project, with its thread and unread counts. */
+  const projectFolders = (rows: readonly InboxListRow[] = store.listRows()) => {
+    return store.listProjects().map((project) => {
+      const mine = rows.filter((row) => row.project.id === project.id);
+      return { ...project, threads: mine.length, unread: mine.filter((row) => row.unread).length };
+    });
+  };
+
+  /**
+   * The list model: one row per thread, placed in the approved sections, with
+   * the project as a label and an optional filter (`?project=prj_...`), which
+   * keeps the sections and drops other projects' rows.
+   */
+  const listModel = (projectFilter: string | null) => {
+    // One pass over the store feeds both the folders' counts and the sections.
+    const rows = store.listRows();
+    return {
+      serverSession,
+      version,
+      cursor: store.cursor(),
+      update,
+      notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
+      projects: projectFolders(rows),
+      project: projectFilter,
+      sections: inboxListSections(projectFilter ? rows.filter((row) => row.project.id === projectFilter) : rows),
+    };
+  };
+
+  const projectFilterOf = (url: URL): string | null => {
+    const value = url.searchParams.get("project");
+    if (value === null || value === "") return null;
+    if (!isInboxId("prj", value)) throw new InboxError("validation_error", "project: a prj_ id.", { field: "project" });
+    if (!store.project(value)) throw new InboxError("project_not_found", `No project ${value}.`);
+    return value;
+  };
 
   const eventPayload = (line: InboxLine) => {
     switch (line.kind) {
@@ -366,7 +396,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
     try {
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
-      if (path === "/api/inbox/projects" && req.method === "GET") return json(listModel());
+      if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url)));
+      if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
       if (path === "/api/inbox/events" && req.method === "GET") return eventStream(req, url);
 
       const threadMatch = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)$/.exec(path);
@@ -374,6 +405,14 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const thread = store.thread(threadMatch[1]!);
         if (!thread) return json({ error: "No such thread.", code: "thread_not_found" }, 404);
         return json({ serverSession, cursor: store.cursor(), thread });
+      }
+
+      const seenMatch = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/seen$/.exec(path);
+      if (seenMatch) {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(), 409);
+        return json({ thread: store.markSeen(seenMatch[1]!) });
       }
 
       const messageMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/(picks|reply|resolve)$/.exec(path);
