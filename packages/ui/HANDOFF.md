@@ -2029,6 +2029,86 @@ row hidden when off, recorded and plain questions untouched, read-only cards
 static, `statusTag: 'none'`, the `Viewer` threading, and a card with none of
 the props rendering the same markup.
 
+## Decision toggle on any question, and an opener for the host's decision card (ui 0.52.1, unreleased; additive, no core change)
+
+Two gaps Workspaces found in 0.52.0 against its approved Inbox design
+("the tag is the switch" on every question, off by default; "clicking the
+tag's words opens the decision card"). Plannotator passes none of this, and a
+card without the new props renders byte-identically to 0.52.0 (checked by
+rendering main and the branch through `BlockRenderer` and `Viewer`,
+interactive and read-only, with no props, with a 0.52.0-shaped host, and with
+a 0.52.0 host returning a boolean for every question).
+
+| `Viewer` | `BlockRenderer` | `QuestionBlock` |
+| --- | --- | --- |
+| `questionDecisionScope?: 'when-answered' \| 'any'` | same | `decisionScope?: 'when-answered' \| 'any'` |
+| `onOpenQuestionDecision?: (key, anchor: HTMLElement) => void` | same | `onOpenDecision?: (key, anchor: HTMLElement) => void` |
+
+1. **Any question can record a decision, opt-in.** With
+   `questionDecisionScope="any"` (`decisionScope: 'any'`),
+   `decisionRecording` / `questionDecisionRecording` also reaches a question
+   WITHOUT a decision line: a boolean adds the "◇ Records a decision" tag in
+   that state (and, with `onToggleDecisionRecording`, makes it the toggle),
+   `undefined` leaves the question as it was (no tag). The default,
+   `'when-answered'`, is the 0.52.0 behaviour: only `Decision: when answered`
+   questions carry the tag, and a boolean returned for a plain question is
+   ignored, as 0.52.0 documented. It is an explicit opt-in rather than
+   "a boolean means show it" so that a 0.52.0 host that returns a boolean for
+   every question does not grow tags on its plain questions in a patch
+   release. On shows the same "Answering this records
+   a decision" row a `Decision: when answered` question shows; off hides it.
+   The default for such a question is whatever you return: start it `false`
+   for "off by default". A question with a recorded decision
+   (`Decision: [statement](url)`) is still never affected, and
+   `data-question-decision` still describes the question's own line (absent
+   for a plain question); `data-question-decision-recording="on" | "off"`
+   appears once you supply a state.
+2. **A separate opener (`onOpenDecision` / `onOpenQuestionDecision`).** Given,
+   the tag is drawn as two adjacent targets inside one visual tag
+   (`[data-question-decision-tag]`), siblings, never nested:
+   - the diamond is the switch: `<button aria-pressed aria-label="Record as a
+     decision" data-question-decision-toggle>` calling
+     `onToggleDecisionRecording(key, next)`. Without a toggle handler the
+     diamond is decoration, not a control.
+   - the words "Records a decision" are `<button aria-haspopup="dialog"
+     data-question-decision-open>`, calling `onOpenDecision(key, element)`
+     with the words' own button as the popover anchor. The card keeps no
+     open state; your popover owns focus and returns it to the anchor.
+   The opener is offered whether recording is on or off: what an off
+   question's card does (switch it on as it opens, or open a card that says
+   it is off) is the host's call. Tab order is switch, then words, both with
+   the `ring-2 ring-primary` focus ring the 0.52.0 toggle uses (a ring, not
+   an outline, because the dotted outline draws the off state, which is now
+   on the wrapping tag). The off look is unchanged: muted-foreground text and
+   a dotted outline (#1744's contrast fix). Without `onOpenDecision` the
+   whole tag is the toggle exactly as in 0.52.0.
+3. **Read-only cards are never interactive.** No answer handler (or
+   `Viewer` `readOnly`, which also drops `onOpenQuestionDecision`) draws the
+   tag as a plain tag in its current state.
+
+Measured in headless Chromium with the default theme: switch and words are
+7.37:1 (dark) / 8.98:1 (light) off, 5.84:1 / 5.15:1 on; the focus ring is
+7.53:1 / 6.53:1 against the card. The split tag draws exactly the 0.52.0 tag
+(127.66 × 17.75 px, the same 4 px between diamond and words). Target size
+(WCAG 2.5.8) is met without changing that look: the diamond (18 × 17.75 px
+drawn) carries an invisible `before:` box 6 px past it on every side, so it
+clicks as 24 × 29.75 px; the words, positioned and later in the tree, paint
+over the box's right-hand part, so a click on the words is always the words,
+and the words (110 px wide) meet the spacing exception.
+
+**No stylesheet change**: only utility classes the package already ships
+(the hit box is the `before:absolute before:-inset-1.5 before:content-['']`
+pattern of the annotation panel's icon buttons), so `styles.css` and the
+guides.show viewer manifest are unchanged (`check:manifest` in sync).
+
+Pinned by `components/blocks/QuestionBlock.decisionAnyQuestion.test.tsx`
+(DOM-gated): the tag on a plain question only with the `'any'` scope and a
+supplied state (a boolean without the scope changes nothing), the
+toggle's arguments and the row on/off, the switch and the opener as sibling
+buttons with the anchor element, tab order, the opener without a toggle
+handler, 0.52.0 behavior without `onOpenDecision`, read-only cards, `Viewer`
+threading, and no-prop markup.
+
 ---
 
 ## Stale-tab guard: `serverSession` (ui 0.52.0, core 0.25.12; additive)
