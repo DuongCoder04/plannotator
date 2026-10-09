@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { configurePlannotatorUI } from '@plannotator/ui/configure';
+import { storage } from '@plannotator/ui/utils/storage';
 import type { InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxThread } from '@plannotator/core/inbox-types';
 import {
   InboxApiError,
@@ -28,6 +29,7 @@ import { filterSections, heldNotice, refreshHeldRows, waitingCount } from './hel
 import { tildePath } from './format';
 import type { ConnectContext } from './harnesses';
 import { Sidebar } from './components/Sidebar';
+import { SidebarShell } from './shell/SidebarShell';
 import { InboxList } from './components/InboxList';
 import { ThreadPane } from './components/Thread';
 import { EmptyState } from './components/EmptyState';
@@ -53,6 +55,8 @@ configurePlannotatorUI({
     },
   },
 });
+
+const SIDEBAR_OPEN_COOKIE = 'plannotator-inbox-sidebar-open';
 
 interface Route {
   page: 'inbox' | 'settings' | 'decisions';
@@ -122,6 +126,12 @@ function hasRows(sections: readonly InboxListSection[] | null): boolean {
 
 function Inbox() {
   const [route, setRoute] = useState<Route>(readRoute);
+  // Open or closed as the person left it (⌘B or the toggle): a cookie of the Inbox's own, open when absent.
+  const [sidebarOpen, setSidebarOpen] = useState(() => storage.getItem(SIDEBAR_OPEN_COOKIE) !== 'false');
+  const changeSidebar = useCallback((next: boolean) => {
+    setSidebarOpen(next);
+    storage.setItem(SIDEBAR_OPEN_COOKIE, String(next));
+  }, []);
   const [latest, setLatest] = useState<ListModel | null>(null);
   /** The list on screen: held until the person acts (the "N new" notice). */
   const [shown, setShown] = useState<InboxListSection[] | null>(null);
@@ -477,24 +487,31 @@ function Inbox() {
 
   return (
     <div className="pn-inbox">
-      <div className={`ib-shell${fileOpen ? ' ib-fileopen' : ''}`}>
-        <Sidebar
-          page={route.page}
-          projectId={route.project}
-          inboxCount={waitingCount(latestSections)}
-          decisionsCount={latest?.decisions_waiting ?? 0}
-          projects={projects}
-          projectCounts={projectCounts}
-          updateReady={update !== null}
-          restarting={restarting}
-          onInbox={() => go({ page: 'inbox', project: null, thread: null })}
-          onProject={(projectId) => go({ page: 'inbox', project: projectId, thread: null })}
-          onSettings={() => go({ page: 'settings', project: null, thread: null })}
-          onDecisions={() => go({ page: 'decisions', project: null, thread: null })}
-          onRestart={() => void restart()}
-        />
+      {/* A file beside the thread takes the sidebar's room (record 2.2): it closes on the same spring, and the person's choice stays as it was. */}
+      <SidebarShell
+        className="ib-shell"
+        open={sidebarOpen && !fileOpen}
+        onOpenChange={changeSidebar}
+        navigation={
+          <Sidebar
+            page={route.page}
+            projectId={route.project}
+            inboxCount={waitingCount(latestSections)}
+            decisionsCount={latest?.decisions_waiting ?? 0}
+            projects={projects}
+            projectCounts={projectCounts}
+            updateReady={update !== null}
+            restarting={restarting}
+            onInbox={() => go({ page: 'inbox', project: null, thread: null })}
+            onProject={(projectId) => go({ page: 'inbox', project: projectId, thread: null })}
+            onSettings={() => go({ page: 'settings', project: null, thread: null })}
+            onDecisions={() => go({ page: 'decisions', project: null, thread: null })}
+            onRestart={() => void restart()}
+          />
+        }
+      >
         <main className="ib-main">{main}</main>
-      </div>
+      </SidebarShell>
       {guideMessage && thread && (
         <GuidePane
           thread={thread}
