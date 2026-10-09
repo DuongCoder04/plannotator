@@ -44,6 +44,10 @@ final class SourceSession {
     private var stream: Task<Void, Never>?
     private var pendingRefresh: Task<Void, Never>?
     private var pickChains: [String: Task<Void, Never>] = [:]
+    private var tickChains: [String: Task<Void, Never>] = [:]
+    /// Per guide while taps are in flight: how many, and the ticks the Inbox last confirmed.
+    private var ticksInFlight: [String: Int] = [:]
+    private var confirmedTicks: [String: [Bool]?] = [:]
     private let cache: Cache
 
     init(source: Source, token: String) {
@@ -442,6 +446,50 @@ final class SourceSession {
         thread.messages.filter { !$0.author.isAgent && $0.replyTo == message }.count
     }
 
+    // MARK: Guided reviews (6.1, 6.2)
+
+    /// The person's reviewed ticks on a guide, kept at once on screen and saved
+    /// through the door. Ticks on one guide go out one after another, each with
+    /// every section's tick as the person left them, so the last tap wins.
+    /// When one is refused or cannot reach the computer, the ticks go back to
+    /// what the Inbox keeps: read again when the computer answers, else the
+    /// ticks it last confirmed. `onError` hands those back for the surface to draw.
+    func saveTicks(_ reviewed: [Bool], message: String, thread id: String, onError: @escaping (_ message: String, _ kept: [Bool]?) -> Void) {
+        if ticksInFlight[message, default: 0] == 0 {
+            confirmedTicks[message] = .some(threads[id]?.messages.first { $0.id == message }?.guideReviewed)
+        }
+        ticksInFlight[message, default: 0] += 1
+        editMessage(message, thread: id) { $0.guideReviewed = reviewed }
+        let previous = tickChains[message]
+        tickChains[message] = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            defer {
+                self.ticksInFlight[message, default: 1] -= 1
+                if self.ticksInFlight[message] == 0 {
+                    self.ticksInFlight[message] = nil
+                    self.confirmedTicks[message] = nil
+                }
+            }
+            do throws(InboxError) {
+                let saved = try await self.filesDoor().saveGuideReviewed(message: message, reviewed: reviewed)
+                self.confirmedTicks[message] = .some(saved)
+                // The last tap in flight: the phone holds what the Inbox answered.
+                if self.ticksInFlight[message] == 1 { self.editMessage(message, thread: id) { $0.guideReviewed = saved } }
+            } catch {
+                if await self.loadThread(id) {
+                    self.confirmedTicks[message] = .some(self.threads[id]?.messages.first { $0.id == message }?.guideReviewed)
+                } else {
+                    // The computer cannot say what it keeps: back to what it last confirmed.
+                    let confirmed = self.confirmedTicks[message] ?? nil
+                    self.editMessage(message, thread: id) { $0.guideReviewed = confirmed }
+                }
+                let kept = self.threads[id]?.messages.first { $0.id == message }?.guideReviewed
+                onError(error.message, kept)
+            }
+        }
+    }
+
     // MARK: Fields still being typed
 
     /// Saves every field the person is typing in this thread's cards, as a pick.
@@ -481,6 +529,12 @@ final class SourceSession {
               let m = thread.messages.firstIndex(where: { $0.id == question.messageId }),
               let q = thread.messages[m].questions?.firstIndex(where: { $0.key == question.key }) else { return }
         change(&thread.messages[m].questions![q])
+        threads[id] = thread
+    }
+
+    private func editMessage(_ message: String, thread id: String, _ change: (inout InboxMessage) -> Void) {
+        guard var thread = threads[id], let m = thread.messages.firstIndex(where: { $0.id == message }) else { return }
+        change(&thread.messages[m])
         threads[id] = thread
     }
 
