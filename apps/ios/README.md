@@ -15,7 +15,14 @@ meta repo.
   file, run `xcodegen generate` here and commit both.
 - `Plannotator/`: the app. `App/` holds the model (paired sources, the shown
   source's list and threads, the event stream, Send's idempotency keys, the
-  cache); `Inbox/`, `Thread/`, `Pairing/` and `Settings/` hold the screens.
+  cache); `Inbox/`, `Thread/`, `Pairing/` and `Settings/` hold the screens;
+  `Attachments/` holds the surface host (one `WKWebView` with Plannotator's
+  bundled surface, its two URL schemes and the bridge) and the attachment
+  screens (4.1 to 4.4, the "N annotations" sheet).
+- The surface: a build phase runs `apps/inbox`'s `build:surface` when its
+  sources are newer than `apps/inbox/dist/surface.html`, and copies that file
+  into the app as `surface.html`. It needs `bun` on the PATH Xcode gives
+  scripts (`~/.bun/bin` and `/opt/homebrew/bin` are added).
 - `PlannotatorKit/`: a local Swift package with the device-door client, the
   wire models, the event stream, the `plannotator://pair` link, the Keychain
   item and the markdown splitter. No third-party dependencies.
@@ -71,7 +78,12 @@ again, Remove this source), and the decisions and New message flow
 on opens the decision card, and after Send the decision is in the Decisions tab
 and in the window's own decisions route; New message to one live Claude Code
 session, to the picked one of two, and the "not running" words for a project
-with none). The live sessions are the Claude Code mod's own code on real
+with none), and attachments (`AttachmentProofTests`: an agent sends
+`scripts/fixtures`' plan, ticket page and Mermaid flow; a comment on each by
+touch; the changed line and the sent version; links; Share; the page's forged
+bridge messages and its embed's beacons dropped; the "3 annotations" sheet
+opening a file at its mark; Send, with the agent's feedback naming all three).
+Every proof class ends by clearing the app's stored sources. The live sessions are the Claude Code mod's own code on real
 processes (`apps/hook/hooks/mod/testing/claude-session.ts`), started by the
 script in the projects the test writes to. Light and dark screenshots of each
 screen and recordings land in `.local/proof/ios/`; `--only

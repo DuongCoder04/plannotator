@@ -24,7 +24,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import http2 from 'node:http2';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
@@ -180,6 +180,10 @@ const others = {
   codex: await agent('Codex', 'codex'),
   opencode: await agent('OpenCode', 'opencode'),
 };
+// Every plannotator process this script starts gets exactly this env: a temp data dir, never ~/.plannotator.
+if (!env.PLANNOTATOR_DATA_DIR.startsWith(tmpdir()) || env.PLANNOTATOR_DATA_DIR.includes('/.plannotator')) {
+  throw new Error(`Refusing to start an Inbox on ${env.PLANNOTATOR_DATA_DIR}: the proof runs on a temp data dir only.`);
+}
 
 const question = (prompt: string, choices: string[], extra: string[] = []) =>
   [':::question', prompt, ...extra, '', ...choices.map((c) => `- [ ] ${c}`), `Recommended: ${choices[0]}`, ':::'].join('\n');
@@ -356,6 +360,37 @@ async function m3Cleanup(): Promise<void> {
   for (const thread of m3Threads.splice(0)) await windowRoute(`/api/inbox/threads/${thread}/delete`, { method: 'POST', body: '{}' });
 }
 
+// M2: one message with three files to comment on (the record's 4.1, 4.3 and 4.4).
+const fixtures = join(repo, 'apps/ios/scripts/fixtures');
+let filesAgent: SimAgent | null = null;
+const beacons: string[] = [];
+let planPath = '';
+
+async function attach(): Promise<Record<string, string>> {
+  const project = projects['billing-svc']!;
+  mkdirSync(join(project, 'plans'), { recursive: true });
+  planPath = join(project, 'plans', 'retry-plan.md');
+  for (const [from, to] of [
+    ['retry-plan.md', planPath],
+    ['ticket-page.html', join(project, 'ticket-page.html')],
+    ['install-flow.mmd', join(project, 'install-flow.mmd')],
+  ] as const) copyFileSync(join(fixtures, from), to);
+  // The ticket page's photos, from its own folder: one name with a space, one with an accent.
+  cpSync(join(fixtures, 'going'), join(project, 'going'), { recursive: true });
+  // A page the ticket page embeds from its folder, which tries to reach this script's beacon.
+  writeFileSync(join(project, 'venue-notes.html'), readFileSync(join(fixtures, 'venue-notes.html'), 'utf8').replace('__PROOF_BEACON__', `http://127.0.0.1:${control.port}/beacon`));
+  filesAgent = await agent('Claude Code', 'claude-code');
+  const sent = await filesAgent.send({
+    project_path: project,
+    subject: 'Three files for the retry work',
+    body: 'The retry plan, the ticket page and the install flow are attached. Comment on anything that looks wrong.',
+    attachments: ['plans/retry-plan.md', 'ticket-page.html', 'install-flow.mmd'],
+  });
+  const thread = sent.thread_id as string;
+  replies.set(thread, waitForPersonReply(filesAgent, thread));
+  return { thread };
+}
+
 // ─── The door, through a proxy the test can break ───
 
 // 'gone': what `tailscale serve` answers when nothing listens behind it (502), for M5's lock-screen answer.
@@ -422,6 +457,34 @@ const control = Bun.serve({
           return Response.json(await seed());
         case '/more':
           return Response.json(await more());
+        case '/reset-app': {
+          // After a proof class: the app as a cold install has it (no sources, the
+          // first-run screen), whatever the class left behind. Reinstalled from this
+          // run's own build; the app clears its Keychain items when it starts with no sources.
+          const appPath = join(derived, 'Build', 'Products', 'Debug-iphonesimulator', 'Plannotator.app');
+          spawnSync('xcrun', ['simctl', 'terminate', udid, 'ai.plannotator.app']);
+          spawnSync('xcrun', ['simctl', 'uninstall', udid, 'ai.plannotator.app']);
+          const installed = spawnSync('xcrun', ['simctl', 'install', udid, appPath], { encoding: 'utf8' });
+          if (installed.status !== 0) throw new Error(`reinstall: ${installed.stderr}`);
+          // And the computer forgets the phone it paired, as before the class.
+          const { devices } = (await (await windowRoute('/api/inbox/devices')).json()) as { devices: { id: string }[] };
+          for (const device of devices) await windowRoute(`/api/inbox/devices/${device.id}/revoke`, { method: 'POST', body: '{}' });
+          return Response.json({ ok: true, revoked: devices.length });
+        }
+        case '/attach':
+          return Response.json(await attach());
+        case '/beacon':
+          // Anything an agent's page managed to send out of the phone's surface.
+          beacons.push(new URL(request.url).search);
+          return new Response('', { status: 204 });
+        case '/beacons':
+          return Response.json({ count: beacons.length, hits: beacons });
+        case '/edit-plan': {
+          // The agent edits the plan after the person commented: the file on disk is no longer what was sent.
+          const text = readFileSync(planPath, 'utf8').replace('at the end of the first week.', 'at the end of the first two weeks.');
+          writeFileSync(planPath, text);
+          return Response.json({ ok: true });
+        }
         case '/proxy':
           proxyMode = body.mode as typeof proxyMode;
           return Response.json({ mode: proxyMode });
@@ -630,7 +693,7 @@ try {
     process.stdout.write(`\nWarm-up ${attempt}: ${warm === 0 ? 'done' : 'did not finish, the app is still warming'}\n`);
     if (warm === 0) break;
   }
-  if (status === 0) status = await xcodebuild(['test-without-building', ...(only ? [`-only-testing:${only}`] : [`-skip-testing:${warmUp}`]), '-resultBundlePath', join(tmp, 'Proof.xcresult')]);
+  if (status === 0) status = await xcodebuild(['test-without-building', ...(only ? only.split(',').map((test) => `-only-testing:${test}`) : [`-skip-testing:${warmUp}`]), '-resultBundlePath', join(tmp, 'Proof.xcresult')]);
 } finally {
   video?.kill('SIGINT');
   await m3Close();
@@ -639,7 +702,7 @@ try {
   relay.kill();
   apple.close();
   if (status !== 0) writeFileSync(join(shots, 'relay-wrangler.log'), relayLog.join(''));
-  await Promise.allSettled([claude, ...Object.values(others), ...newsAgents].map((a) => a.close()));
+  await Promise.allSettled([claude, ...Object.values(others), ...newsAgents, ...(filesAgent ? [filesAgent] : [])].map((a) => a.close()));
   await fetch(`${inbox}/api/inbox/control/stop`, { method: 'POST', headers: { Authorization: `Bearer ${registry.token}` } }).catch(() => {});
   if (status !== 0) {
     // A crash of the app leaves its report with the simulator's host; keep it with the frames.
