@@ -17,20 +17,13 @@ class ProofCase: XCTestCase {
         }
         control = Control(base: url)
         // Every proof class starts from a cold install, whatever the class before it
-        // left behind (a class that failed partway leaves the app paired).
+        // left behind (a class that failed partway leaves the app paired). This is done
+        // here and not in a tearDown on failure: an async test runs on past a failure,
+        // and a tearDown that terminated and reinstalled the app under it hung the shard
+        // until the job timeout (runs 37958261402, 38017849289 and 38023662529).
         try await control.post("/reset-app")
         app = XCUIApplication()
         app.launchArguments = ["-PlannotatorProof"]
-    }
-
-    /// A class that failed partway leaves the app as a cold install has it too, for
-    /// the classes after it that do not reset themselves.
-    override func tearDown() async throws {
-        if testRun?.hasSucceeded == false {
-            app?.terminate()
-            try? await control?.post("/reset-app")
-        }
-        try await super.tearDown()
     }
 
     // MARK: Helpers
@@ -86,11 +79,22 @@ class ProofCase: XCTestCase {
         }
     }
 
+    /// A step that must hold, or the test ends here: an async test runs on past an
+    /// XCTFail, tapping a screen that is no longer the one it expects.
+    func require(_ holds: Bool, _ message: @autoclosure () -> String, file: StaticString = #filePath, line: UInt = #line) throws {
+        guard !holds else { return }
+        XCTFail(message(), file: file, line: line)
+        throw ProofStop()
+    }
+
     func waitForLabel(_ target: XCUIElement, _ text: String) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", text), object: target)
         return XCTWaiter().wait(for: [expectation], timeout: 30) == .completed
     }
 }
+
+/// Thrown by `require`: the failure is already recorded.
+struct ProofStop: Error {}
 
 /// The proof script's loopback control server.
 struct Control {
@@ -129,21 +133,30 @@ struct Control {
 extension ProofCase {
     /// Pairs with the proof's Inbox by its loopback address and six digits (1.3).
     func pairByCode() async throws {
-        XCTAssertTrue(element("connect-computer").waitForExistence(timeout: ProofWait.opening))
+        try opened(element("connect-computer"), "the first run")
         element("connect-computer").tap()
-        XCTAssertTrue(element("find-nearby").waitForExistence(timeout: ProofWait.opening))
+        try opened(element("find-nearby"), "the pairing cover")
         element("find-nearby").tap()
         let offer = try await control.post("/offer")
         let field = element("address-field")
-        XCTAssertTrue(field.waitForExistence(timeout: ProofWait.opening))
+        try opened(field, "the address field")
         field.tap()
         field.typeText(try XCTUnwrap(offer["address"] as? String))
         element("address-next").tap()
         let codeField = element("pairing-code")
-        XCTAssertTrue(codeField.waitForExistence(timeout: ProofWait.opening))
+        try opened(codeField, "the code boxes")
         codeField.tap()
         codeField.typeText(try XCTUnwrap(offer["code"] as? String))
-        XCTAssertTrue(anyRow().waitForExistence(timeout: ProofWait.opening))
+        // A refused code or an unreachable address stays on the code screen, in its message: the screen is printed.
+        try opened(anyRow(), "the list after pairing")
+    }
+
+    /// A screen of the pairing flow; when it never opens, the failure carries the screen as it was.
+    private func opened(_ target: XCUIElement, _ what: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        if !target.waitForExistence(timeout: ProofWait.opening) {
+            print("— \(what) not found. The screen:\n\(app.debugDescription)")
+            try require(false, "\(what) not found", file: file, line: line)
+        }
     }
 
     /// Remove this source (9.2), leaving the app as a fresh install finds it.
