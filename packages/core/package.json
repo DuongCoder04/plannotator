@@ -1,6 +1,7 @@
 {
   "name": "@plannotator/core",
-  "version": "0.25.8",
+  "version": "0.25.13",
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     "./agents": "./agents.ts",
@@ -27,7 +28,11 @@
     "./feedback-templates": "./feedback-templates.ts",
     "./goal-setup": "./goal-setup.ts",
     "./question-block": "./question-block.ts",
+    "./server-session": "./server-session.ts",
+    "./markdown-structure": "./markdown-structure.ts",
     "./html-anchor": "./html-anchor.ts",
+    "./inbox-types": "./inbox-types.ts",
+    "./inbox-questions": "./inbox-questions.ts",
     "./diagram-anchor": "./diagram-anchor.ts",
     "./open-in-apps": "./open-in-apps.ts",
     "./project": "./project.ts",

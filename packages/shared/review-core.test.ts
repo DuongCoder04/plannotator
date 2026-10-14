@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -39,6 +40,7 @@ import {
   parseCommitDiffType,
   parseJjCommitDiffType,
   parseWorktreeDiffType,
+  GIT_COLOR_FREE_ARGS,
   prepareGitCommand,
   runGitDiff,
   splitPorcelainRename,
@@ -217,6 +219,7 @@ describe("review-core", () => {
       GIT_SSH_COMMAND: "custom-ssh --proxy jump-host",
     });
     expect(command.args).toEqual([
+      ...GIT_COLOR_FREE_ARGS,
       "-c",
       "core.quotePath=false",
       "-c",
@@ -263,7 +266,7 @@ describe("review-core", () => {
     );
 
     expect(command).toEqual({
-      args: ["-c", "core.quotePath=false", "fetch", "origin", "main"],
+      args: [...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "fetch", "origin", "main"],
       isolateProcessGroup: false,
     });
   });
@@ -277,7 +280,7 @@ describe("review-core", () => {
 
     // argv must stay byte-identical to the configless invocation: callers and
     // test mocks match on the exact argument vector.
-    expect(command.args).toEqual(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
+    expect(command.args).toEqual([...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
     expect(command.env).toEqual({
       PATH: "/usr/bin",
       GIT_CONFIG_COUNT: "1",
@@ -1321,6 +1324,17 @@ describe("review-core", () => {
     const context = await getGitContext(makeRuntime(repoDir), repoDir);
 
     expect(context.diffOptions.map((option) => option.id)).not.toContain("local-vs-remote");
+  });
+
+  test("git context names the repository top level when started from a subfolder", async () => {
+    const repoDir = initRepo();
+    const subDir = join(repoDir, "docs");
+    mkdirSync(subDir, { recursive: true });
+    const context = await getGitContext(makeRuntime(subDir), subDir);
+
+    // Patch paths are relative to the top level, not to where the review began.
+    expect(context.cwd).toBe(subDir);
+    expect(realpathSync(context.root!)).toBe(realpathSync(repoDir));
   });
 
   test("since-base falls back to HEAD when the requested base cannot resolve", async () => {

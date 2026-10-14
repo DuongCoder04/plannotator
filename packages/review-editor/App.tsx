@@ -26,9 +26,19 @@ import {
   resolveReviewDecisionAction,
 } from './reviewDecision';
 import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
+import { useUpdateToast } from '@plannotator/ui/hooks/useUpdateToast';
+import { useUpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
+import { parseUpdateAdvert, type UpdateAdvert } from '@plannotator/ui/utils/updateNotice';
 import { claimAutoUpdateNotice, describeAutoUpdateNotice, parseAutoUpdateNotice, type AutoUpdateNotice } from '@plannotator/ui/utils/autoUpdateNotice';
 import { storage } from '@plannotator/ui/utils/storage';
 import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay';
+import {
+  closePendingTab,
+  openPendingTab,
+  settlePendingTab,
+  type PendingTabWindow,
+  type TabOpener,
+} from './utils/pendingExternalTab';
 import { PRPlatformIcon } from '@plannotator/ui/components/PRPlatformIcon';
 import { RepoIcon } from '@plannotator/ui/components/RepoIcon';
 import { PullRequestIcon } from '@plannotator/ui/components/PullRequestIcon';
@@ -38,8 +48,12 @@ import type { CallFlowAdvert, CallFlowNode } from '@plannotator/shared/call-flow
 import { configStore, useConfigValue, setReviewPanelView } from '@plannotator/ui/config';
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
+import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
+import { isSessionBridgeProvider } from '@plannotator/ui/utils/aiProvider';
+import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskNotice';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
 import { markLookAndFeelChoiceResolved, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
@@ -48,7 +62,25 @@ import {
   needsTerminalToolsAnnouncement,
   terminalToolsAnnouncementCanShow,
 } from '@plannotator/ui/utils/terminalToolsAnnouncement';
-import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, AgentJobInfo, type ArtifactAnnotationMeta, type CallFlowAnnotationTarget } from '@plannotator/ui/types';
+import { AskSessionAnnouncementDialog } from '@plannotator/ui/components/AskSessionAnnouncementDialog';
+import {
+  askSessionAnnouncementEligible,
+  askSessionAnnouncementPendingThisLoad,
+  connectedAskSessionAgent,
+  markAskSessionAnnouncementSeen,
+} from '@plannotator/ui/utils/askSessionAnnouncement';
+import { askSessionSetupHint } from '@plannotator/ui/utils/askSessionSetupHint';
+import { useFirstRunAnnouncementWindow } from '@plannotator/ui/hooks/useFirstRunAnnouncementWindow';
+import { AgentToolAnnouncementDialog } from '@plannotator/ui/components/AgentToolAnnouncementDialog';
+import {
+  agentToolAnnouncementEligible,
+  agentToolAnnouncementPendingThisLoad,
+  agentToolOfferHostOf,
+  markAgentToolAnnouncementSeen,
+} from '@plannotator/ui/utils/agentToolAnnouncement';
+import { useAgentToolSetting } from '@plannotator/ui/hooks/useAgentToolSetting';
+import { useLatchedTrue } from '@plannotator/ui/hooks/useLatchedTrue';
+import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration, Annotation, CommentAnnotation, AgentJobInfo, type ArtifactAnnotationMeta, type CallFlowAnnotationTarget, type ImageAttachment, type MarkdownPreviewAnchor } from '@plannotator/ui/types';
 import type { CommentAskAIHandler } from '@plannotator/ui/components/CommentPopover';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { useCodeAnnotationDraft, type CodeDraftMergeItems, type CodeDraftTargetState } from '@plannotator/ui/hooks/useCodeAnnotationDraft';
@@ -77,6 +109,7 @@ import {
 } from './hooks/useReviewSearch';
 import { useEditorAnnotations } from '@plannotator/ui/hooks/useEditorAnnotations';
 import { useExternalAnnotations } from '@plannotator/ui/hooks/useExternalAnnotations';
+import { AGENT_CLOSED_TITLE, agentClosedSubtitle } from '@plannotator/ui/utils/agentClosed';
 import { useUndoHistory } from '@plannotator/ui/hooks/useUndoHistory';
 import { useHistoryShortcuts } from '@plannotator/ui/shortcuts';
 import {
@@ -191,6 +224,8 @@ import { DEMO_TOUR_ID } from './demoTour';
 import { GuideScreen } from './components/guide/GuideScreen';
 import { DEMO_GUIDE_ID } from './demoGuide';
 import { buildPRArtifacts } from './utils/prArtifacts';
+import { useMarkdownPreview, useMarkdownPreviewKeys } from './hooks/useMarkdownPreview';
+import { setExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtensions';
 import {
   submitPlatformReviewTargets,
 } from './utils/platformReviewSubmission';
@@ -633,6 +668,9 @@ const ReviewApp: React.FC = () => {
   const [isApproving, setIsApproving] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
   const [submitted, setSubmitted] = useState<'approved' | 'feedback' | 'exited' | false>(false);
+  // The agent that opened this review closed it (POST /api/host/close); the
+  // reviewer's unsent comments stay in the draft for a reopen.
+  const [agentClosed, setAgentClosed] = useState<{ unsentAnnotations: number } | null>(null);
   const [showExitWarning, setShowExitWarning] = useState(false);
   // A committed review-level note waiting for its one-render deferred submit
   // (the payload builders close over `allAnnotations`, so the send has to wait
@@ -660,6 +698,10 @@ const ReviewApp: React.FC = () => {
   // bytes of changed images? Absent (old server, demo) reads as false, so no
   // preview renders and no /api/review-image request is ever issued.
   const [imagePreviewSupported, setImagePreviewSupported] = useState(false);
+  // Markdown preview capability advert: the server can hand both sides of a
+  // file in full (and serve a Markdown file's own images). Absent (old
+  // server, demo) reads as false: no preview UI at all.
+  const [markdownPreviewSupported, setMarkdownPreviewSupported] = useState(false);
   // Session-constant capability advert from `/api/diff`: 'patch' means the
   // diff is caller-supplied bytes (`plannotator review --patch-file`) with no
   // repository behind it. ABSENT reads as 'vcs', so an old server keeps every
@@ -762,6 +804,9 @@ const ReviewApp: React.FC = () => {
   // `chooseEvent` (#1611): the dialog offers Comment / Request changes.
   const [platformCommentDialog, setPlatformCommentDialog] = useState<{ action: PRReviewAction; plan: ReviewSubmission; chooseEvent: boolean } | null>(null);
   const [platformGeneralComment, setPlatformGeneralComment] = useState('');
+  // PR/MR pages a completed platform submission posted to; the completion
+  // screen links them so the reviewer can always get there with a real click.
+  const [platformPostedUrls, setPlatformPostedUrls] = useState<string[]>([]);
   const [platformReviewRecovery, setPlatformReviewRecovery] = useState<{
     rootPrUrl: string;
     recovery: ReviewSubmissionRecovery;
@@ -804,28 +849,15 @@ const ReviewApp: React.FC = () => {
       ? `You can't request changes on your own pull request on ${platformLabel}.`
       : undefined;
   const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
-  const updateInfo = useUpdateCheck();
-  const updateToastShown = useRef(false);
+  // The server's update advert (the machine's once-a-day check): the Options
+  // dot, the menu's command and the toast. The browser never asks GitHub.
+  const [updateAdvert, setUpdateAdvert] = useState<UpdateAdvert | null>(null);
+  const updateInfo = useUpdateCheck(updateAdvert);
   // True when the compiled CLI will install new releases itself (#1634); the
-  // "new version available" toast is then redundant and stays hidden. The
-  // payload lands long before the GitHub answer plus the toast delay, and a
-  // late flip still cancels the pending toast through the effect cleanup.
+  // "new version available" toast is then redundant and stays hidden.
   const [autoUpdateActive, setAutoUpdateActive] = useState(false);
-  useEffect(() => {
-    if (autoUpdateActive) return;
-    if (updateInfo?.updateAvailable && !updateInfo.dismissed && !updateToastShown.current) {
-      updateToastShown.current = true;
-      const t = setTimeout(() => {
-        toast('A new version of Plannotator is available', {
-          description: 'Open the Options menu to update.',
-          duration: 4000,
-          position: 'top-right',
-          classNames: { toast: '!w-auto', description: '!text-foreground/70' },
-        });
-      }, 1500);
-      return () => clearTimeout(t);
-    }
-  }, [updateInfo?.updateAvailable, updateInfo?.dismissed, autoUpdateActive]);
+  // The update-notice switch for Settings: present when the server reports it.
+  const updateCheckSetting = useUpdateCheckSetting();
   // One-time notice after a background auto-update (#1634); the compiled
   // CLI's server attaches it to the initial payload.
   const [autoUpdateNotice, setAutoUpdateNotice] = useState<AutoUpdateNotice | undefined>();
@@ -839,7 +871,9 @@ const ReviewApp: React.FC = () => {
         duration: autoUpdateNotice.kind === 'failed' ? 10000 : 6000,
         position: 'top-right',
         action: { label: 'Release notes', onClick: () => window.open(autoUpdateNotice.releaseUrl, '_blank', 'noopener,noreferrer') },
-        classNames: { toast: '!w-auto', description: '!text-foreground/70' },
+        // The failed notice names the update log's path: keep that line selectable
+        // so it can be copied (every other toast is select-none, see <Toaster>).
+        classNames: { toast: '!w-auto', description: autoUpdateNotice.kind === 'failed' ? '!text-foreground/70 select-text' : '!text-foreground/70' },
       });
     }, 1500);
     return () => clearTimeout(t);
@@ -861,7 +895,13 @@ const ReviewApp: React.FC = () => {
   // (apps/review/) doesn't set it, so external annotations are silently disabled there.
   // The same !!origin proxy is used elsewhere in this file (draft hook, feedback guard, conditional UI)
   // so this should be addressed as a broader refactor.
-  const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<CodeAnnotation>({ enabled: !!origin });
+  const { externalAnnotations, updateExternalAnnotation, deleteExternalAnnotation } = useExternalAnnotations<CodeAnnotation>({
+    enabled: !!origin,
+    onSessionClosed: (event) => {
+      setAgentClosed(event);
+      setSubmitted((current) => current || 'exited');
+    },
+  });
   const agentJobs = useAgentJobs({ enabled: !!origin && aiUIEnabled });
 
   // Tour dialog state — opens as an overlay instead of a dock panel
@@ -1137,6 +1177,10 @@ const ReviewApp: React.FC = () => {
   // reasoning-effort control populate past the static fallback. Never called
   // on load — that would reintroduce the eager `codex app-server` spawn.
   const activateAIProvider = useAIProviderActivation({
+    // Only providers the server lists for Ask AI: a saved id that the
+    // resolver has not replaced yet (e.g. codex-sdk on a session-bridge
+    // server) must not start that provider's discovery.
+    providers: aiProviders,
     onCapabilities: (providers, defaultProvider) => {
       setAiProviders(providers);
       setAiDefaultProvider(defaultProvider);
@@ -1232,6 +1276,34 @@ const ReviewApp: React.FC = () => {
     markTerminalToolsAnnouncementSeen();
     setTerminalToolsIntroPending(false);
   }, []);
+  // One-time "Ask this session" announcement, after the terminal-tools one
+  // (never on the same load). Latched at mount for the same reason.
+  const [askSessionIntroPending, setAskSessionIntroPending] = useState(
+    askSessionAnnouncementPendingThisLoad,
+  );
+  const dismissAskSessionIntro = useCallback(() => {
+    markAskSessionAnnouncementSeen();
+    setAskSessionIntroPending(false);
+  }, []);
+  // The `plannotator` agent tool switch (Settings row + the one-time offer on
+  // Pi and OpenCode 2), from the server's serverConfig.
+  const agentTool = useAgentToolSetting();
+  // One-time offer to turn the agent tool on, after the terminal-tools
+  // announcement (never on the same load). Latched at mount for the same reason.
+  const [agentToolIntroPending, setAgentToolIntroPending] = useState(
+    agentToolAnnouncementPendingThisLoad,
+  );
+  const dismissAgentToolIntro = useCallback(() => {
+    markAgentToolAnnouncementSeen();
+    setAgentToolIntroPending(false);
+  }, []);
+  // "Turn it on": the offer stays open to show the outcome, so only the
+  // cookie is written here; Done closes it.
+  const saveAgentTool = agentTool.save;
+  const turnOnAgentTool = useCallback(async () => {
+    await saveAgentTool(true);
+    markAgentToolAnnouncementSeen();
+  }, [saveAgentTool]);
   const aiChat = useAIChat({
     patch: diffData?.rawPatch ?? '',
     diffType,
@@ -1244,6 +1316,7 @@ const ReviewApp: React.FC = () => {
     providerId: aiConfig.providerId,
     model: aiConfig.model,
     reasoningEffort: aiConfig.reasoningEffort,
+    sessionBridge: isSessionBridgeProvider(aiProviders.find(p => p.id === aiConfig.providerId)),
   });
   const {
     messages: aiMessages,
@@ -1337,14 +1410,22 @@ const ReviewApp: React.FC = () => {
     }
   }, [closeTokenHover, codeNav.resolve, dockApi, isAllFilesActive, isCallFlowActive, isSemanticDiffActive, gitContext, agentCwd]);
 
+  // Which capabilities request has settled, keyed by its input: on the render
+  // where aiUIEnabled changes the key no longer matches, so nothing reads a
+  // stale "settled" (the agent tool offer waits on this to know whether the
+  // "Ask this session" announcement can still take the load).
+  const [aiCapabilitiesSettledFor, setAiCapabilitiesSettledFor] = useState<boolean | null>(null);
+  const aiCapabilitiesSettled = aiCapabilitiesSettledFor === aiUIEnabled;
   // Check AI capabilities only after /api/diff confirms AI is enabled.
   useEffect(() => {
     if (!aiUIEnabled) {
       setAiAvailable(false);
       setAiProviders([]);
       setAiDefaultProvider(null);
+      setAiCapabilitiesSettledFor(false);
       return;
     }
+    let cancelled = false;
     fetch('/api/ai/capabilities')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -1355,7 +1436,11 @@ const ReviewApp: React.FC = () => {
           setAiDefaultProvider(data.defaultProvider ?? null);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setAiCapabilitiesSettledFor(true);
+      });
+    return () => { cancelled = true; };
   }, [aiUIEnabled]);
 
   // Provider/model/effort selection logic lives in the shared hook above; the
@@ -1368,6 +1453,16 @@ const ReviewApp: React.FC = () => {
     applyConfigChange(config);
     resetAISession();
   }, [activateAIProvider, applyConfigChange, resetAISession]);
+
+  // "Ask this session": the busy choice re-asks with a busy policy. There is
+  // no fallback to another provider: a server with a bridge offers nothing
+  // else. Only wired when the server offers a bridge, so other hosts render as
+  // before.
+  const retryAI = aiChat.retry;
+  const hasSessionBridge = useMemo(() => aiProviders.some(isSessionBridgeProvider), [aiProviders]);
+  const handleSessionAskAction = useCallback((questionId: string, action: SessionAskAction) => {
+    void retryAI(questionId, { busyPolicy: action });
+  }, [retryAI]);
 
   // Opening the Ask AI sidebar tab with a provider selected is the other
   // explicit gesture that should surface the provider's real model list.
@@ -1684,6 +1779,60 @@ const ReviewApp: React.FC = () => {
       || editModeIntroVisible
       || tokenHoverIntroVisible,
   });
+  // After the terminal-tools announcement, and only while this review is
+  // actually connected to its agent (Claude Code, Pi, OpenCode) and the Ask AI
+  // button is there. It may only open before the reviewer starts working
+  // (useFirstRunAnnouncementWindow); otherwise it waits for a later load.
+  const askSessionAgent = connectedAskSessionAgent(aiProviders);
+  const askSessionEligibleNow = askSessionAnnouncementEligible({
+    announcementPending: askSessionIntroPending,
+    isLoading,
+    connectedAgent: askSessionAgent,
+    askAIUsable: aiAvailable,
+    readOnlySession: false,
+    compact: isCompactTouchLayout,
+    otherFirstRunDialogVisible:
+      guideIntroVisible
+      || showLookAndFeel
+      || editModeIntroVisible
+      || tokenHoverIntroVisible
+      || terminalToolsIntroVisible,
+  });
+  const askSessionIntroVisible = useFirstRunAnnouncementWindow({
+    pending: askSessionIntroPending,
+    armed: !isLoading,
+    eligible: askSessionEligibleNow,
+  });
+  const askSessionShownThisLoad = useLatchedTrue(askSessionIntroVisible);
+  // LAST: the one-time offer to turn the `plannotator` agent tool on (Pi and
+  // OpenCode 2, where it is off by default). It waits while the "Ask this
+  // session" announcement can still take this load (its capabilities answer
+  // is outstanding, or it is eligible), so a reviewer never gets both on one
+  // load; one who is never connected still gets the offer.
+  const agentToolIntroVisible = useFirstRunAnnouncementWindow({
+    pending: agentToolIntroPending,
+    armed: !isLoading,
+    eligible: agentToolAnnouncementEligible({
+      announcementPending: agentToolIntroPending,
+      isLoading,
+      setting: agentTool.setting,
+      readOnlySession: false,
+      compact: isCompactTouchLayout,
+      otherFirstRunDialogVisible:
+        guideIntroVisible
+        || showLookAndFeel
+        || editModeIntroVisible
+        || tokenHoverIntroVisible
+        || terminalToolsIntroVisible
+        || askSessionIntroVisible,
+      earlierAnnouncementMayShow:
+        askSessionShownThisLoad
+        || (askSessionIntroPending && (!aiCapabilitiesSettled || askSessionEligibleNow)),
+    }),
+  });
+  // Read from the host alone: once "Turn it on" succeeds the setting is on,
+  // and the open offer must stay to say so.
+  const agentToolOfferHost = agentToolOfferHostOf(agentTool.setting);
   const hoveredTokenSymbol = tokenHover.hover?.request.symbol;
   const startTokenHover = tokenHover.onTokenHoverEnter;
   // Stitching lives here, not in the diff views: rebuilding a fragmented
@@ -2154,9 +2303,12 @@ const ReviewApp: React.FC = () => {
         gitContext?: GitContext;
         diffOptions?: DiffOption[];
         agentCwd?: string | null;
+        markdownExtensions?: string[];
         sharingEnabled?: boolean;
         approvalNotesSupported?: boolean;
+        serverSession?: string;
         imagePreviewSupported?: boolean;
+        markdownPreviewSupported?: boolean;
         sourceKind?: ReviewSourceKind;
         repoInfo?: { display: string; branch?: string };
         prMetadata?: PRMetadata;
@@ -2179,8 +2331,9 @@ const ReviewApp: React.FC = () => {
         openStatePinned?: boolean;
         snapshotId?: string;
         localDraftTarget?: string | null;
-        serverConfig?: Record<string, unknown> & { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean };
+        serverConfig?: Record<string, unknown> & { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean };
         autoUpdateNotice?: unknown;
+        updateAvailable?: unknown;
         autoUpdateSupported?: boolean;
         autoUpdateActive?: boolean;
       }) => {
@@ -2192,8 +2345,11 @@ const ReviewApp: React.FC = () => {
         // Only the compiled CLI running the installer-managed binary offers the
         // toggle; OpenCode, Pi and dev runs send no autoUpdateSupported.
         setAutoUpdateSetting(data.autoUpdateSupported === true && typeof data.serverConfig?.autoUpdate === 'boolean' ? { env: data.serverConfig.autoUpdateEnv } : undefined);
+        agentTool.adopt(data.serverConfig);
         setAutoUpdateActive(data.autoUpdateActive === true);
         setAutoUpdateNotice(parseAutoUpdateNotice(data.autoUpdateNotice));
+        setUpdateAdvert(parseUpdateAdvert(data.updateAvailable));
+        updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
         setSnapshotId(data.snapshotId);
         setLocalDraftTarget(data.localDraftTarget ?? null);
         setAiEnabled(data.aiEnabled !== false);
@@ -2226,9 +2382,15 @@ const ReviewApp: React.FC = () => {
           setCommittedBase(initial);
         }
         if (data.agentCwd !== undefined) setAgentCwd(data.agentCwd);
+        // `markdownExtensions` in config.json: extra extensions the Markdown
+        // preview (and local-link detection) treat as Markdown.
+        setExtraMarkdownExtensions(data.markdownExtensions);
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
+        // Stale-tab guard: every decision echoes this server's nonce.
+        adoptServerSession(data.serverSession);
         setImagePreviewSupported(data.imagePreviewSupported === true);
+        setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
         // Session-constant: a static patch session has no diff-type switch to
         // re-advertise it on, so `/api/diff` is the only place it can arrive.
         setSourceKind(data.sourceKind === 'patch' ? 'patch' : 'vcs');
@@ -2480,6 +2642,52 @@ const ReviewApp: React.FC = () => {
     addCodeAnnotationsWithHistory([withPRContext(newAnnotation)]);
   }, [identity, withPRContext, addCodeAnnotationsWithHistory]);
 
+  // --- Markdown preview (rendered Markdown files in the review) ---
+  // One Source / Changes / Read menu per Markdown file: a file set by hand
+  // keeps its view for the session; every other file starts in the last view
+  // picked (remembered). Off entirely when the server has no full contents to
+  // show (old server, static patch).
+  const markdownPreview = useMarkdownPreview({
+    files,
+    supported: markdownPreviewSupported && !isStaticPatch,
+  });
+
+  // A comment made by selecting text in a previewed Markdown file: an
+  // ordinary file-scoped comment that carries the quoted text, so the
+  // sidebar lists it under the file, drafts keep it, undo covers it, the
+  // export quotes it, and a PR review puts it in the body.
+  const handleAddMarkdownPreviewComment = useCallback((
+    filePath: string,
+    comment: { id: string; text: string; anchor: MarkdownPreviewAnchor; images?: ImageAttachment[] },
+  ) => {
+    const trimmed = comment.text.trim();
+    if (!trimmed) return;
+    const newAnnotation: CodeAnnotation = {
+      id: comment.id,
+      type: 'comment',
+      scope: 'file',
+      filePath,
+      lineStart: 1,
+      lineEnd: 1,
+      side: 'new',
+      text: trimmed,
+      ...(comment.images?.length ? { images: comment.images } : {}),
+      markdownPreview: comment.anchor,
+      createdAt: Date.now(),
+      author: identity,
+    };
+    addCodeAnnotationsWithHistory([withPRContext(newAnnotation)]);
+  }, [identity, withPRContext, addCodeAnnotationsWithHistory]);
+
+  // Ask AI about a selection in a previewed Markdown file (selection-scope
+  // ask, labelled with the file, like the PR description's).
+  const handleAskAIForMarkdownPreview = useCallback<CommentAskAIHandler>((question, context) => {
+    askAI({
+      prompt: question,
+      scope: { kind: 'selection', label: context.label ?? 'Markdown preview', text: context.text },
+    });
+  }, [askAI]);
+
   // Edit annotation
   const handleEditAnnotation = useCallback((
     id: string,
@@ -2655,7 +2863,7 @@ const ReviewApp: React.FC = () => {
     // (not lost) behind the guide takeover or a first-run dialog — the file
     // still marks and the next auto-view retries the toast.
     if (!needsAutoViewedNotice()) return;
-    if (guideOpen || guideIntroVisible || showLookAndFeel || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible) return;
+    if (guideOpen || guideIntroVisible || showLookAndFeel || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || askSessionIntroVisible || agentToolIntroVisible) return;
     markAutoViewedNoticeSeen();
     toast('Files are marked viewed as you scroll', {
       description: "Scroll past a file or move on to the next and it's checked off. Turn this off in Settings → Git, or from the gear above the file list.",
@@ -2675,7 +2883,24 @@ const ReviewApp: React.FC = () => {
         },
       },
     });
-  }, [guideOpen, guideIntroVisible, showLookAndFeel, editModeIntroVisible, tokenHoverIntroVisible, terminalToolsIntroVisible]);
+  }, [guideOpen, guideIntroVisible, showLookAndFeel, editModeIntroVisible, tokenHoverIntroVisible, terminalToolsIntroVisible, askSessionIntroVisible, agentToolIntroVisible]);
+  // The update toast waits behind the guide takeover and every first-run
+  // dialog of this load (useUpdateToast).
+  useUpdateToast({
+    advert: updateAdvert,
+    blocked:
+      isLoading
+      || guideOpen
+      || guideIntroVisible
+      || showLookAndFeel
+      || editModeIntroVisible
+      || tokenHoverIntroVisible
+      || terminalToolsIntroVisible
+      || askSessionIntroVisible
+      || agentToolIntroVisible,
+    autoUpdateActive,
+    position: 'top-right',
+  });
   const { handleReadingFileChange: handleAutoViewReadingFile, handleFileScrolledPast } = useAutoViewed({
     enabled: autoViewedEnabled,
     // Rule 4 — only the review target. The guide takeover CSS-hides the dock
@@ -2801,6 +3026,25 @@ const ReviewApp: React.FC = () => {
     return () => window.removeEventListener('keydown', handler);
   }, [files, activeFileIndex, isDiffPanelActive, guideOpen, handleToggleViewed, isPathStageable, stageFile]);
 
+  // `P`: the current Markdown file in its next view: the open one, or in All
+  // files the one holding focus or the pointer, else the top-most Markdown
+  // file in view (resolved when the key is pressed).
+  const resolveAllFilesViewTarget = useCallback(
+    () => markdownPreview?.resolveViewTarget() ?? null,
+    [markdownPreview],
+  );
+  useMarkdownPreviewKeys({
+    controller: markdownPreview,
+    targetPath: isDiffPanelActive
+      ? files[activeFileIndex]?.path ?? null
+      : isAllFilesActive
+        ? resolveAllFilesViewTarget
+        : null,
+    files,
+    enabled: !guideOpen && (isDiffPanelActive || isAllFilesActive),
+    onLocked: (reason) => toast(reason, { id: 'markdown-view-locked' }),
+  });
+
   // Shared function: apply a PR response (used by both initial load and PR switch)
   function applyPRResponse(data: PRSessionUpdate & {
     rawPatch: string; gitRef: string;
@@ -2813,6 +3057,7 @@ const ReviewApp: React.FC = () => {
     agentCwd?: string | null;
     approvalNotesSupported?: boolean;
     imagePreviewSupported?: boolean;
+    markdownPreviewSupported?: boolean;
     draftState?: CodeDraftTargetState;
   }) {
     const isPRSwitch = !!data.prMetadata;
@@ -2826,6 +3071,7 @@ const ReviewApp: React.FC = () => {
       setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
     }
     if (data.imagePreviewSupported !== undefined) setImagePreviewSupported(data.imagePreviewSupported === true);
+    if (data.markdownPreviewSupported !== undefined) setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
     const nextFiles = parseDiffToFiles(data.rawPatch);
     dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
     needsInitialDiffPanel.current = true;
@@ -2939,6 +3185,7 @@ const ReviewApp: React.FC = () => {
         baseBehindRemote?: boolean;
         approvalNotesSupported?: boolean;
         imagePreviewSupported?: boolean;
+        markdownPreviewSupported?: boolean;
         superseded?: boolean;
         localDraftTarget?: string | null;
         draftState?: CodeDraftTargetState;
@@ -2973,6 +3220,7 @@ const ReviewApp: React.FC = () => {
         setApprovalNotesSupported(readApprovalNotesAdvert(data.approvalNotesSupported));
       }
       if (data.imagePreviewSupported !== undefined) setImagePreviewSupported(data.imagePreviewSupported === true);
+      if (data.markdownPreviewSupported !== undefined) setMarkdownPreviewSupported(data.markdownPreviewSupported === true);
 
       const nextFiles = orderFilesBySections(parseDiffToFiles(data.rawPatch), data.sections);
       // Durable progress reconciles every new snapshot independently of the
@@ -3714,6 +3962,9 @@ const ReviewApp: React.FC = () => {
     contextExpansionAvailable: !isStaticPatch,
     imagePreviewAvailable: imagePreviewSupported && !isStaticPatch,
     snapshotId,
+    markdownPreview,
+    onAddMarkdownPreviewComment: handleAddMarkdownPreviewComment,
+    onAskAIForMarkdownPreview: aiAvailable ? handleAskAIForMarkdownPreview : undefined,
     // Outdated comments (#1590) carry line numbers from an earlier version of
     // the PR: they stay in the sidebar and the export, never on the diff.
     allAnnotations: diffAnnotations,
@@ -3826,7 +4077,7 @@ const ReviewApp: React.FC = () => {
   }), [
     files, diffData?.rawPatch, activeFileIndex, guideOpen, effectiveDiffStyle, handleDiffStyleChange, isCompactTouchLayout, diffOverflow, diffIndicators,
     diffLineDiffType, diffShowLineNumbers, diffShowBackground,
-    diffExpandUnchanged, diffFontFamily, diffFontSize, activeDiffBase, committedBase, feedbackDiffContext, prReviewScopeLabel, prDiffScope, agentCwd, canUseLiveWorkspaceActions, isStaticPatch, imagePreviewSupported, snapshotId,
+    diffExpandUnchanged, diffFontFamily, diffFontSize, activeDiffBase, committedBase, feedbackDiffContext, prReviewScopeLabel, prDiffScope, agentCwd, canUseLiveWorkspaceActions, isStaticPatch, imagePreviewSupported, snapshotId, markdownPreview, handleAddMarkdownPreviewComment, handleAskAIForMarkdownPreview,
     diffAnnotations, externalAnnotations,
     visibleDescriptionAnnotations, selectedDescriptionAnnotationId, handleAddDescriptionAnnotation,
     handleSelectDescriptionAnnotation, handleDeleteDescriptionAnnotation, handleAskAIForDescription,
@@ -3940,14 +4191,18 @@ const ReviewApp: React.FC = () => {
       const res = await fetch(feedbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(withServerSession({
           draftGeneration: getDraftGeneration(),
           approved: false,
           feedback: feedbackMarkdown,
           annotations: allAnnotations,
           ...(effectiveAgent && { agentSwitch: effectiveAgent }),
-        }),
+        })),
       });
+      if (await noteServerSessionMismatch(res)) {
+        setIsSendingFeedback(false);
+        return false;
+      }
       if (res.ok) {
         setSubmitted('feedback');
         return true;
@@ -3967,7 +4222,11 @@ const ReviewApp: React.FC = () => {
     setIsExiting(true);
     try {
       await flushReviewProgress();
-      const res = await fetch(`${exitUrl}draftGeneration=${getDraftGeneration()}`, { method: 'POST' });
+      const res = await fetch(withServerSessionQuery(`${exitUrl}draftGeneration=${getDraftGeneration()}`), { method: 'POST' });
+      if (await noteServerSessionMismatch(res)) {
+        setIsExiting(false);
+        return;
+      }
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -3993,14 +4252,18 @@ const ReviewApp: React.FC = () => {
       const res = await fetch(feedbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildReviewApprovalBody({
+        body: JSON.stringify(withServerSession(buildReviewApprovalBody({
           draftGeneration: getDraftGeneration(),
           note: options?.note,
           withAnnotations: options?.withAnnotations === true,
           feedbackMarkdown,
           annotations: allAnnotations,
-        })),
+        }))),
       });
+      if (await noteServerSessionMismatch(res)) {
+        setIsApproving(false);
+        return;
+      }
       if (res.ok) {
         setSubmitted('approved');
       } else {
@@ -4178,7 +4441,14 @@ const ReviewApp: React.FC = () => {
   }, [compactComposerItem, compactConfirmItem, compactDecisionComposer, compactDecisionConfirm]);
 
   // Submit reviews to one or more PRs via /api/pr-action
-  const handlePlatformAction = useCallback(async (action: PRReviewAction, plan: ReviewSubmission, generalComment?: string) => {
+  const handlePlatformAction = useCallback(async (
+    action: PRReviewAction,
+    plan: ReviewSubmission,
+    generalComment?: string,
+    // "View on <platform> after submitting" placeholder, opened synchronously
+    // in the submit gesture (#1583); null when unchecked or refused.
+    pendingTab: PendingTabWindow | null = null,
+  ) => {
     setIsPlatformActioning(true);
     setPlatformActionError(null);
 
@@ -4234,6 +4504,7 @@ const ReviewApp: React.FC = () => {
       setPlatformRecoveryPersistsRefresh(recovery !== null && persistsRefresh);
 
       if (!allOk) {
+        closePendingTab(pendingTab);
         setPlatformCommentDialog(prev => prev ? {
           ...prev,
           plan: { ...plan, targets: updatedTargets },
@@ -4242,10 +4513,13 @@ const ReviewApp: React.FC = () => {
       }
 
       setPlatformCommentDialog(null);
+      setPlatformPostedUrls(openUrls);
       setSubmitted(action === 'approve' ? 'approved' : 'feedback');
 
       if (platformOpenPR) {
-        for (const url of openUrls) window.open(url, '_blank');
+        settlePendingTab(pendingTab, openUrls, window as unknown as TabOpener);
+      } else {
+        closePendingTab(pendingTab);
       }
 
       const agentSwitchSettings = getAgentSwitchSettings('review');
@@ -4261,22 +4535,40 @@ const ReviewApp: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         keepalive: true,
-        body: JSON.stringify({
+        body: JSON.stringify(withServerSession({
           // Tombstones the draft (and its PR target key) at this generation,
           // like the agent-path decisions, so no late autosave revives it.
           draftGeneration: getDraftGeneration(),
           approved: false,
           feedback: statusMessage,
           annotations: [],
+          // Marks this as the platform status post: the Claude Code mod logs
+          // it instead of starting a turn, and OpenCode, Pi and the CLI output
+          // deliver the status line verbatim, without the request-changes
+          // suffix. Never inferred from the empty annotations: agent-path
+          // feedback can be all PR description / PR comment / editor
+          // comments, which ride only in `feedback`.
+          platform: true,
           ...(effectiveAgent && { agentSwitch: effectiveAgent }),
-        }),
+        })),
       }).catch(() => {});
     } catch (err) {
+      closePendingTab(pendingTab);
       setPlatformActionError(err instanceof Error ? err.message : 'Failed to submit review');
     } finally {
       setIsPlatformActioning(false);
     }
   }, [platformOpenPR, platformLabel, mrLabel, prMetadata, getDraftGeneration, flushReviewProgress]);
+
+  // Entry point for the submit gestures (dialog button, Mod+Enter). Must stay
+  // synchronous up to openPendingTab: browsers only allow the tab while the
+  // click's transient activation is live (#1583).
+  const submitPlatformDialog = useCallback((action: PRReviewAction, plan: ReviewSubmission, generalComment: string) => {
+    const pendingTab = platformOpenPR
+      ? openPendingTab(window as unknown as TabOpener, platformLabel)
+      : null;
+    void handlePlatformAction(action, plan, generalComment, pendingTab);
+  }, [platformOpenPR, platformLabel, handlePlatformAction]);
 
   const openPlatformDialog = useCallback((action: PRReviewAction, chooseEvent = false) => {
     const diffPaths = new Set(files.map(f => f.path));
@@ -4413,7 +4705,7 @@ const ReviewApp: React.FC = () => {
     if (event.defaultPrevented || isNativeHistoryOwner(event)) return false;
     if (submitted || isSendingFeedback || isApproving || isExiting || isPlatformActioning || isLoadingDiff) return false;
     if (guideOpen || openSettingsMenu || showDestinationMenu || platformCommentDialog || showExportModal || showWorktreeDialog || showNoAnnotationsDialog || showExitWarning) return false;
-    if (showLookAndFeel || showGuideIntro || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || tourDialogJobId) return false;
+    if (showLookAndFeel || showGuideIntro || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || askSessionIntroVisible || agentToolIntroVisible || tourDialogJobId) return false;
     return !hasActiveHistoryOverlay(document);
   }, [
     guideOpen,
@@ -4425,6 +4717,8 @@ const ReviewApp: React.FC = () => {
     editModeIntroVisible,
     tokenHoverIntroVisible,
     terminalToolsIntroVisible,
+    askSessionIntroVisible,
+    agentToolIntroVisible,
     openSettingsMenu,
     platformCommentDialog,
     showDestinationMenu,
@@ -4473,7 +4767,7 @@ const ReviewApp: React.FC = () => {
         const canSubmit = isApproveAction || hasTargets || platformGeneralComment.trim();
         if (!canSubmit || retryBlocked) return;
         e.preventDefault();
-        handlePlatformAction(platformCommentDialog.action, platformCommentDialog.plan, platformGeneralComment);
+        submitPlatformDialog(platformCommentDialog.action, platformCommentDialog.plan, platformGeneralComment);
         return;
       }
 
@@ -4504,7 +4798,7 @@ const ReviewApp: React.FC = () => {
     platformCommentDialog, platformGeneralComment,
     submitted, isSendingFeedback, isApproving, isExiting, isPlatformActioning,
     origin, platformMode, runPlatformDecisionAction,
-    submitPrimaryDecision, handlePlatformAction
+    submitPrimaryDecision, submitPlatformDialog
   ]);
 
   // Cmd/Ctrl+Shift+Y keyboard shortcut to copy feedback, mirroring the
@@ -5356,6 +5650,7 @@ const ReviewApp: React.FC = () => {
               resizeHandle={fileTreeResizeHandle}
             >
               <FileTree
+                markdownPreviewedPaths={markdownPreview?.previewedPaths}
                 files={files}
                 activeFileIndex={activeFileIndex}
                 onSelectPROverview={() => completeNavigatorSelection(openPROverviewPanel)}
@@ -5618,6 +5913,10 @@ const ReviewApp: React.FC = () => {
                 aiConfig={aiConfig}
                 onAIConfigChange={handleAIConfigChange}
                 hasAISession={!!aiSessionId}
+                {...(hasSessionBridge && {
+                  onSessionAskAction: handleSessionAskAction,
+                })}
+                askSessionSetupHint={askSessionSetupHint(origin, aiProviders)}
                 agentJobs={agentJobs.jobs}
                 agentCapabilities={agentJobs.capabilities}
                 onAgentLaunch={agentJobs.launchJob}
@@ -5680,6 +5979,9 @@ const ReviewApp: React.FC = () => {
             aiProviders={aiProviders}
             gitUser={gitUser}
             autoUpdateSetting={autoUpdateSetting}
+            updateCheckSetting={updateCheckSetting.setting}
+            agentToolSetting={agentTool.setting}
+            onAgentToolChange={agentTool.save}
             externalOpen={openSettingsMenu}
             onExternalClose={() => setOpenSettingsMenu(false)}
             // Local git session where since-base isn't offered (base ref
@@ -5837,12 +6139,34 @@ const ReviewApp: React.FC = () => {
           <TerminalToolsAnnouncementDialog isOpen onDismiss={dismissTerminalToolsIntro} />
         )}
 
+        {/* One-time "Ask this session" announcement. LAST in the dialog chain,
+            and never on the same load as the terminal-tools one
+            (askSessionAnnouncementPendingThisLoad). */}
+        {askSessionIntroVisible && askSessionAgent && (
+          <AskSessionAnnouncementDialog
+            isOpen
+            agent={askSessionAgent}
+            onDismiss={dismissAskSessionIntro}
+          />
+        )}
+
+        {/* One-time offer to turn the agent tool on (Pi, OpenCode 2). LAST in
+            the dialog chain, never on the same load as another announcement. */}
+        {agentToolIntroVisible && agentToolOfferHost && (
+          <AgentToolAnnouncementDialog
+            isOpen
+            host={agentToolOfferHost}
+            onTurnOn={turnOnAgentTool}
+            onDismiss={dismissAgentToolIntro}
+          />
+        )}
+
         {/* One-time PR feedback-destination spotlight. Strictly AFTER the
             first-run dialog chain (guide intro → look-and-feel → edit mode →
-            token hover → terminal tools): it only mounts once none of the five
-            is showing, so it never stacks with them. PR mode only — the
+            token hover → terminal tools → Ask this session → agent tool offer): it
+            only mounts once none of the seven is showing, so it never stacks with them. PR mode only — the
             switcher it points at doesn't render otherwise. */}
-        {showDestSpotlight && !isCompactTouchLayout && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !editModeIntroVisible && !tokenHoverIntroVisible && !terminalToolsIntroVisible && (
+        {showDestSpotlight && !isCompactTouchLayout && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !editModeIntroVisible && !tokenHoverIntroVisible && !terminalToolsIntroVisible && !askSessionIntroVisible && !agentToolIntroVisible && (
           <DestinationSpotlight
             targetRef={destToggleRef}
             platformLabel={platformLabel}
@@ -5857,11 +6181,14 @@ const ReviewApp: React.FC = () => {
           submitted={submitted}
           title={
             submitted === 'approved' ? 'Changes Approved'
+            : submitted === 'exited' && agentClosed ? AGENT_CLOSED_TITLE
             : submitted === 'exited' ? 'Session Closed'
             : 'Feedback Sent'
           }
           subtitle={
-            submitted === 'exited'
+            submitted === 'exited' && agentClosed
+              ? agentClosedSubtitle(agentClosed.unsentAnnotations, 'changes')
+            : submitted === 'exited'
               ? 'Review session closed without feedback.'
               : platformMode
                 ? submitted === 'approved'
@@ -5872,6 +6199,14 @@ const ReviewApp: React.FC = () => {
                   : `${getAgentName(origin)} will address your review feedback.`
           }
           agentLabel={getAgentName(origin)}
+          links={platformMode && submitted !== 'exited'
+            ? platformPostedUrls.map((href) => ({
+              href,
+              label: platformPostedUrls.length > 1
+                ? `View ${href.replace(/^https?:\/\//, '')}`
+                : `View on ${platformLabel}`,
+            }))
+            : undefined}
         />
 
         {/* GitHub general comment dialog */}
@@ -5892,7 +6227,7 @@ const ReviewApp: React.FC = () => {
           }}
           onConfirm={() => {
             if (!platformCommentDialog) return;
-            handlePlatformAction(platformCommentDialog.action, platformCommentDialog.plan, platformGeneralComment);
+            submitPlatformDialog(platformCommentDialog.action, platformCommentDialog.plan, platformGeneralComment);
           }}
           onCancel={() => setPlatformCommentDialog(null)}
           isSubmitting={isPlatformActioning}
@@ -5948,9 +6283,14 @@ const ReviewApp: React.FC = () => {
       />
     )}
 
+    <ServerSessionReplacedBanner />
+
     <Toaster
       position="bottom-center"
       toastOptions={{
+        // Sonner aborts a swipe-to-dismiss once any text is selected, so a
+        // mouse drag across selectable toast text never dismisses it.
+        className: 'select-none',
         style: {
           '--normal-bg': 'var(--card)',
           '--normal-border': 'var(--border)',

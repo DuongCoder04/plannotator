@@ -16,9 +16,10 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { indexQuestionBlocks, type QuestionAnswer } from '@plannotator/core/question-block';
 import type { Annotation } from '../../types';
-import { parseMarkdownToBlocks } from '../../utils/parser';
-import { collectQuestionAnswers, upsertQuestionAnswerAnnotation } from '../../utils/questionAnswers';
+import { exportAnnotations, parseMarkdownToBlocks } from '../../utils/parser';
+import { buildQuestionPanelRows, collectQuestionAnswers, upsertQuestionAnswerAnnotation } from '../../utils/questionAnswers';
 import { BlockRenderer } from '../BlockRenderer';
+import type { QuestionBlockProps } from './QuestionBlock';
 
 const hasDom = typeof document !== 'undefined';
 
@@ -66,7 +67,7 @@ Transport?
 
 let latest: Annotation[] = [];
 
-function Harness({ markdown, readOnly = false, initial = [] }: { markdown: string; readOnly?: boolean; initial?: Annotation[] }) {
+function Harness({ markdown, readOnly = false, initial = [], statusLabel }: { markdown: string; readOnly?: boolean; initial?: Annotation[]; statusLabel?: QuestionBlockProps['statusLabel'] }) {
   const blocks = parseMarkdownToBlocks(markdown);
   const index = indexQuestionBlocks(blocks);
   const [annotations, setAnnotations] = useState<Annotation[]>(initial);
@@ -86,6 +87,7 @@ function Harness({ markdown, readOnly = false, initial = [] }: { markdown: strin
             questionTotal={index.length}
             questionAnswer={question ? answers.get(question.question.key) : undefined}
             onAnswerQuestion={readOnly ? undefined : onAnswer}
+            questionStatusLabel={statusLabel}
           />
         );
       })}
@@ -159,6 +161,26 @@ describe('QuestionBlock', () => {
     expect(latest[0].text).toBe('Answer: Nowhere');
     expect(cards(el)[0].getAttribute('data-question-status')).toBe('answered');
   });
+
+  // The owner's 0.28.17 report: a choice longer than 200 characters was cut
+  // to 200 when the answer was read back, so it never showed as picked here
+  // and the Inbox refused it as "not one of the question's choices".
+  const LONG_CHOICE =
+    'Spike first. Find out what the sign-in grants (a Claude subscription paying for turns the platform runs?) and whether Anthropic allows it for a third-party product; the placeholder stays off the product until both answers are in';
+  for (const [form, line] of [
+    ['no separator', LONG_CHOICE],
+    ["a ' — ' why", `${LONG_CHOICE} — keeps it reversible`],
+    ["a ' - ' why", `${LONG_CHOICE} - keeps it reversible`],
+  ] as const) {
+    test.skipIf(!hasDom)(`a choice longer than 200 characters (${form}) is saved, shown and exported whole`, async () => {
+      const el = await mount(<Harness markdown={`:::question\nWhich way first?\n\n- [ ] ${line}\n- [ ] Ship it now\n:::\n`} />);
+      await click(rowText(cards(el)[0], 'Spike first.'));
+      expect(answerOf(0)?.selected).toEqual([LONG_CHOICE]);
+      expect(cards(el)[0].getAttribute('data-question-status')).toBe('answered');
+      expect(cards(el)[0].querySelectorAll<HTMLInputElement>('input[type="radio"]:checked')).toHaveLength(1);
+      expect(latest[0].text).toBe(`Answer: ${LONG_CHOICE}`);
+    });
+  }
 
   test.skipIf(!hasDom)('multi choice keeps document order; "Other…" rides along; clearing everything removes the annotation', async () => {
     const el = await mount(<Harness markdown={DOC} />);
@@ -283,9 +305,156 @@ describe('QuestionBlock', () => {
     }, q.question.key);
     const el = await mount(<Harness markdown={DOC} readOnly initial={stored} />);
     const card = cards(el)[0];
-    expect(card.disabled).toBe(true);
+    // Each control is disabled (not the fieldset, so host footer actions stay live).
+    const controls = card.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expect(control.disabled).toBe(true);
     expect(button(card, 'Skip')).toBeUndefined();
     expect(card.querySelector<HTMLInputElement>('input:checked')!.closest('label')!.textContent).toContain('Nowhere');
     expect(card.querySelector('textarea')!.value).toBe('keep it simple');
+  });
+
+  // The owner's report: a table in a question's context rendered as one
+  // paragraph of pipes. The context goes through the document's own block
+  // renderers now.
+  test.skipIf(!hasDom)('the context renders block markdown with the document renderers', async () => {
+    const markdown = [
+      ':::question-text',
+      '**5. Set the numbers.**',
+      '',
+      'Each of these is a cap; the numbers are **my** proposals.',
+      '',
+      '| Limit | Proposed |',
+      '| --- | --- |',
+      '| Agents at once | 3 |',
+      '| Longest run | 60 minutes |',
+      '',
+      '- first point',
+      '  that wraps',
+      '- second point',
+      '',
+      '```sh',
+      'echo  "kept  spacing"',
+      '```',
+      '',
+      '> quoted',
+      ':::',
+    ].join('\n');
+    const el = await mount(<Harness markdown={markdown} />);
+    const context = cards(el)[0].querySelector<HTMLElement>('[data-question-part="context"]')!;
+    const rows = Array.from(context.querySelectorAll('table tr')).map((tr) =>
+      Array.from(tr.querySelectorAll('th, td')).map((c) => c.textContent),
+    );
+    expect(rows).toEqual([['Limit', 'Proposed'], ['Agents at once', '3'], ['Longest run', '60 minutes']]);
+    expect(context.textContent).not.toContain('|');
+    expect(context.querySelector('strong')?.textContent).toBe('my');
+    // List items as the document draws them, the wrapped line kept in its item.
+    const items = Array.from(context.querySelectorAll('[data-question-context-list] > div')).map((d) => d.textContent?.trim());
+    expect(items).toEqual(['•first point\nthat wraps', '•second point']);
+    expect(context.querySelector('pre code')?.textContent).toBe('echo  "kept  spacing"');
+    expect(context.querySelector('blockquote')?.textContent).toBe('quoted');
+    // Nothing inside the card claims a block id of its own.
+    expect(context.querySelectorAll('[data-block-id]').length).toBe(0);
+    expect(cards(el)[0].getAttribute('aria-describedby')).toBe(context.id);
+  });
+
+  // 0.28.2 pre-tag smoke: an answer saved on 0.28.1 quotes the bullet's first
+  // line, which was its label then. It restored as "Answered" with nothing
+  // picked.
+  test.skipIf(!hasDom)('an answer saved under a 0.28.1 label restores picked, exports, and re-saves with the current label', async () => {
+    const markdown = [
+      ':::question',
+      '**4. How does a Cloudflare-run agent show in the Machines tab?**',
+      '',
+      'Two ways to name it:',
+      '',
+      '- **One per session:** "ramos · cloud-3", "ramos · cloud-4". Each agent shows',
+      '  as its own machine in the Machines tab.',
+      '- **One per person:** "ramos · cloud", shared by all your cloud agents. A',
+      '  short Machines tab.',
+      '',
+      '**Recommendation:** one per session.',
+      ':::',
+    ].join('\n');
+    const blocks = parseMarkdownToBlocks(markdown);
+    const [q] = indexQuestionBlocks(blocks);
+    const oldLabel = '**One per session:** "ramos · cloud-3", "ramos · cloud-4". Each agent shows';
+    const stored = upsertQuestionAnswerAnnotation([], q.blockId, {
+      v: 1, key: q.question.key, kind: 'single', prompt: q.question.prompt, selected: [oldLabel],
+    }, q.question.key);
+    const el = await mount(<Harness markdown={markdown} initial={stored} />);
+    const card = cards(el)[0];
+    expect(card.getAttribute('data-question-status')).toBe('answered');
+    expect(card.querySelector<HTMLInputElement>('input:checked')?.closest('label')?.textContent).toContain('One per session');
+
+    // Untouched, it exports under the current label, as the recommendation.
+    expect(exportAnnotations(blocks, latest)).toContain('Answer: One per session (your recommendation)');
+    // The panel row reads the current label too.
+    expect(buildQuestionPanelRows(blocks, latest)[0].answerText).toBe('One per session');
+
+    // Changing the answer stores current labels only.
+    await click(rowText(card, 'One per person'));
+    expect(answerOf(0)?.selected).toEqual(['One per person']);
+    await click(rowText(card, 'One per session'));
+    expect(answerOf(0)?.selected).toEqual(['One per session']);
+  });
+
+  // Rows 37 and 38 of the Inbox stress test (the same cards in plan review and annotate).
+  const UNMATCHED = [
+    ':::question',
+    'Which store backs the cache?',
+    '',
+    '- [ ] Redis',
+    '- [ ] Memcached',
+    '',
+    'Recommended: SQLite on the box',
+    ':::',
+  ].join('\n');
+
+  test.skipIf(!hasDom)('a choice question whose recommendation names none of its choices shows it, and Use fills Other', async () => {
+    const el = await mount(<Harness markdown={UNMATCHED} />);
+    const card = cards(el)[0];
+    const line = card.querySelector<HTMLElement>('[data-question-suggested]');
+    expect(line?.textContent).toContain('SQLite on the box');
+    expect(card.getAttribute('aria-describedby')?.split(' ')).toContain(line!.id);
+    await click(button(card, 'Use')!);
+    expect(answerOf(0)).toMatchObject({ selected: [], other: 'SQLite on the box' });
+    // Answered, the line goes (as a text question's does).
+    expect(cards(el)[0].querySelector('[data-question-suggested]')).toBeNull();
+  });
+
+  test.skipIf(!hasDom)('a read-only card draws the Other row only when the answer used it', async () => {
+    const [q] = indexQuestionBlocks(parseMarkdownToBlocks(UNMATCHED));
+    const answer = (extra: Partial<QuestionAnswer>) =>
+      upsertQuestionAnswerAnnotation([], q.blockId, { v: 1, key: q.question.key, kind: 'single', prompt: q.question.prompt, selected: [], ...extra }, q.question.key);
+    const other = (el: HTMLElement) => cards(el)[0].querySelector<HTMLInputElement>('input[aria-label^="Other answer"]');
+
+    let el = await mount(<Harness markdown={UNMATCHED} readOnly initial={answer({ selected: ['Redis'] })} />);
+    expect(other(el)).toBeNull();
+    await act(async () => root!.unmount());
+    host!.remove();
+
+    el = await mount(<Harness markdown={UNMATCHED} readOnly initial={answer({ other: 'Postgres' })} />);
+    expect(other(el)?.value).toBe('Postgres');
+    await act(async () => root!.unmount());
+    host!.remove();
+
+    // An editable card keeps the row to type into.
+    el = await mount(<Harness markdown={UNMATCHED} />);
+    expect(other(el)).not.toBeNull();
+  });
+
+  test.skipIf(!hasDom)('a host status label replaces the card status tag; undefined keeps the card own', async () => {
+    const el = await mount(
+      <Harness
+        markdown={DOC}
+        statusLabel={(question, status) => (question.number === 1 && status === 'answered' ? { label: 'host-label-sentinel', tone: 'open' } : undefined)}
+      />,
+    );
+    await click(rowText(cards(el)[0], 'Nowhere'));
+    await click(rowText(cards(el)[1], 'Dot'));
+    expect(cards(el)[0].textContent).toContain('host-label-sentinel');
+    expect(cards(el)[0].textContent).not.toContain('Answered');
+    expect(cards(el)[1].textContent).toContain('Answered');
   });
 });

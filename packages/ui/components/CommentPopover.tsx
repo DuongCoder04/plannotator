@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useRef, useCallback, useId } from 
 import { createPortal } from 'react-dom';
 import type { ImageAttachment } from '../types';
 import { AttachmentsButton } from './AttachmentsButton';
-import { submitHint } from '../utils/platform';
 import { useDraggable } from '../hooks/useDraggable';
 import { SparklesIcon } from './SparklesIcon';
 import { hasUnsavedCommentContent } from '../utils/commentContent';
@@ -30,6 +29,13 @@ export interface CommentAskAIContext {
   label?: string;
   text?: string;
   sourcePath?: string;
+  /** Agent-facing identity of the selected element(s), for a pinpoint on a
+   *  raw-HTML or live-app surface. Rides with the question; not displayed. */
+  detail?: string;
+  /** 1-based source lines of a markdown text selection (see
+   *  `AIQuestion.scope.lineStart`). Rides with the question; not displayed. */
+  lineStart?: number;
+  lineEnd?: number;
 }
 
 export type CommentAskAIHandler = (
@@ -68,11 +74,14 @@ interface CommentPopoverProps {
    */
   onSubmit: (text: string, images?: ImageAttachment[], mentions?: readonly string[]) => void;
   /**
-   * One-click "Looks good" action (comment-only HTML/live surfaces, where
-   * pinpoint clicks open this composer directly and never see the selection
-   * toolbar's 👍). Renders a thumbs-up button in the footer; disabled once
-   * the user has typed or attached anything, so a click can never discard a
-   * draft. The parent owns annotation creation and closing.
+   * One-click 👍 "Looks good" (comment-only HTML / live-app surfaces, where a
+   * pinpoint click opens this composer directly and never shows the selection
+   * toolbar's 👍). Renders an emoji-only button beside Save, named "Looks
+   * good" for assistive tech and in its tooltip; disabled once anything is
+   * typed or attached so a click can never discard a draft. It takes no
+   * keyboard shortcut: Enter / Mod+Enter still Save. Like Save, a click
+   * clears the `draftKey` draft and returns focus to the opener. The parent
+   * owns annotation creation and closing. Absent renders nothing.
    */
   onQuickLookGood?: () => void;
   /** Optional live draft observer for submit paths outside the popover. */
@@ -590,18 +599,33 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   const canAskAI = !!onAskAI && !askAIDisabled && text.trim().length > 0;
   const showsSkillMenu = skillAc.menu !== null;
 
-  // Shared by both footers. Disabled once anything is typed or attached so a
-  // click can never discard a draft; with content present, Save is the path.
+  // Shared by both footers, sits beside Save. Emoji-only like the selection
+  // toolbar's 👍 (same hover tint). Disabled once anything is typed or
+  // attached so a click can never discard a draft; with content, Save is the
+  // path. A plain click handler only: Enter / Mod+Enter stay on Save.
+  // The grey-out is an inline filter, not a Tailwind filter utility: this
+  // file is scanned into the pinned guides.show viewer CSS, and every class
+  // below already exists there, so the 👍 adds nothing to that bundle.
+  const handleQuickLookGood = () => {
+    if (!onQuickLookGood || hasUnsavedContent) return;
+    if (draftKey) draftStore.delete(draftKey);
+    onQuickLookGood();
+    restoreOpeningFocus();
+  };
   const quickLookGoodButton = onQuickLookGood ? (
     <button
       type="button"
-      onClick={onQuickLookGood}
+      onClick={handleQuickLookGood}
       disabled={hasUnsavedContent}
-      className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-md text-muted-foreground hover:text-foreground hover:bg-green-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      title={hasUnsavedContent ? 'Clear the comment to use Looks good' : 'Add "Looks good" without typing'}
+      aria-label="Looks good"
+      title={hasUnsavedContent ? 'Looks good (clear the comment to use it)' : 'Looks good'}
+      data-quick-look-good="true"
+      data-pn-touch-target="true"
+      data-pn-touch-target-icon="true"
+      style={hasUnsavedContent ? { filter: 'grayscale(1)' } : undefined}
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sm leading-none hover:bg-green-500/10 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent transition-colors"
     >
       <span aria-hidden="true">👍</span>
-      Looks good
     </button>
   ) : null;
 
@@ -723,9 +747,6 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
               >
                 {isGlobal ? 'Add' : 'Save'}
               </button>
-              {!coarsePointer && (
-                <span className="text-[10px] text-muted-foreground">{submitHint}</span>
-              )}
               {quickLookGoodButton}
               {onAskAI && (
                 <button
@@ -879,9 +900,6 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
           >
             {isGlobal ? 'Add' : 'Save'}
           </button>
-          {!coarsePointer && (
-            <span className="text-[10px] text-muted-foreground">{submitHint}</span>
-          )}
           {quickLookGoodButton}
           {onAskAI && (
             <button

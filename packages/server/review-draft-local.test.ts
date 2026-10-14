@@ -111,6 +111,30 @@ for (const [runtime, start] of [['Bun', startBun], ['Pi', startPi]] as const) {
       expect(check(missing.view)[0].outdated).toBe(true);
     });
 
+    test('host status and close count the current target and preserve its recoverable draft', async () => {
+      const first = await open();
+      await post(first.endpoint, {
+        ...body(first.view),
+        codeAnnotations: [...body(first.view).codeAnnotations, { ...note, id: 'external', source: 'agent' }],
+      });
+      // A changed patch still has one human comment, even before accepting restore.
+      writeFileSync(join(cwd, 'b.txt'), 'unrelated edit\n');
+      const reopened = await open();
+      expect(reopened.server.hostControl.status().unsentAnnotations).toBe(1);
+      const staged = await open('staged');
+      await post(staged.endpoint, {
+        ...body(staged.view),
+        codeAnnotations: [note, { ...note, id: 'second' }],
+      });
+      const switched = await post(`${reopened.server.url}/api/diff/switch`, { diffType: 'staged' });
+      expect(switched.status).toBe(200);
+      expect(reopened.server.hostControl.status().unsentAnnotations).toBe(2);
+      expect(reopened.server.hostControl.close!()).toEqual({ closed: true, unsentAnnotations: 2 });
+      expect(reopened.server.hostControl.status().decided).toBe(true);
+      expect((await (await fetch((await open('staged')).endpoint)).json()).codeAnnotations).toHaveLength(2);
+      expect((await (await fetch((await open()).endpoint)).json()).codeAnnotations).toHaveLength(2);
+    });
+
     test('identical patches on other branches, worktrees, comparisons and bases stay isolated', async () => {
       const a = await open();
       await post(a.endpoint, body(a.view));

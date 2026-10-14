@@ -33,6 +33,7 @@ const PARENT = '2'.repeat(40);
 const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n';
 const view = (target: string, diffType = 'since-base') => ({
   rawPatch: patch, gitRef: 'HEAD', snapshotId: `snapshot-${target}`,
+  serverSession: 'local-draft-server',
   localDraftTarget: target, origin: 'claude-code', diffType, base: 'main',
   gitContext: {
     vcsType: 'git', currentBranch: 'feature', defaultBranch: 'main', worktrees: [],
@@ -84,6 +85,7 @@ for (const lateResponse of ['superseded', 'failure', 'success'] as const) {
     const writes: Array<{ target: string | null; ids: string[] }> = [];
     const clients = new Set<string | null>();
     let decisionClient: string | null | undefined;
+    let decisionSession: string | null | undefined;
     globalThis.fetch = (async (input, init) => {
       const url = new URL(String(input), 'http://localhost');
       if (url.pathname === '/api/diff') return Response.json(view('local-a'));
@@ -109,8 +111,11 @@ for (const lateResponse of ['superseded', 'failure', 'success'] as const) {
           authorEmail: 'test@example.invalid', committedAt: 1, isHead: i === 0, isPastBase: false,
         })), hasMore: false, base: 'main',
       });
-      if (url.pathname === '/api/feedback') {
+      if (url.pathname === '/api/feedback' || url.pathname === '/api/exit') {
         decisionClient = url.searchParams.get('client');
+        decisionSession = url.pathname === '/api/exit'
+          ? url.searchParams.get('serverSession')
+          : JSON.parse(String(init?.body)).serverSession;
         return Response.json({ ok: true });
       }
       if (url.pathname === '/api/diff/fresh') return Response.json({ fresh: true });
@@ -144,8 +149,16 @@ for (const lateResponse of ['superseded', 'failure', 'success'] as const) {
     // Target loads, saves and decisions must share the same page identity.
     expect(clients.size).toBe(1);
     expect([...clients][0]).toBeTruthy();
-    await act(async () => document.querySelector<HTMLButtonElement>('[data-decision-primary]')!.click());
+    // Exercise both decision transports: Close must retain the page id AND
+    // upstream's stale-server nonce when composing its query string.
+    if (lateResponse === 'failure') {
+      await act(async () => document.querySelector<HTMLButtonElement>('[title="Close review without feedback"]')!.click());
+      await act(async () => button('Close Anyway')!.click());
+    } else {
+      await act(async () => document.querySelector<HTMLButtonElement>('[data-decision-primary]')!.click());
+    }
     await waitFor(() => decisionClient !== undefined);
     expect(decisionClient).toBe([...clients][0]);
+    expect(decisionSession).toBe('local-draft-server');
   });
 }
