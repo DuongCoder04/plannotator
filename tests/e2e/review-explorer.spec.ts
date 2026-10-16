@@ -81,6 +81,16 @@ async function openReview(browser: Browser, url: string): Promise<Page> {
   return page;
 }
 
+/** Stops the review server and waits for it, so its data folder can go. */
+async function stopReview(child: ChildProcess | undefined, root: string) {
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    child.kill('SIGTERM');
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+  }
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 const treeRows = (page: Page) =>
   page.locator('[data-repo-file-tree] [role="treeitem"]').evaluateAll((rows) =>
     rows.map((row) => {
@@ -164,8 +174,7 @@ test('All files: the repository at the diff, remembered, and following the disk 
     await expect(page.locator('[data-tree-scope="changes"]')).toHaveAttribute('aria-pressed', 'true');
     await page.context().close();
   } finally {
-    child?.kill('SIGTERM');
-    rmSync(root, { recursive: true, force: true });
+    await stopReview(child, root);
   }
 });
 
