@@ -262,7 +262,6 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
     expect(stdout).toContain('export const core = 1;');
     await page.context().close();
   } finally {
-    child?.kill('SIGTERM');
-    rmSync(root, { recursive: true, force: true });
+    await stopReview(child, root);
   }
 });
