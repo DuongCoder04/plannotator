@@ -3208,6 +3208,8 @@ The shortcut system has three layers:
 
 **Convention for adding new shortcuts:** define the action in the relevant app-specific subfolder (`plan-review/` or `code-review/`), or at the shortcuts root when both apps share the same action and semantics. Declare the binding(s) and description, then wire a handler at the call site with `useShortcutScope`. The marketing docs page picks it up automatically at next build. Unit tests in `packages/ui/shortcuts.test.ts` enforce normalized binding tokens (`Mod`, `Shift`, `Alt`, `A-Z`, `1-0`, named keys, `F1`–`F12`) and unique scope ids.
 
+**The VS Code panel and keys.** Inside the VS Code extension's panel the page's keys also go to VS Code (so its keybindings work while the panel has focus), but only keys no handler on the page took: the forwarder (`KEY_BRIDGE_SOURCE` in `apps/vscode-extension/src/cookie-proxy.ts`, injected first in `<head>`) reads `defaultPrevented` one task after the keydown (`setTimeout(…, 0)`; a microtask would run before the app's own listeners for a key the user presses) and forwards nothing the app prevented. So a review or plan key must call `preventDefault()` when it acts, or VS Code runs its own command too (before this, ⌘B, ⌘. and ⌘⇧G did both). Copy, cut and paste go through the clipboard bridge and are never forwarded; ⌘/Ctrl A, Z and Y stay native and are not forwarded.
+
 **Marketing docs auto-generation:** `apps/marketing/src/lib/shortcutReference.ts` reads the three surfaces and `apps/marketing/src/components/ShortcutReference.astro` renders them as tables. The `/docs/reference/keyboard-shortcuts` page is special-cased in `apps/marketing/src/pages/docs/[...slug].astro` to render the component instead of the markdown body.
 
 ## URL Sharing
