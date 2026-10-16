@@ -42,7 +42,7 @@ import {
 import { PRPlatformIcon } from '@plannotator/ui/components/PRPlatformIcon';
 import { RepoIcon } from '@plannotator/ui/components/RepoIcon';
 import { PullRequestIcon } from '@plannotator/ui/components/PullRequestIcon';
-import { getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo, getPRNumber, getPRPlatformCapabilities } from '@plannotator/shared/pr-types';
+import { getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo, getPRNumber, getPRPlatformCapabilities, prBlobPermalink } from '@plannotator/shared/pr-types';
 import type { SemanticDiffAdvert } from '@plannotator/shared/semantic-diff-types';
 import type { CallFlowAdvert, CallFlowNode } from '@plannotator/shared/call-flow-types';
 import { configStore, useConfigValue, setReviewPanelView } from '@plannotator/ui/config';
@@ -187,7 +187,13 @@ import {
   REVIEW_CALL_FLOW_PANEL_ID,
   REVIEW_ALL_FILES_PANEL_ID,
   REVIEW_CODE_NAV_PANEL_ID,
+  REVIEW_FILE_PREVIEW_PANEL_ID,
+  makeReviewFilePanelId,
+  isReviewFilePanelId,
+  type ReviewFilePanelParams,
 } from './dock/reviewPanelTypes';
+import type { ChangedFileView } from './components/FileViewSwitch';
+import type { CodeFileAnnotationInput } from '@plannotator/ui/components/CodeFilePopout';
 import type { DiffFile, AnnotationScrollTarget } from './types';
 import { annotationMatchesPrScope, proseAnnotationMatchesPr } from './utils/annotationScope';
 import { annotationNavigation, reanchorCodeAnnotations, restorableViewedFiles } from './utils/codeAnnotationAnchor';
@@ -461,6 +467,21 @@ const ReviewApp: React.FC = () => {
   const apiModeRef = useRef(false);
   const analysisSettingsInitialized = useRef(false);
   const [isDiffPanelActive, setIsDiffPanelActive] = useState(false);
+  // Explorer (step 2): the file of the repository open in the active tab when
+  // it is not in the review (highlighted in All files), and which changed
+  // files show their Whole file view (per file, for this review).
+  const [activeRepoPath, setActiveRepoPath] = useState<string | null>(null);
+  const [wholeFilePaths, setWholeFilePaths] = useState<ReadonlySet<string>>(() => new Set());
+  const fileViewOf = useCallback((path: string): ChangedFileView => (wholeFilePaths.has(path) ? 'whole' : 'changes'), [wholeFilePaths]);
+  const handleFileViewChange = useCallback((path: string, view: ChangedFileView) => {
+    setWholeFilePaths((current) => {
+      if (current.has(path) === (view === 'whole')) return current;
+      const next = new Set(current);
+      if (view === 'whole') next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
   const [allFilesVisibleFile, setAllFilesVisibleFile] = useState<string | null>(null);
   const [pendingSelection, setPendingSelection] = useState<SelectedLineRange | null>(null);
   const [lineAnnotationComposeRequest, setLineAnnotationComposeRequest] =
@@ -968,6 +989,69 @@ const ReviewApp: React.FC = () => {
     setActiveFileIndex(files.findIndex(candidate => candidate.path === resolvedFilePath));
     needsInitialDiffPanel.current = false;
   }, [dockApi, files, clearPendingSelection]);
+
+  /**
+   * Open any file of the repository in a tab (approved design record
+   * "review-explorer", step 2). A single click previews: a file the review
+   * does not change goes to the one preview tab (italic, replaced by the next
+   * preview), a changed file to the diff tab as before. A double click keeps
+   * the file in a tab of its own (a changed file's own tab shows its diff).
+   * A file already in its own tab is just brought forward.
+   */
+  const openRepoFile = useCallback((filePath: string, options: { pin: boolean }) => {
+    if (!dockApi) return;
+    const changed = files.some((file) => file.path === filePath);
+    const keptId = makeReviewFilePanelId(filePath);
+    const kept = dockApi.getPanel(keptId);
+    if (kept) {
+      kept.api.setActive();
+      return;
+    }
+    if (changed && !options.pin) {
+      openDiffFile(filePath);
+      return;
+    }
+    const preview = dockApi.getPanel(REVIEW_FILE_PREVIEW_PANEL_ID);
+    const title = getFileTabTitle(filePath);
+    if (options.pin) {
+      const previewPath = preview?.api.getParameters<ReviewFilePanelParams>()?.filePath
+        ?? (preview?.params as ReviewFilePanelParams | undefined)?.filePath;
+      if (preview && previewPath === filePath) preview.api.close();
+      dockApi.addPanel({
+        id: keptId,
+        component: REVIEW_PANEL_TYPES.FILE,
+        title,
+        params: { filePath } satisfies ReviewFilePanelParams,
+      });
+      return;
+    }
+    if (preview) {
+      preview.api.updateParameters({ filePath, preview: true } satisfies ReviewFilePanelParams);
+      preview.api.setTitle(title);
+      preview.api.setActive();
+      setActiveRepoPath(filePath);
+      return;
+    }
+    dockApi.addPanel({
+      id: REVIEW_FILE_PREVIEW_PANEL_ID,
+      component: REVIEW_PANEL_TYPES.FILE,
+      title,
+      params: { filePath, preview: true } satisfies ReviewFilePanelParams,
+    });
+    setActiveRepoPath(filePath);
+  }, [dockApi, files, openDiffFile]);
+
+  // Keep the preview tab's file in a tab of its own (a comment in it, or a
+  // double click on the tab).
+  const handleKeepFileTab = useCallback((panelId: string) => {
+    if (!dockApi || panelId !== REVIEW_FILE_PREVIEW_PANEL_ID) return;
+    const preview = dockApi.getPanel(REVIEW_FILE_PREVIEW_PANEL_ID);
+    const filePath = preview?.api.getParameters<ReviewFilePanelParams>()?.filePath
+      ?? (preview?.params as ReviewFilePanelParams | undefined)?.filePath;
+    if (!preview || !filePath) return;
+    preview.api.close();
+    openRepoFile(filePath, { pin: true });
+  }, [dockApi, openRepoFile]);
 
   const isCallFlowNodeInPatch = useCallback((node: CallFlowNode): boolean => {
     if (!node.file || !node.line) return false;
@@ -1601,9 +1685,18 @@ const ReviewApp: React.FC = () => {
       setIsCallFlowActive(panel.id === REVIEW_CALL_FLOW_PANEL_ID);
       setIsPROverviewActive(panel.id === REVIEW_PR_OVERVIEW_PANEL_ID);
       setIsPRArtifactsActive(panel.id === REVIEW_PR_ARTIFACTS_PANEL_ID);
-      setIsDiffPanelActive(isReviewDiffPanelId(panel.id));
-      if (!isReviewDiffPanelId(panel.id)) return;
-      const filePath = getReviewDiffPanelFilePath(panel.params);
+      // A file tab: a changed file behaves as the diff tab; any other file
+      // is the "open outside the diff" file All files highlights.
+      const filePanelPath = isReviewFilePanelId(panel.id)
+        ? panel.api.getParameters<ReviewFilePanelParams>()?.filePath
+          ?? (panel.params as ReviewFilePanelParams | undefined)?.filePath
+          ?? null
+        : null;
+      const filePanelChanged = !!filePanelPath && filesRef.current.some((file) => file.path === filePanelPath);
+      setActiveRepoPath(filePanelPath && !filePanelChanged ? filePanelPath : null);
+      setIsDiffPanelActive(isReviewDiffPanelId(panel.id) || filePanelChanged);
+      if (!isReviewDiffPanelId(panel.id) && !filePanelChanged) return;
+      const filePath = filePanelChanged ? filePanelPath : getReviewDiffPanelFilePath(panel.params);
       if (!filePath) return;
       const fileIndex = filesRef.current.findIndex(file => file.path === filePath);
       if (fileIndex !== -1) {
@@ -2639,6 +2732,36 @@ const ReviewApp: React.FC = () => {
     addCodeAnnotationsWithHistory([withPRContext(newAnnotation)]);
   }, [identity, withPRContext, addCodeAnnotationsWithHistory]);
 
+  // A comment made in a whole-file view (explorer, step 2): a changed file's
+  // Whole file, or a file the review does not change. Inside a hunk it is an
+  // ordinary diff comment; outside one it carries `outsideDiff` and the code it
+  // was written on, so the agent and a PR's review body get the code quoted.
+  const handleAddWholeFileAnnotation = useCallback((input: CodeFileAnnotationInput, options: { inDiff: boolean }) => {
+    const text = input.text.trim();
+    if (!text) return;
+    const base: CodeAnnotation = {
+      id: generateId(),
+      type: 'comment',
+      scope: 'line',
+      filePath: input.filePath,
+      lineStart: input.lineStart,
+      lineEnd: input.lineEnd,
+      side: 'new',
+      text,
+      ...(input.images?.length ? { images: input.images } : {}),
+      originalCode: input.originalCode,
+      createdAt: Date.now(),
+      author: identity,
+    };
+    let annotation = withPRContext(base);
+    if (!options.inDiff) {
+      // Anchored to the file, not the patch: no diff snapshot stamp.
+      const { anchorSnapshot: _snapshot, anchorContext: _context, ...rest } = annotation;
+      annotation = { ...rest, outsideDiff: true, anchorText: input.originalCode };
+    }
+    addCodeAnnotationsWithHistory([annotation]);
+  }, [identity, withPRContext, addCodeAnnotationsWithHistory]);
+
   // --- Markdown preview (rendered Markdown files in the review) ---
   // One Source / Changes / Read menu per Markdown file: a file set by hand
   // keeps its view for the session; every other file starts in the last view
@@ -2774,12 +2897,12 @@ const ReviewApp: React.FC = () => {
     openDiffFile(file.path);
   }, [files, openDiffFile]);
 
-  // Double-click currently behaves the same as single-click.
+  // Double-click keeps the file in a tab of its own (step 2 of the explorer).
   const handleFilePinned = useCallback((index: number) => {
     const file = files[index];
     if (!file) return;
-    openDiffFile(file.path);
-  }, [files, openDiffFile]);
+    openRepoFile(file.path, { pin: true });
+  }, [files, openRepoFile]);
 
   // Legacy file switch (used by handleSelectAnnotation, diff switch, etc.)
   const handleFileSwitch = useCallback((index: number) => {
@@ -3848,6 +3971,20 @@ const ReviewApp: React.FC = () => {
     // Call-Flow-native feedback has no honest inline diff destination. Return
     // it to the analysis surface instead of opening an unrelated file row and
     // issuing a scroll request that cannot resolve.
+    // A comment outside the diff lives in a whole-file view: a changed file's
+    // Whole file, or the file's own tab.
+    if (annotation.outsideDiff && !guideOpen) {
+      if (files.some((f) => f.path === annotation.filePath)) {
+        handleFileViewChange(annotation.filePath, 'whole');
+        const fileIndex = files.findIndex((f) => f.path === annotation.filePath);
+        if (fileIndex !== -1 && !isAllFilesActiveRef.current) handleFileSwitch(fileIndex);
+        else openRepoFile(annotation.filePath, { pin: false });
+      } else {
+        openRepoFile(annotation.filePath, { pin: false });
+      }
+      setSelectedAnnotationId(id);
+      return;
+    }
     const navigation = annotationNavigation(annotation);
     if (navigation === 'call-flow') {
       openCallFlowPanel();
@@ -3881,7 +4018,7 @@ const ReviewApp: React.FC = () => {
     }
     setSelectedAnnotationId(id);
     setScrollTargetAnnotation(prev => ({ id, token: (prev?.token ?? 0) + 1 }));
-  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel]);
+  }, [files, handleFileSwitch, prMetadata, prDiffScope, guideOpen, openCallFlowPanel, handleFileViewChange, openRepoFile]);
 
   // Diff context bundled into local-mode feedback headers so the receiving
   // agent knows which diff the annotations are anchored to. Uses committedBase
@@ -3974,6 +4111,10 @@ const ReviewApp: React.FC = () => {
     onAddEditorCommentForFile: handleAddEditorCommentForFile,
     onAddFileComment: handleAddFileComment,
     onAddFileCommentForFile: handleAddFileCommentForFile,
+    fileViewOf: repoFilesSupported ? fileViewOf : undefined,
+    onFileViewChange: repoFilesSupported ? handleFileViewChange : undefined,
+    onAddWholeFileAnnotation: handleAddWholeFileAnnotation,
+    onKeepFileTab: handleKeepFileTab,
     onEditAnnotation: handleEditAnnotation,
     onSelectAnnotation: handleSelectAnnotation,
     onNavigateToAnnotation: handleNavigateToAnnotation,
@@ -4077,6 +4218,7 @@ const ReviewApp: React.FC = () => {
     selectedAnnotationId, scrollTargetAnnotation, pendingSelection, handleLineSelection,
     handleRequestLineAnnotation, handleAddCallFlowAnnotation,
     handleAddAnnotation, handleAddFileComment, handleAddFileCommentForFile, handleEditAnnotation,
+    repoFilesSupported, fileViewOf, handleFileViewChange, handleAddWholeFileAnnotation, handleKeepFileTab,
     handleSelectAnnotation, handleNavigateToAnnotation, handleDeleteAnnotation, viewedFiles,
     generatedFiles, expandedGeneratedFiles, handleGeneratedFileCollapsedChange,
     handleToggleViewed, reviewShowViewedControls, reviewShowStageControls, stagedFiles, stagingFile, stageFile,
@@ -4566,7 +4708,17 @@ const ReviewApp: React.FC = () => {
       title: prMetadata.title,
       repo: getDisplayRepo(prMetadata),
     } : undefined;
-    const plan = buildReviewSubmission(allAnnotations, visibleEditorAnnotations, prMetadata?.url, diffPaths, prMeta, knownPrSnapshotsRef.current, prMetadata?.platform);
+    const permalinkMeta = prMetadata;
+    const plan = buildReviewSubmission(
+      allAnnotations,
+      visibleEditorAnnotations,
+      prMetadata?.url,
+      diffPaths,
+      prMeta,
+      knownPrSnapshotsRef.current,
+      prMetadata?.platform,
+      permalinkMeta ? (path, start, end) => prBlobPermalink(permalinkMeta, path, start, end) : undefined,
+    );
     // PR description/comment notes aren't line-anchored, so they can't post as
     // inline review comments — seed them into the review body instead (quoted),
     // where the user can edit before submitting. Also means a review with only
@@ -5634,6 +5786,8 @@ const ReviewApp: React.FC = () => {
                 treeScope={treeScope}
                 onTreeScopeChange={repoFilesSupported ? setTreeScope : undefined}
                 repoFiles={repoFiles}
+                onOpenRepoFile={(path, options) => completeNavigatorSelection(() => openRepoFile(path, options))}
+                activeRepoPath={activeRepoPath}
                 groupByKind={groupByKind}
                 onToggleGroupByKind={toggleGroupByKind}
                 generatedFiles={generatedFiles}

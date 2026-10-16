@@ -168,3 +168,92 @@ test('All files: the repository at the diff, remembered, and following the disk 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('Any file in a tab: preview, keep, Whole file with change bars, and a comment outside the diff reaching the agent', async ({ browser }) => {
+  test.skip(!existsSync(binary), `compile the binary first: ${binary}`);
+  mkdirSync(proofDir, { recursive: true });
+  const root = mkdtempSync(join(tmpdir(), 'plannotator-review-explorer-'));
+  const repo = buildRepo(root);
+  const readyFile = join(root, 'ready.jsonl');
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: root,
+    PLANNOTATOR_DATA_DIR: join(root, 'data'),
+    PLANNOTATOR_READY_FILE: readyFile,
+    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
+    NO_BROWSER,
+    PLANNOTATOR_REMOTE: '0',
+    PLANNOTATOR_UPDATE_CHECK: '0',
+  };
+  let child: ChildProcess | undefined;
+  let stdout = '';
+  try {
+    child = spawn(binary, ['review', '--diff-type', 'uncommitted'], { env, cwd: repo, stdio: ['ignore', 'pipe', 'ignore'] });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    await expect.poll(() => (existsSync(readyFile) ? readFileSync(readyFile, 'utf8') : ''), { timeout: 30_000 }).toContain('"url"');
+    const url = (JSON.parse(readFileSync(readyFile, 'utf8').trim().split('\n')[0]!) as { url: string }).url;
+    const page = await openReview(browser, url);
+    await page.locator('[data-tree-scope="all"]').click();
+    await expect(page.locator('[data-repo-file-tree]')).toBeVisible();
+
+    // A single click previews an unchanged file: italic tab, "Not in this review".
+    await page.locator('button[data-repo-file="packages/review-editor/utils/buildFileTree.ts"]').click();
+    const view = page.locator('[data-repo-file-view="packages/review-editor/utils/buildFileTree.ts"]');
+    await expect(view).toBeVisible();
+    await expect(view.locator('[data-not-in-review]')).toHaveText('Not in this review');
+    await expect(view.locator('[data-repo-file-revision]')).toHaveText('at working tree');
+    await expect(page.locator('[data-preview-tab]')).toHaveCount(1);
+    await expect(page.locator('[data-preview-tab] .dv-review-tab-label')).toHaveText('buildFileTree.ts');
+
+    // The next single click replaces the preview: still one preview tab.
+    await page.locator('button[data-repo-file="README.md"]').click();
+    await expect(page.locator('[data-repo-file-view="README.md"]')).toBeVisible();
+    await expect(page.locator('[data-preview-tab]')).toHaveCount(1);
+    await expect(page.locator('[data-preview-tab] .dv-review-tab-label')).toHaveText('README.md');
+    await expect(page.locator('.dv-review-tab', { hasText: 'buildFileTree.ts' })).toHaveCount(0);
+
+    // A double click on the tab keeps it.
+    await page.locator('[data-preview-tab]').dblclick();
+    await expect(page.locator('[data-preview-tab]')).toHaveCount(0);
+    await expect(page.locator('.dv-review-tab', { hasText: 'README.md' })).toHaveCount(1);
+    await expect(page.locator('[data-repo-file-view="README.md"] [data-preview-hint]')).toHaveCount(0);
+
+    // A changed file: Changes | Whole file, the new side with change bars.
+    await page.locator('[data-repo-file="packages/review-editor/utils/fileKindTree.ts"] button').first().click();
+    await expect(page.locator('[data-file-view-switch]')).toBeVisible();
+    await page.locator('[data-file-view="whole"]').click();
+    const whole = page.locator('[data-whole-file-view="packages/review-editor/utils/fileKindTree.ts"]');
+    await expect(whole).toBeVisible();
+    await expect(whole).toContainText("if (path === '') return kind;");
+    await page.screenshot({ path: join(proofDir, '05-whole.png') });
+    await page.locator('[data-file-view="changes"]').click();
+    await expect(whole).toHaveCount(0);
+
+    // A comment on a file the review does not change keeps the preview tab
+    // and reaches the agent labelled, with the code.
+    await page.locator('[data-repo-folder="packages/shared"]').click();
+    await page.locator('button[data-repo-file="packages/shared/review-core.ts"]').click();
+    const coreView = page.locator('[data-repo-file-view="packages/shared/review-core.ts"]');
+    await expect(coreView).toBeVisible();
+    await coreView.locator('[data-line="1"]').first().click();
+    const composer = page.getByRole('textbox', { name: 'Add a comment...' });
+    await composer.fill('Is this constant still used?');
+    await composer.press('ControlOrMeta+Enter');
+    await expect(coreView.locator('[data-code-annotation-outside-diff]')).toHaveText('not in the diff');
+    await expect(page.locator('[data-preview-tab]')).toHaveCount(0);
+    await expect(page.locator('button[data-repo-file="packages/shared/review-core.ts"]')).toContainText('1');
+    await page.screenshot({ path: join(proofDir, '08-comment.png') });
+
+    await page.getByRole('button', { name: /Send Feedback/ }).first().click();
+    await expect.poll(() => stdout, { timeout: 20_000 }).toContain('(not in the diff)');
+    expect(stdout).toContain('packages/shared/review-core.ts');
+    expect(stdout).toContain('Is this constant still used?');
+    expect(stdout).toContain('export const core = 1;');
+    await page.context().close();
+  } finally {
+    child?.kill('SIGTERM');
+    rmSync(root, { recursive: true, force: true });
+  }
+});
