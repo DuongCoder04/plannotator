@@ -8,7 +8,7 @@
 import { join } from "path";
 import { mkdirSync, writeFileSync } from "fs";
 import type { PRRuntime, PRMetadata, PRContext, PRReviewFileComment, PRReviewCommentFailure, PRReviewAction, PRReviewSubmissionResult, CommandResult } from "./pr-types";
-import { decodeBase64Bytes, encodeApiFilePath, isNotFoundCommandFailure, type PRFileBytesResult } from "./pr-types";
+import { decodeBase64Bytes, encodeApiFilePath, isNotFoundCommandFailure, type PRFileBytesResult, type PRTreeResult } from "./pr-types";
 import { getPlannotatorDataDir } from "./data-dir";
 
 // GitLab-specific MRRef shape (used internally)
@@ -563,6 +563,35 @@ export async function fetchGlFileContent(
 
   // GitLab returns raw file content (no base64 encoding)
   return result.stdout;
+}
+
+/**
+ * Every file of one commit through the repository tree API (recursive,
+ * paged by `glab --paginate`). Listing more than the page budget is reported
+ * as truncated rather than waited on.
+ */
+export async function fetchGlTree(
+  runtime: PRRuntime,
+  ref: GlMRRef,
+  sha: string,
+): Promise<PRTreeResult | null> {
+  const encoded = encodeProject(ref.projectPath);
+  const result = await runtime.runCommand(
+    "glab",
+    apiArgs(ref.host, `projects/${encoded}/repository/tree?ref=${encodeURIComponent(sha)}&recursive=true&per_page=100`, ["--paginate"]),
+  );
+  if (result.exitCode !== 0) return null;
+  try {
+    const entries = parsePaginatedArray<{ type?: unknown; path?: unknown }>(result.stdout);
+    return {
+      paths: entries
+        .filter((entry) => entry.type === "blob" && typeof entry.path === "string")
+        .map((entry) => entry.path as string),
+      truncated: false,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
