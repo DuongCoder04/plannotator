@@ -332,8 +332,12 @@ export const KEY_BRIDGE_SOURCE = `function(win,doc,post){
       key:e.key,code:e.code,keyCode:e.keyCode,which:e.which,location:e.location,
       ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey,repeat:e.repeat
     };
+    // VS Code's own window keys (Quick Open, the Command Palette, close
+    // editor, switch editor) always reach VS Code, even when the page took
+    // them: inside the panel they must keep doing what they do everywhere.
+    var global=((e.metaKey||e.ctrlKey)&&!e.altKey&&(k==="p"||(k==="w"&&!e.shiftKey)))||(e.ctrlKey&&!e.metaKey&&!e.altKey&&e.key==="Tab");
     setTimeout(function(){
-      if(e.defaultPrevented)return;
+      if(e.defaultPrevented&&!global)return;
       try{post({type:"plannotator-keydown",event:ev});}catch(err){}
     },0);
   });
