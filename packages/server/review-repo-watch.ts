@@ -43,7 +43,7 @@ export interface RepoLiveOptions {
 	signature: () => Promise<string | null>;
 	/** What git ignores under the root (`gitIgnoredEntries`): never watched. */
 	ignored?: () => Promise<string[]>;
-	/** The listing is stale (called once per real change). */
+	/** The listing is stale: called once per real change, and when the last page stops watching. */
 	onChange: () => void;
 	pollMs?: number;
 	/** The request's signal: a page gone before the stream starts attaches nothing. */
@@ -118,6 +118,9 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 					if (shared.poll) clearTimeout(shared.poll);
 					shared.poll = null;
 					if (lives.get(root) === shared) lives.delete(root);
+					// Nothing watches the disk any more, so the cached listing could go
+					// stale unseen (a hidden tree, a closed page): the next list reads again.
+					options.onChange();
 				}
 				subscriber = null;
 			};
