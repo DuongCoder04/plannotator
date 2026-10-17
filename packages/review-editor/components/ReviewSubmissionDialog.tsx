@@ -107,7 +107,17 @@ interface ReviewSubmissionDialogProps {
 const inBody = (a: CodeAnnotation, withheld: ReadonlySet<string>) => a.outdated || a.outsideDiff === true || withheld.has(a.id);
 
 /** A link to a file's lines at the PR's head commit (`prBlobPermalink`). */
-export type ReviewPermalink = (path: string, lineStart: number, lineEnd: number) => string | undefined;
+/** A link to lines at the PR head the comment was made on (its own PR in a stack). */
+export type ReviewPermalink = (path: string, lineStart: number, lineEnd: number, annotation?: CodeAnnotation) => string | undefined;
+
+/** Most lines of code quoted for one comment outside the diff; the permalink shows the rest. */
+export const OUTSIDE_DIFF_QUOTE_MAX_LINES = 40;
+
+function capQuotedCode(code: string): string {
+  const lines = code.split('\n');
+  if (lines.length <= OUTSIDE_DIFF_QUOTE_MAX_LINES) return code;
+  return `${lines.slice(0, OUTSIDE_DIFF_QUOTE_MAX_LINES).join('\n')}\n…`;
+}
 
 /** The heading of the review body's section for comments on lines outside the diff. */
 export const OUTSIDE_DIFF_BODY_HEADING = 'Comments outside the diff';
@@ -129,10 +139,12 @@ function buildOutsideDiffSection(annotations: CodeAnnotation[], permalink?: Revi
     .filter((a) => a.outsideDiff && (a.scope ?? 'line') === 'line' && (a.text || a.suggestedCode))
     .map((a) => {
       const lines = a.lineStart === a.lineEnd ? `L${a.lineStart}` : `L${a.lineStart}-L${a.lineEnd}`;
-      const link = permalink?.(a.filePath, a.lineStart, a.lineEnd);
+      const link = permalink?.(a.filePath, a.lineStart, a.lineEnd, a);
       const where = link ? `[${a.filePath} (${lines})](${link})` : `${a.filePath} (${lines})`;
       const code = a.anchorText ?? a.originalCode;
-      const quoted = code ? `\n\n${codeFence(code)}` : '';
+      // Capped (GitHub refuses a review body over 65,536 characters); the
+      // permalink covers the rest.
+      const quoted = code ? `\n\n${codeFence(capQuotedCode(code))}` : '';
       const suggestion = a.suggestedCode ? `\n\nSuggested code:\n${codeFence(a.suggestedCode)}` : '';
       const prefix = formatConventionalPrefix(a.conventionalLabel, a.decorations);
       return `**${where}:** ${prefix}${a.text ?? ''}${quoted}${suggestion}`.trim();

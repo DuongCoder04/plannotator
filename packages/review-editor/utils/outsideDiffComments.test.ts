@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import { prBlobPermalink, type PRMetadata } from '@plannotator/shared/pr-types';
-import { buildReviewSubmission, OUTSIDE_DIFF_BODY_HEADING } from '../components/ReviewSubmissionDialog';
+import { buildReviewSubmission, OUTSIDE_DIFF_BODY_HEADING, OUTSIDE_DIFF_QUOTE_MAX_LINES } from '../components/ReviewSubmissionDialog';
 import { exportReviewFeedback, OUTSIDE_DIFF_ANNOTATION_LABEL } from './exportFeedback';
 import { canPostInline, reanchorCodeAnnotations } from './codeAnnotationAnchor';
 import { wholeFileMarks, wholeFileMarksCss } from './wholeFileMarks';
@@ -89,6 +89,32 @@ describe('a PR review: comments outside the diff go in the review body', () => {
         '```',
       ].join('\n'),
     );
+  });
+
+  test('a long quote is capped (the permalink shows the rest), so the body stays under the platform limit', () => {
+    const long = comment({
+      id: 'long',
+      filePath: 'src/big.ts',
+      lineStart: 1,
+      lineEnd: 500,
+      outsideDiff: true,
+      anchorText: Array.from({ length: 500 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n'),
+    });
+    const { targets } = buildReviewSubmission([long], [], PR, new Set(), undefined, undefined, 'github', (p, a, b) => prBlobPermalink(github, p, a, b));
+    const body = targets[0].fileScopedBody;
+    expect(body).toContain(`const line${OUTSIDE_DIFF_QUOTE_MAX_LINES} = ${OUTSIDE_DIFF_QUOTE_MAX_LINES};\n…\n`);
+    expect(body).not.toContain(`const line${OUTSIDE_DIFF_QUOTE_MAX_LINES + 1} =`);
+    expect(body).toContain('#L1-L500');
+  });
+
+  test('each comment links to lines at its own PR head (a stacked review)', () => {
+    const lower = 'https://github.com/acme/app/pull/6';
+    const fromLower = comment({ id: 'low', prUrl: lower, prNumber: 6, outsideDiff: true, anchorText: 'x', filePath: 'a.ts', lineStart: 2, lineEnd: 2 });
+    const heads: Record<string, PRMetadata> = { [PR]: github, [lower]: { ...github, url: lower, number: 6, headSha: 'lowerhead' } as unknown as PRMetadata };
+    const { targets } = buildReviewSubmission([fromLower], [], PR, new Set(), undefined, undefined, 'github',
+      (p, a, b, annotation) => prBlobPermalink(heads[annotation?.prUrl ?? PR], p, a, b));
+    const lowerTarget = targets.find((t) => t.prUrl === lower) ?? targets[0];
+    expect(lowerTarget.fileScopedBody).toContain('/blob/lowerhead/a.ts#L2');
   });
 
   test('a review with no comment outside the diff says nothing about them', () => {
