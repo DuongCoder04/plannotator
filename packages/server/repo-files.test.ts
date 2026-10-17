@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -338,6 +339,39 @@ for (const [runtime, startServer] of [
         server.stop();
       }
     }, 40_000);
+
+    // A page's EventSource.close() closes the connection; destroying a node
+    // request does the same (cancelling a fetch body does not, on either server).
+    function openPageStream(server: { url: string }, snapshotId: string) {
+      return new Promise<() => void>((resolve, reject) => {
+        const req = request(`${server.url}/api/repo-files/stream?snapshot=${encodeURIComponent(snapshotId)}`, (res) => {
+          if (res.statusCode !== 200) return reject(new Error(`stream answered ${res.statusCode}`));
+          res.on("data", (chunk: Buffer) => {
+            if (chunk.toString().includes('"type":"ready"')) resolve(() => req.destroy());
+          });
+        });
+        req.on("error", () => {});
+        req.end();
+      });
+    }
+
+    test("a tree shown again lists what changed while no page watched", async () => {
+      const repo = buildRepo();
+      const { server, files, payload } = await start(repo, "uncommitted");
+      try {
+        expect((await files()).body.paths).not.toContain("later.md");
+        // The tree is shown (a stream opens), then hidden (it closes).
+        const close = await openPageStream(server, payload.snapshotId);
+        close();
+        // Let the server see the page go before anything changes.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        write(repo, "later.md", "# later\n");
+        // Shown again: nothing watched the disk meanwhile, yet the list is current.
+        expect((await files()).body.paths).toContain("later.md");
+      } finally {
+        server.stop();
+      }
+    }, 30_000);
 
     test("a build writing gitignored output never tells the page to list again", async () => {
       const repo = buildRepo();
