@@ -3,7 +3,8 @@ import { CodeFileView, type CodeFileAnnotationInput } from '@plannotator/ui/comp
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import { useRepoFileText, repoFileEmptyMessage } from '../hooks/useRepoFileText';
 import { wholeFileMarks, wholeFileMarksCss } from '../utils/wholeFileMarks';
-import { FileTextState, wholeFileAnnotations } from './RepoFileView';
+import { FileTextState, RevealMissedNote, useRevealedLine, wholeFileAnnotations, type FileTokenHandlers } from './RepoFileView';
+import type { RevealTarget } from '../utils/explorerNavigation';
 
 /**
  * A changed file's Whole file view: its new side, every line, read from
@@ -22,16 +23,26 @@ export const WholeFileView: React.FC<{
   onEditAnnotation: (id: string, text: string | undefined) => void;
   onDeleteAnnotation: (id: string) => void;
   onSelectAnnotation: (id: string | null) => void;
-}> = ({ filePath, patch, snapshotId, annotations, selectedAnnotationId, onAddAnnotation, onEditAnnotation, onDeleteAnnotation, onSelectAnnotation }) => {
+  revealTarget?: RevealTarget | null;
+  tokens?: FileTokenHandlers;
+}> = ({ filePath, patch, snapshotId, annotations, selectedAnnotationId, onAddAnnotation, onEditAnnotation, onDeleteAnnotation, onSelectAnnotation, revealTarget, tokens }) => {
   const text = useRepoFileText(filePath, snapshotId);
-  const marksCss = useMemo(() => wholeFileMarksCss(wholeFileMarks(patch)), [patch]);
+  const marks = useMemo(() => wholeFileMarks(patch), [patch]);
+  const marksCss = useMemo(() => wholeFileMarksCss(marks), [marks]);
+  // Next / previous change walks these lines (`changeNavigation.ts`).
+  const changeLines = useMemo(
+    () => [...new Set([...marks.added, ...marks.modified, ...marks.removedBefore])].sort((a, b) => a - b).join(','),
+    [marks],
+  );
+  const { revealLine, missed } = useRevealedLine(filePath, text.status === 'ready' ? text.content : null, revealTarget);
   const fileAnnotations = useMemo(() => wholeFileAnnotations(annotations, filePath), [annotations, filePath]);
 
   if (text.status === 'loading') return <FileTextState>Reading the file…</FileTextState>;
   if (text.status === 'error') return <FileTextState>{text.message}</FileTextState>;
   if (text.status === 'empty') return <FileTextState>{repoFileEmptyMessage(text.reason, text.size)}</FileTextState>;
   return (
-    <div className="flex-1 min-h-0 overflow-auto" data-whole-file-view={filePath}>
+    <div className="flex-1 min-h-0 overflow-auto" data-whole-file-view={filePath} data-change-lines={changeLines}>
+      {missed && <RevealMissedNote missed={missed} />}
       <CodeFileView
         filepath={filePath}
         contents={text.content}
@@ -44,6 +55,9 @@ export const WholeFileView: React.FC<{
         className="min-h-full"
         extraCss={marksCss}
         lang={text.content.length > 500_000 ? 'text' : undefined}
+        revealLine={revealLine}
+        onTokenTarget={tokens?.onTokenTarget}
+        onTokenNavigate={tokens?.onTokenNavigate}
       />
     </div>
   );
