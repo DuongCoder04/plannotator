@@ -3607,6 +3607,7 @@ export async function startReviewServer(
               ignored: liveWorkspace ? undefined : () => gitIgnoredEntries(gitRuntime, root),
               onChange: () => repoListing.invalidate(),
               pollMs: options.repoLivePollMs,
+              signal: req.signal,
             }, () => server.timeout(req, 0));
           }
 

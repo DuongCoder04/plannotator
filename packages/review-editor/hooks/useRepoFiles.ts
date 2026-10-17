@@ -130,7 +130,12 @@ export function useRepoFiles({
 
   useEffect(() => {
     if (!enabled || !snapshotId) return;
-    if (loadedFor.current === snapshotId && stateRef.current.status !== 'idle' && stateRef.current.status !== 'error') return;
+    if (loadedFor.current === snapshotId && stateRef.current.status !== 'idle' && stateRef.current.status !== 'error') {
+      // Shown again after being hidden: nothing watched the disk meanwhile,
+      // so list again quietly (the tree stays as it was until the answer).
+      if (stateRef.current.status === 'ready' && stateRef.current.live) void load(snapshotId, { quiet: true });
+      return;
+    }
     loadedFor.current = snapshotId;
     pendingDirs.current.clear();
     void load(snapshotId, { quiet: false });
