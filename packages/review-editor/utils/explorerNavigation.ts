@@ -10,6 +10,8 @@
 export interface NavLocation {
   path: string | null;
   line?: number;
+  /** Going back here also puts this file back in this view (a jump flipped it to Whole file). */
+  restoreView?: { path: string; view: 'changes' | 'whole' };
 }
 
 export interface NavHistory {
@@ -22,7 +24,7 @@ export const MAX_NAV_HISTORY = 50;
 
 export function sameNavLocation(a: NavLocation | null | undefined, b: NavLocation | null | undefined): boolean {
   if (!a || !b) return false;
-  return a.path === b.path && (a.line ?? null) === (b.line ?? null);
+  return a.path === b.path && (a.line ?? null) === (b.line ?? null) && !b.restoreView;
 }
 
 /** A jump from `from`: it becomes the newest Back entry; Forward is dropped. */

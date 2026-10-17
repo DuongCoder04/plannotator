@@ -91,6 +91,14 @@ export const GoToFile: React.FC<GoToFileProps> = ({
   // Searched on the server: a lazy listing, or one still loading.
   const searchOnServer = repoSupported && !localPaths && repo.status !== 'unavailable' && repo.status !== 'error';
 
+  // Focus goes back where it came from when the palette closes without
+  // opening a file (Escape, a click outside).
+  const returnFocusRef = useRef<Element | null>(typeof document === 'undefined' ? null : document.activeElement);
+  const close = () => {
+    onClose();
+    const back = returnFocusRef.current;
+    if (back instanceof HTMLElement && back.isConnected) back.focus();
+  };
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
@@ -170,7 +178,7 @@ export const GoToFile: React.FC<GoToFileProps> = ({
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      close();
     } else if (event.key === 'Tab') {
       event.preventDefault();
     }
@@ -179,7 +187,7 @@ export const GoToFile: React.FC<GoToFileProps> = ({
   let lastGroup: Row['group'] | null = null;
   const content = (
     <div className="fixed inset-0 z-[90]" data-go-to-file-root>
-      <div className="absolute inset-0 bg-background/40" onMouseDown={onClose} aria-hidden="true" />
+      <div className="absolute inset-0 bg-background/40" onMouseDown={close} aria-hidden="true" />
       <div
         role="dialog"
         aria-modal="true"

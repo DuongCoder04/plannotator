@@ -119,12 +119,18 @@ describe.skipIf(!hasDom)('GoToFile', () => {
     expect(rowPaths()).toEqual(['src/kind.ts']);
   });
 
-  test('no repository to list: changed files only, and it says so; Escape closes', async () => {
+  test('no repository to list: changed files only, and it says so; Escape closes and focus goes back', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
     const { onClose } = await mount({ repoSupported: false, repo: { status: 'idle' } });
+    expect(document.activeElement).toBe(input());
     await type('kind');
     expect(rowPaths()).toEqual(['packages/review-editor/utils/fileKindTree.ts']);
     expect(document.querySelector('[data-go-to-file-scope]')?.textContent).toContain('Changed files only');
     await key('Escape');
     expect(onClose).toHaveBeenCalled();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
   });
 });

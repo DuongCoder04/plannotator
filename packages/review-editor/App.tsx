@@ -114,6 +114,7 @@ import { useUndoHistory } from '@plannotator/ui/hooks/useUndoHistory';
 import { useHistoryShortcuts } from '@plannotator/ui/shortcuts';
 import { useReviewEditorDoubleTap } from './shortcuts';
 import { useReviewExplorerShortcuts } from '@plannotator/ui/shortcuts';
+import { isVSCodePanel } from '@plannotator/ui/utils/vscodePanel';
 import { createTokenTargetTracker, type TokenTargetHandler } from './utils/tokenTarget';
 import {
   EMPTY_NAV_HISTORY,
@@ -246,7 +247,7 @@ import { needsDestinationSpotlight, markDestinationSpotlightSeen } from './utils
 import { TextShimmer } from '@plannotator/ui/components/TextShimmer';
 import type { PRMetadata, PRReviewAction } from '@plannotator/shared/pr-types';
 import type { PRDiffScope, PRDiffScopeOption, PRStackInfo, PRStackTree } from '@plannotator/shared/pr-stack';
-import { altKey } from '@plannotator/ui/utils/platform';
+import { altKey, isMac } from '@plannotator/ui/utils/platform';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { TourDialog } from './components/tour/TourDialog';
 import { DEMO_TOUR_ID } from './demoTour';
@@ -2076,9 +2077,14 @@ const ReviewApp: React.FC = () => {
     return navLocationOfPanel(panel);
   }, [dockApi, navLocationOfPanel]);
 
-  /** Show a place without recording it (Back, Forward, and the end of a jump). */
-  const goToNavLocation = useCallback((target: NavLocation & { symbol?: string }) => {
-    if (!dockApi) return;
+  /**
+   * Show a place without recording it (Back, Forward, and the end of a jump).
+   * Answers the view change it made to show a line (a changed file flipped to
+   * Whole file), so Back can undo it.
+   */
+  const goToNavLocation = useCallback((target: NavLocation & { symbol?: string }): NavLocation['restoreView'] => {
+    if (!dockApi) return undefined;
+    if (target.restoreView) handleFileViewChange(target.restoreView.path, target.restoreView.view);
     if (target.path == null) {
       dockApi.getPanel(REVIEW_ALL_FILES_PANEL_ID)?.api.setActive();
       return;
@@ -2092,19 +2098,25 @@ const ReviewApp: React.FC = () => {
       return;
     }
     // Any other line of a changed file is in its Whole file view.
-    if (file && target.line) handleFileViewChange(path, 'whole');
+    let flipped: NavLocation['restoreView'];
+    if (file && target.line && fileViewOf(path) !== 'whole') {
+      handleFileViewChange(path, 'whole');
+      flipped = { path, view: 'changes' };
+    }
     openRepoFile(path, { pin: false });
     if (target.line) {
       revealCounterRef.current += 1;
       setRevealTarget({ path, line: target.line, symbol: target.symbol, token: revealCounterRef.current });
     }
+    return flipped;
   }, [dockApi, files, fileViewOf, handleFileViewChange, handleScrollToAILines, openRepoFile]);
 
   const jumpTo = useCallback((target: NavLocation & { symbol?: string }, via: JumpVia, from?: NavLocation | null) => {
     const origin = from === undefined ? currentNavLocation() : from;
-    setNavHistory((history) => pushNavJump(history, origin));
     setJumpCrumb(origin && target.path ? { targetPath: target.path, from: origin, via } : null);
-    goToNavLocation(target);
+    const flipped = goToNavLocation(target);
+    // Back undoes a view the jump changed (a changed file flipped to Whole file).
+    setNavHistory((history) => pushNavJump(history, origin && flipped ? { ...origin, restoreView: flipped } : origin));
   }, [currentNavLocation, goToNavLocation]);
 
   const navigateHistory = useCallback((direction: 'back' | 'forward') => {
@@ -2132,10 +2144,7 @@ const ReviewApp: React.FC = () => {
   /** F12: one clear definition opens its file at the line; else the references panel. */
   const goToDefinition = useCallback(async () => {
     const request = tokenTargets.current();
-    if (!request) {
-      toast('Point at a symbol, then press F12', { duration: 2500 });
-      return;
-    }
+    if (!request) return;
     if (!gitContext && !agentCwd) {
       needsCheckoutToast();
       return;
@@ -2163,10 +2172,7 @@ const ReviewApp: React.FC = () => {
 
   const goToReferences = useCallback(() => {
     const request = tokenTargets.current();
-    if (!request) {
-      toast('Point at a symbol, then press Shift+F12', { duration: 2500 });
-      return;
-    }
+    if (!request) return;
     openReferences(request);
   }, [openReferences, tokenTargets]);
 
@@ -5198,10 +5204,12 @@ const ReviewApp: React.FC = () => {
     if (guideOpen || goToFileOpen || openSettingsMenu || showDestinationMenu || platformCommentDialog || showExportModal || showWorktreeDialog || showNoAnnotationsDialog || showExitWarning) return false;
     if (showLookAndFeel || showGuideIntro || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || askSessionIntroVisible || agentToolIntroVisible || tourDialogJobId) return false;
     if (hasActiveHistoryOverlay(document)) return false;
-    if (!options.inText) {
-      const origin = event.composedPath?.()[0] ?? event.target;
-      if (origin instanceof HTMLElement && (origin.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(origin.tagName))) return false;
-    }
+    const origin = event.composedPath?.()[0] ?? event.target;
+    const typing = origin instanceof HTMLElement && (origin.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(origin.tagName));
+    if (typing && !options.inText) return false;
+    // In a text field on macOS only ⌘ counts: ⌃P there is the field's own
+    // "previous line" (Mod matches ⌃ too, for the keys that predate this).
+    if (typing && isMac && !event.metaKey) return false;
     return true;
   }, [
     agentToolIntroVisible, askSessionIntroVisible, dockApi, editModeIntroVisible, goToFileOpen, guideOpen, isApproving,
@@ -5213,15 +5221,19 @@ const ReviewApp: React.FC = () => {
   useReviewExplorerShortcuts({
     handlers: {
       goToFile: {
-        when: (event) => canHandleExplorerKey(event, { inText: true }),
+        // Inside the VS Code panel ⌘P stays VS Code's Quick Open (the panel
+        // forwards it); Go to File is the tree's "Go to File…" row there.
+        when: (event) => !isVSCodePanel() && canHandleExplorerKey(event, { inText: true }),
         handle: () => setGoToFileOpen(true),
       },
+      // With no symbol under the pointer (or clicked) the key is left alone,
+      // so the browser's F12 (developer tools) still works.
       goToDefinition: {
-        when: (event) => canHandleExplorerKey(event),
+        when: (event) => canHandleExplorerKey(event) && tokenTargets.current() !== null,
         handle: () => { void goToDefinition(); },
       },
       goToReferences: {
-        when: (event) => canHandleExplorerKey(event),
+        when: (event) => canHandleExplorerKey(event) && tokenTargets.current() !== null,
         handle: goToReferences,
       },
       navigateBack: {

@@ -318,7 +318,7 @@ test('Go to File, Go to Definition and References into tabs, Back / Forward, nex
   git(repo, ['add', 'packages/shared/kinds.ts', 'packages/shared/long.ts']);
   git(repo, ['commit', '-q', '-m', 'kinds', '--', 'packages/shared/kinds.ts', 'packages/shared/long.ts']);
   write(repo, 'packages/shared/long.ts', `${longLines.map((line, i) => (i % 20 === 10 ? `${line} // changed` : line)).join('\n')}\n`);
-  write(repo, 'packages/review-editor/utils/fileKindTree.ts', "import { kindLabel } from '../../shared/kinds';\n\nexport function kindFolderPath(kind: string, path: string) {\n  if (path === '') return kindLabel(kind);\n  return `${kind}:${path}`;\n}\n");
+  write(repo, 'packages/review-editor/utils/fileKindTree.ts', "import { kindLabel } from '../../shared/kinds';\nimport { line2 } from '../../shared/long';\n\nexport function kindFolderPath(kind: string, path: string) {\n  if (path === '') return kindLabel(kind);\n  return `${kind}:${path}:${line2}`;\n}\n");
   const readyFile = join(root, 'ready.jsonl');
   const env = {
     PATH: process.env.PATH ?? '',
@@ -340,6 +340,14 @@ test('Go to File, Go to Definition and References into tabs, Back / Forward, nex
     const url = (JSON.parse(readFileSync(readyFile, 'utf8').trim().split('\n')[0]!) as { url: string }).url;
     const page = await openReview(browser, url);
     const activeTab = page.locator('.dv-active-tab .dv-review-tab-label').first();
+
+    // With no symbol under the pointer F12 is left to the browser (developer tools).
+    expect(await page.evaluate(() => {
+      const event = new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true, cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    })).toBe(false);
+    await expect(page.locator('[data-code-nav-location]')).toHaveCount(0);
 
     // The changed file on its diff.
     await page.locator('.file-tree-item', { hasText: 'fileKindTree.ts' }).first().click();
@@ -378,9 +386,28 @@ test('Go to File, Go to Definition and References into tabs, Back / Forward, nex
     await page.keyboard.press('F12');
     const kinds = page.locator('[data-repo-file-view="packages/shared/kinds.ts"]');
     await expect(kinds).toBeVisible({ timeout: 20_000 });
-    await expect(kinds.locator('[data-jump-crumb]')).toContainText('From fileKindTree.ts:4 · Go to Definition (F12)');
+    await expect(kinds.locator('[data-jump-crumb]')).toContainText('From fileKindTree.ts:5 · Go to Definition (F12)');
     await expect(kinds.locator('[data-line="3"][data-selected-line]').first()).toBeAttached();
     await page.screenshot({ path: join(proofDir, '07-definition.png') });
+
+    // A definition on a changed file's line outside its hunks opens its Whole
+    // file view; Back puts the file back on Changes.
+    await page.keyboard.press(back);
+    await expect(activeTab).toHaveText('fileKindTree.ts');
+    await page.locator('[data-char]', { hasText: /^line2$/ }).last().hover();
+    await page.keyboard.press('F12');
+    const longWhole = page.locator('[data-whole-file-view="packages/shared/long.ts"]');
+    await expect(longWhole).toBeVisible({ timeout: 20_000 });
+    await expect(longWhole.locator('[data-line="2"][data-selected-line]').first()).toBeAttached();
+    await page.keyboard.press(back);
+    await expect(activeTab).toHaveText('fileKindTree.ts');
+    await page.locator('.file-tree-item', { hasText: 'long.ts' }).first().click();
+    await expect(page.locator('[data-file-view="changes"]')).toHaveAttribute('aria-pressed', 'true');
+    await page.locator('.file-tree-item', { hasText: 'fileKindTree.ts' }).first().click();
+    await expect(activeTab).toHaveText('fileKindTree.ts');
+    await page.locator('[data-char]', { hasText: /^kindLabel$/ }).last().hover();
+    await page.keyboard.press('F12');
+    await expect(kinds).toBeVisible({ timeout: 20_000 });
 
     // Shift+F12 on the definition: the references panel; a result opens in a tab.
     await kinds.locator('[data-line="3"] [data-char]', { hasText: /^kindLabel$/ }).first().hover();
@@ -418,6 +445,55 @@ test('Go to File, Go to Definition and References into tabs, Back / Forward, nex
     await expect.poll(scrollTop).toBe(second);
     await expect(activeTab).toHaveText('long.ts');
     await page.context().close();
+  } finally {
+    await stopReview(child, root);
+  }
+});
+
+test('Go to File from a text field on macOS needs ⌘ (⌃P stays the field\'s)', async ({ browser }) => {
+  test.skip(!existsSync(binary), `compile the binary first: ${binary}`);
+  const root = mkdtempSync(join(tmpdir(), 'plannotator-review-explorer-'));
+  const repo = buildRepo(root);
+  const readyFile = join(root, 'ready.jsonl');
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: root,
+    PLANNOTATOR_DATA_DIR: join(root, 'data'),
+    PLANNOTATOR_READY_FILE: readyFile,
+    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
+    NO_BROWSER,
+    PLANNOTATOR_REMOTE: '0',
+    PLANNOTATOR_UPDATE_CHECK: '0',
+  };
+  let child: ChildProcess | undefined;
+  try {
+    child = spawn(binary, ['review', '--diff-type', 'uncommitted'], { env, cwd: repo, stdio: 'ignore' });
+    await expect.poll(() => (existsSync(readyFile) ? readFileSync(readyFile, 'utf8') : ''), { timeout: 30_000 }).toContain('"url"');
+    const url = (JSON.parse(readFileSync(readyFile, 'utf8').trim().split('\n')[0]!) as { url: string }).url;
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    // The page reads the system from navigator.platform when it loads.
+    await context.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
+    await context.addCookies(Object.entries(FIRST_RUN).map(([name, value]) => ({ name, value, url })));
+    const page = await context.newPage();
+    await page.goto(url);
+    await expect(page.locator('[data-tree-scope-row]')).toBeVisible();
+    await page.evaluate(() => {
+      const field = document.createElement('textarea');
+      field.setAttribute('data-test-field', '');
+      document.body.appendChild(field);
+      field.focus();
+    });
+    await page.keyboard.press('Control+p');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-go-to-file]')).toHaveCount(0);
+    await page.locator('[data-test-field]').focus();
+    await page.keyboard.press('Meta+p');
+    await expect(page.locator('[data-go-to-file]')).toBeVisible();
+    // Escape puts focus back in the field it came from.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-go-to-file]')).toHaveCount(0);
+    expect(await page.evaluate(() => document.activeElement?.hasAttribute('data-test-field'))).toBe(true);
+    await context.close();
   } finally {
     await stopReview(child, root);
   }
