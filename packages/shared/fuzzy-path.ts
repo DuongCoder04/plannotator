@@ -14,7 +14,7 @@
 export interface FuzzyPathMatch {
   path: string;
   score: number;
-  /** Matched character offsets in the path, ascending. */
+  /** Where each query character landed in the path (string indices), in order. */
   positions: number[];
 }
 
