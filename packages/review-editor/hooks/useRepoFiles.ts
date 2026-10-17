@@ -140,7 +140,7 @@ export function useRepoFiles({
   const live = state.status === 'ready' && state.live;
   useEffect(() => {
     if (!enabled || !live || !snapshotId || !eventSourceImpl) return;
-    const source = new eventSourceImpl('/api/repo-files/stream');
+    const source = new eventSourceImpl(`/api/repo-files/stream?snapshot=${encodeURIComponent(snapshotId)}`);
     source.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as { type?: string };

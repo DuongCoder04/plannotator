@@ -3069,7 +3069,12 @@ const ReviewApp: React.FC = () => {
   // remembered per browser once chosen, and the repository is only listed
   // while All files is chosen.
   const [treeScope, setTreeScope] = useTreeScope();
-  const repoFiles = useRepoFiles({ enabled: repoFilesSupported && treeScope === 'all', snapshotId });
+  // Listed (and watched) only while All files is on screen: the Tree view of
+  // an open file tree, not merely remembered in the cookie.
+  const repoFiles = useRepoFiles({
+    enabled: repoFilesSupported && treeScope === 'all' && effectivePanelView === 'tree' && isNavigatorOpen,
+    snapshotId,
+  });
   const allFilesOrder: AllFilesOrder =
     effectivePanelView === 'sections' ? 'list' : effectivePanelView === 'tree' && groupByKind ? 'kind' : 'tree';
 

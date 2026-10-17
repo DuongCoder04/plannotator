@@ -262,37 +262,48 @@ for (const [runtime, startServer] of [
       }
     }, 30_000);
 
+    async function openStream(server: { url: string }, snapshotId: string) {
+      const stream = await fetch(`${server.url}/api/repo-files/stream?snapshot=${encodeURIComponent(snapshotId)}`);
+      expect(stream.status).toBe(200);
+      expect(stream.headers.get("content-type")).toContain("text/event-stream");
+      const reader = stream.body!.getReader();
+      const decoder = new TextDecoder();
+      let seen = "";
+      const pump = (async () => {
+        for (;;) {
+          const chunk = await reader.read().catch(() => ({ done: true, value: undefined }));
+          if (chunk.done) return;
+          seen += decoder.decode(chunk.value);
+        }
+      })();
+      const waitFor = async (needle: string, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (!seen.includes(needle)) {
+          if (Date.now() > deadline) throw new Error(`no ${needle} event; got ${seen}`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      };
+      const count = (needle: string) => seen.split(needle).length - 1;
+      const close = async () => {
+        await reader.cancel().catch(() => {});
+        await pump;
+      };
+      return { waitFor, count, close };
+    }
+
     test("files changed on disk after the diff was taken are reported; the live stream says when", async () => {
       const repo = buildRepo();
-      const { server, files } = await start(repo, "uncommitted");
+      const { server, files, payload } = await start(repo, "uncommitted");
       try {
         expect((await files()).body.onDisk).toBeUndefined();
-        const stream = await fetch(`${server.url}/api/repo-files/stream`);
-        expect(stream.status).toBe(200);
-        expect(stream.headers.get("content-type")).toContain("text/event-stream");
-        const reader = stream.body!.getReader();
-        const decoder = new TextDecoder();
-        let seen = "";
-        const waitFor = async (needle: string, ms: number) => {
-          const deadline = Date.now() + ms;
-          while (!seen.includes(needle)) {
-            const left = deadline - Date.now();
-            if (left <= 0) throw new Error(`no ${needle} event; got ${seen}`);
-            const chunk = await Promise.race([
-              reader.read(),
-              new Promise<{ done: true; value: undefined }>((resolve) => setTimeout(() => resolve({ done: true, value: undefined }), left)),
-            ]);
-            if (chunk.value) seen += decoder.decode(chunk.value);
-            else if (chunk.done && Date.now() >= deadline) break;
-          }
-        };
-        await waitFor('"type":"ready"', 5_000);
+        const live = await openStream(server, payload.snapshotId);
+        await live.waitFor('"type":"ready"', 5_000);
         // Let the deferred watcher start before writing.
         await new Promise((resolve) => setTimeout(resolve, 1_200));
         write(repo, "src/app.ts", "export const app = 3;\n");
         write(repo, "src/fresh.ts", "export const fresh = true;\n");
-        await waitFor('"type":"changed"', 15_000);
-        await reader.cancel();
+        await live.waitFor('"type":"changed"', 15_000);
+        await live.close();
 
         const after = await files();
         expect(after.body.paths).toContain("src/fresh.ts");
@@ -302,11 +313,72 @@ for (const [runtime, startServer] of [
       }
     }, 40_000);
 
+    test("a build writing gitignored output never tells the page to list again", async () => {
+      const repo = buildRepo();
+      // target/ is ignored but does not exist yet when watching begins: the
+      // watcher sees it, the change gate does not count it.
+      write(repo, ".git/info/exclude", "target/\n");
+      const { server, payload } = await start(repo, "uncommitted");
+      try {
+        const live = await openStream(server, payload.snapshotId);
+        await live.waitFor('"type":"ready"', 5_000);
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        for (let i = 0; i < 5; i += 1) write(repo, `dist/out-${i}.js`, `built ${i}\n`);
+        for (let i = 0; i < 5; i += 1) write(repo, `target/debug/obj-${i}.o`, `obj ${i}\n`);
+        write(repo, ".env", "SECRET=2\n");
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+        expect(live.count('"type":"changed"')).toBe(0);
+        // A real change still arrives.
+        write(repo, "src/real.ts", "export const real = 1;\n");
+        await live.waitFor('"type":"changed"', 15_000);
+        await live.close();
+      } finally {
+        server.stop();
+      }
+    }, 40_000);
+
+    test("past the large-repo threshold the listing is polled, not watched", async () => {
+      const repo = buildRepo();
+      const { server, payload, files } = await start(repo, "uncommitted", { repoFilesLazyThreshold: 3, repoLivePollMs: 300 });
+      try {
+        const live = await openStream(server, payload.snapshotId);
+        await live.waitFor('"type":"ready"', 5_000);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        write(repo, "notes/polled.md", "# Polled\n");
+        await live.waitFor('"type":"changed"', 10_000);
+        await live.close();
+        const root = await files();
+        expect(root.body.total).toBe(7);
+      } finally {
+        server.stop();
+      }
+    }, 40_000);
+
+    test("on-disk marks ride only the root request; the stream needs the current snapshot", async () => {
+      const repo = buildRepo();
+      const { server, files, payload } = await start(repo, "uncommitted", { repoFilesLazyThreshold: 3 });
+      try {
+        write(repo, "src/app.ts", "export const app = 9;\n");
+        // The listing (and so the on-disk marks) is per snapshot generation:
+        // force a new one through the stream's change path is not needed here,
+        // the first listing already sees the edit after the snapshot.
+        const root = await files();
+        expect(root.body.onDisk).toEqual({ "src/app.ts": "M" });
+        const folder = await files("&dir=src");
+        expect(folder.body.onDisk).toBeUndefined();
+        expect((await fetch(`${server.url}/api/repo-files/stream`)).status).toBe(400);
+        expect((await fetch(`${server.url}/api/repo-files/stream?snapshot=old`)).status).toBe(409);
+        void payload;
+      } finally {
+        server.stop();
+      }
+    }, 30_000);
+
     test("a committed listing has no live stream", async () => {
       const repo = buildRepo();
-      const { server } = await start(repo, "last-commit");
+      const { server, payload } = await start(repo, "last-commit");
       try {
-        const response = await fetch(`${server.url}/api/repo-files/stream`);
+        const response = await fetch(`${server.url}/api/repo-files/stream?snapshot=${encodeURIComponent(payload.snapshotId)}`);
         expect(response.status).toBe(400);
         expect(((await response.json()) as { reason: string }).reason).toBe("not-live");
       } finally {

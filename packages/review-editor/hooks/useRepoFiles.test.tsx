@@ -105,7 +105,7 @@ describe.skipIf(!hasDom)('useRepoFiles', () => {
     const net = fakeFetch(() => listing(paths, { onDisk: paths.length > 1 ? { 'new.ts': 'A' } : undefined }));
     const view = await render({ enabled: true, snapshotId: 's1' }, net.impl);
     await flush();
-    expect(FakeEventSource.last?.url).toBe('/api/repo-files/stream');
+    expect(FakeEventSource.last?.url).toBe('/api/repo-files/stream?snapshot=s1');
     paths = ['a.ts', 'new.ts'];
     await act(async () => FakeEventSource.last?.emit({ type: 'changed' }));
     await flush();
