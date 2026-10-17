@@ -82,6 +82,10 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 			let release: () => void = () => {
 				closed = true;
 			};
+			// The request's `close` is the one that fires when the page goes under
+			// Bun's node:http (Oh My Pi, the tests); the response's fires in Node.
+			// `release` runs once, so both firing is harmless (serverAnnotate does the same).
+			res.req?.on("close", () => release());
 			res.on("close", () => release());
 			const ignoredSet = options.mode === "watch" && options.ignored
 				? new Set(await options.ignored().catch(() => []))
@@ -137,6 +141,9 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 					if (shared.poll) clearTimeout(shared.poll);
 					shared.poll = null;
 					if (lives.get(root) === shared) lives.delete(root);
+					// Nothing watches the disk any more, so the cached listing could go
+					// stale unseen (a hidden tree, a closed page): the next list reads again.
+					options.onChange();
 				}
 			};
 			shared.releases.add(release);
