@@ -307,6 +307,23 @@ describe("KEY_BRIDGE_SOURCE: forwarding only keys the page did not take", () => 
     expect(sent[0].event).toMatchObject({ key: "p", code: "KeyP", metaKey: true, shiftKey: true });
   });
 
+  it("always forwards VS Code's window keys (Quick Open, Command Palette, close and switch editor), even when the page took them", async () => {
+    const t = install();
+    t.win.addEventListener("keydown", (e) => e.preventDefault());
+    t.press({ key: "p", metaKey: true, code: "KeyP" });
+    t.press({ key: "P", metaKey: true, shiftKey: true, code: "KeyP" });
+    t.press({ key: "p", ctrlKey: true, code: "KeyP" });
+    t.press({ key: "w", metaKey: true, code: "KeyW" });
+    t.press({ key: "Tab", ctrlKey: true, code: "Tab" });
+    t.press({ key: "Tab", ctrlKey: true, shiftKey: true, code: "Tab" });
+    // Not on the list: the page took them, so VS Code does not get them.
+    t.press({ key: "e", metaKey: true, code: "KeyE" });
+    t.press({ key: "F", metaKey: true, shiftKey: true, code: "KeyF" });
+    t.press({ key: "W", metaKey: true, shiftKey: true, code: "KeyW" });
+    await afterDispatch();
+    expect(keydowns(t.posted).map((m) => m.event!.key)).toEqual(["p", "P", "p", "w", "Tab", "Tab"]);
+  });
+
   it("decides on what the page did during dispatch, not before it", async () => {
     const t = install();
     // A listener that decides late in the same dispatch still counts.
