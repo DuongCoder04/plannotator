@@ -3,6 +3,7 @@ import { CodeFileView, type CodeFileAnnotationInput } from '@plannotator/ui/comp
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import type { RepoRevisionInfo } from '@plannotator/shared/repo-files';
 import { useRepoFileText, repoFileEmptyMessage } from '../hooks/useRepoFileText';
+import { useScrollMemory } from '../hooks/useScrollMemory';
 
 /** "at working tree", "at index", "at a1b2c3d". */
 export function revisionPhrase(revision: RepoRevisionInfo | undefined): string | null {
@@ -59,6 +60,7 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
   const dir = slash === -1 ? '' : filePath.slice(0, slash + 1);
   const name = slash === -1 ? filePath : filePath.slice(slash + 1);
   const revision = text.status === 'ready' || text.status === 'empty' ? text.revision : undefined;
+  const scroll = useScrollMemory(`${snapshotId ?? ''}:${filePath}`, text.status === 'ready');
 
   return (
     <div className="h-full flex flex-col" data-repo-file-view={filePath}>
@@ -84,7 +86,7 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
           {preview && <span className="ml-3" data-preview-hint>Double-click the tab to keep it</span>}
         </span>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto" ref={scroll.ref} onScroll={scroll.onScroll}>
         {text.status === 'loading' ? (
           <FileTextState>Reading the file…</FileTextState>
         ) : text.status === 'error' ? (
