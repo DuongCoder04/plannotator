@@ -33,9 +33,23 @@ const PREFERRED = 0.5;
 /** Starting points tried per term (word starts, then the first occurrence). */
 const MAX_STARTS = 4;
 
-/** Splits a query on whitespace into lowercase terms; empty terms dropped. */
+/**
+ * The query's terms: runs of non-space characters, lowercased (Go to File
+ * matches without case). "  Foo  bar" gives ["foo", "bar"].
+ */
 export function prepareFuzzyQuery(query: string): string[] {
-  return query.toLowerCase().split(/\s+/).filter((term) => term !== '');
+  const terms: string[] = [];
+  let current = '';
+  for (const char of query) {
+    if (/\s/.test(char)) {
+      if (current) terms.push(current);
+      current = '';
+    } else {
+      current += char.toLowerCase();
+    }
+  }
+  if (current) terms.push(current);
+  return terms;
 }
 
 function isWordStart(path: string, at: number): boolean {
@@ -161,25 +175,86 @@ export interface FuzzyPathSearchOptions {
   lowerPaths?: readonly string[];
 }
 
+interface Ranked {
+  match: FuzzyPathMatch;
+  /** Position in the input: on equal scores the earlier path ranks first. */
+  order: number;
+}
+
+/** True when `a` ranks below `b` (a lower score, or an equal one later in the input). */
+function ranksBelow(a: Ranked, b: Ranked): boolean {
+  return a.match.score < b.match.score || (a.match.score === b.match.score && a.order > b.order);
+}
+
+/**
+ * The `limit` best entries seen so far, kept as a min-heap on rank: the
+ * root is the weakest kept entry, so a new candidate either replaces it or
+ * is dropped, in O(log limit).
+ */
+class TopRanked {
+  private readonly heap: Ranked[] = [];
+  constructor(private readonly limit: number) {}
+
+  offer(entry: Ranked): void {
+    const heap = this.heap;
+    if (heap.length < this.limit) {
+      heap.push(entry);
+      this.siftUp(heap.length - 1);
+    } else if (ranksBelow(heap[0], entry)) {
+      heap[0] = entry;
+      this.siftDown(0);
+    }
+  }
+
+  /** The weakest score a candidate must beat once full (else -Infinity). */
+  get bar(): number {
+    return this.heap.length < this.limit ? -Infinity : this.heap[0].match.score;
+  }
+
+  /** Best first. */
+  drain(): FuzzyPathMatch[] {
+    return [...this.heap].sort((a, b) => (ranksBelow(a, b) ? 1 : ranksBelow(b, a) ? -1 : 0)).map((entry) => entry.match);
+  }
+
+  private siftUp(at: number): void {
+    const heap = this.heap;
+    while (at > 0) {
+      const parent = (at - 1) >> 1;
+      if (!ranksBelow(heap[at], heap[parent])) break;
+      [heap[at], heap[parent]] = [heap[parent], heap[at]];
+      at = parent;
+    }
+  }
+
+  private siftDown(at: number): void {
+    const heap = this.heap;
+    for (;;) {
+      const left = at * 2 + 1;
+      const right = left + 1;
+      let weakest = at;
+      if (left < heap.length && ranksBelow(heap[left], heap[weakest])) weakest = left;
+      if (right < heap.length && ranksBelow(heap[right], heap[weakest])) weakest = right;
+      if (weakest === at) return;
+      [heap[at], heap[weakest]] = [heap[weakest], heap[at]];
+      at = weakest;
+    }
+  }
+}
+
 /** The best `limit` matches for `query` among `paths`, highest score first. */
 export function fuzzySearchPaths(paths: readonly string[], query: string, options: FuzzyPathSearchOptions = {}): FuzzyPathMatch[] {
-  const limit = options.limit ?? 50;
   const terms = prepareFuzzyQuery(query);
-  if (terms.length === 0 || limit <= 0) return [];
-  const best: FuzzyPathMatch[] = [];
-  let floor = -Infinity;
-  for (let index = 0; index < paths.length; index++) {
-    const path = paths[index];
-    if (path.endsWith('/')) continue;
-    const result = scoreFuzzyPath(path, terms, options.lowerPaths?.[index]);
-    if (!result) continue;
-    if (options.preferred?.has(path)) result.score += PREFERRED;
-    if (best.length >= limit && result.score <= floor) continue;
-    let at = best.length;
-    while (at > 0 && best[at - 1].score < result.score) at--;
-    best.splice(at, 0, result);
-    if (best.length > limit) best.pop();
-    if (best.length >= limit) floor = best[best.length - 1].score;
-  }
-  return best;
+  const limit = options.limit ?? 50;
+  if (limit <= 0 || terms.length === 0) return [];
+  const top = new TopRanked(limit);
+  paths.forEach((path, order) => {
+    // Folder entries (a trailing slash) are never opened.
+    if (path.charCodeAt(path.length - 1) === 47) return;
+    const match = scoreFuzzyPath(path, terms, options.lowerPaths?.[order]);
+    if (match === null) return;
+    if (options.preferred?.has(path)) match.score += PREFERRED;
+    if (match.score < top.bar) return;
+    top.offer({ match, order });
+  });
+  return top.drain();
 }

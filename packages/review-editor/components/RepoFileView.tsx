@@ -135,7 +135,6 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
           {preview && !crumb && <span className="ml-3" data-preview-hint>Double-click the tab to keep it</span>}
         </span>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto" ref={scroll.ref} onScroll={scroll.onScroll}>
       {crumb && crumb.targetPath === filePath && (
         <JumpCrumb
           crumb={crumb}
@@ -144,7 +143,7 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
         />
       )}
       {missed && <RevealMissedNote missed={missed} />}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto" ref={scroll.ref} onScroll={scroll.onScroll}>
         {text.status === 'loading' ? (
           <FileTextState>Reading the file…</FileTextState>
         ) : text.status === 'error' ? (
