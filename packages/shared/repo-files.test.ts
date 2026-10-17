@@ -163,3 +163,15 @@ describe("platform tree listings (All files without a checkout)", () => {
     expect(tree?.paths).toHaveLength(300);
   });
 });
+
+describe("polling a very large listing backs off while nothing changes", () => {
+  test("1.5x per idle look up to 30 s; a change goes back to the start", async () => {
+    const { nextRepoPollDelay, REPO_LIVE_POLL_MAX_MS } = await import("./repo-files");
+    let delay = 5_000;
+    const seen: number[] = [];
+    for (let i = 0; i < 8; i += 1) seen.push((delay = nextRepoPollDelay(delay, false)));
+    expect(seen.slice(0, 3)).toEqual([7_500, 11_250, 16_875]);
+    expect(seen.at(-1)).toBe(REPO_LIVE_POLL_MAX_MS);
+    expect(nextRepoPollDelay(REPO_LIVE_POLL_MAX_MS, true)).toBe(5_000);
+  });
+});

@@ -407,6 +407,14 @@ export async function handleRepoFileRequest(input: RepoFileRequestInput): Promis
  */
 export type RepoLiveMode = "watch" | "poll";
 export const REPO_LIVE_POLL_MS = 5_000;
+/** A polled listing that keeps finding nothing new backs off to this. */
+export const REPO_LIVE_POLL_MAX_MS = 30_000;
+
+/** The next poll delay: back to the start after a change, else 1.5 times longer up to the cap. */
+export function nextRepoPollDelay(current: number, changed: boolean, start: number = REPO_LIVE_POLL_MS): number {
+  if (changed) return start;
+  return Math.min(Math.max(start, REPO_LIVE_POLL_MAX_MS), Math.round(current * 1.5));
+}
 
 export function repoLiveMode(listing: RepoFileListing, options: { workspace?: boolean; lazyThreshold?: number } = {}): RepoLiveMode {
   if (options.workspace) return "poll";
