@@ -278,6 +278,13 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
     expect(await tabOrder()).toEqual(tabsBefore);
     expect(Math.abs((await scrollTop()) - topBefore)).toBeLessThan(200);
     expect(await longView.evaluate((el) => el === (window as Window & { __longView?: Element }).__longView)).toBe(true);
+    // Back to the kept tab from the tree after another file: where it was, not line 1.
+    const keptTop = await scrollTop();
+    await page.locator('button[data-repo-file="README.md"]').click();
+    await expect(page.locator('[data-repo-file-view="README.md"]')).toBeVisible();
+    await page.locator('button[data-repo-file="packages/shared/long.ts"]').click();
+    await expect(longView).toBeVisible();
+    await expect.poll(scrollTop).toBeGreaterThan(keptTop - 200);
 
     // A comment on a file the review does not change keeps the preview tab
     // and reaches the agent labelled, with the code.

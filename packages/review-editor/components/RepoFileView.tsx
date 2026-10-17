@@ -3,6 +3,7 @@ import { CodeFileView, type CodeFileAnnotationInput, type CodeFileTokenTarget } 
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import type { RepoRevisionInfo } from '@plannotator/shared/repo-files';
 import { useRepoFileText, repoFileEmptyMessage } from '../hooks/useRepoFileText';
+import { useScrollMemory } from '../hooks/useScrollMemory';
 import { findSymbolLine, type JumpCrumb as JumpCrumbData, type RevealTarget } from '../utils/explorerNavigation';
 import { JumpCrumb } from './JumpCrumb';
 
@@ -107,6 +108,8 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
   const dir = slash === -1 ? '' : filePath.slice(0, slash + 1);
   const name = slash === -1 ? filePath : filePath.slice(slash + 1);
   const revision = text.status === 'ready' || text.status === 'empty' ? text.revision : undefined;
+  // A jump's line wins over where the tab was left.
+  const scroll = useScrollMemory(`${snapshotId ?? ''}:${filePath}`, text.status === 'ready' && !revealLine);
 
   return (
     <div className="h-full flex flex-col" data-repo-file-view={filePath}>
@@ -132,6 +135,7 @@ export const RepoFileView: React.FC<RepoFileViewProps> = ({
           {preview && !crumb && <span className="ml-3" data-preview-hint>Double-click the tab to keep it</span>}
         </span>
       </div>
+      <div className="flex-1 min-h-0 overflow-auto" ref={scroll.ref} onScroll={scroll.onScroll}>
       {crumb && crumb.targetPath === filePath && (
         <JumpCrumb
           crumb={crumb}

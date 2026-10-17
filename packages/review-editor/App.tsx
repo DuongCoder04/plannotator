@@ -2256,6 +2256,9 @@ const ReviewApp: React.FC = () => {
     const subscription = dockApi.onDidActivePanelChange((panel) => {
       const location = navLocationOfPanel(panel);
       if (location?.path) setRecentPaths((recent) => pushRecentPath(recent, location.path!));
+      // A jump's line applies to the tab it opened, once: coming back to that
+      // tab later finds it where it was left.
+      if (location) setRevealTarget((target) => (target && target.path !== location.path ? null : target));
     });
     return () => subscription.dispose();
   }, [dockApi, navLocationOfPanel]);

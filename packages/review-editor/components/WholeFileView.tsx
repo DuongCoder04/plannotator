@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { CodeFileView, type CodeFileAnnotationInput } from '@plannotator/ui/components/CodeFilePopout';
 import type { CodeAnnotation } from '@plannotator/ui/types';
 import { useRepoFileText, repoFileEmptyMessage } from '../hooks/useRepoFileText';
+import { useScrollMemory } from '../hooks/useScrollMemory';
 import { wholeFileMarks, wholeFileMarksCss } from '../utils/wholeFileMarks';
 import { FileTextState, RevealMissedNote, useRevealedLine, wholeFileAnnotations, type FileTokenHandlers } from './RepoFileView';
 import type { RevealTarget } from '../utils/explorerNavigation';
@@ -36,12 +37,13 @@ export const WholeFileView: React.FC<{
   );
   const { revealLine, missed } = useRevealedLine(filePath, text.status === 'ready' ? text.content : null, revealTarget);
   const fileAnnotations = useMemo(() => wholeFileAnnotations(annotations, filePath), [annotations, filePath]);
+  const scroll = useScrollMemory(`whole:${snapshotId ?? ''}:${filePath}`, text.status === 'ready' && !revealLine);
 
   if (text.status === 'loading') return <FileTextState>Reading the file…</FileTextState>;
   if (text.status === 'error') return <FileTextState>{text.message}</FileTextState>;
   if (text.status === 'empty') return <FileTextState>{repoFileEmptyMessage(text.reason, text.size)}</FileTextState>;
   return (
-    <div className="flex-1 min-h-0 overflow-auto" data-whole-file-view={filePath} data-change-lines={changeLines}>
+    <div className="flex-1 min-h-0 overflow-auto" data-whole-file-view={filePath} data-change-lines={changeLines} ref={scroll.ref} onScroll={scroll.onScroll}>
       {missed && <RevealMissedNote missed={missed} />}
       <CodeFileView
         filepath={filePath}

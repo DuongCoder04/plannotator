@@ -89,15 +89,17 @@ describe.skipIf(!hasDom)('useRepoFiles', () => {
     expect(state.status).toBe('ready');
     if (state.status === 'ready') expect(state.paths).toEqual(['a.ts', 'b.ts']);
 
-    // Switching away and back keeps the listing.
+    // Hidden and shown again: the tree is kept on screen and, since nothing
+    // watched the disk meanwhile, a live listing is fetched again quietly.
     await view.rerender({ enabled: false, snapshotId: 's1' });
     await view.rerender({ enabled: true, snapshotId: 's1' });
+    expect(view.latest.current!.state.status).toBe('ready');
     await flush();
-    expect(net.calls).toHaveLength(1);
+    expect(net.calls).toEqual(['/api/repo-files?snapshot=s1', '/api/repo-files?snapshot=s1']);
 
     await view.rerender({ enabled: true, snapshotId: 's2' });
     await flush();
-    expect(net.calls).toEqual(['/api/repo-files?snapshot=s1', '/api/repo-files?snapshot=s2']);
+    expect(net.calls).toEqual(['/api/repo-files?snapshot=s1', '/api/repo-files?snapshot=s1', '/api/repo-files?snapshot=s2']);
   });
 
   test('a live listing follows the disk: a changed event lists again', async () => {

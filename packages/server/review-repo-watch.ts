@@ -6,6 +6,7 @@ import {
 } from "@plannotator/shared/file-browser-watch-core";
 import {
 	REPO_LIVE_POLL_MS,
+	nextRepoPollDelay,
 	createRepoChangeGate,
 	isRepoWatchIgnored,
 	isUnderIgnoredEntry,
@@ -45,12 +46,16 @@ export interface RepoLiveOptions {
 	/** The listing is stale (called once per real change). */
 	onChange: () => void;
 	pollMs?: number;
+	/** The request's signal: a page gone before the stream starts attaches nothing. */
+	signal?: AbortSignal;
 }
 
 export interface ReviewRepoWatch {
 	/** The SSE response for one page: `ready` once, then `changed` after each real change. */
 	stream(root: string, options: RepoLiveOptions, disableIdleTimeout?: () => void): Promise<Response>;
 	closeAll(): void;
+	/** Tests only: what is attached right now. */
+	stats(): { lives: number; subscribers: number; heartbeats: number };
 	/** Tests only. */
 	configureForTests: FileBrowserWatchRegistry<Subscriber>["configureForTests"];
 }
@@ -62,7 +67,9 @@ function serialize(event: Pick<FileBrowserChangeEvent, "type" | "reason" | "time
 interface Live {
 	gate: RepoChangeGate;
 	subscribers: Set<Subscriber>;
-	poll: ReturnType<typeof setInterval> | null;
+	/** Each subscriber's release (heartbeat, watcher, poll), for closeAll. */
+	releases: Set<() => void>;
+	poll: ReturnType<typeof setTimeout> | null;
 }
 
 export function createReviewRepoWatch(): ReviewRepoWatch {
@@ -75,34 +82,47 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 		debounceMs: REPO_WATCH_DEBOUNCE_MS,
 	});
 	const lives = new Map<string, Live>();
+	let heartbeats = 0;
 
 	return {
 		async stream(root, options, disableIdleTimeout) {
 			disableIdleTimeout?.();
-			let live = lives.get(root);
-			if (!live) {
-				live = { gate: createRepoChangeGate(options.signature), subscribers: new Set(), poll: null };
-				lives.set(root, live);
-			}
-			const shared = live;
+			// What git ignores is read before anything is attached: a page that
+			// goes away meanwhile leaves nothing behind.
 			const ignoredSet = options.mode === "watch" && options.ignored
 				? new Set(await options.ignored().catch(() => []))
 				: new Set<string>();
+			if (options.signal?.aborted) return new Response(null, { status: 204 });
+			let live = lives.get(root);
+			if (!live) {
+				live = { gate: createRepoChangeGate(options.signature), subscribers: new Set(), releases: new Set(), poll: null };
+				lives.set(root, live);
+			}
+			const shared = live;
 			let subscriber: Subscriber | null = null;
 			let heartbeat: ReturnType<typeof setInterval> | null = null;
 			let handle: ReturnType<typeof registry.ensure> | null = null;
 			let seen = shared.gate.version;
 			const release = () => {
-				if (heartbeat) clearInterval(heartbeat);
+				if (heartbeat) {
+					clearInterval(heartbeat);
+					heartbeat = null;
+					heartbeats -= 1;
+				}
+				shared.releases.delete(release);
+				options.signal?.removeEventListener("abort", release);
 				if (!subscriber) return;
 				if (handle) registry.release(handle, subscriber);
 				shared.subscribers.delete(subscriber);
 				if (shared.subscribers.size === 0) {
-					if (shared.poll) clearInterval(shared.poll);
-					lives.delete(root);
+					if (shared.poll) clearTimeout(shared.poll);
+					shared.poll = null;
+					if (lives.get(root) === shared) lives.delete(root);
 				}
 				subscriber = null;
 			};
+			shared.releases.add(release);
+			options.signal?.addEventListener("abort", release, { once: true });
 			const stream = new ReadableStream({
 				start(controller) {
 					subscriber = {
@@ -135,13 +155,21 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 						});
 						registry.attach(handle, subscriber, root);
 					} else if (!shared.poll) {
-						shared.poll = setInterval(() => {
+						// A poll that keeps finding nothing backs off (to 30 s); a change brings it back.
+						const start = options.pollMs ?? REPO_LIVE_POLL_MS;
+						let delay = start;
+						const tick = () => {
+							const before = shared.gate.version;
 							void shared.gate.check().then((version) => {
 								for (const each of shared.subscribers) each.deliver(version);
+								delay = nextRepoPollDelay(delay, version !== before, start);
+								if (shared.poll) shared.poll = setTimeout(tick, delay);
 							});
-						}, options.pollMs ?? REPO_LIVE_POLL_MS);
+						};
+						shared.poll = setTimeout(tick, delay);
 					}
 					controller.enqueue(serialize({ type: "ready", reason: "initial", timestamp: Date.now() }));
+					heartbeats += 1;
 					heartbeat = setInterval(() => {
 						try {
 							controller.enqueue(encoder.encode(": heartbeat\n\n"));
@@ -163,9 +191,17 @@ export function createReviewRepoWatch(): ReviewRepoWatch {
 			});
 		},
 		closeAll() {
-			registry.closeAll();
-			for (const live of lives.values()) if (live.poll) clearInterval(live.poll);
+			for (const live of [...lives.values()]) {
+				for (const release of [...live.releases]) release();
+				if (live.poll) clearTimeout(live.poll);
+			}
 			lives.clear();
+			registry.closeAll();
+		},
+		stats() {
+			let subscribers = 0;
+			for (const live of lives.values()) subscribers += live.subscribers.size;
+			return { lives: lives.size, subscribers, heartbeats };
 		},
 		configureForTests(overrides) {
 			registry.configureForTests(overrides);
