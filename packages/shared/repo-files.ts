@@ -299,6 +299,19 @@ export interface RepoFilesRequestInput {
 
 const STALE_BODY = { error: "Diff snapshot is stale; refresh first", reason: "stale" };
 
+const onDiskByListing = new WeakMap<RepoFileListing, Promise<Record<string, RepoOnDiskChange> | null>>();
+function onDiskOnce(
+  listing: RepoFileListing,
+  load: (listing: RepoFileListing) => Promise<Record<string, RepoOnDiskChange> | null>,
+): Promise<Record<string, RepoOnDiskChange> | null> {
+  let pending = onDiskByListing.get(listing);
+  if (!pending) {
+    pending = load(listing).catch(() => null);
+    onDiskByListing.set(listing, pending);
+  }
+  return pending;
+}
+
 /** `GET /api/repo-files?snapshot=<id>[&dir=<folder>]`. */
 export async function handleRepoFilesRequest(input: RepoFilesRequestInput): Promise<HandlerResult> {
   const snapshot = input.params.get("snapshot");
@@ -321,7 +334,9 @@ export async function handleRepoFilesRequest(input: RepoFilesRequestInput): Prom
   if (!input.isCurrentSnapshot(snapshot)) return { status: 409, body: STALE_BODY };
 
   const threshold = input.lazyThreshold ?? REPO_FILES_LAZY_THRESHOLD;
-  const onDisk = listing.live && input.loadOnDisk ? await input.loadOnDisk(listing).catch(() => null) : null;
+  // What changed on disk since the snapshot: once per listing (a live change
+  // lists again, so a new listing object), and only with the root request.
+  const onDisk = listing.live && input.loadOnDisk && dir === "" ? await onDiskOnce(listing, input.loadOnDisk) : null;
   const base = {
     available: true as const,
     revision: listing.revision,
@@ -440,6 +455,117 @@ export async function handleRepoFilesSearchRequest(input: RepoFilesSearchRequest
 }
 
 // --- Live watching ----------------------------------------------------------
+
+/**
+ * How a live listing follows the disk. `watch`: the file watcher, with git's
+ * ignored folders never watched. `poll`: a timer, for listings too large to
+ * watch cheaply (past `REPO_FILES_LAZY_THRESHOLD`) and for multi-repo
+ * workspaces, whose root is a parent folder of many repositories.
+ */
+export type RepoLiveMode = "watch" | "poll";
+export const REPO_LIVE_POLL_MS = 5_000;
+
+export function repoLiveMode(listing: RepoFileListing, options: { workspace?: boolean; lazyThreshold?: number } = {}): RepoLiveMode {
+  if (options.workspace) return "poll";
+  return listing.paths.length > (options.lazyThreshold ?? REPO_FILES_LAZY_THRESHOLD) ? "poll" : "watch";
+}
+
+/**
+ * What the tree shows of a working tree, as one string: git's status (tracked
+ * changes, untracked files, deletions; never ignored files) and the
+ * modification time of each path it reports. A write to a gitignored build
+ * folder leaves it unchanged, so the tree is not listed again for it.
+ */
+export async function gitLiveSignature(runtime: ReviewGitRuntime, root: string): Promise<string | null> {
+  const status = await runtime.runGit(
+    ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    { cwd: root, timeoutMs: 60_000 },
+  );
+  if (status.exitCode !== 0) return null;
+  const reported = parsePorcelainZ(status.stdout);
+  const parts: string[] = [];
+  let checked = 0;
+  for (const [path, code] of reported) {
+    if (checked++ >= ON_DISK_CANDIDATE_LIMIT) break;
+    const info = await runtime.getFileInfo(root, path).catch(() => null);
+    parts.push(`${code}\t${path}\t${info ? info.mtimeMs : "-"}`);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * The folders (with a trailing `/`) and files git ignores in a working tree,
+ * for the watcher's ignore rule, so build output (`target/`, `dist/`,
+ * `node_modules/`) is never watched.
+ */
+export async function gitIgnoredEntries(runtime: ReviewGitRuntime, root: string): Promise<string[]> {
+  const result = await runtime.runGit(
+    ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+    { cwd: root, timeoutMs: 60_000 },
+  );
+  if (result.exitCode !== 0) return [];
+  return result.stdout.split("\0").filter(Boolean);
+}
+
+/** Whether a repository-relative path is one of `ignored` or inside an ignored folder. */
+export function isUnderIgnoredEntry(relativePath: string, ignored: ReadonlySet<string>): boolean {
+  const path = relativePath.split("\\").join("/");
+  if (ignored.has(path) || ignored.has(`${path}/`)) return true;
+  let slash = path.indexOf("/");
+  while (slash !== -1) {
+    if (ignored.has(path.slice(0, slash + 1))) return true;
+    slash = path.indexOf("/", slash + 1);
+  }
+  return false;
+}
+
+/**
+ * Tells the watcher's events (or the poll's ticks) apart from real changes: a
+ * change is a new signature. Shared by every page watching one root; each
+ * page keeps the version it last saw. Checks are single-flight.
+ */
+export interface RepoChangeGate {
+  /** Re-reads the signature; answers the version after it. */
+  check(): Promise<number>;
+  readonly version: number;
+}
+
+export function createRepoChangeGate(signature: () => Promise<string | null>): RepoChangeGate {
+  let last: string | null | undefined;
+  let version = 0;
+  let inFlight: Promise<number> | null = null;
+  let again = false;
+  const run = async (): Promise<number> => {
+    do {
+      again = false;
+      const next = await signature().catch(() => null);
+      if (next !== null) {
+        if (last !== undefined && next !== last) version += 1;
+        last = next;
+      }
+    } while (again);
+    return version;
+  };
+  const gate: RepoChangeGate = {
+    check() {
+      if (inFlight) {
+        again = true;
+        return inFlight;
+      }
+      inFlight = run().finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    },
+    get version() {
+      return version;
+    },
+  };
+  // The baseline: what the disk holds when watching starts.
+  void gate.check();
+  return gate;
+}
+
 
 /**
  * Folder names whose changes never reach the tree (dependency and cache

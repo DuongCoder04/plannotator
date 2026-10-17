@@ -1022,11 +1022,24 @@ const ReviewApp: React.FC = () => {
    * the file in a tab of its own (a changed file's own tab shows its diff).
    * A file already in its own tab is just brought forward.
    */
+  // File tabs are found by their parameters, not their ids: a preview tab
+  // that is kept stays the same panel (same place in the strip, same scroll),
+  // only its `preview` flag goes.
+  const findFilePanel = useCallback((match: (params: ReviewFilePanelParams) => boolean) => {
+    if (!dockApi) return undefined;
+    return dockApi.panels.find((panel) => {
+      if (!isReviewFilePanelId(panel.id)) return false;
+      const params = panel.api.getParameters<ReviewFilePanelParams>();
+      const read = params?.filePath ? params : (panel.params as ReviewFilePanelParams | undefined);
+      return !!read?.filePath && match(read);
+    });
+  }, [dockApi]);
+  const previewPanelSeq = useRef(0);
+
   const openRepoFile = useCallback((filePath: string, options: { pin: boolean; side?: boolean }) => {
     if (!dockApi) return;
     const changed = files.some((file) => file.path === filePath);
-    const keptId = makeReviewFilePanelId(filePath);
-    const kept = dockApi.getPanel(keptId);
+    const kept = findFilePanel((params) => !params.preview && params.filePath === filePath);
     if (kept) {
       kept.api.setActive();
       return;
@@ -1042,15 +1055,22 @@ const ReviewApp: React.FC = () => {
       openDiffFile(filePath);
       return;
     }
-    const preview = dockApi.getPanel(REVIEW_FILE_PREVIEW_PANEL_ID);
+    const preview = findFilePanel((params) => !!params.preview);
     const title = getFileTabTitle(filePath);
     if (options.pin) {
-      const previewPath = preview?.api.getParameters<ReviewFilePanelParams>()?.filePath
-        ?? (preview?.params as ReviewFilePanelParams | undefined)?.filePath;
-      if (preview && previewPath === filePath) preview.api.close();
+      if (preview) {
+        // Keeping the file already in the preview tab keeps that tab.
+        const previewPath = preview.api.getParameters<ReviewFilePanelParams>()?.filePath
+          ?? (preview.params as ReviewFilePanelParams | undefined)?.filePath;
+        if (previewPath === filePath) {
+          preview.api.updateParameters({ filePath, preview: false } satisfies ReviewFilePanelParams);
+          preview.api.setActive();
+          return;
+        }
+      }
       const sideOf = options.side ? dockApi.activePanel : undefined;
       dockApi.addPanel({
-        id: keptId,
+        id: makeReviewFilePanelId(filePath),
         component: REVIEW_PANEL_TYPES.FILE,
         title,
         params: { filePath } satisfies ReviewFilePanelParams,
@@ -1067,27 +1087,27 @@ const ReviewApp: React.FC = () => {
       setActiveRepoPath(filePath);
       return;
     }
+    previewPanelSeq.current += 1;
     dockApi.addPanel({
-      id: REVIEW_FILE_PREVIEW_PANEL_ID,
+      id: `${REVIEW_FILE_PREVIEW_PANEL_ID}:${previewPanelSeq.current}`,
       component: REVIEW_PANEL_TYPES.FILE,
       title,
       params: { filePath, preview: true } satisfies ReviewFilePanelParams,
       ...besideCode,
     });
     setActiveRepoPath(filePath);
-  }, [dockApi, files, openDiffFile]);
+  }, [dockApi, files, findFilePanel, openDiffFile]);
 
-  // Keep the preview tab's file in a tab of its own (a comment in it, or a
-  // double click on the tab).
+  // Keep the preview tab's file (a comment in it, or a double click on the
+  // tab): the same panel, now kept, so it keeps its place and its scroll.
   const handleKeepFileTab = useCallback((panelId: string) => {
-    if (!dockApi || panelId !== REVIEW_FILE_PREVIEW_PANEL_ID) return;
-    const preview = dockApi.getPanel(REVIEW_FILE_PREVIEW_PANEL_ID);
-    const filePath = preview?.api.getParameters<ReviewFilePanelParams>()?.filePath
-      ?? (preview?.params as ReviewFilePanelParams | undefined)?.filePath;
-    if (!preview || !filePath) return;
-    preview.api.close();
-    openRepoFile(filePath, { pin: true });
-  }, [dockApi, openRepoFile]);
+    if (!dockApi) return;
+    const panel = dockApi.getPanel(panelId);
+    const params = panel?.api.getParameters<ReviewFilePanelParams>();
+    const read = params?.filePath ? params : (panel?.params as ReviewFilePanelParams | undefined);
+    if (!panel || !read?.filePath || !read.preview) return;
+    panel.api.updateParameters({ filePath: read.filePath, preview: false } satisfies ReviewFilePanelParams);
+  }, [dockApi]);
 
   const isCallFlowNodeInPatch = useCallback((node: CallFlowNode): boolean => {
     if (!node.file || !node.line) return false;
@@ -1254,6 +1274,10 @@ const ReviewApp: React.FC = () => {
   // re-stamped; the rest become outdated. Also remembers the latest layer
   // snapshot per PR, which is what may be posted inline on that PR.
   const knownPrSnapshotsRef = useRef(new Map<string, string>());
+  // Each PR this page has shown, by URL: a comment outside the diff links to
+  // lines at its own PR's head commit (a stacked review can hold several).
+  const knownPrMetadataRef = useRef(new Map<string, PRMetadata>());
+  if (prMetadata) knownPrMetadataRef.current.set(prMetadata.url, prMetadata);
   useEffect(() => {
     if (!prMetadata || !snapshotId) return;
     if (prDiffScope !== 'full-stack') knownPrSnapshotsRef.current.set(prMetadata.url, snapshotId);
@@ -3348,8 +3372,13 @@ const ReviewApp: React.FC = () => {
   // remembered per browser once chosen, and the repository is only listed
   // while All files is chosen.
   const [treeScope, setTreeScope] = useTreeScope();
-  // Listed for All files, and for Go to File while it is open.
-  const repoFiles = useRepoFiles({ enabled: repoFilesSupported && (treeScope === 'all' || goToFileOpen), snapshotId });
+  // Listed (and watched) only while All files is on screen (the Tree view of
+  // an open file tree, not merely remembered in the cookie), and while Go to
+  // File is open.
+  const repoFiles = useRepoFiles({
+    enabled: repoFilesSupported && ((treeScope === 'all' && effectivePanelView === 'tree' && isNavigatorOpen) || goToFileOpen),
+    snapshotId,
+  });
   const allFilesOrder: AllFilesOrder =
     effectivePanelView === 'sections' ? 'list' : effectivePanelView === 'tree' && groupByKind ? 'kind' : 'tree';
 
@@ -5004,7 +5033,12 @@ const ReviewApp: React.FC = () => {
       prMeta,
       knownPrSnapshotsRef.current,
       prMetadata?.platform,
-      permalinkMeta ? (path, start, end) => prBlobPermalink(permalinkMeta, path, start, end) : undefined,
+      permalinkMeta
+        ? (path, start, end, annotation) => {
+            const meta = annotation?.prUrl ? knownPrMetadataRef.current.get(annotation.prUrl) : permalinkMeta;
+            return meta ? prBlobPermalink(meta, path, start, end) : undefined;
+          }
+        : undefined,
     );
     // PR description/comment notes aren't line-anchored, so they can't post as
     // inline review comments — seed them into the review body instead (quoted),

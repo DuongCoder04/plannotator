@@ -131,16 +131,35 @@ describe("platform tree listings (All files without a checkout)", () => {
     expect(await fetchGhPRTree(runtimeAnswering("", 1), { platform: "github", host: "github.com", owner: "o", repo: "r", number: 1 }, "x")).toBeNull();
   });
 
-  test("GitLab: the paged repository tree, blobs only", async () => {
-    const pages = `${JSON.stringify([{ type: "tree", path: "src" }, { type: "blob", path: "src/a.ts" }])}${JSON.stringify([{ type: "blob", path: "README.md" }])}`;
+  test("GitLab: page by page, blobs only, stopping at a short page", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ type: "blob", path: `f${i}.ts` }));
+    const answers = [JSON.stringify([{ type: "tree", path: "src" }, ...full.slice(0, 99)]), JSON.stringify([{ type: "blob", path: "README.md" }])];
     const seen: string[][] = [];
     const tree = await fetchGlTree(
-      runtimeAnswering(pages, 0, seen),
+      { runCommand: async (_cmd: string, args: string[]) => { seen.push(args); return { stdout: answers.shift() ?? "[]", stderr: "", exitCode: 0 }; } } as never,
       { platform: "gitlab", host: "gitlab.com", projectPath: "g/p", iid: 3 },
       "def456",
     );
-    expect(tree).toEqual({ paths: ["src/a.ts", "README.md"], truncated: false });
-    expect(seen[0].join(" ")).toContain("projects/g%2Fp/repository/tree?ref=def456&recursive=true&per_page=100");
-    expect(seen[0]).toContain("--paginate");
+    expect(tree?.truncated).toBe(false);
+    expect(tree?.paths).toHaveLength(100);
+    expect(tree?.paths.at(-1)).toBe("README.md");
+    expect(seen).toHaveLength(2);
+    expect(seen[0].join(" ")).toContain("projects/g%2Fp/repository/tree?ref=def456&recursive=true&per_page=100&page=1");
+    expect(seen[1].join(" ")).toContain("&page=2");
+    expect(seen[0]).not.toContain("--paginate");
+  });
+
+  test("GitLab: a repository past the page budget is reported truncated", async () => {
+    const full = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ type: "blob", path: `f${i}.ts` })));
+    let calls = 0;
+    const tree = await fetchGlTree(
+      { runCommand: async () => { calls += 1; return { stdout: full, stderr: "", exitCode: 0 }; } } as never,
+      { platform: "gitlab", host: "gitlab.com", projectPath: "g/p", iid: 3 },
+      "def456",
+      3,
+    );
+    expect(calls).toBe(3);
+    expect(tree?.truncated).toBe(true);
+    expect(tree?.paths).toHaveLength(300);
   });
 });

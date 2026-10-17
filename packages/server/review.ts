@@ -73,6 +73,9 @@ import {
   createRepoListingCache,
   diffFileStates,
   findRepoOnDiskChanges,
+  gitIgnoredEntries,
+  gitLiveSignature,
+  repoLiveMode,
   handleRepoFileRequest,
   handleRepoFilesRequest,
   handleRepoFilesSearchRequest,
@@ -205,6 +208,8 @@ export { handleServerReady as handleReviewServerReady } from "./shared-handlers"
 export interface ReviewServerOptions {
   /** Tests only: how many paths All files sends whole before serving one folder at a time. */
   repoFilesLazyThreshold?: number;
+  /** Tests only: how often a polled live listing looks (default `REPO_LIVE_POLL_MS`). */
+  repoLivePollMs?: number;
   /** "Ask this session": the host bridge to the agent session that opened this review (see packages/ai/session-bridge.ts). */
   sessionBridge?: SessionBridge;
   /**
@@ -3519,15 +3524,28 @@ export async function startReviewServer(
             }
             return null;
           };
-          const prListingCwd = async (): Promise<string | undefined> =>
-            options.worktreePool && prMetadata ? ensurePRLocalCwd() : agentCwdIfExists();
-          const loadRepoListing = (): Promise<RepoFileListing | null> =>
-            repoListing.get(currentSnapshotId(), async () => {
+          // A PR review lists and reads its local checkout once it is ready.
+          // While a --local clone is still being made, the platform's tree API
+          // answers instead of waiting for it ("pending"); the listing cache
+          // key names the source, so the checkout takes over once it exists.
+          const prListingCwd = async (): Promise<string | "pending" | undefined> => {
+            const pool = options.worktreePool;
+            if (pool && prMetadata) {
+              const entry = pool.get(prMetadata.url);
+              if (entry?.ready) return entry.path;
+              if (prRef) return "pending";
+              return ensurePRLocalCwd();
+            }
+            return agentCwdIfExists();
+          };
+          const loadRepoListing = async (): Promise<RepoFileListing | null> => {
+            const prCwd = isPRMode && prMetadata && !workspace ? await prListingCwd() : undefined;
+            const source = prCwd === "pending" ? "platform" : "local";
+            return repoListing.get(`${currentSnapshotId()}:${source}`, async () => {
               if (workspace) return workspace.listFiles();
               if (isPRMode && prMetadata) {
                 const meta = prMetadata;
-                const prCwd = await prListingCwd();
-                if (prCwd) return listGitSideFiles(gitRuntime, { kind: "commit", rev: meta.headSha, cwd: prCwd });
+                if (prCwd && prCwd !== "pending") return listGitSideFiles(gitRuntime, { kind: "commit", rev: meta.headSha, cwd: prCwd });
                 if (!prRef) return null;
                 const tree = await fetchPRTree(prRef, meta.headSha);
                 if (!tree) return null;
@@ -3541,13 +3559,15 @@ export async function startReviewServer(
               if (!hasLocalAccess) return null;
               return listVcsFiles(currentDiffType as DiffType, currentBase, gitContext?.cwd);
             });
+          };
           const readRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
             if (workspace) return workspace.getFileBytes(path, undefined, "new", maxBytes);
             if (isPRMode && prMetadata) {
               const prCwd = await prListingCwd();
-              if (prCwd) return readDiffSideBytes(gitRuntime, { kind: "object", rev: prMetadata.headSha, path }, maxBytes, prCwd);
+              if (prCwd && prCwd !== "pending") return readDiffSideBytes(gitRuntime, { kind: "object", rev: prMetadata.headSha, path }, maxBytes, prCwd);
               if (!prRef) return { kind: "unavailable" };
-              return { kind: "text", content: await fetchPRFileContent(prRef, prMetadata.headSha, path) };
+              // Capped and as bytes, so a binary file is said to be one.
+              return fetchPRFileBytes(prRef, prMetadata.headSha, path, maxBytes);
             }
             return getVcsFileBytesForDiff(currentDiffType as DiffType, currentBase, path, undefined, "new", maxBytes, gitContext?.cwd);
           };
@@ -3583,13 +3603,26 @@ export async function startReviewServer(
 
           // API: Live updates for a working-tree listing (one event per settled burst of writes).
           if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {
+            const snapshot = url.searchParams.get("snapshot");
+            if (!snapshot) return Response.json({ error: "Missing snapshot", reason: "bad-request" }, { status: 400 });
             const unavailable = repoFilesUnavailable();
             if (unavailable) return Response.json({ error: unavailable.message, reason: unavailable.reason }, { status: 400 });
+            if (snapshot !== currentSnapshotId()) return Response.json({ error: "Diff snapshot is stale; refresh first", reason: "stale" }, { status: 409 });
             const listing = await loadRepoListing();
             if (!listing?.live || !listing.root) {
               return Response.json({ error: "This listing does not change while the review is open", reason: "not-live" }, { status: 400 });
             }
-            return repoWatch.stream(listing.root, () => repoListing.invalidate(), () => server.timeout(req, 0));
+            const root = listing.root;
+            const liveWorkspace = workspace;
+            return repoWatch.stream(root, {
+              mode: repoLiveMode(listing, { workspace: !!liveWorkspace, lazyThreshold: options.repoFilesLazyThreshold }),
+              signature: liveWorkspace
+                ? async () => (await liveWorkspace.listFiles())?.paths.join("\n") ?? null
+                : () => gitLiveSignature(gitRuntime, root),
+              ignored: liveWorkspace ? undefined : () => gitIgnoredEntries(gitRuntime, root),
+              onChange: () => repoListing.invalidate(),
+              pollMs: options.repoLivePollMs,
+            }, () => server.timeout(req, 0));
           }
 
           // API: One file of the listing, as text (any file, changed or not).

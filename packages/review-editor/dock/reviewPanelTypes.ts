@@ -51,6 +51,7 @@ export function getReviewDiffPanelFilePath(
  * opened with a single click (its title italic); a double click, a comment,
  * or a double click on the tab keeps a file in a tab of its own.
  */
+/** The preview tab's id prefix (`review-file-preview:<n>`); a kept preview keeps its id. */
 export const REVIEW_FILE_PREVIEW_PANEL_ID = 'review-file-preview';
 const REVIEW_FILE_PANEL_PREFIX = 'review-file:';
 
@@ -63,7 +64,7 @@ export interface ReviewFilePanelParams {
 }
 
 export function isReviewFilePanelId(panelId: string): boolean {
-  return panelId === REVIEW_FILE_PREVIEW_PANEL_ID || panelId.startsWith(REVIEW_FILE_PANEL_PREFIX);
+  return panelId.startsWith(REVIEW_FILE_PREVIEW_PANEL_ID) || panelId.startsWith(REVIEW_FILE_PANEL_PREFIX);
 }
 
 export function isReviewFilePreviewParams(params: unknown): boolean {

@@ -183,6 +183,10 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
   mkdirSync(proofDir, { recursive: true });
   const root = mkdtempSync(join(tmpdir(), 'plannotator-review-explorer-'));
   const repo = buildRepo(root);
+  // A long file the review does not change (keeping a preview tab keeps its scroll).
+  write(repo, 'packages/shared/long.ts', `${Array.from({ length: 600 }, (_, n) => `export const line${n + 1} = ${n + 1};`).join('\n')}\n`);
+  git(repo, ['add', 'packages/shared/long.ts']);
+  git(repo, ['commit', '-q', '-m', 'long', '--', 'packages/shared/long.ts']);
   const readyFile = join(root, 'ready.jsonl');
   const env = {
     PATH: process.env.PATH ?? '',
@@ -240,9 +244,43 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
     await page.locator('[data-file-view="changes"]').click();
     await expect(whole).toHaveCount(0);
 
+    // Commenting in a preview tab keeps that same tab: its place in the strip
+    // and the line on screen (it is not closed and opened again).
+    await page.locator('[data-repo-folder="packages/shared"]').click();
+    await page.locator('button[data-repo-file="packages/shared/long.ts"]').click();
+    const longView = page.locator('[data-repo-file-view="packages/shared/long.ts"]');
+    await expect(longView.locator('[data-line="401"]').first()).toBeAttached();
+    // The file draws, then draws again highlighted: scroll once it settles.
+    await expect(async () => {
+      const top = await longView.evaluate((view) => {
+        const scroller = view.querySelector<HTMLElement>('.overflow-auto');
+        const line = view.querySelector('diffs-container')?.shadowRoot?.querySelector('[data-line="401"]');
+        if (!scroller || !line) return 0;
+        scroller.scrollTop += line.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 200;
+        return scroller.scrollTop;
+      });
+      expect(top).toBeGreaterThan(5_000);
+    }).toPass({ timeout: 10_000 });
+    await page.waitForTimeout(300);
+    const tabOrder = () => page.locator('.dv-review-tab-label').allTextContents();
+    const tabsBefore = await tabOrder();
+    // The same view, scrolled where it was: not remounted at line 1.
+    await longView.evaluate((el) => { (window as Window & { __longView?: Element }).__longView = el; });
+    const scrollTop = () => longView.evaluate((el) => el.querySelector('.overflow-auto')?.scrollTop ?? 0);
+    const topBefore = await scrollTop();
+    expect(topBefore).toBeGreaterThan(5_000);
+    await longView.locator('[data-line="401"]').first().click();
+    const longComposer = page.getByRole('textbox', { name: 'Add a comment...' });
+    await longComposer.fill('Does line 401 still matter?');
+    await longComposer.press('ControlOrMeta+Enter');
+    await expect(longView.locator('[data-code-annotation-outside-diff]')).toHaveText('not in the diff');
+    await expect(page.locator('[data-preview-tab]')).toHaveCount(0);
+    expect(await tabOrder()).toEqual(tabsBefore);
+    expect(Math.abs((await scrollTop()) - topBefore)).toBeLessThan(200);
+    expect(await longView.evaluate((el) => el === (window as Window & { __longView?: Element }).__longView)).toBe(true);
+
     // A comment on a file the review does not change keeps the preview tab
     // and reaches the agent labelled, with the code.
-    await page.locator('[data-repo-folder="packages/shared"]').click();
     await page.locator('button[data-repo-file="packages/shared/review-core.ts"]').click();
     const coreView = page.locator('[data-repo-file-view="packages/shared/review-core.ts"]');
     await expect(coreView).toBeVisible();

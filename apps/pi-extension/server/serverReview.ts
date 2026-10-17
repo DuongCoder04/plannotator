@@ -86,6 +86,9 @@ import {
 	createRepoListingCache,
 	diffFileStates,
 	findRepoOnDiskChanges,
+	gitIgnoredEntries,
+	gitLiveSignature,
+	repoLiveMode,
 	handleRepoFileRequest,
 	handleRepoFilesRequest,
 	handleRepoFilesSearchRequest,
@@ -361,6 +364,8 @@ export interface ReviewServerResult {
 export async function startReviewServer(options: {
 	/** Tests only: how many paths All files sends whole before serving one folder at a time. */
 	repoFilesLazyThreshold?: number;
+	/** Tests only: how often a polled live listing looks (default `REPO_LIVE_POLL_MS`). */
+	repoLivePollMs?: number;
 	/** "Ask this session": the in-process bridge to the Pi session that opened this review. */
 	sessionBridge?: SessionBridge;
 	/** Turns on `/api/host/status` and `/api/host/close` for a caller in another process (never in remote mode). */
@@ -1931,13 +1936,25 @@ export async function startReviewServer(options: {
 		}
 		return null;
 	};
-	const loadRepoListing = (): Promise<RepoFileListing | null> =>
-		repoListing.get(currentSnapshotId(), async () => {
+	// A PR review uses its local checkout once ready; while a --local clone is
+	// still being made the platform's tree API answers instead (mirrors review.ts).
+	const prListingCwd = async (): Promise<string | "pending" | null> => {
+		const pool = options.worktreePool;
+		if (pool && prMeta) {
+			const entry = pool.get(prMeta.url);
+			if (entry?.ready) return entry.path;
+			if (prRef) return "pending";
+		}
+		return ensurePRCallFlowCwd();
+	};
+	const loadRepoListing = async (): Promise<RepoFileListing | null> => {
+		const prCwd = isPRMode && prMeta && !workspace ? await prListingCwd() : null;
+		const source = prCwd === "pending" ? "platform" : "local";
+		return repoListing.get(`${currentSnapshotId()}:${source}`, async () => {
 			if (workspace) return workspace.listFiles();
 			if (isPRMode && prMeta) {
 				const meta = prMeta;
-				const prCwd = await ensurePRCallFlowCwd();
-				if (prCwd) return listGitSideFiles(reviewRuntime, { kind: "commit", rev: meta.headSha, cwd: prCwd });
+				if (prCwd && prCwd !== "pending") return listGitSideFiles(reviewRuntime, { kind: "commit", rev: meta.headSha, cwd: prCwd });
 				if (!prRef) return null;
 				const tree = await fetchPRTree(prRef, meta.headSha);
 				if (!tree) return null;
@@ -1951,13 +1968,15 @@ export async function startReviewServer(options: {
 			if (!hasLocalAccess) return null;
 			return listVcsFiles(currentDiffType as DiffType, currentBase, options.gitContext?.cwd);
 		});
+	};
 	const readRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
 		if (workspace) return workspace.getFileBytes(path, undefined, "new", maxBytes);
 		if (isPRMode && prMeta) {
-			const prCwd = await ensurePRCallFlowCwd();
-			if (prCwd) return readDiffSideBytes(reviewRuntime, { kind: "object", rev: prMeta.headSha, path }, maxBytes, prCwd);
+			const prCwd = await prListingCwd();
+			if (prCwd && prCwd !== "pending") return readDiffSideBytes(reviewRuntime, { kind: "object", rev: prMeta.headSha, path }, maxBytes, prCwd);
 			if (!prRef) return { kind: "unavailable" };
-			return { kind: "text", content: await fetchPRFileContent(prRef, prMeta.headSha, path) };
+			// Capped and as bytes, so a binary file is said to be one.
+			return fetchPRFileBytes(prRef, prMeta.headSha, path, maxBytes);
 		}
 		return getVcsFileBytesForDiff(currentDiffType as DiffType, currentBase, path, undefined, "new", maxBytes, options.gitContext?.cwd);
 	};
@@ -3502,9 +3521,18 @@ export async function startReviewServer(options: {
 			});
 			json(res, result.body, result.status);
 		} else if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {
+			const snapshot = url.searchParams.get("snapshot");
+			if (!snapshot) {
+				json(res, { error: "Missing snapshot", reason: "bad-request" }, 400);
+				return;
+			}
 			const unavailable = repoFilesUnavailable();
 			if (unavailable) {
 				json(res, { error: unavailable.message, reason: unavailable.reason }, 400);
+				return;
+			}
+			if (snapshot !== currentSnapshotId()) {
+				json(res, { error: "Diff snapshot is stale; refresh first", reason: "stale" }, 409);
 				return;
 			}
 			const listing = await loadRepoListing();
@@ -3512,7 +3540,17 @@ export async function startReviewServer(options: {
 				json(res, { error: "This listing does not change while the review is open", reason: "not-live" }, 400);
 				return;
 			}
-			repoWatch.stream(res, listing.root, () => repoListing.invalidate());
+			const root = listing.root;
+			const liveWorkspace = workspace;
+			await repoWatch.stream(res, root, {
+				mode: repoLiveMode(listing, { workspace: !!liveWorkspace, lazyThreshold: options.repoFilesLazyThreshold }),
+				signature: liveWorkspace
+					? async () => (await liveWorkspace.listFiles())?.paths.join("\n") ?? null
+					: () => gitLiveSignature(reviewRuntime, root),
+				ignored: liveWorkspace ? undefined : () => gitIgnoredEntries(reviewRuntime, root),
+				onChange: () => repoListing.invalidate(),
+				pollMs: options.repoLivePollMs,
+			});
 		} else if (url.pathname === REPO_FILE_ENDPOINT && req.method === "GET") {
 			const result = await handleRepoFileRequest({
 				params: url.searchParams,
