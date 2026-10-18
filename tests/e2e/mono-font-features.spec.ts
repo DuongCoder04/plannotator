@@ -44,9 +44,13 @@ const browsers = (process.env.PLANNOTATOR_E2E_FONT_BROWSERS ?? 'chromium,webkit'
 
 const engines = { chromium, firefox, webkit };
 
-/** A fresh browser of that engine per test (the config's own browser is chromium only). */
+/**
+ * A fresh browser of that engine per test (the config's own browser is chromium only).
+ * The config's launch args are Chromium's (`--use-mock-keychain`, `--password-store=basic`),
+ * and WebKit and Firefox refuse to start with them, so the other engines get none.
+ */
 async function withPage(name: keyof typeof engines, run: (page: Page) => Promise<void>) {
-  const browser = await engines[name].launch({ headless: true });
+  const browser = await engines[name].launch(name === 'chromium' ? { headless: true } : { headless: true, args: [] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await run(page);
