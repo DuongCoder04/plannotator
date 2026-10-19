@@ -14,7 +14,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ReviewPanelHeader, diffWords, middleTruncateRef, type ReviewPanelHeaderModel } from './ReviewPanelHeader';
+import { ReviewPanelHeader, ariaKeyShortcut, diffWords, middleTruncateRef, type ReviewPanelHeaderModel } from './ReviewPanelHeader';
 import type { RepoFilesState } from '../hooks/useRepoFiles';
 
 const hasDom = typeof document !== 'undefined';
@@ -221,24 +221,56 @@ describe.skipIf(!hasDom)('ReviewPanelHeader', () => {
     expect(el.textContent).toContain('Files');
   });
 
-  test('All files carries the live status of the listing', async () => {
-    const repo: Extract<RepoFilesState, { status: 'ready' }> = {
-      status: 'ready',
-      revision: { kind: 'worktree', label: 'working tree' },
-      total: 8,
-      live: true,
-      truncated: false,
-      paths: [],
-      dirs: new Map(),
-      onDisk: { 'a.ts': 'M', 'b.ts': 'A' },
-      updatedAt: Date.now(),
-      liveVersion: 0,
-    };
-    const el = await mount(
-      <ReviewPanelHeader model={model({ scope: { value: 'all', onSelect: () => {}, changed: 4, all: 8 }, repo })} width={256} />,
-    );
-    const status = el.querySelector('[data-tree-scope="all"] [data-repo-listing-status="live"]');
-    expect(status?.textContent).toContain('Live');
-    expect(status?.textContent).toContain('1 added, 1 edited');
+  const readyRepo = (overrides: Partial<Extract<RepoFilesState, { status: 'ready' }>> = {}): Extract<RepoFilesState, { status: 'ready' }> => ({
+    status: 'ready',
+    revision: { kind: 'worktree', label: 'working tree' },
+    total: 8,
+    live: true,
+    truncated: false,
+    paths: [],
+    dirs: new Map(),
+    onDisk: { 'a.ts': 'M', 'b.ts': 'A' },
+    updatedAt: Date.now(),
+    liveVersion: 0,
+    ...overrides,
   });
+
+  test('a live listing: a dot in the pill, its words in a polite status of their own', async () => {
+    const el = await mount(
+      <ReviewPanelHeader model={model({ scope: { value: 'all', onSelect: () => {}, changed: 4, all: 8 }, repo: readyRepo() })} width={256} />,
+    );
+    const all = el.querySelector<HTMLButtonElement>('[data-tree-scope="all"]')!;
+    // The button is named by its words and count alone; the dot is decoration.
+    expect(all.textContent).toBe('All files8');
+    expect(all.querySelector('[data-repo-listing-dot="live"]')?.getAttribute('aria-hidden')).toBe('true');
+    const status = el.querySelector('[role="status"][data-repo-listing-status="live"]')!;
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(status.textContent).toBe('All files is live: 1 added, 1 edited on disk since the diff.');
+    // No age in the announced words: they do not change on the 15 s tick.
+    expect(status.textContent).not.toContain('ago');
+  });
+
+  test('a partial listing says so in words on screen', async () => {
+    const el = await mount(
+      <ReviewPanelHeader
+        model={model({ scope: { value: 'all', onSelect: () => {}, changed: 4, all: 8 }, repo: readyRepo({ live: false, truncated: true }) })}
+        width={256}
+      />,
+    );
+    expect(el.querySelector('[data-repo-listing-status="partial"]')?.textContent).toBe('Part of the repository is listed (the platform stopped early).');
+  });
+
+  test('while a search runs, Changes | All files steps aside; Go to File stays', async () => {
+    const el = await mount(<ReviewPanelHeader model={model({ searching: true, scope: { value: 'all', onSelect: () => {}, changed: 4, all: 8 } })} width={256} />);
+    expect(el.querySelector('[data-tree-scope]')).toBeNull();
+    expect(el.querySelector('[data-go-to-file-button]')).not.toBeNull();
+  });
+
+  test('Go to File names its keys for assistive tech, not the drawn keycaps', async () => {
+    expect(ariaKeyShortcut('Mod+P', true)).toBe('Meta+P');
+    expect(ariaKeyShortcut('Mod+P', false)).toBe('Control+P');
+    const el = await mount(<ReviewPanelHeader model={model()} width={256} />);
+    expect(el.querySelector('[data-go-to-file-button]')?.getAttribute('aria-keyshortcuts')).toMatch(/^(Meta|Control)\+P$/);
+  });
+
 });

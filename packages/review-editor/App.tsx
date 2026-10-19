@@ -5523,6 +5523,7 @@ const ReviewApp: React.FC = () => {
         }
       : undefined,
     onGoToFile: dockApi ? () => setGoToFileOpen(true) : undefined,
+    searching: hasSearchableFiles && !!searchQuery.trim(),
   };
 
   if (isLoading) {

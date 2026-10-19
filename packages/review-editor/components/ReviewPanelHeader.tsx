@@ -16,6 +16,7 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronDown, FolderTree, GitCommitHorizontal, Layers3, Search } from 'lucide-react';
 import { Tooltip } from '@plannotator/ui/components/Tooltip';
+import { isMac } from '@plannotator/ui/utils/platform';
 import { formatShortcutBindingTokens, resolveShortcutBindings, reviewExplorerShortcuts } from '@plannotator/ui/shortcuts';
 import type { AvailableBranches, CompareTargetPickerCopy, DiffOption, RecentCommit } from '@plannotator/shared/types';
 import type { TreeScope } from '../hooks/useTreeScope';
@@ -59,6 +60,9 @@ export interface ReviewPanelHeaderModel {
     recentCommits?: RecentCommit[];
   };
   onGoToFile?: () => void;
+  /** A diff search is on: the list shows results from the changes only, so
+   *  Changes | All files steps aside until it ends. */
+  searching?: boolean;
 }
 
 const VIEW_META: Record<ReviewPanelView, { label: string; title: string; Icon: React.FC<{ className?: string }> }> = {
@@ -86,8 +90,23 @@ function relativeAge(ms: number): string {
   return `${Math.round(minutes / 60)}h ago`;
 }
 
-/** "Live · updated 45s ago · 1 added, 1 edited", or the truncation note. */
-function useLiveText(repo: ReadyRepo | null | undefined): string | null {
+/** "1 added, 1 edited": what changed on disk since the diff was taken. */
+function onDiskSummary(repo: ReadyRepo): string {
+  const counts = { A: 0, M: 0, D: 0 };
+  for (const change of Object.values(repo.onDisk)) counts[change] += 1;
+  return [
+    counts.A > 0 ? `${counts.A} added` : null,
+    counts.M > 0 ? `${counts.M} edited` : null,
+    counts.D > 0 ? `${counts.D} deleted` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+export const PARTIAL_LISTING_TEXT = 'Part of the repository is listed (the platform stopped early).';
+
+/** "Live · updated 45s ago · 1 added, 1 edited", for the dot's tooltip. */
+function useLiveTooltip(repo: ReadyRepo | null | undefined): string | null {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!repo?.live) return;
@@ -96,33 +115,49 @@ function useLiveText(repo: ReadyRepo | null | undefined): string | null {
     return () => clearInterval(timer);
   }, [repo?.live, repo?.updatedAt]);
   if (!repo) return null;
-  if (!repo.live) return repo.truncated ? 'Part of the repository is listed (the platform stopped early)' : null;
-  const counts = { A: 0, M: 0, D: 0 };
-  for (const change of Object.values(repo.onDisk)) counts[change] += 1;
-  const parts = [
-    counts.A > 0 ? `${counts.A} added` : null,
-    counts.M > 0 ? `${counts.M} edited` : null,
-    counts.D > 0 ? `${counts.D} deleted` : null,
-  ].filter(Boolean);
-  return `Live · updated ${relativeAge(now - repo.updatedAt)}${parts.length ? ` · ${parts.join(', ')}` : ''}`;
+  if (!repo.live) return repo.truncated ? PARTIAL_LISTING_TEXT : null;
+  const changes = onDiskSummary(repo);
+  return `Live · updated ${relativeAge(now - repo.updatedAt)}${changes ? ` · ${changes}` : ''}`;
 }
 
-/** A small status dot; its words live in a tooltip and for screen readers. */
+/**
+ * The listing's state as a dot after the All files count: green while live,
+ * an amber ring for a partial listing. Decoration only: the words are the
+ * tooltip, the status line under the row (partial) and the polite status
+ * region (live), so the button's name stays "All files N".
+ */
 const LiveDot: React.FC<{ repo: ReadyRepo | null | undefined }> = ({ repo }) => {
-  const text = useLiveText(repo);
+  const text = useLiveTooltip(repo);
   if (!repo || !text) return null;
   return (
     <Tooltip content={text} side="bottom" delayDuration={150}>
-      <span className="inline-flex items-center" data-repo-listing-status={repo.live ? 'live' : 'partial'}>
-        <span
-          className={`w-1.5 h-1.5 rounded-full ${repo.live ? 'bg-success' : 'border border-warning'}`}
-          aria-hidden="true"
-        />
-        <span className="sr-only">{text}</span>
+      <span className="inline-flex items-center" aria-hidden="true" data-repo-listing-dot={repo.live ? 'live' : 'partial'}>
+        <span className={`w-1.5 h-1.5 rounded-full ${repo.live ? 'bg-success' : 'border border-warning'}`} />
       </span>
     </Tooltip>
   );
 };
+
+/**
+ * What a screen reader hears about the live listing: said when it turns live
+ * and when the files changed on disk change, never on the 15 s age tick.
+ */
+const LiveStatus: React.FC<{ repo: ReadyRepo | null | undefined }> = ({ repo }) => {
+  const text = repo?.live ? `All files is live${onDiskSummary(repo) ? `: ${onDiskSummary(repo)} on disk since the diff` : ''}.` : '';
+  return (
+    <span className="sr-only" role="status" aria-live="polite" data-repo-listing-status={repo?.live ? 'live' : undefined}>
+      {text}
+    </span>
+  );
+};
+
+/** `aria-keyshortcuts` wants key names ("Meta+P"), not the keycaps drawn. */
+export function ariaKeyShortcut(binding: string, mac: boolean = isMac): string {
+  return binding
+    .split('+')
+    .map((key) => (key === 'Mod' ? (mac ? 'Meta' : 'Control') : key))
+    .join('+');
+}
 
 /** The sentence's words for the active diff: a noun and, when a base applies, the word before it. */
 export function diffWords(model: Pick<ReviewPanelHeaderModel, 'view' | 'diff' | 'base'>): {
@@ -171,14 +206,15 @@ export function middleTruncateRef(base: string, width: number): string {
 }
 
 const GoToFileButton: React.FC<{ onClick: () => void; showKeys: boolean }> = ({ onClick, showKeys }) => {
-  const keys = formatShortcutBindingTokens(resolveShortcutBindings(reviewExplorerShortcuts.shortcuts.goToFile)[0] ?? '');
+  const binding = resolveShortcutBindings(reviewExplorerShortcuts.shortcuts.goToFile)[0] ?? '';
+  const keys = formatShortcutBindingTokens(binding);
   return (
     <Tooltip content={<span>Go to File <span className="opacity-70">{keys.join('')}</span></span>} side="bottom" delayDuration={300}>
       <button
         type="button"
         onClick={onClick}
         aria-label="Go to File…"
-        aria-keyshortcuts={keys.join('+')}
+        aria-keyshortcuts={binding ? ariaKeyShortcut(binding) : undefined}
         data-go-to-file-button
         className={`flex-shrink-0 flex items-center gap-1 h-7 px-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors ${FOCUS}`}
       >
@@ -213,7 +249,7 @@ function selectScope(model: ReviewPanelHeaderModel, scope: TreeScope) {
 
 /** The scope shown as on (Git status counts as Changes; Commits shows none). */
 function shownScope(model: ReviewPanelHeaderModel): TreeScope | null {
-  if (!model.scope || model.view === 'commits') return null;
+  if (!model.scope || model.view === 'commits' || model.searching) return null;
   return model.view === 'sections' ? 'changes' : model.scope.value;
 }
 
@@ -319,6 +355,18 @@ export const ReviewPanelHeader: React.FC<{ model: ReviewPanelHeaderModel; width:
     </div>
   ) : null;
 
+  // The listing's state in words, for All files while it is on: a visible line
+  // when only part of the repository is listed; for a live listing the
+  // tooltip on the dot and a polite status region.
+  const listing = scope === 'all' ? model.repo : null;
+  const partialLine =
+    listing && !listing.live && listing.truncated ? (
+      <p className="px-3 pb-2 -mt-1 flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground" data-repo-listing-status="partial">
+        <span className="w-1.5 h-1.5 flex-shrink-0 rounded-full border border-warning" aria-hidden="true" />
+        <span>{PARTIAL_LISTING_TEXT}</span>
+      </p>
+    ) : null;
+
   return (
     <div className="flex-shrink-0" data-review-panel-header>
       {/* View tabs: text with an underline, the panel's top level. */}
@@ -372,6 +420,8 @@ export const ReviewPanelHeader: React.FC<{ model: ReviewPanelHeaderModel; width:
         <div className="border-b border-border/50">
           {sentence}
           {scopeRow}
+          {partialLine}
+          {scope && <LiveStatus repo={listing} />}
         </div>
       )}
     </div>
