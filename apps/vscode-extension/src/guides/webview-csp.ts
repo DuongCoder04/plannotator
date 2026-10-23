@@ -14,6 +14,10 @@ export function webviewCsp(cspSource: string, nonce: string, mode: GuidesWebview
     `img-src ${cspSource} data:`,
     `style-src ${cspSource} 'unsafe-inline'`,
     `font-src ${cspSource}`,
+    // 'unsafe-inline' here ONLY because the answer page's sandboxed srcdoc frame inherits this
+    // policy and its scripts must run. The answer tab itself must never insert unsanitized HTML
+    // into its own DOM (agent text goes through DOMPurify; the agent's page only into the frame),
+    // and it accepts messages only from the webview host (main.ts `fromWebviewHost`).
     mode === "answer" ? `script-src ${cspSource} 'unsafe-inline'` : `script-src 'nonce-${nonce}'`,
   ].join("; ");
 }

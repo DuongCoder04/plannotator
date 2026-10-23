@@ -462,11 +462,23 @@ export class GuidesController implements vscode.Disposable {
         if (this.asks.approveRun(str(args[0]))) return;
         if (this.run && this.run.gen.state.id === str(args[0])) this.run.gen.approveAutomatically();
         return;
-      case "approveAlways":
+      case "approveAlways": {
+        // (run id, permission id). The setting is written only for a request that is really
+        // waiting on the user: a forged command (no such run or request) changes nothing.
+        const runId = str(args[0]);
+        const permissionId = num(args[1]);
+        const gen = this.run?.gen;
+        const genPending = !!gen && gen.state.id === runId && isLive(gen.state) && permissionId !== undefined && gen.state.pendingPermissions.some((p) => p.id === permissionId);
+        const askPending = this.asks.hasPendingPermission(runId, permissionId);
+        if (!genPending && !askPending) {
+          this.log.warn(`[guides] approveAlways ignored: no request ${permissionId ?? "?"} is waiting in run ${runId ?? "?"}`);
+          return;
+        }
         await vscode.workspace.getConfiguration("plannotator.guides").update("autoApprove", "allow-all", vscode.ConfigurationTarget.Global);
-        if (this.asks.approveRun(str(args[0]))) return;
-        if (this.run && this.run.gen.state.id === str(args[0])) this.run.gen.approveAutomatically();
+        if (askPending) this.asks.approveRun(runId);
+        else gen!.approveAutomatically();
         return;
+      }
       case "askAboutSelection":
         return this.asks.askAboutSelection();
       case "askAboutFile":

@@ -48,6 +48,14 @@ export class Uri {
     return new Uri("file", "", fsPath, "", "");
   }
 
+  static joinPath(base: Uri, ...segments: string[]): Uri {
+    return new Uri(base.scheme, base.authority, [base.path.replace(/\/+$/, ""), ...segments].join("/"), base.query, base.fragment);
+  }
+
+  get fsPath(): string {
+    return this.path;
+  }
+
   static parse(value: string): Uri {
     const parsed = new globalThis.URL(value);
     return new Uri(
@@ -89,6 +97,8 @@ export interface WebviewPanel {
 }
 
 export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
   One: 1,
   Two: 2,
   Three: 3,
@@ -98,7 +108,13 @@ export const window = {
   registerUriHandler(_handler: unknown) {
     return { dispose() {} };
   },
-  async showInformationMessage(_message: string) {
+  async showInformationMessage(_message: string, ..._items: string[]): Promise<string | undefined> {
+    return undefined;
+  },
+  async showWarningMessage(_message: string, ..._items: string[]): Promise<string | undefined> {
+    return undefined;
+  },
+  async showErrorMessage(_message: string, ..._items: string[]): Promise<string | undefined> {
     return undefined;
   },
   async showInputBox(_options?: unknown) {

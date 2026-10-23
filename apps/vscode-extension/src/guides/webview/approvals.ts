@@ -29,7 +29,7 @@ export function renderPermissions(s: Pick<GeneratingViewState, "id" | "pendingPe
         h("span", { class: "pn-muted" }, "Approve this request and the rest automatically. What the agent may do is governed by its own settings; you can turn this off in Settings (plannotator.guides.autoApprove).")),
       h("div", { class: "pn-actions" },
         h("button", { class: "pn-btn pn-btn-primary", "data-action": "approveRun", onclick: () => command("approveRun", s.id) }, "Approve all for this run"),
-        h("button", { class: "pn-btn", "data-action": "approveAlways", onclick: () => command("approveAlways", s.id) }, "Always approve during guides"),
+        h("button", { class: "pn-btn", "data-action": "approveAlways", onclick: () => command("approveAlways", s.id, s.pendingPermissions[0]?.id) }, "Always approve during guides"),
       ),
     ));
   }

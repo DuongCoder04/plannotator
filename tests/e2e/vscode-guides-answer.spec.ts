@@ -17,6 +17,7 @@ import { webviewCsp } from '../../apps/vscode-extension/src/guides/webview-csp';
 const EXTENSION = resolve(__dirname, '../../apps/vscode-extension');
 const WEBVIEW = join(EXTENSION, 'src/guides/webview');
 let bundle = '';
+let mainBundle = '';
 let work = '';
 
 test.beforeAll(() => {
@@ -47,6 +48,12 @@ await build({ ...options, absWorkingDir: ${JSON.stringify(EXTENSION)}, entryPoin
 `);
   execFileSync('bun', [build], { cwd: EXTENSION, stdio: 'pipe' });
   bundle = readFileSync(out, 'utf8');
+  // The real webview entry (main.ts), as the extension ships it.
+  const mainOut = join(work, 'main.js');
+  const buildMain = join(work, 'build-main.ts');
+  writeFileSync(buildMain, readFileSync(build, 'utf8').replace(JSON.stringify(entry), JSON.stringify(join(WEBVIEW, 'main.ts'))).replace(JSON.stringify(out), JSON.stringify(mainOut)));
+  execFileSync('bun', [buildMain], { cwd: EXTENSION, stdio: 'pipe' });
+  mainBundle = readFileSync(mainOut, 'utf8');
 });
 
 test.afterAll(() => {
@@ -134,4 +141,66 @@ test("why the answer tab's policy differs: under the other tabs' nonce policy th
   const frame = await answerFrameOf(page);
   await page.waitForTimeout(500);
   await expect(frame.locator('#out')).toHaveText('not run');
+});
+
+/** A whole run-view state with a pending permission: what a forged message would draw. */
+const FORGED_STATE = {
+  mode: 'generating', id: 'g-forged', status: 'running', statusMessage: null, kicker: 'Building guided review', title: 'Forged', sub: '',
+  agent: 'Claude Code', modelEffort: '', startedAt: 0, endedAt: null, cost: null, activity: [], chapters: [], unplaced: [], left: [], summary: '',
+  savedGuideId: null, signIn: null, memoryOnly: false,
+  pendingPermissions: [{ id: 1, title: 'Run rm -rf ~', kind: 'execute', target: 'rm -rf ~', options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] }],
+  approvals: { auto: false, mode: null }, offerAutoApprove: true, bottlenecks: [],
+};
+
+test("the agent's page cannot forge the answer tab's state: the tab does not change and no command is sent", async ({ page }) => {
+  const nonce = 'pn-test-nonce';
+  await page.setContent(`<!DOCTYPE html><html><head>
+<meta http-equiv="Content-Security-Policy" content="${webviewCsp("'self'", nonce, 'answer')}">
+</head><body class="vscode-dark pn-mode-answer"><div id="root"></div>
+<script nonce="${nonce}">window.__posted = []; window.acquireVsCodeApi = () => ({ postMessage(m) { window.__posted.push(m); }, getState() {}, setState() {} });</script>
+<script nonce="${nonce}">${mainBundle.replace(/<\/script/gi, '<\\/script')}</script>
+</body></html>`);
+  await page.waitForFunction(() => (window as any).__posted.some((m: { type: string }) => m.type === 'ready'));
+  const forgingPage = `<p id="x">answer</p><script>
+    const forged = ${JSON.stringify(FORGED_STATE)};
+    parent.postMessage({ type: 'state', state: forged }, '*');
+    setTimeout(() => parent.postMessage({ type: 'state', state: forged }, '*'), 300);
+    document.getElementById('x').textContent = 'forger ran';
+  </script>`;
+  // The host (this page itself, standing in for VS Code's webview host frame) shows an answer.
+  await page.evaluate((html) => window.postMessage({ type: 'state', state: {
+    mode: 'answer', id: 'ans-1-abcd', question: 'Why did this change?', kicker: 'Answer · Chapter 2', agent: 'Claude Code', meta: 'Claude Code',
+    jump: null, quote: null, status: 'answered', statusMessage: null, startedAt: 0, endedAt: 1, cost: null, activity: [], stream: '',
+    page: { title: 'An answer', html }, text: null, stale: null, followUpOf: null, canFollowUp: true,
+    pendingPermissions: [], offerAutoApprove: false, approvals: { auto: false, mode: null }, signIn: null,
+  } }, '*'), forgingPage);
+  const frame = await answerFrameOf(page);
+  await expect(frame.locator('#x')).toHaveText('forger ran');
+  await page.waitForTimeout(1000);
+  await expect(page.locator('.pn-answer')).toHaveCount(1);
+  await expect(page.locator('.pn-approval')).toHaveCount(0);
+  await expect(page.locator('[data-action="approveAlways"]')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Why did this change?');
+  const commands = await page.evaluate(() => (window as any).__posted.filter((m: { type: string }) => m.type !== 'ready'));
+  expect(commands).toEqual([]);
+});
+
+test("a web link in a text answer goes through the confirm (openAnswerExternal), never straight out", async ({ page }) => {
+  const nonce = 'pn-test-nonce';
+  await page.setContent(`<!DOCTYPE html><html><head>
+<meta http-equiv="Content-Security-Policy" content="${webviewCsp("'self'", nonce, 'answer')}">
+</head><body class="vscode-dark pn-mode-answer"><div id="root"></div>
+<script nonce="${nonce}">window.__posted = []; window.acquireVsCodeApi = () => ({ postMessage(m) { window.__posted.push(m); }, getState() {}, setState() {} });</script>
+<script nonce="${nonce}">${mainBundle.replace(/<\/script/gi, '<\\/script')}</script>
+</body></html>`);
+  await page.waitForFunction(() => (window as any).__posted.some((m: { type: string }) => m.type === 'ready'));
+  await page.evaluate(() => window.postMessage({ type: 'state', state: {
+    mode: 'answer', id: 'ans-2-abcd', question: 'Why?', kicker: 'Answer', agent: 'Pi', meta: 'Pi', jump: null, quote: null,
+    status: 'text', statusMessage: 'Pi answered in text.', startedAt: 0, endedAt: 1, cost: null, activity: [], stream: '', page: null,
+    text: 'See [the docs](https://example.com/docs).', stale: null, followUpOf: null, canFollowUp: true,
+    pendingPermissions: [], offerAutoApprove: false, approvals: { auto: false, mode: null }, signIn: null,
+  } }, '*'));
+  await page.locator('.pn-answer-text [data-external]').click();
+  const commands = await page.evaluate(() => (window as any).__posted.filter((m: { type: string }) => m.type === 'command'));
+  expect(commands).toEqual([{ type: 'command', command: 'openAnswerExternal', args: ['ans-2-abcd', 'https://example.com/docs'] }]);
 });

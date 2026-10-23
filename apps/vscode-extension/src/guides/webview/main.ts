@@ -23,6 +23,7 @@ import { checkMermaid, renderMermaid } from "./diagram";
 import { h, icon } from "./dom";
 import { renderBottlenecks, renderPermissions } from "./approvals";
 import { answerFrame } from "./answer-frame";
+import { fromWebviewHost } from "./host-messages";
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): unknown; setState(state: unknown): void };
 const vscode = acquireVsCodeApi();
@@ -35,6 +36,7 @@ let state: ViewState | null = null;
 let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 
 window.addEventListener("message", (event: MessageEvent<ToWebview>) => {
+  if (!fromWebviewHost(event)) return;
   const msg = event.data;
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "state") {
@@ -497,7 +499,9 @@ document.addEventListener("click", (e) => {
   const ext = e.target instanceof Element ? e.target.closest("[data-external]") : null;
   if (ext) {
     e.preventDefault();
-    command("openExternal", ext.getAttribute("data-external"));
+    // In an answer tab the link is the agent's: open it only after the confirm (openAnswerExternal).
+    if (state?.mode === "answer") command("openAnswerExternal", state.id, ext.getAttribute("data-external"));
+    else command("openExternal", ext.getAttribute("data-external"));
     return;
   }
   const action = e.target instanceof Element ? e.target.closest("[data-popover-action]") : null;

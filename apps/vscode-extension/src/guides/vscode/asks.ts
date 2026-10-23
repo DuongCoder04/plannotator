@@ -13,7 +13,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "../acp/agents";
 import type { ReadyLaunch } from "../acp/ensure-launch";
-import { capCode, deleteAnswer, deleteGuideAnswers, listAnswers, newAnswerId, saveAnswer, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
+import { capCode, newAnswerId, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
+import { AnswerShelf } from "../ask/shelf";
 import { buildAskPrompt, type AskGuideContext } from "../ask/prompt";
 import { GuideAskSession, type AskRun, type AskRunState, type SavedSession } from "../ask/session";
 import { aboutTitle, answerListItem, answerViewState, answersFooter, goesWith, relativeTimeShort } from "../ask/view";
@@ -79,34 +80,25 @@ export class GuideAsks implements vscode.Disposable {
   private readonly sessions = new Map<string, GuideAskSession>();
   private readonly live = new Map<string, LiveAsk>();
   private readonly panels = new Set<AnswerPanel>();
-  /** Answers kept in memory (guide history off): guide id → answer id → record. */
-  private readonly memory = new Map<string, Map<string, AnswerRecord>>();
+  /** The answers on disk or in memory, what was deleted, and the one-question-per-guide slot. */
+  private readonly shelf: AnswerShelf;
   private answerColumn: vscode.ViewColumn | undefined;
 
-  constructor(private readonly host: AsksHost) {}
+  constructor(private readonly host: AsksHost) {
+    this.shelf = new AnswerShelf((line) => host.log(line));
+  }
 
   // ---------------------------------------------------------------------------
   // Answers, on disk or in memory
   // ---------------------------------------------------------------------------
 
-  private save(record: AnswerRecord, guide: LoadedGuide): void {
-    if (!this.host.persists(guide)) {
-      const m = this.memory.get(record.guideId) ?? new Map<string, AnswerRecord>();
-      m.set(record.id, record);
-      this.memory.set(record.guideId, m);
-      return;
-    }
-    try {
-      saveAnswer(record);
-    } catch (err) {
-      this.host.log(`[guides] could not save the answer: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  private save(record: AnswerRecord, guide: LoadedGuide): boolean {
+    return this.shelf.save(record, this.host.persists(guide));
   }
 
   /** The guide's answers, newest first (a live one as it is now). */
   answersOf(guide: LoadedGuide): AnswerRecord[] {
-    const saved = this.host.persists(guide) ? listAnswers(guide.repoKey, guide.id) : [...(this.memory.get(guide.id)?.values() ?? [])].sort((a, b) => b.askedAt - a.askedAt);
-    return saved.map((r) => this.live.get(r.id)?.record ?? r);
+    return this.shelf.list(guide.repoKey, guide.id, this.host.persists(guide)).map((r) => this.live.get(r.id)?.record ?? r);
   }
 
   private find(guide: LoadedGuide, id: string): AnswerRecord | null {
@@ -127,7 +119,7 @@ export class GuideAsks implements vscode.Disposable {
   }
 
   private isBusy(guideId: string): boolean {
-    return !!this.sessions.get(guideId)?.current;
+    return this.shelf.isReserved(guideId) || !!this.sessions.get(guideId)?.current;
   }
 
   // ---------------------------------------------------------------------------
@@ -256,22 +248,38 @@ export class GuideAsks implements vscode.Disposable {
   private async ask(guide: LoadedGuide, about: AskAbout, question: string, opts: { codeColumn?: vscode.ViewColumn; followUpOf?: AnswerRecord; panel?: AnswerPanel }): Promise<void> {
     const reader = this.host.reader();
     if (!reader || reader.model.id !== guide.id) return;
-    const busy = this.sessions.get(guide.id)?.current;
-    if (busy) {
-      const running = this.live.get(busy.state.answerId)?.record;
-      const choice = await vscode.window.showWarningMessage(`${running?.agent.label ?? "The agent"} is answering another question${running ? `: “${running.question}”` : ""}.`, "Show it", "Stop it");
+    // One question at a time per guide: the slot is taken before anything is awaited, so a
+    // second ask (a double Enter, the box and the chapter at once) is refused, never half-started.
+    if (!this.shelf.reserve(guide.id)) {
+      const busy = this.sessions.get(guide.id)?.current;
+      const running = busy ? this.live.get(busy.state.answerId)?.record : undefined;
+      const choice = await vscode.window.showWarningMessage(
+        `${running?.agent.label ?? this.choiceFor(guide).label} is ${running ? "answering" : "getting ready to answer"} another question${running ? `: “${running.question}”` : ""}.`,
+        ...(running ? ["Show it", "Stop it"] : []),
+      );
       if (choice === "Show it" && running) await this.openAnswer(running.id);
-      if (choice === "Stop it") await busy.cancel();
+      if (choice === "Stop it") await busy?.cancel();
       return;
     }
+    let started = false;
+    try {
+      started = await this.start(guide, reader, about, question, opts);
+    } finally {
+      if (!started) this.shelf.release(guide.id);
+    }
+  }
+
+  /** Start answering (the guide's slot is held); true when a run started, which releases the slot when it ends. */
+  private async start(guide: LoadedGuide, reader: { model: ReaderModel; sides: ReaderSides }, about: AskAbout, question: string, opts: { codeColumn?: vscode.ViewColumn; followUpOf?: AnswerRecord; panel?: AnswerPanel }): Promise<boolean> {
     const choice = this.choiceFor(guide);
     const descriptor = this.host.agentById(choice.id);
     if (!descriptor) {
       void vscode.window.showErrorMessage(`Plannotator does not know the agent ${choice.label}.`);
-      return;
+      return false;
     }
     const launch = await this.host.ensureLaunch(descriptor);
-    if (!launch) return;
+    if (!launch) return false;
+    if (this.shelf.isGuideDeleted(guide.id) || this.host.reader()?.model.id !== guide.id) return false;
     const cwd = reader.sides.head.kind === "fs" ? reader.sides.head.root : reader.sides.gitRoot;
     const session = await this.sessionFor(guide, descriptor, launch, cwd, reader);
     const record: AnswerRecord = {
@@ -288,7 +296,7 @@ export class GuideAsks implements vscode.Disposable {
       ...(opts.followUpOf && { followUpOf: opts.followUpOf.id }),
       seen: true,
     };
-    this.save(record, guide);
+    if (!this.save(record, guide)) return false;
     const context = guideContext(guide, reader, cwd);
     const previous = opts.followUpOf ? { question: opts.followUpOf.question, ...(opts.followUpOf.title && { title: opts.followUpOf.title }) } : undefined;
     const run = session.ask({
@@ -322,7 +330,11 @@ export class GuideAsks implements vscode.Disposable {
     });
     this.showLive(live, run.state);
     this.host.updateChapterView();
-    void run.done.then((state) => this.finished(guide, live, state, session));
+    void run.done.then((state) => {
+      this.shelf.release(guide.id);
+      this.finished(guide, live, state, session);
+    });
+    return true;
   }
 
   private async sessionFor(guide: LoadedGuide, agent: AgentDescriptor, launch: ReadyLaunch, cwd: string, reader: { model: ReaderModel; sides: ReaderSides }): Promise<GuideAskSession> {
@@ -382,14 +394,18 @@ export class GuideAsks implements vscode.Disposable {
     record.agent = { ...record.agent, ...model, ...effort };
     const panel = this.panelShowing(record.id);
     record.seen = !!panel?.panel.visible;
-    this.save(record, guide);
     this.live.delete(record.id);
+    this.host.setAnswering(null, null);
+    // Deleted while it was being answered (the answer, or its guide): nothing is written back.
+    if (!this.save(record, guide)) {
+      this.host.updateChapterView();
+      return;
+    }
     // Remember the session, so a later window loads it when the agent can.
-    if (session.askSessionId) {
+    if (session.askSessionId && !this.shelf.isGuideDeleted(guide.id)) {
       guide.sidecar.askSession = { id: session.askSessionId, agent: session.agentId };
       if (this.host.persists(guide)) writeSidecar(guide.repoKey, guide.id, guide.sidecar);
     }
-    this.host.setAnswering(null, null);
     if (panel) {
       panel.panel.title = tabTitle(record.question, false);
       void this.showRecord(panel, record);
@@ -498,14 +514,14 @@ export class GuideAsks implements vscode.Disposable {
     await this.live.get(answerId)?.run.cancel();
   }
 
-  /** The tab's "…": ask again, delete, copy the question. `again` asks again at once. */
+  /** The tab's "…": ask again, delete, copy the question. `again` (the tab's button) and `delete` act at once. */
   async menu(answerId: string | undefined, action?: string): Promise<void> {
     const reader = this.host.reader();
     if (!reader || !answerId) return;
     const guide = reader.model.loaded;
     const record = this.find(guide, answerId);
     if (!record) return;
-    const pick = action === "again" ? "again" : (await vscode.window.showQuickPick([
+    const pick = action === "again" || action === "delete" ? action : (await vscode.window.showQuickPick([
       { label: "$(refresh) Ask again", value: "again" },
       { label: "$(copy) Copy the question", value: "copy" },
       { label: "$(trash) Delete this answer", value: "delete" },
@@ -513,9 +529,9 @@ export class GuideAsks implements vscode.Disposable {
     if (pick === "again") return this.ask(guide, record.about, record.question, { codeColumn: this.panelShowing(record.id)?.codeColumn, ...(this.panelShowing(record.id) && { panel: this.panelShowing(record.id)! }) });
     if (pick === "copy") return void vscode.env.clipboard.writeText(record.question);
     if (pick === "delete") {
+      // Marked deleted first, so a run still answering it does not write it back when it ends.
+      this.shelf.remove(record, this.host.persists(guide));
       if (this.live.has(record.id)) await this.stop(record.id);
-      if (this.host.persists(guide)) deleteAnswer(guide.repoKey, guide.id, record.id);
-      else this.memory.get(guide.id)?.delete(record.id);
       this.panelShowing(record.id)?.panel.dispose();
       this.host.updateChapterView();
     }
@@ -536,6 +552,12 @@ export class GuideAsks implements vscode.Disposable {
     return true;
   }
 
+  /** Whether this answer's run is waiting on the user for this permission request. */
+  hasPendingPermission(answerId: string | undefined, id: number | undefined): boolean {
+    const live = answerId ? this.live.get(answerId) : undefined;
+    return !!live && live.run.live && id !== undefined && live.run.state.pendingPermissions.some((p) => p.id === id);
+  }
+
   approveRun(answerId: string | undefined): boolean {
     const live = answerId ? this.live.get(answerId) : undefined;
     if (!live) return false;
@@ -545,11 +567,11 @@ export class GuideAsks implements vscode.Disposable {
 
   /** The guide was deleted: its conversation and answers go too. */
   onGuideDeleted(repoKey: string, guideId: string): void {
+    // Marked first: a question still being answered must not write its answer or the sidecar back.
+    this.shelf.removeGuide(repoKey, guideId);
     this.sessions.get(guideId)?.dispose();
     this.sessions.delete(guideId);
     for (const p of [...this.panels]) if (p.guideId === guideId) p.panel.dispose();
-    this.memory.delete(guideId);
-    deleteGuideAnswers(repoKey, guideId);
   }
 
   dispose(): void {
