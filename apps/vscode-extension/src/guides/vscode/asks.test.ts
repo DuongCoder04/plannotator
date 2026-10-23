@@ -14,6 +14,7 @@ import { answersPath, listAnswers } from "../ask/answers";
 import { startRelayHost, type RelayHost } from "../mcp/relay-host";
 import { ReaderModel } from "../reader-model";
 import type { LoadedGuide } from "../store";
+import { approveAlwaysTarget } from "../trust";
 import { GuideAsks, type AsksHost } from "./asks";
 
 const FAKE_AGENT = join(import.meta.dir, "..", "..", "..", "tests", "fake-acp-agent.ts");
@@ -26,6 +27,7 @@ let relay: RelayHost;
 let dataBefore: string | undefined;
 const warnings: string[] = [];
 const original = { warn: vscode.window.showWarningMessage, info: vscode.window.showInformationMessage };
+let confirmDelete: string | undefined = "Delete";
 
 beforeAll(async () => {
   work = mkdtempSync(join(tmpdir(), "pn-guides-asks-"));
@@ -44,10 +46,14 @@ beforeEach(() => {
   dataBefore = process.env.PLANNOTATOR_DATA_DIR;
   process.env.PLANNOTATOR_DATA_DIR = mkdtempSync(join(work, "data-"));
   warnings.length = 0;
-  (vscode.window as unknown as Record<string, unknown>).showWarningMessage = async (message: string) => {
+  confirmDelete = "Delete";
+  (vscode.window as unknown as Record<string, unknown>).showWarningMessage = async (message: string, ...items: unknown[]) => {
     warnings.push(message);
+    // The Delete confirm (modal): answered by the test.
+    if (items.includes("Delete")) return confirmDelete;
     return undefined;
   };
+  (vscode.window as unknown as Record<string, unknown>).showQuickPick = async (items: Array<{ value: string }>) => items.find((i) => i.value === "delete");
   (vscode.window as unknown as Record<string, unknown>).showInformationMessage = async () => undefined;
 });
 
@@ -158,16 +164,52 @@ describe("asking from VS Code", () => {
     w.asks.dispose();
   });
 
+  it("asks before deleting an answer; a cancelled confirm keeps it", async () => {
+    const w = world([[answer("Kept")]]);
+    await w.ask("Why did this change?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    confirmDelete = undefined;
+    await w.asks.menu(record.id);
+    expect(warnings.some((m) => m.startsWith("Delete the answer to “Why did this change?”"))).toBe(true);
+    expect(listAnswers(REPO_KEY, GUIDE_ID).map((r) => r.id)).toEqual([record.id]);
+    // "delete" is not an action a message can ask for directly: it still asks.
+    warnings.length = 0;
+    await w.asks.menu(record.id, "delete");
+    expect(warnings).toHaveLength(1);
+    expect(listAnswers(REPO_KEY, GUIDE_ID)).toHaveLength(1);
+    w.asks.dispose();
+  });
+
   it("does not write back an answer deleted while it is being answered", async () => {
     const w = world([[{ say: "Thinking…" }, { sleep: 800 }, answer("Too late")]]);
     await w.ask("Why did this change?");
     await waitFor(() => w.log().some((e) => e.event === "prompt"));
     const [record] = listAnswers(REPO_KEY, GUIDE_ID);
     expect(record.status).toBe("stopped"); // an "answering" file reads as stopped
-    await w.asks.menu(record.id, "delete");
+    await w.asks.menu(record.id);
     await new Promise((r) => setTimeout(r, 1500));
     expect(listAnswers(REPO_KEY, GUIDE_ID)).toEqual([]);
     expect(existsSync(join(answersPath(REPO_KEY, GUIDE_ID), `${record.id}.json`))).toBe(false);
+    w.asks.dispose();
+  });
+
+  it("Always approve acts only on the answer and the request really waiting: a mismatched id changes nothing", async () => {
+    const w = world([[{ permission: { title: "Run git log -p", kind: "execute" } }, answer("After the approval")]]);
+    await w.ask("Why did this change?");
+    await waitFor(() => w.log().some((e) => e.event === "prompt"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    await waitFor(() => w.asks.hasPendingPermission(record.id, 1));
+    const askPending = (run: string | undefined, id: number | undefined) => w.asks.hasPendingPermission(run, id);
+    // What the controller checks before it writes plannotator.guides.autoApprove.
+    expect(approveAlwaysTarget(record.id, 1, { generation: null, askPending })).toBe("ask");
+    expect(approveAlwaysTarget(record.id, 2, { generation: null, askPending })).toBeNull();
+    expect(approveAlwaysTarget("ans-1-zzzz", 1, { generation: null, askPending })).toBeNull();
+    expect(approveAlwaysTarget(record.id, undefined, { generation: null, askPending })).toBeNull();
+    expect(w.asks.answerPermission(record.id, 1, "allow-once")).toBe(true);
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    // Answered: nothing waits any more, so the same ids no longer count.
+    expect(approveAlwaysTarget(record.id, 1, { generation: null, askPending })).toBeNull();
     w.asks.dispose();
   });
 });

@@ -161,12 +161,7 @@ test("the agent's page cannot forge the answer tab's state: the tab does not cha
 <script nonce="${nonce}">${mainBundle.replace(/<\/script/gi, '<\\/script')}</script>
 </body></html>`);
   await page.waitForFunction(() => (window as any).__posted.some((m: { type: string }) => m.type === 'ready'));
-  const forgingPage = `<p id="x">answer</p><script>
-    const forged = ${JSON.stringify(FORGED_STATE)};
-    parent.postMessage({ type: 'state', state: forged }, '*');
-    setTimeout(() => parent.postMessage({ type: 'state', state: forged }, '*'), 300);
-    document.getElementById('x').textContent = 'forger ran';
-  </script>`;
+  const forgingPage = `<p id="x">answer</p><script>document.getElementById('x').textContent = 'page ran';</script>`;
   // The host (this page itself, standing in for VS Code's webview host frame) shows an answer.
   await page.evaluate((html) => window.postMessage({ type: 'state', state: {
     mode: 'answer', id: 'ans-1-abcd', question: 'Why did this change?', kicker: 'Answer · Chapter 2', agent: 'Claude Code', meta: 'Claude Code',
@@ -175,8 +170,13 @@ test("the agent's page cannot forge the answer tab's state: the tab does not cha
     pendingPermissions: [], offerAutoApprove: false, approvals: { auto: false, mode: null }, signIn: null,
   } }, '*'), forgingPage);
   const frame = await answerFrameOf(page);
-  await expect(frame.locator('#x')).toHaveText('forger ran');
-  await page.waitForTimeout(1000);
+  await expect(frame.locator('#x')).toHaveText('page ran');
+  // Now, with the frame mounted, the page forges the tab's state from inside the frame.
+  await frame.evaluate((forged) => {
+    window.parent.postMessage({ type: 'state', state: forged }, '*');
+    window.top!.postMessage({ type: 'state', state: forged }, '*');
+  }, FORGED_STATE);
+  await page.waitForTimeout(800);
   await expect(page.locator('.pn-answer')).toHaveCount(1);
   await expect(page.locator('.pn-approval')).toHaveCount(0);
   await expect(page.locator('[data-action="approveAlways"]')).toHaveCount(0);

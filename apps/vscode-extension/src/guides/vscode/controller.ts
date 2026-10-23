@@ -77,6 +77,7 @@ import { chapterColorCss, linkInfo, locateLink, resolveSymbolForBuilder } from "
 import { autoApproveChoice, pickAgentAndEffort, pickPullRequest, pickPullRequestByLink, pickSource, type RememberedChoice, type SourceChoice } from "./new-review";
 import { ReaderUi } from "./reader-ui";
 import { GuideAsks } from "./asks";
+import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
@@ -468,14 +469,16 @@ export class GuidesController implements vscode.Disposable {
         const runId = str(args[0]);
         const permissionId = num(args[1]);
         const gen = this.run?.gen;
-        const genPending = !!gen && gen.state.id === runId && isLive(gen.state) && permissionId !== undefined && gen.state.pendingPermissions.some((p) => p.id === permissionId);
-        const askPending = this.asks.hasPendingPermission(runId, permissionId);
-        if (!genPending && !askPending) {
+        const target = approveAlwaysTarget(runId, permissionId, {
+          generation: gen ? { id: gen.state.id, live: isLive(gen.state), pending: gen.state.pendingPermissions.map((p) => p.id) } : null,
+          askPending: (run, id) => this.asks.hasPendingPermission(run, id),
+        });
+        if (!target) {
           this.log.warn(`[guides] approveAlways ignored: no request ${permissionId ?? "?"} is waiting in run ${runId ?? "?"}`);
           return;
         }
         await vscode.workspace.getConfiguration("plannotator.guides").update("autoApprove", "allow-all", vscode.ConfigurationTarget.Global);
-        if (askPending) this.asks.approveRun(runId);
+        if (target === "ask") this.asks.approveRun(runId);
         else gen!.approveAutomatically();
         return;
       }
@@ -498,14 +501,37 @@ export class GuidesController implements vscode.Disposable {
       case "resumeWithApproval":
         return this.resumeDraft(str(args[0]) ?? treeArg(args[0]), true);
       case "openPullRequestOnGitHub": {
-        const target = str(args[0]) ?? (args[0] && typeof args[0] === "object" ? ((args[0] as { pr?: { url: string }; row?: { url: string } }).pr?.url ?? (args[0] as { row?: { url: string } }).row?.url) : undefined);
-        if (target && /^https:\/\//.test(target)) await vscode.env.openExternal(vscode.Uri.parse(target));
+        // A tree row passes its node (the extension's own data); a webview passes a string,
+        // which opens without asking only when it is a pull request the extension knows.
+        const fromNode = args[0] && typeof args[0] === "object" ? ((args[0] as { pr?: { url: string }; row?: { url: string } }).pr?.url ?? (args[0] as { row?: { url: string } }).row?.url) : undefined;
+        const target = fromNode ?? str(args[0]);
+        if (!target || !/^https:\/\//.test(target)) return;
+        if (!fromNode && !isKnownPullRequestUrl(target, this.knownPullRequestUrls())) {
+          const choice = await vscode.window.showInformationMessage(`Open ${target} in your browser?`, "Open");
+          if (choice !== "Open") return;
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(target));
         return;
       }
       default:
         this.log.warn(`[guides] unknown command ${name}`);
         return undefined;
     }
+  }
+
+  /** Pull requests the extension itself knows: the dashboard's, the open guide's and the run's. */
+  private knownPullRequestUrls(): string[] {
+    const d = this.dashboard;
+    const env = this.reader?.model.loaded.envelope;
+    return [
+      ...(d?.prs.map((p) => p.url) ?? []),
+      ...(d?.waiting.map((w) => w.url) ?? []),
+      d?.currentBranchPR?.url,
+      env?.prUrl,
+      env?.review?.source.pr?.url,
+      this.reader?.model.loaded.sidecar.source?.pr?.url,
+      this.run?.gen.state.source.pr?.url,
+    ].filter((u): u is string => !!u);
   }
 
   /**

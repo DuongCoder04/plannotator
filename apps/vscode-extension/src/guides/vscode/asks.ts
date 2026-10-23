@@ -514,14 +514,14 @@ export class GuideAsks implements vscode.Disposable {
     await this.live.get(answerId)?.run.cancel();
   }
 
-  /** The tab's "…": ask again, delete, copy the question. `again` (the tab's button) and `delete` act at once. */
+  /** The tab's "…": ask again, delete (after a confirm), copy the question. `again` (the tab's button) asks again at once. */
   async menu(answerId: string | undefined, action?: string): Promise<void> {
     const reader = this.host.reader();
     if (!reader || !answerId) return;
     const guide = reader.model.loaded;
     const record = this.find(guide, answerId);
     if (!record) return;
-    const pick = action === "again" || action === "delete" ? action : (await vscode.window.showQuickPick([
+    const pick = action === "again" ? action : (await vscode.window.showQuickPick([
       { label: "$(refresh) Ask again", value: "again" },
       { label: "$(copy) Copy the question", value: "copy" },
       { label: "$(trash) Delete this answer", value: "delete" },
@@ -529,6 +529,8 @@ export class GuideAsks implements vscode.Disposable {
     if (pick === "again") return this.ask(guide, record.about, record.question, { codeColumn: this.panelShowing(record.id)?.codeColumn, ...(this.panelShowing(record.id) && { panel: this.panelShowing(record.id)! }) });
     if (pick === "copy") return void vscode.env.clipboard.writeText(record.question);
     if (pick === "delete") {
+      const sure = await vscode.window.showWarningMessage(`Delete the answer to “${record.question}”?`, { modal: true }, "Delete");
+      if (sure !== "Delete") return;
       // Marked deleted first, so a run still answering it does not write it back when it ends.
       this.shelf.remove(record, this.host.persists(guide));
       if (this.live.has(record.id)) await this.stop(record.id);
