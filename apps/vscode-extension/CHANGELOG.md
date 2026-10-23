@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Guided Reviews: ask the agent about selected code, a file or a chapter, and read its answer as a page beside the diff (the agent's own HTML, scripts included, in a sandboxed frame; Mermaid drawn by the Guide tab's engine). The guide's own ACP session answers when the agent can load it; answers are saved with the guide and listed under the chapter, with follow-ups in the same conversation.
 - Guides view: write a Guided Review of a pull request or your local changes with Claude Code over ACP, watch it build, and read it chapter by chapter in the native diff editor (overview with a Mermaid diagram and code links, chapter and file ticks, CodeLens, status bar). Guides are shared with Plannotator's web app. A pull request's own Claude Code settings and MCP servers are never loaded; guide history off (`PLANNOTATOR_GUIDE_HISTORY=0`) is honored.
 
 ## [0.4.0] - 2026-02-11

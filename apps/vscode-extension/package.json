@@ -191,6 +191,23 @@
         "icon": "$(check)"
       },
       {
+        "command": "plannotator.guides.askAboutSelection",
+        "title": "Ask the Agent About This…",
+        "category": "Guided Reviews",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "plannotator.guides.askAboutFile",
+        "title": "Ask the Agent About This File…",
+        "category": "Guided Reviews",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "plannotator.guides.openAnswer",
+        "title": "Open Answer",
+        "category": "Guided Reviews"
+      },
+      {
         "command": "plannotator.guides.changeDefaults",
         "title": "Change Defaults (Agent, Model, Effort)",
         "category": "Guided Reviews"
@@ -221,6 +238,11 @@
           "command": "plannotator-webview.addEditorAnnotation",
           "when": "editorHasSelection",
           "group": "plannotator"
+        },
+        {
+          "command": "plannotator.guides.askAboutSelection",
+          "when": "plannotator.guides.editorInGuide && editorHasSelection",
+          "group": "plannotator@1"
         }
       ],
       "comments/commentThread/title": [
@@ -383,6 +405,18 @@
         {
           "command": "plannotator.guides.closeGuide",
           "when": "plannotator.guides.readerOpen"
+        },
+        {
+          "command": "plannotator.guides.askAboutSelection",
+          "when": "plannotator.guides.editorInGuide"
+        },
+        {
+          "command": "plannotator.guides.askAboutFile",
+          "when": "plannotator.guides.editorInGuide"
+        },
+        {
+          "command": "plannotator.guides.openAnswer",
+          "when": "false"
         }
       ]
     },

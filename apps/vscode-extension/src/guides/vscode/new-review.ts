@@ -201,8 +201,10 @@ export async function pickAgentAndEffort(input: {
   defaultsOnly?: boolean;
   /** Automatic approval preselected (the `plannotator.guides.autoApprove` setting). */
   autoApprove?: boolean;
+  /** The Quick Pick's title (default "Guide defaults" or "New Guided Review"). */
+  title?: string;
 }): Promise<AgentPickResult | undefined> {
-  const title = input.defaultsOnly ? "Guide defaults" : "New Guided Review";
+  const title = input.title ?? (input.defaultsOnly ? "Guide defaults" : "New Guided Review");
   const total = input.defaultsOnly ? 3 : 4;
   const offset = input.defaultsOnly ? 0 : 1;
   // Step: agent

@@ -66,6 +66,16 @@ Pi can't write guides yet: `pi-acp` does not pass MCP servers on to Pi, so Pi ca
 - **The agent inherits VS Code's environment,** including any credentials in it.
 - Guided reviews are saved where Plannotator's web app finds them: open and export them from either side.
 
+### Ask the agent
+
+While you read a guide, ask the agent about the change, and it answers with a page beside the diff: a few short paragraphs and, when it helps, a picture it draws.
+
+- **Where you ask.** Select code in a guide's diff and right-click **Ask the Agent About This…**; or use **Ask…** in the file's CodeLens line (the selection, or the whole file); or the chapter view's box **Ask the agent about this chapter…** (type and press Enter, or leave it empty for suggestions). The question box offers suggestions ("Why did this change?", "What could break?", "Draw how this works", …), the questions asked before in this guide (picking one opens its answer), and a button to change the agent, model and effort. No keyboard shortcut; bind `plannotator.guides.askAboutSelection` if you like.
+- **Who answers.** The agent, model and effort that wrote the guide, with your own config and permissions, exactly as for a guide. When the agent can reload sessions (ACP `session/load`; the pinned Claude Code, Codex and Pi adapters advertise it), the first question picks up the session that wrote the guide, so it remembers what it read; otherwise a new session starts with the guide, the selected code and the file's diff. Follow-ups continue the same conversation. The agent stops after 10 minutes with nothing asked; the next question loads the conversation again where it can.
+- **The answer** opens in a tab "Answer: …" beside the diff, with the agent's work while it answers (Stop, its tool calls, its text as it writes) and the same approval panel as a guide. The agent hands its page over with the `show_answer` tool; an agent that answers without it (or cannot reach MCP servers, as Pi through pi-acp) has its last message shown as a text answer. Links in the page open the code in the guide's diff (`code:`), a symbol (`symbol:`) or a chapter (`chapter:`); a web link asks before it opens.
+- **The page runs as the agent wrote it, scripts included,** in a sandboxed frame: it cannot reach VS Code, the extension or the network.
+- **Answers are saved with the guide** and listed under the chapter ("Answers · N"); an answer written before the code moved says so. Deleting the guide deletes them; with guide history off they are kept until VS Code closes. They stay in VS Code: exported and shared guides carry none.
+
 ## Features
 
 - **In-editor plan review** — approve or deny plans with annotated feedback, directly in a VS Code tab

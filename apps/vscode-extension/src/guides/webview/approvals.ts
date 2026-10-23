@@ -13,7 +13,7 @@ export type Command = (name: string, ...args: unknown[]) => void;
  * Requests the agent is waiting on: never a silent stall. Each shows every
  * option the agent offers; the first time, automatic approval is offered too.
  */
-export function renderPermissions(s: GeneratingViewState, command: Command): HTMLElement[] {
+export function renderPermissions(s: Pick<GeneratingViewState, "id" | "pendingPermissions" | "offerAutoApprove">, command: Command): HTMLElement[] {
   const out = s.pendingPermissions.map((p) =>
     h("section", { class: "pn-approval", role: "alert", "data-permission": p.id },
       h("div", { class: "pn-approval-head" }, icon("shield"), h("b", {}, " Waiting for your approval: "), p.title, p.kind ? h("span", { class: "pn-tag" }, p.kind) : null),

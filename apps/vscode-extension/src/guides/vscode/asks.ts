@@ -1,0 +1,592 @@
+/**
+ * "Ask the agent" in the reader (approved 2026-10-23): select code in a guide
+ * diff and right-click "Ask the Agent About This…", the file's CodeLens
+ * "Ask…", or the chapter view's ask box. The question goes to the agent that
+ * wrote the guide (its model and effort, changeable from the question box),
+ * and its answer opens as a page in a tab beside the diff, listed under the
+ * chapter. Follow-ups continue the same conversation.
+ */
+
+import * as vscode from "vscode";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "../acp/agents";
+import type { ReadyLaunch } from "../acp/ensure-launch";
+import { capCode, deleteAnswer, deleteGuideAnswers, listAnswers, newAnswerId, saveAnswer, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
+import { buildAskPrompt, type AskGuideContext } from "../ask/prompt";
+import { GuideAskSession, type AskRun, type AskRunState, type SavedSession } from "../ask/session";
+import { aboutTitle, answerListItem, answerViewState, answersFooter, goesWith, relativeTimeShort } from "../ask/view";
+import type { PendingPermission, PermissionAnswer } from "../generation";
+import type { RelayHost } from "../mcp/relay-host";
+import type { ReaderModel, ReaderSides } from "../reader-model";
+import type { Runner } from "../sources/runner";
+import { writeSidecar, type AgentChoiceRecord, type LoadedGuide } from "../store";
+import type { AnswerListItem } from "../webview-protocol";
+import { pickQuestion } from "./ask-box";
+import { resolveSymbolForBuilder } from "./intel";
+import { guideSideOf } from "./uris";
+import type { WebviewHost, WebviewMode } from "./webview-host";
+
+export interface AsksPanel {
+  panel: vscode.WebviewPanel;
+  host: WebviewHost;
+}
+
+export interface AsksHost {
+  context: vscode.ExtensionContext;
+  version: string;
+  runner: Runner;
+  log(line: string): void;
+  reader(): { model: ReaderModel; sides: ReaderSides } | null;
+  openGuide(id: string): Promise<void>;
+  openLink(href: string, column?: vscode.ViewColumn): Promise<void>;
+  relayHost(): Promise<RelayHost>;
+  agentById(id: string): AgentDescriptor | null;
+  defaultChoice(): AgentChoiceRecord;
+  ensureLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null>;
+  /** Pick another agent, model or effort (the start flow's picker). */
+  pickModel(current: AgentChoiceRecord): Promise<AgentChoiceRecord | null>;
+  notifyPermission(pending: PendingPermission, signal: AbortSignal, agentLabel: string): Promise<PermissionAnswer | null>;
+  autoApprove(): boolean;
+  approveAlways(): void;
+  signIn(agentId: string, logins: LoginCommand[], label: string | undefined, cwd: string): Promise<void>;
+  createPanel(title: string, column: vscode.ViewColumn, onLink: (link: string) => void): AsksPanel;
+  /** Whether answers are written to disk (guide history on, and the guide itself is saved). */
+  persists(guide: LoadedGuide): boolean;
+  updateChapterView(): void;
+  setAnswering(text: string | null, answerId: string | null): void;
+}
+
+interface LiveAsk {
+  run: AskRun;
+  record: AnswerRecord;
+}
+
+interface AnswerPanel extends AsksPanel {
+  /** The answer it shows now (a follow-up moves it to the next answer). */
+  current: string;
+  guideId: string;
+  repoKey: string;
+  /** Where to open code links: the diff's editor group. */
+  codeColumn: vscode.ViewColumn | undefined;
+}
+
+const MAX_QUESTION = 2000;
+const askChoiceKey = (guideId: string) => `plannotator.guides.askChoice:${guideId}`;
+
+export class GuideAsks implements vscode.Disposable {
+  private readonly sessions = new Map<string, GuideAskSession>();
+  private readonly live = new Map<string, LiveAsk>();
+  private readonly panels = new Set<AnswerPanel>();
+  /** Answers kept in memory (guide history off): guide id → answer id → record. */
+  private readonly memory = new Map<string, Map<string, AnswerRecord>>();
+  private answerColumn: vscode.ViewColumn | undefined;
+
+  constructor(private readonly host: AsksHost) {}
+
+  // ---------------------------------------------------------------------------
+  // Answers, on disk or in memory
+  // ---------------------------------------------------------------------------
+
+  private save(record: AnswerRecord, guide: LoadedGuide): void {
+    if (!this.host.persists(guide)) {
+      const m = this.memory.get(record.guideId) ?? new Map<string, AnswerRecord>();
+      m.set(record.id, record);
+      this.memory.set(record.guideId, m);
+      return;
+    }
+    try {
+      saveAnswer(record);
+    } catch (err) {
+      this.host.log(`[guides] could not save the answer: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** The guide's answers, newest first (a live one as it is now). */
+  answersOf(guide: LoadedGuide): AnswerRecord[] {
+    const saved = this.host.persists(guide) ? listAnswers(guide.repoKey, guide.id) : [...(this.memory.get(guide.id)?.values() ?? [])].sort((a, b) => b.askedAt - a.askedAt);
+    return saved.map((r) => this.live.get(r.id)?.record ?? r);
+  }
+
+  private find(guide: LoadedGuide, id: string): AnswerRecord | null {
+    return this.live.get(id)?.record ?? this.answersOf(guide).find((r) => r.id === id) ?? null;
+  }
+
+  /** The chapter view's list: answers about this chapter, and the footer. */
+  chapterAnswers(guide: LoadedGuide, chapter: number): { items: AnswerListItem[]; footer?: string; busy: boolean; agent: string } {
+    const all = this.answersOf(guide);
+    const mine = all.filter((r) => r.about.chapter === chapter);
+    const now = Date.now();
+    return {
+      items: mine.map((r) => answerListItem(r, now, this.live.has(r.id) && !!this.live.get(r.id)?.run.live)),
+      footer: answersFooter(all),
+      busy: this.isBusy(guide.id),
+      agent: this.choiceFor(guide).label,
+    };
+  }
+
+  private isBusy(guideId: string): boolean {
+    return !!this.sessions.get(guideId)?.current;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Entry points
+  // ---------------------------------------------------------------------------
+
+  /** Right-click on selected code in a guide diff. */
+  async askAboutSelection(): Promise<void> {
+    const reader = this.host.reader();
+    const editor = vscode.window.activeTextEditor;
+    if (!reader || !editor) {
+      void vscode.window.showInformationMessage("Open a guided review and select code in one of its diffs, then ask.");
+      return;
+    }
+    const side = guideSideOf(reader.sides, editor.document.uri, reader.model.files);
+    const chapter = side ? reader.model.chapterOf(side.path) : -1;
+    if (!side || chapter < 0) {
+      void vscode.window.showInformationMessage("That file is not part of the open guided review.");
+      return;
+    }
+    const sel = editor.selection;
+    const about = sel.isEmpty ? this.fileAbout(reader, side.path, chapter) : this.selectionAbout(reader, editor.document, sel, side, chapter);
+    await this.askWithBox(about, editor.viewColumn);
+  }
+
+  /** The file's CodeLens "Ask…": its selection when it has one, else the whole file. */
+  async askAboutFile(path: string | undefined): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader) return;
+    const editor = vscode.window.activeTextEditor;
+    const side = editor ? guideSideOf(reader.sides, editor.document.uri, reader.model.files) : null;
+    const target = path ?? side?.path;
+    if (!target) return this.askAboutSelection();
+    const chapter = reader.model.chapterOf(target);
+    if (chapter < 0) return;
+    const about = editor && side && side.path === target && !editor.selection.isEmpty
+      ? this.selectionAbout(reader, editor.document, editor.selection, side, chapter)
+      : this.fileAbout(reader, target, chapter);
+    await this.askWithBox(about, editor?.viewColumn);
+  }
+
+  /** The chapter view's ask box: what was typed is asked; nothing typed opens the question box. */
+  async askChapter(n: number | undefined, text: string | undefined): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader) return;
+    const chapter = (n ?? reader.model.currentChapter + 1) - 1;
+    const ch = reader.model.chapters[chapter];
+    if (!ch) return;
+    const about: AskAbout = { kind: "chapter", chapter, chapterTitle: ch.title };
+    const column = vscode.window.activeTextEditor?.viewColumn;
+    const question = text?.trim().slice(0, MAX_QUESTION);
+    if (question) return this.ask(reader.model.loaded, about, question, { codeColumn: column });
+    await this.askWithBox(about, column);
+  }
+
+  private selectionAbout(reader: { model: ReaderModel; sides: ReaderSides }, doc: vscode.TextDocument, sel: vscode.Selection, side: { path: string; side: "head" | "base" }, chapter: number): AskAbout {
+    // A selection ending at column 0 of a line does not take that line.
+    const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line - 1 : sel.end.line;
+    const range = new vscode.Range(sel.start.line, 0, endLine, doc.lineAt(endLine).text.length);
+    return {
+      kind: "selection",
+      chapter,
+      chapterTitle: reader.model.chapters[chapter].title,
+      path: side.path,
+      side: side.side,
+      lines: { start: sel.start.line + 1, end: endLine + 1 },
+      code: capCode(doc.getText(range)),
+      ...(this.headHash(reader, side.path) && { fileHash: this.headHash(reader, side.path)! }),
+    };
+  }
+
+  private fileAbout(reader: { model: ReaderModel; sides: ReaderSides }, path: string, chapter: number): AskAbout {
+    const hash = this.headHash(reader, path);
+    return { kind: "file", chapter, chapterTitle: reader.model.chapters[chapter].title, path, side: "head", ...(hash && { fileHash: hash }) };
+  }
+
+  private headHash(reader: { sides: ReaderSides }, path: string): string | null {
+    if (reader.sides.head.kind !== "fs") return null;
+    try {
+      return createHash("sha1").update(readFileSync(join(reader.sides.head.root, path))).digest("hex");
+    } catch {
+      return null;
+    }
+  }
+
+  private async askWithBox(about: AskAbout, codeColumn: vscode.ViewColumn | undefined): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader) return;
+    const guide = reader.model.loaded;
+    let choice = this.choiceFor(guide);
+    const now = Date.now();
+    const picked = await pickQuestion({
+      agentLabel: choice.label,
+      modelEffort: modelEffortLabel(choice),
+      about: aboutTitle(about),
+      goesWith: goesWith(about),
+      past: this.answersOf(guide).slice(0, 8).map((r) => ({ id: r.id, question: r.question, sub: answerListItem(r, now, false).sub, when: relativeTimeShort(r.answeredAt ?? r.askedAt, now) })),
+      changeModel: async () => {
+        const next = await this.host.pickModel(choice);
+        if (!next) return null;
+        choice = next;
+        await this.host.context.globalState.update(askChoiceKey(guide.id), next);
+        return modelEffortLabel(next);
+      },
+    });
+    if (!picked) return;
+    if (picked.kind === "open") return this.openAnswer(picked.answerId);
+    await this.ask(guide, about, picked.question.slice(0, MAX_QUESTION), { codeColumn });
+  }
+
+  /** The agent, model and effort that answer: the reader's pick for this guide, else the guide's own. */
+  choiceFor(guide: LoadedGuide): AgentChoiceRecord {
+    const picked = this.host.context.globalState.get<AgentChoiceRecord>(askChoiceKey(guide.id));
+    if (picked && this.host.agentById(picked.id)) return picked;
+    const own = guide.sidecar.agent;
+    if (own && this.host.agentById(own.id)) return own;
+    const byEngine = KNOWN_AGENTS.find((a) => a.engine === guide.envelope.engine);
+    if (byEngine) return { id: byEngine.id, label: byEngine.label, ...(guide.envelope.model && { model: { id: guide.envelope.model, label: guide.envelope.model } }) };
+    return this.host.defaultChoice();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Asking
+  // ---------------------------------------------------------------------------
+
+  private async ask(guide: LoadedGuide, about: AskAbout, question: string, opts: { codeColumn?: vscode.ViewColumn; followUpOf?: AnswerRecord; panel?: AnswerPanel }): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader || reader.model.id !== guide.id) return;
+    const busy = this.sessions.get(guide.id)?.current;
+    if (busy) {
+      const running = this.live.get(busy.state.answerId)?.record;
+      const choice = await vscode.window.showWarningMessage(`${running?.agent.label ?? "The agent"} is answering another question${running ? `: “${running.question}”` : ""}.`, "Show it", "Stop it");
+      if (choice === "Show it" && running) await this.openAnswer(running.id);
+      if (choice === "Stop it") await busy.cancel();
+      return;
+    }
+    const choice = this.choiceFor(guide);
+    const descriptor = this.host.agentById(choice.id);
+    if (!descriptor) {
+      void vscode.window.showErrorMessage(`Plannotator does not know the agent ${choice.label}.`);
+      return;
+    }
+    const launch = await this.host.ensureLaunch(descriptor);
+    if (!launch) return;
+    const cwd = reader.sides.head.kind === "fs" ? reader.sides.head.root : reader.sides.gitRoot;
+    const session = await this.sessionFor(guide, descriptor, launch, cwd, reader);
+    const record: AnswerRecord = {
+      v: 1,
+      id: newAnswerId(),
+      guideId: guide.id,
+      repoKey: guide.repoKey,
+      question,
+      about,
+      askedAt: Date.now(),
+      status: "answering",
+      agent: choice,
+      ...(await this.headSha(guide, cwd).then((sha) => (sha ? { headSha: sha } : {}))),
+      ...(opts.followUpOf && { followUpOf: opts.followUpOf.id }),
+      seen: true,
+    };
+    this.save(record, guide);
+    const context = guideContext(guide, reader, cwd);
+    const previous = opts.followUpOf ? { question: opts.followUpOf.question, ...(opts.followUpOf.title && { title: opts.followUpOf.title }) } : undefined;
+    const run = session.ask({
+      answerId: record.id,
+      agent: choice,
+      autoApprove: this.host.autoApprove(),
+      prompt: (m) => buildAskPrompt({
+        mode: m.firstInSession ? m.session : opts.followUpOf ? "followUp" : "next",
+        ...(m.loadedFrom && { loadedFrom: m.loadedFrom }),
+        question,
+        about,
+        guide: context,
+        ...(previous && { previous }),
+      }),
+    });
+    const live: LiveAsk = { run, record };
+    this.live.set(record.id, live);
+    const panel = opts.panel ?? this.panelFor(record, opts.codeColumn);
+    panel.current = record.id;
+    panel.panel.title = tabTitle(question, true);
+    panel.panel.reveal(panel.panel.viewColumn, false);
+    this.host.setAnswering(question, record.id);
+    let lastChapter = 0;
+    run.onChange((state) => {
+      this.showLive(live, state);
+      const now = Date.now();
+      if (now - lastChapter > 600) {
+        lastChapter = now;
+        this.host.updateChapterView();
+      }
+    });
+    this.showLive(live, run.state);
+    this.host.updateChapterView();
+    void run.done.then((state) => this.finished(guide, live, state, session));
+  }
+
+  private async sessionFor(guide: LoadedGuide, agent: AgentDescriptor, launch: ReadyLaunch, cwd: string, reader: { model: ReaderModel; sides: ReaderSides }): Promise<GuideAskSession> {
+    const existing = this.sessions.get(guide.id);
+    if (existing && existing.agentId === agent.id && existing.input.cwd === cwd) return existing;
+    existing?.dispose();
+    const sc = guide.sidecar;
+    const saved: SavedSession[] = [];
+    if (sc.askSession && sc.askSession.agent === agent.id) saved.push({ id: sc.askSession.id, from: sc.askSession.id === sc.acpSessionId ? "guide" : "asks" });
+    if (sc.acpSessionId && sc.agent?.id === agent.id) saved.push({ id: sc.acpSessionId, from: "guide" });
+    const relay = await this.host.relayHost();
+    const headFiles = [...reader.model.files.keys()];
+    const session = new GuideAskSession({ guideId: guide.id, cwd, saved }, {
+      relay,
+      agent,
+      agentLaunch: (dir) => ({ command: launch.command, args: launch.args, cwd: dir, ...(launch.env && { env: launch.env }) }),
+      mcpServer: {
+        command: process.execPath,
+        args: [vscode.Uri.joinPath(this.host.context.extensionUri, "dist", "guide-mcp.cjs").fsPath],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      },
+      clientInfo: { name: "plannotator-vscode", title: "Plannotator", version: this.host.version },
+      linkHooks: {
+        chapterCount: reader.model.chapters.length,
+        fileExists: async (p) => reader.model.files.has(p) || (reader.sides.head.kind === "fs" && existsSync(join(cwd, p))),
+        resolveSymbol: (name, path) => resolveSymbolForBuilder(name, path, cwd, headFiles),
+      },
+      requestPermission: (pending, signal) => this.host.notifyPermission(pending, signal, agent.label),
+      approveAlways: () => this.host.approveAlways(),
+      log: (line) => this.host.log(line),
+    });
+    this.sessions.set(guide.id, session);
+    return session;
+  }
+
+  private async headSha(guide: LoadedGuide, cwd: string): Promise<string | null> {
+    const source = guide.sidecar.source;
+    if (source?.kind === "pr") return source.headSha;
+    const r = await this.host.runner("git", ["rev-parse", "HEAD"], { cwd, timeoutMs: 10_000 }).catch(() => null);
+    return r && r.code === 0 ? r.stdout.trim() : guide.envelope.headSha ?? null;
+  }
+
+  private finished(guide: LoadedGuide, live: LiveAsk, state: AskRunState, session: GuideAskSession): void {
+    const record = live.record;
+    record.status = state.status === "starting" || state.status === "working" ? "stopped" : state.status;
+    record.answeredAt = state.endedAt ?? Date.now();
+    if (state.answer) {
+      record.title = state.answer.title;
+      record.html = state.answer.html;
+    }
+    if (state.text) record.text = state.text;
+    if (state.statusMessage) record.statusMessage = state.statusMessage;
+    if (state.cost) record.cost = state.cost;
+    if (state.session) record.session = state.session;
+    const model = state.appliedModel ? { model: { id: record.agent.model?.id ?? state.appliedModel, label: state.appliedModel } } : {};
+    const effort = state.appliedEffort ? { effort: { id: record.agent.effort?.id ?? state.appliedEffort, label: state.appliedEffort } } : {};
+    record.agent = { ...record.agent, ...model, ...effort };
+    const panel = this.panelShowing(record.id);
+    record.seen = !!panel?.panel.visible;
+    this.save(record, guide);
+    this.live.delete(record.id);
+    // Remember the session, so a later window loads it when the agent can.
+    if (session.askSessionId) {
+      guide.sidecar.askSession = { id: session.askSessionId, agent: session.agentId };
+      if (this.host.persists(guide)) writeSidecar(guide.repoKey, guide.id, guide.sidecar);
+    }
+    this.host.setAnswering(null, null);
+    if (panel) {
+      panel.panel.title = tabTitle(record.question, false);
+      void this.showRecord(panel, record);
+    }
+    this.host.updateChapterView();
+    if (state.signIn) {
+      const logins = state.signIn.logins;
+      void vscode.window.showErrorMessage(`${record.agent.label} is not signed in. Sign in in a terminal, then ask again.`, ...(logins.length ? logins.map((l) => l.label) : ["Sign in"])).then((label) => {
+        if (label) void this.host.signIn(record.agent.id, logins, label, session.input.cwd);
+      });
+    } else if (!panel?.panel.visible && (record.status === "answered" || record.status === "text")) {
+      void vscode.window.showInformationMessage(`Answer ready: ${record.question}`, "Open").then((c) => {
+        if (c) void this.openAnswer(record.id);
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The answer tab
+  // ---------------------------------------------------------------------------
+
+  private panelShowing(answerId: string): AnswerPanel | null {
+    for (const p of this.panels) if (p.current === answerId) return p;
+    return null;
+  }
+
+  private panelFor(record: AnswerRecord, codeColumn: vscode.ViewColumn | undefined): AnswerPanel {
+    const existing = this.panelShowing(record.id);
+    if (existing) return existing;
+    // Later answers reuse the right-hand group the first one opened in.
+    const column = this.answerColumn && [...this.panels].some((p) => p.panel.viewColumn === this.answerColumn) ? this.answerColumn : vscode.ViewColumn.Beside;
+    let entry: AnswerPanel;
+    const base = this.host.createPanel(tabTitle(record.question, record.status === "answering"), column, (link) => void this.openAnswerLink(entry, link));
+    entry = { ...base, current: record.id, guideId: record.guideId, repoKey: record.repoKey, codeColumn };
+    this.panels.add(entry);
+    entry.panel.onDidDispose(() => this.panels.delete(entry));
+    entry.panel.onDidChangeViewState(() => {
+      if (entry.panel.viewColumn) this.answerColumn = entry.panel.viewColumn;
+    });
+    if (entry.panel.viewColumn) this.answerColumn = entry.panel.viewColumn;
+    return entry;
+  }
+
+  private showLive(live: LiveAsk, state: AskRunState): void {
+    const panel = this.panelShowing(live.record.id);
+    if (!panel) return;
+    panel.host.show(answerViewState({ record: live.record, run: state, now: Date.now(), followUpOf: this.followUpOf(live.record), busy: true }));
+  }
+
+  private followUpOf(record: AnswerRecord): { id: string; question: string } | null {
+    if (!record.followUpOf) return null;
+    const reader = this.host.reader();
+    const prev = reader && reader.model.id === record.guideId ? this.find(reader.model.loaded, record.followUpOf) : null;
+    return prev ? { id: prev.id, question: prev.question } : null;
+  }
+
+  private async showRecord(panel: AnswerPanel, record: AnswerRecord): Promise<void> {
+    const live = this.live.get(record.id);
+    if (live) return this.showLive(live, live.run.state);
+    const reader = this.host.reader();
+    const stale = reader && reader.model.id === record.guideId
+      ? staleNote(record, { ...(record.about.path && { fileHash: this.headHash(reader, record.about.path) }), headSha: await this.headSha(reader.model.loaded, reader.sides.head.kind === "fs" ? reader.sides.head.root : reader.sides.gitRoot) })
+      : null;
+    panel.host.show(answerViewState({ record, now: Date.now(), stale, followUpOf: this.followUpOf(record), busy: this.isBusy(record.guideId) }));
+  }
+
+  /** Open an answer of the open guide in its tab (beside the diff). */
+  async openAnswer(id: string | undefined): Promise<void> {
+    const reader = this.host.reader();
+    if (!id || !reader) return;
+    const guide = reader.model.loaded;
+    const record = this.find(guide, id);
+    if (!record) {
+      void vscode.window.showWarningMessage("That answer is gone.");
+      return;
+    }
+    const panel = this.panelFor(record, vscode.window.activeTextEditor?.viewColumn);
+    panel.current = record.id;
+    panel.panel.title = tabTitle(record.question, record.status === "answering" && this.live.has(record.id));
+    panel.panel.reveal(panel.panel.viewColumn, false);
+    if (!record.seen && !this.live.has(record.id)) {
+      record.seen = true;
+      this.save(record, guide);
+      this.host.updateChapterView();
+    }
+    await this.showRecord(panel, record);
+  }
+
+  /** A link in an answer page: open the guide it belongs to first, then the link, in the diff's editor group. */
+  private async openAnswerLink(panel: AnswerPanel, link: string): Promise<void> {
+    if (this.host.reader()?.model.id !== panel.guideId) await this.host.openGuide(panel.guideId);
+    await this.host.openLink(link, panel.codeColumn ?? vscode.ViewColumn.One);
+  }
+
+  async followUp(answerId: string | undefined, text: string | undefined): Promise<void> {
+    const reader = this.host.reader();
+    const question = text?.trim().slice(0, MAX_QUESTION);
+    if (!reader || !answerId || !question) return;
+    const prev = this.find(reader.model.loaded, answerId);
+    if (!prev) return;
+    await this.ask(reader.model.loaded, prev.about, question, { followUpOf: prev, codeColumn: this.panelShowing(answerId)?.codeColumn, ...(this.panelShowing(answerId) && { panel: this.panelShowing(answerId)! }) });
+  }
+
+  async stop(answerId: string | undefined): Promise<void> {
+    if (!answerId) return;
+    await this.live.get(answerId)?.run.cancel();
+  }
+
+  /** The tab's "…": ask again, delete, copy the question. `again` asks again at once. */
+  async menu(answerId: string | undefined, action?: string): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader || !answerId) return;
+    const guide = reader.model.loaded;
+    const record = this.find(guide, answerId);
+    if (!record) return;
+    const pick = action === "again" ? "again" : (await vscode.window.showQuickPick([
+      { label: "$(refresh) Ask again", value: "again" },
+      { label: "$(copy) Copy the question", value: "copy" },
+      { label: "$(trash) Delete this answer", value: "delete" },
+    ], { title: record.question }))?.value;
+    if (pick === "again") return this.ask(guide, record.about, record.question, { codeColumn: this.panelShowing(record.id)?.codeColumn, ...(this.panelShowing(record.id) && { panel: this.panelShowing(record.id)! }) });
+    if (pick === "copy") return void vscode.env.clipboard.writeText(record.question);
+    if (pick === "delete") {
+      if (this.live.has(record.id)) await this.stop(record.id);
+      if (this.host.persists(guide)) deleteAnswer(guide.repoKey, guide.id, record.id);
+      else this.memory.get(guide.id)?.delete(record.id);
+      this.panelShowing(record.id)?.panel.dispose();
+      this.host.updateChapterView();
+    }
+  }
+
+  /** A web link in an answer page: the agent wrote it, so ask before opening it. */
+  async openExternal(url: string | undefined): Promise<void> {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    const choice = await vscode.window.showInformationMessage(`The answer links to ${url}. Open it in your browser?`, "Open");
+    if (choice === "Open") await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+
+  /** Permission answers from an answer tab; false when the id is not an answer being asked. */
+  answerPermission(answerId: string | undefined, id: number | undefined, optionId: string | undefined): boolean {
+    const live = answerId ? this.live.get(answerId) : undefined;
+    if (!live) return false;
+    if (id !== undefined && optionId) live.run.answerPermission(id, { optionId });
+    return true;
+  }
+
+  approveRun(answerId: string | undefined): boolean {
+    const live = answerId ? this.live.get(answerId) : undefined;
+    if (!live) return false;
+    live.run.approveAutomatically();
+    return true;
+  }
+
+  /** The guide was deleted: its conversation and answers go too. */
+  onGuideDeleted(repoKey: string, guideId: string): void {
+    this.sessions.get(guideId)?.dispose();
+    this.sessions.delete(guideId);
+    for (const p of [...this.panels]) if (p.guideId === guideId) p.panel.dispose();
+    this.memory.delete(guideId);
+    deleteGuideAnswers(repoKey, guideId);
+  }
+
+  dispose(): void {
+    for (const s of this.sessions.values()) s.dispose();
+    this.sessions.clear();
+  }
+
+  /** VS Code is closing. */
+  kill(): void {
+    for (const s of this.sessions.values()) s.kill();
+  }
+}
+
+function modelEffortLabel(choice: AgentChoiceRecord): string {
+  return [choice.model?.label ?? "agent default", choice.effort?.label].filter(Boolean).join(" · ");
+}
+
+function tabTitle(question: string, answering: boolean): string {
+  const q = question.length > 42 ? `${question.slice(0, 40)}…` : question;
+  return `${answering ? "Answering: " : "Answer: "}${q}`;
+}
+
+/** The guide as the prompt tells it, and where the change is. */
+function guideContext(guide: LoadedGuide, reader: { model: ReaderModel; sides: ReaderSides }, cwd: string): AskGuideContext {
+  const env = guide.envelope;
+  const source = guide.sidecar.source;
+  const changeLabel = source?.kind === "pr" && source.pr
+    ? `pull request #${source.pr.number}, “${source.pr.title}” (${source.pr.url})`
+    : env.review?.source.pr ? `pull request #${env.review.source.pr.number}${env.review.source.pr.url ? ` (${env.review.source.pr.url})` : ""}`
+      : `the local changes${source?.branch ? ` on ${source.branch}` : ""} (${env.label || basename(cwd)})`;
+  return {
+    title: env.title,
+    intent: env.guide.intent,
+    chapters: reader.model.chapters.map((c) => ({ title: c.title, overview: c.overview, files: c.files.map((f) => f.path) })),
+    changeLabel,
+    cwd,
+    baseRev: reader.sides.baseRev,
+    rawPatch: guide.rawPatch ?? "",
+  };
+}
