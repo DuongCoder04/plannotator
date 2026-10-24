@@ -85,8 +85,11 @@
  *   recommendation), `Reversible: no — <why>` (the answer cannot be taken
  *   back; `yes`, or no line, means it can). Each is read into its own field
  *   (`stakes`, `shows`, `why`, `reversible`) and is never the prompt, never
- *   context, and never changes the key. Like `Context:`, such a line never
- *   continues the choice, bullet or recommendation above it. A value that
+ *   context, and never changes the key. Only a line at the block's own
+ *   indent (the prompt's) is read: an indented `Why:` under a choice or a
+ *   plain bullet is that choice's text. Like `Context:`, a line that is read
+ *   never continues the choice, bullet or recommendation above it. With
+ *   `{ contractLines: false }` (plan review, annotate) the lines stay context. A value that
  *   does not fit (an empty line, a `Shows:` that is not one image or link, a
  *   `Reversible:` that is neither yes nor no) is ordinary prose.
  * - Picture choices: the first markdown image in a choice
@@ -238,7 +241,7 @@ const CONTEXT_LINE_RE = /^\s*(?:[*_]{1,2})?context(?:[*_]{1,2})?\s*:/i;
 const CONTRACT_LINE_RE = /^\s*(?:[*_]{1,2})?(stakes|shows|why|reversible)(?:[*_]{1,2})?\s*:\s*(?:[*_]{1,2})?\s*(.*?)\s*$/i;
 const SHOWS_IMAGE_RE = /^!\[([^\]\n]*)\]\(([^)\n]+)\)\.?$/;
 const SHOWS_LINK_RE = /^\[([^\]\n]+)\]\(([^)\n]+)\)\.?$/;
-const REVERSIBLE_NO_RE = /^(?:no|false|never)\b\s*(?:[—–:;,.]|-(?=\s))?\s*(.*)$/i;
+const REVERSIBLE_NO_RE = /^(?:no|false|never)\b\s*(?:[—–:;,.]|-{1,2}(?=\s))?\s*(.*)$/i;
 const REVERSIBLE_YES_RE = /^(?:yes|true)\b/i;
 // A markdown image as the window renders it (InlineMarkdown, and the Inbox's
 // image capture): the target is everything up to the first `)`.
@@ -319,6 +322,18 @@ const parseDecisionLink = (value: string): QuestionDecisionLink | null => {
  *  separator inside an image's alt text or target never splits a label. */
 const maskImages = (text: string): string =>
   text.includes('![') ? text.replace(new RegExp(CHOICE_IMAGE_RE.source, 'g'), (m) => '#'.repeat(m.length)) : text;
+
+/** The label as parsers before picture choices split it: at the first
+ *  separator even inside an image (`![Drawer A - closest](a.png) Drawer A`
+ *  gave `![Drawer A`). Kept only as an alias, so an answer stored then still
+ *  selects its choice. Null when it is today's label. */
+const legacyImageSplitLabel = (raw: string): string | null => {
+  if (!raw.includes('![')) return null;
+  const idx = raw.search(LABEL_DESC_SEP_RE);
+  if (idx === -1) return null;
+  const old = raw.slice(0, idx).trim();
+  return old && old !== splitLabel(raw).label ? old : null;
+};
 
 const splitLabel = (raw: string): { label: string; description?: string } => {
   const idx = maskImages(raw).search(LABEL_DESC_SEP_RE);
@@ -407,7 +422,12 @@ const plainBulletSplits = (bullets: { text: string; first: string }[]): { splits
   }
   return {
     splits: pick.map((p, i) => options[i][p]),
-    names: options.map((list, i) => [...list.map((o) => o.label), bullets[i].first, splitLabel(bullets[i].first).label]),
+    names: options.map((list, i) => [
+      ...list.map((o) => o.label),
+      bullets[i].first,
+      splitLabel(bullets[i].first).label,
+      ...[legacyImageSplitLabel(bullets[i].first)].filter((name): name is string => !!name),
+    ]),
   };
 };
 
@@ -628,6 +648,26 @@ export const questionLabelWithoutImage = (label: string): string | null => {
   return plain && plain !== label ? plain : null;
 };
 
+/**
+ * A task-list choice's text (what follows `- [ ] `) read as this parser reads
+ * it: the label split from the description (never inside an image), then
+ * the picture taken out. The Plannotator Inbox reads a record stored by an
+ * older parser through it: a dash inside an image's alt text used to split
+ * the label there (`![Drawer A - closest](a.png) Drawer A` was stored as the
+ * label `![Drawer A`).
+ */
+export const parseQuestionChoiceText = (raw: string): { label: string; description?: string; image?: QuestionChoiceImage } => {
+  const split = splitLabel(raw);
+  const choice: QuestionChoice = { ...split, settled: false, recommended: false };
+  const picture = split.label ? pictureChoice(choice) : null;
+  const out = picture ?? choice;
+  return {
+    label: out.label,
+    ...(out.description ? { description: out.description } : {}),
+    ...(out.image ? { image: out.image } : {}),
+  };
+};
+
 /** A choice read as a picture choice: its first image (in the label first,
  *  then the description) taken out. Null when it holds no image, or taking
  *  it out would leave no label. */
@@ -673,6 +713,15 @@ export interface ParseQuestionBlockOptions {
    *  (an answer stored against either parse matches the other). The
    *  Plannotator Inbox passes false: it records no decisions. */
   decisionLines?: boolean;
+  /** Read the contract lines (`Stakes:`, `Shows:`, `Why:`, `Reversible:`)
+   *  into `stakes`, `shows`, `why` and `reversible`. Default true. False: each
+   *  such line stays a context line (plain text), and the result never
+   *  carries those fields. As with `decisionLines`, a line the default parse
+   *  reads still ends the choice, bullet or recommendation above it, so the
+   *  prompt, key and choices are always the default parse's. Plan review and
+   *  annotate pass false (approval "inbox-decision-mode": plan review shows
+   *  the lines as plain text); picture choices are read either way. */
+  contractLines?: boolean;
 }
 
 export const parseQuestionBlock = (
@@ -682,6 +731,7 @@ export const parseQuestionBlock = (
 ): ParsedQuestion | null => {
   if (!isQuestionDirectiveKind(directiveKind)) return null;
   const readDecisionLines = options?.decisionLines !== false;
+  const readContractLines = options?.contractLines !== false;
   if (typeof body !== 'string' || body.length > MAX_QUESTION_BODY_CHARS) return null;
   const lines = body.replace(/\r\n?/g, '\n').split('\n');
 
@@ -758,9 +808,11 @@ export const parseQuestionBlock = (
       const raw = choice[2].trim();
       const { label, description } = splitLabel(raw);
       if (!label) continue;
+      const legacyLabel = legacyImageSplitLabel(raw);
       choices.push({
         label,
         ...(description ? { description } : {}),
+        ...(legacyLabel ? { aliases: [legacyLabel] } : {}),
         settled: choice[1].toLowerCase() === 'x',
         recommended: false,
       });
@@ -801,13 +853,18 @@ export const parseQuestionBlock = (
       continue;
     }
     // A contract line (`Stakes:`, `Shows:`, `Why:`, `Reversible:`): read once
-    // per field, never context. It ends the choice, bullet or recommendation
-    // above it, as a `Context:` line does.
+    // per field, never context, and only at the block's own indent (the
+    // prompt's): an indented `Why:` under a choice or a plain bullet is that
+    // choice's text. It ends the choice, bullet or recommendation above it,
+    // as a `Context:` line does. Without contract lines it does exactly the
+    // same and is kept as context.
     const fenceBefore = bodyFence;
     trackBodyFence(line);
-    const contractLine = fenceBefore || bodyFence || continuationFence ? null : readContractLine(line);
+    const atBlockIndent = indentWidth(line) <= indentWidth(lines[promptLine] ?? '');
+    const contractLine = fenceBefore || bodyFence || continuationFence || !atBlockIndent ? null : readContractLine(line);
     if (contractLine && !(contractLine.field in contract)) {
       (contract as Record<string, unknown>)[contractLine.field] = contractLine.value;
+      if (!readContractLines) pushContext(line.trim());
       lastChoice = -1;
       recommendationOpen = false;
       if (openBullet) {
@@ -995,10 +1052,10 @@ export const parseQuestionBlock = (
     key: questionKey(kind, prompt),
     ...(!readDecisionLines ? {} : decision ? { decision } : decisionFlag ? { decisionOnAnswer: true as const } : {}),
     ...(replaces.length > 0 ? { replaces } : {}),
-    ...(contract.stakes ? { stakes: contract.stakes } : {}),
-    ...(contract.shows ? { shows: contract.shows } : {}),
-    ...(contract.why ? { why: contract.why } : {}),
-    ...(contract.reversible ? { reversible: contract.reversible } : {}),
+    ...(readContractLines && contract.stakes ? { stakes: contract.stakes } : {}),
+    ...(readContractLines && contract.shows ? { shows: contract.shows } : {}),
+    ...(readContractLines && contract.why ? { why: contract.why } : {}),
+    ...(readContractLines && contract.reversible ? { reversible: contract.reversible } : {}),
   };
 };
 

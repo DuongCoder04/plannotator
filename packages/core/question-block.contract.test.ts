@@ -72,15 +72,63 @@ describe("contract lines", () => {
     expect(full.key).toBe(questionKey("single", "Which drawer?"));
   });
 
-  test("leniency: emphasis around the label, any case, indentation, a `**Label:**` with the colon inside", () => {
+  test("leniency: emphasis around the label, any case, a `**Label:**` with the colon inside", () => {
     const q = parseQuestionBlock(
       "question",
-      ["Pick?", "**Stakes:** the whole release.", "  why: lower case works", "*Reversible*: No, the data is gone", "- [ ] A", "- [ ] B"].join("\n"),
+      ["Pick?", "**Stakes:** the whole release.", "why: lower case works", "*Reversible*: No, the data is gone", "- [ ] A", "- [ ] B"].join("\n"),
     )!;
     expect(q.stakes).toBe("the whole release.");
     expect(q.why).toBe("lower case works");
     expect(q.reversible).toEqual({ value: false, why: "the data is gone" });
     expect(q.context).toBe("");
+  });
+
+  test("only a line at the block's own indent is read: the prompt's, even when the whole block is indented", () => {
+    const indented = parseQuestionBlock("question", ["Pick?", "  Why: indented under nothing", "- [ ] A"].join("\n"))!;
+    expect(indented.why).toBeUndefined();
+    expect(indented.context).toBe("Why: indented under nothing");
+    // A question inside a list item: every line carries the item's indent.
+    const nested = parseQuestionBlock("question", ["  Pick?", "  Stakes: the release.", "  - [ ] A", "    Why: A's own reason", "  - [ ] B"].join("\n"))!;
+    expect(nested.stakes).toBe("the release.");
+    expect(nested.why).toBeUndefined();
+    expect(nested.choices[0]).toMatchObject({ label: "A", description: "Why: A's own reason" });
+  });
+
+  test("the reviewer's case: a `Why:` under each choice is that choice's text, never the block's Why", () => {
+    for (const marker of ["- [ ]", "-"]) {
+      const q = parseQuestionBlock(
+        "question",
+        [
+          "Which drawer?",
+          `${marker} A — closest to today`,
+          "  Why: the team knows it",
+          `${marker} B — the total never scrolls away`,
+          "  Why: it keeps the total next to Pay",
+          "",
+          "Recommended: B",
+        ].join("\n"),
+      )!;
+      expect(q.why).toBeUndefined();
+      expect(q.choices.map((c) => c.label)).toEqual(["A", "B"]);
+      expect(q.choices[0]!.description).toContain("Why: the team knows it");
+      expect(q.choices[1]!.description).toContain("Why: it keeps the total next to Pay");
+      expect(q.choices[1]!.recommended).toBe(true);
+    }
+  });
+
+  test("`contractLines: false` keeps the lines as context, with the same prompt, key and choices", () => {
+    const body = ["Pick?", "Stakes: the release.", "- [ ] A", "- [ ] B", "Recommended: B", "Why: it is faster", "Reversible: no -- it deletes"].join("\n");
+    const read = parseQuestionBlock("question", body)!;
+    const plain = parseQuestionBlock("question", body, { contractLines: false })!;
+    expect(read.reversible).toEqual({ value: false, why: "it deletes" });
+    for (const field of ["stakes", "shows", "why", "reversible"]) expect(plain).not.toHaveProperty(field);
+    expect(plain.context).toBe(["Stakes: the release.", "Why: it is faster", "Reversible: no -- it deletes"].join("\n"));
+    expect(plain.key).toBe(read.key);
+    expect(plain.prompt).toBe(read.prompt);
+    expect(plain.choices).toEqual(read.choices);
+    // Picture choices are grammar, read either way.
+    const pictures = parseQuestionBlock("question", ["Pick?", "- [ ] A — ![A](a.png)"].join("\n"), { contractLines: false })!;
+    expect(pictures.choices[0]!.image).toEqual({ alt: "A", src: "a.png" });
   });
 
   test("a line before the prompt is the prompt, as for `Stopped:`", () => {
@@ -127,7 +175,7 @@ describe("contract lines", () => {
   });
 
   test("a contract line ends the choice, bullet or recommendation above it, as `Context:` does", () => {
-    const task = parseQuestionBlock("question", ["Pick?", "- [ ] A — first", "  Why: A is cheaper", "- [ ] B"].join("\n"))!;
+    const task = parseQuestionBlock("question", ["Pick?", "- [ ] A — first", "Why: A is cheaper", "- [ ] B"].join("\n"))!;
     expect(task.choices[0]).toMatchObject({ label: "A", description: "first" });
     expect(task.why).toBe("A is cheaper");
     const plain = parseQuestionBlock("question", ["Pick?", "- Yes", "- No", "Why: no wrapping"].join("\n"))!;
@@ -192,9 +240,12 @@ describe("picture choices", () => {
     expect(q.choices.map((c) => c.label)).toEqual(["Drawer A", "Drawer B"]);
   });
 
-  test("a separator inside the alt text never splits the label", () => {
+  test("a separator inside the alt text never splits the label; the label an older parser cut there stays an alias", () => {
     const q = parseQuestionBlock("question", ["Which?", "- [ ] ![Drawer - A](a.png) A — today"].join("\n"))!;
     expect(q.choices[0]).toMatchObject({ label: "A", description: "today", image: { alt: "Drawer - A", src: "a.png" } });
+    expect(q.choices[0]!.aliases).toContain("![Drawer");
+    const old: QuestionAnswer = { v: 1, key: q.key, kind: "single", prompt: q.prompt, selected: ["![Drawer"] };
+    expect(canonicalQuestionAnswer(q, old).selected).toEqual(["A"]);
   });
 
   test("two choices that would share a label keep their labels as written", () => {

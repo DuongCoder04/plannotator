@@ -56,6 +56,7 @@ import {
   type QuestionKind,
   type ParsedQuestion,
   questionLabelWithoutImage,
+  parseQuestionChoiceText,
 } from "./question-block";
 import type {
   InboxQuestionContract,
@@ -236,6 +237,9 @@ export function inboxQuestionState(
 // `Reversible:`) onto it the same way.
 const STORED_CONTEXT_SPLIT_RE = /\s+(?:[*_]{1,2})?(?:context|stakes|shows|why|reversible)(?:[*_]{1,2})?\s*:/gi;
 
+/** A label holding `![` with no complete `![alt](src)` after it: what an older parser stored when a dash in the alt text split the label. */
+const UNCLOSED_IMAGE_RE = /!\[(?![^\]\n]*\]\([^)\n]+\))/;
+
 /** Every label before a ` Context:` in a stored label (each split point:
  *  the bullet's own words may hold the word too). */
 function storedContextHeads(label: string): string[] {
@@ -265,7 +269,16 @@ function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionCho
   const heads = record.parsed.choices.map((choice) => {
     const list = storedContextHeads(choice.label);
     const plain = questionLabelWithoutImage(choice.label);
-    return plain ? [...list, plain, ...list.flatMap((head) => questionLabelWithoutImage(head) ?? [])] : list;
+    const out = plain ? [...list, plain, ...list.flatMap((head) => questionLabelWithoutImage(head) ?? [])] : [...list];
+    // An older parser split a label at a dash inside an image's alt text:
+    // `- [ ] ![Drawer A - closest](a.png) Drawer A` was stored as the label
+    // `![Drawer A` and the description `closest](a.png) Drawer A`. Joined
+    // again and read as the card reads it today, it answers to `Drawer A`.
+    if (UNCLOSED_IMAGE_RE.test(choice.label) && choice.description) {
+      const rebuilt = parseQuestionChoiceText(`${choice.label} — ${choice.description}`).label;
+      if (rebuilt && rebuilt !== choice.label && !out.includes(rebuilt)) out.push(rebuilt);
+    }
+    return out;
   });
   const headOwners = new Map<string, Set<number>>();
   heads.forEach((list, index) => {

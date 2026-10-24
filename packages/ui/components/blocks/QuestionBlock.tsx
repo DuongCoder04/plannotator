@@ -14,7 +14,7 @@ import {
 import { InlineMarkdown } from '../InlineMarkdown';
 import { QuestionContext } from './QuestionContext';
 import { HostTitle } from '../HostTitle';
-import { useImageResolver } from '../ImageResolverContext';
+import { UNAVAILABLE_IMAGE_CLASS, useImageResolver } from '../ImageResolverContext';
 import { getImageSrc } from '../ImageThumbnail';
 
 /**
@@ -278,6 +278,20 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     if (resolved?.kind === 'unavailable') return null;
     if (resolved?.kind === 'src') return resolved.src;
     return /^(https?:\/\/|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir);
+  };
+  // The host's reason a picture is not shown (its resolver's `unavailable`
+  // title), drawn on the placeholder exactly as an inline image's, so a host
+  // that holds remote images counts and loads these too (code review's PR
+  // Markdown preview: "N remote images held · Load remote images").
+  const pictureHeldTitle = (src: string): string | null => {
+    const resolved = resolveImage ? resolveImage(src) : null;
+    return resolved?.kind === 'unavailable' ? resolved.title : null;
+  };
+  const heldPlaceholder = (src: string, alt: string) => {
+    const title = pictureHeldTitle(src);
+    return title === null ? null : (
+      <span className={UNAVAILABLE_IMAGE_CLASS} title={title} data-image-unavailable="">{alt || 'Image'}</span>
+    );
   };
   // Pictures that failed to load (by the URL tried): a tile shows its alt
   // text instead, and with none left the choices are text rows.
@@ -723,7 +737,8 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                 <span className="truncate">{question.shows.label || 'Picture'}</span>
               </button>
             ) : (
-              <span className="inline-flex items-center gap-1 text-foreground"><PictureGlyph />{question.shows.label || question.shows.src}</span>
+              heldPlaceholder(question.shows.src, question.shows.label)
+                ?? <span className="inline-flex items-center gap-1 text-foreground"><PictureGlyph />{question.shows.label || question.shows.src}</span>
             )
           ) : (
             <span className="min-w-0 text-foreground">{inline(`[${question.shows.label}](${question.shows.src})`)}</span>
@@ -841,7 +856,11 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                                 onError={() => markPictureFailed(shown)}
                               />
                             ) : (
-                              <span className="grid h-full place-items-center px-2 text-center text-xs text-muted-foreground" data-image-unavailable="">
+                              <span
+                                className="grid h-full place-items-center px-2 text-center text-xs text-muted-foreground"
+                                title={pictureHeldTitle(choice.image.src) ?? undefined}
+                                data-image-unavailable=""
+                              >
                                 {alt}
                               </span>
                             )}
@@ -908,6 +927,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     />
                     <span className="min-w-0 flex-1 select-text text-[13.5px] leading-[1.45] text-foreground" data-question-part="choice">
                       <span className="font-[550]">{inline(choice.label)}</span>
+                      {choice.image && pictureChoices && pictureHeldTitle(choice.image.src) !== null && <> {heldPlaceholder(choice.image.src, choice.image.alt || choice.label)}</>}
                       {choice.description && (
                         <span className="text-muted-foreground"> — {inline(choice.description)}</span>
                       )}

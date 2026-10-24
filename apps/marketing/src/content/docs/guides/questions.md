@@ -35,7 +35,7 @@ Recommended: Local only, purged after 30 days
 
 ## Optional lines and picture choices
 
-A question can carry a few more lines, each on its own line after the question. They are all optional, and most questions need none of them:
+A question can carry a few more lines, each on its own line after the question. They are all optional, and most questions need none of them. The [Plannotator Inbox](/docs/reference/inbox/) draws them on the card as described below; in plan review and annotate they show as plain text under the question:
 
 - `Stakes: <one sentence>`: what the choice affects. The card shows it in bold under the question.
 - `Shows: ![alt](path)` or `Shows: [name](file)`: the one picture or file the decision is about. The card shows it as a chip that opens it.
