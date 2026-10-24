@@ -181,25 +181,54 @@ export const env = {
   },
 };
 
+/** Every comment thread made, for tests that look at what a controller shows. */
+export const createdCommentThreads: Array<{ uri: Uri; range: unknown; comments: unknown[]; label?: string; contextValue: string; canReply: boolean; collapsibleState: number; disposed: boolean; controller: string }> = [];
+
 export const comments = {
-  createCommentController(_id: string, _label: string) {
+  createCommentController(id: string, _label: string) {
     return {
+      id,
       options: {},
       dispose() {},
       createCommentThread(_uri: Uri, _range: unknown, _comments: unknown[]) {
-        return {
+        const thread = {
           uri: _uri,
           range: _range,
           comments: _comments,
+          label: undefined as string | undefined,
           collapsibleState: 0,
           canReply: true,
           contextValue: "",
-          dispose() {},
+          disposed: false,
+          controller: id,
+          dispose() {
+            thread.disposed = true;
+          },
         };
+        createdCommentThreads.push(thread);
+        return thread;
       },
     };
   },
 };
+
+export class MarkdownString {
+  value: string;
+  supportThemeIcons: boolean;
+  isTrusted?: boolean | { enabledCommands: readonly string[] };
+  constructor(value = "", supportThemeIcons = false) {
+    this.value = value;
+    this.supportThemeIcons = supportThemeIcons;
+  }
+  appendText(text: string) {
+    this.value += text.replace(/[\\`*_{}[\]()#+\-.!]/g, "\\$&");
+    return this;
+  }
+  appendMarkdown(text: string) {
+    this.value += text;
+    return this;
+  }
+}
 
 export const languages = {
   registerCodeActionsProvider(_selector: unknown, _provider: unknown, _metadata?: unknown) {

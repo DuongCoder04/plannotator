@@ -171,7 +171,7 @@ export class GuidesController implements vscode.Disposable {
       autoApprove: () => this.autoApproveSetting(),
       approveAlways: () => void vscode.workspace.getConfiguration("plannotator.guides").update("autoApprove", "allow-all", vscode.ConfigurationTarget.Global),
       signIn: (agentId, logins, label, cwd) => this.signIn(label, { agentId, logins, cwd }),
-      createPanel: (title, column, onLink) => this.createPanel("plannotator.guides.answer", title, "answer", column, false, { onLink: (link) => onLink(link) }),
+      createPanel: (title, column, onLink, preserveFocus) => this.createPanel("plannotator.guides.answer", title, "answer", column, preserveFocus ?? false, { onLink: (link) => onLink(link) }),
       persists: (guide) => guideHistoryEnabled() && !this.sessionGuides.has(guide.id),
       updateChapterView: () => this.updateChapterView(),
       setAnswering: (text, answerId) => this.ui.setAnswering(text, answerId),
@@ -486,6 +486,19 @@ export class GuidesController implements vscode.Disposable {
         return this.asks.askAboutSelection();
       case "askAboutFile":
         return this.asks.askAboutFile(str(args[0]) ?? (args[0] && typeof args[0] === "object" && "path" in (args[0] as object) ? (args[0] as { path: string }).path : undefined));
+      case "askThreadSubmit":
+        return this.asks.threads.submit(args[0]);
+      case "askThreadCancel":
+      case "askThreadClose":
+        return this.asks.threads.close(args[0]);
+      case "askThreadSettings":
+        return this.asks.threads.settings(args[0]);
+      case "askThreadPick":
+        return this.asks.threads.pick(args[0], args[1]);
+      case "askThreadAgain":
+        return this.asks.threads.again(args[0]);
+      case "askThreadStop":
+        return this.asks.threads.stop(args[0]);
       case "askChapter":
         return this.asks.askChapter(num(args[0]), str(args[1]));
       case "openAnswer":
@@ -1339,6 +1352,7 @@ export class GuidesController implements vscode.Disposable {
       const firstOpen = model.reviewed.findIndex((r) => !r);
       model.currentChapter = firstOpen >= 0 ? firstOpen : 0;
       this.reader = { model, sides };
+      this.asks.onReaderChanged(model.id);
       this.currentFile = null;
       void vscode.commands.executeCommand("setContext", "plannotator.guides.readerOpen", true);
     }
@@ -1375,6 +1389,7 @@ export class GuidesController implements vscode.Disposable {
     if (!this.reader) return;
     this.guidePanels.get(this.reader.model.id)?.panel.dispose();
     this.reader = null;
+    this.asks.onReaderChanged(null);
     this.currentFile = null;
     void vscode.commands.executeCommand("setContext", "plannotator.guides.readerOpen", false);
     this.updateReaderViews();

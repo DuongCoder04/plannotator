@@ -1,10 +1,11 @@
 /**
  * "Ask the agent" in the reader (approved 2026-10-23): select code in a guide
- * diff and right-click "Ask the Agent About This…", the file's CodeLens
- * "Ask…", or the chapter view's ask box. The question goes to the agent that
- * wrote the guide (its model and effort, changeable from the question box),
- * and its answer opens as a page in a tab beside the diff, listed under the
- * chapter. Follow-ups continue the same conversation.
+ * diff and right-click "Ask the Agent About This…" (or the file's CodeLens
+ * "Ask…"), which opens a question box under the lines (a comment thread,
+ * ask-thread.ts); or the chapter view's ask box. The question goes to the
+ * agent that wrote the guide (its model and effort, changeable from the box's
+ * gear), and its answer opens as a page in a tab beside the diff, listed under
+ * the chapter. Follow-ups continue the same conversation.
  */
 
 import * as vscode from "vscode";
@@ -25,6 +26,7 @@ import type { Runner } from "../sources/runner";
 import { writeSidecar, type AgentChoiceRecord, type LoadedGuide } from "../store";
 import type { AnswerListItem } from "../webview-protocol";
 import { pickQuestion } from "./ask-box";
+import { AskThreads, type AskThreadSink, type ThreadAskResult } from "./ask-thread";
 import { resolveSymbolForBuilder } from "./intel";
 import { guideSideOf } from "./uris";
 import type { WebviewHost, WebviewMode } from "./webview-host";
@@ -52,7 +54,7 @@ export interface AsksHost {
   autoApprove(): boolean;
   approveAlways(): void;
   signIn(agentId: string, logins: LoginCommand[], label: string | undefined, cwd: string): Promise<void>;
-  createPanel(title: string, column: vscode.ViewColumn, onLink: (link: string) => void): AsksPanel;
+  createPanel(title: string, column: vscode.ViewColumn, onLink: (link: string) => void, preserveFocus?: boolean): AsksPanel;
   /** Whether answers are written to disk (guide history on, and the guide itself is saved). */
   persists(guide: LoadedGuide): boolean;
   updateChapterView(): void;
@@ -62,6 +64,16 @@ export interface AsksHost {
 interface LiveAsk {
   run: AskRun;
   record: AnswerRecord;
+  /** Asked from a question box under the lines: it hears the run, and the tab opens when the answer is ready. */
+  sink?: AskThreadSink;
+  codeColumn?: vscode.ViewColumn;
+}
+
+interface AskOptions {
+  codeColumn?: vscode.ViewColumn;
+  followUpOf?: AnswerRecord;
+  panel?: AnswerPanel;
+  sink?: AskThreadSink;
 }
 
 interface AnswerPanel extends AsksPanel {
@@ -83,9 +95,27 @@ export class GuideAsks implements vscode.Disposable {
   /** The answers on disk or in memory, what was deleted, and the one-question-per-guide slot. */
   private readonly shelf: AnswerShelf;
   private answerColumn: vscode.ViewColumn | undefined;
+  /** The question boxes under selected lines. */
+  readonly threads: AskThreads;
+  private readonly threadColumns = new Map<string, vscode.ViewColumn | undefined>();
+  private user = "You";
 
   constructor(private readonly host: AsksHost) {
     this.shelf = new AnswerShelf((line) => host.log(line));
+    this.threads = new AskThreads({
+      guide: () => this.host.reader()?.model.loaded ?? null,
+      choiceFor: (guide) => this.choiceFor(guide),
+      changeChoice: (guide) => this.changeChoice(guide),
+      pastFor: (guide, about) => this.pastFor(guide, about),
+      ask: (guide, about, question, sink, followUpOf) => this.askFromThread(guide, about, question, sink, followUpOf),
+      stop: (id) => this.stop(id),
+      userName: () => this.user,
+      log: (line) => host.log(line),
+    }, { plannotator: vscode.Uri.joinPath(host.context.extensionUri, "images", "icon.png") });
+    void host.runner("git", ["config", "user.name"], { cwd: process.cwd(), timeoutMs: 5_000 }).then((r) => {
+      const name = r.code === 0 ? r.stdout.trim() : "";
+      if (name) this.user = name.slice(0, 80);
+    }).catch(() => undefined);
   }
 
   // ---------------------------------------------------------------------------
@@ -142,7 +172,7 @@ export class GuideAsks implements vscode.Disposable {
     }
     const sel = editor.selection;
     const about = sel.isEmpty ? this.fileAbout(reader, side.path, chapter) : this.selectionAbout(reader, editor.document, sel, side, chapter);
-    await this.askWithBox(about, editor.viewColumn);
+    this.openThread(reader, editor, about);
   }
 
   /** The file's CodeLens "Ask…": its selection when it has one, else the whole file. */
@@ -155,10 +185,73 @@ export class GuideAsks implements vscode.Disposable {
     if (!target) return this.askAboutSelection();
     const chapter = reader.model.chapterOf(target);
     if (chapter < 0) return;
-    const about = editor && side && side.path === target && !editor.selection.isEmpty
+    if (!editor || !side || side.path !== target) {
+      // The CodeLens of a file not in the active editor: open its diff first, then the box.
+      await vscode.commands.executeCommand("plannotator.guides.openFile", target);
+      const opened = vscode.window.activeTextEditor;
+      const openedSide = opened ? guideSideOf(reader.sides, opened.document.uri, reader.model.files) : null;
+      if (!opened || openedSide?.path !== target) return;
+      return this.openThread(reader, opened, this.fileAbout(reader, target, chapter));
+    }
+    const about = !editor.selection.isEmpty
       ? this.selectionAbout(reader, editor.document, editor.selection, side, chapter)
       : this.fileAbout(reader, target, chapter);
-    await this.askWithBox(about, editor?.viewColumn);
+    this.openThread(reader, editor, about);
+  }
+
+  /** The question box under the asked-about lines (the first line of the file for a whole file). */
+  private openThread(reader: { model: ReaderModel }, editor: vscode.TextEditor, about: AskAbout): void {
+    const range = about.kind === "selection" && about.lines
+      ? new vscode.Range(about.lines.start - 1, 0, about.lines.end - 1, 0)
+      : new vscode.Range(0, 0, 0, 0);
+    this.threadColumns.set(reader.model.id, editor.viewColumn);
+    const last = range.end.line;
+    this.threads.open(reader.model.loaded, about, editor.document.uri, range, async () => {
+      if (vscode.window.activeTextEditor !== editor) return;
+      // The cursor on the box's lines (the selection kept), then VS Code's own "Focus Comment on
+      // Current Line", which focuses the box, and its widget navigation, which opens and focuses
+      // the box's text field.
+      const sel = editor.selection;
+      if (sel.active.line > last || sel.active.line < range.start.line) {
+        editor.selection = new vscode.Selection(new vscode.Position(range.start.line, 0), new vscode.Position(last, editor.document.lineAt(last).text.length));
+      }
+      await vscode.commands.executeCommand("workbench.action.focusCommentOnCurrentLine");
+      await vscode.commands.executeCommand("widgetNavigation.focusNext");
+    });
+    // The box opens under the last line: bring it into view when it would open below the editor.
+    const visible = editor.visibleRanges[0];
+    if (visible && range.end.line + 8 > visible.end.line) {
+      editor.revealRange(new vscode.Range(Math.max(0, range.start.line - 2), 0, Math.max(0, range.start.line - 2), 0), vscode.TextEditorRevealType.AtTop);
+    }
+  }
+
+  private async changeChoice(guide: LoadedGuide): Promise<AgentChoiceRecord | null> {
+    const next = await this.host.pickModel(this.choiceFor(guide));
+    if (!next) return null;
+    await this.host.context.globalState.update(askChoiceKey(guide.id), next);
+    this.host.updateChapterView();
+    return next;
+  }
+
+  /** "Asked before": earlier questions about the same file (those about these lines first), else this chapter's. */
+  private pastFor(guide: LoadedGuide, about: AskAbout): Array<{ id: string; question: string; when: string }> {
+    const now = Date.now();
+    const all = this.answersOf(guide).filter((r) => !this.live.has(r.id));
+    const overlaps = (r: AnswerRecord) => !!(about.lines && r.about.lines && (r.about.side ?? "head") === (about.side ?? "head") && r.about.lines.start <= about.lines.end && r.about.lines.end >= about.lines.start);
+    const same = about.path ? all.filter((r) => r.about.path === about.path) : all.filter((r) => r.about.chapter === about.chapter);
+    const picked = [...same.filter(overlaps), ...same.filter((r) => !overlaps(r))].slice(0, 3);
+    return picked.map((r) => ({ id: r.id, question: r.question, when: relativeTimeShort(r.answeredAt ?? r.askedAt, now) }));
+  }
+
+  private async askFromThread(guide: LoadedGuide, about: AskAbout, question: string, sink: AskThreadSink, followUpOf?: string): Promise<ThreadAskResult> {
+    const prev = followUpOf ? this.find(guide, followUpOf) : null;
+    const panel = prev ? this.panelShowing(prev.id) : null;
+    return this.ask(guide, about, question.slice(0, MAX_QUESTION), {
+      sink,
+      codeColumn: this.threadColumns.get(guide.id) ?? vscode.window.activeTextEditor?.viewColumn,
+      ...(prev && { followUpOf: prev }),
+      ...(panel && { panel }),
+    });
   }
 
   /** The chapter view's ask box: what was typed is asked; nothing typed opens the question box. */
@@ -171,7 +264,7 @@ export class GuideAsks implements vscode.Disposable {
     const about: AskAbout = { kind: "chapter", chapter, chapterTitle: ch.title };
     const column = vscode.window.activeTextEditor?.viewColumn;
     const question = text?.trim().slice(0, MAX_QUESTION);
-    if (question) return this.ask(reader.model.loaded, about, question, { codeColumn: column });
+    if (question) return void await this.ask(reader.model.loaded, about, question, { codeColumn: column });
     await this.askWithBox(about, column);
   }
 
@@ -245,21 +338,24 @@ export class GuideAsks implements vscode.Disposable {
   // Asking
   // ---------------------------------------------------------------------------
 
-  private async ask(guide: LoadedGuide, about: AskAbout, question: string, opts: { codeColumn?: vscode.ViewColumn; followUpOf?: AnswerRecord; panel?: AnswerPanel }): Promise<void> {
+  private async ask(guide: LoadedGuide, about: AskAbout, question: string, opts: AskOptions): Promise<ThreadAskResult> {
     const reader = this.host.reader();
-    if (!reader || reader.model.id !== guide.id) return;
+    if (!reader || reader.model.id !== guide.id) return { started: false, reason: "Its guide is not open." };
     // One question at a time per guide: the slot is taken before anything is awaited, so a
     // second ask (a double Enter, the box and the chapter at once) is refused, never half-started.
     if (!this.shelf.reserve(guide.id)) {
       const busy = this.sessions.get(guide.id)?.current;
       const running = busy ? this.live.get(busy.state.answerId)?.record : undefined;
+      const who = running?.agent.label ?? this.choiceFor(guide).label;
+      // From a question box the box says it (and offers to ask again); the warning only names the question.
+      if (opts.sink) return { started: false, reason: `${who} was ${running ? `answering “${running.question}”` : "getting ready to answer another question"}.` };
       const choice = await vscode.window.showWarningMessage(
-        `${running?.agent.label ?? this.choiceFor(guide).label} is ${running ? "answering" : "getting ready to answer"} another question${running ? `: “${running.question}”` : ""}.`,
+        `${who} is ${running ? "answering" : "getting ready to answer"} another question${running ? `: “${running.question}”` : ""}.`,
         ...(running ? ["Show it", "Stop it"] : []),
       );
       if (choice === "Show it" && running) await this.openAnswer(running.id);
       if (choice === "Stop it") await busy?.cancel();
-      return;
+      return { started: false };
     }
     let started = false;
     try {
@@ -267,10 +363,11 @@ export class GuideAsks implements vscode.Disposable {
     } finally {
       if (!started) this.shelf.release(guide.id);
     }
+    return started ? { started: true } : { started: false, reason: "The agent did not start." };
   }
 
   /** Start answering (the guide's slot is held); true when a run started, which releases the slot when it ends. */
-  private async start(guide: LoadedGuide, reader: { model: ReaderModel; sides: ReaderSides }, about: AskAbout, question: string, opts: { codeColumn?: vscode.ViewColumn; followUpOf?: AnswerRecord; panel?: AnswerPanel }): Promise<boolean> {
+  private async start(guide: LoadedGuide, reader: { model: ReaderModel; sides: ReaderSides }, about: AskAbout, question: string, opts: AskOptions): Promise<boolean> {
     const choice = this.choiceFor(guide);
     const descriptor = this.host.agentById(choice.id);
     if (!descriptor) {
@@ -312,13 +409,18 @@ export class GuideAsks implements vscode.Disposable {
         ...(previous && { previous }),
       }),
     });
-    const live: LiveAsk = { run, record };
+    const live: LiveAsk = { run, record, ...(opts.sink && { sink: opts.sink }), ...(opts.codeColumn && { codeColumn: opts.codeColumn }) };
     this.live.set(record.id, live);
-    const panel = opts.panel ?? this.panelFor(record, opts.codeColumn);
-    panel.current = record.id;
-    panel.panel.title = tabTitle(question, true);
-    panel.panel.reveal(panel.panel.viewColumn, false);
+    // From the chapter's box (or the tab's follow-up), the tab shows the work as it goes. From a
+    // box under the lines, the box shows it and the tab opens with the answer (a follow-up's open tab moves on).
+    const panel = opts.panel ?? (opts.sink ? null : this.panelFor(record, opts.codeColumn));
+    if (panel) {
+      panel.current = record.id;
+      panel.panel.title = tabTitle(question, true);
+      if (!opts.sink) panel.panel.reveal(panel.panel.viewColumn, false);
+    }
     this.host.setAnswering(question, record.id);
+    opts.sink?.started(record, run);
     let lastChapter = 0;
     run.onChange((state) => {
       this.showLive(live, state);
@@ -392,7 +494,12 @@ export class GuideAsks implements vscode.Disposable {
     const model = state.appliedModel ? { model: { id: record.agent.model?.id ?? state.appliedModel, label: state.appliedModel } } : {};
     const effort = state.appliedEffort ? { effort: { id: record.agent.effort?.id ?? state.appliedEffort, label: state.appliedEffort } } : {};
     record.agent = { ...record.agent, ...model, ...effort };
-    const panel = this.panelShowing(record.id);
+    let panel = this.panelShowing(record.id);
+    // Asked from a box under the lines: the answer opens beside the diff now, leaving the focus in the box.
+    if (live.sink && !panel && !this.shelf.isGuideDeleted(guide.id)) {
+      panel = this.panelFor(record, live.codeColumn, true);
+      panel.current = record.id;
+    } else if (live.sink && panel) panel.panel.reveal(panel.panel.viewColumn, true);
     record.seen = !!panel?.panel.visible;
     this.live.delete(record.id);
     this.host.setAnswering(null, null);
@@ -410,13 +517,14 @@ export class GuideAsks implements vscode.Disposable {
       panel.panel.title = tabTitle(record.question, false);
       void this.showRecord(panel, record);
     }
+    live.sink?.ended(record, !!panel);
     this.host.updateChapterView();
     if (state.signIn) {
       const logins = state.signIn.logins;
       void vscode.window.showErrorMessage(`${record.agent.label} is not signed in. Sign in in a terminal, then ask again.`, ...(logins.length ? logins.map((l) => l.label) : ["Sign in"])).then((label) => {
         if (label) void this.host.signIn(record.agent.id, logins, label, session.input.cwd);
       });
-    } else if (!panel?.panel.visible && (record.status === "answered" || record.status === "text")) {
+    } else if (!live.sink && !panel?.panel.visible && (record.status === "answered" || record.status === "text")) {
       void vscode.window.showInformationMessage(`Answer ready: ${record.question}`, "Open").then((c) => {
         if (c) void this.openAnswer(record.id);
       });
@@ -432,13 +540,13 @@ export class GuideAsks implements vscode.Disposable {
     return null;
   }
 
-  private panelFor(record: AnswerRecord, codeColumn: vscode.ViewColumn | undefined): AnswerPanel {
+  private panelFor(record: AnswerRecord, codeColumn: vscode.ViewColumn | undefined, preserveFocus = false): AnswerPanel {
     const existing = this.panelShowing(record.id);
     if (existing) return existing;
     // Later answers reuse the right-hand group the first one opened in.
     const column = this.answerColumn && [...this.panels].some((p) => p.panel.viewColumn === this.answerColumn) ? this.answerColumn : vscode.ViewColumn.Beside;
     let entry: AnswerPanel;
-    const base = this.host.createPanel(tabTitle(record.question, record.status === "answering"), column, (link) => void this.openAnswerLink(entry, link));
+    const base = this.host.createPanel(tabTitle(record.question, record.status === "answering"), column, (link) => void this.openAnswerLink(entry, link), preserveFocus);
     entry = { ...base, current: record.id, guideId: record.guideId, repoKey: record.repoKey, codeColumn };
     this.panels.add(entry);
     entry.panel.onDidDispose(() => this.panels.delete(entry));
@@ -526,7 +634,7 @@ export class GuideAsks implements vscode.Disposable {
       { label: "$(copy) Copy the question", value: "copy" },
       { label: "$(trash) Delete this answer", value: "delete" },
     ], { title: record.question }))?.value;
-    if (pick === "again") return this.ask(guide, record.about, record.question, { codeColumn: this.panelShowing(record.id)?.codeColumn, ...(this.panelShowing(record.id) && { panel: this.panelShowing(record.id)! }) });
+    if (pick === "again") return void await this.ask(guide, record.about, record.question, { codeColumn: this.panelShowing(record.id)?.codeColumn, ...(this.panelShowing(record.id) && { panel: this.panelShowing(record.id)! }) });
     if (pick === "copy") return void vscode.env.clipboard.writeText(record.question);
     if (pick === "delete") {
       const sure = await vscode.window.showWarningMessage(`Delete the answer to “${record.question}”?`, { modal: true }, "Delete");
@@ -571,12 +679,19 @@ export class GuideAsks implements vscode.Disposable {
   onGuideDeleted(repoKey: string, guideId: string): void {
     // Marked first: a question still being answered must not write its answer or the sidecar back.
     this.shelf.removeGuide(repoKey, guideId);
+    this.threads.keepOnly(this.host.reader()?.model.id === guideId ? null : this.host.reader()?.model.id ?? null);
     this.sessions.get(guideId)?.dispose();
     this.sessions.delete(guideId);
     for (const p of [...this.panels]) if (p.guideId === guideId) p.panel.dispose();
   }
 
+  /** The reader opened another guide, or closed: question boxes of other guides go. */
+  onReaderChanged(guideId: string | null): void {
+    this.threads.keepOnly(guideId);
+  }
+
   dispose(): void {
+    this.threads.dispose();
     for (const s of this.sessions.values()) s.dispose();
     this.sessions.clear();
   }
