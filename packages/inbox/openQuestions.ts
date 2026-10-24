@@ -121,13 +121,36 @@ export function openQuestionState(q: OpenQuestion): OpenQuestionState {
   return null;
 }
 
-/** The row's question is skipped in the person's draft: its Skip reads "Unskip", as the card's does. */
+/** The row's question is skipped in the person's draft: the row goes quiet, and the card's Skip reads "Unskip". */
 export function openQuestionSkipped(q: OpenQuestion): boolean {
   return q.question.answer?.skipped === true;
 }
 
 /**
- * Whether a row offers Skip: exactly when its card does (an open or picked
+ * What the select mode's button does with the ticked rows (approval
+ * "oq-skip-select", variant A): a ticked question not skipped yet is skipped,
+ * a ticked skipped one is unskipped. Only questions that take a Skip count.
+ */
+export function skipSelection(questions: readonly OpenQuestion[], ticked: ReadonlySet<string>): { skip: OpenQuestion[]; unskip: OpenQuestion[] } {
+  const skip: OpenQuestion[] = [];
+  const unskip: OpenQuestion[] = [];
+  for (const q of questions) {
+    if (!ticked.has(q.id) || !openQuestionSkippable(q)) continue;
+    (openQuestionSkipped(q) ? unskip : skip).push(q);
+  }
+  return { skip, unskip };
+}
+
+/**
+ * What "Skip all N" covers: the open questions with nothing picked. A draft
+ * pick, and a question already skipped, stay as they are.
+ */
+export function skipAllCandidates(questions: readonly OpenQuestion[]): OpenQuestion[] {
+  return questions.filter((q) => !q.picked && !openQuestionSkipped(q) && openQuestionSkippable(q));
+}
+
+/**
+ * Whether a row can be skipped: exactly when its card offers Skip (an open or picked
  * question; a sent, closed or replaced one, and an action item, take none).
  * The list holds only such questions, so this is a guard, not a filter.
  */

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import { Menu } from '@base-ui/react/menu';
-import { whenTime } from '../format';
+import { formatCount, whenTime } from '../format';
 import { Icon } from '../icons';
 import {
   openQuestionPlaceWords,
@@ -9,6 +9,8 @@ import {
   openQuestionsLabel,
   openQuestionSkippable,
   openQuestionSkipped,
+  skipAllCandidates,
+  skipSelection,
   type OpenQuestion,
   type OpenQuestionPlace,
   type OpenQuestionsNoun,
@@ -17,9 +19,8 @@ import { Tip } from './Tip';
 import { pickWords } from './ReplacedQuestion';
 import { fitFootRow, footFitCandidates, laidOutChildren, openQuestionsFormText, type FootFit, type OpenQuestionsLabelForm } from '../footFit';
 
-/** What a row's Skip says on hover (and, for Skip, as its description): it is not sent now. */
-const SKIP_TIP = 'Skips it in your draft; it goes with your next Send';
-const UNSKIP_TIP = 'Takes the skip back off your draft';
+/** What "Skip…" says on hover (and as its description): it is not sent now. */
+const SKIP_MODE_TIP = 'Choose questions to skip. Skips ride your next Send.';
 
 /** The Re-ask item at the list's foot (owner, 2026-10-23): what the foot's Re-ask button did. */
 export interface OpenQuestionsReask {
@@ -50,11 +51,12 @@ export interface OpenQuestionsButtonProps {
   /** A row was chosen: scroll to its card (opening a folded message) and ring it. */
   onPick: (question: OpenQuestion) => void;
   /**
-   * A row's Skip (owner, 2026-10-24): what the question's card's own Skip does
-   * (a pick saved as skipped, which goes with the next Send; again on a skipped
-   * one, Unskip). Absent: the rows offer no Skip.
+   * Skipping from the list (approval "oq-skip-select", variant A): "Skip…"
+   * enters a select mode, and its button sets these questions skipped (true)
+   * or not (false), each exactly as its card's own Skip / Unskip does (a pick
+   * saved as skipped, which goes with the next Send). Absent: no "Skip…".
    */
-  onSkip?: (question: OpenQuestion) => void;
+  onSetSkipped?: (questions: readonly OpenQuestion[], skipped: boolean) => void;
 }
 
 /**
@@ -72,8 +74,14 @@ export interface OpenQuestionsButtonProps {
  * usual spacing and then a tighter one; a phone never takes the long form.
  * The name always holds the whole count.
  */
-export function OpenQuestionsButton({ questions, actions = 0, reask = null, triggerRef, phone, measure, onPick, onSkip }: OpenQuestionsButtonProps) {
+export function OpenQuestionsButton({ questions, actions = 0, reask = null, triggerRef, phone, measure, onPick, onSetSkipped }: OpenQuestionsButtonProps) {
   const [open, setOpen] = useState(false);
+  /** Select mode (approval "oq-skip-select"): rows are checkboxes; ticks save nothing until the bar's button. */
+  const [selecting, setSelecting] = useState(false);
+  const [tickedIds, setTickedIds] = useState<ReadonlySet<string>>(new Set());
+  /** After entering or leaving select mode, where focus goes: the first row, or "Skip…". */
+  const focusAfter = useRef<'row' | 'skip' | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const [places, setPlaces] = useState<ReadonlyMap<string, OpenQuestionPlace>>(new Map());
   const trigger = useRef<HTMLButtonElement>(null);
   /** A row was chosen: focus goes to its card, not back to the button. */
@@ -151,14 +159,94 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
   }, []);
   const label = openQuestionsLabel(n, noun);
   const heading = openQuestionsHeading(n, noun);
+
+  // Skipping from the list (approval "oq-skip-select", variant A).
+  const canSkip = !!onSetSkipped && questions.some(openQuestionSkippable);
+  // A tick on a question that left the list (answered elsewhere) no longer counts.
+  const ticks = new Set(questions.filter((q) => tickedIds.has(q.id)).map((q) => q.id));
+  const { skip: toSkip, unskip: toUnskip } = skipSelection(questions, ticks);
+  const allToSkip = skipAllCandidates(questions);
+  const applyReady = toSkip.length + toUnskip.length > 0;
+  const applyLabel =
+    toSkip.length > 0 && toUnskip.length > 0
+      ? `Skip ${formatCount(toSkip.length)}, unskip ${formatCount(toUnskip.length)}`
+      : toUnskip.length > 0
+        ? `Unskip ${formatCount(toUnskip.length)}`
+        : toSkip.length > 0
+          ? `Skip ${formatCount(toSkip.length)}`
+          : 'Skip';
+  const enterSelect = () => {
+    setTickedIds(new Set());
+    focusAfter.current = 'row';
+    setSelecting(true);
+  };
+  /** Cancel, Escape, or the work done: ticks are dropped, focus back on "Skip…". */
+  const leaveSelect = () => {
+    setTickedIds(new Set());
+    focusAfter.current = 'skip';
+    setSelecting(false);
+  };
+  const tick = (id: string, on: boolean) =>
+    setTickedIds((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const apply = () => {
+    if (!onSetSkipped || !applyReady) return;
+    if (toSkip.length > 0) onSetSkipped(toSkip, true);
+    if (toUnskip.length > 0) onSetSkipped(toUnskip, false);
+    leaveSelect();
+  };
+  const skipAll = () => {
+    if (!onSetSkipped || allToSkip.length === 0) return;
+    onSetSkipped(allToSkip, true);
+    leaveSelect();
+  };
+  const skipAllButton =
+    allToSkip.length > 0 ? (
+      <Menu.Item
+        className={phone ? 'ib-oq-skipmode' : 'ib-oq-bbtn ib-oq-ghost'}
+        data-open-questions-skip-all=""
+        label={`Skip all ${formatCount(allToSkip.length)}`}
+        closeOnClick={false}
+        onClick={() => skipAll()}
+      >
+        Skip all {formatCount(allToSkip.length)}
+      </Menu.Item>
+    ) : null;
+  // Focus follows the mode: the first row on the way in, "Skip…" on the way out (the items remount).
+  useLayoutEffect(() => {
+    const where = focusAfter.current;
+    if (!where || !open) return;
+    focusAfter.current = null;
+    const popup = popupRef.current;
+    const target =
+      where === 'row'
+        ? popup?.querySelector<HTMLElement>('[data-open-question]:not([data-disabled])')
+        : popup?.querySelector<HTMLElement>('[data-open-questions-skip-mode]');
+    target?.focus();
+  }, [selecting, open]);
+
   return (
     <Menu.Root
       open={open}
       modal={false}
-      onOpenChange={(next) => {
+      onOpenChange={(next, details) => {
+        // Escape leaves select mode (dropping the ticks) before it closes the list.
+        if (!next && selecting && details.reason === 'escape-key') {
+          details.cancel();
+          details.event.preventDefault();
+          leaveSelect();
+          return;
+        }
         if (next) {
           picked.current = false;
           setPlaces(measure());
+        } else if (selecting) {
+          setSelecting(false);
+          setTickedIds(new Set());
         }
         setOpen(next);
       }}
@@ -193,6 +281,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
           data-phone={phone ? '' : undefined}
         >
           <Menu.Popup
+            ref={popupRef}
             className="ib-oq"
             aria-label={heading}
             data-open-questions-list=""
@@ -206,49 +295,44 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                 </button>
               </div>
             )}
+            {selecting && (
+              <div className="ib-oq-selhead" role="none" data-open-questions-select-head="">
+                <span aria-hidden="true">{ticks.size > 0 ? `${formatCount(ticks.size)} selected` : 'Select questions to skip'}</span>
+                {phone && skipAllButton}
+              </div>
+            )}
             <div className="ib-oq-list">
               {questions.map((q, i) => {
                 const state = openQuestionState(q);
                 const place = openQuestionPlaceWords(places.get(q.id) ?? 'below');
                 const when = whenTime(q.at);
-                const stateWords =
-                  state?.kind === 'draft'
+                const skipped = openQuestionSkipped(q);
+                const stateWords = skipped
+                  ? 'Skipped'
+                  : state?.kind === 'draft'
                     ? `Draft, ${q.question.answer ? pickWords(q.question.answer) : ''}`
                     : state?.kind === 'stopped'
                       ? 'Stopped'
                       : state?.kind === 'holds'
                         ? `Holds up ${state.count}`
                         : '';
-                const skipped = openQuestionSkipped(q);
-                const skipWord = skipped ? 'Unskip' : 'Skip';
-                const row = (
-                  <Menu.Item
-                    key={q.id}
-                    className="ib-oq-row"
-                    label={q.prompt}
-                    data-open-question={q.id}
-                    aria-label={[q.prompt, stateWords, `${when}, ${place}`].filter(Boolean).join('. ')}
-                    onClick={() => {
-                      picked.current = true;
-                      setOpen(false);
-                      onPick(q);
-                    }}
-                  >
-                    <span className="ib-oq-n" aria-hidden="true">
-                      {i + 1}
-                    </span>
+                const ariaLabel = [q.prompt, stateWords, `${when}, ${place}`].filter(Boolean).join('. ');
+                const body = (
+                  <>
                     <span className="ib-oq-main">
                       <span className="ib-oq-p" dir="auto">
                         {q.prompt}
                       </span>
                       <span className="ib-oq-meta">
-                        {state?.kind === 'draft' && (
+                        {/* Skipped: the row goes quiet ("Skipped · time · place"), never "Draft · Skipped". */}
+                        {skipped && <span className="ib-oq-skipped">Skipped</span>}
+                        {!skipped && state?.kind === 'draft' && (
                           <span className="ib-draft-l ib-oq-draft">
                             <b>Draft</b> <span aria-hidden="true">·</span> <span dir="auto">{q.question.answer ? pickWords(q.question.answer) : ''}</span>
                           </span>
                         )}
-                        {state?.kind === 'stopped' && <span className="ib-badge ib-b-stop ib-oq-badge">Stopped</span>}
-                        {state?.kind === 'holds' && <span className="ib-badge ib-b-hold ib-oq-badge">Holds up {state.count}</span>}
+                        {!skipped && state?.kind === 'stopped' && <span className="ib-badge ib-b-stop ib-oq-badge">Stopped</span>}
+                        {!skipped && state?.kind === 'holds' && <span className="ib-badge ib-b-hold ib-oq-badge">Holds up {state.count}</span>}
                         <span className="ib-oq-when">
                           {when} · {place}
                         </span>
@@ -257,64 +341,129 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                     <span className="ib-oq-go" aria-hidden="true">
                       <Icon name="chevR" size={15} />
                     </span>
-                  </Menu.Item>
+                  </>
                 );
-                if (!onSkip) return row;
-                // Skip at the row's right (owner, 2026-10-24): a menu item of its own beside the row's, so the
-                // arrow keys reach it; the list stays open after it, focus on it, to skip several in a row.
+                if (selecting) {
+                  // Select mode (approval "oq-skip-select", variant A): the number turns into a round check.
+                  // A tick saves nothing; the bar's button does.
+                  return (
+                    <Menu.CheckboxItem
+                      key={q.id}
+                      className="ib-oq-row"
+                      label={q.prompt}
+                      data-open-question={q.id}
+                      data-select=""
+                      data-skipped={skipped ? '' : undefined}
+                      aria-label={ariaLabel}
+                      closeOnClick={false}
+                      disabled={!openQuestionSkippable(q)}
+                      checked={ticks.has(q.id)}
+                      onCheckedChange={(on) => tick(q.id, on)}
+                    >
+                      <span className="ib-oq-ck" aria-hidden="true">
+                        <Icon name="check" size={phone ? 13 : 11} />
+                      </span>
+                      {body}
+                    </Menu.CheckboxItem>
+                  );
+                }
                 return (
-                  <div key={q.id} className="ib-oq-line" role="none">
-                    {row}
-                    <Tip content={skipped ? UNSKIP_TIP : SKIP_TIP}>
-                      <Menu.Item
-                        className="ib-oq-skip"
-                        data-open-question-skip={q.id}
-                        data-skipped={skipped ? '' : undefined}
-                        label=""
-                        closeOnClick={false}
-                        disabled={!openQuestionSkippable(q)}
-                        aria-label={`${skipWord} question ${i + 1}: ${q.prompt}`}
-                        aria-describedby={skipped ? undefined : skipTipId}
-                        onClick={() => onSkip(q)}
-                      >
-                        {skipWord}
-                      </Menu.Item>
-                    </Tip>
-                  </div>
+                  <Menu.Item
+                    key={q.id}
+                    className="ib-oq-row"
+                    label={q.prompt}
+                    data-open-question={q.id}
+                    data-skipped={skipped ? '' : undefined}
+                    aria-label={ariaLabel}
+                    onClick={() => {
+                      picked.current = true;
+                      setOpen(false);
+                      onPick(q);
+                    }}
+                  >
+                    <span className="ib-oq-n" aria-hidden="true">
+                      {skipped ? <Icon name="forward" size={phone ? 14 : 12} /> : i + 1}
+                    </span>
+                    {body}
+                  </Menu.Item>
                 );
               })}
             </div>
-            {/* The Skip tooltip tags nothing for a screen reader: the same words as each Skip's description. */}
-            {onSkip && questions.length > 0 && (
-              <span id={skipTipId} hidden>
-                {SKIP_TIP}
-              </span>
-            )}
-            {reask && (
+            {selecting ? (
               <>
                 {questions.length > 0 && <Menu.Separator className="ib-oq-sep" />}
-                <Tip content={reask.tooltip}>
-                  <Menu.Item
-                    className="ib-oq-reask"
-                    data-reask=""
-                    label={reask.label}
-                    disabled={reask.busy}
-                    aria-describedby={reaskTipId}
-                    onClick={() => {
-                      // Focus goes back to the button (or to the route choice, which takes it).
-                      setOpen(false);
-                      reask.onReask();
-                    }}
-                  >
-                    <Icon name="refresh" size={15} />
-                    <span>{reask.label}</span>
+                <div className="ib-oq-selbar" role="none" data-open-questions-select-bar="">
+                  <Menu.Item className="ib-oq-bbtn ib-oq-ghost" data-open-questions-cancel="" label="Cancel" closeOnClick={false} onClick={() => leaveSelect()}>
+                    Cancel
                   </Menu.Item>
-                </Tip>
-                {/* The tooltip tags nothing for a screen reader: the same words as the item's description. */}
-                <span id={reaskTipId} hidden>
-                  {reask.tooltip}
-                </span>
+                  <span className="ib-oq-sp" />
+                  {!phone && skipAllButton}
+                  <Menu.Item
+                    className="ib-oq-bbtn ib-oq-pri"
+                    data-open-questions-apply=""
+                    label={applyLabel}
+                    closeOnClick={false}
+                    disabled={!applyReady}
+                    onClick={() => apply()}
+                  >
+                    {applyLabel}
+                  </Menu.Item>
+                </div>
               </>
+            ) : (
+              (reask || canSkip) && (
+                <>
+                  {questions.length > 0 && <Menu.Separator className="ib-oq-sep" />}
+                  {/* The list's last row (approval "oq-skip-select"): Re-ask on the left, a quiet "Skip…" on the right. */}
+                  <div className="ib-oq-last" role="none">
+                    {reask && (
+                      <Tip content={reask.tooltip}>
+                        <Menu.Item
+                          className="ib-oq-reask"
+                          data-reask=""
+                          label={reask.label}
+                          disabled={reask.busy}
+                          aria-describedby={reaskTipId}
+                          onClick={() => {
+                            // Focus goes back to the button (or to the route choice, which takes it).
+                            setOpen(false);
+                            reask.onReask();
+                          }}
+                        >
+                          <Icon name="refresh" size={15} />
+                          <span>{reask.label}</span>
+                        </Menu.Item>
+                      </Tip>
+                    )}
+                    <span className="ib-oq-sp" />
+                    {canSkip && (
+                      <Tip content={SKIP_MODE_TIP}>
+                        <Menu.Item
+                          className="ib-oq-skipmode"
+                          data-open-questions-skip-mode=""
+                          label="Skip…"
+                          closeOnClick={false}
+                          aria-describedby={skipTipId}
+                          onClick={() => enterSelect()}
+                        >
+                          Skip…
+                        </Menu.Item>
+                      </Tip>
+                    )}
+                  </div>
+                  {/* The tooltips tag nothing for a screen reader: the same words as the items' descriptions. */}
+                  {reask && (
+                    <span id={reaskTipId} hidden>
+                      {reask.tooltip}
+                    </span>
+                  )}
+                  {canSkip && (
+                    <span id={skipTipId} hidden>
+                      {SKIP_MODE_TIP}
+                    </span>
+                  )}
+                </>
+              )
             )}
           </Menu.Popup>
         </Menu.Positioner>
