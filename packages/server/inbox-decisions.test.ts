@@ -195,6 +195,21 @@ describe("GET /api/inbox/decisions", () => {
     expect((await decisions(server)).decisions.map((d) => d.id)).toEqual([second!.id]);
   });
 
+  test("a pick with unsent_only that raced the Send is refused (question_already_sent), and the answer stays sent", async () => {
+    const { server, client, project } = await setup({ on: true });
+    const asked = await send(client, project, "ses-a", "claude-code", { body: block("Ship it?") });
+    const [d] = (await decisions(server)).decisions;
+    const answer = (selected: string) => ({ v: 1, key: d!.question.key, kind: "single", prompt: "Ship it?", selected: [selected] });
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { questions: [{ key: d!.question.key, revision: 0, answer: answer("Yes") }] })).status).toBe(200);
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/reply`, { idempotency_key: "k1", words: "", questions: [{ key: d!.question.key, revision: 1 }] })).status).toBe(200);
+    // The window read revision 1 before the Send: its pick lands after it.
+    const raced = await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { unsent_only: true, questions: [{ key: d!.question.key, revision: 1, answer: answer("No") }] });
+    expect(raced.status).toBe(409);
+    expect(((await raced.json()) as { code: string }).code).toBe("question_already_sent");
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { unsent_only: "yes", questions: [{ key: d!.question.key, revision: 1, answer: answer("No") }] })).status).toBe(422);
+    expect((await decisions(server)).decisions).toHaveLength(0);
+  });
+
   test("the phone door does not carry it: `decisions` stays the removed Decisions route, refused", async () => {
     const { server } = await setup({ on: true, phones: true });
     const made = (await (await post(server, "/api/inbox/pairing", {})).json()) as { offer: { code: string } };

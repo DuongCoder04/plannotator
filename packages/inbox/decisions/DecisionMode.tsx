@@ -20,12 +20,12 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import type { InboxDecision, InboxListRow, InboxQuestion } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { InboxApiError, inboxApi } from '../api';
-import { replyKeysToRenew, sendTargetAnswerIds, type SentContents } from '../sendTargets';
+import { replyKeysToRenew, type SendTarget, type SentContents } from '../sendTargets';
 import { agentName, formatCount } from '../format';
 import { HostMark, Icon } from '../icons';
 import { prefersReducedMotion } from '../settle';
 import { Tip } from '../components/Tip';
-import { DecisionCard, type CardPicture } from './DecisionCard';
+import { DecisionCard, type CardPicture, type CardWords } from './DecisionCard';
 import {
   AFTER_SEND_ORDER,
   AFTER_SEND_WORDS,
@@ -110,6 +110,25 @@ interface Banner {
   withdrawn: boolean;
 }
 
+/** What one group's Send came to. */
+type SendResult = 'sent' | 'draft' | 'failed';
+
+/**
+ * What a reply carries, for its key (`replyKeysToRenew`): each pick with its revision, so a changed answer
+ * (a new pick is a new revision) takes a new key, and an unchanged retry replays the old one.
+ */
+function answersOf(target: SendTarget): string[] {
+  return [
+    ...target.questions.map((q) => `a:${q.message_id ?? target.message.id}/${q.key}@${q.revision}`),
+    ...target.skip.map((q) => `s:${q.message_id ?? target.message.id}/${q.key}`),
+  ];
+}
+
+/** The decision id of one of `answersOf`'s entries. */
+function answerIdOf(entry: string): string {
+  return entry.slice(2).replace(/@\d+$/, '');
+}
+
 /** The agent replaced the question while the pick was on its way: the swap shows it, no error. Any other refusal is shown. */
 function isSuperseded(error: unknown): boolean {
   return error instanceof InboxApiError && error.code === 'question_superseded';
@@ -131,10 +150,26 @@ export function DecisionMode(props: DecisionModeProps) {
   const sentIds = useMemo(() => new Set([...carried.values()].flatMap((ids) => [...ids])), [carried]);
   const sentIdsRef = useRef(sentIds);
   sentIdsRef.current = sentIds;
-  /** The groups the person answered, acted, skipped or undid in during this sitting: only those start a Hold by themselves. */
-  const [touched, setTouched] = useState<Set<string>>(new Set());
-  /** Threads a send found holding a reply draft (the list row may not say so yet). */
-  const [draftSeen, setDraftSeen] = useState<Set<string>>(new Set());
+  /**
+   * The decisions the person answered or acted on in this sitting (a count: Undo takes one off). A group
+   * starts its Hold by itself only when an answer it would send is one of these.
+   */
+  const [touched, setTouched] = useState<Map<string, number>>(new Map());
+  /**
+   * What the last fresh read before a send said about a thread's reply draft, good until the next list
+   * read (`rows` is that read): the row may be older than the draft, never newer.
+   */
+  const [draftRead, setDraftRead] = useState<Map<string, { reply: boolean; rows: ReadonlyMap<string, InboxListRow> }>>(new Map());
+  /** Sends on their way, by group: a second Send, "Keep as a draft" and "Send what you answered" wait for them. */
+  const inFlight = useRef(new Map<string, Promise<SendResult>>());
+  /** The card being edited (a box open, or words typed): its group's Hold waits meanwhile. */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  /** Words typed on a card the queue moved away from (Later, Previous, a notification): back when it is again. */
+  const keptWords = useRef(new Map<string, CardWords>());
+  /** Groups whose asking session has ended while their reply waited: it waits for the next agent. */
+  const [ended, setEnded] = useState<Set<string>>(new Set());
+  /** A notification asked for another card while words were typed here: a banner, never a move. */
+  const [startBanner, setStartBanner] = useState<string | null>(null);
   /** Each reply's idempotency key and what it carried, by (group, message): a key is renewed when the answers change. */
   const sendKeys = useRef(new Map<string, string>());
   const sendContents = useRef(new Map<string, SentContents>());
@@ -146,6 +181,8 @@ export function DecisionMode(props: DecisionModeProps) {
   const [stamp, setStamp] = useState<{ id: string; value: QuestionAnswer | 'done' | 'cant' } | null>(null);
   const [banner, setBanner] = useState<Banner | null>(null);
   const pendingSwap = useRef<{ old: string; replacement: string } | null>(null);
+  /** A replacement on its way: the sitting is not done while it is. */
+  const [swapPending, setSwapPending] = useState(false);
   const [overview, setOverview] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -202,20 +239,39 @@ export function DecisionMode(props: DecisionModeProps) {
       const nonce = props.startNonce ?? 0;
       if (props.start && appliedStart.current !== nonce && next.order.includes(props.start)) {
         appliedStart.current = nonce;
-        next = { ...next, current: props.start, later: new Set([...next.later].filter((l) => l !== props.start)) };
-        return next;
+        // Words typed on the card on screen are never dropped by a notification: a banner offers the move instead.
+        if (next.current !== props.start && next.current !== null && unsavedWordsRef.current?.() === true) {
+          startBannerRef.current = props.start;
+        } else {
+          next = { ...next, current: props.start, later: new Set([...next.later].filter((l) => l !== props.start)) };
+          return next;
+        }
       }
       const swap = pendingSwap.current;
       if (swap && next.cache.has(swap.replacement)) {
         pendingSwap.current = null;
+        swapDoneRef.current = true;
         next = placeAfter(next, swap.replacement, swap.old);
         if (next.current === swap.old || next.current === null || isHandled(next, next.current)) next = { ...next, current: swap.replacement };
       }
       const leftUnanswered = shown !== null && next.current === shown && next.gone.get(shown) === 'closed' && !isHandled(current, shown);
-      if (!leftUnanswered && next.current !== null && isHandled(next, next.current) && !stampRef.current) next = { ...next, current: nextId(next, next.current) };
+      // The card on screen became handled elsewhere (another tab, the thread): the next card. One the person went
+      // back to on purpose (Previous, All) was handled already, and stays.
+      const becameHandled = next.current !== null && isHandled(next, next.current) && !isHandled(current, next.current);
+      if (!leftUnanswered && becameHandled && !stampRef.current) next = { ...next, current: nextId(next, next.current) };
       return next;
     });
+    if (startBannerRef.current) {
+      setStartBanner(startBannerRef.current);
+      startBannerRef.current = null;
+    }
+    if (swapDoneRef.current) {
+      swapDoneRef.current = false;
+      setSwapPending(false);
+    }
   }, [props.decisions, props.start, props.startNonce]);
+  const startBannerRef = useRef<string | null>(null);
+  const swapDoneRef = useRef(false);
 
   // A new start moves the banner off the old card.
   useEffect(() => {
@@ -225,7 +281,17 @@ export function DecisionMode(props: DecisionModeProps) {
   const stampRef = useRef(stamp);
   stampRef.current = stamp;
 
-  useEffect(() => props.onLeft?.(leftCount(queue)), [queue, props.onLeft]);
+  // A replacement on its way counts as one left (the pill and the end screen wait for it).
+  useEffect(() => props.onLeft?.(leftCount(queue) + (swapPending ? 1 : 0)), [queue, swapPending, props.onLeft]);
+  // A replacement that never comes (answered elsewhere, or not this session's): the queue goes on without it.
+  useEffect(() => {
+    if (!swapPending) return;
+    const timer = setTimeout(() => {
+      pendingSwap.current = null;
+      setSwapPending(false);
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [swapPending]);
 
   // ── A question the agent replaced while the queue held it. ──
   const onReplaced = useCallback(
@@ -239,8 +305,10 @@ export function DecisionMode(props: DecisionModeProps) {
       setQueue((current) => markReplaced(current, question));
       if (state.current === id) {
         setBanner({ agent: old ? agentLabel(old) : 'The agent', withdrawn: replacement === null });
-        if (replacement) pendingSwap.current = { old: id, replacement };
-        else setQueue((current) => ({ ...current, current: nextId(current, id) }));
+        if (replacement) {
+          pendingSwap.current = { old: id, replacement };
+          setSwapPending(true);
+        } else setQueue((current) => ({ ...current, current: nextId(current, id) }));
       }
       props.refresh();
     },
@@ -263,10 +331,24 @@ export function DecisionMode(props: DecisionModeProps) {
   };
 
   // ── Each send group: ready → a 5 s Hold → its reply (model `nextGroupSend`). ──
+  /**
+   * Whether a thread's reply goes from the thread: a reply draft (the latest list row, or a fresh read made
+   * since it), or comments waiting for the thread's Send (the row's `unsent.comments`).
+   */
   const draftOf = useCallback(
-    (threadId: string) => (props.rows.get(threadId)?.unsent?.reply_at ?? null) !== null || draftSeen.has(threadId),
-    [props.rows, draftSeen],
+    (threadId: string) => {
+      const row = props.rows.get(threadId);
+      const read = draftRead.get(threadId);
+      const reply = read && read.rows === props.rows ? read.reply : (row?.unsent?.reply_at ?? null) !== null;
+      return reply || (row?.unsent?.comments ?? 0) > 0;
+    },
+    [props.rows, draftRead],
   );
+  const editingKey = editingId ? (queue.cache.get(editingId) ? groupKeyOf(queue.cache.get(editingId)!) : null) : null;
+  /** A group's Hold runs only while the dialog is on screen, no close question is up, and none of its cards is being edited. */
+  const runs = useCallback((key: string) => props.open && !confirm && editingKey !== key, [props.open, confirm, editingKey]);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   useEffect(() => {
     const at = Date.now();
     let started = false;
@@ -278,9 +360,9 @@ export function DecisionMode(props: DecisionModeProps) {
         const first = queue.cache.get(groupIds(queue, key)[0]!);
         const moved = nextGroupSend(state, {
           ready: groupReady(queue, key, carried.get(key)),
-          touched: touched.has(key),
+          touched: freshPicks(queue, key, carried.get(key)).some((id) => (touched.get(id) ?? 0) > 0),
           draft: first ? draftOf(first.thread.id) : false,
-          open: props.open,
+          open: runs(key),
           now: at,
         });
         if (moved !== state) {
@@ -293,9 +375,10 @@ export function DecisionMode(props: DecisionModeProps) {
     });
     // The countdown's first frame reads this clock: never an old one (it said "10 s" for a frame).
     if (started) setNow(at);
-  }, [queue, carried, touched, draftOf, props.open]);
+  }, [queue, carried, touched, draftOf, runs]);
 
-  // Tucked behind a thread, every Hold waits; back on screen, each runs on from where it was.
+  // Tucked behind a thread, behind the close question, or while one of its cards is being edited, a Hold
+  // waits; then it runs on from where it was.
   useEffect(() => {
     const at = Date.now();
     setNow(at);
@@ -303,7 +386,7 @@ export function DecisionMode(props: DecisionModeProps) {
       let changed = false;
       const next = new Map(current);
       for (const [key, state] of current) {
-        const moved = pauseHold(state, props.open, at);
+        const moved = pauseHold(state, runs(key), at);
         if (moved !== state) {
           next.set(key, moved);
           changed = true;
@@ -311,7 +394,7 @@ export function DecisionMode(props: DecisionModeProps) {
       }
       return changed ? next : current;
     });
-  }, [props.open]);
+  }, [runs]);
 
   const pausedCount = [...sends.values()].filter((s) => s.kind === 'hold' && s.paused !== null).length;
   useEffect(() => props.onPaused?.(pausedCount), [pausedCount, props.onPaused]);
@@ -325,41 +408,67 @@ export function DecisionMode(props: DecisionModeProps) {
 
   const setSend = (key: string, value: GroupSend) => setSends((current) => new Map(current).set(key, value));
 
-  /** The person did something in a group: it may start its Hold, and a Hold already running starts over. */
-  const touchGroup = (key: string) => {
-    setTouched((current) => (current.has(key) ? current : new Set(current).add(key)));
+  /** A Hold already running starts over (a pick, an Undo in its group). */
+  const restartGroup = (key: string) => {
     const state = sendsRef.current.get(key);
     if (state?.kind === 'hold') {
       const at = Date.now();
       setNow(at);
-      setSend(key, restartHold(state, at, openRef.current));
+      setSend(key, restartHold(state, at, runsRef.current(key)));
     }
   };
+  /** The person answered or acted on a decision in this sitting: its group may start its Hold. */
+  const touchDecision = (decision: InboxDecision, by: 1 | -1) => {
+    setTouched((current) => {
+      const next = new Map(current);
+      const n = Math.max(0, (next.get(decision.id) ?? 0) + by);
+      if (n === 0) next.delete(decision.id);
+      else next.set(decision.id, n);
+      return next;
+    });
+    restartGroup(groupKeyOf(decision));
+  };
+  /** A group whose reply is on its way: its cards take no pick until it lands (a pick would race the Send). */
+  const sendingNow = (decision: InboxDecision) => sendsRef.current.get(groupKeyOf(decision))?.kind === 'sending' || inFlight.current.has(groupKeyOf(decision));
 
   /**
-   * Send one group's reply: `sent` (or nothing was left to send), `busy` (one is on its way already),
-   * `draft` (the thread holds a reply draft: sent from the thread), or `failed`.
+   * Send one group's reply: `sent` (or nothing was left to send), `draft` (the thread's reply goes from the
+   * thread), or `failed`. A send already on its way is the one awaited.
    */
-  const sendGroup = useCallback(async (key: string): Promise<'sent' | 'busy' | 'draft' | 'failed'> => {
+  const sendGroup = useCallback((key: string): Promise<SendResult> => {
+    const running = inFlight.current.get(key);
+    if (running) return running;
+    const run = sendOnce(key);
+    inFlight.current.set(key, run);
+    void run.finally(() => inFlight.current.delete(key));
+    return run;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.refresh]);
+
+  const sendOnce = async (key: string): Promise<SendResult> => {
     const state = queueRef.current;
     const first = groupIds(state, key).map((id) => state.cache.get(id)).find((d): d is InboxDecision => d !== undefined);
     if (!first) return 'sent';
-    const at = sendsRef.current.get(key);
-    if (at?.kind === 'sending') return 'busy';
-    const before = at ?? { kind: 'waiting' as const };
+    const before = sendsRef.current.get(key) ?? { kind: 'waiting' as const };
     setSend(key, { kind: 'sending' });
     try {
       await pickChain.current;
-      // A thread with a reply draft: its words and these answers go together, from the thread.
-      const [{ thread }, draft] = await Promise.all([
-        inboxApi.thread(first.thread.id),
-        inboxApi.replyDraft(first.thread.id).catch(() => ({ draft: null })),
-      ]);
-      if (draft.draft) {
-        setDraftSeen((current) => new Set(current).add(first.thread.id));
-        setSend(key, { kind: 'draft' });
+      // A thread whose reply goes from the thread (a reply draft, comments waiting): never from here. The draft
+      // is read fresh; a read that fails sends nothing (fail closed).
+      let draft: { draft: unknown };
+      try {
+        draft = await inboxApi.replyDraft(first.thread.id);
+      } catch {
+        setSend(key, { kind: 'failed', error: "Couldn't check the thread for a draft reply, so nothing was sent." });
+        return 'failed';
+      }
+      const reply = draft.draft !== null && draft.draft !== undefined;
+      setDraftRead((current) => new Map(current).set(first.thread.id, { reply, rows: rowsRef.current }));
+      if (reply || (rowsRef.current.get(first.thread.id)?.unsent?.comments ?? 0) > 0) {
+        setSend(key, { kind: 'draft', held: before.kind === 'held' && before.by === 'person' });
         return 'draft';
       }
+      const { thread } = await inboxApi.thread(first.thread.id);
       const targets = groupSendTargets(thread, first.session.key);
       if (targets.length === 0) {
         // Sent from the thread meanwhile: nothing left here.
@@ -370,9 +479,9 @@ export function DecisionMode(props: DecisionModeProps) {
       let sentAt: string | null = null;
       for (const target of targets) {
         const keyId = `${key}\u0002${target.message.id}`;
-        const contents: SentContents = { value: target.message.id, answers: sendTargetAnswerIds(target) };
+        const contents: SentContents = { value: target.message.id, answers: answersOf(target) };
         const last = sendContents.current.get(keyId);
-        // A replay of a key answers the reply it wrote: a new answer set takes a new key.
+        // A replay of a key answers the reply it wrote: a changed answer (a new revision) takes a new key.
         const renew = !sendKeys.current.has(keyId) || (last !== undefined && replyKeysToRenew(new Map([[keyId, last]]), new Map([[keyId, contents]])).length > 0);
         if (renew) sendKeys.current.set(keyId, crypto.randomUUID());
         sendContents.current.set(keyId, contents);
@@ -385,7 +494,7 @@ export function DecisionMode(props: DecisionModeProps) {
         const created = (result.reply as { created_at?: unknown } | null)?.created_at;
         if (typeof created === 'string') sentAt = created;
         // What this reply took, so a follow-up answered later is told apart from it.
-        const ids = contents.answers.map((a) => a.slice(2));
+        const ids = contents.answers.map(answerIdOf);
         setCarried((current) => new Map(current).set(key, new Set([...(current.get(key) ?? []), ...ids])));
       }
       setSend(key, { kind: 'sent', at: sentAt ?? new Date().toISOString() });
@@ -397,9 +506,9 @@ export function DecisionMode(props: DecisionModeProps) {
       props.refresh();
       return 'failed';
     }
-  }, [props.refresh]);
+  };
 
-  // A Hold that ran out sends (never one paused while tucked).
+  // A Hold that ran out sends (never one paused: tucked, behind the close question, or its card being edited).
   useEffect(() => {
     for (const [key, state] of sends) if (state.kind === 'hold' && state.paused === null && state.until <= now) void sendGroup(key);
   }, [now, sends, sendGroup]);
@@ -409,9 +518,27 @@ export function DecisionMode(props: DecisionModeProps) {
     if (!props.open) return;
     const watch = () => {
       for (const [key, state] of sendsRef.current) {
-        if (state.kind !== 'sent') continue;
         const first = groupIds(queueRef.current, key).map((id) => queueRef.current.cache.get(id)).find(Boolean);
         if (!first || !first.session.session) continue;
+        // A reply waiting to go to a session that ended (only a session that wakes can be told ended): it
+        // waits for the next agent to read the thread.
+        if ((state.kind === 'hold' || state.kind === 'held') && first.session.wakes) {
+          void inboxApi
+            .sessions(first.thread.id, first.session.session)
+            .then((model) =>
+              setEnded((current) => {
+                const gone = model.asker?.live === false;
+                if (gone === current.has(key)) return current;
+                const next = new Set(current);
+                if (gone) next.add(key);
+                else next.delete(key);
+                return next;
+              }),
+            )
+            .catch(() => {});
+          continue;
+        }
+        if (state.kind !== 'sent') continue;
         const row = props.rows.get(first.thread.id);
         if (afterSendOf(row, state.at, null) === 'replied') continue;
         void inboxApi
@@ -426,8 +553,9 @@ export function DecisionMode(props: DecisionModeProps) {
   }, [props.open, props.rows]);
 
   // ── Moving through the queue. ──
+  /** The next card after `from`: only while `from` is still on screen (the person may have gone elsewhere since). */
   const advance = (from: string) => {
-    setQueue((current) => ({ ...current, current: nextId(current, from) }));
+    setQueue((current) => (current.current === from ? { ...current, current: nextId(current, from) } : current));
   };
 
   const land = (id: string, value: QuestionAnswer | 'done' | 'cant', words: string) => {
@@ -458,7 +586,7 @@ export function DecisionMode(props: DecisionModeProps) {
     pickChain.current = pickChain.current.then(async () => {
       const revision = Math.max(revisions.current.get(id) ?? 0, queueRef.current.cache.get(id)?.question.revision ?? 0);
       try {
-        const result = await inboxApi.pick(decision.message.id, decision.question.key, revision, answer);
+        const result = await inboxApi.pick(decision.message.id, decision.question.key, revision, answer, { unsentOnly: true });
         const saved = result.questions.find((q) => q.key === decision.question.key);
         if (saved) {
           revisions.current.set(id, saved.revision);
@@ -480,8 +608,9 @@ export function DecisionMode(props: DecisionModeProps) {
   const answer = (id: string, value: QuestionAnswer) => {
     const decision = queueRef.current.cache.get(id);
     if (!decision) return;
+    if (sendingNow(decision)) return setSaid('Its reply is on its way; this answer is not changed.');
     setUndo((stack) => [...stack, { id, kind: 'pick', before: decision.question.state === 'picked' ? decision.question.answer : null, at: Date.now() }]);
-    touchGroup(groupKeyOf(decision));
+    touchDecision(decision, 1);
     savePick(id, value);
     land(id, value, answerWords(value));
   };
@@ -490,18 +619,22 @@ export function DecisionMode(props: DecisionModeProps) {
     const decision = queueRef.current.cache.get(id);
     if (!decision) return;
     setUndo((stack) => [...stack, { id, kind: 'action', before: null, at: Date.now() }]);
-    touchGroup(groupKeyOf(decision));
+    touchDecision(decision, 1);
     setQueue((current) => {
       const cache = new Map(current.cache);
       cache.set(id, { ...decision, question: { ...decision.question, state: 'picked' } });
       return { ...current, cache, later: new Set([...current.later].filter((l) => l !== id)) };
     });
+    // On its way, like a pick: a read that crosses it never undoes it.
+    pendingPicks.current.add(id);
     pickChain.current = pickChain.current.then(async () => {
       try {
         await inboxApi.markAction(decision.message.id, decision.question.key, mark);
       } catch (cause) {
         setError(cause instanceof InboxApiError ? cause.message : 'That was not saved.');
         props.refresh();
+      } finally {
+        pendingPicks.current.delete(id);
       }
     });
     land(id, mark.outcome, mark.outcome === 'done' ? 'Done' : "Can't do it");
@@ -520,7 +653,7 @@ export function DecisionMode(props: DecisionModeProps) {
     const decision = queue.cache.get(entry.id);
     if (!decision) return false;
     if (sentIds.has(entry.id) || queue.gone.get(entry.id) === 'sent') return false;
-    if (sends.get(groupKeyOf(decision))?.kind === 'sending') return false;
+    if (sends.get(groupKeyOf(decision))?.kind === 'sending' || inFlight.current.has(groupKeyOf(decision))) return false;
     if (entry.kind === 'action') return at - entry.at < DECISION_ACTION_UNDO_MS;
     return true;
   };
@@ -530,7 +663,6 @@ export function DecisionMode(props: DecisionModeProps) {
     if (!canUndo(entry)) return;
     setUndo((stack) => stack.slice(0, -1));
     const decision = queueRef.current.cache.get(entry!.id)!;
-    const key = groupKeyOf(decision);
     if (entry!.kind === 'action') {
       // The card reopens only once the server took the Undo back: past its window it refuses, and says why.
       setSaid('Undoing…');
@@ -541,9 +673,12 @@ export function DecisionMode(props: DecisionModeProps) {
             const cache = new Map(current.cache);
             const known = cache.get(entry!.id) ?? decision;
             cache.set(entry!.id, { ...known, question: { ...known.question, state: 'open', action_result: null } });
-            return { ...current, cache, current: entry!.id };
+            // It may have left the projection meanwhile (an action item inside its window waits on nobody).
+            const gone = new Map(current.gone);
+            gone.delete(entry!.id);
+            return { ...current, cache, gone, current: entry!.id };
           });
-          touchGroup(key);
+          touchDecision(decision, -1);
           setStamp(null);
           setError(null);
           setSaid('Undone.');
@@ -556,7 +691,7 @@ export function DecisionMode(props: DecisionModeProps) {
       return;
     }
     if (entry!.kind === 'pick') {
-      touchGroup(key);
+      touchDecision(decision, -1);
       savePick(entry!.id, entry!.before);
     }
     if (entry!.kind === 'later') setQueue((current) => ({ ...current, later: new Set([...current.later].filter((l) => l !== entry!.id)) }));
@@ -575,12 +710,19 @@ export function DecisionMode(props: DecisionModeProps) {
     return () => clearTimeout(timer);
   }, [lastUndo]);
 
-  // ── Closing: anything not sent asks first, and says what it is. ──
-  const closeReasons = () => {
-    const reasons = { half: 0, ready: 0, failed: 0, drafts: 0, words: unsavedWordsRef.current?.() === true };
+  // ── Closing: anything not sent asks first, and says what it is (read live while the question is up). ──
+  /** Typed words on the card on screen, or kept from a card the queue moved away from (still waiting). */
+  const wordsLeft = () =>
+    unsavedWordsRef.current?.() === true ||
+    [...keptWords.current.keys()].some((id) => queue.cache.has(id) && !isHandled(queue, id));
+  const closeReasons = (): CloseReasons => {
+    const reasons: CloseReasons = { half: 0, ready: 0, failed: 0, drafts: 0, sending: 0, words: wordsLeft() };
     for (const key of groupKeys(queue)) {
       const state = sends.get(key) ?? { kind: 'waiting' as const };
-      if (state.kind === 'sending') continue;
+      if (state.kind === 'sending' || inFlight.current.has(key)) {
+        reasons.sending += 1;
+        continue;
+      }
       const fresh = freshPicks(queue, key, carried.get(key)).length > 0;
       if (state.kind === 'failed' && fresh) reasons.failed += 1;
       else if (state.kind === 'draft') reasons.drafts += 1;
@@ -589,33 +731,29 @@ export function DecisionMode(props: DecisionModeProps) {
     }
     return reasons;
   };
-  const [reasons, setReasons] = useState<ReturnType<typeof closeReasons> | null>(null);
 
   const requestClose = () => {
     const now = closeReasons();
-    if (now.half + now.ready + now.failed + now.drafts > 0 || now.words) {
-      setReasons(now);
-      setConfirm(true);
-    } else props.onClose();
+    if (now.half + now.ready + now.failed + now.drafts + now.sending > 0 || now.words) setConfirm(true);
+    else props.onClose();
   };
 
-  /** The groups "Send what you answered" sends: every one with an answer no reply carried, except threads with a reply draft. */
+  /** The groups "Send what you answered" sends: every one with an answer no reply carried, except threads whose reply goes from the thread. */
   const sendableKeys = () =>
     groupKeys(queue).filter((key) => {
-      const state = sends.get(key)?.kind;
-      if (state === 'sending' || state === 'draft') return false;
+      if (sends.get(key)?.kind === 'draft') return false;
       const first = queue.cache.get(groupIds(queue, key)[0]!);
       if (first && draftOf(first.thread.id)) return false;
       return freshPicks(queue, key, carried.get(key)).length > 0;
     });
 
-  const sendAnswered = async () => {
+  /** Close only once every send on its way has landed; one that failed keeps the dialog open, never silent. */
+  const closeAfter = async (sending: Promise<SendResult>[]) => {
     setClosing(true);
-    const results = await Promise.all(sendableKeys().map((key) => sendGroup(key)));
+    const results = await Promise.all(sending);
     setClosing(false);
     const failed = results.filter((r) => r === 'failed').length;
     if (failed > 0) {
-      // Never closed over a reply that did not go: the chips say which, with Try again.
       setConfirm(false);
       setError(`${failed === 1 ? 'A reply was' : `${formatCount(failed)} replies were`} not sent. Try again from the chip, or close and keep the answers as a draft.`);
       return;
@@ -623,13 +761,19 @@ export function DecisionMode(props: DecisionModeProps) {
     props.onClose();
   };
 
+  const sendAnswered = () => void closeAfter([...new Set([...sendableKeys(), ...inFlight.current.keys()])].map((key) => sendGroup(key)));
+
+  /** Keep as a draft: nothing more is sent; a reply already on its way is waited for (and its failure said). */
   const keepDraft = () => {
+    // Nothing touched any more: should the dialog stay open (a reply on its way failed), every ready group
+    // waits as Held · Send rather than starting its Hold again.
+    setTouched(new Map());
     setSends((current) => {
       const next = new Map(current);
       for (const [key, state] of next) if (state.kind === 'hold' || state.kind === 'held') next.set(key, { kind: 'waiting' });
       return next;
     });
-    props.onClose();
+    void closeAfter([...inFlight.current.values()]);
   };
 
   /** Escape: one layer at a time (a box with words in it is a layer: it lets go of focus first). */
@@ -651,7 +795,10 @@ export function DecisionMode(props: DecisionModeProps) {
   // A card whose answer a reply already took (Previous reaches it): read only.
   const sentAnswer = current && (sentIds.has(current.id) || queue.gone.get(current.id) === 'sent' || current.question.state === 'sent') ? current : null;
   const loaded = props.decisions !== null;
-  const done = loaded && queue.current === null;
+  // A replacement on its way is still a decision: the end screen waits for it.
+  const done = loaded && queue.current === null && !swapPending;
+  const startTarget = startBanner && startBanner !== current?.id && !isHandled(queue, startBanner) ? queue.cache.get(startBanner) ?? null : null;
+  const sendingCard = current !== null && sentAnswer === null && (sends.get(groupKeyOf(current))?.kind === 'sending' || inFlight.current.has(groupKeyOf(current)));
 
   return (
     <dialog
@@ -710,6 +857,7 @@ export function DecisionMode(props: DecisionModeProps) {
           const first = queue.cache.get(groupIds(queue, key)[0]!);
           if (first) props.onTuck(first.thread.id);
         }}
+        ended={ended}
       />
       {error && (
         <div className="ib-error ib-dm-error" role="alert">
@@ -738,15 +886,37 @@ export function DecisionMode(props: DecisionModeProps) {
               touch={touch}
               stamp={stamp?.id === current.id ? stamp.value : null}
               sent={sentAnswer !== null}
+              sending={sendingCard}
               reduced={reduced}
               fieldOpenRef={fieldOpenRef}
               unsavedWordsRef={unsavedWordsRef}
+              keptWords={keptWords.current}
+              onEditing={(editing) => setEditingId((was) => (editing ? current.id : was === current.id ? null : was))}
               banner={
                 banner ? (
                   <div className="ib-dm-banner" role="status" data-decision-replaced="">
                     <Icon name="warn" size={16} />
                     <span>
                       <b>{banner.withdrawn ? `${banner.agent} withdrew the last question.` : `${banner.agent} replaced this question just now.`}</b> Your pick, if any, wasn&apos;t sent.
+                    </span>
+                  </div>
+                ) : startTarget ? (
+                  <div className="ib-dm-banner" role="status" data-decision-start-banner="">
+                    <Icon name="warn" size={16} />
+                    <span>
+                      <b>{agentLabel(startTarget)} is stopped on you:</b> {startTarget.question.prompt} ·{' '}
+                      <button
+                        type="button"
+                        className="ib-dm-lnk"
+                        data-decision-start-go=""
+                        onClick={() => {
+                          setStartBanner(null);
+                          setQueue((state) => ({ ...state, current: startTarget.id }));
+                        }}
+                      >
+                        Go to it
+                      </button>{' '}
+                      (what you typed here stays)
                     </span>
                   </div>
                 ) : undefined
@@ -780,7 +950,7 @@ export function DecisionMode(props: DecisionModeProps) {
           <div className="ib-dm-loading">Reading what waits on you…</div>
         )}
       </div>
-      {confirm && reasons && <CloseConfirm reasons={reasons} closing={closing} onKeep={() => setConfirm(false)} onKeepDraft={keepDraft} onSend={() => void sendAnswered()} />}
+      {confirm && <CloseConfirm reasons={closeReasons()} closing={closing} onKeep={() => setConfirm(false)} onKeepDraft={keepDraft} onSend={sendAnswered} />}
       <div className="ib-sr" aria-live="polite" data-decision-live="">
         {said}
       </div>
@@ -808,6 +978,8 @@ interface CloseReasons {
   ready: number;
   failed: number;
   drafts: number;
+  /** Replies on their way now: closing waits for them, and says so if one fails. */
+  sending: number;
   words: boolean;
 }
 
@@ -822,8 +994,10 @@ const replies = (n: number) => (n === 1 ? '1 reply' : `${formatCount(n)} replies
  */
 function CloseConfirm({ reasons, closing, onKeep, onKeepDraft, onSend }: { reasons: CloseReasons; closing: boolean; onKeep: () => void; onKeepDraft: () => void; onSend: () => void }) {
   const sendable = reasons.half + reasons.ready + reasons.failed;
-  const title =
-    reasons.failed > 0
+  const nothing = sendable + reasons.drafts + reasons.sending === 0 && !reasons.words;
+  const title = nothing
+    ? 'Nothing is left to send'
+    : reasons.failed > 0
       ? reasons.failed === 1
         ? "A reply didn't send"
         : "Some replies didn't send"
@@ -835,11 +1009,15 @@ function CloseConfirm({ reasons, closing, onKeep, onKeepDraft, onSend }: { reaso
             : 'Replies are waiting to send'
           : reasons.drafts > 0
             ? 'Your answers wait in a thread'
-            : "What you typed isn't saved";
+            : reasons.sending > 0
+              ? 'A reply is on its way'
+              : "What you typed isn't saved";
   const lines: string[] = [];
   if (reasons.failed > 0) lines.push(`${replies(reasons.failed)} failed to send. Your answers are saved in the thread.`);
   if (reasons.half > 0) lines.push(`${agents(reasons.half)} half answered: what you picked is saved, the rest still waits on you.`);
   if (reasons.ready > 0) lines.push(`${replies(reasons.ready)} answered and not sent yet.`);
+  if (reasons.sending > 0) lines.push(`${replies(reasons.sending)} still sending: closing waits for ${reasons.sending === 1 ? 'it' : 'them'}, and says so if one fails.`);
+  if (nothing) lines.push('Every reply has gone.');
   if (reasons.drafts > 0) lines.push(`${reasons.drafts === 1 ? 'A thread has' : `${formatCount(reasons.drafts)} threads have`} a draft reply: send ${reasons.drafts === 1 ? 'it' : 'them'} from the thread, with your answers.`);
   if (reasons.words) lines.push("The words you typed on this card aren't saved, and closing loses them.");
   return (
@@ -855,8 +1033,8 @@ function CloseConfirm({ reasons, closing, onKeep, onKeepDraft, onSend }: { reaso
         <button type="button" className="ib-btn" autoFocus={sendable === 0} onClick={onKeep}>
           Keep deciding
         </button>
-        <button type="button" className="ib-btn" data-decision-keep-draft="" onClick={onKeepDraft}>
-          {sendable > 0 ? 'Keep as a draft' : 'Close'}
+        <button type="button" className="ib-btn" data-decision-keep-draft="" disabled={closing} onClick={onKeepDraft}>
+          {closing && sendable === 0 ? 'Waiting for the reply…' : sendable > 0 ? 'Keep as a draft' : 'Close'}
         </button>
         {sendable > 0 && (
           <button type="button" className="ib-btn ib-pri" data-decision-send-answered="" disabled={closing} autoFocus onClick={onSend}>
@@ -871,14 +1049,14 @@ function CloseConfirm({ reasons, closing, onKeep, onKeepDraft, onSend }: { reaso
 /** What a chip says about its session's reply. */
 function chipSend(chip: SessionChip, sends: ReadonlyMap<string, GroupSend>, rows: ReadonlyMap<string, InboxListRow>, busy: ReadonlyMap<string, boolean>, queue: QueueState, now: number):
   | { kind: 'none' }
-  | { kind: 'hold'; key: string; seconds: number }
+  | { kind: 'hold'; key: string; seconds: number; paused: boolean }
   | { kind: 'held'; key: string }
   | { kind: 'draft'; key: string }
   | { kind: 'failed'; key: string; error: string }
   | { kind: 'words'; text: string; tone: 'quiet' | 'ok' } {
   for (const key of chip.groups) {
     const state = sends.get(key);
-    if (state?.kind === 'hold') return { kind: 'hold', key, seconds: holdSeconds(state, now) };
+    if (state?.kind === 'hold') return { kind: 'hold', key, seconds: holdSeconds(state, now), paused: state.paused !== null };
     if (state?.kind === 'held') return { kind: 'held', key };
     if (state?.kind === 'draft') return { kind: 'draft', key };
     if (state?.kind === 'failed') return { kind: 'failed', key, error: state.error };
@@ -904,6 +1082,8 @@ function Strip(props: {
   onHold: (key: string) => void;
   onSendNow: (key: string) => void;
   onOpenThread: (key: string) => void;
+  /** Groups whose asking session ended while their reply waited. */
+  ended: ReadonlySet<string>;
 }) {
   return (
     <ol className="ib-dm-strip" aria-label="Agents waiting" data-decision-strip="">
@@ -922,7 +1102,7 @@ function Strip(props: {
             </span>
             {send.kind === 'hold' && (
               <span className="ib-dm-hold-l" data-decision-hold="">
-                Sending in {send.seconds} s ·{' '}
+                {send.paused ? `Waiting · sends ${send.seconds} s after you finish ·` : `Sending in ${send.seconds} s ·`}{' '}
                 <button type="button" className="ib-dm-lnk" onClick={() => props.onHold(send.key)}>
                   Hold
                 </button>
@@ -942,6 +1122,11 @@ function Strip(props: {
                 <button type="button" className="ib-dm-lnk" onClick={() => props.onOpenThread(send.key)}>
                   Open the thread
                 </button>
+              </span>
+            )}
+            {(send.kind === 'hold' || send.kind === 'held') && props.ended.has(send.key) && (
+              <span className="ib-dm-hold-l" data-decision-ended="">
+                Its session ended: the reply waits for the next agent that reads the thread.
               </span>
             )}
             {send.kind === 'failed' && (

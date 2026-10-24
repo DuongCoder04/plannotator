@@ -215,7 +215,7 @@ export function startHold(now: number, open: boolean): GroupSend {
 export interface GroupSendFacts {
   /** `groupReady`: everything handled, and an answer no reply carried yet. */
   ready: boolean;
-  /** The person answered, acted, skipped or undid in this group during this sitting. */
+  /** An answer no reply carried yet is one the person gave in this sitting (`freshPicks` holds a touched id). */
   touched: boolean;
   /** The thread holds a reply draft (the row's `unsent.reply_at`): its reply goes from the thread. */
   draft: boolean;
@@ -237,11 +237,17 @@ export interface GroupSendFacts {
  * again (waiting, then a Hold).
  */
 export function nextGroupSend(state: GroupSend, facts: GroupSendFacts): GroupSend {
-  if (state.kind === 'sending' || state.kind === 'failed') return state;
+  if (state.kind === 'sending') return state;
+  // A failed reply waits for Try again while there is something to send; once there is not (undone, sent
+  // from the thread), it is just waiting.
+  if (state.kind === 'failed') return facts.ready ? state : { kind: 'waiting' };
   if (state.kind === 'sent') return facts.ready ? nextGroupSend({ kind: 'waiting' }, facts) : state;
   if (!facts.ready) return state.kind === 'waiting' ? state : { kind: 'waiting' };
-  if (facts.draft) return state.kind === 'draft' ? state : { kind: 'draft' };
-  if (state.kind === 'hold') return state;
+  if (facts.draft) return state.kind === 'draft' ? state : { kind: 'draft', held: state.kind === 'held' && state.by === 'person' };
+  // The draft went: a Hold the person pressed before it is kept.
+  if (state.kind === 'draft' && state.held) return { kind: 'held', by: 'person' };
+  // An Undo took back the answer the person gave in this sitting: what is left was ready before it, so it waits.
+  if (state.kind === 'hold') return facts.touched ? state : { kind: 'held', by: 'untouched' };
   if (state.kind === 'held' && state.by === 'person') return state;
   if (!facts.touched) return state.kind === 'held' ? state : { kind: 'held', by: 'untouched' };
   return startHold(facts.now, facts.open);
@@ -297,8 +303,11 @@ export type GroupSend =
   | { kind: 'hold'; until: number; paused: number | null }
   /** `person`: the person pressed Hold. `untouched`: ready before this sitting; it waits for a Send. */
   | { kind: 'held'; by: 'person' | 'untouched' }
-  /** The thread holds a reply draft: the reply goes from the thread, never from here. */
-  | { kind: 'draft' }
+  /**
+   * The thread holds a reply draft (or comments waiting for its Send): the reply goes from the thread, never
+   * from here. `held`: the person had pressed Hold before, kept when the draft goes.
+   */
+  | { kind: 'draft'; held: boolean }
   | { kind: 'sending' }
   | { kind: 'sent'; at: string }
   | { kind: 'failed'; error: string };

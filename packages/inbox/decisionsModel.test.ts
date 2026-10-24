@@ -144,11 +144,23 @@ describe("a group's send state", () => {
     // Touched later, it starts its Hold; held by the person, it stays held.
     expect(nextGroupSend({ kind: 'held', by: 'untouched' }, facts()).kind).toBe('hold');
     expect(nextGroupSend({ kind: 'held', by: 'person' }, facts())).toEqual({ kind: 'held', by: 'person' });
+    // Undo took back the only answer given in this sitting: the Hold gives way to Held · Send.
+    expect(nextGroupSend({ kind: 'hold', until: 9, paused: null }, facts({ touched: false }))).toEqual({ kind: 'held', by: 'untouched' });
   });
 
   test('a thread with a reply draft never sends from here, touched or not', () => {
-    expect(nextGroupSend({ kind: 'waiting' }, facts({ draft: true }))).toEqual({ kind: 'draft' });
-    expect(nextGroupSend({ kind: 'hold', until: 9, paused: null }, facts({ draft: true }))).toEqual({ kind: 'draft' });
+    expect(nextGroupSend({ kind: 'waiting' }, facts({ draft: true }))).toEqual({ kind: 'draft', held: false });
+    expect(nextGroupSend({ kind: 'hold', until: 9, paused: null }, facts({ draft: true }))).toEqual({ kind: 'draft', held: false });
+    // The draft goes: a Hold the person pressed before it is kept; otherwise a touched group starts its Hold.
+    const held = nextGroupSend({ kind: 'held', by: 'person' }, facts({ draft: true }));
+    expect(held).toEqual({ kind: 'draft', held: true });
+    expect(nextGroupSend(held, facts())).toEqual({ kind: 'held', by: 'person' });
+    expect(nextGroupSend({ kind: 'draft', held: false }, facts()).kind).toBe('hold');
+    expect(nextGroupSend({ kind: 'draft', held: false }, facts({ touched: false }))).toEqual({ kind: 'held', by: 'untouched' });
+  });
+
+  test('a failed reply with nothing left to send is just waiting', () => {
+    expect(nextGroupSend({ kind: 'failed', error: 'x' }, facts({ ready: false }))).toEqual({ kind: 'waiting' });
   });
 
   test('a sent group whose follow-up the person answered goes round again', () => {

@@ -2447,7 +2447,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const messageId = messageMatch[1]!;
         switch (messageMatch[2]) {
           case "picks": {
-            const questions = store.savePicks(messageId, body.questions as never);
+            // `unsent_only` (decision mode): a pick that raced the Send of its reply never reopens what went.
+            if (body.unsent_only !== undefined && typeof body.unsent_only !== "boolean") {
+              throw new InboxError("validation_error", "unsent_only: a boolean.", { field: "unsent_only" });
+            }
+            const questions = store.savePicks(messageId, body.questions as never, { unsentOnly: body.unsent_only === true });
             return json({ message_id: messageId, questions, reply: null });
           }
           case "reply": {

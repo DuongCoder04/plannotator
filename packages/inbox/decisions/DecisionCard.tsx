@@ -135,8 +135,23 @@ export interface DecisionCardProps {
   unsavedWordsRef?: { current: (() => boolean) | null };
   /** A reply already took this answer (Previous reached it): drawn read only. */
   sent?: boolean;
+  /** Its group's reply is on its way: drawn read only until it lands (a pick would race the Send). */
+  sending?: boolean;
+  /** Words typed on cards the queue moved away from, by decision id: put back here, kept from here. */
+  keptWords?: Map<string, CardWords>;
+  /** The card is being edited (a box open, or words typed and not answered): its group's Hold waits. */
+  onEditing?: (editing: boolean) => void;
   /** prefers-reduced-motion: a committed swipe stays where the finger left it, no exit motion. */
   reduced?: boolean;
+}
+
+/** The words a card holds before they are an answer. */
+export interface CardWords {
+  field: 'none' | 'other' | 'note' | 'cant';
+  other: string;
+  note: string;
+  text: string;
+  reason: string;
 }
 
 /** How far a committed swipe throws the card: past the window's edge. */
@@ -155,18 +170,20 @@ export function DecisionCard(props: DecisionCardProps) {
   const promptRef = useRef<HTMLHeadingElement>(null);
   const saved = q.state === 'picked' ? q.answer : null;
   const [selected, setSelected] = useState<string[]>(() => initialSelection(q));
-  const [field, setField] = useState<'none' | 'other' | 'note' | 'cant'>(() => (saved?.other ? 'other' : saved?.note ? 'note' : 'none'));
-  const [other, setOther] = useState(saved?.other ?? '');
-  const [note, setNote] = useState(saved?.note ?? '');
-  const [text, setText] = useState(saved?.text ?? '');
-  const [reason, setReason] = useState('');
+  // Words kept from an earlier visit to this card (Later, Previous, a notification moved the queue) come back.
+  const kept = props.keptWords?.get(decision.id);
+  const [field, setField] = useState<'none' | 'other' | 'note' | 'cant'>(() => kept?.field ?? (saved?.other ? 'other' : saved?.note ? 'note' : 'none'));
+  const [other, setOther] = useState(kept?.other ?? saved?.other ?? '');
+  const [note, setNote] = useState(kept?.note ?? saved?.note ?? '');
+  const [text, setText] = useState(kept?.text ?? saved?.text ?? '');
+  const [reason, setReason] = useState(kept?.reason ?? '');
   const pointer = useRef(false);
   const swipe = useRef<{ x: number; y: number; id: number } | null>(null);
   const [drag, setDrag] = useState(0);
   /** A committed swipe's exit: the card keeps going that way from where the finger left it. */
   const [fling, setFling] = useState<number | null>(null);
   const articleRef = useRef<HTMLElement>(null);
-  const locked = props.sent === true;
+  const locked = props.sent === true || props.sending === true;
   const choices2 = facts.irreversible || locked ? null : swipeChoices(q);
 
   /** The words in a box the card shows, by box (empty when the box is closed). */
@@ -191,18 +208,37 @@ export function DecisionCard(props: DecisionCardProps) {
     }
     return false;
   };
-  if (props.unsavedWordsRef) {
-    props.unsavedWordsRef.current = () => {
-      if (props.stamp || locked) return false;
-      const differs = (typed: string, kept: string | null | undefined) => typed.trim() !== '' && typed.trim() !== (kept ?? '').trim();
-      return (
-        (kind === 'text' && differs(text, saved?.text)) ||
-        (field === 'other' && differs(other, saved?.other)) ||
-        differs(note, saved?.note) ||
-        (field === 'cant' && reason.trim() !== '')
-      );
+  const differs = (typed: string, was: string | null | undefined) => typed.trim() !== '' && typed.trim() !== (was ?? '').trim();
+  const typedWords =
+    !props.stamp &&
+    !locked &&
+    ((kind === 'text' && differs(text, saved?.text)) ||
+      (field === 'other' && differs(other, saved?.other)) ||
+      differs(note, saved?.note) ||
+      (field === 'cant' && reason.trim() !== ''));
+  if (props.unsavedWordsRef) props.unsavedWordsRef.current = () => typedWords;
+
+  // Being edited (a box open, or words typed): its group's Hold waits. Said once per change, and undone when the card goes.
+  const editing = !props.stamp && !locked && (field !== 'none' || typedWords);
+  const onEditing = useRef(props.onEditing);
+  onEditing.current = props.onEditing;
+  useEffect(() => {
+    onEditing.current?.(editing);
+  }, [editing]);
+  useEffect(() => () => onEditing.current?.(false), []);
+
+  // Words typed and not answered with are kept when the card goes, and dropped once answered.
+  const words = useRef<{ typed: boolean; value: CardWords }>({ typed: false, value: { field, other, note, text, reason } });
+  words.current = { typed: typedWords, value: { field, other, note, text, reason } };
+  useEffect(() => {
+    const store = props.keptWords;
+    return () => {
+      if (!store) return;
+      if (words.current.typed) store.set(decision.id, words.current.value);
+      else store.delete(decision.id);
     };
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decision.id]);
 
   useEffect(() => {
     promptRef.current?.focus({ preventScroll: true });
@@ -353,10 +389,10 @@ export function DecisionCard(props: DecisionCardProps) {
         </div>
 
         {locked && (
-          <p className="ib-dm-sentline" data-decision-sent="">
-            <Icon name="check" size={16} />
+          <p className="ib-dm-sentline" data-decision-sent={props.sending && !props.sent ? undefined : ''} data-decision-sending={props.sending && !props.sent ? '' : undefined}>
+            <Icon name={props.sending && !props.sent ? 'clock' : 'check'} size={16} />
             <span>
-              <b>Sent</b> · {kind === 'action' ? (q.action_result?.outcome === 'cant' ? "Can't do it" : 'Done') : answerWords(q.answer)}
+              <b>{props.sending && !props.sent ? 'Sending' : 'Sent'}</b> · {kind === 'action' ? (q.action_result?.outcome === 'cant' ? "Can't do it" : 'Done') : answerWords(q.answer)}
             </span>
           </p>
         )}

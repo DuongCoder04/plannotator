@@ -91,7 +91,7 @@ describe("openDecisions", () => {
     expect(store.openDecisions()).toEqual([]);
   });
 
-  test("a Re-ask note leaves out what it lists, per session: another session's questions in the thread stay", () => {
+  test("a Re-ask note leaves out what it lists, per session and only while that session is there", () => {
     const { store, project } = open();
     const [a, b] = AGENTS;
     const m1 = store.sendMessage({ project_id: project.id, author: a!, body: block("A asks?") }).message;
@@ -101,9 +101,39 @@ describe("openDecisions", () => {
     store.sendReask(m1.id, { idempotency_key: "k1" });
     expect(store.listRow(m1.thread_id)!.reask_pending).toBe(false);
     expect(store.openDecisions().map((d) => d.question.prompt)).toEqual(["B asks?"]);
+    // Bounded: once A's session has ended (presence, with its grace), nobody will ask again, so its question is back.
+    store.setDeliveryPresence({ connection: () => null, askerLive: (session) => session !== a!.session });
+    expect(store.openDecisions().map((d) => d.question.prompt).sort()).toEqual(["A asks?", "B asks?"]);
+    store.setDeliveryPresence(null);
     // A writes again: its note no longer waits, and what it still has open comes back.
     store.sendMessage({ project_id: project.id, author: a!, reply_to: m2.id, body: "Looking at it." });
     expect(store.openDecisions().map((d) => d.question.prompt).sort()).toEqual(["A asks?", "B asks?"]);
+  });
+
+  test("with unsentOnly (decision mode), a pick that raced a Send (same revision, read before it) never reopens the sent question", () => {
+    const { store, project } = open();
+    const [a] = AGENTS;
+    const m = store.sendMessage({ project_id: project.id, author: a!, body: block("Ship it?") }).message;
+    const q0 = store.questionsOf(m.id)[0]!;
+    const picked = store.savePicks(m.id, [{ key: q0.key, revision: 0, answer: yes(q0) }])[0]!;
+    // The window read revision 1, then a Send took it (sent_revision 1, revision still 1).
+    store.sendReply(m.id, { idempotency_key: "r1", questions: [{ key: q0.key, revision: picked.revision }] });
+    expect(store.questionsOf(m.id)[0]!.state).toBe("sent");
+    for (const answer of [{ ...yes(q0), selected: ["No"] }, null]) {
+      let code: string | null = null;
+      try {
+        store.savePicks(m.id, [{ key: q0.key, revision: picked.revision, answer }], { unsentOnly: true });
+      } catch (error) {
+        code = error instanceof InboxError ? error.code : "other";
+      }
+      expect(code).toBe("question_already_sent");
+      expect(store.questionsOf(m.id)[0]!.state).toBe("sent");
+      expect(store.questionsOf(m.id)[0]!.answer?.selected).toEqual(["Yes"]);
+    }
+    expect(store.openDecisions()).toHaveLength(0);
+    // Without it (the thread, a phone) a sent question takes a pick again, as the thread-state model has it.
+    store.savePicks(m.id, [{ key: q0.key, revision: picked.revision, answer: { ...yes(q0), selected: ["No"] } }]);
+    expect(store.questionsOf(m.id)[0]!.state).toBe("picked");
   });
 
   test("lists action items, and the message's files as references", () => {
@@ -166,7 +196,11 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
 function listCount(store: InboxStore, rows: readonly InboxListRow[]): number {
   let n = 0;
   for (const row of rows) {
-    if (row.reask_pending === true) continue;
+    // Every open question listed (the list puts it in Sent): only what the person picked since waits (for a Send).
+    if (row.reask_pending === true) {
+      n += row.questions.picked;
+      continue;
+    }
     const waits = row.section === "stopped" || row.section === "holding" || row.section === "waiting" || row.answered_not_sent;
     if (!waits) continue;
     n += row.questions.open + row.questions.picked;
@@ -277,7 +311,6 @@ describe("the Decide count", () => {
           for (const d of decisions) expect(inboxQuestionWaitsOnPerson(d.question)).toBe(true);
           // Per thread: its questions (not action items) are exactly what its "N open questions" list holds.
           for (const row of rows) {
-            if (row.reask_pending === true) continue;
             const thread = store.thread(row.thread_id)!;
             const reasked = reaskedOpen(store, row.thread_id);
             const popover = threadOpenQuestions(thread.messages).questions.map((q) => q.id).filter((id) => !reasked.has(id)).sort();
