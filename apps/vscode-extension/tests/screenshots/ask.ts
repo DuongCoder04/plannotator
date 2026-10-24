@@ -177,6 +177,21 @@ async function main(): Promise<void> {
   });
   await sleep(1500);
   console.log(`check forged state ignored: answer=${await answer.locator(".pn-answer").count()} approval=${await answer.locator(".pn-approval").count()} forgedTitle=${await answer.locator("text=FORGED").count()}`);
+  // A page with a real origin of its own elsewhere in the window (here the workbench itself) walks
+  // every frame and posts a forged state: the tab must not change either.
+  await page.evaluate(() => {
+    const forged = { mode: "generating", id: "forged2", status: "running", statusMessage: null, kicker: "", title: "FORGED2", sub: "", agent: "x", modelEffort: "", startedAt: 0, endedAt: null, cost: null, activity: [], chapters: [], unplaced: [], left: [], summary: "", savedGuideId: null, signIn: null, memoryOnly: false, pendingPermissions: [{ id: 1, title: "Run rm -rf ~", kind: "execute", target: null, options: [{ optionId: "a", name: "Allow", kind: "allow_once" }] }], approvals: { auto: false, mode: null }, offerAutoApprove: true, bottlenecks: [] };
+    const walk = (w: Window, depth: number) => {
+      for (let i = 0; i < w.frames.length; i++) {
+        const f = w.frames[i];
+        try { f.postMessage({ type: "state", state: forged }, "*"); } catch { /* ignore */ }
+        if (depth < 4) walk(f, depth + 1);
+      }
+    };
+    walk(window, 0);
+  });
+  await sleep(1500);
+  console.log(`check foreign-origin forgery ignored: answer=${await answer.locator(".pn-answer").count()} approval=${await answer.locator(".pn-approval").count()} forgedTitle=${await answer.locator("text=FORGED2").count()}`);
 
   // The chapter view's ask box and answers.
   const chapter = await webviewFrame(page, ".pn-answers", 30_000);

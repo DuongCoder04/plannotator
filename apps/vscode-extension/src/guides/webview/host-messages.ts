@@ -1,29 +1,35 @@
 /** Which window messages the Guides webviews act on. */
 
 /**
- * Only VS Code's webview host drives this page. The answer tab holds the
- * agent's page in a sandboxed child frame (opaque origin), whose messages must
- * never reach here: a forged `state` could draw a fake approval prompt. That
- * frame talks only to `answer-frame.ts`, which checks its own source.
+ * Only VS Code's webview host drives this page. VS Code posts its messages
+ * into the content frame with `contentWindow.postMessage(message,
+ * window.origin)` (src/vs/workbench/contrib/webview/browser/pre/index.html,
+ * the same in 1.85 and 1.143), so a genuine host message's origin is always
+ * this page's own origin; its `source` is not a reliable test (1.143 sets
+ * `window.parent = window` inside the content frame, 1.85 deletes it).
  *
- * VS Code's host messages do not always come from `window.parent` (in VS Code
- * for the Web their `source` is another window), but they carry the webview's
- * own origin. So a message is dropped when:
- * - it comes from a frame inside this page (its `parent` chain reaches this
- *   window; `parent` is readable across origins), whatever origin it claims; or
- * - its origin is opaque ("null", every sandboxed frame and anything nested in
- *   it) and it is not from this page's parent or this page itself (a harness
- *   page on about:blank or file:// posts to itself).
+ * So a message is acted on only when:
+ * - its origin is this page's own origin. That shuts out the agent's answer
+ *   page (a sandboxed frame: origin "null") and any page elsewhere in the VS
+ *   Code window that has a real origin of its own (a site in the Simple
+ *   Browser, another extension's webview) and walks `top.frames` to post here;
+ * - and it is not from a frame nested in this page (an extra layer: the
+ *   parent chain of the sender reaches this page; `parent` is readable
+ *   across origins).
+ * When this page's own origin is opaque (a harness page on about:blank or
+ * file://), only messages from the page itself or its parent count.
  */
 export interface MessageWindow {
   readonly parent: MessageWindow | null | undefined;
+  readonly origin?: string;
 }
 
 export function fromWebviewHost(event: { source: unknown; origin: string }, self: MessageWindow = window as unknown as MessageWindow): boolean {
   const source = event.source as MessageWindow | null;
   if (source && source !== self && isInside(source, self)) return false;
-  if (event.origin === "null" && source !== self.parent && source !== self) return false;
-  return true;
+  const own = self.origin ?? "null";
+  if (own === "null") return event.origin === "null" && (source === self || source === self.parent);
+  return event.origin === own;
 }
 
 /** Whether `w` is a frame nested (at any depth) in `self`. */
