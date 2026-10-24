@@ -403,6 +403,12 @@ export interface AllFilesCodeViewProps {
    * `readOnly` is set.
    */
   commentOnly?: boolean;
+  /**
+   * Selected lines can only be asked about (the VS Code Guide tab, where
+   * there are no comments): with `commentOnly` and `aiAvailable`, the
+   * selection toolbar opens on its Ask box. Ignored without `aiAvailable`.
+   */
+  askOnly?: boolean;
   /** EXPERIMENTAL flag-gated edit-to-suggestion mode. Only the plain all-files
    * dock panel passes this — Guided Review surfaces deliberately do NOT (the
    * GuideViewportManager evicts CodeViews beyond ~8 mounted, which would
@@ -701,6 +707,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   isActive = true,
   readOnly = false,
   commentOnly = false,
+  askOnly = false,
   aiAvailable = false,
   onAskAIForFile,
   isAILoading = false,
@@ -3251,6 +3258,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         isAILoading={isAILoading}
         onViewAIResponse={onViewAIResponse}
         aiHistoryMessages={aiHistoryForActiveFile}
+        askOnly={askOnly && !!aiAvailable}
       />
       )}
 

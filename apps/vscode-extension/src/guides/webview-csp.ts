@@ -6,7 +6,7 @@
  * answer tab puts no agent HTML in its own DOM. Nothing may connect anywhere.
  */
 
-export type GuidesWebviewMode = "home" | "generating" | "guide" | "chapter" | "answer";
+export type GuidesWebviewMode = "home" | "generating" | "answer";
 
 export function webviewCsp(cspSource: string, nonce: string, mode: GuidesWebviewMode): string {
   return [

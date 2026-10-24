@@ -32,6 +32,8 @@ export interface ReaderInit {
   label: string;
   snapshot: GuideSnapshot;
   reviewed: boolean[];
+  /** Files ticked "Viewed" (a chapter ticks itself when all its files are). */
+  fileTicks: string[];
   /** One CSS color per chapter (the tree's and the status bar's chapter colors). */
   chapterColors: string[];
   /** The guide's head is no longer what the reader shows. */
@@ -81,7 +83,7 @@ export interface ChapterAnswers {
 
 export type ToReader =
   | { type: "init"; init: ReaderInit }
-  | { type: "reviewed"; reviewed: boolean[] }
+  | { type: "reviewed"; reviewed: boolean[]; fileTicks: string[] }
   | { type: "hover"; reqId: number; answer: HoverAnswer | null }
   | { type: "references"; reqId: number; count: number | null }
   | { type: "reveal"; path?: string; chapter?: number; line?: number }
@@ -97,6 +99,7 @@ export type FromReader =
   | { type: "references"; reqId: number; at: DiffPosition }
   | { type: "navigate"; at: DiffPosition; action: NavigateAction }
   | { type: "toggleReviewed"; chapter: number }
+  | { type: "toggleFileReviewed"; path: string }
   | { type: "openFile"; path: string; line?: number }
   | { type: "openDiff"; path: string }
   | { type: "openLocation"; path: string; line: number; character: number }
@@ -162,6 +165,8 @@ export function parseReaderMessage(raw: unknown): FromReader | null {
       return { type: "openFile", path: m.path, ...(m.line !== undefined && { line: m.line as number }) };
     case "openDiff":
       return isPath(m.path) ? { type: "openDiff", path: m.path } : null;
+    case "toggleFileReviewed":
+      return isPath(m.path) ? { type: "toggleFileReviewed", path: m.path } : null;
     case "openLocation":
       if (!isPath(m.path) || !isInt(m.line, 1, 10_000_000) || !isInt(m.character, 0, 1_000_000)) return null;
       return { type: "openLocation", path: m.path, line: m.line, character: m.character };

@@ -15,7 +15,7 @@ import type { AnswerMarker, ChapterAnswers, DiffPosition, HoverAnswer, NavigateA
 import { onMessage, post, requestHover, viewState } from "./bridge";
 import { ReaderDiffRenderer, type ReaderDiffProps } from "./DiffRenderer";
 import { HoverCardContent } from "./HoverCard";
-import { ChapterStrip } from "./ChapterStrip";
+import { ChapterStrip, chapterInView } from "./ChapterStrip";
 import { ChapterAsk } from "./ChapterAsk";
 import { answerChatEntries } from "./ask-markers";
 
@@ -68,6 +68,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   const { snapshot } = init;
   const files = useMemo<DiffFile[]>(() => parseDiffToFiles(snapshot.review.rawPatch), [snapshot.review.rawPatch]);
   const [reviewed, setReviewed] = useState<boolean[]>(init.reviewed);
+  const [fileTicks, setFileTicks] = useState<Set<string>>(() => new Set(init.fileTicks));
   const [focusedFile, setFocusedFile] = useState<string | null>(null);
   const [revealFile, setRevealFile] = useState<{ path: string; token: number } | null>(null);
   const revealToken = useRef(0);
@@ -109,7 +110,10 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   useEffect(
     () =>
       onMessage((msg) => {
-        if (msg.type === "reviewed") setReviewed(msg.reviewed);
+        if (msg.type === "reviewed") {
+          setReviewed(msg.reviewed);
+          setFileTicks(new Set(msg.fileTicks));
+        }
         else if (msg.type === "checkMermaid") {
           void import("./OverviewDiagram")
             .then((m) => m.checkMermaidHere(msg.source))
@@ -117,32 +121,62 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
         } else if (msg.type === "asks") setAsks({ busy: msg.busy, markers: msg.markers, chapters: msg.chapters, agent: msg.agent });
         else if (msg.type === "reveal") {
           if (msg.path) {
-            setBack({ label: "Back", scrollY: window.scrollY });
+            setBack(backHere(snapshot.guide.sections.length));
             reveal(msg.path);
           } else if (typeof msg.chapter === "number") scrollToChapter(msg.chapter);
         }
       }),
-    [reveal, scrollToChapter],
+    [reveal, scrollToChapter, snapshot.guide.sections.length],
   );
+
+  // Open on the first chapter not reviewed yet.
+  useEffect(() => {
+    if (init.startChapter <= 0) return;
+    const t = setTimeout(() => scrollToChapter(init.startChapter), 150);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Hover: the extension asks the language server on the real file.
   const hover = useTokenHover(init.guideId, { resolve: resolveHover });
+  // The token under the pointer, for F12 / Shift+F12 (as in an editor).
+  const pointedRef = useRef<DiffPosition | null>(null);
   const onTokenHoverEnter = useCallback(
     (props: DiffTokenEventBaseProps, filePath: string) => {
       const request = buildTokenHoverRequest(props, filePath);
       if (!request) return;
+      pointedRef.current = positionOf(request);
       hover.onTokenHoverEnter({ ...request, symbol: `${request.symbol}${POSITION_MARK}${request.line}:${request.charStart}` }, props.tokenElement);
     },
     [hover.onTokenHoverEnter],
   );
-  const onCodeNavRequest = useCallback(
-    (request: CodeNavRequest) => {
+  const onTokenHoverLeave = useCallback(() => {
+    pointedRef.current = null;
+    hover.onTokenHoverLeave();
+  }, [hover.onTokenHoverLeave]);
+  const navigate = useCallback(
+    (at: DiffPosition, action: NavigateAction) => {
       hover.close();
-      setBack({ label: "Back", scrollY: window.scrollY });
-      post({ type: "navigate", at: positionOf(request), action: "definition" });
+      if (action === "definition") setBack(backHere(snapshot.guide.sections.length));
+      post({ type: "navigate", at, action });
     },
-    [hover.close],
+    [hover.close, snapshot.guide.sections.length],
   );
+  const onCodeNavRequest = useCallback((request: CodeNavRequest) => navigate(positionOf(request), "definition"), [navigate]);
+  const hoveredAt = (hover.hover?.data as ReaderHoverData | undefined)?.reader?.at ?? null;
+  const hoveredRef = useRef(hoveredAt);
+  hoveredRef.current = hoveredAt;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F12" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const at = hoveredRef.current ?? pointedRef.current;
+      if (!at) return;
+      e.preventDefault();
+      navigate(at, e.shiftKey ? "references" : "definition");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navigate]);
 
   // The selected lines, per file: the selection toolbar's Ask asks about them.
   const [selection, setSelection] = useState<{ path: string; range: SelectedLineRange } | null>(null);
@@ -157,6 +191,15 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
     setSelection(null);
   }, []);
   const aiMessages = useMemo(() => answerChatEntries(asks.markers), [asks.markers]);
+  const onToggleViewed = useCallback((path: string) => {
+    setFileTicks((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    post({ type: "toggleFileReviewed", path });
+  }, []);
   const onClickAIMarker = useCallback((id: string) => post({ type: "openAnswer", id }), []);
 
   const fontVars = useMemo(() => {
@@ -171,7 +214,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
       fontFamily: fontVars.family,
       fontSize: fontVars.size,
       onTokenHoverEnter,
-      onTokenHoverLeave: hover.onTokenHoverLeave,
+      onTokenHoverLeave,
       onCodeNavRequest,
       ...(init.askAgent && { onAskAIForFile }),
       aiMessages: [] as AIChatEntry[],
@@ -179,17 +222,37 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
       isAILoading: asks.busy,
       pendingSelection: null,
       onLineSelection: () => {},
+      viewedFiles: fileTicks,
+      onToggleViewed,
     }),
-    [fontVars, onTokenHoverEnter, hover.onTokenHoverLeave, onCodeNavRequest, onAskAIForFile, onClickAIMarker, asks.busy, init.askAgent],
+    [fontVars, onTokenHoverEnter, onTokenHoverLeave, onCodeNavRequest, onAskAIForFile, onClickAIMarker, asks.busy, init.askAgent, fileTicks, onToggleViewed],
   );
+  // One selection handler per file, kept, so a file's diff does not see a new one on every render.
+  const selectionHandlers = useRef(new Map<string, (range: SelectedLineRange | null) => void>());
+  const selectionHandler = useCallback((path: string) => {
+    let handler = selectionHandlers.current.get(path);
+    if (!handler) {
+      handler = (range) => setSelection((prev) => (range ? { path, range } : prev?.path === path ? null : prev));
+      selectionHandlers.current.set(path, handler);
+    }
+    return handler;
+  }, []);
+  const markersByFile = useMemo(() => {
+    const map = new Map<string, AIChatEntry[]>();
+    for (const m of aiMessages) {
+      const path = m.question.filePath ?? "";
+      map.set(path, [...(map.get(path) ?? []), m]);
+    }
+    return map;
+  }, [aiMessages]);
   const getDiffRendererProps = useCallback(
     ({ file }: { file: DiffFile }) => ({
       ...diffProps,
-      aiMessages: aiMessages.filter((m) => m.question.filePath === file.path),
+      aiMessages: markersByFile.get(file.path) ?? NO_MARKERS,
       pendingSelection: selection?.path === file.path ? selection.range : null,
-      onLineSelection: (range: SelectedLineRange | null) => setSelection(range ? { path: file.path, range } : (prev) => (prev?.path === file.path ? null : prev)),
+      onLineSelection: selectionHandler(file.path),
     }),
-    [diffProps, aiMessages, selection],
+    [diffProps, markersByFile, selection, selectionHandler],
   );
 
   const host = useMemo<GuideHostValue<ReaderDiffProps>>(
@@ -275,11 +338,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
               answer={hoverData.reader.answer}
               at={hoverData.reader.at}
               mod={mod}
-              onNavigate={(action: NavigateAction) => {
-                hover.close();
-                if (action === "definition") setBack({ label: "Back", scrollY: window.scrollY });
-                post({ type: "navigate", at: hoverData.reader.at, action });
-              }}
+              onNavigate={(action: NavigateAction) => navigate(hoverData.reader.at, action)}
               onOpenDefinition={() => {
                 const def = hoverData.reader.answer.definition;
                 hover.close();
@@ -291,6 +350,14 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
       )}
     </GuideHostProvider>
   );
+}
+
+const NO_MARKERS: AIChatEntry[] = [];
+
+/** "Back to Chapter 2": where the reader is now, to come back to after a jump. */
+function backHere(count: number): { label: string; scrollY: number } {
+  const n = chapterInView(count);
+  return { label: n >= 0 ? `Back to Chapter ${n + 1}` : "Back", scrollY: window.scrollY };
 }
 
 function stripHeight(): number {

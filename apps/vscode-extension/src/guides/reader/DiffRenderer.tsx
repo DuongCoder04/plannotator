@@ -23,21 +23,29 @@ export interface ReaderDiffProps {
   /** This file's selected lines (the selection toolbar opens on them). */
   pendingSelection: SelectedLineRange | null;
   onLineSelection: (range: SelectedLineRange | null) => void;
+  viewedFiles: Set<string>;
+  onToggleViewed: (filePath: string) => void;
 }
 
 /**
  * The Guide tab's diff renderer: Plannotator's own `AllFilesCodeView`, the
  * same component guides.show and the review app use, unified at tab width.
- * `commentOnly` gives line selection and the selection toolbar (where its
- * Ask AI asks the agent) with no review server behind it; hover and
+ * `commentOnly` + `askOnly` give line selection and the selection toolbar
+ * as an Ask box (the agent answers; there are no comments here), with no
+ * review server behind it; without an agent to ask it is `readOnly`. Hover and
  * ⌘/Ctrl-click go to the extension, which asks the language server.
  */
 export const ReaderDiffRenderer: React.FC<GuideDiffRendererProps & ReaderDiffProps> = (props) => {
-  const { fontFamily, fontSize, onTokenHoverEnter, onTokenHoverLeave, onCodeNavRequest, onAskAIForFile, aiMessages, onClickAIMarker, isAILoading, pendingSelection, onLineSelection, ...guide } = props;
+  const { fontFamily, fontSize, onTokenHoverEnter, onTokenHoverLeave, onCodeNavRequest, onAskAIForFile, aiMessages, onClickAIMarker, isAILoading, pendingSelection, onLineSelection, viewedFiles, onToggleViewed, ...guide } = props;
+  const canAsk = !!onAskAIForFile;
   return (
     <AllFilesCodeView
       {...guide}
-      commentOnly
+      commentOnly={canAsk}
+      readOnly={!canAsk}
+      askOnly
+      viewedFiles={viewedFiles}
+      onToggleViewed={onToggleViewed}
       diffStyle="unified"
       diffOverflow="scroll"
       diffIndicators="bars"

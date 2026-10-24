@@ -40,6 +40,7 @@ import { startRelayHost, type RelayHost } from "../mcp/relay-host";
 import { ReaderModel, guideWorktreePath, resolveReaderSides, type ReaderSides } from "../reader-model";
 import { removeShareBeforeDelete } from "../share";
 import { buildLocalChangesPatch, changedFilesFromPatch, getRepoInfo, type LocalChangesMode } from "../sources/git";
+import { changedPatchFiles } from "../reader-mapping";
 import {
   ensureRepoClone,
   ghRepoArg,
@@ -72,14 +73,14 @@ import {
   type RecentEntry,
   type ReviewSourceRecord,
 } from "../store";
-import type { ChapterViewState, GeneratingViewState, GuideViewState, HomeViewState } from "../webview-protocol";
+import type { GeneratingViewState, HomeViewState } from "../webview-protocol";
 import { chapterColorCss, linkInfo, locateLink, resolveSymbolForBuilder } from "./intel";
 import { autoApproveChoice, pickAgentAndEffort, pickPullRequest, pickPullRequestByLink, pickSource, type RememberedChoice, type SourceChoice } from "./new-review";
 import { ReaderUi } from "./reader-ui";
 import { GuideAsks } from "./asks";
 import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
-import { ANSWER_VIEW_TYPE, diffColumnBesideAnswers } from "./tab-columns";
+import { ANSWER_VIEW_TYPE } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
 import { ReaderPanel } from "./reader-panel";
@@ -136,8 +137,9 @@ export class GuidesController implements vscode.Disposable {
   /** The Guide tab (the reader), per guide id; one is open at a time. */
   private readonly guidePanels = new Map<string, ReaderPanel>();
   private readonly draftPanels = new Map<string, PanelEntry>();
-  private chapterView: { view: vscode.WebviewView; host: WebviewHost } | null = null;
   private reader: { model: ReaderModel; sides: ReaderSides } | null = null;
+  /** Files of the open guide whose file on disk changed since the guide was written (local changes). */
+  private changedSince: string[] = [];
   private currentFile: string | null = null;
   /** Guides made while guide history is off: kept in memory for this session only. */
   private readonly sessionGuides = new Map<string, LoadedGuide>();
@@ -438,7 +440,7 @@ export class GuidesController implements vscode.Disposable {
       case "openLocation":
         return this.openLocation(str(args[0]), num(args[1]));
       case "openChapter":
-        return this.openChapter(num(args[0]) ?? (args[0] && typeof args[0] === "object" && "index" in (args[0] as object) ? (args[0] as { index: number }).index + 1 : undefined), args[1] as { openFile?: boolean } | undefined);
+        return this.openChapter(num(args[0]) ?? (args[0] && typeof args[0] === "object" && "index" in (args[0] as object) ? (args[0] as { index: number }).index + 1 : this.reader ? this.reader.model.currentChapter + 1 : undefined));
       case "nextChapter":
         return this.nextChapter();
       case "markChapterReviewed":
@@ -489,21 +491,6 @@ export class GuidesController implements vscode.Disposable {
       }
       case "askAboutSelection":
         return this.asks.askAboutSelection();
-      case "askAboutFile":
-        return this.asks.askAboutFile(str(args[0]) ?? (args[0] && typeof args[0] === "object" && "path" in (args[0] as object) ? (args[0] as { path: string }).path : undefined));
-      case "askThreadSubmit":
-        return this.asks.threads.submit(args[0]);
-      case "askThreadCancel":
-      case "askThreadClose":
-        return this.asks.threads.close(args[0]);
-      case "askThreadSettings":
-        return this.asks.threads.settings(args[0]);
-      case "askThreadPick":
-        return this.asks.threads.pick(args[0], args[1]);
-      case "askThreadAgain":
-        return this.asks.threads.again(args[0]);
-      case "askThreadStop":
-        return this.asks.threads.stop(args[0]);
       case "askChapter":
         return this.asks.askChapter(num(args[0]), str(args[1]));
       case "openAnswer":
@@ -1171,7 +1158,7 @@ export class GuidesController implements vscode.Disposable {
   /** The Mermaid render check, in whichever Guides webview is open. */
   private async checkMermaid(source: string): Promise<{ ok: true; checked: boolean } | { ok: false; message: string; line?: number }> {
     const hosts: Array<{ checkMermaid(source: string): ReturnType<WebviewHost["checkMermaid"]> }> = [
-      ...[this.run?.panel?.host, this.home?.host, this.chapterView?.host].filter((h): h is WebviewHost => !!h && h.isReady),
+      ...[this.run?.panel?.host, this.home?.host].filter((h): h is WebviewHost => !!h && h.isReady),
       ...[...this.guidePanels.values()].filter((p) => p.isReady),
     ];
     for (const host of hosts) {
@@ -1360,14 +1347,28 @@ export class GuidesController implements vscode.Disposable {
       const firstOpen = model.reviewed.findIndex((r) => !r);
       model.currentChapter = firstOpen >= 0 ? firstOpen : 0;
       this.reader = { model, sides };
+      this.changedSince = await this.filesChangedSince(model, sides);
       this.asks.onReaderChanged(model.id);
       this.currentFile = null;
       void vscode.commands.executeCommand("setContext", "plannotator.guides.readerOpen", true);
     }
     this.showGuidePanel();
     this.updateReaderViews();
-    void vscode.commands.executeCommand(`${"plannotator.guides.tree"}.focus`);
     void this.recheckDiagram();
+  }
+
+  /**
+   * For local changes, the guide's files whose diff on disk is no longer the
+   * guide's (edited since it was written): the reader says so, and hovers
+   * there find the nearest match. A PR worktree is pinned at the head.
+   */
+  private async filesChangedSince(model: ReaderModel, sides: ReaderSides): Promise<string[]> {
+    if (sides.head.kind !== "fs" || model.loaded.sidecar.source?.kind === "pr" || !model.loaded.rawPatch) return [];
+    const paths = [...model.files.keys()].slice(0, 500);
+    if (!paths.length) return [];
+    const r = await this.runner("git", ["--no-pager", "diff", "--no-color", "--no-ext-diff", sides.baseRev, "--", ...paths], { cwd: sides.head.root, timeoutMs: 20_000 }).catch(() => null);
+    if (!r || r.code !== 0) return [];
+    return changedPatchFiles(model.loaded.rawPatch, r.stdout);
   }
 
   /**
@@ -1401,25 +1402,6 @@ export class GuidesController implements vscode.Disposable {
     this.currentFile = null;
     void vscode.commands.executeCommand("setContext", "plannotator.guides.readerOpen", false);
     this.updateReaderViews();
-  }
-
-  private guideState(): GuideViewState | null {
-    if (!this.reader) return null;
-    const { model, sides } = this.reader;
-    const env = model.loaded.envelope;
-    const engine = engineLabel(env.engine);
-    const kicker = ["Guided review", env.label, engine, model.loaded.sidecar.agent?.model?.label ?? env.model, env.generatedAt ? relativeTime(env.generatedAt) : ""].filter(Boolean).join(" · ");
-    return {
-      mode: "guide",
-      guideId: model.id,
-      kicker,
-      title: model.title,
-      intent: env.guide.intent,
-      overview: model.overview,
-      chapters: model.chapters.map((c, i) => ({ n: i + 1, title: c.title, files: c.files.map((f) => basename(f.path)), reviewed: model.reviewed[i], color: chapterColorCss(i) })),
-      reviewed: model.reviewed.filter(Boolean).length,
-      moved: sides.moved,
-    };
   }
 
   private showGuidePanel(): void {
@@ -1456,9 +1438,10 @@ export class GuidesController implements vscode.Disposable {
       label: env.label && env.label !== "local" ? env.label : "",
       snapshot,
       reviewed: [...model.reviewed],
+      fileTicks: [...model.fileTicks],
       chapterColors: model.chapters.map((_, i) => chapterColorCss(i)),
       moved: sides.moved,
-      changedSince: [],
+      changedSince: this.changedSince,
       platform: process.platform === "darwin" ? "mac" : "other",
       askAgent: this.asks.chapterAnswers(model.loaded, 0).agent,
       startChapter: model.currentChapter,
@@ -1489,17 +1472,20 @@ export class GuidesController implements vscode.Disposable {
       case "toggleReviewed":
         return this.markChapterReviewed(msg.chapter + 1);
       case "chapter":
+        // The chapter in view: the outline (the tree) and the status bar follow the reader.
         if (reader.model.chapters[msg.chapter] && reader.model.currentChapter !== msg.chapter) {
           reader.model.currentChapter = msg.chapter;
           this.fireTree();
-          this.updateChapterView();
           this.ui.updateStatus(null);
+          if (this.bridge.treeView.visible) void Promise.resolve(this.bridge.treeView.reveal({ kind: "chapter", index: msg.chapter }, { select: true, focus: false, expand: false })).catch(() => undefined);
         }
         return;
       case "openFile":
         return this.openHeadFile(msg.path, msg.line);
       case "openDiff":
-        return this.openFile(msg.path, undefined, vscode.ViewColumn.Beside);
+        return this.openDiffBeside(msg.path);
+      case "toggleFileReviewed":
+        return this.toggleFileReviewed(msg.path);
       case "openLocation":
         return this.openHeadFile(msg.path, msg.line, msg.character);
       case "link": {
@@ -1571,52 +1557,6 @@ export class GuidesController implements vscode.Disposable {
     await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, ...(pos && { selection: new vscode.Range(pos, pos) }) });
   }
 
-  private chapterState(): ChapterViewState {
-    if (!this.reader) return { mode: "chapter", empty: true };
-    const { model } = this.reader;
-    const i = model.currentChapter;
-    const ch = model.chapters[i];
-    if (!ch) return { mode: "chapter", empty: true };
-    const sc = model.loaded.sidecar;
-    const footer = sc.agent ? [sc.agent.label, sc.agent.model?.label, sc.agent.effort?.label, sc.cost ? `$${sc.cost.amount.toFixed(2)}` : ""].filter(Boolean).join(" · ") : undefined;
-    return {
-      mode: "chapter",
-      empty: false,
-      n: i + 1,
-      total: model.chapters.length,
-      title: ch.title,
-      overview: ch.overview,
-      files: ch.files.map((f) => ({ path: f.path, name: basename(f.path), summary: f.summary, reviewed: model.fileTicks.has(f.path) })),
-      reviewed: model.reviewed[i],
-      hasNext: i + 1 < model.chapters.length,
-      ...(footer && { footer }),
-      ...this.chapterAsks(i),
-    };
-  }
-
-  /** The chapter view's ask box and the answers about this chapter. */
-  private chapterAsks(chapter: number): Pick<ChapterViewState, "ask" | "answers" | "answersFooter"> {
-    if (!this.reader) return {};
-    const a = this.asks.chapterAnswers(this.reader.model.loaded, chapter);
-    return { ask: { agent: a.agent, busy: a.busy }, ...(a.items.length && { answers: a.items }), ...(a.footer && a.items.length && { answersFooter: a.footer }) };
-  }
-
-  resolveChapterView(view: vscode.WebviewView): void {
-    view.webview.options = webviewOptions(this.context.extensionUri);
-    view.webview.html = webviewHtml(view.webview, this.context.extensionUri, "chapter");
-    const host = new WebviewHost(view.webview, {
-      onCommand: (command, args) => void this.webviewCommand(command, args),
-      onLink: (link, action) => void this.openLink(link, action),
-      onLinkInfo: (link) => this.linkInfo(link),
-    });
-    this.chapterView = { view, host };
-    view.onDidDispose(() => {
-      host.dispose();
-      if (this.chapterView?.view === view) this.chapterView = null;
-    });
-    this.updateChapterView();
-  }
-
   /** The reader's questions and answers: markers on the lines asked about, each chapter's list, whether one is being answered. */
   private sendAsks(): void {
     const reader = this.reader;
@@ -1636,18 +1576,15 @@ export class GuidesController implements vscode.Disposable {
     });
   }
 
+  /** The questions and answers changed (the asks' host calls this). */
   updateChapterView(): void {
     this.sendAsks();
-    if (!this.chapterView) return;
-    const state = this.chapterState();
-    this.chapterView.view.title = state.empty ? "Chapter" : `Chapter ${state.n} · why this changed`;
-    this.chapterView.host.show(state);
   }
 
   private updateReaderViews(): void {
     this.fireTree();
     this.updateChapterView();
-    if (this.reader) this.guidePanels.get(this.reader.model.id)?.send({ type: "reviewed", reviewed: [...this.reader.model.reviewed] });
+    if (this.reader) this.guidePanels.get(this.reader.model.id)?.send({ type: "reviewed", reviewed: [...this.reader.model.reviewed], fileTicks: [...this.reader.model.fileTicks] });
     this.ui.refresh();
     this.ui.updateStatus(this.currentFile);
     this.updateEditorContext(vscode.window.activeTextEditor);
@@ -1664,23 +1601,16 @@ export class GuidesController implements vscode.Disposable {
     model.loaded.envelope.reviewed = [...model.reviewed];
   }
 
-  private async openChapter(n: number | undefined, options?: { openFile?: boolean; column?: vscode.ViewColumn }): Promise<void> {
+  /** Show a chapter in the Guide tab (the tree, the status bar, links). */
+  private async openChapter(n: number | undefined): Promise<void> {
     if (!this.reader || n === undefined) return;
     const { model } = this.reader;
     const index = n - 1;
     if (!model.chapters[index]) return;
     model.currentChapter = index;
+    this.showGuidePanel();
+    this.guidePanels.get(model.id)?.send({ type: "reveal", chapter: index });
     this.updateReaderViews();
-    void vscode.commands.executeCommand("plannotator.guides.chapter.focus");
-    try {
-      await this.bridge.treeView.reveal({ kind: "chapter", index }, { expand: true, select: true, focus: false });
-    } catch {
-      // the tree may not be visible
-    }
-    if (options?.openFile !== false) {
-      const first = model.chapters[index].files.find((f) => !model.fileTicks.has(f.path)) ?? model.chapters[index].files[0];
-      if (first) await this.openFile(first.path, undefined, options?.column);
-    }
   }
 
   private async nextChapter(): Promise<void> {
@@ -1731,39 +1661,29 @@ export class GuidesController implements vscode.Disposable {
     await this.openFile(next.path);
   }
 
-  /** Open a guide file in the native diff editor, in preview so stepping reuses one tab. */
-  async openFile(path: string | undefined, line?: number, column?: vscode.ViewColumn): Promise<void> {
+  /** Show a guide file in the Guide tab (the tree, Next file, a code link in an answer). */
+  async openFile(path: string | undefined): Promise<void> {
     if (!this.reader || !path) return;
-    const { model, sides } = this.reader;
-    const file = model.files.get(path) ?? { path, status: "modified" };
+    const { model } = this.reader;
     const chapter = model.chapterOf(path);
     if (chapter >= 0) model.currentChapter = chapter;
     this.currentFile = path;
-    const focus = model.focusRanges(path)[0];
-    const target = line ?? focus?.start ?? model.files.get(path)?.hunks[0]?.start;
-    const selection = target ? new vscode.Range(target - 1, 0, target - 1, 0) : undefined;
-    const title = `${basename(path)}${chapter >= 0 ? ` · Chapter ${chapter + 1}` : ""}`;
-    const where = column ?? diffColumnBesideAnswers(baseUri(sides, file), headUri(sides, file));
-    await vscode.commands.executeCommand("vscode.diff", baseUri(sides, file), headUri(sides, file), title, { preview: true, ...(selection && { selection }), ...(where && { viewColumn: where }) });
+    this.showGuidePanel();
+    this.guidePanels.get(model.id)?.send({ type: "reveal", path });
     this.updateReaderViews();
-    void this.offerDiffCodeLens();
   }
 
-  /**
-   * The "Chapter 2 of 5 · Mark reviewed · Next file" line is a CodeLens, and
-   * VS Code hides CodeLens in diff editors unless `diffEditor.codeLens` is on.
-   * Ask once; never change the setting without the reader's yes.
-   */
-  private async offerDiffCodeLens(): Promise<void> {
-    if (vscode.workspace.getConfiguration("diffEditor").get<boolean>("codeLens")) return;
-    if (this.context.globalState.get<boolean>("plannotator.guides.askedDiffCodeLens")) return;
-    await this.context.globalState.update("plannotator.guides.askedDiffCodeLens", true);
-    const choice = await vscode.window.showInformationMessage(
-      "Guided reviews put a line at the top of each diff: its chapter, Mark reviewed and Next file. VS Code hides such lines in diffs unless CodeLens in the diff editor is on. Turn it on?",
-      "Turn on",
-      "Not now",
-    );
-    if (choice === "Turn on") await vscode.workspace.getConfiguration("diffEditor").update("codeLens", true, vscode.ConfigurationTarget.Global);
+  /** A guide file in VS Code's own diff editor, beside the Guide tab ("Diff" on a file). */
+  private async openDiffBeside(path: string): Promise<void> {
+    if (!this.reader) return;
+    const { model, sides } = this.reader;
+    const file = model.files.get(path) ?? { path, status: "modified" };
+    const chapter = model.chapterOf(path);
+    const focus = model.focusRanges(path)[0];
+    const target = focus?.start ?? model.files.get(path)?.hunks[0]?.start;
+    const selection = target ? new vscode.Range(target - 1, 0, target - 1, 0) : undefined;
+    const title = `${basename(path)}${chapter >= 0 ? ` · Chapter ${chapter + 1}` : ""}`;
+    await vscode.commands.executeCommand("vscode.diff", baseUri(sides, file), headUri(sides, file), title, { preview: true, viewColumn: vscode.ViewColumn.Beside, ...(selection && { selection }) });
   }
 
   /** `plannotator.guides.editorInGuide`: the editor shows a file of the open guide (either side), for "Ask the Agent About This…". */
@@ -1808,13 +1728,13 @@ export class GuidesController implements vscode.Disposable {
     const parsed = parseGuideLink(href);
     if (!parsed?.ok) return;
     const link = parsed.link;
-    if (link.kind === "chapter") return this.openChapter(link.chapter, column ? { column } : undefined);
+    if (link.kind === "chapter") return this.openChapter(link.chapter);
     const target = await locateLink(link, this.reader.model, this.reader.sides);
     if ("error" in target) {
       void vscode.window.showWarningMessage(target.error);
       return;
     }
-    if (action === "open" && target.inChange) return this.openFile(target.path, target.range.start.line + 1, column);
+    if (action === "open" && target.inChange && this.reader.model.chapterOf(target.path) >= 0) return this.openFile(target.path);
     const editor = await vscode.window.showTextDocument(target.uri, { preview: true, selection: target.range, ...(column && { viewColumn: column }) });
     if (action === "definition") await vscode.commands.executeCommand("editor.action.revealDefinition");
     if (action === "references") await vscode.commands.executeCommand("editor.action.goToReferences", editor.document.uri, target.range.start);

@@ -96,6 +96,9 @@ export interface WebviewPanel {
   onDidDispose(listener: () => void): { dispose(): void };
 }
 
+/** Every panel `createWebviewPanel` made (tests read what it posted and send it messages). */
+export const createdWebviewPanels: Array<WebviewPanel & { posted: unknown[]; receive(message: unknown): void }> = [];
+
 export const ViewColumn = {
   Active: -1,
   Beside: -2,
@@ -132,11 +135,26 @@ export const window = {
     _options?: { enableScripts?: boolean; retainContextWhenHidden?: boolean },
   ): WebviewPanel {
     let disposeListener: (() => void) | null = null;
-    return {
+    const listeners: Array<(message: unknown) => void> = [];
+    const posted: unknown[] = [];
+    const panel = {
       webview: {
         html: "",
-        onDidReceiveMessage() { return { dispose() {} }; },
-        postMessage() { return Promise.resolve(true); },
+        cspSource: "https://file+.vscode-resource.vscode-cdn.net",
+        asWebviewUri: (uri: Uri) => Uri.parse(`https://file+.vscode-resource.vscode-cdn.net${uri.path}`),
+        onDidReceiveMessage(listener: (message: unknown) => void) {
+          listeners.push(listener);
+          return { dispose() { listeners.splice(listeners.indexOf(listener), 1); } };
+        },
+        postMessage(message: unknown) {
+          posted.push(message);
+          return Promise.resolve(true);
+        },
+      },
+      /** Test hooks: what the panel posted, and a message as if the webview sent it. */
+      posted,
+      receive: (message: unknown) => {
+        for (const l of [...listeners]) l(message);
       },
       reveal() {},
       dispose() {
@@ -147,6 +165,8 @@ export const window = {
         return { dispose() {} };
       },
     };
+    createdWebviewPanels.push(panel);
+    return panel;
   },
   createTextEditorDecorationType(_options: unknown) {
     return { dispose() {} };

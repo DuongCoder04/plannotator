@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { renderMermaid } from "../webview/diagram";
+import { checkMermaid, renderMermaid } from "../webview/diagram";
 import { post } from "./bridge";
 
 /**
@@ -55,7 +55,7 @@ export default function OverviewDiagram({ source, onChapter }: { source: string;
   );
 }
 
-export async function checkMermaidHere(source: string): Promise<{ ok: boolean; message?: string; line?: number }> {
-  const { checkMermaid } = await import("../webview/diagram");
+/** The builder's render check (the extension asks the open Guide tab): the same engine, off screen. */
+export function checkMermaidHere(source: string): Promise<{ ok: boolean; message?: string; line?: number }> {
   return checkMermaid(source);
 }

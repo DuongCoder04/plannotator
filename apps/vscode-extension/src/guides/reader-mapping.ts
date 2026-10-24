@@ -5,6 +5,8 @@
  * `vscode`: the caller passes the lines it read.
  */
 
+import { parseDiffToFiles } from "@plannotator/core/diff-files";
+
 export interface TokenSpot {
   /** 1-based. */
   line: number;
@@ -43,7 +45,7 @@ export function locateToken(lineAt: (line: number) => string | undefined, line: 
   if (!token || line < 1) return null;
   const text = lineAt(line);
   if (text !== undefined) {
-    if (text.startsWith(token, character)) return { line, character, stale: false };
+    if (occurrences(text, token).includes(character)) return { line, character, stale: false };
     const same = occurrences(text, token);
     if (same.length) {
       const nearest = same.reduce((a, b) => (Math.abs(b - character) < Math.abs(a - character) ? b : a));
@@ -63,6 +65,31 @@ export function locateToken(lineAt: (line: number) => string | undefined, line: 
     }
   }
   return null;
+}
+
+/** A file's diff text without the lines that name blobs (`index …`), which differ for the same change. */
+function diffBody(patch: string): string {
+  return patch
+    .split("\n")
+    .filter((l) => !l.startsWith("index ") && !l.startsWith("similarity index") && !l.startsWith("diff --git"))
+    .join("\n")
+    .trim();
+}
+
+/**
+ * The files whose diff now (`current`, a fresh `git diff <base>` of the
+ * guide's tracked files) is not the guide's (`guidePatch`). A file the
+ * current diff does not list (an untracked file the guide added) is left out:
+ * nothing says it changed.
+ */
+export function changedPatchFiles(guidePatch: string, current: string): string[] {
+  const now = new Map(parseDiffToFiles(current).map((f) => [f.path, diffBody(f.patch)]));
+  const out: string[] = [];
+  for (const f of parseDiffToFiles(guidePatch)) {
+    const body = now.get(f.path);
+    if (body !== undefined && body !== diffBody(f.patch)) out.push(f.path);
+  }
+  return out;
 }
 
 export type HoverBlock = { kind: "code"; language: string; text: string } | { kind: "markdown"; text: string };

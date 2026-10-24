@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { post } from "./bridge";
 
 interface StripChapter {
@@ -32,9 +32,19 @@ export function ChapterStrip({
   onBack: () => void;
 }) {
   const current = useChapterInView(chapters.length);
+  const stripRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const set = () => document.documentElement.style.setProperty("--pn-strip-h", `${el.offsetHeight}px`);
+    set();
+    const observer = new ResizeObserver(set);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const reviewed = chapters.filter((c) => c.reviewed).length;
   return (
-    <header data-reader-strip className="pn-strip sticky top-0 z-40 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-1.5 backdrop-blur">
+    <header ref={stripRef} data-reader-strip className="pn-strip sticky top-0 z-40 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-1.5 backdrop-blur">
       <span className="codicon codicon-book flex-shrink-0 text-muted-foreground" aria-hidden="true" />
       <h1 className="min-w-0 flex-shrink truncate text-[13px] font-semibold text-foreground" title={title}>
         {label ? `${label} · ` : ""}
@@ -78,21 +88,26 @@ export function ChapterStrip({
   );
 }
 
-/** The chapter whose card holds the line just under the strip. */
+/** The chapter whose card holds the line just under the strip (-1 above the first: the overview). */
+export function chapterInView(count: number): number {
+  const strip = (document.querySelector("[data-reader-strip]") as HTMLElement | null)?.offsetHeight ?? 0;
+  const y = strip + 8;
+  let found = -1;
+  for (let i = 0; i < count; i++) {
+    const el = document.querySelector(`[data-guide-section="${i}"]`);
+    if (!el) continue;
+    if (el.getBoundingClientRect().top <= y) found = i;
+  }
+  return found;
+}
+
 function useChapterInView(count: number): number {
   const [current, setCurrent] = useState(0);
   useEffect(() => {
     let raf = 0;
     const measure = () => {
       raf = 0;
-      const strip = (document.querySelector("[data-reader-strip]") as HTMLElement | null)?.offsetHeight ?? 0;
-      const y = strip + 8;
-      let found = 0;
-      for (let i = 0; i < count; i++) {
-        const el = document.querySelector(`[data-guide-section="${i}"]`);
-        if (!el) continue;
-        if (el.getBoundingClientRect().top <= y) found = i;
-      }
+      const found = Math.max(0, chapterInView(count));
       setCurrent((prev) => (prev === found ? prev : found));
     };
     const onScroll = () => {
