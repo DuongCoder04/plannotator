@@ -472,8 +472,12 @@ function servePicks() {
   }) as typeof fetch;
 }
 
+/** Adds a message to the live thread, as an agent writing while the list is open. */
+let addMessage: ((message: InboxMessageWire) => void) | null = null;
+
 function Live({ initial, phone = false }: { initial: InboxMessageWire[]; phone?: boolean }) {
   const [messages, setMessages] = React.useState(initial);
+  addMessage = (message) => setMessages((current) => [...current, message]);
   return (
     <ThreadPane
       thread={thread(messages)}
@@ -760,4 +764,84 @@ test.skipIf(!hasDom)('on a phone: the sheet has "Skip…"; in select mode "Skip 
   await until(() => pickBodies.length === 1, 'the skip');
   expect(pickBodies[0]!.messageId).toBe(M3);
   expect(list()).not.toBeNull();
+});
+
+test.skipIf(!hasDom)('on a phone: Close leaves select mode; the list opens again at rest with no ticks', async () => {
+  await renderLive({ phone: true });
+  await openList();
+  await press(skipMode()!);
+  await until(selecting, 'select mode');
+  await press(rowOf(M3)!);
+  await until(() => rowOf(M3)!.getAttribute('aria-checked') === 'true', 'the tick');
+  await press(list()!.querySelector<HTMLElement>('[data-open-questions-close]')!);
+  await until(() => !list(), 'Close closes the sheet');
+  await openList();
+  expect(selecting()).toBe(false);
+  expect(list()!.querySelector('[data-open-questions-select-head]')).toBeNull();
+  expect(rows().some((r) => r.getAttribute('aria-checked') === 'true')).toBe(false);
+  expect(skipMode()).not.toBeNull();
+  expect(list()!.getAttribute('aria-label')).toBe('4 open questions in this thread');
+  // Into select mode again: nothing is ticked.
+  await press(skipMode()!);
+  await until(selecting, 'select mode again');
+  expect(rows().every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
+  expect(applyButton()!.textContent).toBe('Skip');
+  await settle();
+  expect(pickBodies).toHaveLength(0);
+});
+
+test.skipIf(!hasDom)('"Skip all" covers only the questions open when select mode began, not one that lands meanwhile', async () => {
+  await renderLive();
+  await openList();
+  await press(skipMode()!);
+  await until(selecting, 'select mode');
+  expect(skipAllButton()!.textContent).toBe('Skip all 3');
+  const M7 = id(7);
+  await act(async () => addMessage!({ ...agent(7, `New.\n\n${block('Rename the retry queue?')}`, 7), id: M7, questions: questionsOf(M7, block('Rename the retry queue?')) }));
+  await until(() => !!rowOf(M7), 'the new question listed');
+  expect(skipAllButton()!.textContent).toBe('Skip all 3');
+  await press(skipAllButton()!);
+  await until(() => pickBodies.length === 3, 'three skips');
+  await settle();
+  expect(pickBodies.map((b) => b.messageId)).toEqual([M2, M3, M6]);
+  expect(rowOf(M7)!.hasAttribute('data-skipped')).toBe(false);
+});
+
+test.skipIf(!hasDom)('screen readers: the menu is named for select mode, and the count is said in a polite live region', async () => {
+  await renderLive();
+  await openList();
+  const live = () => document.querySelector<HTMLElement>('[data-open-questions-select-live]');
+  expect(live()!.getAttribute('aria-live')).toBe('polite');
+  expect(live()!.closest('[role="menu"]')).toBeNull();
+  expect(live()!.textContent).toBe('');
+  await press(skipMode()!);
+  await until(selecting, 'select mode');
+  expect(list()!.getAttribute('aria-label')).toBe('Select questions to skip');
+  await press(rowOf(M3)!);
+  await until(() => live()!.textContent === '1 selected', 'one selected, said');
+  await press(rowOf(M6)!);
+  await until(() => live()!.textContent === '2 selected', 'two selected, said');
+  await press(cancelButton()!);
+  await until(() => !selecting(), 'back at rest');
+  expect(list()!.getAttribute('aria-label')).toBe('4 open questions in this thread');
+  expect(live()!.textContent).toBe('');
+});
+
+test.skipIf(!hasDom)('"Skip 1, unskip 1": a skipped row and an open row ticked; both picks are saved', async () => {
+  await renderLive({ initial: withM2Skipped(sample()) });
+  await openList();
+  await press(skipMode()!);
+  await until(selecting, 'select mode');
+  await press(rowOf(M2)!);
+  await press(rowOf(M3)!);
+  await until(() => applyButton()!.textContent === 'Skip 1, unskip 1', 'the combined button');
+  await settle();
+  expect(pickBodies).toHaveLength(0);
+  await press(applyButton()!);
+  await until(() => pickBodies.length === 2, 'the two picks');
+  const byMessage = new Map(pickBodies.map((b) => [b.messageId, b]));
+  expect(byMessage.get(M3)!.answer?.skipped).toBe(true);
+  expect(byMessage.get(M3)!.answer?.selected).toEqual([]);
+  expect(byMessage.get(M2)!.answer).toBeNull();
+  await until(() => !selecting() && rowOf(M3)!.hasAttribute('data-skipped') && !rowOf(M2)!.hasAttribute('data-skipped'), 'the rows follow');
 });

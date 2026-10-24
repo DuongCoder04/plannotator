@@ -79,6 +79,11 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
   /** Select mode (approval "oq-skip-select"): rows are checkboxes; ticks save nothing until the bar's button. */
   const [selecting, setSelecting] = useState(false);
   const [tickedIds, setTickedIds] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * What "Skip all N" covers, taken when select mode starts: a question that lands while the person
+   * is choosing is never skipped by it (it is the snapshot met with the questions open now).
+   */
+  const [skipAllIds, setSkipAllIds] = useState<ReadonlySet<string>>(new Set());
   /** After entering or leaving select mode, where focus goes: the first row, or "Skip…". */
   const focusAfter = useRef<'row' | 'skip' | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -165,7 +170,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
   // A tick on a question that left the list (answered elsewhere) no longer counts.
   const ticks = new Set(questions.filter((q) => tickedIds.has(q.id)).map((q) => q.id));
   const { skip: toSkip, unskip: toUnskip } = skipSelection(questions, ticks);
-  const allToSkip = skipAllCandidates(questions);
+  const allToSkip = skipAllCandidates(questions).filter((q) => skipAllIds.has(q.id));
   const applyReady = toSkip.length + toUnskip.length > 0;
   const applyLabel =
     toSkip.length > 0 && toUnskip.length > 0
@@ -177,14 +182,28 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
           : 'Skip';
   const enterSelect = () => {
     setTickedIds(new Set());
+    setSkipAllIds(new Set(skipAllCandidates(questions).map((q) => q.id)));
     focusAfter.current = 'row';
     setSelecting(true);
   };
   /** Cancel, Escape, or the work done: ticks are dropped, focus back on "Skip…". */
   const leaveSelect = () => {
     setTickedIds(new Set());
+    setSkipAllIds(new Set());
     focusAfter.current = 'skip';
     setSelecting(false);
+  };
+  /** The list closes and starts at rest next time: no select mode, no ticks, no focus to move. */
+  const resetSelect = () => {
+    setSelecting(false);
+    setTickedIds(new Set());
+    setSkipAllIds(new Set());
+    focusAfter.current = null;
+  };
+  /** Every close the list makes itself (the phone's Close, a row, Re-ask) goes through here. */
+  const close = () => {
+    resetSelect();
+    setOpen(false);
   };
   const tick = (id: string, on: boolean) =>
     setTickedIds((current) => {
@@ -241,12 +260,11 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
           leaveSelect();
           return;
         }
+        // Whatever closed it, the list opens at rest again (never in select mode with old ticks).
+        resetSelect();
         if (next) {
           picked.current = false;
           setPlaces(measure());
-        } else if (selecting) {
-          setSelecting(false);
-          setTickedIds(new Set());
         }
         setOpen(next);
       }}
@@ -272,6 +290,10 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
       </Menu.Trigger>
       <Menu.Portal container={portal ?? undefined}>
         {phone && <Menu.Backdrop className="ib-oq-scrim" data-open-questions-scrim="" />}
+        {/* The count of ticks, said politely as it changes (outside the menu, whose children are its items). */}
+        <span className="ib-sr" role="status" aria-live="polite" data-open-questions-select-live="">
+          {selecting && ticks.size > 0 ? `${formatCount(ticks.size)} selected` : ''}
+        </span>
         <Menu.Positioner
           className="ib-oq-pos"
           side="top"
@@ -283,20 +305,21 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
           <Menu.Popup
             ref={popupRef}
             className="ib-oq"
-            aria-label={heading}
+            aria-label={selecting ? 'Select questions to skip' : heading}
             data-open-questions-list=""
             finalFocus={() => (picked.current ? false : true)}
           >
             {/* No drawn heading or foot line (owner, 2026-10-23): the popup's name (aria-label) carries the count. */}
             {phone && (
               <div className="ib-oq-head">
-                <button type="button" className="ib-oq-x" aria-label="Close" data-open-questions-close="" onClick={() => setOpen(false)}>
+                <button type="button" className="ib-oq-x" aria-label="Close" data-open-questions-close="" onClick={() => close()}>
                   <Icon name="x" size={16} />
                 </button>
               </div>
             )}
             {selecting && (
               <div className="ib-oq-selhead" role="none" data-open-questions-select-head="">
+                {/* Heard through the live region below, not here: the menu's name says the mode. */}
                 <span aria-hidden="true">{ticks.size > 0 ? `${formatCount(ticks.size)} selected` : 'Select questions to skip'}</span>
                 {phone && skipAllButton}
               </div>
@@ -377,7 +400,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                     aria-label={ariaLabel}
                     onClick={() => {
                       picked.current = true;
-                      setOpen(false);
+                      close();
                       onPick(q);
                     }}
                   >
@@ -426,7 +449,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                           aria-describedby={reaskTipId}
                           onClick={() => {
                             // Focus goes back to the button (or to the route choice, which takes it).
-                            setOpen(false);
+                            close();
                             reask.onReask();
                           }}
                         >
