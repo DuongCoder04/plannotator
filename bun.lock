@@ -115,7 +115,7 @@
     },
     "apps/opencode-plugin": {
       "name": "@plannotator/opencode",
-      "version": "0.28.28",
+      "version": "0.28.30",
       "devDependencies": {
         "@opencode-ai/plugin": "1.18.32",
         "@opencode/plugin": "2.0.14",
@@ -134,7 +134,7 @@
     },
     "apps/pi-extension": {
       "name": "@plannotator/pi-extension",
-      "version": "0.28.28",
+      "version": "0.28.30",
       "dependencies": {
         "@joplin/turndown-plugin-gfm": "^1.0.64",
         "@pierre/diffs": "1.3.6",
@@ -203,6 +203,16 @@
         "typescript": "~5.8.2",
         "vite": "^6.2.0",
         "vite-plugin-singlefile": "^2.0.3",
+      },
+    },
+    "apps/telemetry": {
+      "name": "@plannotator/telemetry",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20241218.0",
+        "@plannotator/core": "workspace:*",
+        "typescript": "~5.8.2",
+        "wrangler": "^4.127.1",
       },
     },
     "apps/vscode-extension": {
@@ -330,7 +340,7 @@
     },
     "packages/server": {
       "name": "@plannotator/server",
-      "version": "0.28.28",
+      "version": "0.28.30",
       "dependencies": {
         "@modelcontextprotocol/server": "2.2.0",
         "@pierre/diffs": "1.3.6",
@@ -1125,6 +1135,8 @@
     "@plannotator/shared": ["@plannotator/shared@workspace:packages/shared"],
 
     "@plannotator/t3-code": ["@plannotator/t3-code@workspace:packages/t3-code"],
+
+    "@plannotator/telemetry": ["@plannotator/telemetry@workspace:apps/telemetry"],
 
     "@plannotator/ui": ["@plannotator/ui@workspace:packages/ui"],
 

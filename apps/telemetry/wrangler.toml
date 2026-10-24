@@ -1,0 +1,47 @@
+# Usage counts for experimental features (approval record
+# "experimental-telemetry", 2026-10-24). Owner-deployed from this folder with
+# `wrangler deploy`; never from CI. The proof runs it with `wrangler dev` only.
+# See README.md for the deploy steps.
+#
+# Secret, set once by the owner (`wrangler secret put READ_TOKEN`), never in a
+# file: READ_TOKEN, the bearer token GET /v1/totals takes. Without it the read
+# route answers 401 to everyone.
+name = "plannotator-telemetry"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# No request logs, ever: no Workers Logs, no Logpush, no tail consumers. Never
+# run `wrangler tail` against production.
+logpush = false
+
+# Custom domain (top-level: must precede any [table] in TOML).
+routes = [
+  { pattern = "counts.plannotator.ai", custom_domain = true }
+]
+
+[observability]
+enabled = false
+
+# The totals. database_id is a placeholder: the owner replaces it with the id
+# `wrangler d1 create plannotator-telemetry` prints (README.md).
+[[d1_databases]]
+binding = "COUNTS"
+database_name = "plannotator-telemetry"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# The brake on POST /v1/counts: 60 per minute per IP, its own namespace (the
+# relay is 1002). The IP lives only in Cloudflare's in-memory counter; the
+# Worker never writes it. Optional in Env: without this block nothing is
+# braked, and a limiter that fails lets the request through.
+[[ratelimits]]
+name = "COUNTS_LIMITER"
+namespace_id = "1003"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60
+
+# Retention: once a day, delete totals 180 days after a feature's counting ends.
+[triggers]
+crons = ["0 4 * * *"]

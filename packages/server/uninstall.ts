@@ -109,6 +109,7 @@ const PURGE_OWNED_TOP_LEVEL = [
   "history",
   "feedback",
   "inbox",
+  "usage-counts",
   "t3-code",
   "drafts",
   "review-progress",

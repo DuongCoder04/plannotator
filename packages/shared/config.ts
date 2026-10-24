@@ -486,6 +486,15 @@ export interface PlannotatorConfig {
    * 'totman' (production brand mascot) or 'classic' (historical dark-navy P tile).
    */
   favicon?: FaviconStyle;
+  /**
+   * Usage counts for experimental features (packages/shared/usage-counts.ts).
+   * Absent or `true`: on for each counted feature while that feature is on.
+   * `false`: off for every feature. An object turns single features off
+   * (`{ "decisionMode": false }`). `PLANNOTATOR_TELEMETRY=0` and
+   * `DO_NOT_TRACK=1` turn counts off whatever this says; nothing turns them on.
+   * Written by `plannotator telemetry --off` / `--on`.
+   */
+  usageCounts?: boolean | Record<string, boolean>;
 }
 
 /** Parse the only server-writable call-review analysis flags. */

@@ -10,5 +10,6 @@ preload = ["./tests/setup/feedback-archive-off.ts", "./packages/ui/test-setup/ha
 # The Inbox's browser proofs run under Playwright (`bun run test:e2e:inbox`),
 # against a compiled binary, not under bun test.
 # The relay's proof (apps/relay/test) runs `wrangler dev`: it runs from its own
-# folder in the relay workflow, not in the root run.
-pathIgnorePatterns = ["apps/hook/tests/**", "tests/e2e/**", "apps/relay/**"]
+# folder in the relay workflow, not in the root run. The usage-counts Worker's
+# proof (apps/telemetry/test) runs `wrangler dev` too, from its own folder.
+pathIgnorePatterns = ["apps/hook/tests/**", "tests/e2e/**", "apps/relay/**", "apps/telemetry/**"]

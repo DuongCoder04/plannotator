@@ -1,0 +1,68 @@
+# Plannotator usage counts
+
+A Cloudflare Worker in front of one D1 table. A Plannotator process sends it whole-number counts for one experimental feature and one complete UTC day. The Worker adds those numbers into daily totals across everyone. Agents read the totals over a token-guarded route. Approval record: `.product/approved/experimental-telemetry/` (counts default on with a notice, no install id, D1 behind this Worker).
+
+The registry of counted features, the batch shape and the validator are in `@plannotator/core/usage-counts`. The client and this Worker import the same list.
+
+## What it stores
+
+`daily_totals(day, feature, rev, event, bucket, reports, total)`, one row per key (`migrations/0001_daily_totals.sql`). A batch adds 1 to `reports` and its value to `total`.
+
+- The `_reports` row (bucket `""`) holds the number of batches for that day, i.e. reporting install-days.
+- A count event is filed under the range its value falls in (`1`, `2-3`, `4-9`, `10-29`, `30-100`). The totals show the spread, and no single install's number is kept.
+- A day event and `first_day` are filed under `1`.
+- `days_last7` is filed under its bucket (`1`, `2-3`, `4-5`, `6-7`), with total 0.
+
+Nothing else is stored: no IP address, no time beyond the day, no row per request, no country, no user agent, and no install id. The Worker reads `CF-Connecting-IP` only to give it to the rate limiter. It never reads `request.cf`. It logs nothing about a request; its only log lines are fixed codes. `wrangler.toml` turns off observability and Logpush. Never run `wrangler tail` against production.
+
+## Routes
+
+- `POST /v1/counts`. Checks, in this order:
+  - an `Origin` header gets `403`;
+  - a type other than JSON gets `415`;
+  - a body over 1024 bytes gets `413`;
+  - more than 60 a minute from one IP gets `429` with `Retry-After: 60`;
+  - a batch the shared validator refuses gets `400 {"code":"invalid"}`;
+  - otherwise the batch is added and the answer is `204` with no body.
+- `GET /v1/totals?feature=decisionMode&from=YYYY-MM-DD&to=YYYY-MM-DD[&rev=N]` with `Authorization: Bearer <READ_TOKEN>`. The range is at most 400 days. A `(day, rev)` with fewer than 5 reporting install-days is left out and counted in `suppressed_days`. `totals` sums only the days that are shown.
+- `GET /`: one sentence.
+- The daily cron (`0 4 * * *`) removes three things:
+  - a feature's rows 180 days after its `collectUntil`;
+  - any day older than 400 days;
+  - every feature no longer in the registry. Keep a feature listed until its totals are gone.
+
+An agent asks:
+
+```sh
+curl -s "https://counts.plannotator.ai/v1/totals?feature=decisionMode&from=2026-11-01&to=2026-11-07" \
+  -H "Authorization: Bearer $PLANNOTATOR_TELEMETRY_READ_TOKEN"
+```
+
+How to read it: the data holds install-days, not people. `_reports` per day is about how many installs had the feature on that day. `opened.reports / active_day.reports` is the share of on-days on which the feature was used.
+
+## Deploy (owner only)
+
+No workflow deploys this Worker, and no workflow holds a Cloudflare secret. From this folder:
+
+```sh
+wrangler d1 create plannotator-telemetry       # copy the database_id it prints into wrangler.toml
+wrangler d1 migrations apply COUNTS --remote
+wrangler secret put READ_TOKEN                 # a long random string; agents use it to read totals
+wrangler deploy
+```
+
+`wrangler.toml` names the custom domain `counts.plannotator.ai`, and its `database_id` is a placeholder until the owner replaces it. Without `READ_TOKEN`, every read answers `401`.
+
+## The proof
+
+`bun test` from this folder runs the Worker under `wrangler dev`. Everything is local: D1 is persisted under `.wrangler/proof`, the migration is applied with `wrangler d1 migrations apply --local`, and the cron is triggered through `--test-scheduled`. The proof checks:
+
+- the refusals;
+- the sums and buckets;
+- that the table has only its columns and that storage holds no IP or request detail;
+- the token guard;
+- the small-count suppression;
+- retention;
+- the rate limit.
+
+The root `bun test` skips this folder.

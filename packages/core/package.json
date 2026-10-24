@@ -43,6 +43,7 @@
     "./inbox-search": "./inbox-search.ts",
     "./diagram-anchor": "./diagram-anchor.ts",
     "./image-region": "./image-region.ts",
+    "./usage-counts": "./usage-counts.ts",
     "./open-in-apps": "./open-in-apps.ts",
     "./project": "./project.ts",
     "./source-save": "./source-save.ts",

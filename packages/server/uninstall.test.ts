@@ -275,6 +275,23 @@ async function startFakeT3Worker(dataDir: string) {
   return child;
 }
 
+describe("usage counts", () => {
+  test("purge removes usage-counts/, a plain uninstall keeps it", async () => {
+    const fixture = createFixture();
+    const dir = join(fixture.dataDir, "usage-counts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "counts.json"), JSON.stringify({ v: 1, days: { "2026-10-23": { decisionMode: { rev: 1, events: { opened: 2 } } } } }));
+    writeFileSync(join(dir, "facts.json"), JSON.stringify({ v: 1, features: { decisionMode: { firstDay: "2026-10-23" } } }));
+    await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(true);
+    const planned = await runPlannotatorUninstall({ purge: true, dryRun: true }, fixture.environment);
+    expect(planned.planned.some((line) => line.includes(dir))).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+    await runPlannotatorUninstall({ purge: true, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe("the optional T3 Code connection", () => {
   test("uninstall stops its running workers, and purge removes t3-code/", async () => {
     const fixture = createFixture();
