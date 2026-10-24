@@ -270,7 +270,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                         className="ib-oq-skip"
                         data-open-question-skip={q.id}
                         data-skipped={skipped ? '' : undefined}
-                        label={skipWord}
+                        label=""
                         closeOnClick={false}
                         disabled={!openQuestionSkippable(q)}
                         aria-label={`${skipWord} question ${i + 1}: ${q.prompt}`}

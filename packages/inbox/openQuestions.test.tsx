@@ -602,6 +602,25 @@ test.skipIf(!hasDom)('the keyboard: the arrows reach each Skip, Enter skips, and
   await until(() => highlighted() === 2, 'the next row');
 });
 
+test.skipIf(!hasDom)('type-ahead goes by the question, never to a Skip: "s" lands on "Ship the retry worker…"', async () => {
+  await renderLive();
+  const b = button()!;
+  await act(async () => b.focus());
+  await act(async () => {
+    b.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  });
+  await until(() => !!list(), 'the list from the keyboard');
+  const items = () => [...list()!.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  await until(() => items().some((r) => r.hasAttribute('data-highlighted')), 'a highlighted item');
+  await act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+  });
+  await until(() => {
+    const h = items().find((r) => r.hasAttribute('data-highlighted'));
+    return !!h && !h.hasAttribute('data-open-question-skip') && /Ship the retry worker/.test(h.textContent ?? '');
+  }, 'type-ahead on the question, not a Skip');
+});
+
 test.skipIf(!hasDom)('on a phone the sheet keeps a Skip in each row', async () => {
   await renderLive({ phone: true });
   await openList();
