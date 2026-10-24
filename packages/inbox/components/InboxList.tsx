@@ -72,6 +72,12 @@ export interface InboxListProps {
    * Move back, Archive). Absent: no menu, the browser's own.
    */
   onRowAction?: (row: InboxListRow, action: RowMenuAction) => void;
+  /**
+   * The threads pinned to the sidebar (approval "inbox-pinned-threads"): their
+   * rows carry a small pin, and the row menu offers Pin or Unpin. Absent (an
+   * older Inbox keeps no pins): neither.
+   */
+  pinned?: ReadonlySet<string>;
 }
 
 /**
@@ -158,7 +164,7 @@ function ClipText({ className, text }: { className: string; text: string }) {
  * shapes. When the line is short of room the subject gives way first, down to
  * a floor (inbox.css), then the chip; the mark drops its label to its icon.
  */
-function SubjectLine({ row }: { row: InboxListRow }) {
+function SubjectLine({ row, pinned = false }: { row: InboxListRow; pinned?: boolean }) {
   const chip = chipName(row);
   return (
     <>
@@ -170,6 +176,7 @@ function SubjectLine({ row }: { row: InboxListRow }) {
       <span className="ib-s">
         <ClipText className="ib-st" text={subjectOf(row)} />
       </span>
+      {pinned && <PinMark />}
       {/* The record's 1.1: a thread that carries a guided review says so after its subject. */}
       {row.guide && row.section !== 'sent' && (
         <Tip content="Guided review" when={guideLabelHidden}>
@@ -181,6 +188,24 @@ function SubjectLine({ row }: { row: InboxListRow }) {
       )}
     </>
   );
+}
+
+/**
+ * A pinned thread's small pin in its list row (approval "inbox-pinned-threads"):
+ * after the subject (wide and two-line rows), before the time (a phone's row).
+ * For the eye only: the row's name ends with ", pinned" (`PinnedWords`).
+ */
+function PinMark() {
+  return (
+    <span className="ib-pinmark" data-pin-mark="" aria-hidden="true">
+      <Icon name="pin" size={13} />
+    </span>
+  );
+}
+
+/** The end of a pinned row's accessible name. */
+function PinnedWords() {
+  return <span className="ib-sr">, pinned</span>;
 }
 
 /**
@@ -197,7 +222,7 @@ export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
  * row has one, leads the subject cell, so a row starts at the list's left edge
  * instead of after an empty block.
  */
-function WideRow({ row, selected, filtered, lit, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; keys?: string; onOpen: () => void }) {
+function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const badge = badgeOf(row);
   const sent = row.section === 'sent';
   const badgeEl = badge && <span className={badgeClass(row)}>{badge}</span>;
@@ -218,12 +243,13 @@ function WideRow({ row, selected, filtered, lit, keys, onOpen }: { row: InboxLis
       <span className="ib-subj">
         {filtered && badgeEl}
         <RowMark row={row} />
-        <SubjectLine row={row} />
+        <SubjectLine row={row} pinned={pinned} />
       </span>
       <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{countOf(row)}</span>
       <span className="ib-t">
         <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
       </span>
+      {pinned && <PinnedWords />}
     </button>
   );
 }
@@ -291,7 +317,7 @@ function RowWithAction({
   );
 }
 
-function NarrowRow({ row, selected, filtered, lit, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; keys?: string; onOpen: () => void }) {
+function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const badge = badgeOf(row);
   const count = countOf(row);
   return (
@@ -316,8 +342,9 @@ function NarrowRow({ row, selected, filtered, lit, keys, onOpen }: { row: InboxL
       <div className="ib-l2">
         {badge && <span className={badgeClass(row)}>{badge}</span>}
         <RowMark row={row} />
-        <SubjectLine row={row} />
+        <SubjectLine row={row} pinned={pinned} />
       </div>
+      {pinned && <PinnedWords />}
     </button>
   );
 }
@@ -329,7 +356,7 @@ function NarrowRow({ row, selected, filtered, lit, keys, onOpen }: { row: InboxL
  * badge, the thread's name, the question count, the guided review mark),
  * which wraps rather than pushing anything off the row.
  */
-function PhoneRow({ row, filtered, lit, menu, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; keys?: string; onOpen: () => void }) {
+function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const badge = badgeOf(row);
   const count = countOf(row);
   const guide = row.guide && row.section !== 'sent';
@@ -349,6 +376,7 @@ function PhoneRow({ row, filtered, lit, menu, keys, onOpen }: { row: InboxListRo
       <span className="ib-m1">
         <RowMark row={row} />
         <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+        {pinned && <PinMark />}
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
@@ -371,6 +399,7 @@ function PhoneRow({ row, filtered, lit, menu, keys, onOpen }: { row: InboxListRo
           )}
         </span>
       )}
+      {pinned && <PinnedWords />}
     </button>
   );
 }
@@ -497,6 +526,7 @@ export function InboxList(props: InboxListProps) {
           className="ib-lbody"
           rowOf={rowOf}
           canMarkRead={props.onMarkRead !== undefined}
+          pinnedOf={props.pinned ? (threadId) => props.pinned!.has(threadId) : undefined}
           onTarget={setMenuRow}
           onAction={(row, action) => onRowAction?.(row, action)}
           disabled={!onRowAction}
@@ -541,6 +571,7 @@ export function InboxList(props: InboxListProps) {
                       onSendNow={props.onSendNow ? sendNow : undefined}
                       day={day}
                       menu={menuRow === row.thread_id}
+                      pinned={props.pinned?.has(row.thread_id) === true}
                       keys={rowKeys}
                     />
                   ))}
@@ -566,6 +597,8 @@ interface ListRowProps {
   day: string;
   /** Its right-click menu is open (RowMenu.tsx): the muted background. */
   menu: boolean;
+  /** Pinned to the sidebar: a small pin after the subject. */
+  pinned: boolean;
   /** `aria-keyshortcuts` for the row's menu (Shift+F10), when the list has one. */
   keys?: string;
 }
@@ -576,15 +609,15 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, shape, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, keys }: ListRowProps) {
+  function ListRow({ row, shape, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
     const open = () => onOpen(row);
-    if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} keys={keys} onOpen={open} />;
+    if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
     return (
       <RowWithAction row={row} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
         {shape === 'narrow' ? (
-          <NarrowRow row={row} filtered={filtered} lit={lit} keys={keys} selected={selected} onOpen={open} />
+          <NarrowRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         ) : (
-          <WideRow row={row} filtered={filtered} lit={lit} keys={keys} selected={selected} onOpen={open} />
+          <WideRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         )}
       </RowWithAction>
     );
@@ -596,6 +629,7 @@ const ListRow = memo(
     a.lit === b.lit &&
     a.day === b.day &&
     a.menu === b.menu &&
+    a.pinned === b.pinned &&
     a.keys === b.keys &&
     a.onOpen === b.onOpen &&
     a.onMarkRead === b.onMarkRead &&

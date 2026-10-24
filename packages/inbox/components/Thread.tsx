@@ -686,6 +686,12 @@ export interface ThreadPaneProps {
   onAction?: (messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }) => Promise<boolean>;
   /** Archive (`true`) or Unarchive. Absent: the pane calls the resolve route itself. */
   onArchive?: (archived: boolean) => void;
+  /**
+   * The thread is pinned to the sidebar (approval "inbox-pinned-threads"), and
+   * the header's pin toggle. Absent (an older Inbox keeps no pins): no toggle.
+   */
+  pinned?: boolean;
+  onPin?: (pinned: boolean) => void;
   /** The thread whose reply box should open (the warning toast's Reply); the pane calls `onReplyOpened` once it has. */
   replyRequest?: string | null;
   onReplyOpened?: () => void;
@@ -890,7 +896,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
+export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -2823,6 +2829,21 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
       </button>
     </Tip>
   );
+  // Pin to the sidebar (approval "inbox-pinned-threads"): an icon toggle, the phone's way to pin.
+  const pinButton = onPin ? (
+    <Tip content={pinned ? 'Unpin from the sidebar' : 'Pin to the sidebar'}>
+      <button
+        type="button"
+        className="ib-iconbtn ib-pinbtn"
+        onClick={() => onPin(!pinned)}
+        aria-pressed={pinned}
+        aria-label={pinned ? 'Unpin from the sidebar' : 'Pin to the sidebar'}
+        data-pin-toggle=""
+      >
+        <Icon name="pin" size={16} />
+      </button>
+    </Tip>
+  ) : null;
   const markReadButton = markReadOffered ? (
     <Tip
       content={
@@ -2914,6 +2935,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
                 {thread.subject ?? '(no subject)'}
               </span>
             )}
+            {pinButton}
             {artifactsButton && (
               <Tip content={artifactsOn ? 'Back to the thread' : 'Artifacts: every file, image and guided review in this thread'}>
                 <button

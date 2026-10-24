@@ -1035,6 +1035,14 @@ export interface InboxListRow extends InboxThreadSummary {
   /** When the oldest open question was asked, or null when none is open. */
   waiting_since: string | null;
   /**
+   * When the person pinned the thread to the sidebar (approval
+   * "inbox-pinned-threads"), or null. Only on the list model the window and
+   * the phone read (`GET /api/inbox/threads`), never on anything an agent
+   * reads. Additive: absent from an older Inbox.
+   */
+  pinned_at?: string | null;
+
+  /**
    * Agent messages after the person's last look (a reply of theirs counts as
    * a look; the Inbox's own notes, `isInboxNote`, do not).
    */
@@ -1636,6 +1644,18 @@ export interface InboxReplyDraft {
   body: string;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * A thread pinned to the window's sidebar (approval "inbox-pinned-threads"):
+ * window furniture only. Kept in `inbox/pins.json`, in pin order, outside the
+ * event log, so agents, the MCP, search and the phone's event stream never
+ * see it. A pin changes nothing about the thread: not its section, routing,
+ * questions or delivery.
+ */
+export interface InboxPin {
+  thread_id: string;
+  pinned_at: string;
 }
 
 /** A row on the Drafts page's "Replies not sent" (`GET /api/inbox/drafts` `replies`). */
