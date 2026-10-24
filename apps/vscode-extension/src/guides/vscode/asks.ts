@@ -205,19 +205,7 @@ export class GuideAsks implements vscode.Disposable {
       ? new vscode.Range(about.lines.start - 1, 0, about.lines.end - 1, 0)
       : new vscode.Range(0, 0, 0, 0);
     this.threadColumns.set(reader.model.id, editor.viewColumn);
-    const last = range.end.line;
-    this.threads.open(reader.model.loaded, about, editor.document.uri, range, async () => {
-      if (vscode.window.activeTextEditor !== editor) return;
-      // The cursor on the box's lines (the selection kept), then VS Code's own "Focus Comment on
-      // Current Line", which focuses the box, and its widget navigation, which opens and focuses
-      // the box's text field.
-      const sel = editor.selection;
-      if (sel.active.line > last || sel.active.line < range.start.line) {
-        editor.selection = new vscode.Selection(new vscode.Position(range.start.line, 0), new vscode.Position(last, editor.document.lineAt(last).text.length));
-      }
-      await vscode.commands.executeCommand("workbench.action.focusCommentOnCurrentLine");
-      await vscode.commands.executeCommand("widgetNavigation.focusNext");
-    });
+    this.threads.open(reader.model.loaded, about, editor.document.uri, range, (thread) => focusBoxField(editor, thread));
     // The box opens under the last line: bring it into view when it would open below the editor.
     const visible = editor.visibleRanges[0];
     if (visible && range.end.line + 8 > visible.end.line) {
@@ -495,8 +483,12 @@ export class GuideAsks implements vscode.Disposable {
     const effort = state.appliedEffort ? { effort: { id: record.agent.effort?.id ?? state.appliedEffort, label: state.appliedEffort } } : {};
     record.agent = { ...record.agent, ...model, ...effort };
     let panel = this.panelShowing(record.id);
-    // Asked from a box under the lines: the answer opens beside the diff now, leaving the focus in the box.
-    if (live.sink && !panel && !this.shelf.isGuideDeleted(guide.id)) {
+    // Asked from a box under the lines: the answer opens beside the diff now, leaving the focus in
+    // the box; not when the box went (its guide closed or switched) or the guide is no longer open.
+    const boxOpen = !!live.sink?.alive() && this.host.reader()?.model.id === guide.id;
+    if (live.sink && !boxOpen) {
+      // nothing opens
+    } else if (live.sink && !panel && !this.shelf.isGuideDeleted(guide.id)) {
       panel = this.panelFor(record, live.codeColumn, true);
       panel.current = record.id;
     } else if (live.sink && panel) panel.panel.reveal(panel.panel.viewColumn, true);
@@ -700,6 +692,72 @@ export class GuideAsks implements vscode.Disposable {
   kill(): void {
     for (const s of this.sessions.values()) s.kill();
   }
+}
+
+/**
+ * Put the cursor in a new question box's text field, as VS Code does for a comment it starts
+ * itself (an extension's thread opens with its field folded). VS Code's "Go to Previous Comment
+ * Thread" from a caret just inside the box's first line reveals the nearest box above the caret
+ * with the focus on it and sets the selection to that box's range: when the selection then is
+ * this box's range, the box has the focus, and its widget navigation opens and focuses the
+ * field. That command does nothing when no box is drawn yet (no message), so it is tried again
+ * for a moment; anything else (another box, the editor losing the focus) and the field is left
+ * folded. The reader's selection is put back either way.
+ */
+async function focusBoxField(editor: vscode.TextEditor, thread: vscode.CommentThread): Promise<boolean> {
+  const range = thread.range;
+  if (!range) return false;
+  const doc = editor.document;
+  const first = range.start.line;
+  const probe = doc.lineAt(first).text.length > 0
+    ? new vscode.Position(first, 1)
+    : first + 1 < doc.lineCount ? new vscode.Position(first + 1, 0) : null;
+  if (!probe) return false;
+  const original = editor.selections;
+  const isBox = (sel: vscode.Selection) => sel.start.line === range.start.line && sel.start.character === range.start.character && sel.end.line === range.end.line && sel.end.character === range.end.character;
+  // Put back even once the box's field has the focus (the editor is then no longer the active one).
+  const restore = () => {
+    try {
+      editor.selections = original;
+    } catch {
+      // the editor closed meanwhile
+    }
+  };
+  const deadline = Date.now() + FOCUS_BOX_TIMEOUT_MS;
+  try {
+    while (Date.now() < deadline) {
+      if (vscode.window.activeTextEditor !== editor || !vscode.window.state.focused) return false;
+      editor.selection = new vscode.Selection(probe, probe);
+      await vscode.commands.executeCommand("editor.action.previousCommentThreadAction");
+      if (await selectionBecomes(editor, isBox, 150)) {
+        await vscode.commands.executeCommand("widgetNavigation.focusNext");
+        return true;
+      }
+      if (!editor.selection.isEqual(new vscode.Selection(probe, probe))) return false; // another box took it
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  } finally {
+    restore();
+  }
+}
+
+const FOCUS_BOX_TIMEOUT_MS = 2000;
+
+function selectionBecomes(editor: vscode.TextEditor, test: (sel: vscode.Selection) => boolean, ms: number): Promise<boolean> {
+  if (test(editor.selection)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      sub.dispose();
+      resolve(test(editor.selection));
+    }, ms);
+    const sub = vscode.window.onDidChangeTextEditorSelection((e) => {
+      if (e.textEditor !== editor || !test(e.selections[0])) return;
+      clearTimeout(timer);
+      sub.dispose();
+      resolve(true);
+    });
+  });
 }
 
 function modelEffortLabel(choice: AgentChoiceRecord): string {

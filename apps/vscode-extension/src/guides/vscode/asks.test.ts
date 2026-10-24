@@ -217,7 +217,7 @@ describe("asking from VS Code", () => {
   });
 });
 
-type MockThread = { uri: vscode.Uri; comments: Array<{ body: { value: string }; author: { name: string }; label?: string }>; label?: string; contextValue: string; canReply: boolean; disposed: boolean; controller: string };
+type MockThread = { uri: vscode.Uri; comments: Array<{ body: { value: string }; author: { name: string; iconPath?: vscode.Uri }; label?: string }>; label?: string; state?: number; contextValue: string; canReply: boolean; disposed: boolean; controller: string };
 const threads = () => (vscode as unknown as { createdCommentThreads: MockThread[] }).createdCommentThreads.filter((t) => t.controller.startsWith("plannotator-guides-ask"));
 /** The box now: the newest thread still shown (a box moves to the conversation controller when its first question runs). */
 const current = () => threads().filter((t) => !t.disposed).at(-1)!;
@@ -240,6 +240,8 @@ describe("the question box under the lines", () => {
     expect(t.canReply).toBe(true);
     expect(t.comments).toHaveLength(1);
     expect(t.comments[0].author.name).toBe("Plannotator");
+    // Resolved: nothing waits on it (comments.openView "firstFileUnresolved" leaves the panel closed).
+    expect(t.state).toBe(vscode.CommentThreadState.Resolved);
     expect(bodies(t)[0]).toContain("Ask about **lines 1–2**");
     expect(bodies(t)[0]).toContain("command:plannotator.guides.askThreadPick");
 
@@ -259,7 +261,14 @@ describe("the question box under the lines", () => {
 
     await waitFor(() => c.contextValue === "plannotator-ask-done");
     expect(c.canReply).toBe(true);
+    expect(c.state).toBe(vscode.CommentThreadState.Resolved);
     expect(bodies(c)[1]).toContain("Answer opened beside the diff");
+    // Avatars for the person and the agent; the agent's label adds the time and the cost.
+    for (const i of [0, 1]) {
+      expect(c.comments[i].author.iconPath?.scheme).toBe("data");
+      expect(c.comments[i].author.iconPath?.path).toStartWith("image/svg+xml;base64,");
+    }
+    expect(c.comments[1].label).toMatch(/ · \d+s$/);
     expect(w.panels).toEqual([{ title: "Answer: Why return a value?", preserveFocus: true }]);
     const [record] = listAnswers(REPO_KEY, GUIDE_ID);
     expect(record.about).toMatchObject({ kind: "selection", lines: { start: 1, end: 2 } });
@@ -296,8 +305,8 @@ describe("the question box under the lines", () => {
     await w.asks.threads.pick(threadId, 1);
     await waitFor(() => current().contextValue === "plannotator-ask-done");
     expect(listAnswers(REPO_KEY, GUIDE_ID)[0].question).toBe("What could break?");
-    const next = await openBox(w);
-    expect(bodies(next)[0]).toContain("Asked before: [What could break?](command:plannotator.guides.openAnswer");
+    const next = await openBox(w, 5);
+    expect(bodies(next)[0]).toContain("Asked before:  \n[What could break?](command:plannotator.guides.openAnswer");
     w.asks.dispose();
   });
 
@@ -338,6 +347,50 @@ describe("the question box under the lines", () => {
     expect(c.disposed).toBe(true);
     expect(w.asks.threads.size).toBe(0);
     w.asks.dispose();
+  });
+
+  it("closing the guide while a box's question runs stops it, and no answer tab opens", async () => {
+    const w = world([[{ say: "Thinking…" }, { sleep: 1500 }, answer("Too late")]]);
+    const t = await openBox(w);
+    await w.asks.threads.submit({ thread: t, text: "Why?" });
+    const c = current();
+    await waitFor(() => w.log().some((e) => e.event === "prompt"));
+    w.asks.onReaderChanged(null);
+    expect(c.disposed).toBe(true);
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "stopped" && !!r.answeredAt));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w.panels).toEqual([]);
+    expect(w.log().some((e) => e.event === "cancel")).toBe(true);
+    w.asks.dispose();
+  });
+
+  it("asking again on lines that have a box gets that box back; a new box keeps a question that was not asked", async () => {
+    const w = world([[answer("One")]]);
+    const t = await openBox(w);
+    await w.asks.threads.submit({ thread: t, text: "Why?" });
+    const c = current();
+    await waitFor(() => c.contextValue === "plannotator-ask-done");
+    const before = threads().length;
+    w.asks.threads.open(w.guide, selection, c.uri, new vscode.Range(0, 0, 1, 0));
+    expect(threads()).toHaveLength(before);
+    expect(current()).toBe(c);
+    expect(c.disposed).toBe(false);
+
+    // A box whose question was not asked (another one was running) stays when a box opens elsewhere.
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const w2 = world([[answer("Chapter")]], { gate });
+    const chapter = w2.ask("What does this chapter do?");
+    const kept = await openBox(w2, 5);
+    await w2.asks.threads.submit({ thread: kept, text: "Why?" });
+    expect(bodies(kept).at(-1)).toContain("Not asked");
+    const other = await openBox(w2, 9);
+    expect(kept.disposed).toBe(false);
+    expect(other.disposed).toBe(false);
+    open();
+    await chapter;
+    w.asks.dispose();
+    w2.asks.dispose();
   });
 
   it("an empty Ask asks nothing", async () => {

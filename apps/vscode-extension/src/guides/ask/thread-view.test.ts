@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { AnswerRecord, AskAbout } from "./answers";
 import type { AskRunState } from "./session";
-import { THREAD_LINK_COMMANDS, commandLink, doneMarkdown, filesRead, introMarkdown, introSentence, modelEffort, threadLabel, threadWhere, workingMarkdown } from "./thread-view";
+import { marked } from "marked";
+import { THREAD_LINK_COMMANDS, answerLabel, commandLink, doneMarkdown, filesRead, introMarkdown, introSentence, modelEffort, pendingMarkdown, threadLabel, threadWhere, workingMarkdown } from "./thread-view";
 
 const lines: AskAbout = { kind: "selection", chapter: 1, chapterTitle: "Delivery loop", path: "src/webhooks/deliver.ts", side: "head", lines: { start: 25, end: 31 } };
 const file: AskAbout = { kind: "file", chapter: 1, chapterTitle: "Delivery loop", path: "src/webhooks/deliver.ts", side: "head" };
@@ -41,7 +42,8 @@ describe("the question box's words", () => {
     expect(found.slice(0, 5).map((l) => [l.command, l.args])).toEqual([0, 1, 2, 3, 4].map((i) => [THREAD_LINK_COMMANDS.pick, ["t1", i]]));
     expect(found[0].text).toBe("Why did this change?");
     expect(found[5]).toEqual({ text: "Does the worker count attempts twice?", command: THREAD_LINK_COMMANDS.open, args: ["ans-9"] });
-    expect(md).toContain("Asked before: ");
+    // The label, then one question per line.
+    expect(md).toContain("Asked before:  \n[Does the worker");
     expect(md).toContain("· yesterday");
   });
 
@@ -90,5 +92,44 @@ describe("the question box's words", () => {
     // An agent-written title (only in the link's tooltip) cannot add a link of its own.
     const evil = doneMarkdown({ record: record({ title: '[x](command:workbench.action.terminal.new) "' }), opened: true });
     expect(links(evil).map((l) => l.command)).toEqual([THREAD_LINK_COMMANDS.open]);
+  });
+});
+
+describe("agent text in the box's trusted body", () => {
+  // What an agent (or a page title, a tool call, an error message) could put in the box.
+  const HOSTILE = "$(terminal) [run](command:workbench.action.terminal.new) <img src=x onerror=alert(1)> https://evil.example/x www.evil.example ops@evil.example `code` **bold** #1 \\$(check)";
+  const ALLOWED = Object.values(THREAD_LINK_COMMANDS);
+
+  /** Every link a GFM markdown renderer (VS Code's comment bodies) would make, and whether HTML or an icon got through. */
+  function rendered(md: string) {
+    const html = marked.parse(md, { gfm: true, async: false }) as string;
+    const hrefs = [...html.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]);
+    // Theme icons are $(name) in the markdown source; an escaped one is \$(name).
+    const icons = [...md.matchAll(/(^|[^\\])\$\(([a-z-~]+)\)/g)].map((m) => m[2]);
+    return { html, hrefs, icons };
+  }
+
+  function check(md: string, ownIcons: string[]) {
+    const r = rendered(md);
+    for (const href of r.hrefs) expect(ALLOWED.some((c) => href.startsWith(`command:${c}?`))).toBe(true);
+    expect(r.html).not.toContain("<img");
+    expect(r.html).not.toContain("<code>");
+    expect(r.html).not.toContain("<strong>bold");
+    expect(r.icons).toEqual(ownIcons);
+  }
+
+  it("stays text: no link, autolink, HTML, code or theme icon of its own", () => {
+    check(workingMarkdown({ agentLabel: HOSTILE, answerId: "ans-1", state: state({ activity: [{ id: 1, at: 0, kind: "tool", title: "x", locations: [{ path: `src/${HOSTILE}` }] }] }), now: 2_000 }), ["loading~spin"]);
+    check(workingMarkdown({ agentLabel: "Codex", answerId: "ans-1", state: state({ pendingPermissions: [{ id: 1, title: HOSTILE, options: [] } as unknown as AskRunState["pendingPermissions"][number]] }), now: 2_000 }), ["shield"]);
+    check(doneMarkdown({ record: record({ status: "failed", statusMessage: HOSTILE, title: HOSTILE }), opened: true }), ["error"]);
+    check(doneMarkdown({ record: record({ title: HOSTILE }), opened: true }), ["check"]);
+    check(introMarkdown({ threadId: "t1", about: { ...file, path: `src/${HOSTILE}.ts` }, past: [{ id: "ans-2", question: HOSTILE, when: HOSTILE }], notAsked: { question: HOSTILE, reason: HOSTILE } }), []);
+    check(pendingMarkdown(HOSTILE), ["loading~spin"]);
+    // A bare address is still readable, just not a link.
+    expect(rendered(doneMarkdown({ record: record({ status: "failed", statusMessage: "see https://evil.example/x" }), opened: true })).html).toContain("https://evil.example/x");
+  });
+
+  it("puts the time and cost beside the agent's name once it answered", () => {
+    expect(answerLabel(record({ agent: { id: "claude", label: "Claude Code", model: { id: "s", label: "Sonnet" }, effort: { id: "low", label: "Low" } }, askedAt: 1_000, answeredAt: 10_200, cost: { amount: 0.031, currency: "USD" } }))).toBe("Sonnet · low · 9s · $0.03");
   });
 });

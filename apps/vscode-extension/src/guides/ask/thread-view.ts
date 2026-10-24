@@ -54,15 +54,36 @@ export function modelEffort(choice: Pick<AgentChoiceRecord, "model" | "effort">)
   return [choice.model?.label ?? "agent default", choice.effort?.label.toLowerCase()].filter(Boolean).join(" · ");
 }
 
-/** Escape text for a markdown paragraph (and a link's text). */
+/** Beside the agent's name once it answered: "Sonnet · low · 9s · $0.03". */
+export function answerLabel(record: Pick<AnswerRecord, "agent" | "askedAt" | "answeredAt" | "cost">): string {
+  const bits = [modelEffort(record.agent)];
+  if (record.answeredAt) bits.push(`${Math.max(1, Math.round((record.answeredAt - record.askedAt) / 1000))}s`);
+  if (record.cost) bits.push(`$${record.cost.amount.toFixed(2)}`);
+  return bits.join(" · ");
+}
+
+/** "Getting Claude Code ready…", before the run starts. */
+export function pendingMarkdown(agentLabel: string): string {
+  return `$(loading~spin) **Getting ${escapeMarkdown(agentLabel)} ready…**`;
+}
+
+/**
+ * Escape text for a markdown paragraph (and a link's text) in the box's trusted body: no
+ * emphasis, links, HTML or code, no theme icon (`$(check)`), and no GFM autolink (a bare
+ * `https://`, `www.` or e-mail address stays text). Line breaks become spaces.
+ */
 export function escapeMarkdown(text: string): string {
-  return text.replace(/[\\`*_{}[\]()#!|<>~]/g, (c) => `\\${c}`).replace(/\r?\n/g, " ");
+  return text
+    .replace(/[\\`*_{}[\]()#!|<>~$@]/g, (c) => `\\${c}`)
+    .replace(/:\/\//g, "\\://")
+    .replace(/\b(www)\./gi, "$1\\.")
+    .replace(/\r?\n/g, " ");
 }
 
 /** A `command:` link with JSON arguments, as VS Code reads them. */
 export function commandLink(text: string, command: string, args: unknown[], title?: string): string {
   const uri = `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
-  return `[${escapeMarkdown(text)}](${uri}${title ? ` "${title.replace(/["\\\r\n]/g, " ").slice(0, 200)}"` : ""})`;
+  return `[${escapeMarkdown(text)}](${uri}${title ? ` "${title.replace(/["\\\r\n$]/g, " ").slice(0, 200)}"` : ""})`;
 }
 
 /** "Ask about **lines 25–31**. The lines, the file's diff, Chapter 2 and the guide go with it." */
@@ -98,8 +119,9 @@ export function introMarkdown(input: IntroInput): string {
   parts.push(`${introSentence(input.about)} Or pick one:`);
   parts.push(THREAD_SUGGESTIONS.map((q, i) => commandLink(q, THREAD_LINK_COMMANDS.pick, [input.threadId, i], `Ask: ${q}`)).join(" · "));
   if (input.past.length) {
-    const rows = input.past.map((p) => `${commandLink(p.question, THREAD_LINK_COMMANDS.open, [p.id], "Open its answer")} · ${p.when}`);
-    parts.push(`Asked before: ${rows.join("  \n")}`);
+    // One line each, under the label.
+    const rows = input.past.map((p) => `${commandLink(p.question, THREAD_LINK_COMMANDS.open, [p.id], "Open its answer")} · ${escapeMarkdown(p.when)}`);
+    parts.push(["Asked before:", ...rows].join("  \n"));
   }
   if (input.notAsked) {
     parts.push(`Not asked: “${escapeMarkdown(input.notAsked.question)}”. ${escapeMarkdown(input.notAsked.reason)} ${commandLink("Ask it now", THREAD_LINK_COMMANDS.again, [input.threadId], "Ask this question again")}`);
@@ -160,4 +182,29 @@ export function doneMarkdown(input: { record: AnswerRecord; opened: boolean }): 
     default:
       return `$(question) ${escapeMarkdown(record.statusMessage ?? "No answer.")} · ${open}`;
   }
+}
+
+/** Brand-ish colors for the agents' avatars; anything else is grey. */
+const AGENT_COLORS: Record<string, string> = {
+  "claude-code": "#D97757",
+  codex: "#10A37F",
+  opencode: "#4B5563",
+  pi: "#4D9ABF",
+  copilot: "#6E40C9",
+  cursor: "#111111",
+  kiro: "#7C3AED",
+  kilo: "#F59E0B",
+};
+
+/**
+ * A small avatar as an SVG `data:` URI: the first letter of a name on a colored square (the
+ * agent) or circle (the person). VS Code shows comment authors' `iconPath` as an image.
+ */
+export function avatarDataUri(name: string, kind: "agent" | "person", agentId?: string): string {
+  const letter = (name.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
+  const fill = kind === "agent" ? AGENT_COLORS[agentId ?? ""] ?? "#6B7280" : "#3B82F6";
+  const shape = kind === "agent" ? `<rect width="32" height="32" rx="7" fill="${fill}"/>` : `<circle cx="16" cy="16" r="16" fill="${fill}"/>`;
+  const glyph = letter.replace(/[<>&"']/g, "?");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">${shape}<text x="16" y="21.5" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#FFFFFF">${glyph}</text></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }

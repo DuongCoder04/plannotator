@@ -18,9 +18,12 @@ import type { AskRun } from "../ask/session";
 import {
   THREAD_LINK_COMMANDS,
   THREAD_SUGGESTIONS,
+  answerLabel,
+  avatarDataUri,
   doneMarkdown,
   introMarkdown,
   modelEffort,
+  pendingMarkdown,
   threadLabel,
   workingMarkdown,
   type PastQuestion,
@@ -44,6 +47,8 @@ export const ASK_THREAD_STATE = {
 /** What a thread hears from the ask it started. */
 export interface AskThreadSink {
   started(record: AnswerRecord, run: AskRun): void;
+  /** The box is still there (removed: its run is stopped and its answer tab never opens). */
+  alive(): boolean;
   /** The run ended (`opened`: its answer tab was opened beside the diff). */
   ended(record: AnswerRecord, opened: boolean): void;
 }
@@ -85,8 +90,6 @@ interface Entry {
 }
 
 const MAX_QUESTION = 2000;
-/** How long after it is made the box's text field is focused (VS Code draws the box first). */
-export const FOCUS_DELAY_MS = 400;
 const ENABLED_COMMANDS = Object.values(THREAD_LINK_COMMANDS);
 
 export class AskThreads implements vscode.Disposable {
@@ -98,41 +101,54 @@ export class AskThreads implements vscode.Disposable {
   private readonly dirty = new Set<string>();
   private flush: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly asker: ThreadAsker, private readonly icons: { plannotator?: vscode.Uri; agent?(agentId: string): vscode.Uri | undefined } = {}) {
+  constructor(private readonly asker: ThreadAsker, private readonly icons: { plannotator?: vscode.Uri } = {}) {
     this.controller = vscode.comments.createCommentController(ASK_THREAD_CONTROLLER, "Ask the agent");
-    this.controller.options = { prompt: "Ask a question…", placeHolder: "Ask a question about these lines" };
+    this.controller.options = { prompt: "Ask a question…", placeHolder: "Type a question, or pick one above" };
     this.conversations = vscode.comments.createCommentController(ASK_THREAD_CONVERSATION_CONTROLLER, "Ask the agent");
     this.conversations.options = { prompt: "Ask a follow-up…", placeHolder: "Ask a follow-up; it continues this conversation" };
   }
 
-  /** Open a question box under `range` of `uri` (a side of a guide diff). */
-  open(guide: LoadedGuide, about: AskAbout, uri: vscode.Uri, range: vscode.Range, focus?: () => Promise<void>): void {
-    // An unasked box on the same lines is reused; other unasked boxes go (one empty box at a time).
+  /**
+   * Open a question box under `range` of `uri` (a side of a guide diff). Lines that already have
+   * a box get that box back (asked or not); another box nobody asked in yet goes, unless it
+   * holds a question that was not asked. `focus` puts the cursor in the box's text field.
+   */
+  open(guide: LoadedGuide, about: AskAbout, uri: vscode.Uri, range: vscode.Range, focus?: (thread: vscode.CommentThread) => Promise<boolean>): void {
+    const sameLines = (e: Entry) => e.guideId === guide.id && e.thread.uri.toString() === uri.toString() && !!e.thread.range && e.thread.range.start.line === range.start.line && e.thread.range.end.line === range.end.line;
+    const existing = [...this.entries.values()].find(sameLines);
     for (const e of [...this.entries.values()]) {
-      if (e.exchanges.length || e.pending) continue;
-      if (e.guideId === guide.id && e.thread.uri.toString() === uri.toString() && e.thread.range?.isEqual(range)) {
-        e.about = about;
-        e.notAsked = null;
-        this.render(e);
-        e.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-        if (focus) void focus().catch(() => undefined);
-        return;
-      }
+      if (e === existing || e.exchanges.length || e.pending || e.notAsked) continue;
       this.remove(e);
     }
-    const id = `t${this.next++}`;
-    const thread = this.controller.createCommentThread(uri, range, []);
-    const entry: Entry = { id, guideId: guide.id, about, thread, exchanges: [] };
-    this.entries.set(id, entry);
-    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-    this.render(entry);
-    // Into its text field, as VS Code does for a comment it starts itself (an extension's thread
-    // opens with its field collapsed): after the box is drawn, focus it, then its field.
-    if (focus) {
-      setTimeout(() => {
-        if (this.entries.get(id) === entry && !entry.exchanges.length && !entry.pending) void focus().catch((err) => this.asker.log(`[guides] focusing the question box: ${err}`));
-      }, FOCUS_DELAY_MS);
+    let entry = existing;
+    if (entry) {
+      if (!entry.exchanges.length && !entry.pending) entry.about = about;
+      this.render(entry);
+    } else {
+      const id = `t${this.next++}`;
+      entry = { id, guideId: guide.id, about, thread: this.newThread(this.controller, uri, range), exchanges: [] };
+      this.entries.set(id, entry);
+      this.render(entry);
     }
+    entry.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    const box = entry;
+    if (focus && box.thread.canReply) {
+      void focus(box.thread).then((ok) => {
+        if (!ok) this.asker.log("[guides] question box: its text field was not focused (VS Code had not drawn it, or the editor lost the focus)");
+      }).catch((err) => this.asker.log(`[guides] focusing the question box: ${err}`));
+    }
+  }
+
+  /**
+   * A new thread. Marked resolved: nothing waits on it, and VS Code's `comments.openView` set to
+   * `firstFileUnresolved` then leaves the Comments panel closed (its default, `firstFile`, opens
+   * it the first time a file shows comments, resolved or not).
+   */
+  private newThread(controller: vscode.CommentController, uri: vscode.Uri, range: vscode.Range): vscode.CommentThread {
+    const thread = controller.createCommentThread(uri, range, []);
+    thread.state = vscode.CommentThreadState.Resolved;
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    return thread;
   }
 
   private entryOf(arg: unknown): Entry | undefined {
@@ -220,8 +236,13 @@ export class AskThreads implements vscode.Disposable {
 
   private sinkFor(entry: Entry): AskThreadSink {
     return {
+      alive: () => this.entries.get(entry.id) === entry,
       started: (record, run) => {
-        if (!this.entries.has(entry.id)) return;
+        // The box went (the guide closed or switched) before the run started: stop it.
+        if (this.entries.get(entry.id) !== entry) {
+          void run.cancel();
+          return;
+        }
         entry.pending = undefined;
         if (!entry.exchanges.length) this.moveToConversation(entry);
         entry.exchanges.push({ record, run, ended: false, opened: false });
@@ -245,9 +266,7 @@ export class AskThreads implements vscode.Disposable {
   /** The first question runs: the box moves to the conversation controller (its field asks a follow-up). */
   private moveToConversation(entry: Entry): void {
     const old = entry.thread;
-    const range = old.range ?? new vscode.Range(0, 0, 0, 0);
-    entry.thread = this.conversations.createCommentThread(old.uri, range, []);
-    entry.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    entry.thread = this.newThread(this.conversations, old.uri, old.range ?? new vscode.Range(0, 0, 0, 0));
     old.dispose();
   }
 
@@ -298,11 +317,11 @@ export class AskThreads implements vscode.Disposable {
       const body = x.ended || !x.run
         ? doneMarkdown({ record: x.record, opened: x.opened })
         : workingMarkdown({ agentLabel: x.record.agent.label, answerId: x.record.id, state: x.run.state, now });
-      comments.push(this.comment(body, this.agentAuthor(x.record.agent), modelEffort(x.record.agent), x.record.askedAt));
+      comments.push(this.comment(body, this.agentAuthor(x.record.agent), x.ended ? answerLabel(x.record) : modelEffort(x.record.agent), x.record.askedAt));
     }
     if (entry.pending) {
       comments.push(this.question(entry.pending.question, entry.pending.at));
-      comments.push(this.comment(`$(loading~spin) **Getting ${agentLabel} ready…**`, this.agentAuthor(choice ?? { id: "", label: agentLabel }), choice ? modelEffort(choice) : undefined, entry.pending.at));
+      comments.push(this.comment(pendingMarkdown(agentLabel), this.agentAuthor(choice ?? { id: "", label: agentLabel }), choice ? modelEffort(choice) : undefined, entry.pending.at));
     }
     // After Ask, the box's own first comment goes; an unasked question brings it back.
     if (asked && entry.notAsked) comments.push(...comments.splice(0, 1));
@@ -310,14 +329,14 @@ export class AskThreads implements vscode.Disposable {
   }
 
   private agentAuthor(agent: Pick<AgentChoiceRecord, "id" | "label">): vscode.CommentAuthorInformation {
-    const icon = agent.id ? this.icons.agent?.(agent.id) : undefined;
-    return { name: agent.label, ...(icon && { iconPath: icon }) };
+    return { name: agent.label, iconPath: vscode.Uri.parse(avatarDataUri(agent.label, "agent", agent.id)) };
   }
 
   private question(text: string, at: number): vscode.Comment {
     const body = new vscode.MarkdownString();
     body.appendText(text);
-    return { body, mode: vscode.CommentMode.Preview, author: { name: this.asker.userName() }, timestamp: new Date(at) };
+    const name = this.asker.userName();
+    return { body, mode: vscode.CommentMode.Preview, author: { name, iconPath: vscode.Uri.parse(avatarDataUri(name, "person")) }, timestamp: new Date(at) };
   }
 
   private comment(markdown: string, author: vscode.CommentAuthorInformation, label?: string, at?: number): vscode.Comment {
@@ -326,9 +345,11 @@ export class AskThreads implements vscode.Disposable {
     return { body, mode: vscode.CommentMode.Preview, author, ...(label && { label }), ...(at && { timestamp: new Date(at) }) };
   }
 
+  /** The box goes; a question it is still answering is stopped (its answer tab never opens). */
   private remove(entry: Entry): void {
     this.entries.delete(entry.id);
     entry.thread.dispose();
+    for (const x of entry.exchanges) if (!x.ended) void this.asker.stop(x.record.id);
     this.tick();
   }
 

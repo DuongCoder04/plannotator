@@ -165,6 +165,7 @@ async function main(): Promise<void> {
   await item.hover();
   await sleep(500);
   await shot(page, "1-context-menu");
+  const selectionBefore = await page.locator(".statusbar-item", { hasText: /^Ln / }).first().textContent();
   await item.click();
 
   // The question box: a comment thread under lines 25–31.
@@ -172,6 +173,7 @@ async function main(): Promise<void> {
   await widget.waitFor({ timeout: 15_000 });
   await sleep(1500);
   await report(page, widget, "box");
+  console.log(`check the reader's selection is kept: before "${selectionBefore}", after "${await page.locator(".statusbar-item", { hasText: /^Ln / }).first().textContent()}"`);
   // VS Code opens its Comments panel the first time a file shows comments in a window
   // (`comments.openView`, default "firstFile"); the box is listed there. Shown once, then closed.
   const panelOpened = await page.locator(".part.panel .composite-bar .action-item.checked", { hasText: "Comments" }).count();

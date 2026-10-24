@@ -196,6 +196,7 @@ export const comments = {
           range: _range,
           comments: _comments,
           label: undefined as string | undefined,
+          state: undefined as number | undefined,
           collapsibleState: 0,
           canReply: true,
           contextValue: "",
@@ -258,6 +259,7 @@ export class Range {
 
 export const CommentMode = { Preview: 1, Editing: 0 };
 export const CommentThreadCollapsibleState = { Collapsed: 0, Expanded: 1 };
+export const CommentThreadState = { Unresolved: 0, Resolved: 1 };
 
 export const CodeActionKind = {
   RefactorInline: { value: "refactor.inline" },
