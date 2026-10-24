@@ -8,7 +8,7 @@
 
 import type * as Diagram from "./diagram";
 
-export type { DiagramResult } from "./diagram";
+export type { DiagramResult, MermaidCheck } from "./diagram";
 
 let loading: Promise<typeof Diagram> | null = null;
 
@@ -28,13 +28,25 @@ export async function renderMermaid(source: string): Promise<Diagram.DiagramResu
   try {
     return await (await load()).renderMermaid(source);
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err), line: null };
+    // The engine did not load: the diagram stays as its source.
+    return { ok: false, message: err instanceof Error ? err.message : String(err), line: null, unavailable: true };
   }
 }
 
-export async function checkMermaid(source: string): Promise<{ ok: boolean; message?: string; line?: number }> {
+/**
+ * The builder's render check here. When the engine cannot be loaded the
+ * answer is `unavailable` (this webview cannot check), never a refusal of
+ * the diagram: only Mermaid's own errors refuse it.
+ */
+export async function checkMermaid(source: string): Promise<Diagram.MermaidCheck> {
+  let engine: typeof Diagram;
   try {
-    return await (await load()).checkMermaid(source);
+    engine = await load();
+  } catch (err) {
+    return { ok: false, unavailable: true, message: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    return await engine.checkMermaid(source);
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

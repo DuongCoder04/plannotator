@@ -23,6 +23,8 @@ describe("messages from the Guide tab", () => {
     expect(parseReaderMessage({ type: "command", command: "export" })).toEqual({ type: "command", command: "export" });
     expect(parseReaderMessage({ type: "link", href: "symbol:computeBackoff", action: "definition" })).toEqual({ type: "link", href: "symbol:computeBackoff", action: "definition" });
     expect(parseReaderMessage({ type: "mermaidResult", reqId: 1, ok: false, message: "Parse error", line: 3 })).toEqual({ type: "mermaidResult", reqId: 1, ok: false, message: "Parse error", line: 3 });
+    expect(parseReaderMessage({ type: "mermaidResult", reqId: 2, ok: false, unavailable: true })).toEqual({ type: "mermaidResult", reqId: 2, ok: false, unavailable: true });
+    expect(parseReaderMessage({ type: "mermaidResult", reqId: 2, ok: false, unavailable: "yes" })).toEqual({ type: "mermaidResult", reqId: 2, ok: false });
   });
 
   it("drops anything that is not one of them", () => {

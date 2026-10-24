@@ -4,11 +4,16 @@
  * never opens on the head), only the guide's files are asked about, and a
  * definition in a changed file is revealed on its own side.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import * as vscode from "vscode";
 import { ReaderModel, type ReaderSides } from "../reader-model";
 import type { LoadedGuide } from "../store";
-import { guideFileAt, readerDefinition, readerHover } from "./reader-intel";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseGuideLink } from "../core/adapter";
+import { locateLink } from "./intel";
+import { guideFileAt, readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
 import { baseUri, docSideOf, headUri } from "./uris";
 
 const PATCH = [
@@ -132,4 +137,69 @@ describe("only the guide's files", () => {
     m.setFileReviewed("src/not-in-guide.ts", true);
     expect(m.fileTicks.has("src/not-in-guide.ts")).toBe(false);
   });
+});
+
+describe("a symlink in the change that leads out of the repository", () => {
+  // The change adds notes.md -> a file outside the repository; deliver.ts is a real file of the change.
+  const dir = mkdtempSync(join(tmpdir(), "pn-reader-intel-"));
+  const root = join(dir, "repo");
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(dir, "credentials"), "aws_secret_access_key = SECRET\n");
+  writeFileSync(join(root, "src", "deliver.ts"), "import { retry } from './retry';\nretry(newPolicy);\n");
+  symlinkSync(join(dir, "credentials"), join(root, "notes.md"));
+  const sides: ReaderSides = { gitRoot: root, baseRev: "base1", head: { kind: "fs", root }, moved: false };
+  const linkPatch = PATCH + ["diff --git a/notes.md b/notes.md", "new file mode 120000", "--- /dev/null", "+++ b/notes.md", "@@ -0,0 +1 @@", `+${join(dir, "credentials")}`, "\\ No newline at end of file", ""].join("\n");
+  const linkModel = () =>
+    new ReaderModel({
+      repoKey: "r",
+      id: "g",
+      rawPatch: linkPatch,
+      envelope: {
+        version: 1, savedAt: 1, label: "local", title: "T", engine: "claude",
+        guide: { title: "T", intent: "I", sections: [{ title: "C", overview: "", diffs: [{ file: "src/deliver.ts" }, { file: "notes.md" }] }] },
+        reviewed: [false],
+      },
+      sidecar: { v: 1, fileTicks: [], focus: {} },
+    } as unknown as LoadedGuide);
+  const opened: string[] = [];
+  const installOpen = () => {
+    install();
+    const open = (vscode.workspace as Record<string, unknown>).openTextDocument as (u: vscode.Uri) => Promise<unknown>;
+    (vscode.workspace as Record<string, unknown>).openTextDocument = (u: vscode.Uri) => (opened.push(u.toString()), open(u));
+    docs.set(headUri(sides, { path: "notes.md", status: "added" }).toString(), ["aws_secret_access_key = SECRET"]);
+    docs.set(headUri(sides, { path: "src/deliver.ts", status: "modified" }).toString(), ["import { retry } from './retry';", "retry(newPolicy);"]);
+  };
+
+  it("is never opened, hovered or asked about on the head side; a real file of the change is", async () => {
+    installOpen();
+    opened.length = 0;
+    const m = linkModel();
+    const ctx = { model: m, sides };
+    const at = { path: "notes.md", side: "new" as const, line: 1, character: 0, token: "aws_secret_access_key" };
+    expect(await resolvePosition(at, ctx)).toBeNull();
+    expect(await readerHover(at, ctx)).toBeNull();
+    expect(await readerDefinition(at, ctx)).toBeNull();
+    expect(await readerReferences(at, ctx)).toBeNull();
+    expect(opened).toEqual([]);
+    expect(calls).toEqual([]);
+    const ok = await resolvePosition({ path: "src/deliver.ts", side: "new", line: 2, character: 6, token: "newPolicy" }, ctx);
+    expect(ok?.position).toMatchObject({ line: 1, character: 6 });
+  });
+
+  it("a code: or symbol: link to it is refused; one to a real file is found", async () => {
+    installOpen();
+    const m = linkModel();
+    const link = (href: string) => {
+      const p = parseGuideLink(href);
+      if (!p?.ok) throw new Error(href);
+      return p.link;
+    };
+    expect(await locateLink(link("code:notes.md#L1"), m, sides)).toEqual({ error: "notes.md is not a file inside the repository; not opened." });
+    // Not limited to the guide's files: a link out of the repository anywhere is refused too.
+    symlinkSync(join(dir, "credentials"), join(root, "src", "creds.ts"));
+    expect(await locateLink(link("code:src/creds.ts"), m, sides)).toMatchObject({ error: expect.stringContaining("not a file inside the repository") });
+    expect(await locateLink(link("code:src/deliver.ts#L2"), m, sides)).toMatchObject({ path: "src/deliver.ts", inChange: true });
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 });

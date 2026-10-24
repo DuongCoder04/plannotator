@@ -14,6 +14,7 @@ import { locateToken, splitHoverMarkdown, type TokenSpot } from "../reader-mappi
 import type { DiffPosition, HoverAnswer } from "../reader-protocol";
 import { chapterColorCss, hoverText, withoutGuideHoverLine } from "./intel";
 import { baseUri, docSideOf, headUri } from "./uris";
+import { headLeavesRepo } from "../safe-path";
 
 export interface ReaderContext {
   model: ReaderModel;
@@ -31,6 +32,9 @@ export async function resolvePosition(at: DiffPosition, ctx: ReaderContext): Pro
   // Only a file of the guide: the reader's diffs show nothing else.
   const file = ctx.model.files.get(at.path);
   if (!file) return null;
+  // The head on disk only when it is a regular file inside the repository once symlinks are
+  // followed: a change can add `notes.md -> ~/.aws/credentials`, never opened (nor hovered).
+  if (at.side === "new" && headLeavesRepo(ctx.sides, file)) return null;
   const uri = at.side === "new" ? headUri(ctx.sides, file) : baseUri(ctx.sides, file);
   let doc: vscode.TextDocument;
   try {

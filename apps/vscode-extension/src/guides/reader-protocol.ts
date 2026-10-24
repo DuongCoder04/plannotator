@@ -119,7 +119,7 @@ export type FromReader =
   | { type: "command"; command: "export" | "outline" | "refresh" }
   | { type: "metric"; name: string; ms: number }
   | { type: "link"; href: string; action: NavigateAction }
-  | { type: "mermaidResult"; reqId: number; ok: boolean; message?: string; line?: number };
+  | { type: "mermaidResult"; reqId: number; ok: boolean; message?: string; line?: number; unavailable?: boolean };
 
 const MAX_PATH = 4096;
 const MAX_TOKEN = 512;
@@ -219,6 +219,7 @@ export function parseReaderMessage(raw: unknown): FromReader | null {
         ok: m.ok,
         ...(typeof m.message === "string" && { message: m.message.slice(0, 2000) }),
         ...(isInt(m.line, 1, 1_000_000) && { line: m.line }),
+        ...(m.unavailable === true && { unavailable: true }),
       };
     default:
       return null;

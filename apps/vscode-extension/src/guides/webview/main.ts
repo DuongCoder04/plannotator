@@ -45,7 +45,7 @@ window.addEventListener("message", (event: MessageEvent<ToWebview>) => {
     linkRequests.delete(msg.reqId);
     pending?.(msg.info);
   } else if (msg.type === "checkMermaid") {
-    void checkMermaid(msg.source).then((r) => post({ type: "mermaidResult", reqId: msg.reqId, ok: r.ok, message: r.message, line: r.line }));
+    void checkMermaid(msg.source).then((r) => post({ type: "mermaidResult", reqId: msg.reqId, ok: r.ok, message: r.message, line: r.line, ...(r.unavailable && { unavailable: true }) }));
   }
 });
 

@@ -13,6 +13,7 @@ import { searchDefinitions } from "../symbol-search";
 import type { LinkInfo } from "../webview-protocol";
 import type { ReaderModel, ReaderSides } from "../reader-model";
 import { headUri } from "./uris";
+import { headLeavesRepo } from "../safe-path";
 
 const CHAPTER_COLORS = ["charts.yellow", "charts.blue", "charts.purple", "charts.green", "charts.orange", "charts.red"];
 const CHAPTER_HEX = ["#e2b93d", "#3794ff", "#b180d7", "#89d185", "#d18616", "#f14c4c"];
@@ -141,7 +142,11 @@ export async function locateLink(link: GuideLink, reader: ReaderModel, sides: Re
   const headRoot = sides.head.kind === "fs" ? sides.head.root : sides.gitRoot;
   const changed = [...reader.files.keys()];
   const fileFor = (path: string) => reader.files.get(path) ?? { path, status: "modified" };
+  // A file on disk only when it is a regular file inside the repository once symlinks are followed
+  // (the link is the agent's; the change could add a symlink out of the repository).
+  const outside = (path: string) => headLeavesRepo(sides, fileFor(path));
   if (link.kind === "code") {
+    if (outside(link.path)) return { error: `${link.path} is not a file inside the repository; not opened.` };
     const uri = headUri(sides, fileFor(link.path));
     const start = Math.max(0, (link.startLine ?? 1) - 1);
     const end = Math.max(start, (link.endLine ?? link.startLine ?? 1) - 1);
@@ -158,6 +163,7 @@ export async function locateLink(link: GuideLink, reader: ReaderModel, sides: Re
     const found = await findSymbol(link.name, link.path, headRoot, changed);
     if (found.length === 0) return { error: `No symbol named ${link.name} was found.` };
     const hit = { ...found[0] };
+    if (outside(hit.path)) return { error: `${hit.path} is not a file inside the repository; not opened.` };
     if (hit.character === 0) hit.character = nameColumn(headRoot, hit.path, hit.line, link.name);
     return {
       uri: headUri(sides, fileFor(hit.path)),

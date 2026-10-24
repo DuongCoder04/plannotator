@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as vscode from "vscode";
 import type { ReaderInit } from "../reader-protocol";
 import { ReaderPanel, readerCsp } from "./reader-panel";
+import { WebviewHost } from "./webview-host";
 
 const panels = () => (vscode as unknown as { createdWebviewPanels: Array<{ posted: unknown[]; receive(m: unknown): void; webview: { html: string } }> }).createdWebviewPanels;
 
@@ -10,7 +11,7 @@ describe("the Guide tab's page", () => {
     const csp = readerCsp("https://file+.vscode-resource.vscode-cdn.net", "abc");
     const directives = Object.fromEntries(csp.split("; ").map((d) => [d.split(" ")[0], d.split(" ").slice(1)]));
     expect(directives["default-src"]).toEqual(["'none'"]);
-    expect(directives["script-src"]).toEqual(["'nonce-abc'", "https://file+.vscode-resource.vscode-cdn.net"]);
+    expect(directives["script-src"]).toEqual(["'nonce-abc'", "'strict-dynamic'"]);
     expect(csp).not.toContain("unsafe-eval");
     expect(directives["script-src"]).not.toContain("'unsafe-inline'");
     expect(directives["connect-src"]).toEqual(["https://file+.vscode-resource.vscode-cdn.net"]);
@@ -64,5 +65,37 @@ describe("messages between the Guide tab and the extension", () => {
     page.receive({ type: "mermaidResult", reqId: ask.reqId, ok: false, message: "Parse error", line: 1 });
     expect(await pending).toEqual({ ok: false, message: "Parse error", line: 1 });
     expect(got).toEqual([]);
+  });
+
+  it("a reader whose diagram engine did not load could not check (null), which never refuses the diagram", async () => {
+    const p = new ReaderPanel(vscode.Uri.file("/ext"), "Guide", { init: () => init, onMessage: () => {} });
+    const page = panels().at(-1)!;
+    page.receive({ type: "ready" });
+    const pending = p.checkMermaid("graph TD; A-->B");
+    const ask = page.posted.at(-1) as { reqId: number };
+    page.receive({ type: "mermaidResult", reqId: ask.reqId, ok: false, unavailable: true, message: "Failed to fetch dynamically imported module" });
+    expect(await pending).toBeNull();
+  });
+});
+
+describe("the other Guides webviews' render check", () => {
+  it("passes on Mermaid's own errors, and reports an engine that did not load as not checked", async () => {
+    const listeners: Array<(m: unknown) => void> = [];
+    const posted: Array<{ reqId: number }> = [];
+    const webview = {
+      html: "",
+      cspSource: "x",
+      onDidReceiveMessage: (l: (m: unknown) => void) => (listeners.push(l), { dispose() {} }),
+      postMessage: async (m: { reqId: number }) => (posted.push(m), true),
+    } as unknown as vscode.Webview;
+    const host = new WebviewHost(webview, { onCommand: () => {} });
+    const send = (m: unknown) => listeners.forEach((l) => l(m));
+    send({ type: "ready" });
+    const refused = host.checkMermaid("graph TD; A-->");
+    send({ type: "mermaidResult", reqId: posted.at(-1)!.reqId, ok: false, message: "Parse error on line 1", line: 1 });
+    expect(await refused).toEqual({ ok: false, message: "Parse error on line 1", line: 1 });
+    const notChecked = host.checkMermaid("graph TD; A-->B");
+    send({ type: "mermaidResult", reqId: posted.at(-1)!.reqId, ok: false, unavailable: true, message: "The diagram engine is not available here." });
+    expect(await notChecked).toBeNull();
   });
 });

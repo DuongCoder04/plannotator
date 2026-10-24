@@ -100,7 +100,8 @@ export class WebviewHost {
       case "mermaidResult": {
         const done = this.mermaidChecks.get(msg.reqId);
         this.mermaidChecks.delete(msg.reqId);
-        done?.({ ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : undefined, line: typeof msg.line === "number" ? msg.line : undefined });
+        // No engine in that webview: it could not check (null, so another one is asked), not a refusal.
+        done?.(msg.unavailable === true ? null : { ok: msg.ok === true, message: typeof msg.message === "string" ? msg.message : undefined, line: typeof msg.line === "number" ? msg.line : undefined });
         return;
       }
     }

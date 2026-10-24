@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_CODE } from "../acp/agents";
-import { answersPath, listAnswers } from "../ask/answers";
+import { answersPath, linesHash, listAnswers } from "../ask/answers";
 import { startRelayHost, type RelayHost } from "../mcp/relay-host";
 import { ReaderModel } from "../reader-model";
 import type { LoadedGuide } from "../store";
@@ -290,7 +290,9 @@ describe("asking from the Guide tab", () => {
     const [record] = listAnswers(REPO_KEY, GUIDE_ID);
     expect(record.about).toMatchObject({ path: "src/deliver.ts", side: "base", lines: { start: 1, end: 2 } });
     expect(record.about.code).toBe('export function deliver() {\n  throw new Error("failed");');
+    // The hash describes the lines asked about (the old version's), never the head file on disk.
     expect(record.about.fileHash).toBeUndefined();
+    expect(record.about.codeHash).toBe(linesHash(record.about.code!));
     // Its marker is on the old side of the diff.
     expect(w.asks.lineAnswers(w.guide)[0]).toMatchObject({ side: "old", start: 1, end: 2 });
     w.asks.dispose();
@@ -312,6 +314,7 @@ describe("asking from the Guide tab", () => {
     expect(record.about.code).toBe("../../secret.txt");
     expect(JSON.stringify(record)).not.toContain("SECRET");
     expect(record.about.fileHash).toBeUndefined();
+    expect(record.about.codeHash).toBe(linesHash("../../secret.txt"));
     const prompts = w.log().filter((e) => e.event === "prompt").map((e) => JSON.stringify(e));
     expect(prompts.length).toBeGreaterThan(0);
     for (const p of prompts) expect(p).not.toContain("SECRET");
@@ -323,6 +326,67 @@ describe("asking from the Guide tab", () => {
     await w.asks.askAboutLines("src/deliver.ts", "new", 2, 40, "And below?");
     await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
     expect(listAnswers(REPO_KEY, GUIDE_ID)[0].about.code).toBeUndefined();
+    w.asks.dispose();
+  });
+
+  it("an answer about lines is stale when those lines change on disk, not when the file changes elsewhere", async () => {
+    const w = world([[answer("Returns 1")]]);
+    await w.asks.askAboutLines("src/deliver.ts", "new", 2, 2, "Why 1?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    expect(record.about.codeHash).toBe(linesHash("  return 1;"));
+    const staleNow = async () => {
+      await w.asks.openAnswer(record.id);
+      return (w.shown.at(-1) as { stale: string | null }).stale;
+    };
+    expect(await staleNow()).toBeNull();
+    writeFileSync(join(w.root, "src", "deliver.ts"), "export function deliver() {\n  return 1;\n} // edited below\n");
+    expect(await staleNow()).toBeNull();
+    writeFileSync(join(w.root, "src", "deliver.ts"), "export function deliver() {\n  return 2;\n}\n");
+    expect(await staleNow()).toBe("Written for 9b07e4d; these lines have changed since.");
+    w.asks.dispose();
+  });
+
+  it("removed lines of a renamed file are asked about under the old path", async () => {
+    const RENAME = [
+      "diff --git a/src/old-name.ts b/src/deliver.ts",
+      "similarity index 80%",
+      "rename from src/old-name.ts",
+      "rename to src/deliver.ts",
+      "--- a/src/old-name.ts",
+      "+++ b/src/deliver.ts",
+      "@@ -1,3 +1,3 @@",
+      " export function deliver() {",
+      "-  return 0;",
+      "+  return 1;",
+      " }",
+      "",
+    ].join("\n");
+    const w = world([[answer("Renamed")]], { rawPatch: RENAME });
+    await w.asks.askAboutLines("src/deliver.ts", "old", 2, 2, "What was 0?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    expect(record.about).toMatchObject({ path: "src/deliver.ts", oldPath: "src/old-name.ts", side: "base", code: "  return 0;" });
+    const prompt = JSON.stringify(w.log().filter((e) => e.event === "prompt"));
+    expect(prompt).toContain("line 2 of src/old-name.ts (renamed to src/deliver.ts by the change) (the old version)");
+    w.asks.dispose();
+  });
+
+  it("a selection in an editor showing a symlink of the change that leads out of the repository is not asked about", async () => {
+    const w = changeWorld([[answer("Never")]]);
+    const infos: string[] = [];
+    (vscode.window as unknown as Record<string, unknown>).showInformationMessage = async (m: string) => void infos.push(m);
+    const doc = { uri: vscode.Uri.file(join(w.root, "src", "link.ts")), lineAt: () => ({ text: "aws_secret_access_key = SECRET" }), getText: () => "aws_secret_access_key = SECRET" };
+    const editor = { document: doc, selection: { isEmpty: false, start: { line: 0, character: 0 }, end: { line: 0, character: 10 } }, viewColumn: 1 };
+    Object.defineProperty(vscode.window, "activeTextEditor", { get: () => editor, configurable: true });
+    try {
+      await w.asks.askAboutSelection();
+    } finally {
+      Object.defineProperty(vscode.window, "activeTextEditor", { get: () => undefined, configurable: true });
+    }
+    expect(infos.join(" ")).toContain("leads out of the repository");
+    expect(w.panels).toHaveLength(0);
+    expect(listAnswers(REPO_KEY, GUIDE_ID)).toEqual([]);
     w.asks.dispose();
   });
 

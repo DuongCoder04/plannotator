@@ -18,7 +18,9 @@ import { HoverCardContent } from "./HoverCard";
 import { ChapterStrip, chapterInView } from "./ChapterStrip";
 import { ChapterAsk } from "./ChapterAsk";
 import { answerChatEntries } from "./ask-markers";
-import { askLines, findDiffLine } from "./lines";
+import { askLines, cancelDiffLineJump, scrollToDiffLine } from "./lines";
+
+import type { MermaidCheck } from "../webview/diagram";
 
 const OverviewDiagram = lazy(() => import("./OverviewDiagram"));
 
@@ -68,6 +70,8 @@ const resolveHover: TokenHoverResolver = async (request, signal) => {
 export function ReaderApp({ init }: { init: ReaderInit }) {
   const { snapshot } = init;
   const files = useMemo<DiffFile[]>(() => parseDiffToFiles(snapshot.review.rawPatch), [snapshot.review.rawPatch]);
+  const filesRef = useRef(files);
+  filesRef.current = files;
   const [reviewed, setReviewed] = useState<boolean[]>(init.reviewed);
   const [fileTicks, setFileTicks] = useState<Set<string>>(() => new Set(init.fileTicks));
   const [focusedFile, setFocusedFile] = useState<string | null>(null);
@@ -108,6 +112,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   }, []);
 
   const scrollToChapter = useCallback((index: number) => {
+    cancelDiffLineJump();
     const el = document.querySelector(`[data-guide-section="${index}"]`);
     if (el) {
       const top = el.getBoundingClientRect().top + window.scrollY - stripHeight();
@@ -123,9 +128,11 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
           setFileTicks(new Set(msg.fileTicks));
         }
         else if (msg.type === "checkMermaid") {
+          // A chunk that does not load is "cannot check here", never a refusal of the diagram.
           void import("./OverviewDiagram")
             .then((m) => m.checkMermaidHere(msg.source))
-            .then((r) => post({ type: "mermaidResult", reqId: msg.reqId, ok: r.ok, ...(r.message && { message: r.message }), ...(r.line && { line: r.line }) }));
+            .catch((err: unknown): MermaidCheck => ({ ok: false, unavailable: true, message: err instanceof Error ? err.message : String(err) }))
+            .then((r) => post({ type: "mermaidResult", reqId: msg.reqId, ok: r.ok, ...(r.message && { message: r.message }), ...(r.line && { line: r.line }), ...(r.unavailable && { unavailable: true }) }));
         } else if (msg.type === "asks") setAsks({ busy: msg.busy, markers: msg.markers, chapters: msg.chapters, agent: msg.agent });
         else if (msg.type === "reveal") {
           if (msg.path) {
@@ -133,6 +140,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
             reveal(msg.path);
             // A jump to a definition lands on its line, once the file's diff is drawn.
             if (msg.line) void scrollToDiffLine(msg.path, msg.side ?? "new", msg.line);
+            else cancelDiffLineJump();
           } else if (typeof msg.chapter === "number") scrollToChapter(msg.chapter);
         } else if (msg.type === "notice") setNotice(msg.text);
       }),
@@ -195,7 +203,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   const onAskAIForFile = useCallback((filePath: string, question: string) => {
     const sel = selectionRef.current;
     if (!sel || sel.path !== filePath || !question.trim()) return;
-    const lines = askLines(sel.range);
+    const lines = askLines(sel.range, filesRef.current.find((f) => f.path === filePath)?.patch);
     if (!lines) {
       setNotice("Select lines on one side of the change: removed lines or the new lines, not both.");
       return;
@@ -322,9 +330,13 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
           scrollToChapter(i);
           post({ type: "chapter", chapter: i });
         }}
-        onOverview={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        onOverview={() => {
+          cancelDiffLineJump();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }}
         back={back}
         onBack={() => {
+          cancelDiffLineJump();
           if (back) window.scrollTo({ top: back.scrollY, behavior: "smooth" });
           setBack(null);
         }}
@@ -371,21 +383,6 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
 }
 
 const NO_MARKERS: AIChatEntry[] = [];
-
-/** Scroll a file's line into the middle of the tab once its diff is drawn (it mounts as it comes into view). */
-async function scrollToDiffLine(path: string, side: "old" | "new", line: number): Promise<boolean> {
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, i === 0 ? 120 : 100));
-    const shell = document.querySelector(`[data-guide-file-shell="${CSS.escape(path)}"]`);
-    const row = shell ? findDiffLine(shell, side, line) : null;
-    if (row) {
-      row.scrollIntoView({ block: "center" });
-      row.animate?.([{ outline: "2px solid var(--vscode-focusBorder, #007fd4)" }, { outline: "2px solid transparent" }], { duration: 1400 });
-      return true;
-    }
-  }
-  return false;
-}
 
 /** "Back to Chapter 2": where the reader is now, to come back to after a jump. */
 function backHere(count: number): { label: string; scrollY: number } {

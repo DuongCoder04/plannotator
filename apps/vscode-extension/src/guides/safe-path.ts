@@ -31,6 +31,17 @@ export function realFileInside(root: string, path: string): string | null {
 }
 
 /**
+ * True when a guide file's head side is a file on disk that is not a regular
+ * file inside the repository once symlinks are followed (`notes.md ->
+ * ~/.aws/credentials`, a folder, gone): it is not opened, hovered or read.
+ * A deleted file's head is empty and a head revision is git's, so neither
+ * leaves.
+ */
+export function headLeavesRepo(sides: { head: { kind: "fs"; root: string } | { kind: "rev"; rev: string } }, file: { path: string; status?: string }): boolean {
+  return sides.head.kind === "fs" && file.status !== "deleted" && !realFileInside(sides.head.root, file.path);
+}
+
+/**
  * The bytes of a repository file when it is a regular file of its own (not a
  * symlink, even one pointing inside), for hashing what was asked about.
  */

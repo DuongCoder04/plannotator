@@ -20,8 +20,9 @@ export function readerCsp(cspSource: string, nonce: string): string {
     `img-src ${cspSource} data: blob:`,
     `style-src ${cspSource} 'unsafe-inline'`,
     `font-src ${cspSource} data:`,
-    // The entry by nonce; its lazy chunks (Shiki grammars and themes) from the extension's folder.
-    `script-src 'nonce-${nonce}' ${cspSource}`,
+    // The entry by nonce, and what it loads itself ('strict-dynamic': its lazy chunks, Shiki's
+    // grammars and themes, the diagram engine). No host is listed, so no other script can run.
+    `script-src 'nonce-${nonce}' 'strict-dynamic'`,
     // The highlight worker: its source is fetched from the extension's folder and started from a blob.
     `worker-src blob:`,
     `connect-src ${cspSource}`,
@@ -114,7 +115,8 @@ export class ReaderPanel implements vscode.Disposable {
     if (msg.type === "mermaidResult") {
       const done = this.mermaidChecks.get(msg.reqId);
       this.mermaidChecks.delete(msg.reqId);
-      done?.({ ok: msg.ok, message: msg.message, line: msg.line });
+      // No engine in the Guide tab: it could not check (null), not a refusal.
+      done?.(msg.unavailable ? null : { ok: msg.ok, message: msg.message, line: msg.line });
       return;
     }
     if (msg.type === "ready") {

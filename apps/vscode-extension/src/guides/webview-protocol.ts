@@ -140,7 +140,7 @@ export type ToExtension =
   | { type: "command"; command: string; args?: unknown[] }
   | { type: "link"; link: string; action: "open" | "definition" | "references" }
   | { type: "linkInfo"; reqId: number; link: string }
-  | { type: "mermaidResult"; reqId: number; ok: boolean; message?: string; line?: number };
+  | { type: "mermaidResult"; reqId: number; ok: boolean; message?: string; line?: number; unavailable?: boolean };
 
 export type ToWebview =
   | { type: "state"; state: ViewState }

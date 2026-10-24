@@ -11,11 +11,11 @@
 
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "../acp/agents";
 import type { ReadyLaunch } from "../acp/ensure-launch";
-import { capCode, newAnswerId, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
+import { capCode, fileLinesHash, linesHash, newAnswerId, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
 import { AnswerShelf } from "../ask/shelf";
 import { buildAskPrompt, type AskGuideContext } from "../ask/prompt";
 import { GuideAskSession, type AskRun, type AskRunState, type SavedSession } from "../ask/session";
@@ -24,7 +24,7 @@ import type { PendingPermission, PermissionAnswer } from "../generation";
 import type { RelayHost } from "../mcp/relay-host";
 import { patchExcerpt } from "../reader-mapping";
 import type { ReaderModel, ReaderSides } from "../reader-model";
-import { readOwnFile } from "../safe-path";
+import { headLeavesRepo, readOwnFile, realFileInside } from "../safe-path";
 import type { Runner } from "../sources/runner";
 import { writeSidecar, type AgentChoiceRecord, type LoadedGuide } from "../store";
 import type { AnswerListItem } from "../webview-protocol";
@@ -153,6 +153,11 @@ export class GuideAsks implements vscode.Disposable {
       void vscode.window.showInformationMessage("That file is not part of the open guided review.");
       return;
     }
+    // A symlink of the change that leads out of the repository is not the guide's file: its text is never sent.
+    if (side.side === "head" && headLeavesRepo(reader.sides, reader.model.files.get(side.path) ?? { path: side.path })) {
+      void vscode.window.showInformationMessage(`${side.path} leads out of the repository; it is not asked about.`);
+      return;
+    }
     const sel = editor.selection;
     const about = sel.isEmpty ? this.fileAbout(reader, side.path, chapter) : this.selectionAbout(reader, editor.document, sel, side, chapter);
     await this.askWithBox(about, editor.viewColumn);
@@ -188,16 +193,16 @@ export class GuideAsks implements vscode.Disposable {
     // that side (removed lines are base lines; a deleted file has only those).
     // Never read from disk, where a symlink in the change could point anywhere.
     const excerpt = patchExcerpt(reader.model.loaded.rawPatch ?? "", path, side, start, end);
-    const hash = side === "new" ? this.headHash(reader, path) : null;
+    const oldPath = side === "old" ? reader.model.files.get(path)?.oldPath : undefined;
     const about: AskAbout = {
       kind: "selection",
       chapter,
       chapterTitle: reader.model.chapters[chapter].title,
       path,
+      ...(oldPath && oldPath !== path && { oldPath }),
       side: side === "old" ? "base" : "head",
       lines: { start, end },
-      ...(excerpt !== null && { code: capCode(excerpt) }),
-      ...(hash && { fileHash: hash }),
+      ...(excerpt !== null && { code: capCode(excerpt), codeHash: linesHash(excerpt) }),
     };
     await this.ask(reader.model.loaded, about, text, { codeColumn: vscode.ViewColumn.Active });
   }
@@ -221,21 +226,46 @@ export class GuideAsks implements vscode.Disposable {
     // A selection ending at column 0 of a line does not take that line.
     const endLine = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line - 1 : sel.end.line;
     const range = new vscode.Range(sel.start.line, 0, endLine, doc.lineAt(endLine).text.length);
+    const code = doc.getText(range);
+    const oldPath = side.side === "base" ? reader.model.files.get(side.path)?.oldPath : undefined;
     return {
       kind: "selection",
       chapter,
       chapterTitle: reader.model.chapters[chapter].title,
       path: side.path,
+      ...(oldPath && oldPath !== side.path && { oldPath }),
       side: side.side,
       lines: { start: sel.start.line + 1, end: endLine + 1 },
-      code: capCode(doc.getText(range)),
-      ...(this.headHash(reader, side.path) && { fileHash: this.headHash(reader, side.path)! }),
+      code: capCode(code),
+      // What was asked about: these lines, as the editor showed them (the open document, saved or not).
+      codeHash: linesHash(code),
     };
   }
 
   private fileAbout(reader: { model: ReaderModel; sides: ReaderSides }, path: string, chapter: number): AskAbout {
     const hash = this.headHash(reader, path);
     return { kind: "file", chapter, chapterTitle: reader.model.chapters[chapter].title, path, side: "head", ...(hash && { fileHash: hash }) };
+  }
+
+  /**
+   * The same things the record's hash describes, now: the lines asked about
+   * on the head (read from disk, inside the repository only), or the whole
+   * head file. Not known (left out) for the base side and a head revision,
+   * which do not move.
+   */
+  private currentHashes(reader: { sides: ReaderSides }, record: AnswerRecord): { fileHash?: string | null; codeHash?: string | null } {
+    const about = record.about;
+    if (!about.path || about.side === "base" || reader.sides.head.kind !== "fs") return {};
+    if (about.codeHash && about.lines) {
+      const real = realFileInside(reader.sides.head.root, about.path);
+      if (!real) return { codeHash: null };
+      try {
+        return { codeHash: fileLinesHash(readFileSync(real, "utf8"), about.lines.start, about.lines.end) };
+      } catch {
+        return { codeHash: null };
+      }
+    }
+    return about.fileHash ? { fileHash: this.headHash(reader, about.path) } : {};
   }
 
   private headHash(reader: { sides: ReaderSides }, path: string): string | null {
@@ -513,7 +543,7 @@ export class GuideAsks implements vscode.Disposable {
     if (live) return this.showLive(live, live.run.state);
     const reader = this.host.reader();
     const stale = reader && reader.model.id === record.guideId
-      ? staleNote(record, { ...(record.about.path && { fileHash: this.headHash(reader, record.about.path) }), headSha: await this.headSha(reader.model.loaded, reader.sides.head.kind === "fs" ? reader.sides.head.root : reader.sides.gitRoot) })
+      ? staleNote(record, { ...this.currentHashes(reader, record), headSha: await this.headSha(reader.model.loaded, reader.sides.head.kind === "fs" ? reader.sides.head.root : reader.sides.gitRoot) })
       : null;
     panel.host.show(answerViewState({ record, now: Date.now(), stale, followUpOf: this.followUpOf(record), busy: this.isBusy(record.guideId) }));
   }

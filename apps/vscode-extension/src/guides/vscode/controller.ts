@@ -82,7 +82,7 @@ import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
 import { ANSWER_VIEW_TYPE, RUN_VIEW_TYPE } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
-import { realFileInside } from "../safe-path";
+import { headLeavesRepo, realFileInside } from "../safe-path";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
 import { ReaderPanel } from "./reader-panel";
 import { readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
@@ -1365,11 +1365,13 @@ export class GuidesController implements vscode.Disposable {
    */
   private async filesChangedSince(model: ReaderModel, sides: ReaderSides): Promise<string[]> {
     if (sides.head.kind !== "fs" || model.loaded.sidecar.source?.kind === "pr" || !model.loaded.rawPatch) return [];
-    const args = changedSinceDiffArgs(sides.baseRev, model.files.values());
-    if (!args) return [];
-    const r = await this.runner("git", args, { cwd: sides.head.root, timeoutMs: 20_000 }).catch(() => null);
-    if (!r || r.code !== 0) return [];
-    return changedPatchFiles(model.loaded.rawPatch, r.stdout);
+    const out: string[] = [];
+    for (const args of changedSinceDiffArgs(sides.baseRev, model.files.values())) {
+      const r = await this.runner("git", args, { cwd: sides.head.root, timeoutMs: 20_000 }).catch(() => null);
+      if (!r || r.code !== 0) return [];
+      out.push(r.stdout);
+    }
+    return out.length ? changedPatchFiles(model.loaded.rawPatch, out.join("")) : [];
   }
 
   /**
@@ -1563,7 +1565,7 @@ export class GuidesController implements vscode.Disposable {
     const file = this.reader.model.files.get(path);
     if (!file || file.status === "deleted") return;
     const { sides } = this.reader;
-    if (sides.head.kind === "fs" && !realFileInside(sides.head.root, path)) {
+    if (headLeavesRepo(sides, file)) {
       void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
       return;
     }
@@ -1716,6 +1718,10 @@ export class GuidesController implements vscode.Disposable {
     if (!this.reader) return;
     const { model, sides } = this.reader;
     const file = model.files.get(path) ?? { path, status: "modified" };
+    if (headLeavesRepo(sides, file)) {
+      void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+      return;
+    }
     const chapter = model.chapterOf(path);
     const focus = model.focusRanges(path)[0];
     const target = focus?.start ?? model.files.get(path)?.hunks[0]?.start;

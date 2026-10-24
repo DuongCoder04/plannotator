@@ -80,32 +80,69 @@ describe("a renamed file is not 'changed on disk since the guide'", () => {
     return r.stdout;
   };
 
-  it("a pure `git mv` reads as unchanged; an edit after the guide reads as changed", () => {
+  // The guide's patch as the reader's local source makes it (`getWorkingTreeDiffFromBase`): the user's rename config.
+  const guideDiff = (dir: string) => git(dir, ["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--end-of-options", "HEAD"]);
+  const run = (dir: string, files: Array<{ path: string; oldPath?: string }>, max?: number) => changedSinceDiffArgs("HEAD", files, max).map((args) => git(dir, args)).join("");
+  const repo = (renames: string | null) => {
     const dir = mkdtempSync(join(tmpdir(), "pn-rename-"));
+    git(dir, ["init", "-q", "-b", "main"]);
+    git(dir, ["config", "user.email", "t@example.com"]);
+    git(dir, ["config", "user.name", "T"]);
+    if (renames !== null) git(dir, ["config", "diff.renames", renames]);
+    writeFileSync(join(dir, "old-name.ts"), Array.from({ length: 20 }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n");
+    writeFileSync(join(dir, "other.ts"), "export const x = 1;\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-q", "-m", "base"]);
+    git(dir, ["mv", "old-name.ts", "new-name.ts"]);
+    writeFileSync(join(dir, "other.ts"), "export const x = 2;\n");
+    return dir;
+  };
+
+  for (const renames of [null, "true", "false", "copies"]) {
+    it(`a pure \`git mv\` reads as unchanged; an edit after the guide reads as changed (diff.renames=${renames ?? "unset"})`, () => {
+      const dir = repo(renames);
+      try {
+        const guidePatch = guideDiff(dir);
+        const files = changedFilesFromPatch(guidePatch);
+        if (renames === "false") expect(files.map((f) => f.path).sort()).toEqual(["new-name.ts", "old-name.ts", "other.ts"]);
+        else expect(files.find((f) => f.path === "new-name.ts")?.oldPath).toBe("old-name.ts");
+        expect(changedPatchFiles(guidePatch, run(dir, files))).toEqual([]);
+        // Edited after the guide: changed.
+        writeFileSync(join(dir, "new-name.ts"), "export const changed = true;\n");
+        expect(changedPatchFiles(guidePatch, run(dir, files))).toContain("new-name.ts");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("without the old path in the pathspec, git shows the rename as a new file (the bug the old path fixes)", () => {
+    const dir = repo(null);
     try {
-      git(dir, ["init", "-q", "-b", "main"]);
-      git(dir, ["config", "user.email", "t@example.com"]);
-      git(dir, ["config", "user.name", "T"]);
-      git(dir, ["config", "diff.renames", "false"]); // even with rename detection off by config
-      writeFileSync(join(dir, "old-name.ts"), Array.from({ length: 20 }, (_, i) => `export const v${i} = ${i};`).join("\n") + "\n");
-      writeFileSync(join(dir, "other.ts"), "export const x = 1;\n");
-      git(dir, ["add", "."]);
-      git(dir, ["commit", "-q", "-m", "base"]);
-      git(dir, ["mv", "old-name.ts", "new-name.ts"]);
-      writeFileSync(join(dir, "other.ts"), "export const x = 2;\n");
-      // The guide's patch, as the guide recorded it (renames detected).
-      const guidePatch = git(dir, ["-c", "core.quotePath=false", "diff", "--no-color", "-M", "--src-prefix=a/", "--dst-prefix=b/", "HEAD"]);
-      const files = changedFilesFromPatch(guidePatch);
-      expect(files.find((f) => f.path === "new-name.ts")?.oldPath).toBe("old-name.ts");
-      const args = changedSinceDiffArgs("HEAD", files)!;
-      expect(args).toContain("old-name.ts");
-      expect(changedPatchFiles(guidePatch, git(dir, args))).toEqual([]);
-      // Without the old path in the pathspec, git shows the rename as a new file: that was the bug.
+      const guidePatch = guideDiff(dir);
       const naive = git(dir, ["diff", "--no-color", "HEAD", "--", "new-name.ts", "other.ts"]);
       expect(changedPatchFiles(guidePatch, naive)).toEqual(["new-name.ts"]);
-      // Edited after the guide: changed.
-      writeFileSync(join(dir, "new-name.ts"), "export const changed = true;\n");
-      expect(changedPatchFiles(guidePatch, git(dir, args))).toContain("new-name.ts");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a large guide is batched (a rename's two paths in one run), never skipped", () => {
+    const files = [{ path: "a" }, { path: "new", oldPath: "old" }, { path: "b" }, { path: "c" }];
+    const batches = changedSinceDiffArgs("HEAD", files, 3).map((a) => a.slice(a.indexOf("--") + 1));
+    expect(batches).toEqual([["a", "new", "old"], ["b", "c"]]);
+    expect(changedSinceDiffArgs("HEAD", Array.from({ length: 1200 }, (_, i) => ({ path: `f${i}.ts` }))).length).toBe(3);
+    expect(changedSinceDiffArgs("HEAD", [])).toEqual([]);
+    const dir = repo(null);
+    try {
+      writeFileSync(join(dir, "third.ts"), "export const t = 1;\n");
+      git(dir, ["add", "third.ts"]);
+      const guidePatch = guideDiff(dir);
+      const all = changedFilesFromPatch(guidePatch);
+      writeFileSync(join(dir, "other.ts"), "export const x = 3;\n");
+      writeFileSync(join(dir, "third.ts"), "export const t = 2;\n");
+      expect(changedPatchFiles(guidePatch, run(dir, all, 2)).sort()).toEqual(["other.ts", "third.ts"]);
+      expect(changedPatchFiles(guidePatch, run(dir, all, 2)).sort()).toEqual(changedPatchFiles(guidePatch, run(dir, all)).sort());
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

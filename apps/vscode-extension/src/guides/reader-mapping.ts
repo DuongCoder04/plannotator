@@ -68,19 +68,27 @@ export function locateToken(lineAt: (line: number) => string | undefined, line: 
 }
 
 /**
- * The `git diff` arguments that give the guide's files' diff now, to compare
- * with the guide's (`changedPatchFiles`): renames detected (`-M`, whatever
- * `diff.renames` says) and each renamed file's old path in the pathspec too,
- * or git would show a pure rename as a new file and it would read as changed.
+ * The `git diff` runs that give the guide's files' diff now, to compare with
+ * the guide's (`changedPatchFiles`; their outputs are joined). Rename
+ * detection is the user's (`diff.renames`), as it was when the guide's own
+ * patch was made, so a pure `git mv` comes out the same way both times; a
+ * renamed file's old path is in the pathspec too (in the same run), or git
+ * would show the rename as a new file and it would read as changed. At most
+ * `max` paths per run, so a large guide is batched rather than skipped.
  */
-export function changedSinceDiffArgs(baseRev: string, files: Iterable<{ path: string; oldPath?: string }>, max = 500): string[] | null {
-  const paths: string[] = [];
+export function changedSinceDiffArgs(baseRev: string, files: Iterable<{ path: string; oldPath?: string }>, max = 500): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
   for (const f of files) {
-    paths.push(f.path);
-    if (f.oldPath && f.oldPath !== f.path) paths.push(f.oldPath);
+    const paths = f.oldPath && f.oldPath !== f.path ? [f.path, f.oldPath] : [f.path];
+    if (batch.length && batch.length + paths.length > max) {
+      batches.push(batch);
+      batch = [];
+    }
+    batch.push(...paths);
   }
-  if (!paths.length || paths.length > max) return null;
-  return ["--no-pager", "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-M", "--src-prefix=a/", "--dst-prefix=b/", baseRev, "--", ...paths];
+  if (batch.length) batches.push(batch);
+  return batches.map((paths) => ["--no-pager", "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", baseRev, "--", ...paths]);
 }
 
 /** A file's diff text without the lines that name blobs (`index …`), which differ for the same change. */
