@@ -69,6 +69,7 @@ import {
   type InboxListRow,
   type InboxListSection,
   inboxHasUnsent,
+  inboxRowArchived,
   type InboxRowUnsent,
   type InboxSectionId,
 } from "@plannotator/core/inbox-types";
@@ -127,14 +128,8 @@ export function inboxListSections(rows: readonly InboxListRow[]): InboxListSecti
   }));
 }
 
-/**
- * Archived: resolved, and not come back. Not shown in the window's list;
- * Settings lists it. A thread an agent wrote in after the archive is back in
- * the list while something there waits, and returns here once handled.
- */
-export function inboxRowArchived(row: Pick<InboxListRow, "resolved_at" | "back_from_archive">): boolean {
-  return row.resolved_at !== null && row.back_from_archive !== true;
-}
+/** Archived: resolved, and not come back (the rule lives in core, so the window shares it). */
+export { inboxRowArchived };
 
 /** Newest archived first (the Archived block's order); ties on the thread id. */
 function newestArchivedFirst(left: InboxListRow, right: InboxListRow): number {

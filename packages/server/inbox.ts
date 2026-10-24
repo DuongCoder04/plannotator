@@ -130,6 +130,7 @@ import { createInboxLiveSessions } from "./inbox-sessions";
 import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, CLAUDE_PLUGIN_UPDATE_COMMAND, createClaudePluginInstallReader, piSessionOutdated } from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
+import { createInboxPins } from "./inbox-pins";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import type { PairingProbes } from "./inbox-pairing-checks";
@@ -662,6 +663,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const statusListeners = new Set<() => void>();
   /** A reply draft was saved or deleted (inbox-reply-drafts.ts): the windows' streams say `event: drafts`. */
   const draftListeners = new Set<(threadId: string) => void>();
+  /** The sidebar's pins changed (inbox-pins.ts): the windows' streams say `event: pins`. */
+  const pinListeners = new Set<() => void>();
   // The Inbox windows open now and whether any can show a notification (inbox-windows.ts).
   const windows = createInboxWindows({ graceMs: options.windowGraceMs });
   /** Event streams open now (health's `event_streams`): Inbox tabs of one origin share one. */
@@ -824,8 +827,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    */
   const listModel = (projectFilter: string | null, archived: "include" | "exclude") => {
     // One pass over the store feeds both the folders' counts and the sections.
-    const rows = store.listRows();
+    // `pinned_at` (additive) on the window's and the phone's rows only: never on anything an agent reads.
+    const pinnedAt = new Map(store.pins().map((pin) => [pin.thread_id, pin.pinned_at]));
+    const rows = store.listRows().map((row) => (pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
     const scoped = projectFilter ? rows.filter((row) => row.project.id === projectFilter) : rows;
+    const byId = new Map(rows.map((row) => [row.thread_id, row]));
     return {
       serverSession,
       version,
@@ -842,6 +848,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Quiet included, and Settings lists them (GET /api/inbox/threads/archived).
       // Without it they stay in Quiet, as an older window and the phone expect.
       sections: inboxListSections(archived === "exclude" ? scoped.filter((row) => !inboxRowArchived(row)) : scoped),
+      /**
+       * The sidebar's pinned threads (approval "inbox-pinned-threads"), in pin
+       * order: every pinned thread whatever the project filter or `archived`
+       * (an archived thread stays pinned). Additive: absent from an older Inbox.
+       */
+      pins: store
+        .pins()
+        .map((pin) => byId.get(pin.thread_id))
+        .filter((row): row is InboxListRow => row !== undefined),
     };
   };
 
@@ -1558,6 +1573,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // A reply draft changed (any window's, or this one's): the list reads the rows' `unsent` again. Windows only.
         const onDraft = (threadId: string) => send(`event: drafts\ndata: ${JSON.stringify({ thread_id: threadId })}\n\n`);
         if (windowId) draftListeners.add(onDraft);
+        // The sidebar's pins changed (any window's, or a deletion): the list reads `pins` again. Windows only.
+        const onPins = () => send(`event: pins\ndata: {}\n\n`);
+        if (windowId) pinListeners.add(onPins);
         if (windowId) sendReach();
         // A row's delivery moved with the live sessions (no store line): windows only, like `reach`.
         const sendDeliveries = () => send(`event: deliveries\ndata: {}\n\n`);
@@ -1573,6 +1591,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           statusListeners.delete(onStatus);
           stopReach();
           draftListeners.delete(onDraft);
+          pinListeners.delete(onPins);
           deliveryListeners.delete(sendDeliveries);
           leave();
         };
@@ -1893,6 +1912,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     onChange: (threadId) => {
       for (const listener of draftListeners) listener(threadId);
     },
+  });
+  // Pins: threads pinned to the window's sidebar (packages/server/inbox-pins.ts). A deletion's prune tells the windows too.
+  const pins = createInboxPins({ store, serverSession, readBody: (req) => readBody(req), json });
+  const stopPinEvents = store.onPinsChange(() => {
+    for (const listener of pinListeners) listener();
   });
   const uploadSweep = setInterval(() => compose.sweep(), INBOX_UPLOAD_SWEEP_MS);
   (uploadSweep as { unref?: () => void }).unref?.();
@@ -2247,6 +2271,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Reply drafts: the reply box's words per thread (approval "inbox-reply-drafts").
       const drafted = await replyDrafts.route(req, url);
       if (drafted) return drafted;
+      // Pins (approval "inbox-pinned-threads"): pin, unpin and the order of the sidebar's pinned threads.
+      const pinned = await pins.route(req, url);
+      if (pinned) return pinned;
 
       // The Board's cards (approval "inbox-board", step 1): the person's read and moves.
       if (path === "/api/inbox/cards") {
@@ -2714,6 +2741,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // No capture writes after stop (a restart to update starts the next binary on this store).
     imageCapture.stop();
     clearInterval(uploadSweep);
+    stopPinEvents();
     clearInterval(restartWatch);
     clearInterval(deliveryWatch);
     clearInterval(autoSendWatch);
