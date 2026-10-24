@@ -91,6 +91,21 @@ describe("openDecisions", () => {
     expect(store.openDecisions()).toEqual([]);
   });
 
+  test("a Re-ask note leaves out what it lists, per session: another session's questions in the thread stay", () => {
+    const { store, project } = open();
+    const [a, b] = AGENTS;
+    const m1 = store.sendMessage({ project_id: project.id, author: a!, body: block("A asks?") }).message;
+    const m2 = store.sendMessage({ project_id: project.id, author: b!, reply_to: m1.id, body: block("B asks?") }).message;
+    expect(store.openDecisions().map((d) => d.question.prompt)).toEqual(["A asks?", "B asks?"]);
+    // The person asks A to ask again: A's question is about to be asked again, B's still waits here.
+    store.sendReask(m1.id, { idempotency_key: "k1" });
+    expect(store.listRow(m1.thread_id)!.reask_pending).toBe(false);
+    expect(store.openDecisions().map((d) => d.question.prompt)).toEqual(["B asks?"]);
+    // A writes again: its note no longer waits, and what it still has open comes back.
+    store.sendMessage({ project_id: project.id, author: a!, reply_to: m2.id, body: "Looking at it." });
+    expect(store.openDecisions().map((d) => d.question.prompt).sort()).toEqual(["A asks?", "B asks?"]);
+  });
+
   test("lists action items, and the message's files as references", () => {
     const { store, project } = open();
     const m = store.sendMessage({ project_id: project.id, author: AGENTS[0]!, body: `Before.\n\n${block("Approve the 2FA prompt", ["Where: https://example.com"], "action")}` }).message;
@@ -143,14 +158,31 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
 );
 
 /** What the list says waits on the person: the rows it places in Stopped, Holding and Waiting, plus "Answered, not sent". */
-function listCount(rows: readonly InboxListRow[]): number {
+/**
+ * What the list says waits, less what a waiting Re-ask note lists and is still
+ * open: the agent is about to ask those again, so decision mode leaves them
+ * out (per note, so per session; the list keeps counting them in its row).
+ */
+function listCount(store: InboxStore, rows: readonly InboxListRow[]): number {
   let n = 0;
   for (const row of rows) {
     if (row.reask_pending === true) continue;
     const waits = row.section === "stopped" || row.section === "holding" || row.section === "waiting" || row.answered_not_sent;
-    if (waits) n += row.questions.open + row.questions.picked;
+    if (!waits) continue;
+    n += row.questions.open + row.questions.picked;
+    n -= reaskedOpen(store, row.thread_id).size;
   }
   return n;
+}
+
+/** A thread's open questions a waiting Re-ask note lists. */
+function reaskedOpen(store: InboxStore, threadId: string): Set<string> {
+  const listed = store.reaskListedIds(threadId);
+  const out = new Set<string>();
+  for (const m of store.thread(threadId)?.messages ?? []) {
+    for (const q of store.questionsOf(m.id)) if (q.state === "open" && listed.has(`${m.id}/${q.key}`)) out.add(`${m.id}/${q.key}`);
+  }
+  return out;
 }
 
 function bodyOf(kind: Op & { op: "send" }, n: number): string {
@@ -239,7 +271,7 @@ describe("the Decide count", () => {
           seen += decisions.length;
           picked += decisions.filter((d) => d.question.state === "picked").length;
           const rows = store.listRows();
-          expect(decisions.length).toBe(listCount(rows));
+          expect(decisions.length).toBe(listCount(store, rows));
           // No decision twice, and each is a waiting question of a live agent message.
           expect(new Set(decisions.map((d) => d.id)).size).toBe(decisions.length);
           for (const d of decisions) expect(inboxQuestionWaitsOnPerson(d.question)).toBe(true);
@@ -247,7 +279,8 @@ describe("the Decide count", () => {
           for (const row of rows) {
             if (row.reask_pending === true) continue;
             const thread = store.thread(row.thread_id)!;
-            const popover = threadOpenQuestions(thread.messages).questions.map((q) => q.id).sort();
+            const reasked = reaskedOpen(store, row.thread_id);
+            const popover = threadOpenQuestions(thread.messages).questions.map((q) => q.id).filter((id) => !reasked.has(id)).sort();
             const mine = decisions.filter((d) => d.thread.id === row.thread_id && d.question.kind !== "action").map((d) => d.id).sort();
             expect(mine).toEqual(popover);
           }

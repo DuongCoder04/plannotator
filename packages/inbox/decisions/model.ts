@@ -57,13 +57,14 @@ export function isHandled(state: QueueState, id: string): boolean {
 /**
  * Fold a fresh projection into the queue: copies refreshed, new decisions
  * appended in the server's order (the queue never reorders under the
- * person), and the ones that left marked gone. `sentGroups`: the groups this
- * sitting sent, so a decision that left with its group's reply reads as sent.
+ * person), and the ones that left marked gone. `sent`: the decisions this
+ * sitting's replies carried, so one that left with its reply reads as sent
+ * (and one answered elsewhere, in its thread, reads as closed).
  */
 export function mergeDecisions(
   state: QueueState,
   decisions: readonly InboxDecision[],
-  sentGroups: ReadonlySet<string> = new Set(),
+  sent: ReadonlySet<string> = new Set(),
   /** Decisions with a pick on its way: the copy on screen is newer than any read that crossed it. */
   pending: ReadonlySet<string> = new Set(),
 ): QueueState {
@@ -89,8 +90,7 @@ export function mergeDecisions(
       continue;
     }
     if (gone.has(id)) continue;
-    const decision = cache.get(id);
-    gone.set(id, decision && sentGroups.has(groupKeyOf(decision)) ? 'sent' : 'closed');
+    gone.set(id, sent.has(id) ? 'sent' : 'closed');
   }
   const later = new Set([...state.later].filter((id) => fresh.has(id) && cache.get(id)?.question.state === 'open'));
   const next: QueueState = { order, cache, gone, later, current: state.current };
@@ -173,26 +173,97 @@ export function groupIds(state: QueueState, key: string): string[] {
 }
 
 /**
- * Whether a group's reply can go: every decision in it is handled (none put
- * off with Later and still open), and at least one question there is picked
- * and not sent (a group of action items alone sends nothing: the actions route
- * sends those by itself after its own Undo window).
+ * The answers of a group no reply of this sitting carried yet: picked
+ * questions still in the queue (a group of action items alone sends nothing:
+ * the actions route sends those by itself after its own Undo window).
+ * `carried`: the decisions this sitting's replies already took.
  */
-export function groupReady(state: QueueState, key: string): boolean {
-  const ids = groupIds(state, key);
-  if (ids.length === 0) return false;
-  if (!ids.every((id) => isHandled(state, id))) return false;
-  return ids.some((id) => {
+export function freshPicks(state: QueueState, key: string, carried: ReadonlySet<string> = new Set()): string[] {
+  return groupIds(state, key).filter((id) => {
     const decision = state.cache.get(id)!;
-    return !state.gone.has(id) && !isActionDecision(decision) && decision.question.state === 'picked';
+    return !state.gone.has(id) && !carried.has(id) && !isActionDecision(decision) && decision.question.state === 'picked';
   });
 }
 
-/** Some of a group answered, the rest not: closing then asks "Send what you answered / Keep as a draft". */
-export function groupHalfAnswered(state: QueueState, key: string): boolean {
+/**
+ * Whether a group's reply can go: every decision in it is handled (none put
+ * off with Later and still open), and at least one answer there no reply
+ * carried yet (a follow-up question answered after the group's first reply
+ * makes it ready again).
+ */
+export function groupReady(state: QueueState, key: string, carried: ReadonlySet<string> = new Set()): boolean {
   const ids = groupIds(state, key);
-  const picked = ids.some((id) => !state.gone.has(id) && state.cache.get(id)!.question.state === 'picked' && !isActionDecision(state.cache.get(id)!));
-  return picked && !groupReady(state, key);
+  if (ids.length === 0) return false;
+  if (!ids.every((id) => isHandled(state, id))) return false;
+  return freshPicks(state, key, carried).length > 0;
+}
+
+/** Some of a group answered, the rest not: closing then asks "Send what you answered / Keep as a draft". */
+export function groupHalfAnswered(state: QueueState, key: string, carried: ReadonlySet<string> = new Set()): boolean {
+  return freshPicks(state, key, carried).length > 0 && !groupReady(state, key, carried);
+}
+
+/** How long a session's reply waits before it goes, so the person can hold it (brief §9). */
+export const DECISION_HOLD_MS = 5000;
+
+/** The Hold a group starts: 5 s, or paused at 5 s while decision mode is tucked behind a thread. */
+export function startHold(now: number, open: boolean): GroupSend {
+  return { kind: 'hold', until: now + DECISION_HOLD_MS, paused: open ? null : DECISION_HOLD_MS };
+}
+
+/** The facts a group's send state moves on. */
+export interface GroupSendFacts {
+  /** `groupReady`: everything handled, and an answer no reply carried yet. */
+  ready: boolean;
+  /** The person answered, acted, skipped or undid in this group during this sitting. */
+  touched: boolean;
+  /** The thread holds a reply draft (the row's `unsent.reply_at`): its reply goes from the thread. */
+  draft: boolean;
+  /** The dialog is on screen (not tucked behind a thread). */
+  open: boolean;
+  now: number;
+}
+
+/**
+ * The send state machine of one group (one reply per agent session per thread):
+ *
+ *   waiting → hold (5 s) → sending → sent, or failed (Try again).
+ *
+ * Only a group the person touched in this sitting starts a Hold by itself.
+ * One that was ready before the sitting opened (its picks saved with "Keep as
+ * a draft") waits as "Held · Send" for the person's Send. A thread with a
+ * reply draft never sends from here: its reply goes from the thread, with the
+ * words. A sent group whose follow-up question the person answered goes round
+ * again (waiting, then a Hold).
+ */
+export function nextGroupSend(state: GroupSend, facts: GroupSendFacts): GroupSend {
+  if (state.kind === 'sending' || state.kind === 'failed') return state;
+  if (state.kind === 'sent') return facts.ready ? nextGroupSend({ kind: 'waiting' }, facts) : state;
+  if (!facts.ready) return state.kind === 'waiting' ? state : { kind: 'waiting' };
+  if (facts.draft) return state.kind === 'draft' ? state : { kind: 'draft' };
+  if (state.kind === 'hold') return state;
+  if (state.kind === 'held' && state.by === 'person') return state;
+  if (!facts.touched) return state.kind === 'held' ? state : { kind: 'held', by: 'untouched' };
+  return startHold(facts.now, facts.open);
+}
+
+/** A Hold paused (tucked) or running again (back on screen); every other state as it is. */
+export function pauseHold(state: GroupSend, open: boolean, now: number): GroupSend {
+  if (state.kind !== 'hold') return state;
+  if (!open && state.paused === null) return { ...state, paused: Math.max(0, state.until - now) };
+  if (open && state.paused !== null) return { kind: 'hold', until: now + state.paused, paused: null };
+  return state;
+}
+
+/** A pick in a group whose Hold runs gives the person the whole 5 s again. */
+export function restartHold(state: GroupSend, now: number, open: boolean): GroupSend {
+  return state.kind === 'hold' ? startHold(now, open) : state;
+}
+
+/** The seconds a Hold shows: never more than the Hold itself, whatever clock the render read. */
+export function holdSeconds(state: Extract<GroupSend, { kind: 'hold' }>, now: number): number {
+  const left = state.paused ?? state.until - now;
+  return Math.min(DECISION_HOLD_MS / 1000, Math.max(1, Math.ceil(left / 1000)));
 }
 
 /** Every send group the queue has met, in queue order. */
@@ -222,8 +293,12 @@ export function groupSendTargets(thread: InboxThread, sessionKey: string): SendT
 /** Where a group's reply is. */
 export type GroupSend =
   | { kind: 'waiting' }
-  | { kind: 'hold'; until: number }
-  | { kind: 'held' }
+  /** `paused`: the ms left while decision mode is tucked behind a thread (the Hold waits); null while it runs. */
+  | { kind: 'hold'; until: number; paused: number | null }
+  /** `person`: the person pressed Hold. `untouched`: ready before this sitting; it waits for a Send. */
+  | { kind: 'held'; by: 'person' | 'untouched' }
+  /** The thread holds a reply draft: the reply goes from the thread, never from here. */
+  | { kind: 'draft' }
   | { kind: 'sending' }
   | { kind: 'sent'; at: string }
   | { kind: 'failed'; error: string };

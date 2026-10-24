@@ -864,4 +864,12 @@ describe("experimental features", () => {
     saveConfig({ inboxTextSize: 13 });
     expect(loadConfig().experimental).toEqual({ otherFlag: true, decisionMode: true } as unknown as { decisionMode?: boolean });
   });
+
+  test("a hand-edited experimental value that is not an object is replaced, never spread", () => {
+    for (const bad of ["on", ["decisionMode"], 7, null]) {
+      writeFileSync(join(dir, "config.json"), JSON.stringify({ experimental: bad }));
+      saveConfig({ experimental: { decisionMode: true } });
+      expect(loadConfig().experimental).toEqual({ decisionMode: true });
+    }
+  });
 });

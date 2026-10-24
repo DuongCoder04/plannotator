@@ -728,8 +728,13 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
       : undefined;
     const mergedPrompts = mergePromptConfig(current.prompts, partial.prompts);
     // One experimental switch saved keeps the others as they are.
-    const mergedExperimental = (current.experimental || partial.experimental)
-      ? { ...current.experimental, ...partial.experimental }
+    // A hand-edited config.json may hold anything there: only plain objects are merged.
+    const plain = (value: unknown): Record<string, unknown> | undefined =>
+      value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+    const currentExperimental = plain(current.experimental);
+    const partialExperimental = plain(partial.experimental);
+    const mergedExperimental = currentExperimental || partialExperimental
+      ? { ...currentExperimental, ...partialExperimental } as PlannotatorConfig["experimental"]
       : undefined;
     const merged = {
       ...current,

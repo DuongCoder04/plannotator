@@ -276,24 +276,35 @@ export function isInboxQuestionSupersedable(state: InboxQuestionState): boolean 
 }
 
 /**
- * The one rule for "this waits on the person" (approval "inbox-decision-mode",
- * brief §10): the list's sections (through `summarizeInboxQuestions`), a
- * thread's open-questions list and decision mode's queue all read it, so the
- * Decide count, the list and the popover cannot disagree.
+ * What waits on the person, as the list counts it (its sections, the
+ * Stopped / Holding / Waiting badges, "Answered, not sent"): a question or
+ * action item that is `open`, or a question `picked` and not sent (its answer
+ * waits only for a Send). An action item the person marked is on its way (its
+ * Undo window: `picked`) and waits on nobody. Never an orphaned record.
  *
- * A question or action item waits on the person when it is `open`, or a
- * question `picked` and not sent (its answer waits only for a Send). An action
- * item the person marked is on its way (its Undo window: `picked`) and waits
- * on nobody. Never an orphaned record, and never a kind this build does not
- * know (no reader may answer one). Whether the message is still live (not
- * closed by an archive) is already in `state`, which the store derives.
+ * A kind this build does not know (written by a newer Inbox) still counts
+ * here, exactly as the list counted it before decision mode: the thread still
+ * waits on the person, who answers it in a newer window. Only the readers that
+ * answer (decision mode, the thread's open-questions list) leave it out, through
+ * `inboxQuestionWaitsOnPerson`. Whether the message is still live (not closed
+ * by an archive) is already in `state`, which the store derives.
+ */
+export function inboxQuestionWaitsForList(q: Pick<InboxQuestion, "state" | "kind" | "orphaned">): boolean {
+  if (q.orphaned) return false;
+  if (q.state === "open") return true;
+  return q.state === "picked" && q.kind !== "action";
+}
+
+/**
+ * The one rule for "this waits on the person and can be answered here"
+ * (approval "inbox-decision-mode", brief §10): decision mode's queue and a
+ * thread's open-questions list read it. It is the list's rule
+ * (`inboxQuestionWaitsForList`) without the kinds this build does not know,
+ * since no reader here may answer one. So the Decide count, the list and the
+ * popover agree on every known kind.
  */
 export function inboxQuestionWaitsOnPerson(q: Pick<InboxQuestion, "state" | "kind" | "orphaned">): boolean {
-  if (q.orphaned) return false;
-  const kind = readInboxQuestionKind(q.kind);
-  if (kind === "unknown") return false;
-  if (q.state === "open") return true;
-  return q.state === "picked" && kind !== "action";
+  return inboxQuestionWaitsForList(q) && readInboxQuestionKind(q.kind) !== "unknown";
 }
 
 /**
@@ -318,7 +329,8 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
   const holdsUp: string[] = [];
   let prompt: string | null = null;
   for (const q of questions) {
-    if (!inboxQuestionWaitsOnPerson(q)) continue;
+    // The list's rule: a kind this build does not know still counts (see inboxQuestionWaitsForList).
+    if (!inboxQuestionWaitsForList(q)) continue;
     if (q.state === "picked") picked += 1;
     if (q.state !== "open") continue;
     open += 1;

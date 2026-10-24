@@ -408,8 +408,12 @@ function Inbox() {
   const [decisions, setDecisions] = useState<InboxDecision[] | null>(null);
   const decisionsRef = useRef(decisions);
   decisionsRef.current = decisions;
-  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null } | null>(null);
+  // `startNonce`: a new start while the sitting is open (another notification) moves it to that card.
+  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null; startNonce: number } | null>(null);
+  /** What opened decision mode: focus goes back there when the sitting ends. */
+  const decideOpener = useRef<HTMLElement | null>(null);
   const [decideLeft, setDecideLeft] = useState(0);
+  const [decidePaused, setDecidePaused] = useState(0);
   const decisionModeOnRef = useRef(false);
   const questionListeners = useRef(new Set<(question: InboxQuestion) => void>());
   const subscribeQuestions = useCallback((listener: (question: InboxQuestion) => void) => {
@@ -572,17 +576,35 @@ function Inbox() {
     // A click on a notification: the thread opens, and the list on screen catches up, even with a
     // thread open. The one exception to "the list holds still while a thread is open" (settle.ts):
     // the person was away, and the thread notified may not be on screen at all.
-    openThread: (threadId) => {
-      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode").
-      const stopped = decisionModeOnRef.current ? decisionsRef.current?.find((d) => d.thread.id === threadId && d.question.stopped !== null) : undefined;
-      if (stopped) {
-        setDecide({ tucked: false, start: stopped.id });
+    openThread: (threadId, questionId) => {
+      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode"):
+      // the question it notified about, else a Stopped one of that thread. The projection may not have the
+      // new question yet, so it is read once more before giving up on it.
+      const stoppedOf = (list: readonly InboxDecision[] | null) =>
+        (questionId ? list?.find((d) => d.id === questionId && d.question.stopped !== null) : undefined) ??
+        list?.find((d) => d.thread.id === threadId && d.question.stopped !== null);
+      const fallback = () => {
+        writeRoute({ page: 'inbox', project: null, thread: threadId });
+        void refreshList(true);
+      };
+      if (!decisionModeOnRef.current) return fallback();
+      const openOn = (decision: InboxDecision) => {
+        setDecide((current) => ({ tucked: false, start: decision.id, startNonce: (current?.startNonce ?? 0) + 1 }));
         void refreshDecisions();
         void refreshList(true);
-        return;
-      }
-      writeRoute({ page: 'inbox', project: null, thread: threadId });
-      void refreshList(true);
+      };
+      const known = stoppedOf(decisionsRef.current);
+      if (known) return openOn(known);
+      if (!questionId) return fallback();
+      void inboxApi.decisions().then(
+        (model) => {
+          setDecisions(model.decisions);
+          const found = stoppedOf(model.decisions);
+          if (found) openOn(found);
+          else fallback();
+        },
+        () => fallback(),
+      );
     },
     // A click on a burst's notice: the list at rest, as it now is.
     openList: () => {
@@ -2076,8 +2098,24 @@ function Inbox() {
   }, [decisionModeOn, refreshDecisions]);
   const decideCount = decisionModeOn ? (decisions?.length ?? 0) : 0;
   const openDecide = (start: string | null = null) => {
-    setDecide({ tucked: false, start });
+    const active = document.activeElement;
+    decideOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    setDecide((current) => ({ tucked: false, start, startNonce: (current?.startNonce ?? 0) + 1 }));
     void refreshDecisions();
+  };
+  /** The sitting ended: focus back on what opened it, else on a Decide button still on screen. */
+  const closeDecide = () => {
+    setDecide(null);
+    void refreshList(true);
+    const opener = decideOpener.current;
+    decideOpener.current = null;
+    requestAnimationFrame(() => {
+      const target =
+        (opener?.isConnected ? opener : null) ??
+        document.querySelector<HTMLElement>('[data-decide-head]') ??
+        document.querySelector<HTMLElement>('[data-decide-nav]');
+      target?.focus({ preventScroll: true });
+    });
   };
   // The open thread's row: the list's, else its own read's (an archived thread is not in the list).
   const openThreadRow = thread
@@ -2687,21 +2725,20 @@ function Inbox() {
           decisions={decisions}
           rows={latestRows}
           start={decide.start}
+          startNonce={decide.startNonce}
           phone={phone}
           refresh={refreshDecisions}
           subscribeQuestions={subscribeQuestions}
           onLeft={setDecideLeft}
+          onPaused={setDecidePaused}
           onTuck={(threadId, fileId) => {
             setDecide((current) => (current ? { ...current, tucked: true } : current));
             writeRoute({ page: 'inbox', project: null, thread: threadId, file: fileId ? { id: fileId, version: 'current', focus: null } : null });
           }}
-          onClose={() => {
-            setDecide(null);
-            void refreshList(true);
-          }}
+          onClose={closeDecide}
         />
       )}
-      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
+      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} paused={decidePaused} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
       <div className="ib-sr" aria-live="polite" data-inbox-live="">
         {said}
       </div>

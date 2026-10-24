@@ -131,6 +131,18 @@ export interface DecisionCardProps {
   onImage: (pictures: CardPicture[], index: number) => void;
   /** Escape walked out of a field the card opened: report it so the dialog does not close too. */
   fieldOpenRef: { current: (() => boolean) | null };
+  /** Whether the card holds words typed and not answered with (closing asks first). */
+  unsavedWordsRef?: { current: (() => boolean) | null };
+  /** A reply already took this answer (Previous reached it): drawn read only. */
+  sent?: boolean;
+  /** prefers-reduced-motion: a committed swipe stays where the finger left it, no exit motion. */
+  reduced?: boolean;
+}
+
+/** How far a committed swipe throws the card: past the window's edge. */
+function flingDistance(direction: number): number {
+  const width = typeof window === 'undefined' ? 1200 : window.innerWidth;
+  return direction * Math.max(width, 600);
 }
 
 export function DecisionCard(props: DecisionCardProps) {
@@ -151,14 +163,46 @@ export function DecisionCard(props: DecisionCardProps) {
   const pointer = useRef(false);
   const swipe = useRef<{ x: number; y: number; id: number } | null>(null);
   const [drag, setDrag] = useState(0);
-  const choices2 = facts.irreversible ? null : swipeChoices(q);
+  /** A committed swipe's exit: the card keeps going that way from where the finger left it. */
+  const [fling, setFling] = useState<number | null>(null);
+  const articleRef = useRef<HTMLElement>(null);
+  const locked = props.sent === true;
+  const choices2 = facts.irreversible || locked ? null : swipeChoices(q);
 
-  // Escape inside a field the card opened closes the field first.
+  /** The words in a box the card shows, by box (empty when the box is closed). */
+  const boxWords = (box: 'other' | 'note' | 'cant' | 'text'): string =>
+    box === 'other' ? other : box === 'note' ? note : box === 'cant' ? reason : text;
+  const openBoxEmpty = field === 'none' || !boxWords(field).trim();
+
+  // Escape is one layer at a time. A box with words in it is a layer: Escape lets go of it (the
+  // words stay, focus goes to the prompt), and the dialog then asks before it closes over them.
+  // An empty box the card opened closes.
   props.fieldOpenRef.current = () => {
-    if (field === 'none') return false;
-    setField('none');
-    return true;
+    const active = typeof document === 'undefined' ? null : document.activeElement;
+    const inBox = active instanceof HTMLTextAreaElement && articleRef.current?.contains(active) === true;
+    if (inBox && active.value.trim()) {
+      promptRef.current?.focus({ preventScroll: true });
+      return true;
+    }
+    if (field !== 'none' && openBoxEmpty) {
+      setField('none');
+      promptRef.current?.focus({ preventScroll: true });
+      return true;
+    }
+    return false;
   };
+  if (props.unsavedWordsRef) {
+    props.unsavedWordsRef.current = () => {
+      if (props.stamp || locked) return false;
+      const differs = (typed: string, kept: string | null | undefined) => typed.trim() !== '' && typed.trim() !== (kept ?? '').trim();
+      return (
+        (kind === 'text' && differs(text, saved?.text)) ||
+        (field === 'other' && differs(other, saved?.other)) ||
+        differs(note, saved?.note) ||
+        (field === 'cant' && reason.trim() !== '')
+      );
+    };
+  }
 
   useEffect(() => {
     promptRef.current?.focus({ preventScroll: true });
@@ -192,8 +236,16 @@ export function DecisionCard(props: DecisionCardProps) {
     swipe.current = null;
     if (!start || start.id !== event.pointerId || !choices2) return setDrag(0);
     const dx = event.clientX - start.x;
-    setDrag(0);
-    if (Math.abs(dx) < 90) return;
+    // Short of the threshold: back to the centre.
+    if (Math.abs(dx) < 90) return setDrag(0);
+    // Committed: the card stays where the finger left it, then (with motion) keeps going that way while the
+    // stamp shows; it never jumps back to the centre first. Under reduced motion it just stays.
+    setDrag(dx);
+    if (!props.reduced) {
+      const target = flingDistance(Math.sign(dx));
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => setFling(target));
+      else setFling(target);
+    }
     commitChoice([dx > 0 ? choices2[0] : choices2[1]]);
   };
 
@@ -204,8 +256,22 @@ export function DecisionCard(props: DecisionCardProps) {
       data-decision-card={decision.id}
       data-kind={kind}
       data-has-picture={pictures.length > 0 ? '' : undefined}
+      ref={articleRef}
       data-stamped={props.stamp ? '' : undefined}
-      style={drag ? { translate: `${drag}px 0`, rotate: `${drag / 40}deg` } : undefined}
+      data-flung={drag !== 0 && props.stamp ? '' : undefined}
+      data-sent={locked ? '' : undefined}
+      style={
+        fling !== null
+          ? {
+              translate: `${fling}px 0`,
+              rotate: `${Math.max(-18, Math.min(18, fling / 40))}deg`,
+              opacity: 0,
+              transition: 'translate 320ms cubic-bezier(0.2, 0.6, 0.3, 1), rotate 320ms cubic-bezier(0.2, 0.6, 0.3, 1), opacity 260ms ease-in 60ms',
+            }
+          : drag
+            ? { translate: `${drag}px 0`, rotate: `${Math.max(-18, Math.min(18, drag / 40))}deg` }
+            : undefined
+      }
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
@@ -286,7 +352,16 @@ export function DecisionCard(props: DecisionCardProps) {
           </button>
         </div>
 
+        {locked && (
+          <p className="ib-dm-sentline" data-decision-sent="">
+            <Icon name="check" size={16} />
+            <span>
+              <b>Sent</b> · {kind === 'action' ? (q.action_result?.outcome === 'cant' ? "Can't do it" : 'Done') : answerWords(q.answer)}
+            </span>
+          </p>
+        )}
         {/* The answers. */}
+        {!locked && (
         <div className="ib-dm-answers" onPointerDownCapture={() => (pointer.current = true)} onKeyDownCapture={() => (pointer.current = false)}>
           {kind === 'single' && (
             <fieldset className={`ib-dm-choices${q.choices.length === 2 ? ' ib-dm-two' : ''}`} aria-labelledby={promptId}>
@@ -434,9 +509,10 @@ export function DecisionCard(props: DecisionCardProps) {
             </p>
           )}
         </div>
+        )}
 
         {/* The secondary actions: Other, Add a note, Later, Skip. */}
-        {kind !== 'action' && (
+        {!locked && kind !== 'action' && (
           <>
             {field === 'other' && kind !== 'text' && (
               <div className="ib-dm-field">
@@ -476,7 +552,7 @@ export function DecisionCard(props: DecisionCardProps) {
             </div>
           </>
         )}
-        {kind === 'action' && (
+        {!locked && kind === 'action' && (
           <div className="ib-dm-more">
             <button type="button" className="ib-dm-lnk" data-decision-later="" onClick={props.onLater}>
               <Icon name="clock" size={15} />

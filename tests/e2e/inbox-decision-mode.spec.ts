@@ -274,6 +274,23 @@ test('a phone (WebKit, iPhone 15): the card is a full-screen column with 44 px t
       }
       await page.waitForTimeout(300);
       await page.screenshot({ path: join(proofDir, `phone-card-${scheme}.png`) });
+      if (scheme === 'dark') {
+        // Open the thread: decision mode tucks into its pill, which never covers the thread's foot (Reply, Send).
+        await card(page).locator('[data-decision-open-thread]').tap();
+        const pill = page.locator('[data-decision-pill]');
+        await expect(pill).toBeVisible();
+        const foot = page.locator('section.ib-pane .ib-pfoot');
+        await expect(foot).toBeVisible();
+        await expect
+          .poll(async () => {
+            const [p, f] = [await pill.boundingBox(), await foot.boundingBox()];
+            return p && f ? Math.round(p.y + p.height) <= Math.round(f.y) : false;
+          })
+          .toBe(true);
+        await page.screenshot({ path: join(proofDir, `phone-pill-${scheme}.png`) });
+        await page.locator('[data-decision-resume]').tap();
+        await expect(dialog).toBeVisible();
+      }
       if (scheme === 'light') {
         await card(page).locator('.ib-dm-choice', { hasText: 'Yes, send it' }).tap();
         await expect(promptOf(page)).toHaveText('Round half-even or half-up for JPY refunds?');

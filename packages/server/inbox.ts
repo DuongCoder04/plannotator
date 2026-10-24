@@ -442,6 +442,8 @@ const ERROR_STATUS: Record<string, number> = {
   card_person_only: 403,
   // Over your tailnet (packages/server/inbox-tailscale.ts).
   tailscale_env_decides: 409,
+  // Settings → General → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
+  experimental_env_decides: 409,
   tailscale_unavailable: 409,
   local_only: 403,
 };
@@ -1393,6 +1395,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       throw new InboxError("validation_error", "experimental: { decision_mode: boolean }.", { field: "experimental" });
     }
     const on = (input as { decision_mode: boolean }).decision_mode;
+    // The env var decides (like PLANNOTATOR_INBOX_TAILSCALE): saving to config.json would change nothing.
+    const env = parseExperimentalEnv("decision-mode");
+    if (env !== undefined) {
+      throw new InboxError("experimental_env_decides", `PLANNOTATOR_EXPERIMENTAL is set in this Inbox's environment, so decision mode stays ${env ? "on" : "off"}.`, { field: "experimental" });
+    }
     if (validateOnly) return experimentalState();
     saveConfig({ experimental: { decisionMode: on } });
     if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");

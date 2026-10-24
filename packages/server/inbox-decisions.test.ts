@@ -114,13 +114,21 @@ describe("the gate", () => {
   });
 
   test("PLANNOTATOR_EXPERIMENTAL decides over config.json, both ways", async () => {
-    const { server } = await setup({ on: true });
+    const { server, dataDir } = await setup({ on: true });
     process.env.PLANNOTATOR_EXPERIMENTAL = "other-thing, -decision-mode";
     expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(404);
     const settings = (await (await fetch(`${base(server)}/api/inbox/settings`)).json()) as { experimental: unknown };
     expect(settings.experimental).toEqual({ decision_mode: { on: false, env: false } });
     process.env.PLANNOTATOR_EXPERIMENTAL = " Decision-Mode ";
-    await post(server, "/api/inbox/settings", { experimental: { decision_mode: false } });
+    // While the env var decides, the switch is locked: a save is refused (409, like Over your tailnet) and writes nothing.
+    const before = readFileSync(join(dataDir, "config.json"), "utf8");
+    const locked = await post(server, "/api/inbox/settings", { experimental: { decision_mode: false } });
+    expect(locked.status).toBe(409);
+    expect(((await locked.json()) as { code: string }).code).toBe("experimental_env_decides");
+    expect(readFileSync(join(dataDir, "config.json"), "utf8")).toBe(before);
+    // Nothing else in the same request is saved either.
+    expect((await post(server, "/api/inbox/settings", { experimental: { decision_mode: true }, text_size: 12 })).status).toBe(409);
+    expect(readFileSync(join(dataDir, "config.json"), "utf8")).toBe(before);
     expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(200);
   });
 });

@@ -11,6 +11,15 @@ import {
   choiceAnswer,
   emptyQueue,
   groupHalfAnswered,
+  freshPicks,
+  holdSeconds,
+  nextGroupSend,
+  pauseHold,
+  restartHold,
+  startHold,
+  DECISION_HOLD_MS,
+  type GroupSend,
+  type GroupSendFacts,
   groupKeyOf,
   groupReady,
   groupSendTargets,
@@ -77,9 +86,10 @@ describe('the queue', () => {
     q = mergeDecisions(q, [B1, A2]);
     expect(q.order).toEqual([A1.id, A2.id, B1.id]);
     expect(q.gone.get(A1.id)).toBe('closed');
-    // A send group this sitting sent: what left with it reads as sent.
-    const sent = mergeDecisions(mergeDecisions(emptyQueue(), [A1, A2, B1]), [B1], new Set([groupKeyOf(A1)]));
+    // A decision a reply of this sitting carried reads as sent; one that left otherwise reads as closed.
+    const sent = mergeDecisions(mergeDecisions(emptyQueue(), [A1, A2, B1]), [B1], new Set([A1.id]));
     expect(sent.gone.get(A1.id)).toBe('sent');
+    expect(sent.gone.get(A2.id)).toBe('closed');
   });
 
   test('a read older than a saved pick, or one that crossed a pick on its way, never undoes it', () => {
@@ -114,6 +124,58 @@ describe('the queue', () => {
     const act = decision('msg_c/a-1', 'ses_c', 'msg_t3', { kind: 'action', state: 'picked' });
     const q = mergeDecisions(emptyQueue(), [act]);
     expect(groupReady(q, groupKeyOf(act))).toBe(false);
+  });
+});
+
+describe("a group's send state", () => {
+  const facts = (over: Partial<GroupSendFacts> = {}): GroupSendFacts => ({ ready: true, touched: true, draft: false, open: true, now: 1000, ...over });
+
+  test('a group the person answered in this sitting starts a 5 s Hold; its first value is 5', () => {
+    const next = nextGroupSend({ kind: 'waiting' }, facts());
+    expect(next).toEqual({ kind: 'hold', until: 1000 + DECISION_HOLD_MS, paused: null });
+    // Whatever clock the first render read (an old one, before the Hold began), it shows 5, never more.
+    expect(holdSeconds(next as Extract<GroupSend, { kind: 'hold' }>, 1000)).toBe(5);
+    expect(holdSeconds(next as Extract<GroupSend, { kind: 'hold' }>, 1000 - 5000)).toBe(5);
+    expect(holdSeconds(next as Extract<GroupSend, { kind: 'hold' }>, 1000 + 4200)).toBe(1);
+  });
+
+  test('a group ready before this sitting (Keep as a draft) never sends by itself: Held · Send', () => {
+    expect(nextGroupSend({ kind: 'waiting' }, facts({ touched: false }))).toEqual({ kind: 'held', by: 'untouched' });
+    // Touched later, it starts its Hold; held by the person, it stays held.
+    expect(nextGroupSend({ kind: 'held', by: 'untouched' }, facts()).kind).toBe('hold');
+    expect(nextGroupSend({ kind: 'held', by: 'person' }, facts())).toEqual({ kind: 'held', by: 'person' });
+  });
+
+  test('a thread with a reply draft never sends from here, touched or not', () => {
+    expect(nextGroupSend({ kind: 'waiting' }, facts({ draft: true }))).toEqual({ kind: 'draft' });
+    expect(nextGroupSend({ kind: 'hold', until: 9, paused: null }, facts({ draft: true }))).toEqual({ kind: 'draft' });
+  });
+
+  test('a sent group whose follow-up the person answered goes round again', () => {
+    const sent: GroupSend = { kind: 'sent', at: '2026-10-24T10:00:00.000Z' };
+    expect(nextGroupSend(sent, facts({ ready: false }))).toBe(sent);
+    expect(nextGroupSend(sent, facts()).kind).toBe('hold');
+    // A failed send waits for Try again.
+    expect(nextGroupSend({ kind: 'failed', error: 'x' }, facts()).kind).toBe('failed');
+  });
+
+  test('a Hold pauses while tucked and runs on from where it was; a pick restarts it', () => {
+    const hold = startHold(1000, true);
+    const paused = pauseHold(hold, false, 3000);
+    expect(paused).toEqual({ kind: 'hold', until: hold.kind === 'hold' ? hold.until : 0, paused: 3000 });
+    // Tucked for a minute: still 3 s left once back.
+    expect(pauseHold(paused, true, 63_000)).toEqual({ kind: 'hold', until: 66_000, paused: null });
+    expect(restartHold(hold, 4000, true)).toEqual({ kind: 'hold', until: 9000, paused: null });
+    // A Hold that starts while tucked starts paused.
+    expect(startHold(1000, false)).toEqual({ kind: 'hold', until: 6000, paused: 5000 });
+  });
+
+  test('the answers a reply already carried do not make a group ready again', () => {
+    const picked = (d: InboxDecision) => ({ ...d, question: { ...d.question, state: 'picked' as const, revision: 1 } });
+    const q = mergeDecisions(emptyQueue(), [picked(A1), picked(A2)]);
+    expect(groupReady(q, groupKeyOf(A1))).toBe(true);
+    expect(groupReady(q, groupKeyOf(A1), new Set([A1.id, A2.id]))).toBe(false);
+    expect(freshPicks(q, groupKeyOf(A1), new Set([A1.id]))).toEqual([A2.id]);
   });
 });
 
