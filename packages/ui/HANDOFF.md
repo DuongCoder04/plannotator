@@ -2461,6 +2461,13 @@ Settings → Display can show a **Text size** row (13 / 15 / 17 / 19 / 21 px of 
 - **`back(options?: { restoreScroll?: boolean })`** (was `back()`): `restoreScroll: false` skips the restore, for a caller that scrolls to a target itself; only an explicit false turns it off, so `back` handed to an onClick is unchanged. **`cancelScrollRestore()`** (new on the return): stops a restore still settling. Call it before a programmatic scroll (a jump to a comment, a Contents click, a reveal); assigning scrollTop during a smooth `scrollIntoView` cancels it in Chromium, so a live restore would otherwise undo the jump.
 - **`open()` / `openLoaded()` option `restoreScroll?: boolean`** (#2128, additive): leaving a linked document for another one now also remembers where the reader was in it (per path), and reopening it with `restoreScroll: true` puts them back there with the same restore `back()` runs. For a host whose Back reopens a document that is not the root (Plannotator's review of several files reopens the bundle file a link was followed from). Without the flag nothing about scrolling changes.
 
+## Image viewer: "Use ⌘ + scroll to zoom" (#2127; next ui release; visual change, additive prop, no core change)
+
+The first time a plain wheel scrolls an image in **`ImageZoomStage`** (the lightbox, and any host stage), a pill in the middle of the stage says "Use ⌘ + scroll to zoom" ("Ctrl" off macOS), held while the wheel keeps scrolling and 2 s after (`WHEEL_HINT_HOLD_MS`), then faded (no fade under reduced motion). It is `aria-hidden` with `pointer-events: none`; a polite live region (`[data-wheel-hint-live]`, always in the stage) says "Scrolling moves the image. To zoom, hold Command (Control) and scroll." once, then empties. Never for a fitted image, Ctrl/⌘ + wheel, a pinch, or on a touch-only device. What a host notices:
+
+- **Without a prop, once per stage mount** (so once per image, since hosts key the stage by image). To show it once per viewer instead, hold a **`WheelHintGate`** (`{ shown: boolean }`, exported from `components/ImageZoomStage`) for the viewer's life and pass it to every stage as **`wheelHint`**; `wheelHint={false}` turns it off. `ImageLightbox` does this itself (once per open).
+- **`utils/platform`** adds `modKeySpoken` (`'Command'` / `'Control'`), the modifier as a screen reader says it in a sentence.
+
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 
 These are enforced socially and, where possible, by CI. They exist because a prior from-scratch reimplementation of this UI broke the app and was reverted.

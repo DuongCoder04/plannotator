@@ -8,7 +8,7 @@ import { AnnotationPanel } from './AnnotationPanel';
 import { CommentPopover, type CommentAskAIHandler } from './CommentPopover';
 import { ImagePeek, type ImagePeekHandle, type ImagePeekRow } from './ImagePeek';
 import { RegionBoxLayer, RegionToolStrip, regionOf, type RegionBoxItem } from './ImageRegions';
-import { ImageZoomStage, type ImageZoomStageHandle, type ZoomDraw, type ZoomMode } from './ImageZoomStage';
+import { ImageZoomStage, type ImageZoomStageHandle, type WheelHintGate, type ZoomDraw, type ZoomMode } from './ImageZoomStage';
 import type { NaturalBox, ZoomSize, ZoomViewport } from './imageZoom';
 import { useIsMobile } from '../hooks/useIsMobile';
 
@@ -183,6 +183,8 @@ export const ImageLightbox: React.FC<{
   const [announced, setAnnounced] = useState('');
   const peekRef = useRef<ImagePeekHandle>(null);
   const stageRef = useRef<ImageZoomStageHandle>(null);
+  // The "⌘ + scroll to zoom" hint shows once while the lightbox is open, whichever image a plain wheel first scrolls (#2127).
+  const wheelHint = useRef<WheelHintGate>({ shown: false }).current;
   const refocusStage = useRef(false);
   const pillRef = useRef<HTMLButtonElement>(null);
   const endTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -542,6 +544,7 @@ export const ImageLightbox: React.FC<{
           imageClassName="shadow-2xl"
           radius={8}
           stageAttributes={{ 'data-lightbox-stage': zoomMode }}
+          wheelHint={wheelHint}
         />
         {alt && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[2.5vh] mx-auto max-w-[90vw] truncate text-center text-sm text-white/70">{alt}</div>
@@ -729,6 +732,7 @@ export const ImageLightbox: React.FC<{
                 className="absolute inset-0"
                 imageClassName="shadow-xl"
                 stageAttributes={{ 'data-lightbox-stage': zoomMode, ...(regionsOn ? { 'data-region-tool-active': tool } : {}) }}
+                wheelHint={wheelHint}
               >
                 {regionsOn && (
                   <RegionBoxLayer

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ImageZoomStage, type FitAxis, type ImageZoomStageHandle, type ZoomMode } from '@plannotator/ui/components/ImageZoomStage';
+import { ImageZoomStage, type FitAxis, type ImageZoomStageHandle, type WheelHintGate, type ZoomMode } from '@plannotator/ui/components/ImageZoomStage';
 import type { InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { ImageAnnotator } from '@plannotator/ui/components/ImageAnnotator';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
@@ -60,6 +60,7 @@ export function ImageAttachmentView({
   initialFit,
   onFitChange,
   onSwipe,
+  wheelHint,
 }: {
   attachment: InboxAttachmentState;
   version: 'current' | 'sent';
@@ -73,6 +74,8 @@ export function ImageAttachmentView({
   onFitChange?: (fit: 'fit' | 'actual') => void;
   /** A swipe across the fitted image: 1 next file, -1 previous. */
   onSwipe?: (dir: 1 | -1) => void;
+  /** The pane's "⌘ + scroll to zoom" gate, so the hint shows once per viewer open, not once per file (#2127). */
+  wheelHint?: WheelHintGate;
 }) {
   const [mode, setMode] = useState<ZoomMode>(initialFit ?? 'fit');
   const [scale, setScale] = useState<number | null>(null);
@@ -277,6 +280,7 @@ export function ImageAttachmentView({
               className="ib-zoomstage"
               imageClassName="ib-zoomimg"
               stageAttributes={{ 'data-image-zoom-stage': mode }}
+              wheelHint={wheelHint}
               onImageLoad={setNatural}
               onImageError={() => setFailed(true)}
               overlay={
