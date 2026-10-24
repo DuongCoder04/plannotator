@@ -25,6 +25,7 @@
  *   origin.
  */
 
+import { getLiveProxyPortSelection, isLiveProxyAddressInUseError, LiveProxyPortInUseError } from "@plannotator/shared/live-proxy-port";
 import {
   HOP_BY_HOP_HEADERS,
   LIVE_PROXY_BRIDGE_PATH,
@@ -103,10 +104,10 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
   const wsUpstreams = new Set<WebSocket>();
   let warnedEncodedHtml = false;
 
-  const server = Bun.serve<LiveProxySocketData>({
+  const startServer = (port: number) => Bun.serve<LiveProxySocketData>({
     // The literal loopback address is the security contract (see header).
     hostname: LOOPBACK_HOST,
-    port: 0,
+    port,
     idleTimeout: 0,
 
     async fetch(req, srv) {
@@ -345,6 +346,18 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
       },
     },
   });
+
+  const selection = getLiveProxyPortSelection();
+  const server = (() => {
+    for (const port of selection.ports) {
+      try {
+        return startServer(port);
+      } catch (error) {
+        if (!isLiveProxyAddressInUseError(error)) throw error;
+      }
+    }
+    throw new LiveProxyPortInUseError(selection);
+  })();
 
   const port = server.port!;
   return {

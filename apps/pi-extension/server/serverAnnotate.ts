@@ -114,6 +114,8 @@ import { createAnnotateDecisionSettler, isNothingToSendFeedbackBody } from "../g
 
 export interface AnnotateServerResult {
 	port: number;
+	/** The live proxy port, when annotating a running app. */
+	liveProxyPort?: number;
 	portSource: "env" | "remote-default" | "random";
 	url: string;
 	waitForDecision: () => Promise<{ feedback: string; annotations: unknown[]; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages"; closedBy?: "agent"; unsentAnnotations?: number }>;
@@ -1528,6 +1530,7 @@ export async function startAnnotateServer(options: {
 
 	return {
 		port,
+		liveProxyPort: liveProxy?.port,
 		portSource,
 		url: buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,

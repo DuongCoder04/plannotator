@@ -33,6 +33,7 @@
  * proxy origin.
  */
 
+import { getLiveProxyPortSelection, isLiveProxyAddressInUseError, LiveProxyPortInUseError } from "./live-proxy-port";
 import { createServer, request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
@@ -115,7 +116,7 @@ function sendForbidden(res: ServerResponse): void {
  * sockets and closes the listener (plus its remaining keep-alive
  * connections).
  */
-export function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<LiveAppProxy> {
+export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<LiveAppProxy> {
   const target = new URL(opts.targetUrl);
   if (target.protocol !== "http:") {
     throw new Error("Live app proxy supports http upstreams only.");
@@ -386,33 +387,52 @@ export function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<LiveAp
   // mirrors the Bun transport's idleTimeout: 0.
   server.requestTimeout = 0;
 
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    // The literal loopback address is the security contract (see header).
-    server.listen(0, LOOPBACK_HOST, () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Live app proxy failed to bind a loopback port"));
-        return;
-      }
-      port = address.port;
-      resolve({
-        port,
-        // Always the literal loopback origin: PLANNOTATOR_URL_HOST and
-        // buildAdvertisedUrl are never applied here.
-        origin: `http://${LOOPBACK_HOST}:${port}`,
-        stop() {
-          for (const s of upgradeSockets) s.destroy();
-          upgradeSockets.clear();
-          server.close();
-          // close() only stops the listener; drain keep-alive connections so
-          // a stopped session's sockets die immediately (parity with Bun's
-          // server.stop(true)). Guarded: jiti can run under hosts whose
-          // node:http lacks closeAllConnections.
-          (server as { closeAllConnections?: () => void }).closeAllConnections?.();
-        },
+  const selection = getLiveProxyPortSelection();
+  let listening = false;
+  for (const candidate of selection.ports) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          server.removeListener("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.removeListener("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        // The literal loopback address is the security contract (see header).
+        server.listen(candidate, LOOPBACK_HOST);
       });
-    });
-  });
+      listening = true;
+      break;
+    } catch (error) {
+      if (!isLiveProxyAddressInUseError(error)) throw error;
+    }
+  }
+  if (!listening) throw new LiveProxyPortInUseError(selection);
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Live app proxy failed to bind a loopback port");
+  }
+  port = address.port;
+  return {
+    port,
+    // Always the literal loopback origin: PLANNOTATOR_URL_HOST and
+    // buildAdvertisedUrl are never applied here.
+    origin: `http://${LOOPBACK_HOST}:${port}`,
+    stop() {
+      for (const s of upgradeSockets) s.destroy();
+      upgradeSockets.clear();
+      server.close();
+      // close() only stops the listener; drain keep-alive connections so
+      // a stopped session's sockets die immediately (parity with Bun's
+      // server.stop(true)). Guarded: jiti can run under hosts whose
+      // node:http lacks closeAllConnections.
+      (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+    },
+  };
 }
