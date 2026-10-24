@@ -45,6 +45,7 @@ import type { AnnotationRestoreReport } from '@plannotator/ui/hooks/useAnnotatio
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
 import { MarkdownEditor, type MarkdownEditorHandle } from '@plannotator/ui/components/MarkdownEditor';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
+import { loadableImageSrc } from '@plannotator/ui/components/ImageRegions';
 import { DocumentAIChatPanel } from '@plannotator/ui/components/ai/DocumentAIChatPanel';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { ExportModal } from '@plannotator/ui/components/ExportModal';
@@ -298,6 +299,13 @@ import {
 } from './agentTerminalIntegration';
 import { resolveDocumentAreaClassName } from './documentAreaLayout';
 import { askAIAnnotationParams } from './askAIDrafts';
+import {
+  askDocumentParams,
+  describeAskDocument,
+  EMPTY_ASK_DOCUMENT_LATCH,
+  type AskDocument,
+  type AskDocumentLatch,
+} from './askDocumentContext';
 import {
   buildPlanEditPanelItem,
   buildDirectEditsSection,
@@ -747,6 +755,13 @@ const App: React.FC = () => {
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
   // Plan review: the directory of the plan file on disk, when its contents match the plan.
   const [planDir, setPlanDir] = useState<string | undefined>(undefined);
+  // Plan review: the history file holding the exact plan on screen (absolute),
+  // so Ask AI can name the plan by path instead of pasting it.
+  const [planPath, setPlanPath] = useState<string | undefined>(undefined);
+  // Plan review: the plan's own file (the agent's, e.g. ~/.claude/plans/x.md),
+  // when its text is the plan on screen. "Ask this session" is named this
+  // one, never the history copy, which is outside its project.
+  const [planOwnFilePath, setPlanOwnFilePath] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
@@ -2016,7 +2031,7 @@ const App: React.FC = () => {
   const handleFileBrowserSelect = React.useCallback(async (
     absolutePath: string,
     dirPath: string,
-    selectOptions?: { revealSidebar?: boolean },
+    selectOptions?: { revealSidebar?: boolean; restoreScroll?: boolean },
   ): Promise<void> => {
     const normalizedAbsolutePath = normalizeBrowserPath(absolutePath);
     const dirState = fileBrowser.dirs.find(d => d.path === dirPath);
@@ -2043,7 +2058,7 @@ const App: React.FC = () => {
         markdown: editableRecord.currentText,
         renderAs: 'markdown',
         sourceSave: editableRecord.sourceSave,
-      }, 'files', { notifyDocumentLoaded: false });
+      }, 'files', { notifyDocumentLoaded: false, restoreScroll: selectOptions?.restoreScroll });
       editableDocuments.setActiveKey(editableKey);
       if (isEditingMarkdown) {
         editSessionBaseRef.current = editableRecord.currentText;
@@ -2068,6 +2083,7 @@ const App: React.FC = () => {
     fileBrowser.setActiveFile(absolutePath);
     await linkedDocHook.open(absolutePath, buildUrl, 'files', {
       revealSidebar: selectOptions?.revealSidebar,
+      restoreScroll: selectOptions?.restoreScroll,
     });
   }, [editableDocuments, linkedDocHook, fileBrowser, convertHtml, isEditingMarkdown]);
 
@@ -2079,7 +2095,7 @@ const App: React.FC = () => {
   const bundleIndex = bundleFiles
     ? annotateBundleIndexOf(bundleFiles, linkedDocHook.isActive ? linkedDocHook.filepath : null)
     : -1;
-  const openBundleFile = React.useCallback((path: string, options?: { revealSidebar?: boolean }) => {
+  const openBundleFile = React.useCallback((path: string, options?: { revealSidebar?: boolean; restoreScroll?: boolean }) => {
     if (!bundleDirState) return Promise.resolve();
     return handleFileBrowserSelect(path, bundleDirState.path, options);
   }, [bundleDirState, handleFileBrowserSelect]);
@@ -2237,7 +2253,13 @@ const App: React.FC = () => {
   // The header's Back passes its click event, which never turns it off.
   const handleLinkedDocBack = React.useCallback((options?: { restoreScroll?: boolean }) => {
     if (bundleBackPath) {
-      void openBundleFile(bundleBackPath, { revealSidebar: false });
+      // The bundle file is reopened (it is a linked document, not the root),
+      // so ask for the reader's place in it explicitly, as back() restores
+      // the root's.
+      void openBundleFile(bundleBackPath, {
+        revealSidebar: false,
+        restoreScroll: options?.restoreScroll !== false,
+      });
       return;
     }
     linkedDocHook.back(options?.restoreScroll === false ? { restoreScroll: false } : undefined);
@@ -3810,7 +3832,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; planPath?: string; planFilePath?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Stale-tab guard: every decision echoes this server's nonce.
@@ -3934,6 +3956,8 @@ const App: React.FC = () => {
           }
         }
         setPlanDir(data.planDir ?? undefined);
+        setPlanPath(data.mode === undefined && typeof data.planPath === 'string' ? data.planPath : undefined);
+        setPlanOwnFilePath(data.mode === undefined && typeof data.planFilePath === 'string' ? data.planFilePath : undefined);
         if (data.sharingEnabled !== undefined) {
           setSharingEnabled(data.sharingEnabled);
         }
@@ -4309,6 +4333,8 @@ const App: React.FC = () => {
     originalMarkdownRef.current = normalized;
     setPreviousPlan(snapshot.previousPlan);
     setVersionInfo(snapshot.versionInfo);
+    setPlanPath(snapshot.planPath ?? undefined);
+    setPlanOwnFilePath(snapshot.planFilePath ?? undefined);
     setAppliedPlanRevision(snapshot.planRevision);
     setIsPlanDiffActive(false);
     const remapped = applyEditedDocument(normalized);
@@ -5411,6 +5437,34 @@ const App: React.FC = () => {
     linkedDocHook.isActive,
   ]);
 
+  // What is on screen, for the note a question carries when it changed.
+  const aiAskDocument = useMemo<AskDocument | null>(() => {
+    if (!aiContext) return null;
+    if (aiContext.mode === 'plan-review') {
+      return describeAskDocument({
+        kind: 'plan',
+        path: planPath,
+        ownPath: planOwnFilePath,
+        version: versionInfo?.version,
+        content: markdown,
+      });
+    }
+    if (aiContext.mode !== 'annotate') return null;
+    return describeAskDocument({
+      kind: 'document',
+      path: aiDocumentPath,
+      sourceUrl: liveApp?.targetUrl ?? aiSourceInfo,
+      label: annotateSource === 'message' && !linkedDocHook.isActive ? "the agent's message" : undefined,
+      renderAs: aiRenderAs,
+      converted: aiSourceConverted,
+      position: aiContext.annotate.bundlePosition,
+      content: aiContext.annotate.content,
+    });
+  }, [aiContext, aiDocumentPath, aiRenderAs, aiSourceConverted, aiSourceInfo, annotateSource, linkedDocHook.isActive, liveApp, markdown, planOwnFilePath, planPath, versionInfo]);
+  // What the agent was last told about the document, recorded once a question
+  // carrying it reached the session.
+  const askDocumentLatchRef = useRef<AskDocumentLatch>(EMPTY_ASK_DOCUMENT_LATCH);
+
   const aiChat = useAIChat({
     context: aiContext,
     providerId: aiConfig.providerId,
@@ -5488,9 +5542,12 @@ const App: React.FC = () => {
     return { prompt, markSent };
   }, [agentTerminalSessionId, getAIDraftList, aiDocumentPath, aiRenderAs, askScopeFromContext, displayedMarkdown, rawHtml, terminalAskReadableFilePath]);
 
-  const aiDocumentKey = aiContext
-    ? `${aiDocumentMode ? 'document' : 'plan'}:${aiRenderAs}:${aiDocumentPath}:${versionInfo?.version ?? 'current'}`
-    : 'none';
+  // One Ask AI chat for the whole Plannotator session (#1001): switching files,
+  // linked documents, Back and plan revisions all keep it (each question then
+  // names what is on screen, see `askDocumentContext.ts`). Only archive and
+  // goal setup, which are other contexts, start their own. "New chat" is the
+  // explicit way to start fresh.
+  const aiDocumentKey = archive.archiveMode ? 'archive' : goalSetupMode ? 'goal-setup' : 'session';
   const previousAIDocumentKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!aiSessionEnabled) return;
@@ -5566,9 +5623,16 @@ const App: React.FC = () => {
       return false;
     }
     openAIChat();
+    const documentParams = askDocumentParams(askDocumentLatchRef, aiAskDocument, {
+      hasSession: !!aiSessionId,
+      sessionBridge: hasSessionBridge,
+    });
     askAI({
       prompt: question,
       scope: askScopeFromContext(context),
+      // Decided at submission, so a retry ("Ask when it finishes") keeps the
+      // document it was asked about even if the reviewer moved on.
+      ...documentParams,
       ...askAIAnnotationParams({
         sessionBridge: hasSessionBridge,
         hasSession: !!aiSessionId,
@@ -5578,6 +5642,7 @@ const App: React.FC = () => {
     });
     return true;
   }, [
+    aiAskDocument,
     aiAnnotationsContext,
     aiSessionId,
     getAIDraftList,
@@ -7044,6 +7109,11 @@ const App: React.FC = () => {
     );
   };
 
+  // Region cards (#2100) show a crop of their image, loaded the way the
+  // document loads it.
+  const regionImageBaseDir = linkedDocHook.isActive ? activeDocBaseDir : imageBaseDir;
+  const imageRegionThumbSrc = useCallback((src: string) => loadableImageSrc(src, regionImageBaseDir), [regionImageBaseDir]);
+
   const renderAnnotationPanel = (presentation: 'panel' | 'embedded', isOpen = true) => (
     <AnnotationPanel
       isOpen={isOpen}
@@ -7091,6 +7161,7 @@ const App: React.FC = () => {
       readOnly={documentReadOnly}
       questionRows={questionRows.length > 0 ? questionRows : undefined}
       onSelectQuestion={handleSelectQuestionRow}
+      imageRegionSrc={imageRegionThumbSrc}
     />
   );
 
@@ -7693,6 +7764,10 @@ const App: React.FC = () => {
                     ref={viewerRef}
                     // The light version of the Inbox's one viewer: the lightbox steps through the document's images (approval "inbox-image-viewer").
                     imageLightboxStepping
+                    // Comments on part of an image (#2100, approval "image-region-comments").
+                    imageRegionComments
+                    onDeleteAnnotation={handleDeleteAnnotation}
+                    onEditAnnotation={handleEditAnnotation}
                     onRestoreReport={handleRestoreReport}
                     blocks={blocks}
                     markdown={displayedMarkdown}

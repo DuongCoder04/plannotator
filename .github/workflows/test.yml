@@ -135,6 +135,7 @@ jobs:
           packages/ui/components/Viewer.askAISelectionLine.test.tsx
           packages/ui/components/Viewer.textComments.test.tsx
           packages/ui/components/ImageLightbox.test.tsx
+          packages/ui/components/Viewer.imageRegions.test.tsx
           packages/ui/components/HostTitle.dom.test.tsx
           packages/inbox/images.test.tsx
           packages/inbox/inlineImages.test.tsx
@@ -198,9 +199,11 @@ jobs:
           packages/inbox/listLabels.test.tsx
           packages/inbox/listRowMemo.test.tsx
           packages/inbox/rowTicks.test.tsx
+          packages/inbox/guideDiffStyle.test.tsx
           packages/inbox/componentTooltips.test.tsx
           packages/inbox/toast.test.tsx
           packages/inbox/attachmentsHeader.test.tsx
+          packages/inbox/threadArtifacts.test.tsx
           packages/inbox/sentQuestionLocked.test.tsx
           packages/inbox/themeToggle.test.tsx
           packages/inbox/textSize.test.tsx
@@ -325,6 +328,7 @@ jobs:
           packages/editor/App.planRevision.test.tsx
           packages/editor/App.liveVersion.test.tsx
           packages/editor/askSessionDrafts.test.tsx
+          packages/editor/askDocumentLatch.test.tsx
           packages/review-editor/App.decisionControl.test.tsx
           packages/ui/components/TerminalToolsAnnouncementDialog.test.tsx
           packages/editor/App.terminalToolsAnnouncement.test.tsx
@@ -368,6 +372,7 @@ jobs:
           packages/editor/App.restoreAcrossEdit.test.tsx
           packages/editor/App.documentDrafts.test.tsx
           packages/editor/App.bundle.test.tsx
+          packages/editor/App.bundleBackScroll.test.tsx
           packages/editor/annotationDraftStaleRetry.test.tsx
           packages/ui/components/blocks/AlertBlock.title.test.tsx
           packages/ui/components/blocks/AlertBlock.seam.test.tsx
