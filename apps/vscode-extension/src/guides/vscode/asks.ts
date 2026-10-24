@@ -116,7 +116,7 @@ export class GuideAsks implements vscode.Disposable {
     return this.live.get(id)?.record ?? this.answersOf(guide).find((r) => r.id === id) ?? null;
   }
 
-  /** The chapter view's list: answers about this chapter, and the footer. */
+  /** The Guide tab's list under a chapter: answers about this chapter, and the footer. */
   chapterAnswers(guide: LoadedGuide, chapter: number): { items: AnswerListItem[]; footer?: string; busy: boolean; agent: string } {
     const all = this.answersOf(guide);
     const mine = all.filter((r) => r.about.chapter === chapter);

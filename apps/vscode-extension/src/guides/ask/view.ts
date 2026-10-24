@@ -1,5 +1,5 @@
 /**
- * What the answer tab and the chapter view's answer list show, from a saved
+ * What the answer tab and the Guide tab's answer list show, from a saved
  * answer and, while it is being answered, the live run. No `vscode` here.
  */
 
