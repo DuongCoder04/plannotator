@@ -208,6 +208,7 @@ jobs:
           packages/inbox/threadArtifacts.test.tsx
           packages/inbox/sentQuestionLocked.test.tsx
           packages/inbox/themeToggle.test.tsx
+          packages/inbox/palettePicker.test.tsx
           packages/inbox/textSize.test.tsx
           packages/inbox/agentNoteDialog.test.tsx
           packages/inbox/agentsSettings.test.tsx
