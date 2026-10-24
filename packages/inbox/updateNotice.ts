@@ -10,6 +10,7 @@
 import type { InboxHealth } from '@plannotator/core/inbox-types';
 import type { SidebarToggleNotice } from './shell/sidebar';
 
+type InboxUpdate = InboxHealth['update'];
 type UpdateState = NonNullable<InboxHealth['update']>['state'];
 
 export function sidebarUpdateNotice(state: UpdateState | null | undefined, restarting: boolean): SidebarToggleNotice | null {
@@ -24,4 +25,17 @@ export function sidebarUpdateNotice(state: UpdateState | null | undefined, resta
     default:
       return null;
   }
+}
+
+/**
+ * The update this page may offer: none on a page opened over the tailnet,
+ * where every /api/inbox/update* route answers 403 local_only (the server
+ * still carries `update` in the list model, health and status frames,
+ * whatever listener served them), and none until the settings read says
+ * which listener this page came through (the rule the sidebar's
+ * "Reload Claude Code N" follows). It gates the sidebar's Update button,
+ * the toggle's dot and Settings → About's update.
+ */
+export function updateForPage(update: InboxUpdate, settings: { via?: 'local' | 'tailnet' } | null): InboxUpdate {
+  return settings && settings.via !== 'tailnet' ? update : null;
 }

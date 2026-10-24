@@ -97,7 +97,7 @@ import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { DraftView } from './api';
 import { inboxTabCount, useTabCount } from './tabCount';
-import { sidebarUpdateNotice } from './updateNotice';
+import { sidebarUpdateNotice, updateForPage } from './updateNotice';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -468,8 +468,10 @@ function Inbox() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [update, setUpdate] = useState<InboxHealth['update']>(null);
   const [restarting, setRestarting] = useState(false);
+  // What this page may offer: nothing over the tailnet, where the update routes are local only.
+  const pageUpdate = updateForPage(update, settings);
   // The sidebar toggle's dot while the sidebar is closed: an update the Update button offers.
-  const updateState = update?.state ?? null;
+  const updateState = pageUpdate?.state ?? null;
   const sidebarToggleNotice = useMemo(() => sidebarUpdateNotice(updateState, restarting), [updateState, restarting]);
   /** This run started on a newer version: the sidebar's "What's new in X" link. */
   const [updated, setUpdated] = useState<string | null>(null);
@@ -2232,7 +2234,7 @@ function Inbox() {
         sound={settings?.sound ? sound : undefined}
         archived={<ArchivedBlock refreshKey={latest?.cursor ?? null} onUnarchive={unarchiveFromSettings} />}
         archivedTotal={archivedTotal}
-        aboutDot={!!update}
+        aboutDot={!!pageUpdate}
         about={
           <AboutBlock
             version={latest?.version ?? settings?.version ?? 'dev'}
@@ -2242,7 +2244,7 @@ function Inbox() {
             error={null}
             onCheckNow={() => void checkNow()}
             onToggle={(change) => void saveUpdateSwitches(change)}
-            update={update}
+            update={pageUpdate}
             onUpdate={pressUpdate}
             onWhatsNew={openWhatsNew}
             where={
@@ -2502,7 +2504,8 @@ function Inbox() {
             projectCounts={projectCounts}
             projectsReadable={projectsReadable}
             onProjectAction={(projectId, action) => void projectAction(projectId, action)}
-            update={update}
+            // Not on a page opened over the tailnet: the update routes answer 403 local_only there.
+            update={pageUpdate}
             restarting={restarting}
             updated={updated}
             onSearch={(opener) => openSearch(opener)}

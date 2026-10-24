@@ -5,8 +5,8 @@
  * The server says whether a newer release exists (`updateAvailable` on
  * /api/plan and /api/diff, from the machine's own check): the browser
  * never asks GitHub. This module parses that advert, decides whether the toast
- * may show now (once per version, and at most once every three days across
- * versions, remembered in a cookie that every localhost port shares), and
+ * may show now (once per version, and at most once a day across versions,
+ * remembered in a cookie that every localhost port shares), and
  * words the toast for the host that launched the session.
  */
 

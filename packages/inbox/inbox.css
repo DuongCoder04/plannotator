@@ -1653,9 +1653,16 @@ pre code.pn-code[data-keep-layout] {
 .ib-sb-trigger svg { width: 16px; height: 16px; }
 /* The dot while the sidebar is closed and holds something to see (an update): at the glyph's top-right corner, no motion. Primary for an update available or ready; neutral when it failed (never the error colour, the Update button's rule). */
 .pn-inbox .ib-sb-trigger { position: relative; }
-.ib-sb-trigger-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 1.5px var(--card); pointer-events: none; }
+/* The ring is the ground the toggle sits on, so it never haloes: every page header that holds the toggle (the list,
+   Drafts, Settings and its phone list, What's new, the first run) is drawn on its pane, `--ib-pane-bg-s` with the Soft
+   panes and `--ib-main-bg` without them; hovered, the toggle's own fill. */
+.ib-sb-trigger-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 1.5px var(--ib-pane-bg-s, var(--ib-main-bg)); pointer-events: none; }
 .pn-inbox .ib-sb-trigger:hover .ib-sb-trigger-dot { box-shadow: 0 0 0 1.5px var(--muted); }
 .ib-sb-trigger-dot[data-tone="neutral"] { background: var(--muted-foreground); }
+@media (forced-colors: active) {
+  .ib-sb-trigger-dot, .ib-sb-trigger-dot[data-tone="neutral"] { forced-color-adjust: none; background: CanvasText; box-shadow: 0 0 0 1.5px Canvas; }
+  .pn-inbox .ib-sb-trigger:hover .ib-sb-trigger-dot { box-shadow: 0 0 0 1.5px Canvas; }
+}
 /* Phone widths: the sheet, on the same spring (opacity and x ride it). */
 .ib-sb-scrim { position: fixed; inset: 0; z-index: 50; background-color: rgb(0 0 0 / 0.45); backdrop-filter: blur(2px); }
 .ib-sb-sheet { position: fixed; top: 0; bottom: 0; left: 0; z-index: 50; display: flex; flex-direction: column; width: var(--sidebar-width); box-shadow: var(--ib-shadow-sheet); outline: none; }

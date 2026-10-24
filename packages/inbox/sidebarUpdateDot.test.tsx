@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { sidebarUpdateNotice } from './updateNotice';
+import { sidebarUpdateNotice, updateForPage } from './updateNotice';
 import type { SidebarToggleNotice } from './shell/sidebar';
 
 const hasDom = typeof document !== 'undefined';
@@ -68,6 +68,23 @@ test('the notice follows what the Update button offers', () => {
   expect(sidebarUpdateNotice('updating', false)).toBeNull();
   expect(sidebarUpdateNotice('available', true)).toBeNull();
   expect(sidebarUpdateNotice(null, false)).toBeNull();
+});
+
+// A DOM test of the whole window over the tailnet is not possible here: the tailnet listener answers only a
+// Host the browser sets (happy-dom's fetch cannot), so the rule App follows is tested on its own.
+test('a page opened over the tailnet offers no update (the update routes answer 403 local_only there)', () => {
+  const update = { available: true, state: 'available', version: '9.9.9', current: '0.28.0', action: 'script', releaseUrl: '' } as const;
+  type Update = Parameters<typeof updateForPage>[0];
+  const offered = update as unknown as Update;
+  expect(updateForPage(offered, { via: 'local' })).toBe(offered);
+  // An Inbox that predates `via` is this computer's.
+  expect(updateForPage(offered, {})).toBe(offered);
+  // Over the tailnet: no Update button, so no dot either.
+  expect(updateForPage(offered, { via: 'tailnet' })).toBeNull();
+  expect(sidebarUpdateNotice(updateForPage(offered, { via: 'tailnet' })?.state, false)).toBeNull();
+  // Before the settings read answers, the page does not yet know where it came from.
+  expect(updateForPage(offered, null)).toBeNull();
+  expect(updateForPage(null, { via: 'local' })).toBeNull();
 });
 
 test.skipIf(!hasDom)('closed sidebar with an update: the dot, hidden from screen readers, and the name says it', () => {
