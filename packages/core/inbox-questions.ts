@@ -46,6 +46,7 @@ import {
   isQuestionAnswered,
   capQuestionPrompt,
   MAX_QUESTION_PROMPT_CHARS,
+  normalizeQuestionText,
   parseQuestionAnswer,
   parseQuestionBlock,
   questionChoicesNeedCanonicalLabels,
@@ -204,16 +205,57 @@ export function inboxQuestionState(
   return "picked";
 }
 
-/** The choices with their older names, for `canonicalQuestionAnswer`. */
+// Where a build through 0.28.26 may have joined a `Context:` line onto the
+// plain bullet above it: `Keep it pinned forever Context: an archived thread…`.
+const STORED_CONTEXT_SPLIT_RE = /\s+(?:[*_]{1,2})?context(?:[*_]{1,2})?\s*:/gi;
+
+/** Every label before a ` Context:` in a stored label (each split point:
+ *  the bullet's own words may hold the word too). */
+function storedContextHeads(label: string): string[] {
+  const heads: string[] = [];
+  for (const match of label.matchAll(STORED_CONTEXT_SPLIT_RE)) {
+    const head = label.slice(0, match.index).trim();
+    if (head) heads.push(head);
+  }
+  return heads;
+}
+
+/**
+ * The choices with their older names, for `canonicalQuestionAnswer`. A label
+ * stored with a `Context:` line joined on (a record from 0.28.26 or older)
+ * also answers to the part before it, which is the label the card reads
+ * today, so the card's pick is not refused as an unknown choice. A head is
+ * added only when no other choice has that name and no other choice yields
+ * the same head, so two choices never share a name.
+ */
 function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionChoice[] {
+  const names = record.parsed.choices.map((choice, index) =>
+    new Set([choice.label, ...(record.parsed.aliases[index] ?? [])].map(normalizeQuestionText)),
+  );
+  const heads = record.parsed.choices.map((choice) => storedContextHeads(choice.label));
+  const headOwners = new Map<string, Set<number>>();
+  heads.forEach((list, index) => {
+    for (const head of list) {
+      const key = normalizeQuestionText(head);
+      if (!headOwners.has(key)) headOwners.set(key, new Set());
+      headOwners.get(key)!.add(index);
+    }
+  });
   return record.parsed.choices.map((choice, index) => {
-    const aliases = record.parsed.aliases[index];
+    const aliases = [...(record.parsed.aliases[index] ?? [])];
+    for (const head of heads[index]!) {
+      const key = normalizeQuestionText(head);
+      if (!key || names[index]!.has(key) || headOwners.get(key)!.size > 1) continue;
+      if (names.some((set, other) => other !== index && set.has(key))) continue;
+      names[index]!.add(key);
+      aliases.push(head);
+    }
     return {
       label: choice.label,
       settled: choice.settled,
       recommended: choice.recommended,
       ...(choice.description !== null ? { description: choice.description } : {}),
-      ...(aliases ? { aliases } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
     };
   });
 }
@@ -348,14 +390,14 @@ function exportItem(record: InboxQuestionRecord, number: number): QuestionExport
     line: record.parsed.line,
     recommendedLabels: record.parsed.choices.filter((c) => c.recommended).map((c) => c.label),
     ...(record.parsed.suggested_text === null ? {} : { suggestedText: record.parsed.suggested_text }),
+    ...(record.parsed.recommendation === null ? {} : { recommendation: record.parsed.recommendation }),
+    choiceLabels: record.parsed.choices.map((c) => c.label),
+    choiceAliases: storedChoices(record).map((c) => c.aliases),
     settled: settled.length > 0,
     settledLabels: settled,
     ...(needsChoices
       ? {
-          choices: record.parsed.choices.map((c, i) => ({
-            label: c.label,
-            ...(record.parsed.aliases[i] ? { aliases: record.parsed.aliases[i]! } : {}),
-          })),
+          choices: storedChoices(record).map(({ label, aliases }) => ({ label, ...(aliases ? { aliases } : {}) })),
         }
       : {}),
   };
@@ -525,7 +567,11 @@ export function composeInboxReaskBody(input: {
       const recommended = record.parsed.choices.filter((c) => c.recommended).map((c) => c.label);
       const suggested = record.parsed.suggested_text ?? undefined;
       section += `### ${record.prompt.replace(/\s+/g, " ").trim()} (${record.id})\n`;
-      section += formatQuestionAnswerLines(answer, { recommended: isQuestionAnswered(answer) && isRecommendedQuestionAnswer(answer, recommended, suggested) });
+      section += formatQuestionAnswerLines(answer, { recommended: isQuestionAnswered(answer) && isRecommendedQuestionAnswer(answer, recommended, suggested, {
+        ...(record.parsed.recommendation === null ? {} : { recommendation: record.parsed.recommendation }),
+        choiceLabels: record.parsed.choices.map((c) => c.label),
+        choiceAliases: storedChoices(record).map((c) => c.aliases),
+      }) });
       section += "\n";
     }
     lines.push("", section.trimEnd());
