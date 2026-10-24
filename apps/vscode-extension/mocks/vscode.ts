@@ -105,6 +105,8 @@ export const ViewColumn = {
 };
 
 export const window = {
+  /** No editor groups unless a test sets them. */
+  tabGroups: { all: [] as unknown[], activeTabGroup: undefined as unknown },
   registerUriHandler(_handler: unknown) {
     return { dispose() {} };
   },
@@ -255,6 +257,14 @@ export class Range {
     return this.start.line === other.start.line && this.start.character === other.start.character &&
       this.end.line === other.end.line && this.end.character === other.end.character;
   }
+}
+
+export class TabInputWebview {
+  constructor(readonly viewType: string) {}
+}
+
+export class TabInputTextDiff {
+  constructor(readonly original: Uri, readonly modified: Uri) {}
 }
 
 export const CommentMode = { Preview: 1, Editing: 0 };

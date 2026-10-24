@@ -264,10 +264,10 @@ describe("the question box under the lines", () => {
     expect(c.state).toBe(vscode.CommentThreadState.Resolved);
     expect(bodies(c)[1]).toContain("Answer opened beside the diff");
     // Avatars for the person and the agent; the agent's label adds the time and the cost.
-    for (const i of [0, 1]) {
-      expect(c.comments[i].author.iconPath?.scheme).toBe("data");
-      expect(c.comments[i].author.iconPath?.path).toStartWith("image/svg+xml;base64,");
-    }
+    // The person: initials; the agent: its own mark from images/agents/.
+    expect(c.comments[0].author.iconPath?.scheme).toBe("data");
+    expect(c.comments[0].author.iconPath?.path).toStartWith("image/svg+xml;base64,");
+    expect(c.comments[1].author.iconPath?.path).toEndWith("/ext/images/agents/claude-code.svg");
     expect(c.comments[1].label).toMatch(/ · \d+s$/);
     expect(w.panels).toEqual([{ title: "Answer: Why return a value?", preserveFocus: true }]);
     const [record] = listAnswers(REPO_KEY, GUIDE_ID);

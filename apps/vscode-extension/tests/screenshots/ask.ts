@@ -183,14 +183,12 @@ async function main(): Promise<void> {
     await page.locator(".part.panel .title-actions [aria-label^='Hide Panel'], .part.panel .global-actions [aria-label^='Hide Panel'], .part.panel [aria-label^='Close Panel']").first().click().catch(() => {});
     await sleep(800);
   }
+  // The field takes one click (no stable API focuses a comment thread's field).
   const reply = widget.locator(".comment-form textarea, .comment-form .monaco-editor").first();
-  if (!(await widget.evaluate((el) => el.contains(document.activeElement)))) {
-    // An empty text field folds back to its "Ask a question…" button when it loses the focus.
-    console.log("check box keeps the focus after the panel closed: no (clicked)");
-    const folded = widget.locator(".review-thread-reply-button");
-    if (await folded.isVisible().catch(() => false)) await folded.click();
-    else await reply.click();
-  }
+  const folded = widget.locator(".review-thread-reply-button");
+  console.log(`check the field shows: ${await folded.isVisible().catch(() => false) ? "folded to its button" : await reply.isVisible().catch(() => false) ? "open" : "NOT SHOWN"}`);
+  if (await folded.isVisible().catch(() => false)) await folded.click();
+  else await reply.click();
   await page.keyboard.type("Why return a value here instead of throwing?");
   await sleep(600);
   await shot(page, "2-ask-box");

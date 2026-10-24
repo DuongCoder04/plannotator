@@ -79,6 +79,7 @@ import { ReaderUi } from "./reader-ui";
 import { GuideAsks } from "./asks";
 import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
+import { ANSWER_VIEW_TYPE, diffColumnBesideAnswers } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
 import { pullRequestWorktreeInUse, removeDraftWorktree, type WorktreeUsers } from "../worktrees";
@@ -171,7 +172,7 @@ export class GuidesController implements vscode.Disposable {
       autoApprove: () => this.autoApproveSetting(),
       approveAlways: () => void vscode.workspace.getConfiguration("plannotator.guides").update("autoApprove", "allow-all", vscode.ConfigurationTarget.Global),
       signIn: (agentId, logins, label, cwd) => this.signIn(label, { agentId, logins, cwd }),
-      createPanel: (title, column, onLink, preserveFocus) => this.createPanel("plannotator.guides.answer", title, "answer", column, preserveFocus ?? false, { onLink: (link) => onLink(link) }),
+      createPanel: (title, column, onLink, preserveFocus) => this.createPanel(ANSWER_VIEW_TYPE, title, "answer", column, preserveFocus ?? false, { onLink: (link) => onLink(link) }),
       persists: (guide) => guideHistoryEnabled() && !this.sessionGuides.has(guide.id),
       updateChapterView: () => this.updateChapterView(),
       setAnswering: (text, answerId) => this.ui.setAnswering(text, answerId),
@@ -1585,7 +1586,7 @@ export class GuidesController implements vscode.Disposable {
     const target = line ?? focus?.start ?? model.files.get(path)?.hunks[0]?.start;
     const selection = target ? new vscode.Range(target - 1, 0, target - 1, 0) : undefined;
     const title = `${basename(path)}${chapter >= 0 ? ` · Chapter ${chapter + 1}` : ""}`;
-    const where = column ?? diffColumnBesideAnswers();
+    const where = column ?? diffColumnBesideAnswers(baseUri(sides, file), headUri(sides, file));
     await vscode.commands.executeCommand("vscode.diff", baseUri(sides, file), headUri(sides, file), title, { preview: true, ...(selection && { selection }), ...(where && { viewColumn: where }) });
     this.updateReaderViews();
     void this.offerDiffCodeLens();
@@ -1760,20 +1761,4 @@ function withSessionGuides(model: DashboardModel, guides: LoadedGuide[], history
     .map((g) => ({ kind: "guide", id: g.id, title: g.envelope.title, label: g.envelope.label, at: g.envelope.savedAt, progress: { reviewed: g.envelope.reviewed.filter(Boolean).length, total: g.envelope.guide.sections.length }, sessionOnly: true }));
   const notes = history ? model.notes : [...model.notes, "Guide history is off (PLANNOTATOR_GUIDE_HISTORY or guideHistory in Plannotator's config.json): new guides and drafts are not saved, only kept until VS Code closes."];
   return { ...model, recent: [...entries, ...model.recent].sort((a, b) => b.at - a.at), notes };
-}
-
-/**
- * Where a guide file opens when the reader is in an answer tab's group (answers open beside the
- * diff): the group of the diff it was asked about, else the first group without answers; a
- * diff never opens on top of the answers. Undefined: the active group, as before.
- */
-function diffColumnBesideAnswers(): vscode.ViewColumn | undefined {
-  const groups = vscode.window.tabGroups?.all ?? [];
-  const isAnswer = (tab: vscode.Tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("plannotator.guides.answer");
-  const active = vscode.window.tabGroups?.activeTabGroup;
-  if (!active?.activeTab || !isAnswer(active.activeTab)) return undefined;
-  const withDiff = groups.find((g) => g !== active && g.tabs.some((t) => t.input instanceof vscode.TabInputTextDiff));
-  if (withDiff) return withDiff.viewColumn;
-  const plain = groups.find((g) => g !== active && !g.tabs.some(isAnswer));
-  return plain?.viewColumn ?? vscode.ViewColumn.One;
 }

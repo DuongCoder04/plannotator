@@ -184,27 +184,21 @@ export function doneMarkdown(input: { record: AnswerRecord; opened: boolean }): 
   }
 }
 
-/** Brand-ish colors for the agents' avatars; anything else is grey. */
-const AGENT_COLORS: Record<string, string> = {
-  "claude-code": "#D97757",
-  codex: "#10A37F",
-  opencode: "#4B5563",
-  pi: "#4D9ABF",
-  copilot: "#6E40C9",
-  cursor: "#111111",
-  kiro: "#7C3AED",
-  kilo: "#F59E0B",
-};
+/** The person's initials: two letters for two words or more ("Michael Ramos" → "MR"), else one. */
+export function initials(name: string): string {
+  const words = name.trim().split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0]).filter((c): c is string => !!c);
+  if (!words.length) return "?";
+  return (words.length > 1 ? words[0] + words[words.length - 1] : words[0]).toUpperCase();
+}
 
 /**
- * A small avatar as an SVG `data:` URI: the first letter of a name on a colored square (the
- * agent) or circle (the person). VS Code shows comment authors' `iconPath` as an image.
+ * A lettered avatar as an SVG `data:` URI: the person's initials on a circle, or an agent's
+ * first letter on a grey square when the agent has no mark of its own (images/agents/).
  */
-export function avatarDataUri(name: string, kind: "agent" | "person", agentId?: string): string {
-  const letter = (name.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? "?").toUpperCase();
-  const fill = kind === "agent" ? AGENT_COLORS[agentId ?? ""] ?? "#6B7280" : "#3B82F6";
-  const shape = kind === "agent" ? `<rect width="32" height="32" rx="7" fill="${fill}"/>` : `<circle cx="16" cy="16" r="16" fill="${fill}"/>`;
-  const glyph = letter.replace(/[<>&"']/g, "?");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">${shape}<text x="16" y="21.5" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#FFFFFF">${glyph}</text></svg>`;
+export function avatarDataUri(name: string, kind: "agent" | "person"): string {
+  const text = (kind === "person" ? initials(name) : initials(name).slice(0, 1)).replace(/[<>&"']/g, "?");
+  const shape = kind === "agent" ? `<rect width="32" height="32" rx="7" fill="#6B7280"/>` : `<circle cx="16" cy="16" r="16" fill="#3B82F6"/>`;
+  const size = text.length > 1 ? 13 : 15;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">${shape}<text x="16" y="${size === 13 ? 20.5 : 21.5}" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="${size}" font-weight="600" fill="#FFFFFF">${text}</text></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }

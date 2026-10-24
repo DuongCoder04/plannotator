@@ -101,7 +101,7 @@ export class AskThreads implements vscode.Disposable {
   private readonly dirty = new Set<string>();
   private flush: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly asker: ThreadAsker, private readonly icons: { plannotator?: vscode.Uri } = {}) {
+  constructor(private readonly asker: ThreadAsker, private readonly icons: { plannotator?: vscode.Uri; agent?(agentId: string): vscode.Uri | undefined } = {}) {
     this.controller = vscode.comments.createCommentController(ASK_THREAD_CONTROLLER, "Ask the agent");
     this.controller.options = { prompt: "Ask a question…", placeHolder: "Type a question, or pick one above" };
     this.conversations = vscode.comments.createCommentController(ASK_THREAD_CONVERSATION_CONTROLLER, "Ask the agent");
@@ -111,9 +111,11 @@ export class AskThreads implements vscode.Disposable {
   /**
    * Open a question box under `range` of `uri` (a side of a guide diff). Lines that already have
    * a box get that box back (asked or not); another box nobody asked in yet goes, unless it
-   * holds a question that was not asked. `focus` puts the cursor in the box's text field.
+   * holds a question that was not asked. The box opens expanded with its text field showing; the
+   * reader clicks in it (no stable API focuses a thread's field, and moving the caret or the
+   * selection to get there risks the reader's own work).
    */
-  open(guide: LoadedGuide, about: AskAbout, uri: vscode.Uri, range: vscode.Range, focus?: (thread: vscode.CommentThread) => Promise<boolean>): void {
+  open(guide: LoadedGuide, about: AskAbout, uri: vscode.Uri, range: vscode.Range): void {
     const sameLines = (e: Entry) => e.guideId === guide.id && e.thread.uri.toString() === uri.toString() && !!e.thread.range && e.thread.range.start.line === range.start.line && e.thread.range.end.line === range.end.line;
     const existing = [...this.entries.values()].find(sameLines);
     for (const e of [...this.entries.values()]) {
@@ -131,12 +133,6 @@ export class AskThreads implements vscode.Disposable {
       this.render(entry);
     }
     entry.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-    const box = entry;
-    if (focus && box.thread.canReply) {
-      void focus(box.thread).then((ok) => {
-        if (!ok) this.asker.log("[guides] question box: its text field was not focused (VS Code had not drawn it, or the editor lost the focus)");
-      }).catch((err) => this.asker.log(`[guides] focusing the question box: ${err}`));
-    }
   }
 
   /**
@@ -329,7 +325,7 @@ export class AskThreads implements vscode.Disposable {
   }
 
   private agentAuthor(agent: Pick<AgentChoiceRecord, "id" | "label">): vscode.CommentAuthorInformation {
-    return { name: agent.label, iconPath: vscode.Uri.parse(avatarDataUri(agent.label, "agent", agent.id)) };
+    return { name: agent.label, iconPath: (agent.id && this.icons.agent?.(agent.id)) || vscode.Uri.parse(avatarDataUri(agent.label, "agent")) };
   }
 
   private question(text: string, at: number): vscode.Comment {

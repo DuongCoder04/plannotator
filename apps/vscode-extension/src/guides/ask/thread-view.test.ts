@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AnswerRecord, AskAbout } from "./answers";
 import type { AskRunState } from "./session";
 import { marked } from "marked";
-import { THREAD_LINK_COMMANDS, answerLabel, commandLink, doneMarkdown, filesRead, introMarkdown, introSentence, modelEffort, pendingMarkdown, threadLabel, threadWhere, workingMarkdown } from "./thread-view";
+import { THREAD_LINK_COMMANDS, answerLabel, avatarDataUri, initials, commandLink, doneMarkdown, filesRead, introMarkdown, introSentence, modelEffort, pendingMarkdown, threadLabel, threadWhere, workingMarkdown } from "./thread-view";
 
 const lines: AskAbout = { kind: "selection", chapter: 1, chapterTitle: "Delivery loop", path: "src/webhooks/deliver.ts", side: "head", lines: { start: 25, end: 31 } };
 const file: AskAbout = { kind: "file", chapter: 1, chapterTitle: "Delivery loop", path: "src/webhooks/deliver.ts", side: "head" };
@@ -131,5 +131,17 @@ describe("agent text in the box's trusted body", () => {
 
   it("puts the time and cost beside the agent's name once it answered", () => {
     expect(answerLabel(record({ agent: { id: "claude", label: "Claude Code", model: { id: "s", label: "Sonnet" }, effort: { id: "low", label: "Low" } }, askedAt: 1_000, answeredAt: 10_200, cost: { amount: 0.031, currency: "USD" } }))).toBe("Sonnet · low · 9s · $0.03");
+  });
+});
+
+describe("the person's avatar", () => {
+  it("shows two initials for two words or more, one for one", () => {
+    expect(initials("Michael Ramos")).toBe("MR");
+    expect(initials("Ana María de la Cruz")).toBe("AC");
+    expect(initials("ramos")).toBe("R");
+    expect(initials("  ")).toBe("?");
+    const svg = Buffer.from(avatarDataUri("Michael Ramos", "person").split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain(">MR</text>");
+    expect(Buffer.from(avatarDataUri("<script>", "person").split(",")[1], "base64").toString("utf8")).not.toContain("<script");
   });
 });
