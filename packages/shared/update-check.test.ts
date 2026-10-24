@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,6 +21,9 @@ import {
   isApiFallbackDue,
   releasePageUrl,
   versionFromLatestRedirect,
+  fetchReleaseNotesFor,
+  updateLog,
+  UPDATE_LOG_MAX_BYTES,
   RELEASE_NOTES_MAX_BYTES,
   releaseSummary,
   runReleaseCheck,
@@ -143,7 +146,7 @@ describe("the release check", () => {
     expect(fetches).toBe(2);
   });
 
-  test("a failure is logged, keeps the last known answer, and retries after 10 minutes, never sooner", async () => {
+  test("a failure is logged, keeps the last known answer, and retries after 10 minutes whatever triggers it, never sooner", async () => {
     await runReleaseCheck({ dataDir, enabled: () => true, now: () => NOW, fetchReleasePage: release() });
     const later = NOW + RELEASE_CHECK_INTERVAL_MS;
     // The page fails; the API was not asked within the hour, so it is (and fails too).
@@ -156,6 +159,10 @@ describe("the release check", () => {
     expect(readFileSync(updateCheckPaths(dataDir).log, "utf-8")).toContain("page: HTTP 503; api: HTTP 503");
     expect(await runReleaseCheck({ dataDir, enabled: () => true, now: () => later + RELEASE_CHECK_RETRY_MS - 1, fetchReleasePage: failing() }))
       .toMatchObject({ outcome: "fresh" });
+    // A start or a page load (the 1-minute trigger) waits out a failure too.
+    expect(
+      await runReleaseCheck({ dataDir, enabled: () => true, now: () => later + 2 * RELEASE_CHECK_ON_START_MS, freshForMs: RELEASE_CHECK_ON_START_MS, fetchReleasePage: failing() }),
+    ).toMatchObject({ outcome: "fresh" });
     expect(fetches).toBe(3);
     expect(await runReleaseCheck({ dataDir, enabled: () => true, now: () => later + RELEASE_CHECK_RETRY_MS, fetchReleasePage: release(), fetchRelease: NO_API }))
       .toMatchObject({ outcome: "checked" });
@@ -232,6 +239,94 @@ describe("the release check", () => {
   });
 });
 
+describe("failing quietly and politely", () => {
+  const pageLimited = (headers: Record<string, string> = {}, status = 429): (() => Promise<FetchReleaseResult>) => async () => {
+    fetches++;
+    const res = new Response("slow down", { status, headers });
+    return fetchLatestFromPage("https://github.com/x/y/releases/latest", (async () => res) as unknown as typeof fetch);
+  };
+  const noApi = async (): Promise<FetchReleaseResult> => ({ ok: false, error: "api down" });
+
+  test("the page's 429 Retry-After is honoured, kept between 10 minutes and an hour, by every trigger", async () => {
+    const run = (now: number, fetchReleasePage: () => Promise<FetchReleaseResult>, freshForMs?: number) =>
+      runReleaseCheck({ dataDir, enabled: () => true, now: () => now, fetchReleasePage, fetchRelease: noApi, ...(freshForMs && { freshForMs }) });
+    expect(await run(NOW, pageLimited({ "retry-after": "1800" }))).toMatchObject({ outcome: "failed" });
+    expect(readUpdateState(dataDir).releaseCheck?.pageRetryAt).toBe(NOW + 30 * 60 * 1000);
+    expect(readFileSync(updateCheckPaths(dataDir).log, "utf-8")).toContain("next try in 30m");
+    expect(await run(NOW + 29 * 60 * 1000, release(), RELEASE_CHECK_ON_START_MS)).toMatchObject({ outcome: "fresh" });
+    expect(fetches).toBe(1);
+    expect(await run(NOW + 30 * 60 * 1000, release(), RELEASE_CHECK_ON_START_MS)).toMatchObject({ outcome: "checked" });
+    expect(readUpdateState(dataDir).releaseCheck?.pageRetryAt).toBeUndefined();
+
+    // Ten hours asked: an hour. Nothing named: an hour. Seconds asked: 10 minutes.
+    for (const [headers, wait] of [
+      [{ "retry-after": String(10 * 3600) }, 60 * 60 * 1000],
+      [{}, 60 * 60 * 1000],
+      [{ "retry-after": "5" }, RELEASE_CHECK_RETRY_MS],
+    ] as const) {
+      rmSync(updateCheckPaths(dataDir).state, { force: true });
+      await run(NOW, pageLimited(headers));
+      expect(readUpdateState(dataDir).releaseCheck?.pageRetryAt).toBe(NOW + wait);
+      expect(isReleaseCheckDue(readUpdateState(dataDir), NOW + wait - 1, RELEASE_CHECK_ON_START_MS)).toBe(false);
+      expect(isReleaseCheckDue(readUpdateState(dataDir), NOW + wait, RELEASE_CHECK_ON_START_MS)).toBe(true);
+    }
+    // A pageRetryAt on disk far beyond an hour (a wrong clock) does not hold checks back.
+    expect(isReleaseCheckDue({ releaseCheck: { attemptedAt: NOW, failedAt: NOW, pageRetryAt: NOW + 100 * 3600_000 } }, NOW + RELEASE_CHECK_RETRY_MS)).toBe(true);
+  });
+
+  test("a plain 403 from the page (no rate-limit sign) is an ordinary failure: 10 minutes", async () => {
+    await runReleaseCheck({ dataDir, enabled: () => true, now: () => NOW, fetchReleasePage: pageLimited({}, 403), fetchRelease: noApi });
+    expect(readUpdateState(dataDir).releaseCheck?.pageRetryAt).toBeUndefined();
+    expect(isReleaseCheckDue(readUpdateState(dataDir), NOW + RELEASE_CHECK_RETRY_MS)).toBe(true);
+    await runReleaseCheck({
+      dataDir,
+      enabled: () => true,
+      now: () => NOW + RELEASE_CHECK_RETRY_MS,
+      fetchReleasePage: pageLimited({ "x-ratelimit-remaining": "0" }, 403),
+      fetchRelease: noApi,
+    });
+    expect(readUpdateState(dataDir).releaseCheck?.pageRetryAt).toBe(NOW + RELEASE_CHECK_RETRY_MS + 60 * 60 * 1000);
+  });
+
+  test("an offline machine writes one log line per kind of error, and one when it answers again", async () => {
+    const offline = async (): Promise<FetchReleaseResult> => ({ ok: false, error: "Unable to connect" });
+    for (let i = 0; i < 6; i++) {
+      await runReleaseCheck({ dataDir, enabled: () => true, now: () => NOW + i * RELEASE_CHECK_RETRY_MS, fetchReleasePage: offline, fetchRelease: offline });
+    }
+    const lines = () => readFileSync(updateCheckPaths(dataDir).log, "utf-8").trim().split("\n");
+    expect(lines()).toHaveLength(1);
+    expect(readUpdateState(dataDir).releaseCheck?.failures).toBe(6);
+    await runReleaseCheck({ dataDir, enabled: () => true, now: () => NOW + 6 * RELEASE_CHECK_RETRY_MS, fetchReleasePage: failing(), fetchRelease: offline });
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toContain("6 failed checks before this one");
+    await runReleaseCheck({ dataDir, enabled: () => true, now: () => NOW + 7 * RELEASE_CHECK_RETRY_MS, fetchReleasePage: release() });
+    expect(lines()).toHaveLength(3);
+    expect(lines()[2]).toContain("answered again (0.28.11) after 7 failed checks");
+    expect(readUpdateState(dataDir).releaseCheck?.failures).toBeUndefined();
+  });
+
+  test("update.log is bounded: past the cap it moves to update.log.1", () => {
+    const { log } = updateCheckPaths(dataDir);
+    writeFileSync(log, "x".repeat(UPDATE_LOG_MAX_BYTES + 1));
+    updateLog("after the cap", dataDir);
+    expect(readFileSync(log, "utf-8")).toContain("after the cap");
+    expect(readFileSync(log, "utf-8").length).toBeLessThan(200);
+    expect(readFileSync(`${log}.1`, "utf-8").length).toBe(UPDATE_LOG_MAX_BYTES + 1);
+  });
+
+  test("the notes fetched by tag fill in the publish date the page does not name", async () => {
+    writeUpdateState({ latestRelease: { tag: "0.28.11", fetchedAt: NOW } }, dataDir);
+    await fetchReleaseNotesFor({
+      version: "0.28.11",
+      dataDir,
+      enabled: () => true,
+      now: () => NOW,
+      fetchRelease: async () => ({ ok: true, release: { tag: "v0.28.11", publishedAt: "2026-10-10T15:49:28Z", body: BODY } }),
+    });
+    expect(readUpdateState(dataDir).latestRelease).toEqual({ tag: "0.28.11", fetchedAt: NOW, publishedAt: "2026-10-10T15:49:28Z" });
+  });
+});
+
 describe("the release page redirect", () => {
   const URL_ = "https://github.com/backnotprop/plannotator/releases/latest";
 
@@ -280,7 +375,7 @@ describe("the release page redirect", () => {
       mode = "elsewhere";
       expect(await fetchLatestFromPage(url)).toMatchObject({ ok: false });
       mode = "429";
-      expect(await fetchLatestFromPage(url)).toEqual({ ok: false, error: "HTTP 429" });
+      expect(await fetchLatestFromPage(url)).toEqual({ ok: false, error: "HTTP 429", rateLimited: true });
       // A fetch that follows redirects whatever it is told.
       mode = "redirect";
       const following: typeof fetch = ((input: string, init?: RequestInit) => fetch(input, { ...init, redirect: "follow" })) as typeof fetch;

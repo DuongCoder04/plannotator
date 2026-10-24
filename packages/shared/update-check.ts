@@ -26,7 +26,7 @@
  * Node-only (node:fs + global fetch), vendored to Pi.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPlannotatorDataDir } from "./data-dir";
 
@@ -44,6 +44,14 @@ export const RELEASE_API_FALLBACK_INTERVAL_MS = 60 * 60 * 1000;
  * when it names none. The page source is not held back by it.
  */
 export const RELEASE_CHECK_RATE_LIMITED_RETRY_MS = 6 * 60 * 60 * 1000;
+/**
+ * After the release page itself refused (429, or 403 with a rate-limit
+ * answer: an office NAT can meet github.com's limits too): wait the time it
+ * names, kept between RELEASE_CHECK_RETRY_MS and this; this when it names none.
+ */
+export const RELEASE_PAGE_RATE_LIMITED_RETRY_MS = 60 * 60 * 1000;
+/** update.log is moved to update.log.1 (one generation kept) once it passes this. */
+export const UPDATE_LOG_MAX_BYTES = 1024 * 1024;
 /** Each request gives up after this. */
 const RELEASE_CHECK_TIMEOUT_MS = 8_000;
 /**
@@ -143,6 +151,16 @@ export interface UpdateState {
     apiRetryAt?: number;
     /** Written by 0.28.30, which had only the API: read as `apiRetryAt`. */
     retryAt?: number;
+    /**
+     * Set when the release page refused for its rate limit: no request before
+     * this (at most RELEASE_PAGE_RATE_LIMITED_RETRY_MS after the attempt),
+     * whatever triggers it. Cleared by a success.
+     */
+    pageRetryAt?: number;
+    /** Failed checks in a row; update.log gets a line only when the error changes. */
+    failures?: number;
+    /** The errors the last logged failure named, whichever source: what "changes" compares. */
+    logged?: string;
   };
   /** The install this process (or an earlier one) started. */
   pending?: {
@@ -215,6 +233,10 @@ export function updateLog(message: string, dataDir?: string, tag = "update-check
   try {
     const { log: path } = updateCheckPaths(dataDir);
     mkdirSync(join(path, ".."), { recursive: true });
+    // Bounded: past the cap the log moves to update.log.1 (replacing the one before).
+    try {
+      if (statSync(path).size > UPDATE_LOG_MAX_BYTES) renameSync(path, `${path}.1`);
+    } catch {}
     appendFileSync(path, `[${new Date().toISOString()}] ${tag}: ${message}\n`);
   } catch {
     // Best-effort: a check must never surface an error.
@@ -253,9 +275,21 @@ export function knownLatestRelease(state: UpdateState): { version: string; fetch
  */
 export function isReleaseCheckDue(state: UpdateState, now: number, freshForMs: number = RELEASE_CHECK_INTERVAL_MS): boolean {
   if (cachedLatestTag(state, now, freshForMs)) return false;
-  const attempt = state.releaseCheck?.attemptedAt;
+  const check = state.releaseCheck;
+  const attempt = check?.attemptedAt;
   if (typeof attempt !== "number" || !Number.isFinite(attempt) || attempt > now) return true;
-  return now - attempt >= Math.min(freshForMs, RELEASE_CHECK_RETRY_MS);
+  // The page asked us to wait (capped, so a wrong header never holds it back for long).
+  const pageRetryAt = check?.pageRetryAt;
+  if (
+    typeof pageRetryAt === "number" &&
+    pageRetryAt > now &&
+    pageRetryAt - attempt <= RELEASE_PAGE_RATE_LIMITED_RETRY_MS
+  ) {
+    return false;
+  }
+  // After a failure: 10 minutes, whatever triggers it (a start or a reload too).
+  const failed = typeof check?.failedAt === "number" && check.failedAt >= attempt;
+  return now - attempt >= (failed ? RELEASE_CHECK_RETRY_MS : Math.min(freshForMs, RELEASE_CHECK_RETRY_MS));
 }
 
 /**
@@ -501,6 +535,10 @@ export async function fetchLatestFromPage(
           ? versionFromLatestRedirect(url, res.url)
           : null;
     if (version) return { ok: true, release: { tag: version } };
+    if (res.status === 429 || (res.status === 403 && (res.headers.has("retry-after") || res.headers.get("x-ratelimit-remaining") === "0"))) {
+      const wait = rateLimitWaitMs(res.headers);
+      return { ok: false, error: `HTTP ${res.status}`, rateLimited: true, ...(wait !== undefined && { retryAfterMs: wait }) };
+    }
     return { ok: false, error: res.status >= 300 && res.status < 400 ? `redirect to ${String(res.headers.get("location")).slice(0, 120)}` : `HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -608,8 +646,10 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
   if (!deps.force && !deps.enabled()) return { outcome: "disabled" };
   const freshForMs = deps.freshForMs ?? RELEASE_CHECK_INTERVAL_MS;
   let state: UpdateState;
+  let previous: UpdateState["releaseCheck"];
   try {
     state = readUpdateState(dataDir);
+    previous = state.releaseCheck;
     if (!deps.force && !isReleaseCheckDue(state, now, freshForMs)) {
       return { outcome: "fresh", version: knownLatestRelease(state)?.version ?? null };
     }
@@ -657,8 +697,28 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
         )
       : 0;
     const parts = [pageError && `page: ${pageError}`, apiAsked ? `api: ${error}${rateLimited ? ", rate limited" : ""}` : !pageError && error].filter(Boolean);
-    const note = rateLimited ? `; the API is not asked again for ${formatWait(apiWait)}` : "";
-    updateLog(`could not read the latest release (${parts.join("; ")}); next try in ${formatWait(RELEASE_CHECK_RETRY_MS)}${note}`, dataDir);
+    const summary = (parts.join("; ") || error).slice(0, 200);
+    // The release page asked us to wait (an office NAT can meet github.com's limits too).
+    const pageWait =
+      !page.ok && page.rateLimited === true
+        ? Math.min(Math.max(page.retryAfterMs ?? RELEASE_PAGE_RATE_LIMITED_RETRY_MS, RELEASE_CHECK_RETRY_MS), RELEASE_PAGE_RATE_LIMITED_RETRY_MS)
+        : 0;
+    const failedBefore = typeof previous?.failedAt === "number" && previous.failedAt >= previous.attemptedAt;
+    const failures = failedBefore ? (previous?.failures ?? 1) + 1 : 1;
+    // One line per change of error, not one per check: an offline machine
+    // would otherwise add a line every 10 minutes. Compared by the errors
+    // alone, so the API being asked or not (hourly) is no change.
+    const logged = [...new Set([pageError, apiAsked && error].filter(Boolean))].join("; ") || error;
+    if (!failedBefore || previous?.logged !== logged) {
+      const notes = [
+        rateLimited && `the API is not asked again for ${formatWait(apiWait)}`,
+        failedBefore && `${failures - 1} failed check${failures - 1 === 1 ? "" : "s"} before this one`,
+      ].filter(Boolean);
+      updateLog(
+        `could not read the latest release (${summary}); next try in ${formatWait(pageWait || RELEASE_CHECK_RETRY_MS)}${notes.length ? `; ${notes.join("; ")}` : ""}`,
+        dataDir,
+      );
+    }
     try {
       patchUpdateState(
         (s) => ({
@@ -667,8 +727,11 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
             ...apiBackoff(s),
             attemptedAt: now,
             failedAt: now,
-            error: (parts.join("; ") || error).slice(0, 200),
+            error: summary,
+            failures,
+            logged,
             ...(rateLimited && { apiRetryAt: now + apiWait }),
+            ...(pageWait > 0 && { pageRetryAt: now + pageWait }),
           },
         }),
         dataDir,
@@ -677,6 +740,10 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
     return { outcome: "failed", error };
   }
   const release = result.release;
+  if (typeof previous?.failedAt === "number" && previous.failedAt >= previous.attemptedAt) {
+    const n = previous.failures ?? 1;
+    updateLog(`the latest release answered again (${version}) after ${n} failed check${n === 1 ? "" : "s"}`, dataDir);
+  }
   if (source === "api") {
     try {
       const { notes, highlights } = extractReleaseNotes(release.body);
@@ -812,6 +879,16 @@ export async function fetchReleaseNotesFor(deps: ReleaseNotesFetchDeps): Promise
     writeReleaseNotes(saved, dataDir);
   } catch (err) {
     updateLog(`could not save the release notes: ${err instanceof Error ? err.message : String(err)}`, dataDir);
+  }
+  // The release page names no publish date: take this answer's for the latest release.
+  if (release.publishedAt) {
+    try {
+      patchUpdateState((s) => {
+        const latest = s.latestRelease;
+        if (!latest || latest.publishedAt || normalizeStableVersion(latest.tag) !== version) return s;
+        return { ...s, latestRelease: { ...latest, publishedAt: release.publishedAt } };
+      }, dataDir);
+    } catch {}
   }
   return { outcome: "fetched", notes: saved };
 }

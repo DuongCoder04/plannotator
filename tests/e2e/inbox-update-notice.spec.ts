@@ -9,6 +9,8 @@
  * for hours. Now the page answers and the Update button shows at once; a
  * newer release the page names after that shows on the next page load.
  *
+ * PLANNOTATOR_E2E_RELEASE_BINARY names a binary compiled with
+ * __CLI_VERSION__="0.28.10" to run instead of the CLI from source (CI does).
  * Needs the built apps (apps/hook/dist), as the other specs do.
  */
 
@@ -53,8 +55,12 @@ test.beforeAll(async () => {
   await new Promise<void>((r) => github.listen(0, '127.0.0.1', () => r()));
   const port = (github.address() as { port: number }).port;
 
+  const release = process.env.PLANNOTATOR_E2E_RELEASE_BINARY;
   const bun = realpathSync(process.env.BUN_BINARY ?? execSync('command -v bun').toString().trim());
-  inbox = spawn(bun, ['--define', '__CLI_VERSION__="0.28.10"', entry, 'inbox', '--no-open'], {
+  const [command, args] = release
+    ? [realpathSync(release), ['inbox', '--no-open']]
+    : [bun, ['--define', '__CLI_VERSION__="0.28.10"', entry, 'inbox', '--no-open']];
+  inbox = spawn(command, args, {
     cwd: root,
     env: {
       PATH: process.env.PATH ?? '',

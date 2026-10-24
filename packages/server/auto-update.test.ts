@@ -502,11 +502,15 @@ describe("a failed fetch gives the install window back", () => {
 });
 
 describe("the toast steps aside for auto-update only when it can install", () => {
-  test("another session open: auto-update skips, so the toast must show; an install running or no other session: it steps aside", () => {
-    expect(autoUpdateCanInstall(dataDir, [session(100)], 100)).toBe(true);
-    expect(autoUpdateCanInstall(dataDir, [session(100), session(200)], 100)).toBe(false);
-    writeFileSync(autoUpdatePaths(dataDir).lock, String(process.pid));
-    expect(autoUpdateCanInstall(dataDir, [session(100), session(200)], 100)).toBe(true);
+  test("an install running; or its 24 h window open and no other session. Otherwise the toast must show", () => {
+    const can = (lockHeld: boolean, windowOpen: boolean, sessions: SessionInfo[]) => autoUpdateCanInstall({ lockHeld, windowOpen, sessions, ownPid: 100 });
+    expect(can(false, true, [session(100)])).toBe(true);
+    // Another session open: auto-update skips this start.
+    expect(can(false, true, [session(100), session(200)])).toBe(false);
+    // Its window was spent today: it will not install for up to a day.
+    expect(can(false, false, [session(100)])).toBe(false);
+    // An install runs: the post-update toast speaks.
+    expect(can(true, false, [session(100), session(200)])).toBe(true);
   });
 });
 

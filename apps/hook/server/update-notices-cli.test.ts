@@ -5,8 +5,8 @@
  * source; the API answers 403 (its rate limit), as it can on a busy IP.
  *
  * The state on disk is the one that hid the notice before: an answer cached
- * minutes ago naming the version this binary runs, and an API rate-limit
- * lockout hours long. The Update button must still show within seconds of the
+ * a quarter of an hour ago naming the version this binary runs, and an API
+ * rate-limit lockout hours long. The Update button must still show within seconds of the
  * Inbox starting, without the API being asked.
  */
 import { afterEach, expect, test } from "bun:test";
@@ -61,9 +61,9 @@ test("a new release shows in the Inbox within seconds of a start, through a stal
   writeFileSync(
     join(dataDir, "update-state.json"),
     JSON.stringify({
-      latestRelease: { tag: "0.28.10", fetchedAt: now - 5 * 60 * 1000 },
-      // What 0.28.30 wrote after a 403: no request for hours.
-      releaseCheck: { attemptedAt: now - 5 * 60 * 1000, failedAt: now - 5 * 60 * 1000, error: "HTTP 403", retryAt: now + 5 * 60 * 60 * 1000 },
+      latestRelease: { tag: "0.28.10", fetchedAt: now - 15 * 60 * 1000 },
+      // What 0.28.30 wrote after a 403 from the API: no request for hours.
+      releaseCheck: { attemptedAt: now - 12 * 60 * 1000, failedAt: now - 12 * 60 * 1000, error: "HTTP 403", retryAt: now + 5 * 60 * 60 * 1000 },
     }),
   );
 

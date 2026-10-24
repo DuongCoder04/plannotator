@@ -72,7 +72,7 @@ import {
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
 import { checkServerSession, serverSessionMismatchBody } from "@plannotator/shared/server-session";
-import { listSessions, type SessionInfo } from "./sessions";
+import { listLiveSessions, listSessions, type SessionInfo } from "./sessions";
 
 // The version helpers and the install-flag allowlist moved to
 // @plannotator/shared/update-check (vendored to Pi); re-exported so existing
@@ -798,20 +798,28 @@ export function isAutoUpdateActive(): boolean {
   try {
     const config = loadConfig();
     if (!(resolveAutoUpdate(config) && resolveUpdateCheck(config) && isManagedBinary(process.execPath))) return false;
-    return autoUpdateCanInstall(getPlannotatorDataDir(), listSessions(), process.pid);
+    const dataDir = getPlannotatorDataDir();
+    return autoUpdateCanInstall({
+      lockHeld: isUpdateLockHeld(dataDir),
+      windowOpen: isCheckDue(readAutoUpdateState(dataDir), Date.now()),
+      sessions: listLiveSessions(),
+      ownPid: process.pid,
+    });
   } catch {
     return false;
   }
 }
 
 /**
- * Whether auto-update can actually install now: an install is running, or no
- * other Plannotator session is open (it skips every start that finds one, so
- * a person who always has a session open would otherwise be neither updated
- * nor told). Pure over its inputs, for the tests.
+ * Whether auto-update can actually install now: an install is running, or its
+ * 24 h window has elapsed and no other Plannotator session is open. It skips
+ * every start that finds another session, and installs at most once a day,
+ * so without these a person would be neither updated nor told for up to a
+ * day, or for good while a session is always open. Pure, for the tests.
  */
-export function autoUpdateCanInstall(dataDir: string, sessions: SessionInfo[], ownPid: number): boolean {
-  return isUpdateLockHeld(dataDir) || otherOpenSessions(sessions, ownPid).length === 0;
+export function autoUpdateCanInstall(input: { lockHeld: boolean; windowOpen: boolean; sessions: SessionInfo[]; ownPid: number }): boolean {
+  if (input.lockHeld) return true;
+  return input.windowOpen && otherOpenSessions(input.sessions, input.ownPid).length === 0;
 }
 
 /**
