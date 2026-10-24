@@ -2663,7 +2663,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
   // Open questions in this thread (approval "inbox-thread-open-questions", option A): the "N open questions"
   // button lists them (Re-ask at its foot), and a row takes the person to the card (unfolding its message).
   const openQFromServer = resolved && !cameBack ? { questions: [], replaced: 0 } : threadOpenQuestions(thread.messages, liveMessage);
-  // A pick still being saved shows on its row at once, as on its card (a Skip from the list reads "Draft · Skipped").
+  // A pick still being saved shows on its row at once, as on its card (a Skip from the list goes quiet: "Skipped").
   const openQ = {
     ...openQFromServer,
     questions: openQFromServer.questions.map((q): OpenQuestion => {
@@ -2673,18 +2673,23 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
     }),
   };
   /**
-   * A row's Skip (owner, 2026-10-24): exactly the card's own Skip. The same
-   * starting answer (the saved or pending pick, else the question's empty
-   * answer as the card builds it from the message), the same toggle
-   * (skipToggledAnswer, ui's toggleSkip), and the same save (`pick`): a pick
-   * marked skipped that goes with the next Send. Nothing is sent now.
+   * Skipping from the list (approval "oq-skip-select", variant A): the select
+   * mode's button sets each question skipped or not, exactly as the card's own
+   * Skip / Unskip does. The same starting answer (the saved or pending pick,
+   * else the question's empty answer as the card builds it from the message),
+   * the same toggle (skipToggledAnswer, ui's toggleSkip), and the same save
+   * (`pick`, serialized per thread): a pick marked skipped that goes with the
+   * next Send. Nothing is sent now. A question already as asked is left alone.
    */
-  const skipFromList = (q: OpenQuestion) => {
-    const message = thread.messages.find((m) => m.id === q.messageId);
-    if (!message) return;
-    const current = pending.has(q.id) ? pending.get(q.id)! : (questionById(q.id)?.answer ?? q.question.answer);
-    const base = current ?? emptyAnswerFor(message, q);
-    pick(q.messageId, q.key, skipToggledAnswer(base));
+  const setSkippedFromList = (questions: readonly OpenQuestion[], skipped: boolean) => {
+    for (const q of questions) {
+      const message = thread.messages.find((m) => m.id === q.messageId);
+      if (!message) continue;
+      const current = pending.has(q.id) ? pending.get(q.id)! : (questionById(q.id)?.answer ?? q.question.answer);
+      if ((current?.skipped === true) === skipped) continue;
+      const base = current ?? emptyAnswerFor(message, q);
+      pick(q.messageId, q.key, skipToggledAnswer(base));
+    }
   };
   // Shown whenever a question waits, or Re-ask is offered (it lives in the list now, so never out of reach).
   const openQShown = openQuestionsShown(openQ.questions, reaskShown);
@@ -3675,7 +3680,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
                   phone={phone}
                   measure={measureOpenQuestions}
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
-                  onSkip={skipFromList}
+                  onSetSkipped={setSkippedFromList}
                 />
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits. */}
