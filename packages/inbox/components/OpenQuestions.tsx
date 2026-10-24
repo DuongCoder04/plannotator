@@ -7,6 +7,8 @@ import {
   openQuestionState,
   openQuestionsHeading,
   openQuestionsLabel,
+  openQuestionSkippable,
+  openQuestionSkipped,
   type OpenQuestion,
   type OpenQuestionPlace,
   type OpenQuestionsNoun,
@@ -14,6 +16,10 @@ import {
 import { Tip } from './Tip';
 import { pickWords } from './ReplacedQuestion';
 import { fitFootRow, footFitCandidates, laidOutChildren, openQuestionsFormText, type FootFit, type OpenQuestionsLabelForm } from '../footFit';
+
+/** What a row's Skip says on hover (and, for Skip, as its description): it is not sent now. */
+const SKIP_TIP = 'Skips it in your draft; it goes with your next Send';
+const UNSKIP_TIP = 'Takes the skip back off your draft';
 
 /** The Re-ask item at the list's foot (owner, 2026-10-23): what the foot's Re-ask button did. */
 export interface OpenQuestionsReask {
@@ -43,6 +49,12 @@ export interface OpenQuestionsButtonProps {
   measure: () => ReadonlyMap<string, OpenQuestionPlace>;
   /** A row was chosen: scroll to its card (opening a folded message) and ring it. */
   onPick: (question: OpenQuestion) => void;
+  /**
+   * A row's Skip (owner, 2026-10-24): what the question's card's own Skip does
+   * (a pick saved as skipped, which goes with the next Send; again on a skipped
+   * one, Unskip). Absent: the rows offer no Skip.
+   */
+  onSkip?: (question: OpenQuestion) => void;
 }
 
 /**
@@ -60,7 +72,7 @@ export interface OpenQuestionsButtonProps {
  * usual spacing and then a tighter one; a phone never takes the long form.
  * The name always holds the whole count.
  */
-export function OpenQuestionsButton({ questions, actions = 0, reask = null, triggerRef, phone, measure, onPick }: OpenQuestionsButtonProps) {
+export function OpenQuestionsButton({ questions, actions = 0, reask = null, triggerRef, phone, measure, onPick, onSkip }: OpenQuestionsButtonProps) {
   const [open, setOpen] = useState(false);
   const [places, setPlaces] = useState<ReadonlyMap<string, OpenQuestionPlace>>(new Map());
   const trigger = useRef<HTMLButtonElement>(null);
@@ -73,6 +85,7 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
   const noun: OpenQuestionsNoun = questions.length === 0 && actions > 0 ? 'action item' : 'question';
   const n = noun === 'question' ? questions.length : actions;
   const reaskTipId = useId();
+  const skipTipId = useId();
   const max: OpenQuestionsLabelForm = phone ? 'short' : 'full';
   const [fitted, setFitted] = useState<FootFit>({ form: max, tight: false });
   const words = useRef<HTMLSpanElement>(null);
@@ -206,7 +219,9 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                       : state?.kind === 'holds'
                         ? `Holds up ${state.count}`
                         : '';
-                return (
+                const skipped = openQuestionSkipped(q);
+                const skipWord = skipped ? 'Unskip' : 'Skip';
+                const row = (
                   <Menu.Item
                     key={q.id}
                     className="ib-oq-row"
@@ -244,8 +259,37 @@ export function OpenQuestionsButton({ questions, actions = 0, reask = null, trig
                     </span>
                   </Menu.Item>
                 );
+                if (!onSkip) return row;
+                // Skip at the row's right (owner, 2026-10-24): a menu item of its own beside the row's, so the
+                // arrow keys reach it; the list stays open after it, focus on it, to skip several in a row.
+                return (
+                  <div key={q.id} className="ib-oq-line" role="none">
+                    {row}
+                    <Tip content={skipped ? UNSKIP_TIP : SKIP_TIP}>
+                      <Menu.Item
+                        className="ib-oq-skip"
+                        data-open-question-skip={q.id}
+                        data-skipped={skipped ? '' : undefined}
+                        label={skipWord}
+                        closeOnClick={false}
+                        disabled={!openQuestionSkippable(q)}
+                        aria-label={`${skipWord} question ${i + 1}: ${q.prompt}`}
+                        aria-describedby={skipped ? undefined : skipTipId}
+                        onClick={() => onSkip(q)}
+                      >
+                        {skipWord}
+                      </Menu.Item>
+                    </Tip>
+                  </div>
+                );
               })}
             </div>
+            {/* The Skip tooltip tags nothing for a screen reader: the same words as each Skip's description. */}
+            {onSkip && questions.length > 0 && (
+              <span id={skipTipId} hidden>
+                {SKIP_TIP}
+              </span>
+            )}
             {reask && (
               <>
                 {questions.length > 0 && <Menu.Separator className="ib-oq-sep" />}

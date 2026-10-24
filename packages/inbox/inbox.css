@@ -3888,6 +3888,16 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-oq-badge { height: 20px; padding: 0 6px; font-size: var(--ib-fs-12, 12px); }
 .ib-oq-when { color: var(--muted-foreground); white-space: nowrap; }
 .ib-oq-go { display: grid; place-items: center; color: var(--muted-foreground); }
+/* Skip at a row's right (owner, 2026-10-24): its own menu item beside the row's, so the arrows reach it.
+   As wide as "Unskip", so the chevrons line up whatever a row's Skip reads. */
+.ib-oq-line { display: flex; align-items: center; gap: 2px; }
+.ib-oq-line > .ib-oq-row { flex: 1 1 auto; min-width: 0; }
+.ib-oq-line > .ib-tipwrap { display: flex; flex: none; }
+.ib-oq-skip { display: inline-flex; align-items: center; justify-content: center; min-width: calc(3.6em + 20px); min-height: 30px; padding: 0 10px; border-radius: 999px; background: var(--ib-fill); font-size: var(--ib-fs-12-5, 12.5px); font-weight: 500; color: var(--muted-foreground); cursor: default; outline: none; user-select: none; white-space: nowrap; }
+.ib-oq-skip[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); color: var(--foreground); }
+.ib-oq-skip[data-skipped] { color: var(--foreground); }
+.ib-oq-skip:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.ib-oq-skip[data-disabled] { opacity: 0.45; }
 .ib-oq-sep { height: 1px; margin: 4px 0; background: var(--ib-hair); }
 /* Re-ask, at the list's foot (owner, 2026-10-23): what the foot's Re-ask button did. */
 /* Tip wraps the item in a span (it can be disabled): the span takes the row's width. */
@@ -3908,6 +3918,7 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-pos[data-phone] .ib-oq-p { font-size: var(--ib-fs-15, 15px); }
 .ib-oq-pos[data-phone] .ib-oq-meta { font-size: var(--ib-fs-13, 13px); }
 .ib-oq-pos[data-phone] .ib-oq-reask { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
+.ib-oq-pos[data-phone] .ib-oq-skip { min-width: max(64px, calc(3.6em + 20px)); min-height: 44px; font-size: var(--ib-fs-14, 14px); }
 
 /* ── A thread's Artifacts (approval "inbox-thread-artifacts", variant Swap) ──
    The header's right side is icons only: Artifacts (with its count), Expand / Fold all, Archive, a hairline, the
