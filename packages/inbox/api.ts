@@ -84,6 +84,13 @@ export interface ListModel {
   projects: ProjectFolder[];
   project: string | null;
   sections: InboxListSection[];
+  /**
+   * The sidebar's pinned threads (approval "inbox-pinned-threads"), in pin
+   * order, whatever the project filter (an archived thread stays pinned).
+   * Absent from an older Inbox: the window then draws no Pinned section and
+   * offers no pin.
+   */
+  pins?: InboxListRow[];
 }
 
 /** GET /api/inbox/threads/archived: Settings' Archived block, newest archived first, a page at a time. */
@@ -753,6 +760,15 @@ export const inboxApi = {
       base,
       ...(baseBody !== null ? { base_body: baseBody } : {}),
     }),
+  // Pins (approval "inbox-pinned-threads"): the sidebar's pinned threads.
+  /** Pin a thread (at the bottom of Pinned) or unpin it. */
+  pin: (threadId: string, pinned: boolean) =>
+    post<{ pins: { thread_id: string; pinned_at: string }[] }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/pin`, { pinned }),
+  /** Put the pins in this order (Move up, Move down): pins it does not name keep their place after them; a named thread not pinned now is skipped. */
+  pinOrder: (order: readonly string[]) => post<{ pins: { thread_id: string; pinned_at: string }[] }>('/api/inbox/pins', { order }),
+  /** Unpin's Undo: pin this one thread again at its old index, with the time it was first pinned. */
+  pinRestore: (restore: { thread_id: string; index: number; pinned_at: string }) =>
+    post<{ pins: { thread_id: string; pinned_at: string }[] }>('/api/inbox/pins', { restore }),
   discardReplyDraft: (threadId: string) => post<{ ok: true; deleted: boolean }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/draft/delete`, {}),
   saveDraft: (id: string, input: { body: string; to: InboxDraft['to']; project: InboxDraft['project']; files: string[]; base: string | null; thread_name?: string }) =>
     post<{ draft: DraftView }>(`/api/inbox/drafts/${encodeURIComponent(id)}`, { ...input }),
@@ -866,6 +882,8 @@ export interface InboxEventHandlers {
   onConnect?: () => void;
   /** A reply draft was saved or discarded (`event: drafts`, approval "inbox-reply-drafts"); never called by an older Inbox. */
   onDrafts?: (threadId: string) => void;
+  /** The sidebar's pins changed (`event: pins`, approval "inbox-pinned-threads"); never called by an older Inbox. */
+  onPins?: () => void;
 }
 
 /** This window, as its event stream (or its report) names it to the server (inbox-windows.ts). */
@@ -876,7 +894,7 @@ export interface InboxEventWindow {
 }
 
 /** The event stream's named frames, as they arrive (and as the tab that holds the shared stream passes them on). */
-export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts'] as const;
+export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts', 'pins'] as const;
 export type InboxEventFrameName = (typeof INBOX_EVENT_FRAMES)[number];
 export interface InboxEventFrame {
   name: InboxEventFrameName;
@@ -931,6 +949,9 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
       return;
     case 'deliveries':
       handlers.onDeliveries?.();
+      return;
+    case 'pins':
+      handlers.onPins?.();
       return;
     case 'record': {
       let parsed: InboxEvent | null = null;

@@ -455,11 +455,14 @@ button.ib-mut { border-radius: 6px; }
    base ring, 2 px outside. */
 .pn-inbox :is(.ib-nav, .ib-proj, button.ib-band, .ib-mrow):focus-visible { outline-offset: -2px; }
 .ib-side-label { font-size: var(--ib-lbl-size-s, var(--ib-fs-11, 11px)); font-weight: var(--ib-lbl-550-s, 600); letter-spacing: var(--ib-lbl-track-s, 0.07em); text-transform: var(--ib-lbl-case-s, uppercase); color: var(--muted-foreground); padding: 18px 9px 6px; }
-.ib-projs { overflow-y: auto; min-height: 0; }
-/* Only the project list gives up height when there are many projects: Inbox and the foot keep theirs (they
-   shrank from 32 to 20 px past about 17 projects). The list fades at its foot while there is more to scroll. */
-.ib-side > :not(.ib-projs) { flex-shrink: 0; }
-.ib-projs[data-more] { mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent); }
+/* Pinned and Projects share one scroll area (approval "inbox-pinned-threads": no limit on pins, so a long
+   Pinned section scrolls with the projects instead of pushing them and the foot off the window). */
+.ib-sidescroll { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.ib-sidescroll > * { flex-shrink: 0; }
+/* Only that scroll area gives up height when there are many projects or pins: Inbox and the foot keep theirs
+   (they shrank from 32 to 20 px past about 17 projects). It fades at its foot while there is more to scroll. */
+.ib-side > :not(.ib-sidescroll) { flex-shrink: 0; }
+.ib-sidescroll[data-more] { mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent); }
 .ib-proj { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px; border-radius: var(--ib-rl-sm-s, 7px); font-size: var(--ib-fs-13-5, 13.5px); width: 100%; text-align: left; }
 .ib-proj .ib-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-proj .ib-n { margin-left: auto; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
@@ -490,6 +493,41 @@ button.ib-mut { border-radius: 6px; }
 /* Shown only because the list shows it (nothing of it is listed): it leaves when the person goes elsewhere. */
 .ib-projrow[data-held] .ib-proj { color: var(--muted-foreground); }
 .ib-projrow[data-held] .ib-name { opacity: 0.7; }
+/* Pinned threads (approval "inbox-pinned-threads", variant Count): between Inbox / Drafts and Projects, with the
+   Projects label's style. A row: the agent's mark, the subject, then the state (a Stopped / Holds N pill in the
+   badges' tints, the open questions, a dot for news, the archive glyph for an archived thread). ⋯ is the project
+   row's pattern. The thread on screen wears the list's selection pill, not the lifted card of the current page. */
+.ib-pins { display: flex; flex-direction: column; }
+.ib-pinrow { position: relative; }
+.ib-pin { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px; border-radius: var(--ib-rl-sm-s, 7px); font-size: var(--ib-fs-13-5, 13.5px); width: 100%; text-align: left; color: var(--foreground); transition: var(--ib-fade-s, var(--ib-ui-fade)); }
+.ib-pin .ib-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-pin.ib-u .ib-name { font-weight: 600; }
+/* Nothing waits on the person (Sent, Quiet, Archived): the row steps back, like a quiet project. */
+.ib-pin.ib-calm { color: var(--muted-foreground); }
+.ib-pinrow:hover .ib-pin:not(.ib-on) { background: var(--ib-side-hover); }
+.ib-pinrow[data-menu] .ib-pin:not(.ib-on) { background: var(--ib-side-menu); color: var(--foreground); }
+.ib-pin.ib-on { background: var(--ib-sel); }
+.pn-inbox .ib-pin:focus-visible { outline-offset: -2px; }
+.ib-pin .ib-n { margin-left: auto; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); font-variant-numeric: tabular-nums; flex: none; }
+.ib-pdot { width: 6px; height: 6px; border-radius: 50%; flex: none; margin-left: auto; background: var(--primary); opacity: 0.8; }
+.ib-parch { margin-left: auto; flex: none; display: inline-flex; color: var(--muted-foreground); }
+.ib-spill { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; white-space: nowrap; flex: none; margin-left: auto; }
+.ib-spill[data-k="stop"] { background: var(--ib-badge-stop-bg); color: var(--ib-badge-stop-fg, currentcolor); }
+.ib-spill[data-k="hold"] { background: var(--ib-badge-hold-bg); color: var(--ib-badge-hold-fg, currentcolor); }
+/* ⋯ on hover, keyboard focus, or while its menu is open, in place of the state (which stays in the row's name). */
+.ib-pinrow:hover .ib-pmore, .ib-pinrow:has(:focus-visible) .ib-pmore, .ib-pinrow[data-menu] .ib-pmore { opacity: 1; }
+.ib-pinrow:hover .ib-pin, .ib-pinrow:has(:focus-visible) .ib-pin, .ib-pinrow[data-menu] .ib-pin { padding-right: 32px; }
+.ib-pinrow:hover .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow:has(:focus-visible) .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow[data-menu] .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch) { visibility: hidden; position: absolute; }
+.ib-pinrow[data-menu] .ib-pmore { color: var(--foreground); }
+/* A pinned thread's row in the list: a small pin after the subject (wide, two-line), before the time (a phone's row). */
+.ib-pinmark { display: inline-flex; flex: none; color: var(--muted-foreground); }
+.pn-inbox .ib-pinmark svg.ib-ic { width: 13px; height: 13px; stroke-width: 1.8; }
+.ib-m1 .ib-pinmark { margin-left: auto; }
+.ib-m1 .ib-pinmark + .ib-t { margin-left: 0; }
+/* The thread header's pin: an icon toggle, pressed while pinned. */
+.pn-inbox .ib-pinbtn[aria-pressed="true"] { color: var(--primary); background: color-mix(in oklch, var(--primary) 13%, transparent); }
+.pn-inbox .ib-pinbtn[aria-pressed="true"] svg.ib-ic { fill: color-mix(in oklch, currentColor 22%, transparent); }
+.ib-tip-sub { font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); overflow-wrap: anywhere; }
 /* The menu: the Inbox's dropdown (the search chips' .ib-sp-menu), on Base UI Menu / ContextMenu. */
 .ib-pm-pos { z-index: 80; outline: none; }
 .ib-pm { min-width: 184px; padding: 4px; border-radius: var(--ib-rl-lg-s, 8px); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--ib-float-s, 0 0 0 1px var(--border), 0 12px 30px -12px oklch(0 0 0 / 0.5)); transform-origin: var(--transform-origin, top left); animation: ib-pm-in 120ms cubic-bezier(0.23, 1, 0.32, 1); outline: none; font-size: var(--ib-fs-13, 13px); }
@@ -2398,7 +2436,7 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   /* a phone on its side is about 400 px tall: the projects scroll, the rest keeps its height */
   .ib-sb-sheet-in > .ib-side { overflow-y: auto; }
   .ib-sb-sheet-in .ib-brand, .ib-sb-sheet-in .ib-side-foot { flex: none; }
-  .ib-sb-sheet-in .ib-projs { flex: 0 1 auto; min-height: 88px; }
+  .ib-sb-sheet-in .ib-sidescroll { flex: 0 1 auto; min-height: 88px; }
   .ib-proj { height: 44px; font-size: var(--ib-fs-15, 15px); flex: none; }
   /* The project menu on a phone: ⋯ always shown (a 44 px target after the count), the menu a sheet from the
      bottom edge titled by the project, with 48 px items. No right-click and no long-press. */
@@ -2406,6 +2444,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-projrow .ib-proj .ib-n, .ib-projrow:hover .ib-proj .ib-n, .ib-projrow:has(:focus-visible) .ib-proj .ib-n, .ib-projrow[data-menu] .ib-proj .ib-n { position: static; width: auto; height: auto; margin: 0 0 0 auto; overflow: visible; clip-path: none; }
   .pn-inbox .ib-pmore { opacity: 1; top: 0; right: 0; width: 44px; height: 44px; border-radius: 8px; }
   .ib-pmore .ib-ic { width: 20px; height: 20px; }
+  /* Pinned rows on a phone: 44 px, ⋯ always shown (a 44 px target after the state), the state always visible. */
+  .ib-pin { height: 44px; font-size: var(--ib-fs-15, 15px); flex: none; }
+  .ib-pinrow > .ib-pin, .ib-pinrow:hover > .ib-pin, .ib-pinrow:has(:focus-visible) > .ib-pin, .ib-pinrow[data-menu] > .ib-pin { padding-right: 46px; }
+  .ib-pinrow:hover .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow:has(:focus-visible) .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow[data-menu] .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch) { visibility: visible; position: static; }
+  .pn-inbox .ib-pinmark svg.ib-ic { width: 14px; height: 14px; }
   .ib-pm-scrim { display: block; position: fixed; inset: 0; z-index: 79; background: rgb(0 0 0 / 0.3); }
   .ib-pm-pos[data-phone] { position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom)) !important; transform: none !important; width: auto !important; }
   .ib-pm-pos[data-phone] .ib-pm { min-width: 0; padding: 6px; border-radius: var(--ib-sheet-corner, 12px); animation: ib-pm-up 200ms cubic-bezier(0.23, 1, 0.32, 1); }
@@ -4076,4 +4119,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 @media (max-width: 359px) {
   .ib-artbtn-n { display: none; }
   .pn-inbox .ib-iconbtn.ib-artbtn { width: 44px; padding: 0; }
+  /* With the pin to the sidebar there (approval "inbox-pinned-threads") one more 44 px icon has no room: Mark read
+     shows its icon alone, its words kept as its name (visually hidden, still read). */
+  .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pn-inbox .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
 }
