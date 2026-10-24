@@ -150,7 +150,7 @@ The install script also updates the Claude Code plugin when it is already instal
 Every few minutes (at most once every ten minutes, and when the Inbox starts or its page is reloaded), the machine (never your browser) asks GitHub which stable release is the latest and caches the answer. A new release shows within minutes. When a newer one exists:
 
 - the Inbox shows an **Update** button above Settings, which opens a dialog with what's new and **Update now** (see [the Inbox](/docs/reference/inbox/#update));
-- plan review, annotate and code review show a short toast at most once every three days, with **Update** (or the command to copy, on Pi: `pi update --extensions`), and the Options menu shows the right update command for your agent;
+- plan review, annotate and code review show a short toast at most once a day, with **Update** (or the command to copy, on Pi: `pi update --extensions`), and the Options menu shows the right update command for your agent;
 - a review you started yourself in a terminal ends with one line: `Plannotator X is available (you have Y). Update: plannotator update`.
 
 Turn the check off with **Settings → General → Tell me when a new version is out** (the Inbox: **Settings → About**), with `{ "updateCheck": false }` in `~/.plannotator/config.json` or `PLANNOTATOR_UPDATE_CHECK=0`. Off makes no automatic request to GitHub at all (and stops auto-update, which needs the check); `plannotator update` still checks when you run it.
