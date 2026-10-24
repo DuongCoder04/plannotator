@@ -100,15 +100,21 @@ describe("pinned threads", () => {
     expect(typeof row.pinned_at).toBe("string");
     expect(model.pins![1]!.subject).toBe(row.subject);
 
-    // Move down (b below c), then the Undo of an Unpin puts a back where it was.
+    // Move down (b below c), then the Undo of an Unpin puts a back where it was, pinned when it first was.
     expect((await post(server, "/api/inbox/pins", { order: [a.thread_id, c.thread_id, b.thread_id] })).status).toBe(200);
     expect(await pinIds(server)).toEqual([a.thread_id, c.thread_id, b.thread_id]);
+    const firstPinnedAt = (await list(server)).pins![0]!.pinned_at!;
     expect((await pin(server, a.thread_id, false)).status).toBe(200);
     expect(await pinIds(server)).toEqual([c.thread_id, b.thread_id]);
     const unpinnedRow = (await list(server)).sections.flatMap((s) => s.threads).find((r) => r.thread_id === a.thread_id)!;
     expect(unpinnedRow.pinned_at ?? null).toBeNull();
+    // An order alone never pins it again.
     expect((await post(server, "/api/inbox/pins", { order: [a.thread_id, c.thread_id, b.thread_id] })).status).toBe(200);
+    expect(await pinIds(server)).toEqual([c.thread_id, b.thread_id]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect((await post(server, "/api/inbox/pins", { restore: { thread_id: a.thread_id, index: 0, pinned_at: firstPinnedAt } })).status).toBe(200);
     expect(await pinIds(server)).toEqual([a.thread_id, c.thread_id, b.thread_id]);
+    expect((await list(server)).pins![0]!.pinned_at).toBe(firstPinnedAt);
 
     // An order from a window that has not seen a newer pin keeps it (after the ones it names); an order never unpins.
     const d = await send("Release notes draft", "ses_d");
@@ -222,9 +228,40 @@ describe("pinned threads", () => {
     expect((await post(server, "/api/inbox/pins", { order: ["not-an-id"] })).status).toBe(422);
     expect((await fetch(url(server, path))).status).toBe(405);
     expect(await pinIds(server)).toEqual([]);
-    // An order naming a thread that no longer exists skips it.
+    // An order naming a thread that no longer exists, or one not pinned, skips it.
     expect((await post(server, "/api/inbox/pins", { order: ["msg_01K70000000000000000000099", a.thread_id] })).status).toBe(200);
-    expect(await pinIds(server)).toEqual([a.thread_id]);
+    expect(await pinIds(server)).toEqual([]);
+    // A restore: both or neither of order and restore, or a bad restore, is 422; a gone thread is 404.
+    const restore = { thread_id: a.thread_id, index: 0, pinned_at: "2026-10-24T00:00:00.000Z" };
+    expect((await post(server, "/api/inbox/pins", {})).status).toBe(422);
+    expect((await post(server, "/api/inbox/pins", { order: [a.thread_id], restore })).status).toBe(422);
+    expect((await post(server, "/api/inbox/pins", { restore: { ...restore, index: -1 } })).status).toBe(422);
+    expect((await post(server, "/api/inbox/pins", { restore: { ...restore, pinned_at: "later" } })).status).toBe(422);
+    expect((await post(server, "/api/inbox/pins", { restore: { ...restore, thread_id: "msg_01K70000000000000000000099" } })).status).toBe(404);
+    expect((await post(server, "/api/inbox/pins", { restore }, { "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    expect(await pinIds(server)).toEqual([]);
+  });
+
+  test("two windows: a move from a window that has not seen another's Unpin never brings the pin back", async () => {
+    const { server, send } = await setup();
+    const [a, b, c] = [await send("One", "ses_a"), await send("Two", "ses_b"), await send("Three", "ses_c")];
+    for (const t of [a, b, c]) await pin(server, t.thread_id, true);
+    // Both windows read [a, b, c].
+    const tab1 = (await list(server)).pins!.map((r) => r.thread_id);
+    const tab2 = (await list(server)).pins!.map((r) => r.thread_id);
+    expect(tab1).toEqual(tab2);
+    // Window 2 unpins b; window 1, still on its stale read, moves c up (its order still names b).
+    expect((await pin(server, b.thread_id, false)).status).toBe(200);
+    const stale = [tab1[2]!, tab1[0]!, tab1[1]!];
+    expect(stale).toEqual([c.thread_id, a.thread_id, b.thread_id]);
+    expect((await post(server, "/api/inbox/pins", { order: stale })).status).toBe(200);
+    expect(await pinIds(server)).toEqual([c.thread_id, a.thread_id]);
+    // Window 1's Undo of an earlier Unpin of its own restores only its thread, never window 2's.
+    const cPinnedAt = (await list(server)).pins![0]!.pinned_at!;
+    await pin(server, c.thread_id, false);
+    expect((await post(server, "/api/inbox/pins", { restore: { thread_id: c.thread_id, index: 0, pinned_at: cPinnedAt } })).status).toBe(200);
+    expect(await pinIds(server)).toEqual([c.thread_id, a.thread_id]);
+    expect((await list(server)).pins![0]!.pinned_at).toBe(cPinnedAt);
   });
 
   test("every open window hears `event: pins`; the phone's stream (no window id) does not", async () => {

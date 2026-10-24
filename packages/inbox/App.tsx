@@ -1669,7 +1669,10 @@ function Inbox() {
    * <section>" with Undo, which puts the pin back at its old place.
    */
   const setPin = async (row: Pick<InboxListRow, 'thread_id' | 'subject'>, pinned: boolean) => {
-    const before = (latestRef.current?.pins ?? []).map((pin) => pin.thread_id);
+    // Unpin's Undo puts this one thread back where it was, with the time it was first pinned.
+    const pinsNow = latestRef.current?.pins ?? [];
+    const index = pinsNow.findIndex((pin) => pin.thread_id === row.thread_id);
+    const pinnedAt = index >= 0 ? (pinsNow[index]!.pinned_at ?? null) : null;
     // Where it still is, from the pinned row (an archived thread has none in the list) or the list.
     const listed = (latestRef.current?.pins ?? []).find((pin) => pin.thread_id === row.thread_id) ?? rowOf(row.thread_id) ?? (threadRow?.thread_id === row.thread_id ? threadRow : null);
     try {
@@ -1684,18 +1687,23 @@ function Inbox() {
       say(`Pinned “${subject}”`);
       return;
     }
+    const canUndo = index >= 0 && pinnedAt !== null;
     showToast({
       icon: 'unpin',
       lead: 'Unpinned',
       detail: unpinnedWhere(listed),
-      speech: `Unpinned “${subject}”. ${unpinnedWhere(listed)}. Press Z to undo.`,
-      onUndo: () => void restorePins(before, subject),
+      speech: `Unpinned “${subject}”. ${unpinnedWhere(listed)}.`,
+      onUndo: canUndo ? () => void restorePin({ thread_id: row.thread_id, index, pinned_at: pinnedAt! }, subject) : undefined,
     });
   };
-  /** Unpin's Undo: the pins as they were, the thread back at its old place. */
-  const restorePins = async (order: readonly string[], subject: string) => {
+  /**
+   * Unpin's Undo: that one thread pinned again at its old place with its
+   * original `pinned_at`. Never a whole remembered order, which would bring
+   * back a pin another tab removed meanwhile.
+   */
+  const restorePin = async (restore: { thread_id: string; index: number; pinned_at: string }, subject: string) => {
     try {
-      await inboxApi.pinOrder(order);
+      await inboxApi.pinRestore(restore);
     } catch (cause) {
       showError(cause);
       return;
@@ -2471,7 +2479,7 @@ function Inbox() {
             onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
-            onPin={pinsOn ? (next) => void setPin(thread, next) : undefined}
+            onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
             replyRequest={replyFor}
             draftChanged={draftChanged}
             onReplyOpened={() => setReplyFor(null)}

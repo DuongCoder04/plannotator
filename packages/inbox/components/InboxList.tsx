@@ -11,7 +11,7 @@ import { ListColumnEdge } from '../shell/ListColumnEdge';
 import { SidebarTrigger, useSidebar } from '../shell/sidebar';
 import { offersRowMarkRead } from '../markRead';
 import { useNarrowerThan } from '../narrower';
-import { inboxHasUnsent } from '@plannotator/core/inbox-types';
+import { inboxHasUnsent, inboxRowArchived } from '@plannotator/core/inbox-types';
 import { DraftLabel } from './DraftLabel';
 import { ThreadRowMenu } from './RowMenu';
 import type { RowMenuAction } from '../rowMenu';
@@ -126,7 +126,7 @@ function countOf(row: InboxListRow): ReactNode {
   const wait = rowWait(row.delivery);
   if (wait) return <UndeliveredBadge wait={wait} />;
   // A Quiet row says why it is there: archived (resolved), or marked read.
-  if (row.section === 'quiet' && row.resolved_at !== null && row.back_from_archive !== true) return 'Archived';
+  if (inboxRowArchived(row)) return 'Archived';
   // What the person has not sent (approval "inbox-reply-drafts"): "Draft · Your reply, 2 picks".
   if (row.unsent && inboxHasUnsent(row.unsent)) return <DraftLabel unsent={row.unsent} />;
   // Marked read with 👍 Looks good: the row says so in place of "Read".

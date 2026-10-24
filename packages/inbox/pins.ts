@@ -8,7 +8,8 @@
  * never see it. No limit on pins; an archived thread stays pinned.
  */
 
-import { INBOX_SECTIONS, type InboxListRow } from '@plannotator/core/inbox-types';
+import { INBOX_SECTIONS, inboxRowArchived, type InboxListRow } from '@plannotator/core/inbox-types';
+import { waitCount } from './format';
 
 /** What a pinned row's state signal is (Count): a pill, a count, a dot, or nothing. */
 export type PinnedStateKind = 'stop' | 'hold' | 'wait' | 'new' | 'sent' | 'quiet' | 'archived';
@@ -23,13 +24,8 @@ export interface PinnedState {
   calm: boolean;
 }
 
-/** Archived: resolved and not come back (the list's own rule, shared/inbox/list.ts). */
-export function pinnedRowArchived(row: Pick<InboxListRow, 'resolved_at' | 'back_from_archive'>): boolean {
-  return row.resolved_at !== null && row.back_from_archive !== true;
-}
-
 export function pinnedState(row: InboxListRow): PinnedState {
-  if (pinnedRowArchived(row)) return { kind: 'archived', words: 'Archived', n: 0, calm: true };
+  if (inboxRowArchived(row)) return { kind: 'archived', words: 'Archived', n: 0, calm: true };
   switch (row.section) {
     case 'stopped':
       return { kind: 'stop', words: 'Stopped', n: 0, calm: false };
@@ -38,12 +34,13 @@ export function pinnedState(row: InboxListRow): PinnedState {
       return { kind: 'hold', words: `Holds up ${n}`, n, calm: false };
     }
     case 'waiting': {
+      // The list row's own words for its count ("1 question, 1 action item"), so the two never disagree.
       const n = row.questions.open;
-      return { kind: 'wait', words: `${n} ${n === 1 ? 'question' : 'questions'}`, n, calm: false };
+      return { kind: 'wait', words: waitCount(n, row.questions.actions ?? 0), n, calm: false };
     }
     case 'new':
-      // News the person has not looked at gets the dot; a row in New only for their own draft does not.
-      return row.unread ? { kind: 'new', words: 'New', n: 0, calm: false } : { kind: 'quiet', words: 'Draft', n: 0, calm: true };
+      // Agent news the person has not looked at gets the dot; a row in New only for their own draft does not.
+      return row.unseen > 0 ? { kind: 'new', words: 'New', n: 0, calm: false } : { kind: 'quiet', words: 'Draft', n: 0, calm: true };
     case 'sent':
       return { kind: 'sent', words: 'Sent', n: 0, calm: true };
     default:
@@ -70,7 +67,7 @@ export function movePin(order: readonly string[], threadId: string, by: -1 | 1):
 /** Where an unpinned thread still is, for the toast: "Still in Waiting on you", "Still in Archived". */
 export function unpinnedWhere(row: InboxListRow | null | undefined): string {
   if (!row) return 'Still in the Inbox';
-  if (pinnedRowArchived(row)) return 'Still in Archived';
+  if (inboxRowArchived(row)) return 'Still in Archived';
   const label = INBOX_SECTIONS.find((section) => section.id === row.section)?.label;
   return label ? `Still in ${label}` : 'Still in the Inbox';
 }

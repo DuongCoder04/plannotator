@@ -120,7 +120,7 @@ import { inboxMarkupNamesOf, removeInboxMarkups } from "./markups";
 import { pendingInboxUploadBlobs, removeUnusedInboxUploadFiles } from "./uploads";
 import { inboxDraftsBytes } from "./drafts";
 import { checkInboxReplyDraftInput, readInboxReplyDrafts, removeInboxReplyDraft, writeInboxReplyDraft } from "./reply-drafts";
-import { checkInboxPinOrder, readInboxPins, writeInboxPins } from "./pins";
+import { checkInboxPinOrder, checkInboxPinRestore, readInboxPins, writeInboxPins } from "./pins";
 import { INBOX_CARD_PR_HINT, parseInboxCardPr } from "./cards";
 import {
   INBOX_CARD_COLUMN_LABELS,
@@ -809,14 +809,17 @@ export class InboxStore {
   }
 
   /**
-   * Read pins.json and keep the pins of threads that exist: one deleted (here,
-   * or by an Inbox that predates pins) leaves the file. Called at the end of
-   * every load, so a deletion's reload prunes it too.
+   * Read pins.json and keep the pins of threads that exist. Pruning happens
+   * here, on load, rather than when a thread is deleted, because the delete
+   * paths (deleteThread, deleteProject) end in a full reload, and because an
+   * Inbox that predates pins may have deleted a pinned thread while this file
+   * sat on disk: every load is where a pin can outlive its thread, so every
+   * load drops it and writes the file back. Called at the end of every load.
    */
   private loadPins(): void {
     const before = this.pinList;
     const read = readInboxPins(this.dir);
-    const kept = read.filter((pin) => this.messages.get(pin.thread_id)?.thread_id === pin.thread_id);
+    const kept = read.filter((pin) => this.isThreadRoot(pin.thread_id));
     this.pinList = kept;
     if (kept.length !== read.length) {
       try {
@@ -829,14 +832,22 @@ export class InboxStore {
     if (before.some((pin) => !kept.some((k) => k.thread_id === pin.thread_id))) this.pinsChanged();
   }
 
+  private isThreadRoot(threadId: string): boolean {
+    return this.messages.get(threadId)?.thread_id === threadId;
+  }
+
   /** The pinned threads, in pin order (the sidebar's order). */
   pins(): readonly InboxPin[] {
     return this.pinList;
   }
 
-  /** When a thread was pinned, or null. */
-  pinnedAt(threadId: string): string | null {
-    return this.pinList.find((pin) => pin.thread_id === threadId)?.pinned_at ?? null;
+  private commitPins(next: InboxPin[]): readonly InboxPin[] {
+    const same = next.length === this.pinList.length && next.every((pin, i) => pin.thread_id === this.pinList[i]!.thread_id && pin.pinned_at === this.pinList[i]!.pinned_at);
+    if (same) return this.pinList;
+    writeInboxPins(this.dir, next);
+    this.pinList = next;
+    this.pinsChanged();
+    return next;
   }
 
   /**
@@ -845,41 +856,45 @@ export class InboxStore {
    * that is not, changes nothing. Writes no store line.
    */
   setPinned(threadId: string, pinned: boolean): readonly InboxPin[] {
-    const root = this.messages.get(threadId);
-    if (!root || root.thread_id !== threadId) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
+    if (!this.isThreadRoot(threadId)) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
     const has = this.pinList.some((pin) => pin.thread_id === threadId);
     if (has === pinned) return this.pinList;
-    const next = pinned ? [...this.pinList, { thread_id: threadId, pinned_at: this.now().toISOString() }] : this.pinList.filter((pin) => pin.thread_id !== threadId);
-    writeInboxPins(this.dir, next);
-    this.pinList = next;
-    this.pinsChanged();
-    return next;
+    return this.commitPins(pinned ? [...this.pinList, { thread_id: threadId, pinned_at: this.now().toISOString() }] : this.pinList.filter((pin) => pin.thread_id !== threadId));
   }
 
   /**
-   * Put the pins in an order (Move up, Move down, and the Undo of Unpin): the
-   * threads `order` names, in that order, then any other pin (in its place),
-   * so a window that has not seen another tab's pin never drops it. A thread
-   * named that is not pinned is pinned again (Undo); one that no longer exists
-   * is skipped. An order never unpins.
+   * Put the pins in an order (Move up, Move down): a permutation of the
+   * threads pinned NOW. The threads `order` names that are pinned come first,
+   * in that order, then every other pin in its place, so a window that has
+   * not seen another tab's pin never drops it. A named thread that is not
+   * pinned (another tab unpinned it, or it no longer exists) is skipped: an
+   * order never pins and never unpins.
    */
   orderPins(value: unknown): readonly InboxPin[] {
     const order = checkInboxPinOrder(value);
     const byId = new Map(this.pinList.map((pin) => [pin.thread_id, pin]));
-    const at = this.now().toISOString();
     const named: InboxPin[] = [];
     for (const id of order) {
-      if (this.messages.get(id)?.thread_id !== id) continue;
-      named.push(byId.get(id) ?? { thread_id: id, pinned_at: at });
+      const pin = byId.get(id);
+      if (pin) named.push(pin);
     }
     const namedIds = new Set(named.map((pin) => pin.thread_id));
-    const next = [...named, ...this.pinList.filter((pin) => !namedIds.has(pin.thread_id))];
-    const same = next.length === this.pinList.length && next.every((pin, i) => pin.thread_id === this.pinList[i]!.thread_id);
-    if (same) return this.pinList;
-    writeInboxPins(this.dir, next);
-    this.pinList = next;
-    this.pinsChanged();
-    return next;
+    return this.commitPins([...named, ...this.pinList.filter((pin) => !namedIds.has(pin.thread_id))]);
+  }
+
+  /**
+   * Unpin's Undo: pin exactly one thread again at `index` (clamped to the
+   * pins as they are now) with the `pinned_at` it had. A thread that is
+   * pinned again already (another tab) keeps its place; one that no longer
+   * exists is refused (`thread_not_found`).
+   */
+  restorePin(value: unknown): readonly InboxPin[] {
+    const restore = checkInboxPinRestore(value);
+    if (!this.isThreadRoot(restore.thread_id)) throw new InboxError("thread_not_found", `No thread ${restore.thread_id}.`);
+    if (this.pinList.some((pin) => pin.thread_id === restore.thread_id)) return this.pinList;
+    const next = [...this.pinList];
+    next.splice(Math.min(restore.index, next.length), 0, { thread_id: restore.thread_id, pinned_at: restore.pinned_at });
+    return this.commitPins(next);
   }
 
   /** A thread's reply draft was saved or deleted: its row's `unsent` (and section) changed with no store line. */

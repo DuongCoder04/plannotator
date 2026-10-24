@@ -5,12 +5,16 @@
  * page's `serverSession`; the owner over the tailnet like every window route):
  *
  *   POST /api/inbox/threads/:id/pin   `{ pinned: boolean }`: pin (at the bottom) or unpin; `{ pins }`
- *   POST /api/inbox/pins              `{ order: [thread ids] }`: Move up, Move down, and Unpin's Undo; `{ pins }`
+ *   POST /api/inbox/pins              `{ order: [thread ids] }`: Move up and Move down; `{ pins }`
+ *   POST /api/inbox/pins              `{ restore: { thread_id, index, pinned_at } }`: Unpin's Undo; `{ pins }`
  *
  * No limit on pins, and an archived thread stays pinned (the owner's
- * decisions). An order puts the threads it names first, in that order, and
- * keeps every other pin after them, so a stale window never drops another
- * tab's pin; it never unpins. The list model carries `pins` (rows, in pin
+ * decisions). An order only permutes the threads pinned now: the pinned ones
+ * it names come first, in that order, every other pin keeps its place after
+ * them, and a named thread that is not pinned (another tab unpinned it) is
+ * skipped, so a stale window never drops another tab's pin nor brings back
+ * one it unpinned. Only a restore pins again: exactly one thread, at its old
+ * index (clamped), with its original `pinned_at`. The list model carries `pins` (rows, in pin
  * order, every pinned thread whatever the project filter or `archived`), and
  * a change tells every window (`event: pins` on the window's stream, as
  * `event: drafts` does). Pins live in `inbox/pins.json`, outside the event
@@ -46,7 +50,10 @@ export function createInboxPins(options: {
       if (typeof body.pinned !== "boolean") throw new InboxError("validation_error", "pinned: a boolean.", { field: "pinned" });
       return json({ pins: wire(store.setPinned(match[1]!, body.pinned)) });
     }
-    return json({ pins: wire(store.orderPins(body.order)) });
+    const hasOrder = body.order !== undefined;
+    const hasRestore = body.restore !== undefined;
+    if (hasOrder === hasRestore) throw new InboxError("validation_error", "Send one of order or restore.", { field: hasOrder ? "restore" : "order" });
+    return json({ pins: wire(hasRestore ? store.restorePin(body.restore) : store.orderPins(body.order)) });
   };
 
   return { route };

@@ -1627,6 +1627,17 @@ export interface InboxRowUnsent {
   comments: number;
 }
 
+/**
+ * Archived: resolved, and not come back. Not shown in the window's list;
+ * Settings lists it. A thread an agent wrote in after the archive is back in
+ * the list while something there waits, and returns here once handled. One
+ * rule for the server's list (shared/inbox/list.ts re-exports it) and the
+ * window (a list row's count, a pinned row).
+ */
+export function inboxRowArchived(row: Pick<InboxListRow, "resolved_at" | "back_from_archive">): boolean {
+  return row.resolved_at !== null && row.back_from_archive !== true;
+}
+
 /** The thread holds something the person has not sent: reply words, picks or comments. */
 export function inboxHasUnsent(unsent: InboxRowUnsent | null | undefined): boolean {
   return !!unsent && (unsent.reply_at !== null || unsent.picks > 0 || unsent.comments > 0);

@@ -236,6 +236,9 @@ for (const phone of [
       await expect(pane.locator('[data-phone-back]')).toBeVisible();
       await shot(page, `7-phone-${phone.name.replace(/\W+/g, '-').toLowerCase()}`, ['light', 'dark']);
       expect(await headerOrder(pane)).toEqual(['back', 'mark-read', 'pin', 'artifacts', 'expand', 'archive']);
+      // Under 360 px Mark read shows its icon alone; its words stay its name.
+      await expect(pane.locator('[data-mark-read]')).toHaveAccessibleName(/Mark read/);
+      await expect(pane.locator('[data-pin-toggle]')).toHaveAccessibleName('Pin to the sidebar');
       // Every header control is a 44 px target and none overlaps another.
       // Measured against the header itself (the thread may still be sliding in).
       const boxes = await pane.locator('.ib-phead').evaluate((head) => {

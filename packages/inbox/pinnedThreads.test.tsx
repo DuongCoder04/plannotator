@@ -8,7 +8,9 @@
  * and its name; a click opens the thread and keeps the project filter; the
  * pinned row's ⋯ offers Unpin, Move up, Move down and Copy link, and the
  * moves change the order with focus kept on that row's ⋯; Unpin's toast and
- * its Undo putting the pin back at its old place; an archived thread stays
+ * its Undo putting the pin back at its old place (a restore of that one
+ * thread with its original pinned_at); a quick pin-then-unpin on the
+ * header's toggle sending both in order; an archived thread stays
  * pinned and opens as an archived thread; no section when nothing is pinned.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
@@ -62,12 +64,17 @@ async function serverPins(): Promise<string[]> {
   return (model.pins ?? []).map((row) => row.thread_id);
 }
 
+async function serverPinnedAt(threadId: string): Promise<string | null> {
+  const model = JSON.parse((await loopback('/api/inbox/threads?archived=exclude')).text) as { pins?: InboxListRow[] };
+  return model.pins?.find((row) => row.thread_id === threadId)?.pinned_at ?? null;
+}
+
 async function serverPin(threadId: string, pinned: boolean) {
   const answer = await loopback(`/api/inbox/threads/${threadId}/pin`, 'POST', JSON.stringify({ serverSession, pinned }));
   expect(answer.status).toBe(200);
 }
 
-const TESTS = 8;
+const TESTS = 9;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -202,11 +209,20 @@ test('the order a move makes, the state a pinned row shows, and the toast words'
   expect(movePin(['a', 'b', 'c'], 'a', -1)).toEqual(['a', 'b', 'c']);
   expect(movePin(['a', 'b', 'c'], 'c', 1)).toEqual(['a', 'b', 'c']);
   const row = (over: Record<string, unknown>) =>
-    ({ section: 'waiting', unread: true, resolved_at: null, back_from_archive: false, read_at: null, questions: { open: 3, holds_up: [] }, ...over }) as unknown as InboxListRow;
+    ({ section: 'waiting', unread: true, unseen: 1, resolved_at: null, back_from_archive: false, read_at: null, questions: { open: 3, holds_up: [] }, ...over }) as unknown as InboxListRow;
   expect(pinnedState(row({}))).toMatchObject({ kind: 'wait', n: 3, words: '3 questions', calm: false });
   expect(pinnedState(row({ section: 'stopped' }))).toMatchObject({ kind: 'stop', words: 'Stopped' });
   expect(pinnedState(row({ section: 'holding', questions: { open: 2, holds_up: ['a', 'b'] } }))).toMatchObject({ kind: 'hold', n: 2, words: 'Holds up 2' });
+  // The list row's count words: an action item named beside the questions.
+  expect(pinnedState(row({ questions: { open: 2, actions: 1, holds_up: [] } }))).toMatchObject({ kind: 'wait', n: 2, words: '1 question, 1 action item' });
+  expect(pinnedState(row({ questions: { open: 1, actions: 1, holds_up: [] } }))).toMatchObject({ words: '1 action item' });
   expect(pinnedState(row({ section: 'new' }))).toMatchObject({ kind: 'new', words: 'New' });
+  // The dot follows unseen agent news, not `unread`: news seen with picks still to send is no dot...
+  expect(pinnedState(row({ section: 'new', unread: true, unseen: 0, answered_not_sent: true }))).toMatchObject({ kind: 'quiet', words: 'Draft', calm: true });
+  // ...and unseen news gets it even where `unread` is off (a row in New for a draft too).
+  expect(pinnedState(row({ section: 'new', unread: false, unseen: 2 }))).toMatchObject({ kind: 'new', words: 'New', calm: false });
+  // Archived is the list's own rule: a thread that came back is placed as an open one.
+  expect(pinnedState(row({ section: 'new', resolved_at: 'x', back_from_archive: true }))).toMatchObject({ kind: 'new' });
   expect(pinnedState(row({ section: 'quiet', unread: false, read_at: 'x' }))).toMatchObject({ kind: 'quiet', words: 'Read', calm: true });
   expect(pinnedState(row({ section: 'quiet', unread: false, resolved_at: 'x' }))).toMatchObject({ kind: 'archived', words: 'Archived', calm: true });
   expect(unpinnedWhere(row({}))).toBe('Still in Waiting on you');
@@ -260,7 +276,8 @@ test.skipIf(!hasDom)("the header's pin toggle pins and unpins the open thread", 
   await act(async () => toggle().click());
   await until(() => pinnedOrder().includes(ids.waiting), 'the pinned row');
   await until(() => toggle().getAttribute('aria-pressed') === 'true', 'the toggle pressed');
-  expect(toggle().getAttribute('aria-label')).toBe('Unpin from the sidebar');
+  // One fixed name whatever the state: aria-pressed says it (as Mark read keeps its key); only the tooltip's words change.
+  expect(toggle().getAttribute('aria-label')).toBe('Pin to the sidebar');
   // The open thread's pinned row wears the selection pill and aria-current, not the current page's card.
   expect(pinnedRow(ids.waiting)!.getAttribute('aria-current')).toBe('true');
   expect(pinnedRow(ids.waiting)!.classList.contains('ib-on')).toBe(true);
@@ -271,6 +288,24 @@ test.skipIf(!hasDom)("the header's pin toggle pins and unpins the open thread", 
   await until(() => !!toast(), 'the Unpinned toast');
   expect(toast()!.textContent).toContain('Unpinned');
   expect(toast()!.textContent).toContain('Still in Waiting on you');
+});
+
+test.skipIf(!hasDom)("a quick pin-then-unpin on the header's toggle sends both, in order, and ends unpinned", async () => {
+  await renderApp(`#thread=${ids.mixed}`);
+  await until(() => !!document.querySelector('[data-pin-toggle]'), 'the header toggle');
+  const toggle = () => document.querySelector<HTMLElement>('[data-pin-toggle]')!;
+  // Two clicks before the first request answers: the second shows at once and is not lost.
+  await act(async () => {
+    toggle().click();
+    toggle().click();
+  });
+  expect(toggle().getAttribute('aria-pressed')).toBe('false');
+  await until(() => posted.filter((p) => p.path.endsWith(`/threads/${ids.mixed}/pin`)).length === 2, 'both requests');
+  expect(posted.filter((p) => p.path.endsWith(`/threads/${ids.mixed}/pin`)).map((p) => p.body.pinned)).toEqual([true, false]);
+  await until(() => !!toast(), 'the Unpinned toast');
+  expect(await serverPins()).toEqual([]);
+  expect(pinnedSection()).toBeNull();
+  expect(toggle().getAttribute('aria-pressed')).toBe('false');
 });
 
 test.skipIf(!hasDom)('a click opens the thread and keeps the project filter; the open thread\'s pinned row does nothing', async () => {
@@ -315,6 +350,8 @@ test.skipIf(!hasDom)("the pinned row's ⋯: Move up and Move down reorder with f
 
 test.skipIf(!hasDom)("Unpin from the pinned row's ⋯: the toast, focus on the next pin, and Undo puts it back at its old place", async () => {
   for (const id of [ids.stopped, ids.waiting, ids.mixed]) await serverPin(id, true);
+  const firstPinnedAt = await serverPinnedAt(ids.waiting);
+  expect(firstPinnedAt).toEqual(expect.any(String));
   await renderApp();
   await until(() => pinnedOrder().length === 3, 'the pinned rows');
   await openPinMenu(ids.waiting);
@@ -329,6 +366,11 @@ test.skipIf(!hasDom)("Unpin from the pinned row's ⋯: the toast, focus on the n
   await until(() => pinnedOrder().length === 3, 'the pin back');
   expect(pinnedOrder()).toEqual([ids.stopped, ids.waiting, ids.mixed]);
   expect(await serverPins()).toEqual([ids.stopped, ids.waiting, ids.mixed]);
+  // The Undo restores that one thread, with the time it was first pinned, never a remembered whole order.
+  const undo = posted.find((p) => p.path === '/api/inbox/pins')!;
+  expect(undo.body.order).toBeUndefined();
+  expect(undo.body.restore).toEqual({ thread_id: ids.waiting, index: 1, pinned_at: firstPinnedAt });
+  expect(await serverPinnedAt(ids.waiting)).toBe(firstPinnedAt);
 });
 
 test.skipIf(!hasDom)('an archived thread stays pinned, shown archived, and opens as an archived thread', async () => {

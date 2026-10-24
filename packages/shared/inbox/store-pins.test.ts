@@ -19,10 +19,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function open() {
+function open(now?: () => Date) {
   const dir = mkdtempSync(join(tmpdir(), "plannotator-inbox-store-pin-"));
   roots.push(dir);
-  const store = InboxStore.open(dir);
+  const store = InboxStore.open(dir, now ? { now } : {});
   const project = store.ensureProject({ name: "repo", root: "/work/repo" });
   return { dir, store, project };
 }
@@ -52,11 +52,12 @@ describe("pins in the store", () => {
     store.setPinned(b.thread_id, true);
     store.setPinned(a.thread_id, true);
     expect(store.pins().map((p) => p.thread_id)).toEqual([b.thread_id, a.thread_id]);
-    expect(store.pinnedAt(a.thread_id)).toEqual(expect.any(String));
+    const pinnedAt = (id: string) => store.pins().find((p) => p.thread_id === id)?.pinned_at ?? null;
+    expect(pinnedAt(a.thread_id)).toEqual(expect.any(String));
     store.orderPins([a.thread_id]);
     expect(store.pins().map((p) => p.thread_id)).toEqual([a.thread_id, b.thread_id]);
     store.setPinned(a.thread_id, false);
-    expect(store.pinnedAt(a.thread_id)).toBeNull();
+    expect(pinnedAt(a.thread_id)).toBeNull();
     expect(code(() => store.orderPins([b.thread_id, b.thread_id]))).toBe("validation_error");
     expect(code(() => store.orderPins("x"))).toBe("validation_error");
   });
@@ -69,12 +70,53 @@ describe("pins in the store", () => {
     store.onPinsChange(() => told++);
     store.setPinned(a.thread_id, true);
     expect(told).toBe(1);
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: 1, pins: [{ thread_id: a.thread_id, pinned_at: store.pinnedAt(a.thread_id) }] });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: 1, pins: [{ thread_id: a.thread_id, pinned_at: store.pins()[0]!.pinned_at }] });
     expect(InboxStore.open(dir).pins().map((p) => p.thread_id)).toEqual([a.thread_id]);
     store.setPinned(a.thread_id, true);
     expect(told).toBe(1);
     store.setPinned(a.thread_id, false);
     expect(existsSync(file)).toBe(false);
+  });
+
+  test("an order only permutes the pins now: a stale order never brings back a pin another tab removed", () => {
+    const { store, project } = open();
+    const [a, b, c] = ["One", "Two", "Three"].map((body, i) => store.sendMessage({ project_id: project.id, author: agent(`ses_${i}`), body }).message.thread_id);
+    for (const id of [a!, b!, c!]) store.setPinned(id, true);
+    // Tab 1 read [a, b, c]; tab 2 unpins b; tab 1 then moves c to the top with its stale order.
+    const stale = [c!, a!, b!];
+    store.setPinned(b!, false);
+    let told = 0;
+    store.onPinsChange(() => told++);
+    store.orderPins(stale);
+    expect(store.pins().map((p) => p.thread_id)).toEqual([c, a]);
+    expect(told).toBe(1);
+    // An order naming only threads no longer pinned changes nothing.
+    store.orderPins([b!]);
+    expect(store.pins().map((p) => p.thread_id)).toEqual([c, a]);
+    expect(told).toBe(1);
+  });
+
+  test("restore pins one thread again at its old index with its original pinned_at", () => {
+    let clock = Date.parse("2026-10-24T10:00:00.000Z");
+    const { store, project } = open(() => new Date((clock += 60_000)));
+    const [a, b, c] = ["One", "Two", "Three"].map((body, i) => store.sendMessage({ project_id: project.id, author: agent(`ses_${i}`), body }).message.thread_id);
+    for (const id of [a!, b!, c!]) store.setPinned(id, true);
+    const original = store.pins()[1]!;
+    expect(original.thread_id).toBe(b);
+    store.setPinned(b!, false);
+    store.restorePin({ thread_id: b!, index: 1, pinned_at: original.pinned_at });
+    expect(store.pins().map((p) => p.thread_id)).toEqual([a, b, c]);
+    expect(store.pins()[1]!.pinned_at).toBe(original.pinned_at);
+    // A thread pinned again meanwhile keeps its place; an index past the end lands last; a gone thread is refused.
+    store.restorePin({ thread_id: b!, index: 0, pinned_at: original.pinned_at });
+    expect(store.pins().map((p) => p.thread_id)).toEqual([a, b, c]);
+    store.setPinned(a!, false);
+    store.restorePin({ thread_id: a!, index: 99, pinned_at: "2026-10-01T00:00:00.000Z" });
+    expect(store.pins().map((p) => p.thread_id)).toEqual([b, c, a]);
+    expect(code(() => store.restorePin({ thread_id: "msg_01K70000000000000000000099", index: 0, pinned_at: original.pinned_at }))).toBe("thread_not_found");
+    for (const bad of [null, { thread_id: a, index: -1, pinned_at: original.pinned_at }, { thread_id: a, index: 1.5, pinned_at: original.pinned_at }, { thread_id: a, index: 0, pinned_at: "soon" }, { thread_id: "x", index: 0, pinned_at: original.pinned_at }]) {
+      expect(code(() => store.restorePin(bad))).toBe("validation_error");
+    }
   });
 
   test("a deleted thread leaves the pins, and the listeners hear it", () => {

@@ -226,7 +226,8 @@ test("a click opens the thread and keeps the filter; the header's toggle pins an
   await expect(pinned(page, threads.board)).toHaveAttribute('aria-current', 'true');
   const toggle = page.locator('[data-pin-toggle]');
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  await expect(toggle).toHaveAccessibleName('Unpin from the sidebar');
+  // One fixed name; aria-pressed says it is pinned.
+  await expect(toggle).toHaveAccessibleName('Pin to the sidebar');
   await shot(page, 'desktop-thread-light.png');
   await page.emulateMedia({ colorScheme: 'dark' });
   await shot(page, 'desktop-thread-dark.png');

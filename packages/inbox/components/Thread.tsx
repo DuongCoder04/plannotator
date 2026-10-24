@@ -691,7 +691,8 @@ export interface ThreadPaneProps {
    * the header's pin toggle. Absent (an older Inbox keeps no pins): no toggle.
    */
   pinned?: boolean;
-  onPin?: (pinned: boolean) => void;
+  /** Resolves once the pin is written and the list read again (the header waits on it before the next click's request). */
+  onPin?: (pinned: boolean) => void | Promise<unknown>;
   /** The thread whose reply box should open (the warning toast's Reply); the pane calls `onReplyOpened` once it has. */
   replyRequest?: string | null;
   onReplyOpened?: () => void;
@@ -2835,14 +2836,43 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
     </Tip>
   );
   // Pin to the sidebar (approval "inbox-pinned-threads"): an icon toggle, the phone's way to pin.
+  // One fixed name ("Pin to the sidebar") with `aria-pressed`, so a screen reader hears the state
+  // change rather than a new control; only the tooltip's words follow the state.
+  // A click shows its state at once and its request waits for the one before it, so a quick
+  // pin-then-unpin sends both, in order, and ends where the person left it.
+  const [pinWant, setPinWant] = useState<{ thread: string; pinned: boolean } | null>(null);
+  const pinChain = useRef<{ thread: string; tail: Promise<unknown>; pending: number }>({ thread: '', tail: Promise.resolve(), pending: 0 });
+  const pinShown = pinWant?.thread === thread.thread_id ? pinWant.pinned : pinned;
+  // What the last click asked for, read synchronously, so two clicks before a render still alternate.
+  const pinWantRef = useRef<{ thread: string; pinned: boolean } | null>(null);
+  const togglePin = () => {
+    if (!onPin) return;
+    const threadId = thread.thread_id;
+    const current = pinWantRef.current?.thread === threadId ? pinWantRef.current.pinned : pinShown;
+    const next = !current;
+    pinWantRef.current = { thread: threadId, pinned: next };
+    setPinWant({ thread: threadId, pinned: next });
+    const chain = pinChain.current.thread === threadId ? pinChain.current : (pinChain.current = { thread: threadId, tail: Promise.resolve(), pending: 0 });
+    chain.pending++;
+    chain.tail = chain.tail
+      .then(() => onPin(next))
+      .catch(() => {})
+      .then(() => {
+        // The last request answered (and the list was read again): the list's state takes over.
+        if (--chain.pending === 0) {
+          if (pinWantRef.current?.thread === threadId) pinWantRef.current = null;
+          setPinWant((want) => (want?.thread === threadId ? null : want));
+        }
+      });
+  };
   const pinButton = onPin ? (
-    <Tip content={pinned ? 'Unpin from the sidebar' : 'Pin to the sidebar'}>
+    <Tip content={pinShown ? 'Unpin from the sidebar' : 'Pin to the sidebar'}>
       <button
         type="button"
         className="ib-iconbtn ib-pinbtn"
-        onClick={() => onPin(!pinned)}
-        aria-pressed={pinned}
-        aria-label={pinned ? 'Unpin from the sidebar' : 'Pin to the sidebar'}
+        onClick={togglePin}
+        aria-pressed={pinShown}
+        aria-label="Pin to the sidebar"
         data-pin-toggle=""
       >
         <Icon name="pin" size={16} />

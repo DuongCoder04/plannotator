@@ -11,7 +11,7 @@
  * pinned; a deleted thread leaves the file.
  */
 
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isInboxId, type InboxPin } from "@plannotator/core/inbox-types";
 import { InboxError } from "./schema";
@@ -60,6 +60,8 @@ export function writeInboxPins(inboxDirPath: string, pins: readonly InboxPin[]):
   }
   const temp = `${file}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify({ v: 1, pins: pins.map((pin) => ({ thread_id: pin.thread_id, pinned_at: pin.pinned_at })) })}\n`, { mode: 0o600 });
+  // `mode` applies only when the file is created: a temp file a crash left keeps its old mode.
+  chmodSync(temp, 0o600);
   renameSync(temp, file);
 }
 
@@ -70,4 +72,31 @@ export function checkInboxPinOrder(value: unknown): string[] {
   }
   if (new Set(value).size !== value.length) throw new InboxError("validation_error", "order: a thread id appears twice.", { field: "order" });
   return value as string[];
+}
+
+/** Unpin's Undo (`POST /api/inbox/pins { restore }`): one thread, where it was and when it was pinned. */
+export interface InboxPinRestore {
+  thread_id: string;
+  index: number;
+  pinned_at: string;
+}
+
+/** The checks on a restore: a thread id, a whole index, and an ISO time. */
+export function checkInboxPinRestore(value: unknown): InboxPinRestore {
+  const restore = value as { thread_id?: unknown; index?: unknown; pinned_at?: unknown } | null;
+  if (
+    !restore ||
+    typeof restore !== "object" ||
+    !isInboxId("msg", restore.thread_id) ||
+    typeof restore.index !== "number" ||
+    !Number.isInteger(restore.index) ||
+    restore.index < 0 ||
+    restore.index > INBOX_PIN_ORDER_MAX ||
+    typeof restore.pinned_at !== "string" ||
+    restore.pinned_at.length > 64 ||
+    Number.isNaN(Date.parse(restore.pinned_at))
+  ) {
+    throw new InboxError("validation_error", "restore: { thread_id (msg_), index (a whole number), pinned_at (an ISO time) }.", { field: "restore" });
+  }
+  return { thread_id: restore.thread_id, index: restore.index, pinned_at: restore.pinned_at };
 }

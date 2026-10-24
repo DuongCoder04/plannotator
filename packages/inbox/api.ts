@@ -764,8 +764,11 @@ export const inboxApi = {
   /** Pin a thread (at the bottom of Pinned) or unpin it. */
   pin: (threadId: string, pinned: boolean) =>
     post<{ pins: { thread_id: string; pinned_at: string }[] }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/pin`, { pinned }),
-  /** Put the pins in this order (Move up, Move down, Unpin's Undo); pins it does not name keep their place after them. */
+  /** Put the pins in this order (Move up, Move down): pins it does not name keep their place after them; a named thread not pinned now is skipped. */
   pinOrder: (order: readonly string[]) => post<{ pins: { thread_id: string; pinned_at: string }[] }>('/api/inbox/pins', { order }),
+  /** Unpin's Undo: pin this one thread again at its old index, with the time it was first pinned. */
+  pinRestore: (restore: { thread_id: string; index: number; pinned_at: string }) =>
+    post<{ pins: { thread_id: string; pinned_at: string }[] }>('/api/inbox/pins', { restore }),
   discardReplyDraft: (threadId: string) => post<{ ok: true; deleted: boolean }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/draft/delete`, {}),
   saveDraft: (id: string, input: { body: string; to: InboxDraft['to']; project: InboxDraft['project']; files: string[]; base: string | null; thread_name?: string }) =>
     post<{ draft: DraftView }>(`/api/inbox/drafts/${encodeURIComponent(id)}`, { ...input }),
