@@ -291,7 +291,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   const pressRef = useRef<{ x: number; y: number; touch: boolean } | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLFieldSetElement>(null);
-  // Accept recommended (and Use) go away once clicked: focus moves to what
+  // Accept recommended goes away once clicked: focus moves to what
   // the click filled in, never to the page.
   const focusAfterAcceptRef = useRef(false);
   const lastPickRef = useRef<{ label: string; before: QuestionAnswer | undefined; at: number } | null>(null);
@@ -474,21 +474,12 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
 
   // The suggestion the agent wrote that is not one of the choices (a choice
   // question's `Recommended:` naming none of them; a text question's whole
-  // suggestion): "Accept recommended" fills it in, so the card shows it.
+  // suggestion): "Accept recommended" fills it in, so the card shows it. The
+  // line only shows it: the footer's Accept recommended is the one button
+  // (a "Use" here did exactly the same thing).
   const suggestedLine = question.suggestedText && !answered && (
-    <div id={suggestId} className="mt-2 flex items-start gap-2 text-[12.5px] text-muted-foreground" data-question-suggested="">
-      <span className="min-w-0 flex-1">
-        <Tag tone="rec">Suggested</Tag> {inline(question.suggestedText)}
-      </span>
-      {!readOnly && (
-        <button
-          type="button"
-          onClick={acceptRecommended}
-          className="shrink-0 rounded-md bg-primary/15 px-2.5 py-[3px] text-xs font-medium text-primary hover:bg-primary/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-        >
-          Use
-        </button>
-      )}
+    <div id={suggestId} className="mt-2 text-[12.5px] text-muted-foreground" data-question-suggested="">
+      <Tag tone="rec">Suggested</Tag> {inline(question.suggestedText)}
     </div>
   );
 

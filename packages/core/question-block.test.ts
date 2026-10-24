@@ -795,3 +795,137 @@ describe("long task-list choices (picked as written)", () => {
     expect(parsed.selected[0].length).toBe(20_000);
   });
 });
+
+// The owner's 2026-10-24 report: an agent wrote the block below; the card drew
+// a "Suggested · Unpin it" row with its own Use button beside Accept
+// recommended (the recommendation named no choice exactly), and glued the
+// `Context:` line onto the last choice's label.
+const OWNERS_BLOCK = [
+  "What happens to a pin when you archive the thread?",
+  "Recommended: Unpin it",
+  '- Unpin it: the toast says "Archived · Unpinned", and Undo restores both',
+  "- Keep it pinned",
+  "Context: an archived thread gets nothing new, because the agent's next message starts a new thread.",
+].join("\n");
+const OWNERS_CONTEXT = "Context: an archived thread gets nothing new, because the agent's next message starts a new thread.";
+
+describe("a recommendation naming the start of a choice", () => {
+  test("the owner's block: the recommended choice is the one it begins, no suggestion, the key unchanged", () => {
+    const q = parseQuestionBlock("question", OWNERS_BLOCK)!;
+    expect(q.choices.map((c) => [c.label, c.recommended])).toEqual([
+      ['Unpin it: the toast says "Archived · Unpinned", and Undo restores both', true],
+      ["Keep it pinned", false],
+    ]);
+    expect(q.suggestedText).toBeUndefined();
+    expect(q.recommendation).toBe("Unpin it");
+    expect(q.key).toBe(questionKey("single", "What happens to a pin when you archive the thread?"));
+    // Accept recommended picks that choice.
+    expect(recommendedQuestionAnswer({ line: 1, question: q })!.selected).toEqual([q.choices[0]!.label]);
+  });
+
+  for (const [sep, label] of [
+    [":", "Unpin it: the toast says so"],
+    ["(", "Unpin it (Undo restores it)"],
+    [" - ", "Unpin it - Undo restores it"],
+    ["–", "Unpin it– Undo restores it"],
+    ["—", "Unpin it—Undo restores it"],
+  ] as const) {
+    test(`a task-list label that goes on after ${JSON.stringify(sep)}`, () => {
+      const q = parseQuestionBlock("question", ["Pin on archive?", "", `- [ ] ${label}`, "- [ ] Keep it pinned", "", "Recommended: Unpin it"].join("\n"))!;
+      expect(q.choices.find((c) => c.recommended)?.label).toBe(label.split(/\s+-\s/)[0]!.trim());
+      expect(q.suggestedText).toBeUndefined();
+    });
+  }
+
+  test("compared case-insensitively, emphasis and a trailing period aside", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] **Unpin it**: toast says so", "- [ ] Keep it", "Recommended: _unpin IT_."].join("\n"))!;
+    expect(q.choices[0]!.recommended).toBe(true);
+    expect(q.suggestedText).toBeUndefined();
+  });
+
+  test("a recommendation with its own reason still names the choice it begins", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- Unpin it: toast says so", "- Keep it", "Recommended: Unpin it — Undo restores both"].join("\n"))!;
+    expect(q.choices[0]!.recommended).toBe(true);
+  });
+
+  test("two choices it begins: ambiguous, so it stays a suggested answer", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it: now", "- [ ] Unpin it (later)", "Recommended: Unpin it"].join("\n"))!;
+    expect(q.choices.some((c) => c.recommended)).toBe(false);
+    expect(q.suggestedText).toBe("Unpin it");
+  });
+
+  test("no separator after it (the label only starts with the same words): a suggested answer", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it now", "- [ ] Keep it", "Recommended: Unpin it"].join("\n"))!;
+    expect(q.choices.some((c) => c.recommended)).toBe(false);
+    expect(q.suggestedText).toBe("Unpin it");
+  });
+
+  test("names no choice at all: a suggested answer, as before", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it: now", "- [ ] Keep it", "Recommended: Ask me later"].join("\n"))!;
+    expect(q.suggestedText).toBe("Ask me later");
+  });
+
+  test("an exact label wins over a label it begins", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it: and tell me", "- [ ] Unpin it", "Recommended: Unpin it"].join("\n"))!;
+    expect(q.choices.map((c) => c.recommended)).toEqual([false, true]);
+  });
+
+  test("a pick-any list names each choice by its start", () => {
+    const q = parseQuestionBlock("question-multi", ["Which ship?", "- Dot: per document", "- Banner: global", "- Toasts: on error", "Recommended: Dot, Banner"].join("\n"))!;
+    expect(q.choices.map((c) => c.recommended)).toEqual([true, true, false]);
+    expect(q.suggestedText).toBeUndefined();
+  });
+});
+
+describe("a Context: line", () => {
+  test("the owner's block: it is context, never the last choice's label", () => {
+    const q = parseQuestionBlock("question", OWNERS_BLOCK)!;
+    expect(q.choices[1]!.label).toBe("Keep it pinned");
+    expect(q.context).toBe(OWNERS_CONTEXT);
+    expect(q.prompt).toBe("What happens to a pin when you archive the thread?");
+  });
+
+  test("an answer stored under the label older builds read (the context joined on) still selects the choice", () => {
+    const q = parseQuestionBlock("question", OWNERS_BLOCK)!;
+    const stored = `Keep it pinned ${OWNERS_CONTEXT}`;
+    expect(q.choices[1]!.aliases).toContain(stored);
+    const answer: QuestionAnswer = { v: 1, key: q.key, kind: "single", prompt: q.prompt, selected: [stored] };
+    expect(canonicalQuestionAnswer(q, answer).selected).toEqual(["Keep it pinned"]);
+  });
+
+  test("it ends a plain bullet even when it wraps over lines; the wrapped lines are context too", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- Unpin it", "- Keep it pinned", "Context: an archived thread", "gets nothing new."].join("\n"))!;
+    expect(q.choices.map((c) => c.label)).toEqual(["Unpin it", "Keep it pinned"]);
+    expect(q.context).toBe("Context: an archived thread\ngets nothing new.");
+  });
+
+  test("indented under a task-list choice it is context, not that choice's description", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it", "- [ ] Keep it pinned", "  Context: archived threads get nothing new."].join("\n"))!;
+    expect(q.choices[1]).toEqual({ label: "Keep it pinned", settled: false, recommended: false });
+    expect(q.context).toBe("Context: archived threads get nothing new.");
+  });
+
+  test("in bold too", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- Unpin it", "- Keep it pinned", "**Context:** archived threads get nothing new."].join("\n"))!;
+    expect(q.choices[1]!.label).toBe("Keep it pinned");
+    expect(q.context).toBe("**Context:** archived threads get nothing new.");
+  });
+
+  test("it never wraps a recommendation", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- [ ] Unpin it", "- [ ] Keep it", "Recommended: Unpin it", "context: archived threads get nothing new"].join("\n"))!;
+    expect(q.recommendation).toBe("Unpin it");
+    expect(q.choices[0]!.recommended).toBe(true);
+    expect(q.context).toBe("context: archived threads get nothing new");
+  });
+
+  test("first in the block it is still the prompt (keys do not move)", () => {
+    const q = parseQuestionBlock("question", ["Context: which pin rule?", "- [ ] Unpin", "- [ ] Keep"].join("\n"))!;
+    expect(q.prompt).toBe("Context: which pin rule?");
+    expect(q.key).toBe(questionKey("single", "Context: which pin rule?"));
+  });
+
+  test("other `Word:` lines are unchanged: a lazy `Note:` line still continues a plain bullet", () => {
+    const q = parseQuestionBlock("question", ["Pin on archive?", "- Unpin it", "- Keep it pinned", "Note: this wraps."].join("\n"))!;
+    expect(q.choices[1]!.label).toBe("Keep it pinned Note: this wraps.");
+  });
+});

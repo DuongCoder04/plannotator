@@ -211,7 +211,7 @@ describe('QuestionBlock', () => {
     expect(answerOf(1)?.selected).toEqual(['Dot', 'Banner']);
     expect(button(cards(el)[1], 'Accept recommended')).toBeUndefined();
 
-    await click(button(cards(el)[2], 'Use')!);
+    await click(button(cards(el)[2], 'Accept recommended')!);
     expect(answerOf(2)?.text).toBe('Two phones, one offline.');
     // A settled question has no Accept recommended.
     expect(button(cards(el)[3], 'Accept recommended')).toBeUndefined();
@@ -491,16 +491,43 @@ describe('QuestionBlock', () => {
     ':::',
   ].join('\n');
 
-  test.skipIf(!hasDom)('a choice question whose recommendation names none of its choices shows it, and Use fills Other', async () => {
+  test.skipIf(!hasDom)('a choice question whose recommendation names none of its choices shows it, and Accept recommended fills Other', async () => {
     const el = await mount(<Harness markdown={UNMATCHED} />);
     const card = cards(el)[0];
     const line = card.querySelector<HTMLElement>('[data-question-suggested]');
     expect(line?.textContent).toContain('SQLite on the box');
     expect(card.getAttribute('aria-describedby')?.split(' ')).toContain(line!.id);
-    await click(button(card, 'Use')!);
+    // One button for the suggestion (the owner's 2026-10-24 report): the
+    // Suggested line only shows it, and the footer's Accept recommended is
+    // the one action that fills it in.
+    expect(line!.querySelector('button')).toBeNull();
+    expect(Array.from(card.querySelectorAll('button')).filter((b) => /^(Use|Accept recommended)$/.test(b.textContent ?? ''))).toHaveLength(1);
+    await click(button(card, 'Accept recommended')!);
     expect(answerOf(0)).toMatchObject({ selected: [], other: 'SQLite on the box' });
     // Answered, the line goes (as a text question's does).
     expect(cards(el)[0].querySelector('[data-question-suggested]')).toBeNull();
+  });
+
+  test.skipIf(!hasDom)("the owner's block: the recommendation marks the choice it begins, one Accept button, the Context line as context", async () => {
+    const owners = [
+      ':::question',
+      'What happens to a pin when you archive the thread?',
+      'Recommended: Unpin it',
+      '- Unpin it: the toast says "Archived · Unpinned", and Undo restores both',
+      '- Keep it pinned',
+      "Context: an archived thread gets nothing new, because the agent's next message starts a new thread.",
+      ':::',
+    ].join('\n');
+    const el = await mount(<Harness markdown={owners} />);
+    const card = cards(el)[0];
+    expect(card.querySelector('[data-question-suggested]')).toBeNull();
+    expect(Array.from(card.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['Add note', 'Skip', 'Accept recommended']);
+    const options = Array.from(card.querySelectorAll('[data-question-part="choice"]')).map((o) => o.textContent);
+    expect(options[0]).toContain('Recommended');
+    expect(options[1]).toBe('Keep it pinned');
+    expect(card.textContent).toContain('Context: an archived thread gets nothing new');
+    await click(button(card, 'Accept recommended')!);
+    expect(answerOf(0)?.selected).toEqual(['Unpin it: the toast says "Archived · Unpinned", and Undo restores both']);
   });
 
   test.skipIf(!hasDom)('a read-only card draws the Other row only when the answer used it', async () => {
