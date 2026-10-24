@@ -67,6 +67,22 @@ export function locateToken(lineAt: (line: number) => string | undefined, line: 
   return null;
 }
 
+/**
+ * The `git diff` arguments that give the guide's files' diff now, to compare
+ * with the guide's (`changedPatchFiles`): renames detected (`-M`, whatever
+ * `diff.renames` says) and each renamed file's old path in the pathspec too,
+ * or git would show a pure rename as a new file and it would read as changed.
+ */
+export function changedSinceDiffArgs(baseRev: string, files: Iterable<{ path: string; oldPath?: string }>, max = 500): string[] | null {
+  const paths: string[] = [];
+  for (const f of files) {
+    paths.push(f.path);
+    if (f.oldPath && f.oldPath !== f.path) paths.push(f.oldPath);
+  }
+  if (!paths.length || paths.length > max) return null;
+  return ["--no-pager", "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "-M", "--src-prefix=a/", "--dst-prefix=b/", baseRev, "--", ...paths];
+}
+
 /** A file's diff text without the lines that name blobs (`index …`), which differ for the same change. */
 function diffBody(patch: string): string {
   return patch
@@ -119,4 +135,63 @@ export function splitHoverMarkdown(markdown: string): HoverBlock[] {
   }
   pushProse(markdown.slice(last));
   return blocks;
+}
+
+/**
+ * One side's lines of a file's diff, as the reader drew them: line number on
+ * that side → text, for every line the patch shows (context and the side's
+ * own changes). `new` is the head side (context and `+`), `old` the base side
+ * (context and `-`). Nothing is read from disk: an ask carries exactly what
+ * the reviewer saw.
+ */
+export function patchSideLines(filePatch: string, side: "old" | "new"): Map<number, string> {
+  const out = new Map<number, string>();
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+  for (const raw of filePatch.split("\n")) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    const mark = raw[0];
+    const text = raw.slice(1).replace(/\r$/, "");
+    if (mark === " ") {
+      out.set(side === "old" ? oldLine : newLine, text);
+      oldLine++;
+      newLine++;
+    } else if (mark === "-") {
+      if (side === "old") out.set(oldLine, text);
+      oldLine++;
+    } else if (mark === "+") {
+      if (side === "new") out.set(newLine, text);
+      newLine++;
+    } else if (mark === "\\") {
+      // "\ No newline at end of file"
+    } else if (raw.startsWith("diff --git")) {
+      inHunk = false;
+    }
+  }
+  return out;
+}
+
+/**
+ * The selected lines' code from the guide's patch (`start`..`end` on `side`
+ * of `path`), or null when the patch does not show every one of them.
+ */
+export function patchExcerpt(guidePatch: string, path: string, side: "old" | "new", start: number, end: number): string | null {
+  const file = parseDiffToFiles(guidePatch).find((f) => f.path === path);
+  if (!file || end < start) return null;
+  const lines = patchSideLines(file.patch, side);
+  const out: string[] = [];
+  for (let l = start; l <= end; l++) {
+    const text = lines.get(l);
+    if (text === undefined) return null;
+    out.push(text);
+  }
+  return out.join("\n");
 }

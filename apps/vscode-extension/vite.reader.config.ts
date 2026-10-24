@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -13,10 +13,30 @@ import tailwindcss from "@tailwindcss/vite";
  * `base: './'` keeps chunk URLs relative to the entry, so they resolve under
  * the webview's resource origin.
  */
+/**
+ * The Guide tab draws in VS Code's own fonts (reader.css maps `--font-sans` /
+ * `--font-mono` to `--vscode-*`), so the web fonts the shared CSS declares
+ * (Inter, Geist Mono) are never used: their `@font-face` rules and files are
+ * left out of the build.
+ */
+function dropWebFonts(): Plugin {
+  return {
+    name: "plannotator-reader-drop-web-fonts",
+    enforce: "post",
+    generateBundle(_options, bundle) {
+      for (const [name, item] of Object.entries(bundle)) {
+        if (item.type !== "asset") continue;
+        if (/\.(woff2?|ttf|otf)$/.test(name)) delete bundle[name];
+        else if (name.endsWith(".css") && typeof item.source === "string") item.source = item.source.replace(/@font-face\{[^}]*\}/g, "");
+      }
+    },
+  };
+}
+
 export default defineConfig({
   root: __dirname,
   base: "./",
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), dropWebFonts()],
   resolve: {
     alias: {
       // Pierre runs Shiki's JavaScript regex engine: the Oniguruma WASM is dead weight.
@@ -40,10 +60,13 @@ export default defineConfig({
     chunkSizeWarningLimit: 4_000,
     sourcemap: false,
     rollupOptions: {
-      input: { reader: path.resolve(__dirname, "src/guides/reader/main.tsx") },
+      // `diagram.js`: the Mermaid engine the other Guides webviews load when they draw a
+      // diagram (src/guides/webview/diagram-loader.ts), sharing the reader's chunks.
+      input: { reader: path.resolve(__dirname, "src/guides/reader/main.tsx"), diagram: path.resolve(__dirname, "src/guides/webview/diagram.ts") },
+      preserveEntrySignatures: "exports-only",
       output: {
         inlineDynamicImports: false,
-        entryFileNames: "reader.js",
+        entryFileNames: "[name].js",
         chunkFileNames: "chunks/[name].[hash].js",
         assetFileNames: (info) => {
           const name = info.names?.[0] ?? info.name ?? "asset";

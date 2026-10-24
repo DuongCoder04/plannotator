@@ -18,6 +18,7 @@ export function webviewCsp(cspSource: string, nonce: string, mode: GuidesWebview
     // policy and its scripts must run. The answer tab itself must never insert unsanitized HTML
     // into its own DOM (agent text goes through DOMPurify; the agent's page only into the frame),
     // and it accepts messages only from the webview host (main.ts `fromWebviewHost`).
-    mode === "answer" ? `script-src ${cspSource} 'unsafe-inline'` : `script-src 'nonce-${nonce}'`,
+    // The extension's own resources (cspSource) for the diagram engine the webviews import when they draw one.
+    mode === "answer" ? `script-src ${cspSource} 'unsafe-inline'` : `script-src 'nonce-${nonce}' ${cspSource}`,
   ].join("; ");
 }

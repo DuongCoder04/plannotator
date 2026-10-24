@@ -10,7 +10,7 @@ import type { AnswerMarker } from "../reader-protocol";
 
 export function answerChatEntries(markers: readonly AnswerMarker[]): AIChatEntry[] {
   return markers.map((m) => ({
-    question: { id: m.id, prompt: m.question, filePath: m.path, lineStart: m.start, lineEnd: m.end, side: "new", createdAt: 0 },
+    question: { id: m.id, prompt: m.question, filePath: m.path, lineStart: m.start, lineEnd: m.end, side: m.side, createdAt: 0 },
     response: {
       questionId: m.id,
       text: m.status === "answered" || m.status === "text" ? "Answer opened beside the guide" : "",

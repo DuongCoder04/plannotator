@@ -4,7 +4,7 @@
 
 ### Changed
 - Guided Reviews: a guide is read in one tab, **Guide**, which is Plannotator's own guide reader (the one the web app and guides.show render) in VS Code's colors and fonts: the overview, then every chapter's text beside its files' diffs on one scrolling page, with a chapter strip at the top. Hovering a name in a diff shows the language server's hover and the definition (and the chapter that changes it); ⌘-click (Ctrl-click) or F12 goes to the definition, in the guide or in the real file beside; Shift+F12 lists the references. Each file has **Open in editor** and **Diff**.
-- Guided Reviews: ask about selected lines in the Guide tab's diff, or about a chapter in the box under its text. The answer tab opens beside at once and shows the agent's work; answers are marked on the lines they are about.
+- Guided Reviews: ask about selected lines in the Guide tab's diff (new lines or removed lines, sent as the diff shows them), or about a chapter in the box under its text. The answer tab opens beside at once and shows the agent's work; answers are marked on the lines they are about.
 
 ### Removed
 - Guided Reviews: the chapter side view, reading a guide file by file in VS Code's diff editor, the CodeLens line on guide files and the comment-thread question box. The **Guided Reviews** side bar stays as the guide's outline; right-click **Ask the Agent About This…** stays in VS Code's own diff of a guide's file (a quick input now).

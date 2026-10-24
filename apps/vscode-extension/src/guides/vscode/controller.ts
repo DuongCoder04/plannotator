@@ -5,7 +5,7 @@
  */
 
 import * as vscode from "vscode";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { createGuideHtml, guideExportFilename, resolveGuideViewerAssets } from "@plannotator/core/guide-format";
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/core/guide-viewer-manifest";
@@ -40,7 +40,7 @@ import { startRelayHost, type RelayHost } from "../mcp/relay-host";
 import { ReaderModel, guideWorktreePath, resolveReaderSides, type ReaderSides } from "../reader-model";
 import { removeShareBeforeDelete } from "../share";
 import { buildLocalChangesPatch, changedFilesFromPatch, getRepoInfo, type LocalChangesMode } from "../sources/git";
-import { changedPatchFiles } from "../reader-mapping";
+import { changedPatchFiles, changedSinceDiffArgs } from "../reader-mapping";
 import {
   ensureRepoClone,
   ghRepoArg,
@@ -80,8 +80,9 @@ import { ReaderUi } from "./reader-ui";
 import { GuideAsks } from "./asks";
 import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
-import { ANSWER_VIEW_TYPE } from "./tab-columns";
+import { ANSWER_VIEW_TYPE, RUN_VIEW_TYPE } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
+import { realFileInside } from "../safe-path";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
 import { ReaderPanel } from "./reader-panel";
 import { readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
@@ -1026,7 +1027,7 @@ export class GuidesController implements vscode.Disposable {
       entry.panel.panel.reveal();
       return;
     }
-    const p = this.createPanel("plannotator.guides.guide", "Guide", "generating");
+    const p = this.createPanel(RUN_VIEW_TYPE, "Guide", "generating");
     p.panel.title = `Guide · ${entry.gen.state.source.label}`;
     entry.panel = p;
     entry.background = false;
@@ -1200,7 +1201,7 @@ export class GuidesController implements vscode.Disposable {
       existing.panel.reveal();
       return;
     }
-    const p = this.createPanel("plannotator.guides.guide", `Guide · draft`, "generating");
+    const p = this.createPanel(RUN_VIEW_TYPE, `Guide · draft`, "generating");
     this.draftPanels.set(record.id, p);
     p.panel.onDidDispose(() => this.draftPanels.delete(record.id));
     const gen = new GuideGeneration(
@@ -1364,9 +1365,9 @@ export class GuidesController implements vscode.Disposable {
    */
   private async filesChangedSince(model: ReaderModel, sides: ReaderSides): Promise<string[]> {
     if (sides.head.kind !== "fs" || model.loaded.sidecar.source?.kind === "pr" || !model.loaded.rawPatch) return [];
-    const paths = [...model.files.keys()].slice(0, 500);
-    if (!paths.length) return [];
-    const r = await this.runner("git", ["--no-pager", "diff", "--no-color", "--no-ext-diff", sides.baseRev, "--", ...paths], { cwd: sides.head.root, timeoutMs: 20_000 }).catch(() => null);
+    const args = changedSinceDiffArgs(sides.baseRev, model.files.values());
+    if (!args) return [];
+    const r = await this.runner("git", args, { cwd: sides.head.root, timeoutMs: 20_000 }).catch(() => null);
     if (!r || r.code !== 0) return [];
     return changedPatchFiles(model.loaded.rawPatch, r.stdout);
   }
@@ -1453,6 +1454,15 @@ export class GuidesController implements vscode.Disposable {
     const reader = this.reader;
     const panel = this.guidePanels.get(id);
     if (!reader || reader.model.id !== id || !panel) return;
+    // Defense in depth: a message about a file names a file of this guide
+    // (a definition's place, `openLocation`, is checked on its own).
+    const guidePath = "at" in msg ? msg.at.path : msg.type === "openFile" || msg.type === "openDiff" || msg.type === "toggleFileReviewed" ? msg.path : msg.type === "ask" ? msg.path : undefined;
+    if (guidePath !== undefined && !reader.model.isGuideFile(guidePath)) {
+      this.log.warn(`[guides] reader: ${msg.type} for a file not in the guide, ignored`);
+      if (msg.type === "hover") panel.send({ type: "hover", reqId: msg.reqId, answer: null });
+      if (msg.type === "references") panel.send({ type: "references", reqId: msg.reqId, count: null });
+      return;
+    }
     switch (msg.type) {
       case "hover": {
         const answer = await readerHover(msg.at, reader).catch((err) => {
@@ -1487,17 +1497,17 @@ export class GuidesController implements vscode.Disposable {
       case "toggleFileReviewed":
         return this.toggleFileReviewed(msg.path);
       case "openLocation":
-        return this.openHeadFile(msg.path, msg.line, msg.character);
+        return this.openDefinitionPlace(msg.path, msg.side, msg.line, msg.character);
       case "link": {
         const parsed = parseGuideLink(msg.href);
         if (!parsed?.ok) return;
         const link = parsed.link;
         if (link.kind === "chapter") return void panel.send({ type: "reveal", chapter: link.chapter - 1 });
-        if (link.kind === "code" && reader.model.chapterOf(link.path) >= 0 && msg.action === "open") return void panel.send({ type: "reveal", path: link.path });
+        if (link.kind === "code" && reader.model.chapterOf(link.path) >= 0 && msg.action === "open") return void panel.send({ type: "reveal", path: link.path, ...(link.startLine && { line: link.startLine, side: "new" as const }) });
         return this.openLink(msg.href, msg.action, vscode.ViewColumn.Beside);
       }
       case "ask":
-        if (msg.path && msg.start && msg.end) return this.asks.askAboutLines(msg.path, msg.start, msg.end, msg.question);
+        if (msg.path && msg.start && msg.end) return this.asks.askAboutLines(msg.path, msg.side ?? "new", msg.start, msg.end, msg.question);
         return this.asks.askChapter((msg.chapter ?? reader.model.currentChapter) + 1, msg.question);
       case "openAnswer":
         return this.asks.openAnswer(msg.id);
@@ -1523,7 +1533,7 @@ export class GuidesController implements vscode.Disposable {
         return;
       }
       if (def.inGuide && panel) {
-        panel.send({ type: "reveal", path: def.inGuide, line: def.range.start.line + 1 });
+        panel.send({ type: "reveal", path: def.inGuide.path, side: def.inGuide.side, line: def.range.start.line + 1 });
         return;
       }
       await vscode.window.showTextDocument(def.uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: def.range });
@@ -1547,14 +1557,42 @@ export class GuidesController implements vscode.Disposable {
     await vscode.window.showTextDocument(where.uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: new vscode.Range(where.position, where.position) });
   }
 
-  /** The real file (the head side) beside the reader, at a line when one is given. */
+  /** The real file (the head side) of a guide file beside the reader, at a line when one is given. */
   private async openHeadFile(path: string, line?: number, character = 0): Promise<void> {
     if (!this.reader) return;
-    const file = this.reader.model.files.get(path) ?? { path, status: "modified" };
-    if (file.status === "deleted") return;
-    const uri = headUri(this.reader.sides, file);
+    const file = this.reader.model.files.get(path);
+    if (!file || file.status === "deleted") return;
+    const { sides } = this.reader;
+    if (sides.head.kind === "fs" && !realFileInside(sides.head.root, path)) {
+      void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+      return;
+    }
+    const uri = headUri(sides, file);
     const pos = line ? new vscode.Position(Math.max(0, line - 1), character) : undefined;
     await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, ...(pos && { selection: new vscode.Range(pos, pos) }) });
+  }
+
+  /**
+   * A definition's place from the hover card ("Open in editor"), on the side
+   * it was found on: the base revision's document for `old`, else the head
+   * (the file on disk only when it is inside the repository once links are
+   * followed).
+   */
+  private async openDefinitionPlace(path: string, side: "old" | "new", line: number, character: number): Promise<void> {
+    if (!this.reader) return;
+    const { sides } = this.reader;
+    let uri: vscode.Uri;
+    if (side === "old") uri = baseUri(sides, { path, status: "modified" });
+    else if (sides.head.kind === "fs") {
+      const real = realFileInside(sides.head.root, path);
+      if (!real) {
+        void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+        return;
+      }
+      uri = vscode.Uri.file(real);
+    } else uri = headUri(sides, { path, status: "modified" });
+    const pos = new vscode.Position(Math.max(0, line - 1), character);
+    await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: new vscode.Range(pos, pos) });
   }
 
   /** The reader's questions and answers: markers on the lines asked about, each chapter's list, whether one is being answered. */
@@ -1662,14 +1700,14 @@ export class GuidesController implements vscode.Disposable {
   }
 
   /** Show a guide file in the Guide tab (the tree, Next file, a code link in an answer). */
-  async openFile(path: string | undefined): Promise<void> {
+  async openFile(path: string | undefined, line?: number): Promise<void> {
     if (!this.reader || !path) return;
     const { model } = this.reader;
     const chapter = model.chapterOf(path);
     if (chapter >= 0) model.currentChapter = chapter;
     this.currentFile = path;
     this.showGuidePanel();
-    this.guidePanels.get(model.id)?.send({ type: "reveal", path });
+    this.guidePanels.get(model.id)?.send({ type: "reveal", path, ...(line && { line, side: "new" as const }) });
     this.updateReaderViews();
   }
 
@@ -1708,7 +1746,14 @@ export class GuidesController implements vscode.Disposable {
     if (!path) return;
     const root = this.run?.gen.state.source.headRoot ?? this.reader?.sides.gitRoot ?? this.dashboard?.repo?.root;
     if (!root) return;
-    const uri = path.startsWith("/") ? vscode.Uri.file(path) : vscode.Uri.joinPath(vscode.Uri.file(root), path);
+    // A place an agent named (the run's activity): only a file inside the repository, links followed.
+    const rel = isAbsolute(path) ? relative(root, path) : path;
+    const real = realFileInside(root, rel);
+    if (!real) {
+      void vscode.window.showWarningMessage(`${path} is not a file inside the repository; not opened.`);
+      return;
+    }
+    const uri = vscode.Uri.file(real);
     const pos = line ? new vscode.Position(Math.max(0, line - 1), 0) : undefined;
     await vscode.window.showTextDocument(uri, { preview: true, ...(pos && { selection: new vscode.Range(pos, pos) }) });
   }
@@ -1734,7 +1779,7 @@ export class GuidesController implements vscode.Disposable {
       void vscode.window.showWarningMessage(target.error);
       return;
     }
-    if (action === "open" && target.inChange && this.reader.model.chapterOf(target.path) >= 0) return this.openFile(target.path);
+    if (action === "open" && target.inChange && this.reader.model.chapterOf(target.path) >= 0) return this.openFile(target.path, link.kind === "code" ? link.startLine : target.range.start.line + 1);
     const editor = await vscode.window.showTextDocument(target.uri, { preview: true, selection: target.range, ...(column && { viewColumn: column }) });
     if (action === "definition") await vscode.commands.executeCommand("editor.action.revealDefinition");
     if (action === "references") await vscode.commands.executeCommand("editor.action.goToReferences", editor.document.uri, target.range.start);

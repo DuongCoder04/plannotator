@@ -18,6 +18,7 @@ import { HoverCardContent } from "./HoverCard";
 import { ChapterStrip, chapterInView } from "./ChapterStrip";
 import { ChapterAsk } from "./ChapterAsk";
 import { answerChatEntries } from "./ask-markers";
+import { askLines, findDiffLine } from "./lines";
 
 const OverviewDiagram = lazy(() => import("./OverviewDiagram"));
 
@@ -79,6 +80,13 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
     agent: init.askAgent,
   });
   const [back, setBack] = useState<{ label: string; scrollY: number } | null>(null);
+  // A short line at the foot of the tab (an ask that cannot be sent, the extension's notice).
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
   const mod = init.platform === "mac" ? "⌘" : "Ctrl";
 
   const guide = useMemo<CodeGuideData>(
@@ -123,8 +131,10 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
           if (msg.path) {
             setBack(backHere(snapshot.guide.sections.length));
             reveal(msg.path);
+            // A jump to a definition lands on its line, once the file's diff is drawn.
+            if (msg.line) void scrollToDiffLine(msg.path, msg.side ?? "new", msg.line);
           } else if (typeof msg.chapter === "number") scrollToChapter(msg.chapter);
-        }
+        } else if (msg.type === "notice") setNotice(msg.text);
       }),
     [reveal, scrollToChapter, snapshot.guide.sections.length],
   );
@@ -185,9 +195,12 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   const onAskAIForFile = useCallback((filePath: string, question: string) => {
     const sel = selectionRef.current;
     if (!sel || sel.path !== filePath || !question.trim()) return;
-    const start = Math.min(sel.range.start, sel.range.end);
-    const end = Math.max(sel.range.start, sel.range.end);
-    post({ type: "ask", question: question.trim(), path: filePath, start, end });
+    const lines = askLines(sel.range);
+    if (!lines) {
+      setNotice("Select lines on one side of the change: removed lines or the new lines, not both.");
+      return;
+    }
+    post({ type: "ask", question: question.trim(), path: filePath, ...lines });
     setSelection(null);
   }, []);
   const aiMessages = useMemo(() => answerChatEntries(asks.markers), [asks.markers]);
@@ -316,6 +329,11 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
           setBack(null);
         }}
       />
+      {notice && (
+        <div className="pn-notice" role="status">
+          {notice}
+        </div>
+      )}
       <div className="pn-reader-body min-h-screen bg-background text-foreground">
         <GuideView
           guide={guide}
@@ -342,7 +360,7 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
               onOpenDefinition={() => {
                 const def = hoverData.reader.answer.definition;
                 hover.close();
-                if (def) post({ type: "openLocation", path: def.path, line: def.line, character: def.character });
+                if (def) post({ type: "openLocation", path: def.path, line: def.line, character: def.character, side: def.side ?? "new" });
               }}
             />
           }
@@ -353,6 +371,21 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
 }
 
 const NO_MARKERS: AIChatEntry[] = [];
+
+/** Scroll a file's line into the middle of the tab once its diff is drawn (it mounts as it comes into view). */
+async function scrollToDiffLine(path: string, side: "old" | "new", line: number): Promise<boolean> {
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 120 : 100));
+    const shell = document.querySelector(`[data-guide-file-shell="${CSS.escape(path)}"]`);
+    const row = shell ? findDiffLine(shell, side, line) : null;
+    if (row) {
+      row.scrollIntoView({ block: "center" });
+      row.animate?.([{ outline: "2px solid var(--vscode-focusBorder, #007fd4)" }, { outline: "2px solid transparent" }], { duration: 1400 });
+      return true;
+    }
+  }
+  return false;
+}
 
 /** "Back to Chapter 2": where the reader is now, to come back to after a jump. */
 function backHere(count: number): { label: string; scrollY: number } {

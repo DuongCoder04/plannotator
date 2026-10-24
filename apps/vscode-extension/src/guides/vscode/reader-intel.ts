@@ -13,7 +13,7 @@ import type { ReaderModel, ReaderSides } from "../reader-model";
 import { locateToken, splitHoverMarkdown, type TokenSpot } from "../reader-mapping";
 import type { DiffPosition, HoverAnswer } from "../reader-protocol";
 import { chapterColorCss, hoverText, withoutGuideHoverLine } from "./intel";
-import { baseUri, headUri } from "./uris";
+import { baseUri, docSideOf, headUri } from "./uris";
 
 export interface ReaderContext {
   model: ReaderModel;
@@ -28,7 +28,9 @@ export interface ResolvedPosition {
 
 /** The document and position a diff position names, or null when the token is not there any more. */
 export async function resolvePosition(at: DiffPosition, ctx: ReaderContext): Promise<ResolvedPosition | null> {
-  const file = ctx.model.files.get(at.path) ?? { path: at.path, status: "modified" };
+  // Only a file of the guide: the reader's diffs show nothing else.
+  const file = ctx.model.files.get(at.path);
+  if (!file) return null;
   const uri = at.side === "new" ? headUri(ctx.sides, file) : baseUri(ctx.sides, file);
   let doc: vscode.TextDocument;
   try {
@@ -42,15 +44,31 @@ export async function resolvePosition(at: DiffPosition, ctx: ReaderContext): Pro
   return { uri, position: new vscode.Position(spot.line - 1, spot.character), spot };
 }
 
-/** A location as the reader names it: repo-relative when it is in the guide's head, else its file name. */
-function readerPath(uri: vscode.Uri, ctx: ReaderContext): { path: string; inRepo: boolean } {
+/**
+ * A location as the reader names it: repo-relative with its side when it is
+ * one of the guide's two versions (the head on disk or at its revision, the
+ * base revision), else its file name.
+ */
+function readerPath(uri: vscode.Uri, ctx: ReaderContext): { path: string; inRepo: boolean; side: "old" | "new" | null } {
+  const doc = docSideOf(ctx.sides, uri);
+  if (doc) return { path: doc.path, inRepo: true, side: doc.side === "base" ? "old" : "new" };
   const root = ctx.sides.head.kind === "fs" ? ctx.sides.head.root : null;
   if (root && uri.scheme === "file") {
     const rel = relative(root, uri.fsPath);
-    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return { path: rel.split("\\").join("/"), inRepo: true };
+    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return { path: rel.split("\\").join("/"), inRepo: true, side: "new" };
   }
-  if (uri.scheme === "plannotator-guide") return { path: uri.path.replace(/^\//, ""), inRepo: true };
-  return { path: uri.path.split("/").pop() ?? uri.path, inRepo: false };
+  return { path: uri.path.split("/").pop() ?? uri.path, inRepo: false, side: null };
+}
+
+/** The guide file a definition is in (the file's path in the change), on its side; null when the guide does not show it. */
+export function guideFileAt(where: { path: string; side: "old" | "new" | null }, ctx: ReaderContext): { path: string; side: "old" | "new" } | null {
+  if (!where.side) return null;
+  if (where.side === "new") return ctx.model.chapterOf(where.path) >= 0 && ctx.model.files.get(where.path)?.status !== "deleted" ? { path: where.path, side: "new" } : null;
+  for (const f of ctx.model.files.values()) {
+    if (f.status === "added") continue;
+    if ((f.oldPath ?? f.path) === where.path && ctx.model.chapterOf(f.path) >= 0) return { path: f.path, side: "old" };
+  }
+  return null;
 }
 
 function locationOf(d: vscode.Location | vscode.LocationLink): { uri: vscode.Uri; range: vscode.Range } {
@@ -112,7 +130,8 @@ export async function readerHover(at: DiffPosition, ctx: ReaderContext): Promise
   const first = await realDefinition(defs);
   const def = first ? { ...readerPath(first.uri, ctx), line: first.range.start.line + 1, character: first.range.start.character } : null;
   if (!blocks.length && !def) return null;
-  const chapterIndex = def?.inRepo ? ctx.model.chapterOf(def.path) : -1;
+  const inGuide = def ? guideFileAt(def, ctx) : null;
+  const chapterIndex = inGuide ? ctx.model.chapterOf(inGuide.path) : -1;
   return {
     symbol: at.token,
     blocks,
@@ -137,8 +156,12 @@ export async function readerReferences(at: DiffPosition, ctx: ReaderContext): Pr
   return refs ? refs.length : null;
 }
 
-/** Where the definition is: in the guide (a changed file's head side: the reader shows it) or elsewhere. */
-export async function readerDefinition(at: DiffPosition, ctx: ReaderContext): Promise<{ uri: vscode.Uri; range: vscode.Range; inGuide: string | null } | null> {
+/**
+ * Where the definition is: in the guide (a changed file's side the reader
+ * shows: the head for a definition found on the new side, the base for one
+ * found on a removed line) or elsewhere (its own document, on its own side).
+ */
+export async function readerDefinition(at: DiffPosition, ctx: ReaderContext): Promise<{ uri: vscode.Uri; range: vscode.Range; inGuide: { path: string; side: "old" | "new" } | null } | null> {
   const where = await resolvePosition(at, ctx);
   if (!where) return null;
   const defs = await vscode.commands
@@ -146,7 +169,5 @@ export async function readerDefinition(at: DiffPosition, ctx: ReaderContext): Pr
     .then(undefined, () => undefined);
   const loc = await realDefinition(defs);
   if (!loc) return null;
-  const p = readerPath(loc.uri, ctx);
-  const inGuide = p.inRepo && loc.uri.scheme === "file" && ctx.model.chapterOf(p.path) >= 0 ? p.path : null;
-  return { uri: loc.uri, range: loc.range, inGuide };
+  return { uri: loc.uri, range: loc.range, inGuide: guideFileAt(readerPath(loc.uri, ctx), ctx) };
 }

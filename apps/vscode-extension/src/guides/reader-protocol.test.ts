@@ -13,10 +13,12 @@ describe("messages from the Guide tab", () => {
     expect(parseReaderMessage({ type: "toggleFileReviewed", path: "a/b.ts" })).toEqual({ type: "toggleFileReviewed", path: "a/b.ts" });
     expect(parseReaderMessage({ type: "openFile", path: "a/b.ts", line: 3 })).toEqual({ type: "openFile", path: "a/b.ts", line: 3 });
     expect(parseReaderMessage({ type: "openDiff", path: "a/b.ts" })).toEqual({ type: "openDiff", path: "a/b.ts" });
-    expect(parseReaderMessage({ type: "openLocation", path: "a/b.ts", line: 3, character: 0 })).toMatchObject({ type: "openLocation" });
+    expect(parseReaderMessage({ type: "openLocation", path: "a/b.ts", line: 3, character: 0 })).toEqual({ type: "openLocation", path: "a/b.ts", line: 3, character: 0, side: "new" });
+    expect(parseReaderMessage({ type: "openLocation", path: "a/b.ts", line: 3, character: 0, side: "old" })).toMatchObject({ side: "old" });
     expect(parseReaderMessage({ type: "chapter", chapter: 0 })).toEqual({ type: "chapter", chapter: 0 });
     expect(parseReaderMessage({ type: "ask", question: "Why?", chapter: 2 })).toEqual({ type: "ask", question: "Why?", chapter: 2 });
-    expect(parseReaderMessage({ type: "ask", question: "Why?", path: "a.ts", start: 25, end: 31 })).toEqual({ type: "ask", question: "Why?", path: "a.ts", start: 25, end: 31 });
+    expect(parseReaderMessage({ type: "ask", question: "Why?", path: "a.ts", start: 25, end: 31 })).toEqual({ type: "ask", question: "Why?", path: "a.ts", side: "new", start: 25, end: 31 });
+    expect(parseReaderMessage({ type: "ask", question: "Why?", path: "a.ts", side: "old", start: 4, end: 6 })).toEqual({ type: "ask", question: "Why?", path: "a.ts", side: "old", start: 4, end: 6 });
     expect(parseReaderMessage({ type: "openAnswer", id: "ans-1761200000000-ab12" })).toEqual({ type: "openAnswer", id: "ans-1761200000000-ab12" });
     expect(parseReaderMessage({ type: "command", command: "export" })).toEqual({ type: "command", command: "export" });
     expect(parseReaderMessage({ type: "link", href: "symbol:computeBackoff", action: "definition" })).toEqual({ type: "link", href: "symbol:computeBackoff", action: "definition" });
@@ -50,6 +52,12 @@ describe("messages from the Guide tab", () => {
     expect(parseReaderMessage({ type: "ask", question: "Why?", path: "a.ts", start: 3 })).toBeNull();
     expect(parseReaderMessage({ type: "ask", question: "x".repeat(4001), chapter: 0 })).toBeNull();
     expect(parseReaderMessage({ type: "ask", question: "Why?", chapter: -1 })).toBeNull();
+    expect(parseReaderMessage({ type: "ask", question: "Why?", path: "a.ts", side: "both", start: 1, end: 2 })).toBeNull();
+  });
+
+  it("a blank question asks nothing", () => {
+    for (const question of ["", "   ", "\n\t "]) expect(parseReaderMessage({ type: "ask", question, chapter: 0 })).toBeNull();
+    expect(parseReaderMessage({ type: "openLocation", path: "a.ts", line: 1, character: 0, side: "both" })).toBeNull();
   });
 
   it("a link is a guide link only, and an answer id has the answer's shape", () => {

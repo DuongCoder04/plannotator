@@ -11,7 +11,7 @@
 
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "../acp/agents";
 import type { ReadyLaunch } from "../acp/ensure-launch";
@@ -22,13 +22,15 @@ import { GuideAskSession, type AskRun, type AskRunState, type SavedSession } fro
 import { aboutTitle, answerListItem, answerViewState, answersFooter, goesWith, relativeTimeShort } from "../ask/view";
 import type { PendingPermission, PermissionAnswer } from "../generation";
 import type { RelayHost } from "../mcp/relay-host";
+import { patchExcerpt } from "../reader-mapping";
 import type { ReaderModel, ReaderSides } from "../reader-model";
+import { readOwnFile } from "../safe-path";
 import type { Runner } from "../sources/runner";
 import { writeSidecar, type AgentChoiceRecord, type LoadedGuide } from "../store";
 import type { AnswerListItem } from "../webview-protocol";
 import { pickQuestion } from "./ask-box";
 import { resolveSymbolForBuilder } from "./intel";
-import { guideSideOf, headUri } from "./uris";
+import { guideSideOf } from "./uris";
 import type { WebviewHost, WebviewMode } from "./webview-host";
 
 export interface AsksPanel {
@@ -176,42 +178,43 @@ export class GuideAsks implements vscode.Disposable {
    * guide and shows the agent's work as it goes; the lines get a marker in
    * the reader.
    */
-  async askAboutLines(path: string, start: number, end: number, question: string): Promise<void> {
+  async askAboutLines(path: string, side: "old" | "new", start: number, end: number, question: string): Promise<void> {
     const reader = this.host.reader();
     if (!reader) return;
     const chapter = reader.model.chapterOf(path);
     const text = question.trim().slice(0, MAX_QUESTION);
     if (chapter < 0 || !text) return;
-    let code: string | undefined;
-    try {
-      const file = reader.model.files.get(path) ?? { path, status: "modified" };
-      const text = reader.sides.head.kind === "fs"
-        ? readFileSync(join(reader.sides.head.root, path), "utf8")
-        : (await vscode.workspace.openTextDocument(headUri(reader.sides, file))).getText();
-      const lines = text.split(/\r?\n/);
-      if (start <= lines.length) code = capCode(lines.slice(start - 1, Math.min(end, lines.length)).join("\n"));
-    } catch {
-      // the lines go without their code
-    }
-    const hash = this.headHash(reader, path);
+    // The code is what the reviewer saw: the lines of the guide's own diff on
+    // that side (removed lines are base lines; a deleted file has only those).
+    // Never read from disk, where a symlink in the change could point anywhere.
+    const excerpt = patchExcerpt(reader.model.loaded.rawPatch ?? "", path, side, start, end);
+    const hash = side === "new" ? this.headHash(reader, path) : null;
     const about: AskAbout = {
       kind: "selection",
       chapter,
       chapterTitle: reader.model.chapters[chapter].title,
       path,
-      side: "head",
+      side: side === "old" ? "base" : "head",
       lines: { start, end },
-      ...(code !== undefined && { code }),
+      ...(excerpt !== null && { code: capCode(excerpt) }),
       ...(hash && { fileHash: hash }),
     };
     await this.ask(reader.model.loaded, about, text, { codeColumn: vscode.ViewColumn.Active });
   }
 
   /** Line answers of the guide, for the reader's markers (newest first). */
-  lineAnswers(guide: LoadedGuide): Array<{ id: string; path: string; start: number; end: number; question: string; status: AnswerRecord["status"] }> {
+  lineAnswers(guide: LoadedGuide): Array<{ id: string; path: string; side: "old" | "new"; start: number; end: number; question: string; status: AnswerRecord["status"] }> {
     return this.answersOf(guide)
-      .filter((r) => r.about.kind === "selection" && r.about.path && r.about.lines && (r.about.side ?? "head") === "head")
-      .map((r) => ({ id: r.id, path: r.about.path!, start: r.about.lines!.start, end: r.about.lines!.end, question: r.question, status: this.live.has(r.id) ? "answering" : r.status }));
+      .filter((r) => r.about.kind === "selection" && r.about.path && r.about.lines)
+      .map((r) => ({
+        id: r.id,
+        path: r.about.path!,
+        side: r.about.side === "base" ? ("old" as const) : ("new" as const),
+        start: r.about.lines!.start,
+        end: r.about.lines!.end,
+        question: r.question,
+        status: this.live.has(r.id) ? "answering" : r.status,
+      }));
   }
 
   private selectionAbout(reader: { model: ReaderModel; sides: ReaderSides }, doc: vscode.TextDocument, sel: vscode.Selection, side: { path: string; side: "head" | "base" }, chapter: number): AskAbout {
@@ -238,7 +241,8 @@ export class GuideAsks implements vscode.Disposable {
   private headHash(reader: { sides: ReaderSides }, path: string): string | null {
     if (reader.sides.head.kind !== "fs") return null;
     try {
-      return createHash("sha1").update(readFileSync(join(reader.sides.head.root, path))).digest("hex");
+      const bytes = readOwnFile(reader.sides.head.root, path);
+      return bytes ? createHash("sha1").update(bytes).digest("hex") : null;
     } catch {
       return null;
     }

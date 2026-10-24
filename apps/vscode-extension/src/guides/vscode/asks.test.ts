@@ -8,7 +8,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as vscode from "vscode";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_CODE } from "../acp/agents";
@@ -66,21 +66,22 @@ afterEach(() => {
   (vscode.window as unknown as Record<string, unknown>).showInformationMessage = original.info;
 });
 
-function world(askTurns: unknown[][], options: { gate?: Promise<void> } = {}) {
+function world(askTurns: unknown[][], options: { gate?: Promise<void>; rawPatch?: string; files?: string[]; setup?: (root: string) => void } = {}) {
   const root = mkdtempSync(join(work, "repo-"));
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "deliver.ts"), "export function deliver() {\n  return 1;\n}\n");
+  options.setup?.(root);
   const scriptPath = join(root, "script.json");
   const logPath = join(root, "agent.log");
   writeFileSync(scriptPath, JSON.stringify({ steps: [], askTurns }));
-  const rawPatch = "diff --git a/src/deliver.ts b/src/deliver.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/deliver.ts\n@@ -0,0 +1,3 @@\n+export function deliver() {\n+  return 1;\n+}\n";
+  const rawPatch = options.rawPatch ?? "diff --git a/src/deliver.ts b/src/deliver.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/deliver.ts\n@@ -0,0 +1,3 @@\n+export function deliver() {\n+  return 1;\n+}\n";
   const guide: LoadedGuide = {
     repoKey: REPO_KEY,
     id: GUIDE_ID,
     rawPatch,
     envelope: {
       version: 1, savedAt: 1, label: "local", title: "Retry failed webhook deliveries", engine: "claude",
-      guide: { title: "Retry failed webhook deliveries", intent: "Deliveries retry.", sections: [{ title: "The loop", overview: "It backs off.", diffs: [{ file: "src/deliver.ts", summary: "x" }] }] },
+      guide: { title: "Retry failed webhook deliveries", intent: "Deliveries retry.", sections: [{ title: "The loop", overview: "It backs off.", diffs: (options.files ?? ["src/deliver.ts"]).map((file) => ({ file, summary: "x" })) }] },
       reviewed: [false],
     } as unknown as LoadedGuide["envelope"],
     sidecar: { v: 1, fileTicks: [], focus: {}, agent: { id: CLAUDE_CODE.id, label: CLAUDE_CODE.label } },
@@ -220,7 +221,7 @@ describe("asking from VS Code", () => {
 describe("asking from the Guide tab", () => {
   it("asks about lines selected in a diff: their code goes with the question, the answer opens beside at once, and the lines get a marker", async () => {
     const w = world([[{ say: "Looking…" }, answer("Why it returns 1")]]);
-    await w.asks.askAboutLines("src/deliver.ts", 1, 2, "  Why does it return 1?  ");
+    await w.asks.askAboutLines("src/deliver.ts", "new", 1, 2, "  Why does it return 1?  ");
     // The tab opens at once (keeping the focus in the Guide tab) and shows the work.
     expect(w.panels).toHaveLength(1);
     expect(w.panels[0].title).toBe("Answering: Why does it return 1?");
@@ -230,7 +231,7 @@ describe("asking from the Guide tab", () => {
     expect(record.question).toBe("Why does it return 1?");
     expect(record.about).toMatchObject({ kind: "selection", chapter: 0, path: "src/deliver.ts", side: "head", lines: { start: 1, end: 2 } });
     expect(record.about.code).toBe("export function deliver() {\n  return 1;");
-    expect(w.asks.lineAnswers(w.guide)).toEqual([{ id: record.id, path: "src/deliver.ts", start: 1, end: 2, question: "Why does it return 1?", status: "answered" }]);
+    expect(w.asks.lineAnswers(w.guide)).toEqual([{ id: record.id, path: "src/deliver.ts", side: "new", start: 1, end: 2, question: "Why does it return 1?", status: "answered" }]);
     // The chapter lists it too.
     expect(w.asks.chapterAnswers(w.guide, 0).items.map((i) => i.question)).toEqual(["Why does it return 1?"]);
     w.asks.dispose();
@@ -238,10 +239,90 @@ describe("asking from the Guide tab", () => {
 
   it("asks nothing for a file outside the guide or an empty question", async () => {
     const w = world([[answer("Never")]]);
-    await w.asks.askAboutLines("src/other.ts", 1, 1, "Why?");
-    await w.asks.askAboutLines("src/deliver.ts", 1, 1, "   ");
+    await w.asks.askAboutLines("src/other.ts", "new", 1, 1, "Why?");
+    await w.asks.askAboutLines("src/deliver.ts", "new", 1, 1, "   ");
     expect(w.panels).toHaveLength(0);
     expect(listAnswers(REPO_KEY, GUIDE_ID)).toEqual([]);
+    w.asks.dispose();
+  });
+
+  const CHANGE = [
+    "diff --git a/src/deliver.ts b/src/deliver.ts",
+    "index 1111111..2222222 100644",
+    "--- a/src/deliver.ts",
+    "+++ b/src/deliver.ts",
+    "@@ -1,3 +1,3 @@",
+    " export function deliver() {",
+    '-  throw new Error("failed");',
+    "+  return 1;",
+    " }",
+    "diff --git a/src/old.ts b/src/old.ts",
+    "deleted file mode 100644",
+    "--- a/src/old.ts",
+    "+++ /dev/null",
+    "@@ -1,2 +0,0 @@",
+    "-export const old = 1;",
+    "-export const gone = 2;",
+    "diff --git a/src/link.ts b/src/link.ts",
+    "new file mode 120000",
+    "--- /dev/null",
+    "+++ b/src/link.ts",
+    "@@ -0,0 +1 @@",
+    "+../../secret.txt",
+    "\\ No newline at end of file",
+    "",
+  ].join("\n");
+  const changeWorld = (turns: unknown[][]) =>
+    world(turns, {
+      rawPatch: CHANGE,
+      files: ["src/deliver.ts", "src/old.ts", "src/link.ts"],
+      // The change adds a symlink out of the repository; the file it points at holds a secret.
+      setup: (root) => {
+        writeFileSync(join(root, "..", "secret.txt"), "aws_secret_access_key = SECRET\n");
+        symlinkSync(join(root, "..", "secret.txt"), join(root, "src", "link.ts"));
+      },
+    });
+
+  it("removed lines are asked about as the old version's lines, with the code the diff showed", async () => {
+    const w = changeWorld([[answer("It threw")]]);
+    await w.asks.askAboutLines("src/deliver.ts", "old", 1, 2, "Why did it throw?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    expect(record.about).toMatchObject({ path: "src/deliver.ts", side: "base", lines: { start: 1, end: 2 } });
+    expect(record.about.code).toBe('export function deliver() {\n  throw new Error("failed");');
+    expect(record.about.fileHash).toBeUndefined();
+    // Its marker is on the old side of the diff.
+    expect(w.asks.lineAnswers(w.guide)[0]).toMatchObject({ side: "old", start: 1, end: 2 });
+    w.asks.dispose();
+  });
+
+  it("a deleted file's lines come from the diff (the file is gone from disk)", async () => {
+    const w = changeWorld([[answer("Gone")]]);
+    await w.asks.askAboutLines("src/old.ts", "old", 1, 2, "Why remove these?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    expect(listAnswers(REPO_KEY, GUIDE_ID)[0].about).toMatchObject({ side: "base", code: "export const old = 1;\nexport const gone = 2;" });
+    w.asks.dispose();
+  });
+
+  it("never sends what a symlink in the change points at: the code is the diff's own line", async () => {
+    const w = changeWorld([[answer("A link")]]);
+    await w.asks.askAboutLines("src/link.ts", "new", 1, 1, "What is this?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    const [record] = listAnswers(REPO_KEY, GUIDE_ID);
+    expect(record.about.code).toBe("../../secret.txt");
+    expect(JSON.stringify(record)).not.toContain("SECRET");
+    expect(record.about.fileHash).toBeUndefined();
+    const prompts = w.log().filter((e) => e.event === "prompt").map((e) => JSON.stringify(e));
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const p of prompts) expect(p).not.toContain("SECRET");
+    w.asks.dispose();
+  });
+
+  it("lines the diff does not show go without code (never read from disk)", async () => {
+    const w = changeWorld([[answer("Far")]]);
+    await w.asks.askAboutLines("src/deliver.ts", "new", 2, 40, "And below?");
+    await waitFor(() => listAnswers(REPO_KEY, GUIDE_ID).some((r) => r.status === "answered"));
+    expect(listAnswers(REPO_KEY, GUIDE_ID)[0].about.code).toBeUndefined();
     w.asks.dispose();
   });
 

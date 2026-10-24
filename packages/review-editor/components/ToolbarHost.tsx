@@ -84,6 +84,7 @@ export const ToolbarHost = forwardRef<ToolbarHostHandle, ToolbarHostProps>(funct
     onLineSelection,
     onAddAnnotation,
     onEditAnnotation,
+    askOnly,
   });
 
   const conventionalCommentsEnabled = useConfigValue('conventionalComments');

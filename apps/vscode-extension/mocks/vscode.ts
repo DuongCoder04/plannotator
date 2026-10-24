@@ -48,6 +48,10 @@ export class Uri {
     return new Uri("file", "", fsPath, "", "");
   }
 
+  static from(c: { scheme: string; authority?: string; path?: string; query?: string; fragment?: string }): Uri {
+    return new Uri(c.scheme, c.authority ?? "", c.path ?? "", c.query ?? "", c.fragment ?? "");
+  }
+
   static joinPath(base: Uri, ...segments: string[]): Uri {
     return new Uri(base.scheme, base.authority, [base.path.replace(/\/+$/, ""), ...segments].join("/"), base.query, base.fragment);
   }
@@ -258,6 +262,14 @@ export const languages = {
     return { dispose() {} };
   },
 };
+
+export class Position {
+  constructor(readonly line: number, readonly character: number) {}
+}
+
+export class Location {
+  constructor(readonly uri: Uri, readonly range: Range) {}
+}
 
 export class Range {
   start: { line: number; character: number };

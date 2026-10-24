@@ -85,3 +85,28 @@ describe.skipIf(!hasDom)('AnnotationToolbar askOnly', () => {
     expect(document.querySelector('textarea[placeholder="Ask about this code..."]')).toBeNull();
   });
 });
+
+const hookModule = hasDom ? await import('../hooks/useAnnotationToolbar') : null;
+
+describe.skipIf(!hasDom)('useAnnotationToolbar askOnly', () => {
+  test('a touch screen (or a narrow window) never gets the expanded composer, so outside-click and Escape still close the Ask box', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query === '(pointer: coarse)', media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => true })) as typeof window.matchMedia;
+    const seen: Array<{ askOnly: boolean; expanded: boolean }> = [];
+    function Probe({ askOnly }: { askOnly: boolean }) {
+      const t = hookModule!.useAnnotationToolbar({ patch: '', filePath: 'a.ts', isFocused: true, onLineSelection: () => {}, onAddAnnotation: () => {}, onEditAnnotation: () => {}, askOnly });
+      seen.push({ askOnly, expanded: t.expandedComposerRequired });
+      return null;
+    }
+    try {
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      root = createRoot(host);
+      await act(async () => root?.render(<><Probe askOnly /><Probe askOnly={false} /></>));
+      expect(seen.find((s) => s.askOnly)?.expanded).toBe(false);
+      expect(seen.find((s) => !s.askOnly)?.expanded).toBe(true);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+});

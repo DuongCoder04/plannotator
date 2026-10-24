@@ -17,7 +17,7 @@ import type {
   ViewState,
 } from "../webview-protocol";
 import { renderInlineMarkdown, renderMarkdown } from "./markdown";
-import { checkMermaid } from "./diagram";
+import { checkMermaid } from "./diagram-loader";
 import { h, icon } from "./dom";
 import { renderBottlenecks, renderPermissions } from "./approvals";
 import { answerFrame } from "./answer-frame";

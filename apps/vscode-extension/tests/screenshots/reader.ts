@@ -191,6 +191,22 @@ async function main(): Promise<void> {
   await command(page, "View: Join All Editor Groups");
   await sleep(1500);
   const reader4 = await webviewFrame(page, "[data-reader-strip]");
+
+  // A definition inside the guide: ⌘-click computeBackoff (defined in chapter 1's retryPolicy.ts) scrolls the Guide tab to its line.
+  const backoff3 = reader4.locator('[data-guide-file-shell="src/webhooks/deliver.ts"] span[data-char]').filter({ hasText: /^computeBackoff$/ }).last();
+  await backoff3.scrollIntoViewIfNeeded();
+  await backoff3.click({ modifiers: ["Meta"] });
+  await sleep(2500);
+  const landed = await reader4.evaluate(() => {
+    const shell = document.querySelector('[data-guide-file-shell="src/webhooks/retryPolicy.ts"]');
+    if (!shell) return "no retryPolicy.ts";
+    const box = shell.getBoundingClientRect();
+    return box.top < innerHeight && box.bottom > 0 ? "retryPolicy.ts in view" : `retryPolicy.ts not in view (${Math.round(box.top)})`;
+  });
+  console.log(`in-guide definition: ${landed}`);
+  await shot(page, "a3-in-guide");
+  await reader4.locator("[data-reader-strip] button", { hasText: /Back/ }).first().click().catch(() => undefined);
+  await sleep(1500);
   const gutter = (line: number) => reader4.locator(`[data-guide-file-shell="src/webhooks/deliver.ts"] [data-column-number="${line}"]`).last();
   const g25 = await gutter(25).boundingBox();
   const g31 = await gutter(31).boundingBox();

@@ -54,8 +54,13 @@ export interface HoverAnswer {
   symbol: string;
   /** The language server's hover: code blocks (signatures) and markdown, in order. */
   blocks: Array<{ kind: "code"; language: string; text: string } | { kind: "markdown"; text: string }>;
-  /** Where it is defined (the first definition), repo-relative when inside the repository. */
-  definition: { path: string; line: number; character: number; inRepo: boolean } | null;
+  /**
+   * Where it is defined (the first definition), repo-relative when inside the
+   * repository. `side` says which version holds it: `new` the head (the file on
+   * disk or the head revision), `old` the base revision (a definition found
+   * from a removed line), null a file outside the guide's sides.
+   */
+  definition: { path: string; line: number; character: number; inRepo: boolean; side: "old" | "new" | null } | null;
   /** The chapter that changed the definition's file, when it is in the guide. */
   chapter: { n: number; title: string; reviewed: boolean; color: string } | null;
   /** Filled in by a later `references` message (a references search can take longer). */
@@ -69,7 +74,9 @@ export interface HoverAnswer {
 export interface AnswerMarker {
   id: string;
   path: string;
-  /** Head lines the question was about. */
+  /** The side of the diff the lines are on (`new`: head lines, `old`: base lines). */
+  side: "old" | "new";
+  /** Lines the question was about, on that side. */
   start: number;
   end: number;
   question: string;
@@ -86,7 +93,8 @@ export type ToReader =
   | { type: "reviewed"; reviewed: boolean[]; fileTicks: string[] }
   | { type: "hover"; reqId: number; answer: HoverAnswer | null }
   | { type: "references"; reqId: number; count: number | null }
-  | { type: "reveal"; path?: string; chapter?: number; line?: number }
+  /** Scroll the reader to a chapter, or to a file (and a line on one side of its diff). */
+  | { type: "reveal"; path?: string; chapter?: number; line?: number; side?: "old" | "new" }
   | { type: "asks"; busy: boolean; markers: AnswerMarker[]; chapters: ChapterAnswers[]; agent: string | null }
   | { type: "notice"; text: string }
   | { type: "checkMermaid"; reqId: number; source: string };
@@ -102,9 +110,11 @@ export type FromReader =
   | { type: "toggleFileReviewed"; path: string }
   | { type: "openFile"; path: string; line?: number }
   | { type: "openDiff"; path: string }
-  | { type: "openLocation"; path: string; line: number; character: number }
+  /** A definition's place from the hover card: `old` opens the base revision's document. */
+  | { type: "openLocation"; path: string; line: number; character: number; side: "old" | "new" }
   | { type: "chapter"; chapter: number }
-  | { type: "ask"; question: string; chapter?: number; path?: string; start?: number; end?: number }
+  /** A question about a chapter, or about lines `start`..`end` on one `side` of a file's diff. */
+  | { type: "ask"; question: string; chapter?: number; path?: string; side?: "old" | "new"; start?: number; end?: number }
   | { type: "openAnswer"; id: string }
   | { type: "command"; command: "export" | "outline" | "refresh" }
   | { type: "metric"; name: string; ms: number }
@@ -169,9 +179,11 @@ export function parseReaderMessage(raw: unknown): FromReader | null {
       return isPath(m.path) ? { type: "toggleFileReviewed", path: m.path } : null;
     case "openLocation":
       if (!isPath(m.path) || !isInt(m.line, 1, 10_000_000) || !isInt(m.character, 0, 1_000_000)) return null;
-      return { type: "openLocation", path: m.path, line: m.line, character: m.character };
+      if (m.side !== undefined && m.side !== "old" && m.side !== "new") return null;
+      return { type: "openLocation", path: m.path, line: m.line, character: m.character, side: m.side === "old" ? "old" : "new" };
     case "ask": {
-      if (typeof m.question !== "string" || m.question.length > MAX_QUESTION) return null;
+      // A question with something in it: a blank one asks nothing.
+      if (typeof m.question !== "string" || m.question.length > MAX_QUESTION || !m.question.trim()) return null;
       const out: Extract<FromReader, { type: "ask" }> = { type: "ask", question: m.question };
       if (m.chapter !== undefined) {
         if (!isInt(m.chapter, 0, 10_000)) return null;
@@ -179,7 +191,9 @@ export function parseReaderMessage(raw: unknown): FromReader | null {
       }
       if (m.path !== undefined) {
         if (!isPath(m.path) || !isInt(m.start, 1, 10_000_000) || !isInt(m.end, 1, 10_000_000) || (m.end as number) < (m.start as number)) return null;
+        if (m.side !== undefined && m.side !== "old" && m.side !== "new") return null;
         out.path = m.path;
+        out.side = m.side === "old" ? "old" : "new";
         out.start = m.start as number;
         out.end = m.end as number;
       }
