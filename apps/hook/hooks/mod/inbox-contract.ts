@@ -722,15 +722,41 @@ export function inboxAckLine(messageId: string): string {
 }
 
 /**
+ * The thread id a wake's closing line names: the Inbox's own id shape only
+ * (`msg_` + a ULID today), so nothing else a command carries reaches the
+ * prompt there. Anything else (an older Inbox without the field) is ''.
+ */
+function wakeThreadId(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : ''
+}
+
+/**
+ * The closing line of every wake, after the body: which thread it is, how to
+ * read more of it, and where the Inbox explains itself.
+ * `[thread <id> · more: <tool> read_thread · how it works: plannotator inbox --help]`,
+ * with the tool named as the host registered it (the mod's
+ * `mcp__<server>__plannotator_inbox`). Without a thread id (an older Inbox)
+ * the thread part is left out.
+ */
+export function inboxWakeClosingLine(threadId: unknown, toolName: string = INBOX_TOOL_NAME): string {
+  const thread = wakeThreadId(threadId)
+  const tool = typeof toolName === 'string' && toolName.trim() !== '' ? toolName.trim() : INBOX_TOOL_NAME
+  return `[${thread ? `thread ${thread} · ` : ''}more: ${tool} read_thread · how it works: plannotator inbox --help]`
+}
+
+/**
  * The turn a reply or a message becomes: `Plannotator Inbox: <subject> (<id>)`,
  * the fixed instruction line for its type (a reply, a New message, or a
  * thread the person started; on a redirected reply, the line
- * saying so under it), then the words verbatim. Never the thread re-sent.
- * A 👍 Looks good (`ack_of`) is the first line and `inboxAckLine` alone.
+ * saying so under it), then the words verbatim, then the closing line
+ * (`inboxWakeClosingLine`, naming `toolName`, the tool as the host
+ * registered it). Never the thread re-sent. A 👍 Looks good (`ack_of`) is the
+ * first line and `inboxAckLine`, closed by `[thread <id>]` alone.
  */
 export function inboxWakeText(
   command: Pick<InboxReplyCommand, 'id' | 'subject' | 'body'> & {
     type?: InboxReplyCommand['type']
+    thread_id?: unknown
     redirected_from?: string | null
     new_thread?: boolean
     continues_thread?: boolean
@@ -742,16 +768,19 @@ export function inboxWakeText(
     reask_items?: unknown
     reask_one?: unknown
   },
+  toolName: string = INBOX_TOOL_NAME,
 ): string {
   if (typeof command.ack_of === 'string' && command.ack_of !== '') {
     const ackSubject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || 'a message'
-    return `Plannotator Inbox: ${ackSubject} (${command.id})\n${inboxAckLine(command.ack_of)}`
+    const thread = wakeThreadId(command.thread_id)
+    return `Plannotator Inbox: ${ackSubject} (${command.id})\n${inboxAckLine(command.ack_of)}${thread ? `\n\n[thread ${thread}]` : ''}`
   }
+  const closing = `\n\n${inboxWakeClosingLine(command.thread_id, toolName)}`
   const subject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || (command.type === 'message' ? 'a message' : 'a reply')
   // Tagged into a thread another session owns: what it is, then read the thread first.
   if (command.tagged && typeof command.tagged === 'object') {
     const owner = wakeName(command.tagged.owner) || 'another agent'
-    return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}\n\n${command.body}`
+    return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}\n\n${command.body}${closing}`
   }
   const others = Array.isArray(command.also_tagged)
     ? command.also_tagged
@@ -780,7 +809,7 @@ export function inboxWakeText(
       ? `\n${inboxContinuesLine(command.id)}`
       : ''
   const naming = command.name_thread === true ? `\n${INBOX_NAME_THREAD_LINE}` : ''
-  return `Plannotator Inbox: ${subject} (${command.id})\n${instruction}${redirected}${also}${naming}\n\n${command.body}`
+  return `Plannotator Inbox: ${subject} (${command.id})\n${instruction}${redirected}${also}${naming}\n\n${command.body}${closing}`
 }
 
 /**
