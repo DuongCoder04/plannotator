@@ -752,7 +752,7 @@ export function inboxAckLine(messageId: string): string {
  * prompt there. Anything else (an older Inbox without the field) is ''.
  */
 function wakeThreadId(value: unknown): string {
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : ''
+  return typeof value === 'string' && /^msg_[0-9A-Za-z]{1,64}$/.test(value) ? value : ''
 }
 
 /**
@@ -765,7 +765,7 @@ function wakeThreadId(value: unknown): string {
  */
 export function inboxWakeClosingLine(threadId: unknown, toolName: string = INBOX_TOOL_NAME): string {
   const thread = wakeThreadId(threadId)
-  const tool = typeof toolName === 'string' && toolName.trim() !== '' ? toolName.trim() : INBOX_TOOL_NAME
+  const tool = typeof toolName === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(toolName.trim()) ? toolName.trim() : INBOX_TOOL_NAME
   return `[${thread ? `thread ${thread} · ` : ''}more: ${tool} read_thread · how it works: plannotator inbox --help]`
 }
 
