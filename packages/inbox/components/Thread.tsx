@@ -6,7 +6,7 @@ import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHig
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
-import { isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
+import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
@@ -74,7 +74,7 @@ import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
 import { OpenQuestionsButton } from './OpenQuestions';
 import { laidOutChildren, pillHitsButtons } from '../footFit';
-import { openQuestionsShown, placeOf, reaskItemLabel, threadOpenQuestions, type OpenQuestionPlace } from '../openQuestions';
+import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { selectionToolbarShowing } from '../selectionToolbar';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, type SendTarget, type SentContents } from '../sendTargets';
 
@@ -182,6 +182,20 @@ function HoldingChips({ holdings }: { holdings: Holding[] }) {
 
 /** A wire message's question states, for the shared asking rule. */
 const questionStatesOf = (message: InboxMessageWire): InboxQuestionState[] => (message.questions ?? []).map((q) => q.state);
+
+/**
+ * A question's empty answer as its card builds it (ui's QuestionBlock:
+ * `emptyQuestionAnswer` of the question Viewer indexes from the same body),
+ * so a Skip from the open-questions list saves what the card's Skip saves.
+ */
+function emptyAnswerFor(message: InboxMessageWire, q: { key: string; prompt: string; question: InboxQuestion }): QuestionAnswer {
+  const indexed = indexQuestionBlocks(parseMarkdownToBlocks(message.body, { frontmatter: false }), { decisionLines: false }).find(
+    (i) => i.question.key === q.key,
+  );
+  if (indexed) return emptyQuestionAnswer(indexed);
+  const kind = q.question.kind === 'multi' || q.question.kind === 'text' ? q.question.kind : 'single';
+  return { v: 1, key: q.key, kind, prompt: capQuestionPrompt(q.prompt), selected: [] };
+}
 
 /**
  * The session a Send reaches, when its message names one: the last target's
@@ -2648,7 +2662,30 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
 
   // Open questions in this thread (approval "inbox-thread-open-questions", option A): the "N open questions"
   // button lists them (Re-ask at its foot), and a row takes the person to the card (unfolding its message).
-  const openQ = resolved && !cameBack ? { questions: [], replaced: 0 } : threadOpenQuestions(thread.messages, liveMessage);
+  const openQFromServer = resolved && !cameBack ? { questions: [], replaced: 0 } : threadOpenQuestions(thread.messages, liveMessage);
+  // A pick still being saved shows on its row at once, as on its card (a Skip from the list reads "Draft · Skipped").
+  const openQ = {
+    ...openQFromServer,
+    questions: openQFromServer.questions.map((q): OpenQuestion => {
+      if (!pending.has(q.id)) return q;
+      const answer = pending.get(q.id) ?? null;
+      return { ...q, picked: answer !== null, question: { ...q.question, answer, state: answer ? 'picked' : 'open' } };
+    }),
+  };
+  /**
+   * A row's Skip (owner, 2026-10-24): exactly the card's own Skip. The same
+   * starting answer (the saved or pending pick, else the question's empty
+   * answer as the card builds it from the message), the same toggle
+   * (skipToggledAnswer, ui's toggleSkip), and the same save (`pick`): a pick
+   * marked skipped that goes with the next Send. Nothing is sent now.
+   */
+  const skipFromList = (q: OpenQuestion) => {
+    const message = thread.messages.find((m) => m.id === q.messageId);
+    if (!message) return;
+    const current = pending.has(q.id) ? pending.get(q.id)! : (questionById(q.id)?.answer ?? q.question.answer);
+    const base = current ?? emptyAnswerFor(message, q);
+    pick(q.messageId, q.key, skipToggledAnswer(base));
+  };
   // Shown whenever a question waits, or Re-ask is offered (it lives in the list now, so never out of reach).
   const openQShown = openQuestionsShown(openQ.questions, reaskShown);
   /** Where each listed card sits now: in a folded message, or above or below the middle of the thread's view. */
@@ -3638,6 +3675,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
                   phone={phone}
                   measure={measureOpenQuestions}
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
+                  onSkip={skipFromList}
                 />
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits. */}

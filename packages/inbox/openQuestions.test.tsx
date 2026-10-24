@@ -8,18 +8,19 @@
  * message and ringing the card, Escape putting focus back on the button, the
  * phone's bottom sheet, no button when nothing is open, the label forms and
  * the pill's place that keep the foot on one line (footFit.ts), and focus
- * landing on Reply when the button goes while its list is open.
+ * landing on Reply when the button goes while its list is open, and each
+ * row's Skip doing exactly what its card's Skip does (owner, 2026-10-24).
  *
  * The pure rules (openQuestions.ts) run everywhere; the window's parts are
  * DOM-gated: they run under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { act } from 'react';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
 import type { InboxAuthor, InboxMessageWire, InboxProject, InboxQuestion, InboxThread } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
-import { openQuestionsShown, openQuestionState, placeOf, reaskItemLabel, threadOpenQuestions } from './openQuestions';
+import { openQuestionsShown, openQuestionState, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions } from './openQuestions';
 import { footFitCandidates, onOneLine, openQuestionsFormText, pillHitsButtons } from './footFit';
 
 const hasDom = typeof document !== 'undefined';
@@ -350,9 +351,12 @@ test.skipIf(!hasDom)('arrow keys move through the rows; Escape closes the list a
   await until(() => rows().some((r) => r.hasAttribute('data-highlighted')), 'a highlighted row');
   const highlighted = () => rows().findIndex((r) => r.hasAttribute('data-highlighted'));
   const start = highlighted();
-  await act(async () => {
-    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-  });
+  // Each row's Skip sits between it and the next row (owner, 2026-10-24): two steps to the next row.
+  for (let i = 0; i < 2; i += 1) {
+    await act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+  }
   await until(() => highlighted() === start + 1, 'the next row');
   await act(async () => {
     (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -417,4 +421,212 @@ test.skipIf(!hasDom)("the button going while its list is open puts focus on the 
   expect(button()).toBeNull();
   expect(list()).toBeNull();
   await until(() => document.activeElement === el.querySelector('[data-reply-button]'), 'focus on Reply');
+});
+
+// ── Skip from the list (owner, 2026-10-24): exactly the card's own Skip ──
+
+describe('the Skip toggle (skipToggledAnswer, the card\'s toggleSkip)', () => {
+  const q = questionsOf(M2, block('Ship it?'))[0]!;
+  const base: QuestionAnswer = { v: 1, key: q.key, kind: 'single', prompt: q.prompt, selected: [] };
+  test('an empty answer becomes a skip; skipped again it clears (null)', () => {
+    expect(skipToggledAnswer(base)).toEqual({ ...base, skipped: true });
+    expect(skipToggledAnswer({ ...base, skipped: true })).toBeNull();
+  });
+  test('a pick and Other give way to the skip; a note stays, and Unskip keeps it', () => {
+    const picked = { ...base, selected: ['Yes'], other: 'maybe', note: 'later' };
+    expect(skipToggledAnswer(picked)).toEqual({ ...base, note: 'later', skipped: true });
+    expect(skipToggledAnswer({ ...base, note: 'later', skipped: true })).toEqual({ ...base, note: 'later' });
+  });
+});
+
+/** The thread as the server keeps it: picks change it, and the pane is told (onQuestions), as App does. */
+let served: InboxMessageWire[] = [];
+let pickBodies: { messageId: string; key: string; revision: number; answer: QuestionAnswer | null }[] = [];
+const PICKED_AT = '2026-10-22T16:40:00.000Z';
+
+function servePicks() {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const match = path.match(/\/api\/inbox\/messages\/([^/]+)\/picks$/);
+    if (!match) return fallback(input, init);
+    const messageId = decodeURIComponent(match[1]!);
+    const body = JSON.parse(String(init?.body)) as { questions: { key: string; revision: number; answer: QuestionAnswer | null }[] };
+    const entry = body.questions[0]!;
+    pickBodies.push({ messageId, ...entry });
+    served = served.map((m) =>
+      m.id !== messageId
+        ? m
+        : {
+            ...m,
+            questions: m.questions!.map((q) =>
+              q.key !== entry.key
+                ? q
+                : { ...q, answer: entry.answer, state: entry.answer ? ('picked' as const) : ('open' as const), revision: q.revision + 1, picked_at: entry.answer ? PICKED_AT : null, picked_by: entry.answer ? { id: 'person', name: null } : null },
+            ),
+          },
+    );
+    return Response.json({ questions: served.find((m) => m.id === messageId)!.questions });
+  }) as typeof fetch;
+}
+
+function Live({ initial, phone = false }: { initial: InboxMessageWire[]; phone?: boolean }) {
+  const [messages, setMessages] = React.useState(initial);
+  return (
+    <ThreadPane
+      thread={thread(messages)}
+      sent={null}
+      lookSeq={6}
+      phone={phone}
+      onQuestions={(messageId, questions) => setMessages((current) => current.map((m) => (m.id === messageId ? { ...m, questions } : m)))}
+      onChanged={async () => {}}
+      onClose={() => {}}
+      file={null}
+      onOpenFile={() => {}}
+      onOpenGuide={() => {}}
+    />
+  );
+}
+
+async function renderLive(options: { phone?: boolean } = {}) {
+  served = sample();
+  pickBodies = [];
+  servePicks();
+  host = document.createElement('div');
+  host.className = 'pn-inbox';
+  document.body.appendChild(host);
+  act(() => {
+    root = createRoot(host!);
+    root.render(<Live initial={served} phone={options.phone} />);
+  });
+  await settle();
+  return host;
+}
+
+const skipItem = (messageId: string) => list()?.querySelector<HTMLElement>(`[data-open-question-skip^="${messageId}/"]`) ?? null;
+const rowOf = (messageId: string) => list()?.querySelector<HTMLElement>(`[data-open-question^="${messageId}/"]`) ?? null;
+/** What the card of M6's question shows: its tag, its Skip button, its footer. */
+function cardState(el: HTMLElement) {
+  const card = el.querySelector<HTMLElement>(`[data-message-id="${M6}"] [data-question-key]`)!;
+  const skip = [...card.querySelectorAll('button')].find((b) => /^(Un)?[Ss]kip$/.test(b.textContent?.trim() ?? ''))!;
+  return { text: card.textContent, skip: skip.textContent?.trim(), pressed: skip.getAttribute('aria-pressed') };
+}
+
+test.skipIf(!hasDom)("a Skip from the list saves what the card's Skip saves, and the card ends the same", async () => {
+  // The card's own Skip first.
+  let el = await renderLive();
+  const cardSkip = [...el.querySelectorAll<HTMLButtonElement>(`[data-message-id="${M6}"] [data-question-key] button`)].find((b) => b.textContent?.trim() === 'Skip')!;
+  await act(async () => cardSkip.click());
+  await until(() => pickBodies.length === 1, 'the card pick');
+  await until(() => cardState(el).skip === 'Unskip', 'the card skipped');
+  const byCard = { pick: pickBodies[0]!, card: cardState(el) };
+  act(() => root?.unmount());
+  host?.remove();
+  globalThis.fetch = savedFetch;
+
+  // The list's Skip on the same question, from a fresh thread.
+  el = await renderLive();
+  await openList();
+  const item = skipItem(M6)!;
+  expect(item.getAttribute('role')).toBe('menuitem');
+  expect(item.textContent).toBe('Skip');
+  expect(item.getAttribute('aria-label')).toBe('Skip question 4: Anything the on-call runbook should say?');
+  await press(item);
+  await until(() => pickBodies.length === 1, 'the list pick');
+  // The same request, so the same state on the card (tag, Unskip pressed, "Picked … · in your draft").
+  expect(pickBodies[0]).toEqual(byCard.pick);
+  expect(byCard.pick.answer).toEqual({ v: 1, key: byCard.pick.key, kind: 'single', prompt: 'Anything the on-call runbook should say?', selected: [], skipped: true, sourceLine: expect.any(Number) });
+  await until(() => cardState(el).skip === 'Unskip', 'the card skipped from the list');
+  expect(cardState(el)).toEqual(byCard.card);
+  expect(byCard.card.text).toContain('in your draft');
+  // The list stayed open; the row reads as a picked row does, and its Skip turned to Unskip.
+  expect(list()).not.toBeNull();
+  await until(() => rowOf(M6)?.querySelector('.ib-oq-draft')?.textContent === 'Draft · Skipped', 'the row in the draft');
+  expect(skipItem(M6)!.textContent).toBe('Unskip');
+  expect(skipItem(M6)!.getAttribute('aria-label')).toBe('Unskip question 4: Anything the on-call runbook should say?');
+  // Nothing was sent: no reply went (only the pick).
+  expect(pickBodies).toHaveLength(1);
+});
+
+test.skipIf(!hasDom)('several skips in a row, a folded message and a draft pick included; Unskip takes one back', async () => {
+  const el = await renderLive();
+  await openList();
+  // M2 sits in the middle fold (no card drawn), M3 is a folded line, M5 holds the pick "Yes".
+  expect(el.querySelector(`[data-message-id="${M2}"] [data-question-key]`)).toBeNull();
+  for (const m of [M2, M3, M5]) {
+    await press(skipItem(m)!);
+    await until(() => rowOf(m)?.querySelector('.ib-oq-draft')?.textContent === 'Draft · Skipped', `row ${m} skipped`);
+  }
+  expect(list()).not.toBeNull();
+  expect(pickBodies.map((b) => [b.messageId, b.answer?.skipped, b.answer?.selected])).toEqual([
+    [M2, true, []],
+    [M3, true, []],
+    [M5, true, []],
+  ]);
+  // Every row is still listed (a skipped question is a draft pick until the Send), and the button still counts 4.
+  expect(rows()).toHaveLength(4);
+  expect(button()!.textContent?.trim()).toBe('4 open questions');
+  // Unskip on M2: the pick clears, as the card's Unskip does.
+  await press(skipItem(M2)!);
+  await until(() => pickBodies.length === 4, 'the unskip');
+  expect(pickBodies[3]!.answer).toBeNull();
+  await until(() => rowOf(M2)?.querySelector('.ib-oq-draft') === null && skipItem(M2)?.textContent === 'Skip', 'row M2 open again');
+});
+
+test.skipIf(!hasDom)('the keyboard: the arrows reach each Skip, Enter skips, and focus stays on it with the list open', async () => {
+  await renderLive();
+  const b = button()!;
+  await act(async () => b.focus());
+  await act(async () => {
+    b.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  });
+  await until(() => !!list(), 'the list from the keyboard');
+  const items = () => [...list()!.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  // Row, its Skip, the next row, its Skip …, then Re-ask.
+  expect(items().map((n) => (n.hasAttribute('data-open-question-skip') ? 'skip' : n.hasAttribute('data-reask') ? 'reask' : 'row'))).toEqual(['row', 'skip', 'row', 'skip', 'row', 'skip', 'row', 'skip', 'reask']);
+  const highlighted = () => items().findIndex((r) => r.hasAttribute('data-highlighted'));
+  await until(() => highlighted() >= 0, 'a highlighted item');
+  const key = async (k: string) =>
+    act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+    });
+  while (highlighted() !== 1) await key('ArrowDown');
+  const skip = items()[1]!;
+  expect(skip.getAttribute('data-open-question-skip')).toMatch(new RegExp(`^${M2}/`));
+  await key('Enter');
+  await until(() => pickBodies.length === 1, 'the skip from Enter');
+  await until(() => skip.textContent === 'Unskip', 'the item turned to Unskip');
+  expect(list()).not.toBeNull();
+  expect(document.activeElement).toBe(skip);
+  await key('ArrowDown');
+  await until(() => highlighted() === 2, 'the next row');
+});
+
+test.skipIf(!hasDom)('type-ahead goes by the question, never to a Skip: "s" lands on "Ship the retry worker…"', async () => {
+  await renderLive();
+  const b = button()!;
+  await act(async () => b.focus());
+  await act(async () => {
+    b.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  });
+  await until(() => !!list(), 'the list from the keyboard');
+  const items = () => [...list()!.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  await until(() => items().some((r) => r.hasAttribute('data-highlighted')), 'a highlighted item');
+  await act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 's', bubbles: true }));
+  });
+  await until(() => {
+    const h = items().find((r) => r.hasAttribute('data-highlighted'));
+    return !!h && !h.hasAttribute('data-open-question-skip') && /Ship the retry worker/.test(h.textContent ?? '');
+  }, 'type-ahead on the question, not a Skip');
+});
+
+test.skipIf(!hasDom)('on a phone the sheet keeps a Skip in each row', async () => {
+  await renderLive({ phone: true });
+  await openList();
+  expect(list()!.closest('.ib-oq-pos')!.hasAttribute('data-phone')).toBe(true);
+  expect(list()!.querySelectorAll('[data-open-question-skip]')).toHaveLength(4);
+  await press(skipItem(M3)!);
+  await until(() => rowOf(M3)?.querySelector('.ib-oq-draft')?.textContent === 'Draft · Skipped', 'row M3 skipped');
+  expect(list()).not.toBeNull();
 });

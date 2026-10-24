@@ -13,6 +13,7 @@
 
 import type { InboxMessageWire, InboxQuestion } from '@plannotator/core/inbox-types';
 import { readInboxQuestionKind } from '@plannotator/core/inbox-types';
+import { isQuestionAnswerEmpty, type QuestionAnswer } from '@plannotator/core/question-block';
 import { formatCount } from './format';
 
 /** One row of the list. */
@@ -118,4 +119,39 @@ export function openQuestionState(q: OpenQuestion): OpenQuestionState {
   if (q.question.stopped) return { kind: 'stopped' };
   if (q.question.holds_up.length > 0) return { kind: 'holds', count: q.question.holds_up.length };
   return null;
+}
+
+/** The row's question is skipped in the person's draft: its Skip reads "Unskip", as the card's does. */
+export function openQuestionSkipped(q: OpenQuestion): boolean {
+  return q.question.answer?.skipped === true;
+}
+
+/**
+ * Whether a row offers Skip: exactly when its card does (an open or picked
+ * question; a sent, closed or replaced one, and an action item, take none).
+ * The list holds only such questions, so this is a guard, not a filter.
+ */
+export function openQuestionSkippable(q: OpenQuestion): boolean {
+  return isQuestion(q.question) && waits(q.question);
+}
+
+/**
+ * What a Skip from the list saves: the answer the card's own Skip makes from
+ * the same starting answer (ui's QuestionBlock `toggleSkip`, then its
+ * `commit`). Skipped already: the skip comes off (Unskip), the note stays.
+ * Otherwise the choices, Other and the text go and `skipped` is set, the note
+ * staying. An answer left with nothing in it is null (the pick is cleared).
+ * `base` is the card's: its saved or pending answer, else the question's
+ * empty answer.
+ */
+export function skipToggledAnswer(base: QuestionAnswer): QuestionAnswer | null {
+  let next: QuestionAnswer;
+  if (base.skipped) {
+    const { skipped: _skipped, ...rest } = base;
+    next = rest;
+  } else {
+    const { other: _other, text: _text, ...rest } = base;
+    next = { ...rest, selected: [], skipped: true };
+  }
+  return isQuestionAnswerEmpty(next) ? null : next;
 }
