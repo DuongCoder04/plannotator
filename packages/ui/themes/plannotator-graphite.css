@@ -36,6 +36,8 @@
 }
 
 .theme-plannotator-graphite.light {
+  /* Plannotator light inherits this from its own dark block; keep the same value. */
+  --focus-highlight: oklch(0.70 0.20 200);
   --background: oklch(0.97 0.005 260);
   --foreground: oklch(0.18 0.02 260);
   --card: oklch(1 0 0);
