@@ -21,6 +21,9 @@ const READ_TOKEN = "proof-read-token-0123456789abcdef";
 const TODAY = utcDay(Date.now());
 const D1 = addUtcDays(TODAY, -1);
 const D2 = addUtcDays(TODAY, -2);
+/** Days closed for good (older than the 3-day acceptance window), seeded straight into D1. */
+const S1 = addUtcDays(TODAY, -10);
+const S2 = addUtcDays(TODAY, -11);
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
@@ -57,6 +60,16 @@ beforeAll(async () => {
     "--local",
     "--command",
     `INSERT INTO daily_totals VALUES ('2024-01-01','decisionMode',1,'_reports','',7,7),('${D2}','retiredFeature',1,'_reports','',9,9),('${D2}','decisionMode',1,'_kept','',1,1)`,
+  ]);
+  // Closed days for the read route: S1 has 6 reports, with two opened cells
+  // under 5 reports; S2 has 4 reports in all.
+  wranglerSync([
+    "d1",
+    "execute",
+    "COUNTS",
+    "--local",
+    "--command",
+    `INSERT INTO daily_totals VALUES ('${S1}','decisionMode',1,'_reports','',6,6),('${S1}','decisionMode',1,'active_day','1',6,6),('${S1}','decisionMode',1,'opened','1',2,2),('${S1}','decisionMode',1,'opened','2-3',5,12),('${S1}','decisionMode',1,'opened','30-100',1,64),('${S2}','decisionMode',1,'_reports','',4,4),('${S2}','decisionMode',1,'opened','2-3',4,9)`,
   ]);
   const envFile = join(persist, "proof.env");
   writeFileSync(envFile, `READ_TOKEN=${READ_TOKEN}\n`, { mode: 0o600 });
@@ -197,21 +210,31 @@ describe("POST /v1/counts", () => {
 
 describe("GET /v1/totals", () => {
   test("needs the bearer token", async () => {
-    expect((await totals(`feature=decisionMode&from=${D2}&to=${D1}`, null)).status).toBe(401);
-    expect((await totals(`feature=decisionMode&from=${D2}&to=${D1}`, "wrong")).status).toBe(401);
-    expect((await totals(`feature=decisionMode&from=${D2}&to=${D1}`)).status).toBe(200);
+    expect((await totals(`feature=decisionMode&from=${S2}&to=${D1}`, null)).status).toBe(401);
+    expect((await totals(`feature=decisionMode&from=${S2}&to=${D1}`, "wrong")).status).toBe(401);
+    expect((await totals(`feature=decisionMode&from=${S2}&to=${D1}`)).status).toBe(200);
   });
 
-  test("answers the totals and hides a day with fewer than 5 reporting install-days", async () => {
-    const res = await totals(`feature=decisionMode&from=${D2}&to=${D1}`);
-    const body = (await res.json()) as any;
+  test("serves only days closed for good, and hides small days and small cells", async () => {
+    const body = (await (await totals(`feature=decisionMode&from=${S2}&to=${D1}`)).json()) as any;
     expect(body.min_reports).toBe(5);
-    expect(body.suppressed_days).toBe(1);
+    expect(body.served_through).toBe(addUtcDays(TODAY, -4));
+    // Yesterday's batches (D1) are still open: not served.
+    expect(body.days.map((d: any) => d.day)).toEqual([S1]);
+    expect(body.suppressed_days).toBe(1); // S2: 4 reports
+    expect(body.suppressed_cells).toBe(2); // S1 opened "1" (2 reports) and "30-100" (1 report)
     expect(body.install_days).toBe(6);
-    expect(body.days.map((d: any) => d.day)).toEqual([D1]);
-    expect(body.totals.opened).toEqual({ reports: 6, total: 120, buckets: { "1": 2, "2-3": 2, "10-29": 1, "30-100": 1 } });
-    expect(body.totals.days_last7.buckets).toEqual({ "1": 2, "2-3": 1, "4-5": 1, "6-7": 2 });
-    expect(JSON.stringify(body.days)).not.toContain(D2);
+    expect(body.totals).toEqual({
+      active_day: { reports: 6, total: 6, buckets: { "1": 6 } },
+      opened: { reports: 5, total: 12, buckets: { "2-3": 5 } },
+    });
+    const text = JSON.stringify(body.days);
+    expect(text).not.toContain(D1);
+    expect(text).not.toContain(S2);
+    expect(text).not.toContain('"30-100"');
+    // A range of only open days answers nothing.
+    const open = (await (await totals(`feature=decisionMode&from=${D2}&to=${D1}`)).json()) as any;
+    expect(open.days).toEqual([]);
   });
 
   test("refuses a bad query", async () => {

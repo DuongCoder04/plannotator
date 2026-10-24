@@ -6,9 +6,11 @@
  *                       against the registry the client builds from
  *                       (@plannotator/core/usage-counts), then added into
  *                       the day's totals. 204, no body.
- *  - GET  /v1/totals    the totals for agents, with a bearer token; a
- *                       (day, rev) with fewer than 5 reporting install-days
- *                       is left out and counted as suppressed.
+ *  - GET  /v1/totals    the totals for agents, with a bearer token: only
+ *                       days closed for good (older than the 3 days a batch
+ *                       is accepted for); a (day, rev) with fewer than 5
+ *                       reporting install-days, and any cell with fewer than
+ *                       5 reports, is left out and counted as suppressed.
  *  - GET  /             one sentence about the service.
  *  - scheduled          retention: a feature's totals go 180 days after its
  *                       counting ends; anything older than 400 days goes; a
@@ -29,6 +31,7 @@ import {
   USAGE_COUNTS_MIN_REPORTS,
   USAGE_COUNTS_PATH,
   USAGE_COUNTS_RETENTION_DAYS,
+  usageCountsServedThrough,
   usageCountEvent,
   usageCountFeature,
   utcDay,
@@ -172,7 +175,7 @@ function addTo(target: Record<string, EventTotals>, event: string, bucket: strin
   t.buckets[bucket] = (t.buckets[bucket] ?? 0) + reports;
 }
 
-async function getTotals(req: Request, env: Env, url: URL): Promise<Response> {
+async function getTotals(req: Request, env: Env, url: URL, now: number): Promise<Response> {
   const auth = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
   if (!env.READ_TOKEN || !auth || !(await sameSecret(auth, env.READ_TOKEN))) {
     return json({ code: "unauthorized" }, 401, { "www-authenticate": "Bearer" });
@@ -187,47 +190,66 @@ async function getTotals(req: Request, env: Env, url: URL): Promise<Response> {
   if (utcDaysBetween(from, to) >= MAX_TOTALS_RANGE_DAYS) return json({ code: "invalid", hint: `at most ${MAX_TOTALS_RANGE_DAYS} days` }, 400);
   if (revParam !== null && !/^[1-9]\d{0,5}$/.test(revParam)) return json({ code: "invalid", hint: "rev is a whole number" }, 400);
 
+  // Only days no batch can still change: a day is accepted for
+  // USAGE_COUNTS_MAX_DAYS_BACK days, so reading a total before and after one
+  // install's batch is never possible through this route.
+  const servedThrough = usageCountsServedThrough(utcDay(now));
+  const upTo = to < servedThrough ? to : servedThrough;
   const where = revParam === null ? "" : " AND rev = ?4";
-  const params: (string | number)[] = [feature, from, to, ...(revParam === null ? [] : [Number(revParam)])];
-  const { results } = await env.COUNTS.prepare(
-    `SELECT day, rev, event, bucket, reports, total FROM daily_totals WHERE feature = ?1 AND day BETWEEN ?2 AND ?3${where} ORDER BY day, rev, event, bucket`,
-  )
-    .bind(...params)
-    .all<{ day: string; rev: number; event: string; bucket: string; reports: number; total: number }>();
+  const params: (string | number)[] = [feature, from, upTo, ...(revParam === null ? [] : [Number(revParam)])];
+  const { results } =
+    from > upTo
+      ? { results: [] as { day: string; rev: number; event: string; bucket: string; reports: number; total: number }[] }
+      : await env.COUNTS.prepare(
+          `SELECT day, rev, event, bucket, reports, total FROM daily_totals WHERE feature = ?1 AND day BETWEEN ?2 AND ?3${where} ORDER BY day, rev, event, bucket`,
+        )
+          .bind(...params)
+          .all<{ day: string; rev: number; event: string; bucket: string; reports: number; total: number }>();
 
-  const groups = new Map<string, DayTotals>();
+  // A (day, rev) with fewer than 5 reports is hidden whole; inside a shown
+  // day, any (event, bucket) cell with fewer than 5 reports is hidden too, and
+  // never enters a sum, so no total can be subtracted from another to find it.
+  const groups = new Map<string, { day: string; rev: number; reports: number; cells: typeof results }>();
   for (const row of results) {
     const key = `${row.day}\u0000${row.rev}`;
-    const g = groups.get(key) ?? { day: row.day, rev: row.rev, reports: 0, events: {} };
+    const g = groups.get(key) ?? { day: row.day, rev: row.rev, reports: 0, cells: [] };
     groups.set(key, g);
     if (row.event === REPORTS_EVENT) g.reports += row.reports;
-    else addTo(g.events, row.event, row.bucket, row.reports, row.total);
+    else g.cells.push(row);
   }
   const days: DayTotals[] = [];
-  let suppressed = 0;
+  let suppressedDays = 0;
+  let suppressedCells = 0;
   const totals: Record<string, EventTotals> = {};
   let installDays = 0;
   for (const g of groups.values()) {
     if (g.reports < USAGE_COUNTS_MIN_REPORTS) {
-      suppressed++;
+      suppressedDays++;
       continue;
     }
-    days.push(g);
-    installDays += g.reports;
-    for (const [event, t] of Object.entries(g.events)) {
-      for (const [bucket, n] of Object.entries(t.buckets)) addTo(totals, event, bucket, n, 0);
-      totals[event]!.total += t.total;
+    const day: DayTotals = { day: g.day, rev: g.rev, reports: g.reports, events: {} };
+    for (const cell of g.cells) {
+      if (cell.reports < USAGE_COUNTS_MIN_REPORTS) {
+        suppressedCells++;
+        continue;
+      }
+      addTo(day.events, cell.event, cell.bucket, cell.reports, cell.total);
+      addTo(totals, cell.event, cell.bucket, cell.reports, cell.total);
     }
+    days.push(day);
+    installDays += g.reports;
   }
   return json(
     {
       feature,
       from,
       to,
+      served_through: servedThrough,
       rev: revParam === null ? null : Number(revParam),
       min_reports: USAGE_COUNTS_MIN_REPORTS,
       install_days: installDays,
-      suppressed_days: suppressed,
+      suppressed_days: suppressedDays,
+      suppressed_cells: suppressedCells,
       totals,
       days,
     },
@@ -246,7 +268,7 @@ export async function handleRequest(req: Request, env: Env, now: number = Date.n
   }
   if (url.pathname === "/v1/totals") {
     if (req.method !== "GET") return json({ code: "method_not_allowed" }, 405, { allow: "GET" });
-    return getTotals(req, env, url);
+    return getTotals(req, env, url, now);
   }
   if (url.pathname === "/" && (req.method === "GET" || req.method === "HEAD")) {
     return new Response(req.method === "HEAD" ? null : HOME_TEXT, { status: 200, headers: { ...BASE_HEADERS, "content-type": "text/plain; charset=utf-8" } });

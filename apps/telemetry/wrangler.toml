@@ -10,6 +10,10 @@ name = "plannotator-telemetry"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
+# Only the custom domain below answers: no *.workers.dev hostname, no preview URLs.
+workers_dev = false
+preview_urls = false
+
 # No request logs, ever: no Workers Logs, no Logpush, no tail consumers. Never
 # run `wrangler tail` against production.
 logpush = false
