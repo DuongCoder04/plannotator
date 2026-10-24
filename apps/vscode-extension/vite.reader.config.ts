@@ -22,6 +22,8 @@ export default defineConfig({
       // Pierre runs Shiki's JavaScript regex engine: the Oniguruma WASM is dead weight.
       "shiki/wasm": path.resolve(__dirname, "../../build/shiki-wasm-stub.ts"),
       "katex/dist/katex.min.css": path.resolve(__dirname, "../guides-show/viewer/stubs/empty.css"),
+      // Overview diagrams are Mermaid only: Graphviz's 1.3 MB engine stays out (as in the webview build).
+      "@viz-js/viz": path.resolve(__dirname, "src/guides/webview/stubs/viz.ts"),
     },
   },
   worker: {

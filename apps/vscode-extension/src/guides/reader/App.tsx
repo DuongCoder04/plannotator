@@ -157,10 +157,10 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   const navigate = useCallback(
     (at: DiffPosition, action: NavigateAction) => {
       hover.close();
-      if (action === "definition") setBack(backHere(snapshot.guide.sections.length));
+      // "Back to Chapter N" appears when the extension answers with a jump inside the guide (`reveal`).
       post({ type: "navigate", at, action });
     },
-    [hover.close, snapshot.guide.sections.length],
+    [hover.close],
   );
   const onCodeNavRequest = useCallback((request: CodeNavRequest) => navigate(positionOf(request), "definition"), [navigate]);
   const hoveredAt = (hover.hover?.data as ReaderHoverData | undefined)?.reader?.at ?? null;

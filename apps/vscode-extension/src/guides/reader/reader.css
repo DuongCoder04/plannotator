@@ -48,6 +48,13 @@ html.pn-vscode body { background: var(--vscode-editor-background); color: var(--
 .pn-vscode [data-guide-file-shell] { scroll-margin-top: calc(var(--pn-strip-h, 40px) + 8px); }
 
 .pn-strip { font-family: var(--vscode-font-family); }
+/* A narrow tab (the real file opened beside it) keeps every chapter pill: the title gives way first, then the words. */
+@media (max-width: 760px) {
+  .pn-strip-count, .pn-strip-export, .pn-strip-back { display: none; }
+}
+@media (max-width: 520px) {
+  .pn-strip-nav > :first-child { display: none; }
+}
 .pn-pill {
   display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
   border: 1px solid var(--border); border-radius: 999px; background: transparent;

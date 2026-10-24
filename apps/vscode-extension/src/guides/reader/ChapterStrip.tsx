@@ -50,16 +50,16 @@ export function ChapterStrip({
         {label ? `${label} · ` : ""}
         {title}
       </h1>
-      <span className="flex-shrink-0 whitespace-nowrap text-[12px] text-muted-foreground">
+      <span className="pn-strip-count flex-shrink-0 whitespace-nowrap text-[12px] text-muted-foreground">
         {reviewed} of {chapters.length} reviewed
       </span>
       {back && (
-        <button type="button" className="pn-pill flex-shrink-0" onClick={onBack} title="Back to where you were reading">
-          <span className="codicon codicon-arrow-left" aria-hidden="true" /> {back.label}
+        <button type="button" className="pn-pill flex-shrink-0" onClick={onBack} title="Back to where you were reading" aria-label={back.label}>
+          <span className="codicon codicon-arrow-left" aria-hidden="true" /> <span className="pn-strip-back">{back.label}</span>
         </button>
       )}
       <span className="flex-1" />
-      <nav className="flex min-w-0 items-center gap-1 overflow-x-auto" aria-label="Chapters">
+      <nav className="pn-strip-nav flex flex-shrink-0 items-center gap-1" aria-label="Chapters">
         <button type="button" className="pn-pill flex-shrink-0" onClick={onOverview}>
           Overview
         </button>
@@ -78,8 +78,8 @@ export function ChapterStrip({
           </button>
         ))}
       </nav>
-      <button type="button" className="pn-pill flex-shrink-0" onClick={() => post({ type: "command", command: "export" })} title="Download the guide as one HTML file that opens in any browser">
-        <span className="codicon codicon-link-external" aria-hidden="true" /> Export
+      <button type="button" className="pn-pill flex-shrink-0" onClick={() => post({ type: "command", command: "export" })} title="Download the guide as one HTML file that opens in any browser" aria-label="Export">
+        <span className="codicon codicon-link-external" aria-hidden="true" /> <span className="pn-strip-export">Export</span>
       </button>
       <button type="button" className="pn-pill flex-shrink-0" onClick={() => post({ type: "command", command: "outline" })} title="Show the guide's outline in the side bar" aria-label="Show the outline">
         <span className="codicon codicon-list-tree" aria-hidden="true" />
@@ -91,7 +91,8 @@ export function ChapterStrip({
 /** The chapter whose card holds the line just under the strip (-1 above the first: the overview). */
 export function chapterInView(count: number): number {
   const strip = (document.querySelector("[data-reader-strip]") as HTMLElement | null)?.offsetHeight ?? 0;
-  const y = strip + 8;
+  // A chapter counts from when its card reaches a little below the strip.
+  const y = strip + 48;
   let found = -1;
   for (let i = 0; i < count; i++) {
     const el = document.querySelector(`[data-guide-section="${i}"]`);

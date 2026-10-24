@@ -57,7 +57,36 @@ function locationOf(d: vscode.Location | vscode.LocationLink): { uri: vscode.Uri
   return "targetUri" in d ? { uri: d.targetUri, range: d.targetSelectionRange ?? d.targetRange } : { uri: d.uri, range: d.range };
 }
 
+/**
+ * The definition to show: the first one the language server gives, past an
+ * import of the name (a server that has not loaded the project yet answers
+ * with the import line in the same file; asking again from there reaches the
+ * declaration).
+ */
+async function realDefinition(defs: Array<vscode.Location | vscode.LocationLink> | undefined): Promise<{ uri: vscode.Uri; range: vscode.Range } | null> {
+  if (!defs?.length) return null;
+  let loc = locationOf(defs[0]);
+  for (let hop = 0; hop < 2; hop++) {
+    let line = "";
+    try {
+      line = (await vscode.workspace.openTextDocument(loc.uri)).lineAt(loc.range.start.line).text;
+    } catch {
+      return loc;
+    }
+    if (!/^\s*(import|export\s*\{[^}]*\}\s*from)\b/.test(line)) return loc;
+    const next = await vscode.commands
+      .executeCommand<Array<vscode.Location | vscode.LocationLink>>("vscode.executeDefinitionProvider", loc.uri, loc.range.start)
+      .then(undefined, () => undefined);
+    const other = next?.map(locationOf).find((n) => n.uri.toString() !== loc.uri.toString() || n.range.start.line !== loc.range.start.line);
+    if (!other) return loc;
+    loc = other;
+  }
+  return loc;
+}
+
 const LOADING = /^\s*(```\w*\s*)?\(loading\.\.\.\)/;
+const LOADING_POLL_MS = 300;
+const LOADING_WAIT_MS = 5_000;
 
 /** The hover card's contents: the language server's hover and the definition, plus the guide's chapter. */
 export async function readerHover(at: DiffPosition, ctx: ReaderContext): Promise<HoverAnswer | null> {
@@ -72,14 +101,15 @@ export async function readerHover(at: DiffPosition, ctx: ReaderContext): Promise
       ]),
     );
   let [hovers, defs] = await ask();
-  // A document the language server just opened (a PR worktree is outside the workspace) may need a moment.
-  if (LOADING.test(hoverText(hovers) ?? "")) {
-    await new Promise((r) => setTimeout(r, 400));
+  // A language server still loading the project answers "(loading...)" (a PR worktree outside the
+  // workspace, the first hover in a window): ask again for a few seconds, as the editor's own hover does.
+  for (let waited = 0; LOADING.test(hoverText(hovers) ?? "") && waited < LOADING_WAIT_MS; waited += LOADING_POLL_MS) {
+    await new Promise((r) => setTimeout(r, LOADING_POLL_MS));
     [hovers, defs] = await ask();
   }
   const text = hoverText(hovers) ?? "";
   const blocks = LOADING.test(text) ? [] : splitHoverMarkdown(text);
-  const first = defs?.length ? locationOf(defs[0]) : null;
+  const first = await realDefinition(defs);
   const def = first ? { ...readerPath(first.uri, ctx), line: first.range.start.line + 1, character: first.range.start.character } : null;
   if (!blocks.length && !def) return null;
   const chapterIndex = def?.inRepo ? ctx.model.chapterOf(def.path) : -1;
@@ -114,8 +144,8 @@ export async function readerDefinition(at: DiffPosition, ctx: ReaderContext): Pr
   const defs = await vscode.commands
     .executeCommand<Array<vscode.Location | vscode.LocationLink>>("vscode.executeDefinitionProvider", where.uri, where.position)
     .then(undefined, () => undefined);
-  if (!defs?.length) return null;
-  const loc = locationOf(defs[0]);
+  const loc = await realDefinition(defs);
+  if (!loc) return null;
   const p = readerPath(loc.uri, ctx);
   const inGuide = p.inRepo && loc.uri.scheme === "file" && ctx.model.chapterOf(p.path) >= 0 ? p.path : null;
   return { uri: loc.uri, range: loc.range, inGuide };

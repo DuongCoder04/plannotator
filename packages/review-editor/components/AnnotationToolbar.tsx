@@ -183,7 +183,9 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 
   const handleAskAISubmit = (question: string) => {
     onAskAI?.(question);
-    // Stay in AI mode so the history updates
+    // An ask-only host answers somewhere else (a page beside): the toolbar is done.
+    if (askOnly) onCancel();
+    // Otherwise stay in AI mode so the history updates
   };
 
   const handleAskAIClose = () => {
