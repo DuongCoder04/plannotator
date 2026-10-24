@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-24
+
 ### Added
-- Guided Reviews: ask the agent about selected code, a file or a chapter, and read its answer as a page beside the diff (the agent's own HTML, scripts included, in a sandboxed frame; Mermaid drawn by the Guide tab's engine). The guide's own ACP session answers when the agent can load it; answers are saved with the guide and listed under the chapter, with follow-ups in the same conversation. Selected lines (and the file's CodeLens) open the question box right under the lines, as a comment thread that shows the agent's progress and links to the answer.
-- Guides view: write a Guided Review of a pull request or your local changes with Claude Code over ACP, watch it build, and read it chapter by chapter in the native diff editor (overview with a Mermaid diagram and code links, chapter and file ticks, CodeLens, status bar). Guides are shared with Plannotator's web app. A pull request's own Claude Code settings and MCP servers are never loaded; guide history off (`PLANNOTATOR_GUIDE_HISTORY=0`) is honored.
+- **Guided Reviews.** An agent reads a pull request or your local changes and splits them into chapters, the core of the change first, and you read them in VS Code's own diff editor: an overview with a diagram and code links, what changed and why for each chapter, chapter and file ticks, CodeLens and the status bar. The Guided Reviews dashboard opens from the activity bar and lists your repositories, local changes and pull requests (works without a folder open). Guides are shared with Plannotator's web app and export as one HTML file.
+- **Your agent, over ACP.** Claude Code, Codex, OpenCode, Pi, GitHub Copilot CLI, Cursor, Kiro and Kilo Code, plus any other ACP agent through `plannotator.guides.customAgent`. The agent runs with your own install, login and settings. The ACP adapters for Claude Code, Codex and Pi are installed for you on first use (pinned versions, into the extension's storage, nothing global); turn that off with `plannotator.guides.installAdapters`.
+- **Permission requests come to you.** The agent is never blocked by the extension: its requests show in the run with every option it offers, and when your setup holds a run back (a request you turned down, a tool your settings or sandbox blocked), the guide says so and offers a way through. Automatic approval is opt-in (`plannotator.guides.autoApprove`).
+- **Ask the agent.** Select lines in a guide diff (or use the file's CodeLens or a chapter's ask box) and ask; the question box opens right under the lines and shows the agent's progress. The answer is the agent's own page, opened beside the diff in a sandboxed tab with no network and no access to VS Code; its links open the code, a symbol or a chapter. Follow-ups continue the same conversation, and answers are saved with the guide and listed under each chapter.
+- **Pull requests** need the GitHub CLI (`gh`). Each one opens in a git worktree in the extension's storage, so your checkout is never touched; pull requests from other repositories are cloned there too.
 
 ## [0.4.0] - 2026-02-11
 
