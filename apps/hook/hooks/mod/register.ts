@@ -272,6 +272,7 @@ async function currentMod($: Engine): Promise<PlannotatorMod | null> {
       ...(inboxTools
         ? {
             inboxTools,
+            ...(inboxToolName ? { inboxToolName } : {}),
             cwd: async () => String(await $.session.cwd()),
             // The session's root (where it started; a shell cd does not move it): its `claude --resume` folder.
             root: async () => String(await $.session.root()),

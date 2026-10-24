@@ -220,6 +220,7 @@ import { exitOnUnknownSubcommand } from "./unknown-subcommand";
 import { completeAnnotateCommand } from "./annotate-command";
 import { ensureInboxRunning, runInboxCommand, selfCommand as inboxSelfCommand } from "./inbox-command";
 import { runCardCommand } from "./card-command";
+import { runTelemetryCommand } from "./telemetry-command";
 import { formatInboxHelp } from "./inbox-help";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { isAgentSdkEntrypoint } from "@plannotator/shared/t3-hook-command";
@@ -295,6 +296,11 @@ const rawArgs = process.argv.slice(2);
         ensureRunning: () => ensureInboxRunning(cardDataDir),
       }),
     );
+  }
+  // Usage counts for experimental features (unreleased, HIDDEN_SUBCOMMANDS):
+  // telemetry-command.ts. Before the strict-annotate parse, which takes `--json`.
+  if (args[0] === "telemetry" && !args.slice(1).some((a) => a === "--help" || a === "-h")) {
+    process.exit(await runTelemetryCommand(args.slice(1), { version: getCliVersion() }));
   }
 }
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's

@@ -7,6 +7,7 @@
 
 import { isActionRecord, questionsOnly, splitThreadActions } from './actions';
 import type {
+  InboxDecisionsModel,
   InboxGuideRef,
   InboxHealth,
   InboxListRow,
@@ -223,6 +224,8 @@ export interface SettingsModel {
    * shared with code review: null when never chosen. Absent from an older Inbox.
    */
   diff_style?: InboxDiffStyle | null;
+  /** Experimental features, each off unless switched on (`env`: PLANNOTATOR_EXPERIMENTAL decides). Absent from an older Inbox. */
+  experimental?: InboxExperimentalSettings;
   store: {
     dir: string;
     bytes: number;
@@ -234,6 +237,11 @@ export interface SettingsModel {
       threads: { thread_id: string; subject: string | null; bytes: number }[];
     }[];
   };
+}
+
+/** Settings → General → Experimental: each feature's switch, and whether the env var decides it. */
+export interface InboxExperimentalSettings {
+  decision_mode: { on: boolean; env: boolean | null };
 }
 
 /** One live agent session of a thread's project (New message, record 5.x). */
@@ -581,6 +589,10 @@ export const inboxApi = {
       : getWithin<ThreadModel>(`/api/inbox/threads/${encodeURIComponent(threadId)}`, timeoutMs)
     ).then((model) => ({ ...model, thread: splitThreadActions(model.thread) })),
   settings: () => get<SettingsModel>('/api/inbox/settings'),
+  /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
+  decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  saveExperimental: (change: { decision_mode: boolean }) =>
+    post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
   /**
    * The person looked at the thread. `throughSeq`: the seq of the newest
    * message the window showed; the look stops there, so a message that landed
@@ -609,9 +621,11 @@ export const inboxApi = {
   /** Its Undo: exactly the threads the batch took. */
   unarchiveProject: (projectId: string, threads: { resolved: readonly string[]; read: readonly string[] }) =>
     post<{ threads: InboxListRow[]; skipped: string[] }>(`/api/inbox/projects/${encodeURIComponent(projectId)}/resolve`, { resolved: false, threads }),
-  pick: (messageId: string, key: string, revision: number, answer: QuestionAnswer | null) =>
+  /** `unsentOnly`: refused (`question_already_sent`) when a reply already sent the question (decision mode, where a pick can race a Send). */
+  pick: (messageId: string, key: string, revision: number, answer: QuestionAnswer | null, options: { unsentOnly?: boolean } = {}) =>
     post<{ questions: InboxQuestion[] }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/picks`, {
       questions: [{ key, revision, answer }],
+      ...(options.unsentOnly ? { unsent_only: true } : {}),
     }).then((result) => ({ ...result, questions: questionsOnly(result.questions) })),
   /**
    * An action item's Done (with an optional note) or Can't do it (with the reason),

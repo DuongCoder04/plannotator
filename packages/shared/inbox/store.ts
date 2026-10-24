@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { inboxDecisionExcerpt, orderInboxDecisions, type InboxDecisionCandidate } from "./decisions";
 import {
   checkInboxAnswer,
   composeInboxReaskBody,
@@ -37,6 +38,7 @@ import {
   deriveInboxSubject,
   derivePersonThreadSubject,
   inboxQuestionState,
+  inboxQuestionWaitsOnPerson,
   isInboxQuestionSupersedable,
   parseInboxQuestionBlocks,
   parseInboxSupersedeRef,
@@ -58,6 +60,7 @@ import {
   type InboxAck,
   type InboxAddressee,
   type InboxAuthor,
+  type InboxDecision,
   type InboxGuideRef,
   type InboxLine,
   type InboxMessage,
@@ -1527,6 +1530,79 @@ export class InboxStore {
     return out.sort((a, b) => b.last_at.localeCompare(a.last_at) || b.thread_id.localeCompare(a.thread_id));
   }
 
+  /**
+   * Decision mode's projection (approval "inbox-decision-mode", brief §10):
+   * every question and action item that waits on the person (core's
+   * `inboxQuestionWaitsOnPerson`) in a live agent message, across threads, in
+   * queue order. What a waiting Re-ask note lists is left out, since the
+   * agent is about to ask it again (per note, so a thread where one session
+   * was asked to re-ask still shows another session's questions); a thread
+   * whose every open question is listed (the list puts it in Sent) shows
+   * nothing. Read only; no record.
+   */
+  openDecisions(filter: { projectId?: string | null } = {}): InboxDecision[] {
+    const candidates: InboxDecisionCandidate[] = [];
+    for (const [threadId] of this.threadMembers) {
+      const root = this.messages.get(threadId);
+      if (!root || root.thread_id !== threadId) continue;
+      if (filter.projectId && root.project_id !== filter.projectId) continue;
+      const waiting: { message: InboxMessage; question: InboxQuestion }[] = [];
+      // What a waiting Re-ask note lists is about to be asked again: left out, per note (so per session).
+      const reasked = this.reaskListedIds(threadId);
+      for (const message of this.threadMessages(threadId)) {
+        if (message.author.kind !== "agent" || this.closedByArchive(message)) continue;
+        for (const question of this.questionsOf(message.id)) {
+          // A listed question the person picked since still waits for their Send (as the list's rule 2a reads it).
+          const reask = question.state === "open" && reasked.has(`${message.id}/${question.key}`);
+          if (inboxQuestionWaitsOnPerson(question) && !reask) waiting.push({ message, question });
+        }
+      }
+      if (waiting.length === 0) continue;
+      const row = this.listRow(threadId);
+      if (!row) continue;
+      for (const { message, question } of waiting) {
+        const author = message.author as Extract<InboxAuthor, { kind: "agent" }>;
+        const inBlock = (ref: string) =>
+          [question.context ?? "", ...question.choices.flatMap((c) => [c.label, c.description ?? ""])].some((text) => text.includes(ref));
+        const images = [...(message.inline_images ?? [])].sort((a, b) => Number(inBlock(b.ref)) - Number(inBlock(a.ref)));
+        candidates.push({
+          seq: this.messageSeq.get(message.id) ?? 0,
+          decision: {
+            id: `${message.id}/${question.key}`,
+            question,
+            message: { id: message.id, created_at: message.created_at, author: message.author, excerpt: inboxDecisionExcerpt(message.body) },
+            pictures: {
+              inline: images.map((image) => ({
+                attachment_id: image.id,
+                ref: image.ref,
+                name: image.name,
+                media_type: image.media_type ?? null,
+                width: image.width ?? null,
+                height: image.height ?? null,
+              })),
+              attachments: (message.attachments ?? []).map((file) => ({
+                attachment_id: file.id,
+                name: file.name,
+                kind: file.kind,
+                size: file.size,
+                media_type: file.media_type ?? null,
+              })),
+            },
+            thread: { id: threadId, subject: row.subject, thread_name: row.thread_name, project: row.project, section: row.section },
+            session: {
+              key: author.session ? `s:${author.host ?? ""}\u0000${author.session}` : `m:${message.id}`,
+              host: author.host,
+              session: author.session,
+              name: author.name,
+              wakes: message.wakes === true,
+            },
+          },
+        });
+      }
+    }
+    return orderInboxDecisions(candidates);
+  }
+
   /** The list, placed in its sections; a project filter keeps the sections and drops other rows. */
   listSections(projectId?: string | null): InboxListSection[] {
     return inboxListSections(this.listRows({ projectId }));
@@ -2945,6 +3021,7 @@ export class InboxStore {
     mode: "pick" | "send",
     /** Each entry's index in the request's `questions` (a Send's entries are planned per message). */
     indices?: readonly number[],
+    options: { unsentOnly?: boolean } = {},
   ): { record: InboxQuestionRecord; answer: QuestionAnswer | null | undefined }[] {
     const records = new Map(this.questionRecords(message.id).map((r) => [r.key, r]));
     const seen = new Set<string>();
@@ -2975,6 +3052,13 @@ export class InboxStore {
       if (record.revision !== entry.revision) {
         throw refusalError({ code: "question_revision_conflict", key: entry.key, current_revision: record.revision });
       }
+      // `unsentOnly` (decision mode): a question a reply already sent takes no new pick (nor a cleared one). Its
+      // revision matches when the pick raced the Send (read before it, saved after), and saving it would reopen an
+      // answer the agent already has. Without it a sent question takes a pick again, as the thread-state model has
+      // it (the window never offers one; adr/implementation/inbox-thread-state.md).
+      if (mode === "pick" && options.unsentOnly === true && record.answer !== null && record.revision > 0 && record.sent_revision === record.revision) {
+        throw refusalError({ code: "question_already_sent", key: entry.key });
+      }
       let answer: QuestionAnswer | null | undefined;
       if (entry.answer === null) {
         if (mode === "send") throw new InboxError("validation_error", `${field}.answer: a Send cannot clear a pick.`, { field: `${field}.answer` });
@@ -2995,12 +3079,13 @@ export class InboxStore {
   }
 
   /** Save picks at once (no reply is written): each revision goes up by one. */
-  savePicks(messageId: string, entries: readonly InboxAnswerEntry[]): InboxQuestion[] {
+  /** `unsentOnly`: refuse a pick on a question a reply already sent (`question_already_sent`), as decision mode asks. */
+  savePicks(messageId: string, entries: readonly InboxAnswerEntry[], options: { unsentOnly?: boolean } = {}): InboxQuestion[] {
     const message = this.targetMessage(messageId);
     if (!Array.isArray(entries) || entries.length === 0) {
       throw new InboxError("validation_error", "questions: at least one question is required.", { field: "questions" });
     }
-    const plan = this.planAnswers(message, entries, "pick");
+    const plan = this.planAnswers(message, entries, "pick", undefined, options);
     const at = this.stamp();
     for (const { record, answer } of plan) {
       this.appendQuestion(
@@ -3304,7 +3389,20 @@ export class InboxStore {
     if (!messages.some((m) => m.author.kind === "person" && (m.reask?.length ?? 0) > 0)) return false;
     const states = new Map<string, string>();
     for (const m of messages) if (m.author.kind === "agent") for (const q of this.questionsOf(m.id)) states.set(`${m.id}/${q.key}`, q.state);
-    const covered = new Set<string>();
+    const listed = this.reaskListedIn(messages);
+    const open = [...states].filter(([, state]) => state === "open").map(([id]) => id);
+    return open.length > 0 && open.every((id) => listed.has(id));
+  }
+
+  /**
+   * The questions (`<message id>/<key>`) a Re-ask note in these messages lists
+   * while the note still waits: the session it went to (its `to`, else the
+   * session of the message it answers) has not written since. Per note, so
+   * per session: another session's questions in the same thread are not in it.
+   */
+  private reaskListedIn(messages: readonly InboxMessage[], options: { live?: boolean } = {}): Set<string> {
+    const listed = new Set<string>();
+    const presence = this.deliveryPresence;
     messages.forEach((note, index) => {
       if (note.author.kind !== "person" || (note.reask?.length ?? 0) === 0) return;
       const asked = note.reply_to ? this.messages.get(note.reply_to) : undefined;
@@ -3314,10 +3412,32 @@ export class InboxStore {
         .slice(index + 1)
         .some((m) => m.author.kind === "agent" && m.author.session === by.session && (m.author.host ?? "") === (by.host ?? ""));
       if (wrote) return;
-      for (const id of note.reask!) if (states.get(id) === "open") covered.add(id);
+      // `live`: only while that session is still there (the sessions route's grace). A note to a session that ended
+      // waits on nobody who will ask again.
+      if (options.live && presence && by.session && !presence.askerLive(by.session)) return;
+      for (const id of note.reask!) listed.add(id);
     });
-    const open = [...states].filter(([, state]) => state === "open").map(([id]) => id);
-    return open.length > 0 && open.every((id) => covered.has(id));
+    return listed;
+  }
+
+  /**
+   * The questions of a thread a still-waiting Re-ask note lists: the agent is
+   * about to ask them again, so decision mode leaves those still open out (the
+   * rest of the thread, another session's questions included, stays).
+   *
+   * A note waits exactly as the list's rule 2a reads it: until the session it
+   * went to writes in the thread again, and only for what it lists that is
+   * still open (answered, superseded, set aside or archived, a question is no
+   * longer hidden; one the person picks since shows, waiting for its Send).
+   * One bound more than the list: only while that session is still there
+   * (presence's `askerLive`, with its grace), so a note to a session that ended
+   * never hides its questions for good; the list's row may still read Sent then.
+   * With no presence (tests, tools) every session counts as there.
+   */
+  reaskListedIds(threadId: string): Set<string> {
+    const messages = this.threadMessages(threadId);
+    if (!messages.some((m) => m.author.kind === "person" && (m.reask?.length ?? 0) > 0)) return new Set();
+    return this.reaskListedIn(messages, { live: true });
   }
 
   /**
