@@ -97,6 +97,7 @@ import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { DraftView } from './api';
 import { inboxTabCount, useTabCount } from './tabCount';
+import { sidebarUpdateNotice } from './updateNotice';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -467,6 +468,9 @@ function Inbox() {
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [update, setUpdate] = useState<InboxHealth['update']>(null);
   const [restarting, setRestarting] = useState(false);
+  // The sidebar toggle's dot while the sidebar is closed: an update the Update button offers.
+  const updateState = update?.state ?? null;
+  const sidebarToggleNotice = useMemo(() => sidebarUpdateNotice(updateState, restarting), [updateState, restarting]);
   /** This run started on a newer version: the sidebar's "What's new in X" link. */
   const [updated, setUpdated] = useState<string | null>(null);
   // Claude Code sessions a /reload-plugins would bring up to date: the sidebar's "Reload Claude Code N" (owner approval "restart-warning").
@@ -2479,6 +2483,7 @@ function Inbox() {
       {/* A file beside the thread takes the sidebar's room (record 2.2): it closes on the same spring, and the person's choice stays as it was. */}
       <SidebarShell
         className="ib-shell"
+        toggleNotice={sidebarToggleNotice}
         open={route.page === 'settings' ? settingsSidebar : sidebarOpen && !fileOpen && !sidebarHeld}
         onOpenChange={(next) => {
           if (routeRef.current.page === 'settings') {

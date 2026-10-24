@@ -25,8 +25,8 @@ export interface UpdateAdvert {
   publishedAt?: string;
 }
 
-/** The toast shows at most this often, across versions. */
-export const UPDATE_TOAST_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+/** The toast shows at most this often, across versions (owner's choice: once a day). */
+export const UPDATE_TOAST_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const TOAST_KEY = 'plannotator-update-toast';
 const VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/;
