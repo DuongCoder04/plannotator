@@ -275,6 +275,37 @@ async function startFakeT3Worker(dataDir: string) {
   return child;
 }
 
+describe("usage counts", () => {
+  function seed(dataDir: string): string {
+    const dir = join(dataDir, "usage-counts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "counts.json"), JSON.stringify({ v: 1, days: { "2026-10-23": { decisionMode: { rev: 1, events: { opened: 2 } } } } }));
+    writeFileSync(join(dir, "facts.json"), JSON.stringify({ v: 1, features: { decisionMode: { used: true } } }));
+    return dir;
+  }
+
+  test("a plain uninstall removes usage-counts/ and keeps an opt-out in config.json", async () => {
+    const fixture = createFixture();
+    const dir = seed(fixture.dataDir);
+    writeFileSync(join(fixture.dataDir, "config.json"), JSON.stringify({ usageCounts: false }));
+    const planned = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(planned.planned.filter((line) => line === dir)).toHaveLength(1);
+    expect(existsSync(dir)).toBe(true);
+    await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(false);
+    expect(JSON.parse(readFileSync(join(fixture.dataDir, "config.json"), "utf-8")).usageCounts).toBe(false);
+  });
+
+  test("purge removes usage-counts/, listed once in a dry run", async () => {
+    const fixture = createFixture();
+    const dir = seed(fixture.dataDir);
+    const planned = await runPlannotatorUninstall({ purge: true, dryRun: true }, fixture.environment);
+    expect(planned.planned.filter((line) => line === dir)).toHaveLength(1);
+    await runPlannotatorUninstall({ purge: true, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe("the optional T3 Code connection", () => {
   test("uninstall stops its running workers, and purge removes t3-code/", async () => {
     const fixture = createFixture();

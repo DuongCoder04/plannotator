@@ -205,6 +205,16 @@
         "vite-plugin-singlefile": "^2.0.3",
       },
     },
+    "apps/telemetry": {
+      "name": "@plannotator/telemetry",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20241218.0",
+        "@plannotator/core": "workspace:*",
+        "typescript": "~5.8.2",
+        "wrangler": "^4.127.1",
+      },
+    },
     "apps/vscode-extension": {
       "name": "plannotator-webview",
       "version": "0.16.8",
@@ -1125,6 +1135,8 @@
     "@plannotator/shared": ["@plannotator/shared@workspace:packages/shared"],
 
     "@plannotator/t3-code": ["@plannotator/t3-code@workspace:packages/t3-code"],
+
+    "@plannotator/telemetry": ["@plannotator/telemetry@workspace:apps/telemetry"],
 
     "@plannotator/ui": ["@plannotator/ui@workspace:packages/ui"],
 
