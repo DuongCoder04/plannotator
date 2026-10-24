@@ -708,7 +708,7 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
     // One line per change of error, not one per check: an offline machine
     // would otherwise add a line every 10 minutes. Compared by the errors
     // alone, so the API being asked or not (hourly) is no change.
-    const logged = [...new Set([pageError, apiAsked && error].filter(Boolean))].join("; ") || error;
+    const logged = pageError || error;
     if (!failedBefore || previous?.logged !== logged) {
       const notes = [
         rateLimited && `the API is not asked again for ${formatWait(apiWait)}`,

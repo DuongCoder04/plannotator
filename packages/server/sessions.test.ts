@@ -65,3 +65,10 @@ test("listLiveSessions on a data dir with no sessions folder answers nothing and
   expect(listLiveSessions()).toEqual([]);
   expect(existsSync(join(dataDir, "sessions"))).toBe(false);
 });
+
+test("registerSession never throws when the data dir can't be written (a file in its place)", () => {
+  const blocked = join(dataDir, "not-a-dir");
+  writeFileSync(blocked, "x");
+  process.env.PLANNOTATOR_DATA_DIR = blocked;
+  expect(() => registerSession(info(process.pid))).not.toThrow();
+});

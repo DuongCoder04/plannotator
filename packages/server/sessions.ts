@@ -64,16 +64,27 @@ export function registerSession(info: SessionInfo): void {
   // Atomic (temp + rename): a reader never sees a half-written file, which
   // listSessions would take for a corrupt one and delete. The temp name does
   // not end in `.json`, so no lister reads it.
-  const path = sessionPath(info.pid);
-  const tmp = `${path}.${Math.random().toString(36).slice(2)}.tmp`;
+  let tmp: string | null = null;
   try {
-    writeFileSync(tmp, JSON.stringify(info, null, 2), "utf-8");
-    renameSync(tmp, path);
+    const path = sessionPath(info.pid);
+    const body = JSON.stringify(info, null, 2);
+    tmp = `${path}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tmp, body, "utf-8");
+    try {
+      renameSync(tmp, path);
+    } catch {
+      // Windows refuses the rename while a reader holds the old file open:
+      // write it directly instead (the old, non-atomic behaviour).
+      writeFileSync(path, body, "utf-8");
+    }
   } catch {
     // Session discovery is unavailable; the session itself is unaffected.
-    try {
-      unlinkSync(tmp);
-    } catch {}
+  } finally {
+    if (tmp) {
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp);
+      } catch {}
+    }
   }
 }
 
