@@ -72,7 +72,7 @@ import {
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
 import { checkServerSession, serverSessionMismatchBody } from "@plannotator/shared/server-session";
-import { listSessions, type SessionInfo } from "./sessions";
+import { listLiveSessions, listSessions, type SessionInfo } from "./sessions";
 
 // The version helpers and the install-flag allowlist moved to
 // @plannotator/shared/update-check (vendored to Pi); re-exported so existing
@@ -279,7 +279,9 @@ export interface AutoUpdateDeps {
   /** The update-check knob (resolveUpdateCheck): auto-update needs the check. Default: on. */
   checksEnabled?: () => boolean;
   isManaged: () => boolean;
-  /** Ask GitHub; the release (with its notes) or why not. Preferred over fetchLatestTag. */
+  /** The release check's primary source (the "latest release" redirect). Default: GitHub's. */
+  fetchReleasePage?: () => Promise<FetchReleaseResult>;
+  /** Ask the API; the release (with its notes) or why not. Preferred over fetchLatestTag. */
   fetchRelease?: () => Promise<FetchReleaseResult>;
   /** Ask GitHub for the tag only (older seam, kept for tests). */
   fetchLatestTag?: () => Promise<string | null>;
@@ -326,7 +328,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateDeps): Promise<AutoUpda
   patchUpdateState((s) => ({ ...s, lastCheckAt: now }), deps.dataDir);
   // Give the window back when nothing was installed for a reason that is not
   // "checked and up to date": the next session start retries (the release
-  // check's own one-hour backoff still bounds the requests).
+  // check's own 10-minute backoff still bounds the requests).
   const restoreWindow = () =>
     patchUpdateState((s) => {
       const next = { ...s };
@@ -335,7 +337,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateDeps): Promise<AutoUpda
       return next;
     }, deps.dataDir);
 
-  // The shared release check answers from its one-hour cache, or asks GitHub once
+  // The shared release check answers from its 10-minute cache, or asks GitHub once
   // (it reduces the tag to a canonical X.Y.Z, since the tag ends up as an
   // installer argument).
   let latest = cachedLatestTag(state, now);
@@ -344,6 +346,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateDeps): Promise<AutoUpda
       dataDir: deps.dataDir,
       now: () => now,
       enabled: () => true,
+      ...(deps.fetchReleasePage && { fetchReleasePage: deps.fetchReleasePage }),
       fetchRelease: releaseFetcher(deps),
     });
     latest = checked.outcome === "checked" ? checked.version : null;
@@ -357,7 +360,7 @@ export async function runAutoUpdateCheck(deps: AutoUpdateDeps): Promise<AutoUpda
   const others = otherOpenSessions(deps.listSessions(), deps.pid);
   if (others.length > 0) {
     // Do not spend the 24h install window: the next session start retries,
-    // answering from the cached release while it is under an hour old, and
+    // answering from the cached release while it is under 10 minutes old, and
     // otherwise through the release check's own throttle.
     restoreWindow();
     log(
@@ -735,9 +738,10 @@ let noticeVersion: string | undefined;
  * every failure into update.log. Called by the compiled CLI each time a
  * session registers; only the first call per process does anything.
  *
- * First the shared release check (the update notices: at most once an hour
- * per machine, an hour after a failure, never when PLANNOTATOR_UPDATE_CHECK is
- * off), then opt-in auto-update, which answers from that same cache.
+ * First the shared release check (the update notices: at most once every 10
+ * minutes per machine, 10 minutes after a failure, never when
+ * PLANNOTATOR_UPDATE_CHECK is off), then opt-in auto-update, which answers
+ * from that same cache.
  */
 export function scheduleAutoUpdateCheck(currentVersion: string | undefined): void {
   if (scheduled) return;
@@ -793,10 +797,29 @@ export function isAutoUpdateActive(): boolean {
   if (!noticeVersion) return false;
   try {
     const config = loadConfig();
-    return resolveAutoUpdate(config) && resolveUpdateCheck(config) && isManagedBinary(process.execPath);
+    if (!(resolveAutoUpdate(config) && resolveUpdateCheck(config) && isManagedBinary(process.execPath))) return false;
+    const dataDir = getPlannotatorDataDir();
+    return autoUpdateCanInstall({
+      lockHeld: isUpdateLockHeld(dataDir),
+      windowOpen: isCheckDue(readAutoUpdateState(dataDir), Date.now()),
+      sessions: listLiveSessions(),
+      ownPid: process.pid,
+    });
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether auto-update can actually install now: an install is running, or its
+ * 24 h window has elapsed and no other Plannotator session is open. It skips
+ * every start that finds another session, and installs at most once a day,
+ * so without these a person would be neither updated nor told for up to a
+ * day, or for good while a session is always open. Pure, for the tests.
+ */
+export function autoUpdateCanInstall(input: { lockHeld: boolean; windowOpen: boolean; sessions: SessionInfo[]; ownPid: number }): boolean {
+  if (input.lockHeld) return true;
+  return input.windowOpen && otherOpenSessions(input.sessions, input.ownPid).length === 0;
 }
 
 /**

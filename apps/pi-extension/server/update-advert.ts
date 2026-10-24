@@ -1,6 +1,6 @@
 /**
  * Update notices for the Pi extension's review windows (design:
- * .product/approved/plannotator-updates/ §4.5, §4.9): the same once-a-day
+ * .product/approved/plannotator-updates/ §4.5, §4.9): the same
  * check the compiled CLI and the Inbox run (generated/update-check.ts, cached
  * in the shared data dir, so whichever runs first asks GitHub), compared with
  * this package's own version. Pi updates through npm, so the advert's action
@@ -28,14 +28,13 @@ export function piExtensionVersion(): string | null {
 	return packageVersion;
 }
 
-let scheduled = false;
-
 /**
  * The advert for a Pi review window's payload: read from the cache only, so
- * a page load never waits on the network. The first call in this process also
- * schedules the hourly release check (fire-and-forget; it answers from the cache within
- * its window). Nothing for another origin (oh-my-pi updates differently) or
- * while update checks are off.
+ * a page load never waits on the network. Each call also schedules the release
+ * check (fire-and-forget; it answers from the cache within its 10-minute
+ * window, so a long-lived Pi still learns of a release without a restart).
+ * Nothing for another origin (oh-my-pi updates differently) or while update
+ * checks are off.
  */
 export function piUpdateAdvert(origin?: string | null): { updateAvailable?: UpdateAdvert } {
 	try {
@@ -43,10 +42,7 @@ export function piUpdateAdvert(origin?: string | null): { updateAvailable?: Upda
 		if (!resolveUpdateCheck(loadConfig())) return {};
 		const current = piExtensionVersion();
 		if (!current) return {};
-		if (!scheduled) {
-			scheduled = true;
-			scheduleReleaseCheck({ enabled: () => resolveUpdateCheck(loadConfig()) });
-		}
+		scheduleReleaseCheck({ enabled: () => resolveUpdateCheck(loadConfig()) });
 		const advert = buildUpdateAdvert({ state: readUpdateState(), current, action: "pi", platform: process.platform });
 		return advert ? { updateAvailable: advert } : {};
 	} catch {

@@ -30,6 +30,8 @@ on:
       - 'packages/shared/inbox/**'
       - 'packages/core/inbox*'
       - 'packages/shared/config.ts'
+      - 'packages/shared/update-check.ts'
+      - 'packages/server/auto-update.ts'
       - 'packages/server/html-assets.ts'
       - 'packages/server/tailscale-serve.ts'
       - 'packages/server/request-host-guard.ts'
@@ -72,6 +74,8 @@ on:
       - 'packages/shared/inbox/**'
       - 'packages/core/inbox*'
       - 'packages/shared/config.ts'
+      - 'packages/shared/update-check.ts'
+      - 'packages/server/auto-update.ts'
       - 'packages/server/html-assets.ts'
       - 'packages/server/tailscale-serve.ts'
       - 'packages/server/request-host-guard.ts'
@@ -152,6 +156,15 @@ jobs:
 
       - name: Run the Inbox window proof
         run: bun run test:e2e:inbox
+
+      # The update notices need a release-numbered binary (a 0.0.0-dev one has
+      # no update control): the same build with 0.28.10, against a fake GitHub.
+      - name: Run the update specs on a release-numbered binary
+        run: |
+          bun build apps/hook/server/index.ts --compile --no-compile-autoload-bunfig \
+            --define '__CLI_VERSION__="0.28.10"' --outfile .local/plannotator-0.28.10
+          PLANNOTATOR_E2E_RELEASE_BINARY="$PWD/.local/plannotator-0.28.10" \
+            bunx playwright test -c tests/e2e/playwright.config.ts inbox-update-notice inbox-updates.spec
 
       - name: Replay the phone door's contract exchanges and the Wi-Fi listener on the binary
         run: |

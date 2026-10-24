@@ -3,7 +3,7 @@
  * .product/approved/plannotator-updates/ §4.5, owner's answers 1 and 3).
  *
  * The server says whether a newer release exists (`updateAvailable` on
- * /api/plan and /api/diff, from the machine's once-a-day check): the browser
+ * /api/plan and /api/diff, from the machine's own check): the browser
  * never asks GitHub. This module parses that advert, decides whether the toast
  * may show now (once per version, and at most once every three days across
  * versions, remembered in a cookie that every localhost port shares), and

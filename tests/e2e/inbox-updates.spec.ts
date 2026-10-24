@@ -7,6 +7,8 @@
  * an AVAILABLE release, opens the update dialog, and Update now runs the
  * install script once for that version while the button reads Updating….
  *
+ * PLANNOTATOR_E2E_RELEASE_BINARY names a binary compiled with
+ * __CLI_VERSION__="0.28.10" to run instead of the CLI from source (CI does).
  * Needs the built apps (apps/hook/dist), as the other specs do.
  */
 
@@ -39,9 +41,11 @@ test.beforeAll(async () => {
   home = join(root, 'home');
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(join(home, '.local', 'bin'), { recursive: true });
-  // The running bun counts as the binary the install script manages, so the dialog offers Update now.
+  // The running program (bun, or the release binary) counts as the one the install script manages, so the dialog offers Update now.
+  const release = process.env.PLANNOTATOR_E2E_RELEASE_BINARY;
   const bun = realpathSync(process.env.BUN_BINARY ?? execSync('command -v bun').toString().trim());
-  symlinkSync(bun, join(home, '.local', 'bin', 'plannotator'));
+  const program = release ? realpathSync(release) : bun;
+  symlinkSync(program, join(home, '.local', 'bin', 'plannotator'));
   writeFileSync(join(dataDir, 'update-state.json'), JSON.stringify({ latestRelease: { tag: '0.28.12', fetchedAt: Date.now(), publishedAt: '2026-10-09T15:00:00Z' } }));
   mkdirSync(join(dataDir, 'update-notes'));
   writeFileSync(
@@ -57,7 +61,7 @@ test.beforeAll(async () => {
   await new Promise<void>((r) => installer.listen(0, '127.0.0.1', () => r()));
   installerPort = (installer.address() as { port: number }).port;
 
-  inbox = spawn(bun, ['--define', '__CLI_VERSION__="0.28.10"', entry, 'inbox', '--no-open'], {
+  inbox = spawn(program, release ? ['inbox', '--no-open'] : ['--define', '__CLI_VERSION__="0.28.10"', entry, 'inbox', '--no-open'], {
     env: {
       PATH: process.env.PATH ?? '',
       HOME: home,
