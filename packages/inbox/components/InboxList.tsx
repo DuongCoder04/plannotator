@@ -18,6 +18,7 @@ import type { RowMenuAction } from '../rowMenu';
 import { rowTimeIso, rowWait } from '../rowDelivery';
 import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
+import { decideLabel } from '../decisions/entry';
 
 export interface InboxListProps {
   title: string;
@@ -60,6 +61,9 @@ export interface InboxListProps {
    * header's far right while the main sidebar (which has its own) is closed.
    */
   onCompose?: (opener: HTMLElement) => void;
+  /** Decision mode (experimental): the header's "Decide N" while 2 or more decisions wait. 0 or absent: no button. */
+  decideCount?: number;
+  onDecide?: () => void;
   /** What an empty list says (one project whose threads are all archived). Drawn only while no row shows. */
   empty?: ReactNode;
   /**
@@ -473,6 +477,12 @@ export function InboxList(props: InboxListProps) {
         {props.onSearch && (
           <button type="button" className="ib-lhead-search" data-open-search="" aria-label="Search" aria-haspopup="dialog" onClick={(event) => props.onSearch?.(event.currentTarget)}>
             <Icon name="search" size={20} />
+          </button>
+        )}
+        {(props.decideCount ?? 0) > 0 && props.onDecide && (
+          <button type="button" className="ib-lhead-decide" data-decide-head="" aria-haspopup="dialog" onClick={props.onDecide}>
+            <Icon name="todo" size={15} />
+            {decideLabel(props.decideCount ?? 0)}
           </button>
         )}
         {props.onCompose && headerCompose && (

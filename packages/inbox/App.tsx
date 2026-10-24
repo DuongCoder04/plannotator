@@ -19,7 +19,9 @@ import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
-import type { InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import type { InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import { DecisionMode } from './decisions/DecisionMode';
+import { DecisionPill, decideEntryShown } from './decisions/entry';
 import {
   InboxApiError,
   inboxApi,
@@ -398,6 +400,31 @@ function Inbox() {
     storage.setItem(SIDEBAR_OPEN_COOKIE, String(next));
   }, []);
   const [latest, setLatest] = useState<ListModel | null>(null);
+  /**
+   * Decision mode (experimental, approval "inbox-decision-mode"): the
+   * projection while the feature is on, and the sitting (open, or tucked
+   * into its pill behind a thread). Off, nothing of it renders.
+   */
+  const [decisions, setDecisions] = useState<InboxDecision[] | null>(null);
+  const decisionsRef = useRef(decisions);
+  decisionsRef.current = decisions;
+  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null } | null>(null);
+  const [decideLeft, setDecideLeft] = useState(0);
+  const decisionModeOnRef = useRef(false);
+  const questionListeners = useRef(new Set<(question: InboxQuestion) => void>());
+  const subscribeQuestions = useCallback((listener: (question: InboxQuestion) => void) => {
+    questionListeners.current.add(listener);
+    return () => void questionListeners.current.delete(listener);
+  }, []);
+  const refreshDecisions = useCallback(async () => {
+    if (!decisionModeOnRef.current) return;
+    try {
+      const next = await inboxApi.decisions();
+      if (decisionModeOnRef.current) setDecisions(next.decisions);
+    } catch {
+      // Off on the server (another window turned it off): the next settings read says so.
+    }
+  }, []);
   /** The latest list read's sections, for the event stream's `deliveries` (which reads again only while a delivery can move). */
   const latestSectionsRef = useRef<ListModel['sections'] | null>(null);
   latestSectionsRef.current = latest?.sections ?? null;
@@ -546,6 +573,14 @@ function Inbox() {
     // thread open. The one exception to "the list holds still while a thread is open" (settle.ts):
     // the person was away, and the thread notified may not be on screen at all.
     openThread: (threadId) => {
+      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode").
+      const stopped = decisionModeOnRef.current ? decisionsRef.current?.find((d) => d.thread.id === threadId && d.question.stopped !== null) : undefined;
+      if (stopped) {
+        setDecide({ tucked: false, start: stopped.id });
+        void refreshDecisions();
+        void refreshList(true);
+        return;
+      }
       writeRoute({ page: 'inbox', project: null, thread: threadId });
       void refreshList(true);
     },
@@ -870,9 +905,11 @@ function Inbox() {
       unsubscribe = subscribeInboxEvents(first.cursor, {
         onRecord: (event) => {
           observeEvent(event);
+          if (event?.kind === 'question') for (const listener of questionListeners.current) listener(event.question);
           if (timer) clearTimeout(timer);
           timer = setTimeout(() => {
             void refreshList(false).then((next) => next && flushNotifications(next));
+            void refreshDecisions();
             const open = routeRef.current.thread;
             if (open) void refreshThread(open);
             // Picks and comments are unsent work too: the Drafts row follows them.
@@ -916,7 +953,7 @@ function Inbox() {
       if (deliveriesTimer) clearTimeout(deliveriesTimer);
       if (draftsTimer) clearTimeout(draftsTimer);
     };
-  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
+  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
   // Opening a thread: read it, record the look, and update its row in place.
   // While any thread is open the list holds still (settle.ts): the look
@@ -1975,6 +2012,19 @@ function Inbox() {
     }
   };
 
+  // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  const toggleExperimental = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current ? { ...current, experimental: { decision_mode: { on: next, env: current.experimental?.decision_mode.env ?? null } } } : current));
+    try {
+      const saved = await inboxApi.saveExperimental({ decision_mode: next });
+      setSettings((current) => (current ? { ...current, experimental: saved.experimental } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   // "Over your tailnet": saved to config.json and applied at once; the answer carries the address or why not.
   const [tailscaleBusy, setTailscaleBusy] = useState(false);
   const toggleTailscale = async (next: boolean, replaceExposed = false) => {
@@ -2013,6 +2063,22 @@ function Inbox() {
 
   const projects = latest?.projects ?? [];
   const latestSections = latest?.sections ?? [];
+  const latestRows = useMemo(() => new Map((latest?.sections ?? []).flatMap((section) => section.threads).map((row) => [row.thread_id, row] as const)), [latest]);
+  // Decision mode is on only while settings say so; with it off, nothing of it renders and nothing is read.
+  const decisionModeOn = settings?.experimental?.decision_mode.on === true;
+  decisionModeOnRef.current = decisionModeOn;
+  useEffect(() => {
+    if (decisionModeOn) void refreshDecisions();
+    else {
+      setDecisions(null);
+      setDecide(null);
+    }
+  }, [decisionModeOn, refreshDecisions]);
+  const decideCount = decisionModeOn ? (decisions?.length ?? 0) : 0;
+  const openDecide = (start: string | null = null) => {
+    setDecide({ tucked: false, start });
+    void refreshDecisions();
+  };
   // The open thread's row: the list's, else its own read's (an archived thread is not in the list).
   const openThreadRow = thread
     ? (latestSections.flatMap((section) => section.threads).find((row) => row.thread_id === thread.thread_id) ??
@@ -2215,6 +2281,7 @@ function Inbox() {
         context={context}
         error={settingsError}
         onToggleTool={toggleTool}
+        onToggleExperimental={(next) => void toggleExperimental(next)}
         agents={agents}
         onAgents={setAgents}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
@@ -2351,6 +2418,8 @@ function Inbox() {
           onRowAction={rowAction}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
+          decideCount={decideEntryShown(decideCount) ? decideCount : 0}
+          onDecide={() => openDecide()}
           phone={phone}
           empty={
             projectAllArchived(filterProject) ? (
@@ -2502,6 +2571,8 @@ function Inbox() {
             updated={updated}
             onSearch={(opener) => openSearch(opener)}
             onCompose={(opener) => openCompose({}, opener)}
+            decideCount={decideEntryShown(decideCount) ? decideCount : 0}
+            onDecide={() => openDecide()}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => go({ page: 'drafts', project: null, thread: null })}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
@@ -2610,6 +2681,27 @@ function Inbox() {
           onClose={() => closeCompose()}
         />
       )}
+      {decisionModeOn && decide && (
+        <DecisionMode
+          open={!decide.tucked}
+          decisions={decisions}
+          rows={latestRows}
+          start={decide.start}
+          phone={phone}
+          refresh={refreshDecisions}
+          subscribeQuestions={subscribeQuestions}
+          onLeft={setDecideLeft}
+          onTuck={(threadId, fileId) => {
+            setDecide((current) => (current ? { ...current, tucked: true } : current));
+            writeRoute({ page: 'inbox', project: null, thread: threadId, file: fileId ? { id: fileId, version: 'current', focus: null } : null });
+          }}
+          onClose={() => {
+            setDecide(null);
+            void refreshList(true);
+          }}
+        />
+      )}
+      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
       <div className="ib-sr" aria-live="polite" data-inbox-live="">
         {said}
       </div>

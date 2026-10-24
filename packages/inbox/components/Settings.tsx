@@ -39,6 +39,8 @@ export interface SettingsPageProps {
   context: ConnectContext | null;
   error: string | null;
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
+  /** Settings → General → Experimental: decision mode's switch. Absent: no Experimental group. */
+  onToggleExperimental?: (next: boolean) => void;
   /** Over your tailnet: the switch, and whether a change is in flight. */
   onToggleTailscale: (next: boolean, replaceExposed?: boolean) => void;
   tailscaleBusy: boolean;
@@ -174,7 +176,9 @@ function GeneralSection({
   notifyReach,
   onTestNotification,
   sound,
+  onToggleExperimental,
 }: {
+  onToggleExperimental?: (next: boolean) => void;
   settings: SettingsModel;
   permission: NotificationPermission | 'unsupported';
   onToggleNotifications: (next: boolean) => void;
@@ -323,6 +327,33 @@ function GeneralSection({
           Notifications are allowed per address, so a browser on another device asks once there.
         </div>
       </section>
+      {settings.experimental && onToggleExperimental && (
+        <section className="ib-sgroup" data-settings-experimental="" aria-labelledby="ib-g-experimental">
+          <h2 id="ib-g-experimental">Experimental</h2>
+          <div className="ib-card">
+            <div className="ib-prow">
+              <span className="ib-txt">
+                <span className="ib-l" id="ib-decision-mode-label">
+                  Decision mode
+                </span>
+                <span className="ib-desc">
+                  {settings.experimental.decision_mode.env !== null
+                    ? `PLANNOTATOR_EXPERIMENTAL turns it ${settings.experimental.decision_mode.env ? 'on' : 'off'}.`
+                    : 'Answer what agents ask across threads, one decision at a time; each agent gets one reply per thread.'}
+                </span>
+              </span>
+              <span className="ib-ctl">
+                <Switch
+                  on={settings.experimental.decision_mode.on}
+                  labelledBy="ib-decision-mode-label"
+                  disabled={settings.experimental.decision_mode.env !== null}
+                  onClick={() => onToggleExperimental(!settings.experimental!.decision_mode.on)}
+                />
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
     </>
   );
 }
@@ -615,6 +646,7 @@ export function SettingsPage(props: SettingsPageProps) {
             notifyReach={notifyReach}
             onTestNotification={onTestNotification}
             sound={sound}
+            onToggleExperimental={props.onToggleExperimental}
           />
         );
         break;
