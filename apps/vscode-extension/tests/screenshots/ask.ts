@@ -106,6 +106,9 @@ async function main(): Promise<void> {
   // Write a guide of the PR for this branch (the FAKE agent builds it).
   await page.locator('.activitybar [aria-label^="Guided Reviews"]').first().click();
   await sleep(2500);
+  // Every Guides webview renders the state VS Code's host sends it (a blank view means its messages were dropped).
+  const home = await webviewFrame(page, ".pn-home h1", 30_000);
+  console.log(`check dashboard renders: ${(await home.locator(".pn-home h1").textContent()) ?? ""}`);
   await command(page, "Guided Reviews: New Guided Review");
   for (let i = 0; i < 8; i++) {
     await page.locator(".quick-input-widget").waitFor({ state: "visible", timeout: 30_000 }).catch(() => {});
@@ -116,7 +119,8 @@ async function main(): Promise<void> {
     const gen = await webviewFrame(page, ".pn-gen", 1500).catch(() => null);
     if (gen) break;
   }
-  await webviewFrame(page, ".pn-guide", 180_000);
+  const guideTab = await webviewFrame(page, ".pn-guide h1", 180_000);
+  console.log(`check guide view renders: ${(await guideTab.locator(".pn-guide h1").textContent()) ?? ""}`);
   await sleep(2500);
 
   // Chapter 2's first file: deliver.ts.
@@ -151,16 +155,28 @@ async function main(): Promise<void> {
   await shot(page, "2-ask-box");
   await page.keyboard.press("Enter"); // "Why did this change?"
 
+  const chapterView = await webviewFrame(page, ".pn-side h2", 30_000);
+  console.log(`check chapter view renders: ${(await chapterView.locator(".pn-side h2").textContent()) ?? ""}`);
   const working = await webviewFrame(page, ".pn-answer-working", 60_000);
+  console.log(`check answer tab renders (working): ${(await working.locator(".pn-answer-question").textContent()) ?? ""}`);
   await working.locator(".pn-act").nth(3).waitFor({ timeout: 30_000 }).catch(() => {});
   await sleep(1200);
   await shot(page, "3-working");
 
   const answer = await webviewFrame(page, ".pn-answer-frame", 90_000);
   await sleep(3000);
-  void answer;
+  const drawn = await webviewFrame(page, "svg .box", 20_000);
+  console.log(`check answer page drawn: ${await drawn.locator("svg .box").count()} boxes; ${await answer.locator(".pn-answer-title").textContent()}`);
   await page.mouse.move(1590, 950);
   await shot(page, "4-answer");
+
+  // The agent's page forges the tab's state from inside its frame: the tab must not change.
+  await drawn.evaluate(() => {
+    const forged = { mode: "generating", id: "forged", status: "running", statusMessage: null, kicker: "", title: "FORGED", sub: "", agent: "x", modelEffort: "", startedAt: 0, endedAt: null, cost: null, activity: [], chapters: [], unplaced: [], left: [], summary: "", savedGuideId: null, signIn: null, memoryOnly: false, pendingPermissions: [{ id: 1, title: "Run rm -rf ~", kind: "execute", target: null, options: [{ optionId: "a", name: "Allow", kind: "allow_once" }] }], approvals: { auto: false, mode: null }, offerAutoApprove: true, bottlenecks: [] };
+    for (const w of [window.parent, window.top]) w?.postMessage({ type: "state", state: forged }, "*");
+  });
+  await sleep(1500);
+  console.log(`check forged state ignored: answer=${await answer.locator(".pn-answer").count()} approval=${await answer.locator(".pn-approval").count()} forgedTitle=${await answer.locator("text=FORGED").count()}`);
 
   // The chapter view's ask box and answers.
   const chapter = await webviewFrame(page, ".pn-answers", 30_000);
