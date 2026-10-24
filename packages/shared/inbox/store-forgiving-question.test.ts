@@ -11,7 +11,7 @@ import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxAuthor, InboxQuestionRecord } from "@plannotator/core/inbox-types";
-import { parseInboxQuestionBlocks } from "@plannotator/core/inbox-questions";
+import { checkInboxAnswer, parseInboxQuestionBlocks } from "@plannotator/core/inbox-questions";
 import { canonicalQuestionAnswer, parseQuestionBlock, recommendedQuestionAnswer } from "@plannotator/core/question-block";
 import { InboxStore } from "./store";
 
@@ -201,5 +201,47 @@ describe("a recommendation that names no choice: the card's recommended row", ()
     const sent = store.sendReply(message.id, { idempotency_key: "k-row", questions: [{ key: q.key, revision: 1 }] });
     expect(sent.reply!.body).toContain("SQLite on the box");
     expect(sent.reply!.body).toContain("(your recommendation)");
+  });
+});
+
+describe("the legacy Context: alias on a stored record", () => {
+  const record = (labels: string[], aliases: (string[] | null)[] = labels.map(() => null)) => ({
+    key: "q-11111111",
+    kind: "single" as const,
+    prompt: "Pick?",
+    parsed: {
+      context: null,
+      choices: labels.map((label) => ({ label, description: null, recommended: false, settled: false })),
+      aliases,
+      recommendation: null,
+      suggested_text: null,
+      line: 1,
+    },
+  });
+  const pick = (r: ReturnType<typeof record>, label: string) =>
+    checkInboxAnswer(r, { v: 1, key: r.key, kind: "single", prompt: r.prompt, selected: [label] }, "answer");
+
+  test("every split point: a bullet whose own words hold \"context:\" still answers to the card's label", () => {
+    // The bullet read `- Keep context: the thread` and a `Context:` line followed.
+    const r = record(["Unpin it", "Keep context: the thread Context: an archived thread."]);
+    const ok = pick(r, "Keep context: the thread");
+    expect(ok.ok && ok.answer.selected).toEqual(["Keep context: the thread Context: an archived thread."]);
+    // The first split (`Keep`) names it too: no other choice has it.
+    const first = pick(r, "Keep");
+    expect(first.ok && first.answer.selected).toEqual(["Keep context: the thread Context: an archived thread."]);
+  });
+
+  test("a head another choice already has is not added", () => {
+    const r = record(["Keep it", "Keep it Context: an archived thread."]);
+    const ok = pick(r, "Keep it");
+    expect(ok.ok && ok.answer.selected).toEqual(["Keep it"]);
+  });
+
+  test("a head two choices would share is added to neither", () => {
+    const r = record(["Keep it Context: one.", "Keep it Context: two.", "Unpin it"]);
+    const refused = pick(r, "Keep it");
+    expect(refused.ok).toBe(false);
+    const one = pick(r, "Keep it Context: one.");
+    expect(one.ok && one.answer.selected).toEqual(["Keep it Context: one."]);
   });
 });

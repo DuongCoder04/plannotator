@@ -299,6 +299,17 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   // the click filled in, never to the page.
   const focusAfterAcceptRef = useRef(false);
   const lastPickRef = useRef<{ label: string; before: QuestionAnswer | undefined; at: number } | null>(null);
+  // Who set the "Other…" answer while this card was open: the recommended
+  // row (its pick, or Accept recommended) or the Other field. null: neither
+  // (an answer the host stored): an Other answer that is exactly the agent's
+  // text then reads as the row, unless the Other field has focus. Typing
+  // never turns into the row, so "Yes, but slower" stays in the field when
+  // the recommendation is "Yes".
+  const [otherBy, setOtherBy] = useState<'row' | 'field' | null>(null);
+  const [otherFocused, setOtherFocused] = useState(false);
+  // Pick any: the reviewer's own Other text the recommended row replaced when
+  // ticked, put back when it is unticked (the answer has one Other field).
+  const replacedOtherRef = useRef<string | null>(null);
 
   const inline = (text: string) => (
     <InlineMarkdown
@@ -376,13 +387,26 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     lastPickRef.current = { label: SUGGESTION_ROW, before: answer, at: now() };
     const { skipped: _s, other: _o, ...rest } = base;
     if (question.kind === 'multi') {
-      commit({ ...rest, selected, ...(checked ? { other: text } : {}) });
+      if (checked) {
+        if (storedOther.trim() && !suggestionPicked) replacedOtherRef.current = storedOther;
+        setOtherBy('row');
+        commit({ ...rest, selected, other: text });
+      } else {
+        const back = replacedOtherRef.current;
+        replacedOtherRef.current = null;
+        setOtherBy(back ? 'field' : null);
+        commit({ ...rest, selected, ...(back ? { other: back } : {}) });
+      }
     } else if (checked) {
+      replacedOtherRef.current = null;
+      setOtherBy('row');
       commit({ ...rest, selected: [], other: text });
     }
   };
 
   const setOther = (value: string) => {
+    setOtherBy('field');
+    replacedOtherRef.current = null;
     const { skipped: _s, other: _o, ...rest } = base;
     const keepSelected = question.kind === 'multi' ? selected : value.trim() ? [] : rest.selected;
     commit({ ...rest, selected: keepSelected, ...(value ? { other: value } : {}) });
@@ -411,6 +435,8 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   const acceptRecommended = () => {
     const next = recommendedQuestionAnswer(indexed, base);
     if (!next) return;
+    replacedOtherRef.current = null;
+    if (next.other) setOtherBy('row');
     focusAfterAcceptRef.current = true;
     commit(next);
   };
@@ -475,7 +501,10 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   // The recommended row holds the "Other…" answer when it is the agent's
   // text; the Other field is then empty (typing there replaces it).
   const suggestionRow = question.kind !== 'text' && !!question.suggestedText;
-  const suggestionPicked = suggestionRow && storedOther.trim() !== '' && storedOther.trim() === question.suggestedText!.trim();
+  const suggestionPicked = suggestionRow
+    && storedOther.trim() !== ''
+    && storedOther.trim() === question.suggestedText!.trim()
+    && (otherBy === 'row' || (otherBy === null && !otherFocused));
   const other = suggestionPicked ? '' : storedOther;
   const otherOn = other.trim() !== '';
 
@@ -744,6 +773,13 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                   type="text"
                   value={other}
                   onChange={(e) => setOther(e.target.value)}
+                  onFocus={() => {
+                    // A stored answer that reads as the row stays the row
+                    // while the reviewer types here (typing replaces it).
+                    if (otherBy === null && suggestionPicked) setOtherBy('row');
+                    setOtherFocused(true);
+                  }}
+                  onBlur={() => setOtherFocused(false)}
                   disabled={readOnly}
                   placeholder={readOnly ? '' : 'Other…'}
                   aria-label={number > 0 ? `Other answer to question ${number}` : 'Other answer'}

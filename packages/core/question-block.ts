@@ -1218,6 +1218,9 @@ export interface RecommendedAnswerContext {
    *  that choice: an Inbox record stored through 0.28.26 kept the suggestion
    *  and no recommended choice. */
   choiceLabels?: readonly string[];
+  /** Each choice's other names, parallel to `choiceLabels` (`QuestionChoice.aliases`),
+   *  read with the label as `matchRecommendation` reads them. */
+  choiceAliases?: ReadonlyArray<readonly string[] | undefined>;
 }
 
 /** Whether an answer is exactly what the question recommended. */
@@ -1242,7 +1245,8 @@ export const isRecommendedQuestionAnswer = (
   if (recommendedLabels.length > 0) return sameSet(recommendedLabels) || otherIs(context.recommendation);
   if (otherIs(suggestedText)) return true;
   if (suggestedText && context.choiceLabels) {
-    const head = recommendationHeadChoice(suggestedText, context.choiceLabels);
+    const names = context.choiceLabels.map((label, i) => [label, ...(context.choiceAliases?.[i] ?? [])]);
+    const head = recommendationHeadChoice(suggestedText, names);
     if (head !== -1) return sameSet([context.choiceLabels[head]]);
   }
   return false;
@@ -1319,6 +1323,7 @@ export interface QuestionExportItem {
    *  `RecommendedAnswerContext`. Absent reads as unknown. */
   recommendation?: string;
   choiceLabels?: string[];
+  choiceAliases?: (string[] | undefined)[];
   /** The agent marked a choice `[x]`: decided, not waiting on the reviewer. */
   settled: boolean;
   /** The `[x]` choice labels. Absent reads as none. */
@@ -1339,6 +1344,7 @@ export const questionExportItems = (indexed: ReadonlyArray<IndexedQuestion>): Qu
     ...(question.suggestedText ? { suggestedText: question.suggestedText } : {}),
     ...(question.recommendation ? { recommendation: question.recommendation } : {}),
     choiceLabels: question.choices.map((c) => c.label),
+    choiceAliases: question.choices.map((c) => c.aliases),
     settled: question.choices.some((c) => c.settled),
     settledLabels: question.choices.filter((c) => c.settled).map((c) => c.label),
     ...(questionChoicesNeedCanonicalLabels(question.choices) ? { choices: question.choices.map(({ label, aliases }) => ({ label, ...(aliases ? { aliases } : {}) })) } : {}),
@@ -1408,6 +1414,7 @@ export const formatQuestionAnswersSection = (
       recommended: isQuestionAnswered(a) && isRecommendedQuestionAnswer(a, q.recommendedLabels, q.suggestedText, {
         recommendation: q.recommendation,
         choiceLabels: q.choiceLabels,
+        choiceAliases: q.choiceAliases,
       }),
       ...(settledStands(q, a) ? { settledLabels: q.settledLabels ?? [] } : {}),
     });

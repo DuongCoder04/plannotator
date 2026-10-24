@@ -977,6 +977,14 @@ describe("review of #2139", () => {
     expect(formatQuestionAnswersSection([two], [pick(["Unpin it: now"])])).not.toContain("(your recommendation)");
   });
 
+  test("(your recommendation): the suggestion's head is matched against each choice's aliases too", () => {
+    // The stored label is the old one; its alias is what the suggestion begins.
+    const item = { key: "q-33333333", number: 1, prompt: "Pin?", recommendedLabels: [], suggestedText: "Unpin it", choiceLabels: ["Drop it", "Keep it pinned"], choiceAliases: [["Unpin it: the toast says"], undefined], settled: false };
+    const pick: QuestionAnswer = { v: 1, key: item.key, kind: "single", prompt: item.prompt, selected: ["Drop it"] };
+    expect(formatQuestionAnswersSection([item], [pick])).toContain("(your recommendation)");
+    expect(formatQuestionAnswersSection([{ ...item, choiceAliases: undefined }], [pick])).not.toContain("(your recommendation)");
+  });
+
   test("the recommended row's answer (the suggestion as Other) exports as the recommendation", () => {
     const item = { key: "q-22222222", number: 1, prompt: "Store?", recommendedLabels: [], suggestedText: "SQLite on the box", recommendation: "SQLite on the box", choiceLabels: ["Redis", "Memcached"], settled: false };
     const other: QuestionAnswer = { v: 1, key: item.key, kind: "single", prompt: item.prompt, selected: [], other: "SQLite on the box" };

@@ -567,6 +567,60 @@ describe('QuestionBlock', () => {
     expect(answerOf(0)?.other).toBeUndefined();
   });
 
+  test.skipIf(!hasDom)('typing in Other, one character at a time, never turns into the recommended row', async () => {
+    // The re-review of #2139: with `Recommended: Yes` naming no choice, typing
+    // "Yes, but slower" blanked the field at "Yes" and stored ", but slower".
+    const md = [':::question', 'Pick?', '- [ ] Redis', '- [ ] No', 'Recommended: Yes', ':::'].join('\n');
+    const el = await mount(<Harness markdown={md} />);
+    const otherField = () => cards(el)[0].querySelector<HTMLInputElement>('input[aria-label^="Other answer"]')!;
+    const row = () => cards(el)[0].querySelector<HTMLInputElement>('label[data-question-suggested] input')!;
+    await act(async () => otherField().focus());
+    for (const ch of 'Yes, but slower') {
+      await type(otherField(), otherField().value + ch);
+      expect(row().checked).toBe(false);
+    }
+    expect(otherField().value).toBe('Yes, but slower');
+    expect(answerOf(0)).toMatchObject({ selected: [], other: 'Yes, but slower' });
+    // Typed whole, the agent's own words stay the reviewer's Other answer too.
+    for (let i = 0; i < ', but slower'.length; i++) await type(otherField(), otherField().value.slice(0, -1));
+    expect(otherField().value).toBe('Yes');
+    expect(row().checked).toBe(false);
+    expect(answerOf(0)?.other).toBe('Yes');
+  });
+
+  test.skipIf(!hasDom)('a stored answer that is the recommended text reads as the row, and stays it when Other is focused', async () => {
+    const [q] = indexQuestionBlocks(parseMarkdownToBlocks(UNMATCHED));
+    const initial = upsertQuestionAnswerAnnotation([], q.blockId, { v: 1, key: q.question.key, kind: 'single', prompt: q.question.prompt, selected: [], other: 'SQLite on the box' }, q.question.key);
+    const el = await mount(<Harness markdown={UNMATCHED} initial={initial} />);
+    const otherField = () => cards(el)[0].querySelector<HTMLInputElement>('input[aria-label^="Other answer"]')!;
+    const row = () => cards(el)[0].querySelector<HTMLInputElement>('label[data-question-suggested] input')!;
+    expect(row().checked).toBe(true);
+    expect(otherField().value).toBe('');
+    await act(async () => otherField().focus());
+    expect(row().checked).toBe(true);
+    expect(otherField().value).toBe('');
+    await type(otherField(), 'P');
+    expect(row().checked).toBe(false);
+    expect(answerOf(0)).toMatchObject({ selected: [], other: 'P' });
+  });
+
+  test.skipIf(!hasDom)('pick any: ticking the recommended row keeps the typed Other text, and unticking puts it back', async () => {
+    const multi = [':::question-multi', 'Which stores?', '- [ ] Redis', '- [ ] Memcached', 'Recommended: SQLite on the box', ':::'].join('\n');
+    const el = await mount(<Harness markdown={multi} />);
+    const card = () => cards(el)[0];
+    const row = () => card().querySelector<HTMLLabelElement>('label[data-question-suggested]')!;
+    const otherField = () => card().querySelector<HTMLInputElement>('input[aria-label^="Other answer"]')!;
+    await click(rowText(card(), 'Redis'));
+    await type(otherField(), 'Postgres with a long reason');
+    await click(row().querySelector('span')!);
+    expect(answerOf(0)).toMatchObject({ selected: ['Redis'], other: 'SQLite on the box' });
+    expect(otherField().value).toBe('');
+    await click(row().querySelector('span')!);
+    expect(answerOf(0)).toMatchObject({ selected: ['Redis'], other: 'Postgres with a long reason' });
+    expect(otherField().value).toBe('Postgres with a long reason');
+    expect(row().querySelector('input')!.checked).toBe(false);
+  });
+
   test.skipIf(!hasDom)('a read-only card shows the recommended row, checked when the answer was it', async () => {
     const [q] = indexQuestionBlocks(parseMarkdownToBlocks(UNMATCHED));
     const initial = upsertQuestionAnswerAnnotation([], q.blockId, { v: 1, key: q.question.key, kind: 'single', prompt: q.question.prompt, selected: [], other: 'SQLite on the box' }, q.question.key);
