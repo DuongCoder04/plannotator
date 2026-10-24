@@ -1751,6 +1751,10 @@ if (args[0] === "sessions") {
     },
   });
 
+  if (server.liveProxyPort !== undefined) {
+    console.error(`Live app: ${absolutePath} (proxy port ${server.liveProxyPort})`);
+  }
+
   registerCliSession({
     pid: process.pid,
     port: server.port,

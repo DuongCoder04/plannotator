@@ -109,6 +109,7 @@
     "./guide-format": "./guide-format.ts",
     "./guide-viewer-manifest": "./guide-viewer-manifest.ts",
     "./guide-format-fixtures": "./guide-format-fixtures.ts",
+    "./live-proxy-port": "./live-proxy-port.ts",
     "./live-proxy-core": "./live-proxy-core.ts",
     "./loopback-host": "./loopback-host.ts",
     "./request-origin": "./request-origin.ts",

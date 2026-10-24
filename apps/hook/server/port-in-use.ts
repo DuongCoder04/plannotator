@@ -1,3 +1,4 @@
+import { LiveProxyPortInUseError } from "@plannotator/shared/live-proxy-port";
 import { PortInUseError } from "@plannotator/server/remote";
 
 /**
@@ -15,6 +16,7 @@ export function exitOnPortInUse<A extends unknown[], R>(
     try {
       return await start(...args);
     } catch (error) {
+      if (error instanceof LiveProxyPortInUseError) exit(error.message);
       if (error instanceof PortInUseError) exit(error.cliMessage);
       throw error;
     }
