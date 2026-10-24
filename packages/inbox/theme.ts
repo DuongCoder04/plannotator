@@ -14,7 +14,7 @@
 
 import { useCallback } from 'react';
 import { useTheme } from '@plannotator/ui/components/ThemeProvider';
-import { useThemePaletteHalves, type ThemePaletteHalves } from '@plannotator/ui/components/ThemeTab';
+import { useThemePaletteHalves, type ThemePaletteHalves } from '@plannotator/ui/hooks/useThemePaletteHalves';
 import { themeSupportsHalf, type ThemeHalf } from '@plannotator/ui/utils/themeRegistry';
 import { configStore, type ServerSyncFn } from '@plannotator/ui/config';
 import type { Mode } from '@plannotator/ui/theme-modes';
@@ -30,11 +30,15 @@ import { inboxApi, type InboxThemeConfig } from './api';
  * whole theme pair, but this tab's copy of the parts the person did not touch
  * can be days old (a palette picked in plan review since this tab loaded) or
  * the defaults (a page with no cookies): sending them would undo the person's
- * choices. So only the fields marked by `choose` (the mode) and
- * `choosePalette` (one half) go; with none marked (a write the Inbox did not
- * make), only the mode, as before palettes could be picked here.
+ * choices. So only the fields marked by `useInboxTheme().choose` (the mode)
+ * and `useInboxPalettes().choose` (one half) go; with none marked (a write the
+ * Inbox did not make), only the mode, as before palettes could be picked here.
+ * These marks are the POST still to send, cleared when it goes; what the
+ * person chose on this page at all is `chosenFields`, below.
  */
-const changedThemeFields = new Set<'mode' | ThemeHalf>();
+type ThemeField = 'mode' | ThemeHalf;
+const THEME_FIELDS: readonly ThemeField[] = ['mode', 'light', 'dark'];
+const changedThemeFields = new Set<ThemeField>();
 
 export const inboxServerSync: ServerSyncFn = (payload) => {
   const theme = payload.theme as InboxThemeConfig | undefined;
@@ -59,23 +63,47 @@ export const inboxServerSync: ServerSyncFn = (payload) => {
 };
 
 let adopted = false;
-let chosenHere = false;
+/** The parts of the theme the person chose on this page (kept for the page's life, unlike the POST marks). */
+const chosenFields = new Set<ThemeField>();
+
+/** Mark a part of the theme as the person's choice on this page, and as still to send. */
+function markChosen(field: ThemeField): void {
+  chosenFields.add(field);
+  changedThemeFields.add(field);
+}
 
 /**
  * config.json's `theme` wins over the cookie, as it does in plan review, but
- * only from the first settings read, and never over a choice made in this
- * page before that read answered.
+ * only from the first settings read, and per field: a part the person chose
+ * on this page before that read answered (the mode, or one half's palette)
+ * keeps the page's value, and every other part comes from config.json. So a
+ * mode flipped before the read still takes the palettes plan review saved.
  */
 export function adoptSavedTheme(theme: InboxThemeConfig | null | undefined): void {
   if (adopted) return;
   adopted = true;
-  if (theme && !chosenHere) configStore.init({ theme });
+  if (!theme) return;
+  if (chosenFields.size === 0) {
+    configStore.init({ theme });
+    return;
+  }
+  // Nothing in config.json the person did not already choose here: nothing to adopt.
+  if (!THEME_FIELDS.some((field) => theme[field] !== undefined && !chosenFields.has(field))) return;
+  const current = configStore.get('themePair');
+  const merged: InboxThemeConfig = { ...theme };
+  for (const field of chosenFields) {
+    if (field === 'mode') merged.mode = current.mode;
+    else merged[field] = current[field];
+  }
+  configStore.init({ theme: merged });
+  // init retracts a theme write still queued; the person's pick is still owed to the server (its marks are set), so queue it again.
+  if (changedThemeFields.size > 0) configStore.set('themePair', configStore.get('themePair'));
 }
 
 /** Tests only: forget the first settings read and any choice, as a fresh page would. */
 export function resetInboxThemeForTests(): void {
   adopted = false;
-  chosenHere = false;
+  chosenFields.clear();
   changedThemeFields.clear();
 }
 
@@ -105,8 +133,7 @@ export function useInboxTheme(): InboxTheme {
   const { mode, resolvedMode, setMode } = useTheme();
   const choose = useCallback(
     (next: Mode) => {
-      chosenHere = true;
-      changedThemeFields.add('mode');
+      markChosen('mode');
       landInstantlyIfReducedMotion();
       setMode(next);
     },
@@ -134,8 +161,7 @@ export function useInboxPalettes(): InboxPalettes {
     (half: ThemeHalf, id: string) => {
       // A palette that cannot draw this half is refused by the provider, so nothing would be written.
       if (!themeSupportsHalf(id, half)) return;
-      chosenHere = true;
-      changedThemeFields.add(half);
+      markChosen(half);
       landInstantlyIfReducedMotion();
       assign(half, id);
     },

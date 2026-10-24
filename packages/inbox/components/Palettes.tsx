@@ -1,17 +1,21 @@
 /**
  * Settings → General → Appearance → Colors: the palette for the light half
  * and the dark half, the same choices plan review's Theme tab offers
- * (ThemeTab's useThemePaletteHalves, over the palette registry, so a palette
+ * (@plannotator/ui's useThemePaletteHalves, over the palette registry, so a palette
  * added there shows here by itself). A pick applies at once, is kept in the
  * `plannotator-theme` cookie, and only that half goes to config.json `theme`
  * (useInboxPalettes in theme.ts), so plan review opens on it too.
  *
- * Two radio groups: which half (Light / Dark, starting on the one on screen),
- * then that half's palettes as tiles. Native radios, so arrows move the pick
- * and Tab leaves the group; no new shortcut.
+ * A tab list picks which half ("Light half" / "Dark half", starting on the one
+ * on screen; ← → / Home / End move and select, one tab stop), and each tab
+ * controls the tile list: that half's palettes as a native radio group
+ * ("Palettes for the light half"): one tab stop, the arrows step the pick
+ * through the list (onTileKey, so the order is the list's in every browser),
+ * and Tab leaves the group. The row's "Colors" label names the tab list; no two controls share a
+ * name. No new shortcut.
  */
 
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, type KeyboardEvent } from 'react';
 import { paletteSwatchColors } from '@plannotator/ui/components/ThemeTab';
 import type { ThemeHalf } from '@plannotator/ui/utils/themeRegistry';
 import { Icon } from '../icons';
@@ -22,9 +26,10 @@ const HALVES: { id: ThemeHalf; label: string; icon: 'sun' | 'moon' }[] = [
   { id: 'dark', label: 'Dark', icon: 'moon' },
 ];
 
+const PALETTE_LIST_ID = 'ib-palette-list';
+
 export function PaletteRow() {
   const { half, setHalf, pair, themes, nameOf, choose, shown } = useInboxPalettes();
-  const halfLabel = half === 'light' ? 'Light' : 'Dark';
   const box = useRef<HTMLDivElement>(null);
   // The chosen palette in view inside the tiles' own box (on a desktop it scrolls), never scrolling the page.
   useLayoutEffect(() => {
@@ -37,6 +42,47 @@ export function PaletteRow() {
       el.scrollTop = Math.max(0, top - (el.clientHeight - on.offsetHeight) / 2);
     }
   }, [half, pair[half]]);
+  // The tab list's keys (automatic activation): the arrows, Home and End select the other half and focus it.
+  const onTabKey = (event: KeyboardEvent<HTMLElement>) => {
+    const index = HALVES.findIndex((choice) => choice.id === half);
+    const next =
+      event.key === 'ArrowRight' || event.key === 'ArrowDown'
+        ? (index + 1) % HALVES.length
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+          ? (index - 1 + HALVES.length) % HALVES.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? HALVES.length - 1
+              : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    const id = HALVES[next]!.id;
+    setHalf(id);
+    document.getElementById(`ib-palette-tab-${id}`)?.focus();
+  };
+  // The tiles' keys: the arrows step through the palettes in order (wrapping), Home and End go to the ends, each a pick,
+  // as native radios do. Handled here so the step is the list's order in every browser, never twice.
+  const onTileKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const index = themes.findIndex((theme) => theme.id === pair[half]);
+    const last = themes.length - 1;
+    const next =
+      event.key === 'ArrowRight' || event.key === 'ArrowDown'
+        ? index < 0 || index === last ? 0 : index + 1
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+          ? index <= 0 ? last : index - 1
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? last
+              : -1;
+    if (next < 0 || last < 0) return;
+    event.preventDefault();
+    const id = themes[next]!.id;
+    choose(half, id);
+    box.current?.querySelector<HTMLInputElement>(`.ib-pal[data-palette="${id}"] input`)?.focus();
+  };
   return (
     <div className="ib-palrow" data-settings-palettes={half}>
       <div className="ib-prow ib-palhead">
@@ -49,25 +95,41 @@ export function PaletteRow() {
           </span>
         </span>
         <span className="ib-ctl">
-          <span className="ib-seg" role="radiogroup" aria-label="Choose colors for">
-            {HALVES.map((choice) => (
-              <label key={choice.id} className="ib-seg-o" data-on={half === choice.id ? '' : undefined}>
-                <input
-                  type="radio"
-                  name="ib-palette-half"
-                  value={choice.id}
-                  checked={half === choice.id}
-                  aria-label={`${choice.label} colors`}
-                  onChange={() => setHalf(choice.id)}
-                />
-                <Icon name={choice.icon} size={14} />
-                {choice.label}
-              </label>
-            ))}
+          <span className="ib-seg" role="tablist" aria-labelledby="ib-colors-label" onKeyDown={onTabKey}>
+            {HALVES.map((choice) => {
+              const on = half === choice.id;
+              return (
+                <button
+                  key={choice.id}
+                  type="button"
+                  role="tab"
+                  id={`ib-palette-tab-${choice.id}`}
+                  className="ib-seg-o"
+                  data-on={on ? '' : undefined}
+                  data-half={choice.id}
+                  aria-selected={on}
+                  aria-controls={PALETTE_LIST_ID}
+                  aria-label={`${choice.label} half`}
+                  tabIndex={on ? 0 : -1}
+                  onClick={() => setHalf(choice.id)}
+                >
+                  <Icon name={choice.icon} size={14} />
+                  {choice.label}
+                </button>
+              );
+            })}
           </span>
         </span>
       </div>
-      <div ref={box} className="ib-pals" role="radiogroup" aria-label={`${halfLabel} colors`} data-palette-half={half}>
+      <div
+        ref={box}
+        id={PALETTE_LIST_ID}
+        className="ib-pals"
+        role="radiogroup"
+        aria-label={`Palettes for the ${half} half`}
+        data-palette-half={half}
+        onKeyDown={onTileKey}
+      >
         {themes.map((theme) => {
           const on = pair[half] === theme.id;
           return (

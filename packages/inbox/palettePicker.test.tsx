@@ -49,7 +49,6 @@ let savedEventSource: unknown;
 let savedMatchMedia: typeof window.matchMedia;
 /** What this computer prefers, as the stubbed `matchMedia` answers it. */
 let osLight = false;
-let reducedMotion = false;
 /** Whether the window is a phone, as the stubbed `matchMedia` answers PHONE_QUERY. */
 let phone = false;
 /** While set, the window's settings read waits for it (a page whose first read has not answered yet). */
@@ -132,7 +131,6 @@ afterAll(async () => {
 beforeEach(() => {
   if (!hasDom) return;
   osLight = false;
-  reducedMotion = false;
   phone = false;
   settingsGate = null;
   posted = [];
@@ -153,7 +151,7 @@ beforeEach(() => {
   savedMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) => ({
     media: query,
-    matches: query.includes('max-width: 767px') ? phone : query.includes('prefers-color-scheme: light') ? osLight : query.includes('prefers-reduced-motion: reduce') ? reducedMotion : false,
+    matches: query.includes('max-width: 767px') ? phone : query.includes('prefers-color-scheme: light') ? osLight : false,
     onchange: null,
     addEventListener() {},
     removeEventListener() {},
@@ -217,7 +215,14 @@ async function reload(hash = '') {
 const shownLight = () => document.documentElement.classList.contains('light');
 const shownPalette = () => [...document.documentElement.classList].find((c) => c.startsWith('theme-'))?.slice('theme-'.length);
 const tile = (el: ParentNode, id: string) => el.querySelector(`.ib-pals [data-palette="${id}"] input`) as HTMLInputElement | null;
-const half = (el: ParentNode, id: 'light' | 'dark') => el.querySelector(`input[name="ib-palette-half"][value="${id}"]`) as HTMLInputElement;
+const half = (el: ParentNode, id: 'light' | 'dark') => el.querySelector(`[data-settings-palettes] [role="tab"][data-half="${id}"]`) as HTMLButtonElement;
+const tileList = (el: ParentNode) => el.querySelector('.ib-pals') as HTMLElement;
+const checkedTile = (el: ParentNode) => (el.querySelector('.ib-pals input:checked') as HTMLInputElement | null)?.value;
+function press(target: Element, key: string) {
+  act(() => {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  });
+}
 const themePosts = () => posted.filter((body) => 'theme' in body).map((body) => body.theme);
 
 async function openColors(hash = '#settings') {
@@ -308,4 +313,172 @@ test.skipIf(!hasDom)("a phone's list of sections says the mode and, once one is 
   await until(() => general() === 'Dark', 'the General row to say Dark');
   act(() => configStore.set('themePair', { mode: 'dark', light: 'plannotator', dark: 'tokyo-night' }));
   await until(() => general() === 'Dark · Tokyo Night', 'the General row to name the palette');
+});
+
+test.skipIf(!hasDom)('the controls have names of their own: Colors, Light half / Dark half, and the palettes of the half shown', async () => {
+  startPage('dark');
+  writeThemeOnDisk(undefined);
+  const el = await openColors();
+  const tabs = el.querySelector('[data-settings-palettes] [role="tablist"]')!;
+  expect(tabs.getAttribute('aria-labelledby')).toBe('ib-colors-label');
+  expect(el.querySelector('#ib-colors-label')?.textContent).toBe('Colors');
+  expect(half(el, 'light').getAttribute('aria-label')).toBe('Light half');
+  expect(half(el, 'dark').getAttribute('aria-label')).toBe('Dark half');
+  expect(half(el, 'dark').getAttribute('aria-selected')).toBe('true');
+  expect(half(el, 'light').getAttribute('aria-selected')).toBe('false');
+  // One tab stop, and each tab controls the tile list.
+  expect(half(el, 'dark').tabIndex).toBe(0);
+  expect(half(el, 'light').tabIndex).toBe(-1);
+  const list = tileList(el);
+  expect(half(el, 'light').getAttribute('aria-controls')).toBe(list.id);
+  expect(half(el, 'dark').getAttribute('aria-controls')).toBe(list.id);
+  expect(list.getAttribute('role')).toBe('radiogroup');
+  expect(list.getAttribute('aria-label')).toBe('Palettes for the dark half');
+  act(() => half(el, 'light').click());
+  expect(tileList(el).getAttribute('aria-label')).toBe('Palettes for the light half');
+
+  // No two named controls on the Appearance card share a name (the Theme row's own Light / Dark included).
+  const card = el.querySelector('[data-settings-theme] .ib-card')!;
+  const nameOf = (node: Element) => {
+    const label = node.getAttribute('aria-label');
+    if (label) return label;
+    const by = node.getAttribute('aria-labelledby');
+    if (by) return by.split(' ').map((id) => el.querySelector(`#${id}`)?.textContent ?? '').join(' ');
+    return (node.closest('label')?.textContent ?? node.textContent ?? '').trim();
+  };
+  const named = [...card.querySelectorAll('[role="radiogroup"], [role="tablist"], [role="tab"], input[name="ib-theme"]')].map(nameOf);
+  expect(new Set(named).size).toBe(named.length);
+});
+
+test.skipIf(!hasDom)('the arrows move between the halves and between the tiles, each step a pick', async () => {
+  startPage('dark');
+  writeThemeOnDisk(undefined);
+  const el = await openColors();
+  // The tabs: Right / Left / Home / End select and focus.
+  press(half(el, 'dark'), 'ArrowRight');
+  expect(half(el, 'light').getAttribute('aria-selected')).toBe('true');
+  expect(document.activeElement).toBe(half(el, 'light'));
+  expect(tileList(el).getAttribute('data-palette-half')).toBe('light');
+  press(half(el, 'light'), 'End');
+  expect(half(el, 'dark').getAttribute('aria-selected')).toBe('true');
+  expect(document.activeElement).toBe(half(el, 'dark'));
+
+  // The tiles, in the list's order.
+  const ids = [...tileList(el).querySelectorAll<HTMLInputElement>('input')].map((input) => input.value);
+  expect(checkedTile(el)).toBe('plannotator');
+  const start = ids.indexOf('plannotator');
+  press(tile(el, 'plannotator')!, 'ArrowDown');
+  expect(checkedTile(el)).toBe(ids[start + 1]);
+  expect(document.activeElement).toBe(tile(el, ids[start + 1]!));
+  expect(shownPalette()).toBe(ids[start + 1]);
+  press(tile(el, ids[start + 1]!)!, 'ArrowLeft');
+  expect(checkedTile(el)).toBe('plannotator');
+  press(tile(el, 'plannotator')!, 'End');
+  expect(checkedTile(el)).toBe(ids[ids.length - 1]);
+  // Past the end it wraps to the first, as native radios do.
+  press(tile(el, ids[ids.length - 1]!)!, 'ArrowRight');
+  expect(checkedTile(el)).toBe(ids[0]);
+  press(tile(el, ids[0]!)!, 'Home');
+  expect(checkedTile(el)).toBe(ids[0]);
+  // A chord is not a step.
+  act(() => {
+    tile(el, ids[0]!)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', metaKey: true, bubbles: true, cancelable: true }));
+  });
+  expect(checkedTile(el)).toBe(ids[0]);
+  await until(() => themeOnDisk()?.dark === ids[0], 'config.json to hold the last pick');
+});
+
+test.skipIf(!hasDom)('the tile box scrolls to the chosen tile, never the page', async () => {
+  startPage('dark');
+  writeThemeOnDisk(undefined);
+  const el = await openColors();
+  const list = tileList(el);
+  // happy-dom lays nothing out: give the box and its tiles a desktop's geometry (a 120 px box, 40 px a tile).
+  let scrollTop = 0;
+  Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 120 });
+  Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 40 * list.children.length });
+  Object.defineProperty(list, 'scrollTop', { configurable: true, get: () => scrollTop, set: (v: number) => (scrollTop = v) });
+  const proto = HTMLElement.prototype;
+  const savedTop = Object.getOwnPropertyDescriptor(proto, 'offsetTop')!;
+  const savedHeight = Object.getOwnPropertyDescriptor(proto, 'offsetHeight')!;
+  const indexIn = (node: HTMLElement) => [...(node.parentElement?.children ?? [])].indexOf(node);
+  Object.defineProperty(proto, 'offsetTop', { configurable: true, get(this: HTMLElement) { return this.classList.contains('ib-pal') ? indexIn(this) * 40 : savedTop.get!.call(this); } });
+  Object.defineProperty(proto, 'offsetHeight', { configurable: true, get(this: HTMLElement) { return this.classList.contains('ib-pal') ? 38 : savedHeight.get!.call(this); } });
+  try {
+    const ids = [...list.querySelectorAll<HTMLInputElement>('input')].map((input) => input.value);
+    const far = ids[ids.length - 1]!;
+    act(() => tile(el, far)!.click());
+    const top = (ids.length - 1) * 40;
+    // The chosen tile is inside the box's view, centred where it can be.
+    expect(scrollTop).toBeGreaterThan(0);
+    expect(top).toBeGreaterThanOrEqual(scrollTop);
+    expect(top + 38).toBeLessThanOrEqual(scrollTop + 120);
+    // A tile already in view moves nothing.
+    const before = scrollTop;
+    act(() => tile(el, ids[ids.length - 2]!)!.click());
+    expect(scrollTop).toBe(before);
+    // Back to the first: the box goes to its top.
+    act(() => tile(el, ids[0]!)!.click());
+    expect(scrollTop).toBe(0);
+  } finally {
+    Object.defineProperty(proto, 'offsetTop', savedTop);
+    Object.defineProperty(proto, 'offsetHeight', savedHeight);
+  }
+});
+
+test.skipIf(!hasDom)('two picks within the 300 ms debounce are one POST of that half', async () => {
+  startPage('dark');
+  writeThemeOnDisk({ mode: 'dark', light: 'adwaita', dark: 'plannotator' });
+  const el = await openColors();
+  await until(() => el.querySelector('[data-palette-summary]')?.textContent?.includes('Light: Adwaita') === true, 'config.json adopted');
+  posted = [];
+  act(() => tile(el, 'tokyo-night')!.click());
+  act(() => tile(el, 'catppuccin')!.click());
+  await until(() => themeOnDisk()?.dark === 'catppuccin', 'config.json to say catppuccin');
+  await settle();
+  expect(themePosts()).toEqual([{ dark: 'catppuccin' }]);
+  expect(themeOnDisk()).toEqual({ mode: 'dark', light: 'adwaita', dark: 'catppuccin' });
+});
+
+test.skipIf(!hasDom)('a light pick and a mode change within 300 ms are one POST of { light, mode }', async () => {
+  startPage('dark');
+  writeThemeOnDisk({ mode: 'dark', light: 'plannotator', dark: 'catppuccin' });
+  const el = await openColors();
+  await until(() => shownPalette() === 'catppuccin', 'config.json adopted');
+  posted = [];
+  act(() => half(el, 'light').click());
+  act(() => tile(el, 'tokyo-night')!.click());
+  const lightMode = [...el.querySelectorAll<HTMLInputElement>('[data-settings-theme] input[name="ib-theme"]')].find((r) => r.value === 'light')!;
+  act(() => lightMode.click());
+  expect(shownLight()).toBe(true);
+  expect(shownPalette()).toBe('tokyo-night');
+  await until(() => themeOnDisk()?.mode === 'light', 'config.json to say light');
+  await settle();
+  expect(themePosts()).toEqual([{ light: 'tokyo-night', mode: 'light' }]);
+  // The dark half the page never touched stays as config.json had it.
+  expect(themeOnDisk()).toEqual({ mode: 'light', light: 'tokyo-night', dark: 'catppuccin' });
+});
+
+test.skipIf(!hasDom)("a mode flipped before the first settings read keeps the flip and still takes config.json's palettes", async () => {
+  // The page's cookie says light with the default palettes; config.json has palettes picked in plan review.
+  startPage('light');
+  writeThemeOnDisk({ mode: 'light', light: 'catppuccin', dark: 'tokyo-night' });
+  let release = () => {};
+  settingsGate = new Promise<void>((done) => (release = done));
+  const el = await renderApp();
+  expect(shownLight()).toBe(true);
+  expect(shownPalette()).toBe('plannotator');
+  const toggle = el.querySelector('.ib-setrow .ib-theme-tg') as HTMLButtonElement;
+  act(() => toggle.click());
+  expect(shownLight()).toBe(false);
+  // The read answers now: the mode the person chose stands, and both halves come from config.json.
+  release();
+  await until(() => shownPalette() === 'tokyo-night', "config.json's dark palette");
+  expect(shownLight()).toBe(false);
+  expect(readThemePairCookies()).toMatchObject({ mode: 'dark', light: 'catppuccin', dark: 'tokyo-night' });
+  // The flip still reaches config.json, alone: the read did not swallow the queued write.
+  await until(() => themeOnDisk()?.mode === 'dark', 'config.json to say dark');
+  await settle();
+  expect(themePosts()).toEqual([{ mode: 'dark' }]);
+  expect(themeOnDisk()).toEqual({ mode: 'dark', light: 'catppuccin', dark: 'tokyo-night' });
 });
