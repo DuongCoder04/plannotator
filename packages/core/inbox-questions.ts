@@ -54,8 +54,11 @@ import {
   type QuestionChoice,
   type QuestionExportItem,
   type QuestionKind,
+  type ParsedQuestion,
+  questionLabelWithoutImage,
 } from "./question-block";
 import type {
+  InboxQuestionContract,
   InboxQuestion,
   InboxQuestionFacts,
   InboxQuestionRecord,
@@ -115,17 +118,39 @@ export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[
           description: choice.description ?? null,
           recommended: choice.recommended,
           settled: choice.settled,
+          ...(choice.image ? { image: { alt: choice.image.alt, src: choice.image.src } } : {}),
         })),
         aliases: parsed.choices.map((choice) => (choice.aliases?.length ? [...choice.aliases] : null)),
         recommendation: parsed.recommendation ?? null,
         suggested_text: parsed.suggestedText ?? null,
         line: location.startLine + 1 + parsed.promptLine,
+        ...contractFacts(parsed),
       },
       ...waitsOf(context),
       replaces: parsed.replaces ? [...parsed.replaces] : [],
     });
   }
   return out;
+}
+
+/** The block's contract lines as the record keeps them (each only when present). */
+function contractFacts(parsed: Pick<ParsedQuestion, "stakes" | "shows" | "why" | "reversible">): InboxQuestionContract {
+  return {
+    ...(parsed.stakes ? { stakes: parsed.stakes } : {}),
+    ...(parsed.shows ? { shows: { kind: parsed.shows.kind, label: parsed.shows.label, src: parsed.shows.src } } : {}),
+    ...(parsed.why ? { why: parsed.why } : {}),
+    ...(parsed.reversible ? { reversible: { value: false as const, why: parsed.reversible.why ?? null } } : {}),
+  };
+}
+
+/** A record's contract lines for the wire (copies; absent when absent). */
+function wireContract(facts: InboxQuestionContract): InboxQuestionContract {
+  return {
+    ...(typeof facts.stakes === "string" && facts.stakes ? { stakes: facts.stakes } : {}),
+    ...(facts.shows ? { shows: { ...facts.shows } } : {}),
+    ...(typeof facts.why === "string" && facts.why ? { why: facts.why } : {}),
+    ...(facts.reversible ? { reversible: { value: false as const, why: facts.reversible.why ?? null } } : {}),
+  };
 }
 
 /**
@@ -207,7 +232,9 @@ export function inboxQuestionState(
 
 // Where a build through 0.28.26 may have joined a `Context:` line onto the
 // plain bullet above it: `Keep it pinned forever Context: an archived thread…`.
-const STORED_CONTEXT_SPLIT_RE = /\s+(?:[*_]{1,2})?context(?:[*_]{1,2})?\s*:/gi;
+// A build from before contract lines joined one (`Stakes:`, `Shows:`, `Why:`,
+// `Reversible:`) onto it the same way.
+const STORED_CONTEXT_SPLIT_RE = /\s+(?:[*_]{1,2})?(?:context|stakes|shows|why|reversible)(?:[*_]{1,2})?\s*:/gi;
 
 /** Every label before a ` Context:` in a stored label (each split point:
  *  the bullet's own words may hold the word too). */
@@ -232,7 +259,14 @@ function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionCho
   const names = record.parsed.choices.map((choice, index) =>
     new Set([choice.label, ...(record.parsed.aliases[index] ?? [])].map(normalizeQuestionText)),
   );
-  const heads = record.parsed.choices.map((choice) => storedContextHeads(choice.label));
+  // A label stored with an image in it (a record from before picture
+  // choices: `![B](b.png) B`) also answers to the plain label the card reads
+  // today, as a `Context:` head does.
+  const heads = record.parsed.choices.map((choice) => {
+    const list = storedContextHeads(choice.label);
+    const plain = questionLabelWithoutImage(choice.label);
+    return plain ? [...list, plain, ...list.flatMap((head) => questionLabelWithoutImage(head) ?? [])] : list;
+  });
   const headOwners = new Map<string, Set<number>>();
   heads.forEach((list, index) => {
     for (const head of list) {
@@ -268,7 +302,7 @@ export function toInboxQuestion(record: InboxQuestionRecord, threadResolved: boo
     kind: record.kind,
     prompt: record.prompt,
     context: record.parsed.context,
-    choices: record.parsed.choices.map((c) => ({ ...c })),
+    choices: record.parsed.choices.map((c) => ({ ...c, ...(c.image ? { image: { ...c.image } } : {}) })),
     recommendation: record.parsed.recommendation,
     suggested_text: record.parsed.suggested_text,
     stopped: record.stopped,
@@ -285,6 +319,7 @@ export function toInboxQuestion(record: InboxQuestionRecord, threadResolved: boo
     message_id: record.message_id,
     superseded_by: record.superseded_by ? { message_id: record.superseded_by.message_id, key: record.superseded_by.key ?? null } : null,
     set_aside_at: record.set_aside?.at ?? null,
+    ...wireContract(record.parsed),
     ...(record.kind === "action"
       ? {
           action: record.action ? { ...record.action } : { where: null, where_url: null, run: null, watching: null },

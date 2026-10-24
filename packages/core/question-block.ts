@@ -77,6 +77,25 @@
  *   context, so the card never shows the raw ids (`replaces`). Any other
  *   `Replaces:` line ("Replaces: q-learning with PPO") is ordinary prose. It
  *   does not change the question key.
+ * - Contract lines (optional, after the prompt, at the start of a line; a
+ *   label may be emphasised like `Context:`; case-insensitive; the first of
+ *   each wins, a later one is prose): `Stakes: <one sentence>` (what the
+ *   choice affects), `Shows: ![alt](path)` or `Shows: [name](file)` (the one
+ *   picture or file the decision is about), `Why: <one line>` (why the
+ *   recommendation), `Reversible: no — <why>` (the answer cannot be taken
+ *   back; `yes`, or no line, means it can). Each is read into its own field
+ *   (`stakes`, `shows`, `why`, `reversible`) and is never the prompt, never
+ *   context, and never changes the key. Like `Context:`, such a line never
+ *   continues the choice, bullet or recommendation above it. A value that
+ *   does not fit (an empty line, a `Shows:` that is not one image or link, a
+ *   `Reversible:` that is neither yes nor no) is ordinary prose.
+ * - Picture choices: the first markdown image in a choice
+ *   (`- [ ] Label — ![alt](path) rest`, or a plain `- Label — ![alt](path)`
+ *   bullet) becomes `choice.image { alt, src }`. The label stays plain
+ *   (an image written inside it is taken out, the raw label kept as an alias
+ *   so an answer stored against it still matches), the answer is the label,
+ *   and the rest is the choice's description. A choice with no words but the
+ *   image takes its alt text as its label.
  */
 
 import { sliceText } from "./text-cut";
@@ -113,6 +132,34 @@ export interface QuestionChoice {
   settled: boolean;
   /** Named by the block's `Recommended:` line. */
   recommended: boolean;
+  /** A picture choice: the choice's first markdown image. The picture picks
+   *  the choice; the answer is still the label. Absent otherwise. */
+  image?: QuestionChoiceImage;
+}
+
+/** The picture of a picture choice (`- [ ] Label — ![alt](src)`). */
+export interface QuestionChoiceImage {
+  /** The alt text as written, or the choice's label when it has none. */
+  alt: string;
+  /** The image source exactly as written (the markdown target). */
+  src: string;
+}
+
+/** `Shows:` — the one picture or file a question is about. */
+export interface QuestionShows {
+  /** `image` for `![alt](src)`, `link` for `[name](src)`. */
+  kind: 'image' | 'link';
+  /** The alt text or the link's name, as written. */
+  label: string;
+  /** The target exactly as written. */
+  src: string;
+}
+
+/** `Reversible: no — <why>`: the answer cannot be taken back. */
+export interface QuestionIrreversible {
+  value: false;
+  /** The reason after `no`, when there is one. */
+  why?: string;
 }
 
 export interface ParsedQuestion {
@@ -142,6 +189,14 @@ export interface ParsedQuestion {
    *  block has no such line. The host checks them (the Inbox refuses an id
    *  that names no open question of the thread). */
   replaces?: string[];
+  /** `Stakes:` — what the choice affects, in product terms. */
+  stakes?: string;
+  /** `Shows:` — the one picture or file the decision is about. */
+  shows?: QuestionShows;
+  /** `Why:` — why the recommendation. */
+  why?: string;
+  /** `Reversible: no — <why>`. Absent means reversible (`yes`, or no line). */
+  reversible?: QuestionIrreversible;
 }
 
 /** A recorded decision a question links to (`Decision: [statement](url)`). */
@@ -177,6 +232,17 @@ const LABEL_DESC_SEP_RE = /\s+(?:—|–|-)\s+/;
 // A `Context:` line (optionally in emphasis): context, never the continuation
 // of the choice, bullet or recommendation above it.
 const CONTEXT_LINE_RE = /^\s*(?:[*_]{1,2})?context(?:[*_]{1,2})?\s*:/i;
+// The contract lines (`Stakes:`, `Shows:`, `Why:`, `Reversible:`), with the
+// leniency of `Context:` and `Recommended:` (emphasis around the label, any
+// case, leading whitespace).
+const CONTRACT_LINE_RE = /^\s*(?:[*_]{1,2})?(stakes|shows|why|reversible)(?:[*_]{1,2})?\s*:\s*(?:[*_]{1,2})?\s*(.*?)\s*$/i;
+const SHOWS_IMAGE_RE = /^!\[([^\]\n]*)\]\(([^)\n]+)\)\.?$/;
+const SHOWS_LINK_RE = /^\[([^\]\n]+)\]\(([^)\n]+)\)\.?$/;
+const REVERSIBLE_NO_RE = /^(?:no|false|never)\b\s*(?:[—–:;,.]|-(?=\s))?\s*(.*)$/i;
+const REVERSIBLE_YES_RE = /^(?:yes|true)\b/i;
+// A markdown image as the window renders it (InlineMarkdown, and the Inbox's
+// image capture): the target is everything up to the first `)`.
+const CHOICE_IMAGE_RE = /!\[([^\]\n]*)\]\(([^)\n]+)\)/;
 // What may follow a recommendation that names the start of a choice label
 // (`Recommended: Unpin it` for `Unpin it: the toast says…`).
 const LABEL_HEAD_SEP_RE = /^(?:\s*[:—–(]|\s+-\s)/;
@@ -203,7 +269,7 @@ const STARTS_OTHER_BLOCK_RE = /^(?:[-*+]\s|\d{1,9}[.)]\s|#{1,6}(?:\s|$)|>|```|~~
  *  and it starts no other block. Anything else stays context, as before. */
 const isRecommendationWrap = (soFar: string, line: string): boolean => {
   const next = line.trim();
-  if (PLAIN_BULLET_RE.test(line) || STARTS_OTHER_BLOCK_RE.test(next) || CONTEXT_LINE_RE.test(line)) return false;
+  if (PLAIN_BULLET_RE.test(line) || STARTS_OTHER_BLOCK_RE.test(next) || CONTEXT_LINE_RE.test(line) || CONTRACT_LINE_RE.test(line)) return false;
   if (/[.!?:;]["'”’)\]*_]*$/.test(soFar)) return false;
   return /^\p{Ll}/u.test(next);
 };
@@ -249,10 +315,15 @@ const parseDecisionLink = (value: string): QuestionDecisionLink | null => {
   return { statement, url: m[2] };
 };
 
+/** `text` with each markdown image blanked to `#` (same length), so a
+ *  separator inside an image's alt text or target never splits a label. */
+const maskImages = (text: string): string =>
+  text.includes('![') ? text.replace(new RegExp(CHOICE_IMAGE_RE.source, 'g'), (m) => '#'.repeat(m.length)) : text;
+
 const splitLabel = (raw: string): { label: string; description?: string } => {
-  const idx = raw.search(LABEL_DESC_SEP_RE);
+  const idx = maskImages(raw).search(LABEL_DESC_SEP_RE);
   if (idx === -1) return { label: raw.trim() };
-  const sep = raw.slice(idx).match(LABEL_DESC_SEP_RE)![0];
+  const sep = maskImages(raw).slice(idx).match(LABEL_DESC_SEP_RE)![0];
   const description = raw.slice(idx + sep.length).trim();
   return {
     label: raw.slice(0, idx).trim(),
@@ -515,6 +586,78 @@ const matchRecommendation = (
   return fallback !== -1 ? [fallback] : [];
 };
 
+type ContractField = 'stakes' | 'shows' | 'why' | 'reversible';
+type ContractValue =
+  | { field: 'stakes' | 'why'; value: string }
+  | { field: 'shows'; value: QuestionShows }
+  | { field: 'reversible'; value: QuestionIrreversible | null };
+
+/** A contract line (`Stakes:`, `Shows:`, `Why:`, `Reversible:`) read, or
+ *  null when the line is not one or its value does not fit (prose). */
+const readContractLine = (line: string): ContractValue | null => {
+  const m = line.match(CONTRACT_LINE_RE);
+  if (!m) return null;
+  const field = m[1].toLowerCase() as ContractField;
+  const value = m[2].replace(/[*_]{1,2}$/, '').trim();
+  if (!value) return null;
+  if (field === 'stakes' || field === 'why') return { field, value };
+  if (field === 'shows') {
+    const image = value.match(SHOWS_IMAGE_RE);
+    if (image) return { field, value: { kind: 'image', label: image[1].trim(), src: image[2] } };
+    const link = value.match(SHOWS_LINK_RE);
+    if (link) return { field, value: { kind: 'link', label: link[1].trim(), src: link[2] } };
+    return null;
+  }
+  if (REVERSIBLE_YES_RE.test(value)) return { field, value: null };
+  const no = value.match(REVERSIBLE_NO_RE);
+  if (!no) return null;
+  const why = no[1].trim();
+  return { field, value: { value: false, ...(why ? { why } : {}) } };
+};
+
+/** A label with the first markdown image written in it taken out (spacing
+ *  collapsed), or its alt text when the image was all the label held. Null
+ *  when the label holds no image, or nothing would be left. The Plannotator
+ *  Inbox reads a stored label through it: a record from before picture
+ *  choices kept `![B](b.png) B` as the label, which the card now reads as `B`. */
+export const questionLabelWithoutImage = (label: string): string | null => {
+  const m = label.match(CHOICE_IMAGE_RE);
+  if (!m || m.index === undefined) return null;
+  const rest = `${label.slice(0, m.index)} ${label.slice(m.index + m[0].length)}`.replace(/\s+/g, ' ').trim();
+  const plain = rest || m[1].trim();
+  return plain && plain !== label ? plain : null;
+};
+
+/** A choice read as a picture choice: its first image (in the label first,
+ *  then the description) taken out. Null when it holds no image, or taking
+ *  it out would leave no label. */
+const pictureChoice = (choice: QuestionChoice): QuestionChoice | null => {
+  const inLabel = choice.label.match(CHOICE_IMAGE_RE);
+  if (inLabel && inLabel.index !== undefined) {
+    const label = questionLabelWithoutImage(choice.label);
+    if (!label) return null;
+    const aliases = [...new Set([...(choice.aliases ?? []), choice.label])];
+    return { ...choice, label, aliases, image: { alt: inLabel[1].trim() || label, src: inLabel[2] } };
+  }
+  const desc = choice.description?.match(CHOICE_IMAGE_RE);
+  if (!desc || desc.index === undefined || choice.description === undefined) return null;
+  const rest = `${choice.description.slice(0, desc.index)} ${choice.description.slice(desc.index + desc[0].length)}`
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[—–-]\s+/, '');
+  const { description: _d, ...base } = choice;
+  return { ...base, ...(rest ? { description: rest } : {}), image: { alt: desc[1].trim() || choice.label, src: desc[2] } };
+};
+
+/** Every choice that holds an image becomes a picture choice, unless that
+ *  would give two choices one label (they keep their labels as written). */
+const withPictureChoices = (choices: QuestionChoice[]): QuestionChoice[] => {
+  const next = choices.map((c) => pictureChoice(c) ?? c);
+  const owners = new Map<string, number>();
+  for (const c of next) owners.set(normalizeQuestionText(c.label), (owners.get(normalizeQuestionText(c.label)) ?? 0) + 1);
+  return next.map((c, i) => (c.image && (owners.get(normalizeQuestionText(c.label)) ?? 0) > 1 && c.label !== choices[i].label ? choices[i] : c));
+};
+
 /**
  * Parse a `:::question*` directive body. Returns null when the block is not a
  * question (wrong kind, no prompt, oversized body): the renderer then shows
@@ -576,6 +719,16 @@ export const parseQuestionBlock = (
   let decisionFlag = false;
   let decision: QuestionDecisionLink | undefined;
   const replaces: string[] = [];
+  const contract: { stakes?: string; shows?: QuestionShows; why?: string; reversible?: QuestionIrreversible | null } = {};
+  // A code fence open anywhere in the body after the prompt: a contract line
+  // inside it is code, never read.
+  let bodyFence: string | null = null;
+  const trackBodyFence = (line: string) => {
+    const marker = line.trimStart().match(/^(`{3,}|~{3,})/)?.[1];
+    if (!marker) return;
+    if (!bodyFence) bodyFence = marker;
+    else if (marker[0] === bodyFence[0] && marker.length >= bodyFence.length && line.trim() === marker) bodyFence = null;
+  };
 
   const pushContext = (line: string) => {
     contextLines.push(line);
@@ -645,6 +798,32 @@ export const parseQuestionBlock = (
       // A heading marker on the prompt line (`### Which…?`) is dropped.
       prompt = line.trim().replace(/^#{1,6}\s+/, '');
       promptLine = i;
+      continue;
+    }
+    // A contract line (`Stakes:`, `Shows:`, `Why:`, `Reversible:`): read once
+    // per field, never context. It ends the choice, bullet or recommendation
+    // above it, as a `Context:` line does.
+    const fenceBefore = bodyFence;
+    trackBodyFence(line);
+    const contractLine = fenceBefore || bodyFence || continuationFence ? null : readContractLine(line);
+    if (contractLine && !(contractLine.field in contract)) {
+      (contract as Record<string, unknown>)[contractLine.field] = contractLine.value;
+      lastChoice = -1;
+      recommendationOpen = false;
+      if (openBullet) {
+        // Builds before contract lines joined such a line onto the plain
+        // bullet above it: keep that text as a name a stored answer may quote.
+        const inItem = indentWidth(line) >= openBullet.contentColumn;
+        const continues = openBullet.afterBlank ? inItem : inItem || !STARTS_OTHER_BLOCK_RE.test(line.trimStart());
+        if (continues) {
+          const target = plainBullets[openBullet.index];
+          target.legacyText = `${target.legacyText ?? target.text} ${line.trim()}`;
+          openBullet.legacy = true;
+          openBullet.afterBlank = false;
+        } else {
+          openBullet = null;
+        }
+      }
       continue;
     }
     // A `Decision:` line the default parse reads (the first flag, the first
@@ -768,6 +947,9 @@ export const parseQuestionBlock = (
       for (const index of bullet.contextIndices) dropContext.add(index);
     });
   }
+  if (choices.some((c) => c.label.includes('![') || c.description?.includes('!['))) {
+    choices.splice(0, choices.length, ...withPictureChoices(choices));
+  }
   for (const index of recommendationWrapIndices) dropContext.add(index);
   for (let i = contextLines.length - 1; i >= 0; i--) if (dropContext.has(i)) contextLines.splice(i, 1);
 
@@ -813,6 +995,10 @@ export const parseQuestionBlock = (
     key: questionKey(kind, prompt),
     ...(!readDecisionLines ? {} : decision ? { decision } : decisionFlag ? { decisionOnAnswer: true as const } : {}),
     ...(replaces.length > 0 ? { replaces } : {}),
+    ...(contract.stakes ? { stakes: contract.stakes } : {}),
+    ...(contract.shows ? { shows: contract.shows } : {}),
+    ...(contract.why ? { why: contract.why } : {}),
+    ...(contract.reversible ? { reversible: contract.reversible } : {}),
   };
 };
 

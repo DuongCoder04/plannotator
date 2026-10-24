@@ -14,6 +14,8 @@ import {
 import { InlineMarkdown } from '../InlineMarkdown';
 import { QuestionContext } from './QuestionContext';
 import { HostTitle } from '../HostTitle';
+import { useImageResolver } from '../ImageResolverContext';
+import { getImageSrc } from '../ImageThumbnail';
 
 /**
  * A `:::question` block rendered as an answer card (the approved "Card"
@@ -46,6 +48,20 @@ import { HostTitle } from '../HostTitle';
  * host supplies a state), open its own decision
  * card from the tag's words (`onOpenDecision`), and hide the card's own
  * status tag to draw its own (`statusTag: 'none'`).
+ *
+ * The optional contract lines (approval "inbox-decision-mode"): `Stakes:` is
+ * a short emphasised line under the prompt, `Shows:` a chip that opens the
+ * picture (through `onImageClick`) or the file (an ordinary link), `Why:` a
+ * line under the choices ("Why <recommended>: …"), and `Reversible: no` a
+ * "Can't be undone" tag in the eyebrow. The card adds no confirm step.
+ *
+ * Picture choices (`choice.image`) draw as a grid of tiles: the picture and
+ * the label pick (a real radio or checkbox in each tile), a separate zoom
+ * button opens the picture (`onImageClick`), the label and description sit
+ * under it. When no picture can be shown (the host's image resolver says
+ * `unavailable`, every picture failed to load, or `pictureChoices={false}`)
+ * the choices are the ordinary text rows. The recommended answer that is
+ * none of the choices, and Other, stay text rows.
  */
 
 /** Pointer travel (px) above which a press on a choice row is a drag. */
@@ -74,7 +90,7 @@ const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(
  *  the guides.show viewer pins (a deploy for no visible change). */
 const PILL = 'annotation-exclude select-none inline-flex h-[18px] items-center gap-1 whitespace-nowrap rounded border px-1.5 align-[1px] text-[10.5px] font-semibold leading-4 tracking-[0.03em]';
 
-const Tag: React.FC<{ tone: 'rec' | 'ok' | 'skip' | 'open'; children: React.ReactNode; className?: string; style?: React.CSSProperties }> = ({ tone, children, className, style }) => (
+const Tag: React.FC<{ tone: 'rec' | 'ok' | 'skip' | 'open' | 'warn'; children: React.ReactNode; className?: string; style?: React.CSSProperties }> = ({ tone, children, className, style }) => (
   <span
     className={cx(
       PILL,
@@ -82,6 +98,7 @@ const Tag: React.FC<{ tone: 'rec' | 'ok' | 'skip' | 'open'; children: React.Reac
       tone === 'ok' && 'border-transparent bg-success/15 text-success',
       tone === 'skip' && 'border-transparent bg-muted text-muted-foreground',
       tone === 'open' && 'border-dashed border-border text-muted-foreground',
+      tone === 'warn' && 'border-transparent bg-warning/15 text-warning',
       className,
     )}
     style={style}
@@ -100,6 +117,20 @@ const CheckGlyph = () => (
 const DiamondGlyph = () => (
   <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="shrink-0">
     <path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41l-7.59-7.59a2.41 2.41 0 0 0-3.41 0Z" strokeLinejoin="round" />
+  </svg>
+);
+
+const ZoomGlyph = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5M11 8v6M8 11h6" strokeLinecap="round" />
+  </svg>
+);
+
+const PictureGlyph = () => (
+  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="shrink-0">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m3 16 5-5 4 4 3-3 6 6" strokeLinejoin="round" />
   </svg>
 );
 
@@ -201,6 +232,9 @@ export interface QuestionBlockProps {
   githubRepo?: string;
   repoHost?: string;
   onNavigateAnchor?: (hash: string) => void;
+  /** Draw picture choices (`choice.image`) as picture tiles (default true).
+   *  False: every choice is a text row, as on a host that shows no images. */
+  pictureChoices?: boolean;
 }
 
 /** A host's status tag (`statusLabel`): its words, and the tone of one of the card's own tags (default `open`). */
@@ -232,8 +266,23 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   githubRepo,
   repoHost,
   onNavigateAnchor,
+  pictureChoices = true,
 }) => {
   const { question, number } = indexed;
+  const resolveImage = useImageResolver();
+  // The URL a picture loads from, exactly as an inline markdown image of the
+  // same src would (the host's resolver first), or null when the host says
+  // it cannot be shown.
+  const pictureSrc = (src: string): string | null => {
+    const resolved = resolveImage ? resolveImage(src) : null;
+    if (resolved?.kind === 'unavailable') return null;
+    if (resolved?.kind === 'src') return resolved.src;
+    return /^(https?:\/\/|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir);
+  };
+  // Pictures that failed to load (by the URL tried): a tile shows its alt
+  // text instead, and with none left the choices are text rows.
+  const [failedPictures, setFailedPictures] = useState<ReadonlySet<string>>(() => new Set());
+  const markPictureFailed = (url: string) => setFailedPictures((prev) => (prev.has(url) ? prev : new Set([...prev, url])));
   // An answer saved under an older label of a choice (0.28.1 read a wrapped
   // plain bullet's first line as its label) shows that choice picked; the
   // next edit stores the current label.
@@ -288,6 +337,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   const uid = useId().replace(/:/g, '');
   const promptId = `q-prompt-${uid}`;
   const contextId = `q-context-${uid}`;
+  const stakesId = `q-stakes-${uid}`;
   const suggestId = `q-suggest-${uid}`;
   const noteLabelId = `q-note-${uid}`;
   // null = follow the answer (open while a note exists); a click pins it.
@@ -509,6 +559,13 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     && (otherBy === 'row' || (otherBy === null && !otherFocused));
   const other = suggestionPicked ? '' : storedOther;
   const otherOn = other.trim() !== '';
+  // Picture choices: each choice's picture URL (null: none, or not shown).
+  const pictures = question.choices.map((c) => (c.image ? pictureSrc(c.image.src) : null));
+  const showTiles = pictureChoices
+    && question.kind !== 'text'
+    && pictures.some((url) => url !== null && !failedPictures.has(url));
+  const recommendedLabels = question.choices.filter((c) => c.recommended).map((c) => c.label);
+  const showsSrc = question.shows?.kind === 'image' ? pictureSrc(question.shows.src) : null;
 
   // A `Decision: when answered` question the host may switch off, or (with
   // `decisionScope: 'any'`) any other question once the host supplies a
@@ -525,7 +582,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     ? (recordingOn ? 'on' : 'off')
     : undefined;
 
-  const describedBy = [question.context ? contextId : null, question.kind === 'text' && question.suggestedText && !answered ? suggestId : null]
+  const describedBy = [question.stakes ? stakesId : null, question.context ? contextId : null, question.kind === 'text' && question.suggestedText && !answered ? suggestId : null]
     .filter(Boolean)
     .join(' ') || undefined;
 
@@ -615,6 +672,14 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
           ) : (
             <><Tag tone="rec" style={DECISION_OFF_STYLE}><DiamondGlyph />Records a decision</Tag>{' '}</>
           ))}
+          {question.reversible && (
+            <><HostTitle title={question.reversible.why ? `Can't be undone: ${question.reversible.why}` : "Can't be undone"}>
+              <span className="inline-flex" data-question-irreversible="">
+                <Tag tone="warn">Can&rsquo;t be undone</Tag>
+                {question.reversible.why && <span className="sr-only">: {question.reversible.why}</span>}
+              </span>
+            </HostTitle>{' '}</>
+          )}
           {statusTag !== 'none' && hostStatus && <Tag tone={hostStatus.tone ?? 'open'}>{hostStatus.label}</Tag>}
           {statusTag !== 'none' && !hostStatus && (
             <>
@@ -630,6 +695,41 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
       <p id={promptId} className="m-0 text-[15px] font-semibold leading-[1.45] text-foreground" data-question-part="prompt">
         {inline(question.prompt)}
       </p>
+      {question.stakes && (
+        <p id={stakesId} className="m-0 mt-1 text-[13px] font-medium leading-[1.45] text-foreground/90" data-question-part="stakes">
+          {inline(question.stakes)}
+        </p>
+      )}
+      {question.shows && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[12.5px]" data-question-shows="">
+          <span className="annotation-exclude select-none text-muted-foreground" data-pinpoint-ignore="">Shows</span>
+          {question.shows.kind === 'image' ? (
+            showsSrc && onImageClick ? (
+              <button
+                type="button"
+                onClick={() => onImageClick(showsSrc, question.shows!.label || 'Picture')}
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/80 bg-background/60 py-0.5 pl-0.5 pr-2 text-foreground hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+                data-question-shows-open=""
+              >
+                <img
+                  src={showsSrc}
+                  alt=""
+                  draggable={false}
+                  className="h-6 w-8 shrink-0 rounded-[4px] object-cover"
+                  data-question-picture=""
+                  data-zoomable=""
+                  data-image-src={question.shows.src}
+                />
+                <span className="truncate">{question.shows.label || 'Picture'}</span>
+              </button>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-foreground"><PictureGlyph />{question.shows.label || question.shows.src}</span>
+            )
+          ) : (
+            <span className="min-w-0 text-foreground">{inline(`[${question.shows.label}](${question.shows.src})`)}</span>
+          )}
+        </div>
+      )}
       {renderBelowPrompt?.(indexed)}
       {(question.decision || (decisionCapable && recordingOn)) && (
         <div
@@ -694,39 +794,129 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
             role={inputType === 'radio' ? 'radiogroup' : 'group'}
             aria-labelledby={promptId}
           >
-            {question.choices.map((choice) => {
-              const checked = selected.includes(choice.label);
-              return (
-                <label
-                  key={choice.label}
-                  className={cx(
-                    'flex items-start gap-2.5 rounded-[7px] px-[9px] py-1.5 transition-colors',
-                    readOnly ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
-                    checked && 'bg-primary/12 hover:bg-primary/12',
-                  )}
-                  data-question-option=""
-                  onPointerDown={onRowPointerDown}
-                  onClickCapture={(event) => onRowClick(event, choice.label)}
-                >
-                  <input
-                    type={inputType}
-                    name={groupName}
-                    checked={checked}
-                    onChange={(e) => pick(choice.label, e.target.checked)}
-                    className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
-                    data-question-control=""
-                    disabled={readOnly}
-                  />
-                  <span className="min-w-0 flex-1 select-text text-[13.5px] leading-[1.45] text-foreground" data-question-part="choice">
-                    <span className="font-[550]">{inline(choice.label)}</span>
-                    {choice.description && (
-                      <span className="text-muted-foreground"> — {inline(choice.description)}</span>
+            {showTiles ? (
+              <div
+                className="mb-1 grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2"
+                data-question-tiles=""
+              >
+                {question.choices.map((choice, index) => {
+                  const checked = selected.includes(choice.label);
+                  const url = pictures[index];
+                  const shown = url !== null && !failedPictures.has(url) ? url : null;
+                  // The alt text names the picture; one that only repeats the label is decorative.
+                  const alt = choice.image ? (choice.image.alt || choice.label) : '';
+                  const decorative = !!choice.image && alt.trim() === choice.label.trim();
+                  return (
+                    <div
+                      key={choice.label}
+                      className={cx(
+                        'relative flex min-w-0 flex-col overflow-hidden rounded-[9px] border transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary',
+                        checked ? 'border-primary/70 bg-primary/10' : 'border-border/80 bg-background/40',
+                        !readOnly && !checked && 'hover:border-foreground/30',
+                      )}
+                      data-question-tile=""
+                      data-question-tile-checked={checked ? '' : undefined}
+                    >
+                      <label
+                        className={cx('flex min-w-0 flex-1 flex-col', readOnly ? 'cursor-default' : 'cursor-pointer')}
+                        data-question-option=""
+                        onPointerDown={onRowPointerDown}
+                        onClickCapture={(event) => onRowClick(event, choice.label)}
+                      >
+                        {choice.image && (
+                          <span
+                            className="annotation-exclude select-none block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
+                            data-pinpoint-ignore=""
+                          >
+                            {shown ? (
+                              <img
+                                src={shown}
+                                alt={decorative ? '' : alt}
+                                draggable={false}
+                                loading="lazy"
+                                className="h-full w-full object-contain"
+                                data-question-picture=""
+                                data-zoomable=""
+                                data-image-src={choice.image.src}
+                                onError={() => markPictureFailed(shown)}
+                              />
+                            ) : (
+                              <span className="grid h-full place-items-center px-2 text-center text-xs text-muted-foreground" data-image-unavailable="">
+                                {alt}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        <span className="flex w-full min-w-0 items-start gap-2 px-2.5 py-2">
+                          <input
+                            type={inputType}
+                            name={groupName}
+                            checked={checked}
+                            onChange={(e) => pick(choice.label, e.target.checked)}
+                            className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
+                            data-question-control=""
+                            disabled={readOnly}
+                          />
+                          <span className="min-w-0 flex-1 select-text text-[13px] leading-[1.4] text-foreground" data-question-part="choice">
+                            <span className="font-[550]">{inline(choice.label)}</span>
+                            {choice.description && (
+                              <span className="block text-muted-foreground">{inline(choice.description)}</span>
+                            )}
+                            {choice.recommended && <span className="mt-1 block"><Tag tone="rec">Recommended</Tag></span>}
+                          </span>
+                        </span>
+                      </label>
+                      {shown && onImageClick && (
+                        <button
+                          type="button"
+                          onClick={() => onImageClick(shown, alt)}
+                          aria-label={`Zoom: ${alt}`}
+                          className="annotation-exclude absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-md bg-background/85 text-foreground shadow-sm ring-1 ring-border/70 before:absolute before:-inset-2 before:content-[''] hover:bg-background focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+                          data-pinpoint-ignore=""
+                          data-question-zoom=""
+                        >
+                          <ZoomGlyph />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              question.choices.map((choice) => {
+                const checked = selected.includes(choice.label);
+                return (
+                  <label
+                    key={choice.label}
+                    className={cx(
+                      'flex items-start gap-2.5 rounded-[7px] px-[9px] py-1.5 transition-colors',
+                      readOnly ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
+                      checked && 'bg-primary/12 hover:bg-primary/12',
                     )}
-                    {choice.recommended && <> <Tag tone="rec">Recommended</Tag></>}
-                  </span>
-                </label>
-              );
-            })}
+                    data-question-option=""
+                    onPointerDown={onRowPointerDown}
+                    onClickCapture={(event) => onRowClick(event, choice.label)}
+                  >
+                    <input
+                      type={inputType}
+                      name={groupName}
+                      checked={checked}
+                      onChange={(e) => pick(choice.label, e.target.checked)}
+                      className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
+                      data-question-control=""
+                      disabled={readOnly}
+                    />
+                    <span className="min-w-0 flex-1 select-text text-[13.5px] leading-[1.45] text-foreground" data-question-part="choice">
+                      <span className="font-[550]">{inline(choice.label)}</span>
+                      {choice.description && (
+                        <span className="text-muted-foreground"> — {inline(choice.description)}</span>
+                      )}
+                      {choice.recommended && <> <Tag tone="rec">Recommended</Tag></>}
+                    </span>
+                  </label>
+                );
+              })
+            )}
             {suggestionRow && (
               // The agent's recommended answer that is none of its choices:
               // drawn exactly as a choice (the same control, row and tag), so
@@ -791,6 +981,15 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
             )}
           </div>
         </>
+      )}
+
+      {question.why && (
+        <p className="m-0 mt-2 text-[12.5px] leading-[1.45] text-muted-foreground" data-question-part="why">
+          <span className="font-semibold text-foreground/85">
+            {recommendedLabels.length > 0 ? <>Why {recommendedLabels.map((label, i) => <React.Fragment key={label}>{i > 0 ? ', ' : ''}{inline(label)}</React.Fragment>)}:</> : 'Why:'}
+          </span>{' '}
+          {inline(question.why)}
+        </p>
       )}
 
       {noteOpen && (!readOnly || !!answer?.note?.trim()) && (
