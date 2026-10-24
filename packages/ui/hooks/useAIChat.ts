@@ -277,6 +277,9 @@ export function useAIChat({
   // In-flight server abort (from Stop or a superseding question). The next ask()
   // waits on it so a new query can't race the still-active turn into busy.
   const pendingAbortRef = useRef<Promise<unknown> | null>(null);
+  // Answers a newer question replaced. Their fetch stays open until the server
+  // acknowledges the supersede, but nothing more they stream is shown.
+  const supersededRef = useRef(new WeakSet<AbortController>());
   const sessionEpochRef = useRef(0);
   const createRequestRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
@@ -358,6 +361,7 @@ export function useAIChat({
   const ask = useCallback(async (params: AskAIParams, askOptions?: { providerId?: string }) => {
     const previous = abortRef.current;
     if (previous) {
+      supersededRef.current.add(previous);
       pendingAbortRef.current = postServerAbort('supersede');
     }
     // Let the server distinguish supersede from Stop before disconnecting:
@@ -405,7 +409,7 @@ export function useAIChat({
         sid = await createSession(controller.signal, epoch);
       }
 
-      if (controller.signal.aborted || epoch !== sessionEpochRef.current) {
+      if (controller.signal.aborted || supersededRef.current.has(controller) || epoch !== sessionEpochRef.current) {
         throw createAbortError('AI question was superseded');
       }
 
@@ -447,6 +451,7 @@ export function useAIChat({
 
       while (true) {
         const { done, value } = await reader.read();
+        if (supersededRef.current.has(controller)) throw createAbortError('AI question was superseded');
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
@@ -588,7 +593,7 @@ export function useAIChat({
         )
       );
     } finally {
-      if (abortRef.current === controller) {
+      if (abortRef.current === controller && !supersededRef.current.has(controller)) {
         setIsStreaming(false);
         abortRef.current = null;
       }

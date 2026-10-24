@@ -267,6 +267,12 @@ export function createAIEndpoints(deps: AIEndpointDeps) {
     pullBridge,
   } = deps;
 
+  // Streams whose question /api/ai/abort already handled. The browser drops a
+  // superseded answer's fetch only after that abort is acknowledged, so its
+  // disconnect can arrive after the next question started; it must not abort
+  // again (the session-level abort would hit the new question).
+  const liveStreams = new Map<string, Set<{ handled: boolean }>>();
+
   const handlePullBridge = async (req: Request): Promise<Response> => {
     if (!pullBridge) {
       return Response.json({ error: "No session bridge on this server.", code: "session_bridge_unavailable" }, { status: 404 });
@@ -450,6 +456,14 @@ export function createAIEndpoints(deps: AIEndpointDeps) {
 
       // Stream the response using Server-Sent Events (SSE)
       const encoder = new TextEncoder();
+      const marker = { handled: false };
+      let markers = liveStreams.get(sessionId);
+      if (!markers) liveStreams.set(sessionId, (markers = new Set()));
+      markers.add(marker);
+      const forget = () => {
+        markers!.delete(marker);
+        if (markers!.size === 0 && liveStreams.get(sessionId) === markers) liveStreams.delete(sessionId);
+      };
       const stream = new ReadableStream({
         async start(controller) {
           try {
@@ -473,13 +487,17 @@ export function createAIEndpoints(deps: AIEndpointDeps) {
               encoder.encode(`data: ${JSON.stringify(errorMsg)}\n\n`)
             );
           } finally {
+            forget();
             controller.close();
           }
         },
         cancel() {
           // Client disconnected (Stop fetch abort, superseding question, tab
           // close, navigation). Stop the in-flight turn so it doesn't keep
-          // running on the now long-lived provider process.
+          // running on the now long-lived provider process. Not when an abort
+          // request already handled this question (see liveStreams).
+          forget();
+          if (marker.handled) return;
           entry.session.abort();
         },
       });
@@ -507,6 +525,7 @@ export function createAIEndpoints(deps: AIEndpointDeps) {
         );
       }
 
+      for (const marker of liveStreams.get(body.sessionId) ?? []) marker.handled = true;
       if (body.reason === "supersede" && entry.session instanceof SessionBridgeSession) {
         entry.session.supersede();
       } else {
