@@ -4071,4 +4071,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 @media (max-width: 359px) {
   .ib-artbtn-n { display: none; }
   .pn-inbox .ib-iconbtn.ib-artbtn { width: 44px; padding: 0; }
+  /* With the pin to the sidebar there (approval "inbox-pinned-threads") one more 44 px icon has no room: Mark read
+     shows its icon alone, its words kept as its name (visually hidden, still read). */
+  .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pn-inbox .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
 }

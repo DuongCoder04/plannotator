@@ -2861,7 +2861,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
     >
       <button type="button" className="ib-hbtn" data-mark-read="" aria-pressed={readAt !== null} disabled={!markReadEnabled} onClick={() => onMarkRead!(readAt === null)}>
         <Icon name="checkCircle" size={16} />
-        {readAt !== null ? 'Read' : 'Mark read'}
+        <span className="ib-hbtn-l">{readAt !== null ? 'Read' : 'Mark read'}</span>
         <kbd className="ib-kbd ib-wide">E</kbd>
       </button>
     </Tip>
