@@ -621,6 +621,22 @@ describe('QuestionBlock', () => {
     expect(row().querySelector('input')!.checked).toBe(false);
   });
 
+  test.skipIf(!hasDom)('pick any: text that Skip cleared never comes back when the row is unticked later', async () => {
+    const multi = [':::question-multi', 'Which stores?', '- [ ] Redis', '- [ ] Memcached', 'Recommended: SQLite on the box', ':::'].join('\n');
+    const el = await mount(<Harness markdown={multi} />);
+    const card = () => cards(el)[0];
+    const row = () => card().querySelector<HTMLLabelElement>('label[data-question-suggested]')!;
+    const otherField = () => card().querySelector<HTMLInputElement>('input[aria-label^="Other answer"]')!;
+    await type(otherField(), 'Mine');
+    await click(row().querySelector('span')!);
+    await click(button(card(), 'Skip')!);
+    await click(button(card(), 'Unskip')!);
+    await click(row().querySelector('span')!);
+    await click(row().querySelector('span')!);
+    expect(answerOf(0)?.other).toBeUndefined();
+    expect(otherField().value).toBe('');
+  });
+
   test.skipIf(!hasDom)('a read-only card shows the recommended row, checked when the answer was it', async () => {
     const [q] = indexQuestionBlocks(parseMarkdownToBlocks(UNMATCHED));
     const initial = upsertQuestionAnswerAnnotation([], q.blockId, { v: 1, key: q.question.key, kind: 'single', prompt: q.question.prompt, selected: [], other: 'SQLite on the box' }, q.question.key);

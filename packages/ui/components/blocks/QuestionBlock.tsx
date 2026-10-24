@@ -279,6 +279,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     }
   };
   const cancel = () => {
+    replacedOtherRef.current = null;
     setDraft(null);
     setNotePinned(null);
   };
@@ -388,7 +389,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     const { skipped: _s, other: _o, ...rest } = base;
     if (question.kind === 'multi') {
       if (checked) {
-        if (storedOther.trim() && !suggestionPicked) replacedOtherRef.current = storedOther;
+        if (!suggestionPicked) replacedOtherRef.current = storedOther.trim() ? storedOther : null;
         setOtherBy('row');
         commit({ ...rest, selected, other: text });
       } else {
@@ -423,6 +424,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   };
 
   const toggleSkip = () => {
+    replacedOtherRef.current = null;
     if (base.skipped) {
       const { skipped: _s, ...rest } = base;
       commit(rest);
