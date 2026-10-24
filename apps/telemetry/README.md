@@ -62,13 +62,13 @@ These are accepted for phase 1 and listed so totals are read with care:
 No workflow deploys this Worker, and no workflow holds a Cloudflare secret. From this folder:
 
 ```sh
-wrangler d1 create plannotator-telemetry       # copy the database_id it prints into wrangler.toml
-wrangler d1 migrations apply COUNTS --remote
+wrangler d1 create plannotator-telemetry       # done 2026-10-24; its id is in wrangler.toml
+wrangler d1 migrations apply COUNTS --remote   # 0001 applied 2026-10-24
 wrangler secret put READ_TOKEN                 # a long random string; agents use it to read totals
 wrangler deploy
 ```
 
-`wrangler.toml` names the custom domain `counts.plannotator.ai` and turns off the `*.workers.dev` hostname and preview URLs (`workers_dev = false`, `preview_urls = false`). Its `database_id` is a placeholder until the owner replaces it. Without `READ_TOKEN`, every read answers `401`.
+`wrangler.toml` names the custom domain `counts.plannotator.ai` and turns off the `*.workers.dev` hostname and preview URLs (`workers_dev = false`, `preview_urls = false`). Its `database_id` names the database on the owner's account, made with the first two commands above on 2026-10-24. Without `READ_TOKEN`, every read answers `401`.
 
 ## The proof
 
