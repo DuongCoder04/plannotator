@@ -12,7 +12,9 @@ import type { TestResult } from '../notify';
 import { blockedSteps, browserName, isMac, notifyStatusKind, notifyStatusText, reachText, testMissHint } from '../notifyStatus';
 import { DevicesSection, devicesNeedAttention, usePhones } from './Devices';
 import { SidebarTrigger } from '../shell/sidebar';
-import { useInboxTheme } from '../theme';
+import { useInboxPalettes, useInboxTheme } from '../theme';
+import { PaletteRow } from './Palettes';
+import { DEFAULT_COLOR_THEME } from '@plannotator/ui/utils/themeRegistry';
 import { chooseTextSize, useInboxTextSize } from '../textSize';
 import { SETTINGS_SECTION_LABEL, SETTINGS_SECTIONS, settingsHash, type SettingsSection } from '../settingsRoute';
 
@@ -163,8 +165,9 @@ const THEME_CHOICES = [
 
 /**
  * General (design of record `.product/approved/inbox-settings-tabs/`):
- * Appearance (light, dark, or match this computer; Plannotator's one theme
- * preference, so plan review follows it too), and how the Inbox gets your
+ * Appearance (light, dark, or match this computer; the text size; and the
+ * palette for each half, Plannotator's one theme preference, so plan review
+ * follows it too), and how the Inbox gets your
  * attention when an agent asks: desktop notifications and the sound.
  */
 function GeneralSection({
@@ -245,6 +248,7 @@ function GeneralSection({
               </span>
             </span>
           </div>
+          <PaletteRow />
         </div>
       </section>
       <section className="ib-sgroup" data-settings-notifications="" aria-labelledby="ib-g-attention">
@@ -539,6 +543,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const phones = usePhones(phonesOn);
   const via = settings?.via ?? 'local';
   const { mode } = useInboxTheme();
+  const palettes = useInboxPalettes();
   const heading = useRef<HTMLHeadingElement>(null);
   const firstSection = useRef(true);
 
@@ -581,8 +586,13 @@ export function SettingsPage(props: SettingsPageProps) {
   const value = (id: SettingsSection): string => {
     if (!settings) return '';
     switch (id) {
-      case 'general':
-        return mode === 'system' ? 'Match system' : mode === 'light' ? 'Light' : 'Dark';
+      case 'general': {
+        const modeLabel = mode === 'system' ? 'Match system' : mode === 'light' ? 'Light' : 'Dark';
+        // The palette on screen, unless both halves are still the default one.
+        const shownPalette = palettes.pair[palettes.shown];
+        const defaults = palettes.pair.light === DEFAULT_COLOR_THEME && palettes.pair.dark === DEFAULT_COLOR_THEME;
+        return defaults ? modeLabel : `${modeLabel} · ${palettes.nameOf(shownPalette)}`;
+      }
       case 'agents': {
         if (props.agents) {
           const connected = props.agents.agents.filter((row) => row.detected && row.reach.on).map((row) => row.label);

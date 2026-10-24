@@ -14,14 +14,15 @@
  * message and rings its card. Then the list as a bottom sheet on a phone
  * (WebKit, iPhone 15). Then the foot's buttons on one row with a pick waiting
  * (beside a file at 1100, 1280 and 1440, and on phones), and the "N new" pill
- * on a phone never lying over a foot button. Last, Skip from the list (owner,
- * 2026-10-24): it saves what the card's own Skip saves, the list stays open,
- * and the phone sheet's Skip is a 44 px target.
+ * on a phone never lying over a foot button. Last, skipping from the list
+ * (approval "oq-skip-select", variant A): no Skip on a row, a skipped row
+ * quiet at rest, "Skip…" entering a select mode whose ticks save nothing until
+ * "Skip N", which saves what the card's own Skip saves; then the phone sheet.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * PNGs (desktop 1440 and a phone, light and dark) land in
  * PLANNOTATOR_OPEN_Q_SHOTS, or .local/proof/open-questions/ (the Skip shots:
- * skip-desktop-*.png and skip-phone-*.png).
+ * skip-rest-*.png, skip-select-*.png and skip-phone-*.png).
  */
 
 import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
@@ -165,7 +166,7 @@ test.afterAll(async () => {
   }
 });
 
-test('desktop: the button sits after Edit draft, its list names state and place and ends with Re-ask, and a folded question opens and rings', async () => {
+test('desktop: the button sits after Edit draft, its list names state and place, then Re-ask and "Skip…", and a folded question opens and rings', async () => {
   const { page, ids } = world;
   await page.goto(`${world.url}#thread=${world.threadId}`);
   const pane = page.locator('section.ib-pane');
@@ -195,10 +196,11 @@ test('desktop: the button sits after Edit draft, its list names state and place 
   await expect(list).not.toContainText('Choose one');
   const rows = list.locator('.ib-oq-row');
   await expect(rows).toHaveCount(6);
-  // Each row and its Skip (owner, 2026-10-24), then Re-ask, the last menu item.
-  await expect(list.getByRole('menuitem')).toHaveCount(13);
-  await expect(list.locator('[data-open-question-skip]')).toHaveCount(6);
-  await expect(list.getByRole('menuitem').last()).toHaveText('Re-ask in one new message');
+  // The rows, then the last row: Re-ask and "Skip…" (approval "oq-skip-select"). No Skip on any row.
+  await expect(list.getByRole('menuitem')).toHaveCount(8);
+  await expect(list.locator('[data-open-question-skip]')).toHaveCount(0);
+  await expect(list.getByRole('menuitem').nth(6)).toHaveText('Re-ask in one new message');
+  await expect(list.getByRole('menuitem').last()).toHaveText('Skip…');
   await expect(rows.nth(1)).toContainText('How many times should a rate-limited charge be retried?');
   await expect(rows.nth(1).locator('.ib-oq-when')).toHaveText(/ · in a folded message$/);
   await expect(rows.nth(2).locator('.ib-b-stop')).toHaveText('Stopped');
@@ -364,7 +366,7 @@ const skipShape = (a: Record<string, unknown> | null) => {
   return rest;
 };
 
-test('Skip from the list: what the card\'s Skip saves, the list stays open, several in a row; then the phone sheet', async () => {
+test('Skip from the list: "Skip…", tick two, "Skip 2" saves what the card\'s Skip saves; Escape and Unskip; then the phone sheet', async () => {
   const { page, ids } = world;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${world.url}#thread=${world.threadId}`);
@@ -377,52 +379,75 @@ test('Skip from the list: what the card\'s Skip saves, the list stays open, seve
   await expect.poll(async () => (await serverQuestion(ids.at(-1)!)).state).toBe('picked');
   const byCard = await serverQuestion(ids.at(-1)!);
 
-  // The list's Skip on the queue question (folded) and the rate-limit question (in the middle fold).
   const button = pane.locator('.ib-pfoot [data-open-questions]');
   await button.click();
   const list = page.locator('[data-open-questions-list]');
   await expect(list).toBeVisible();
-  const skip = (messageId: string) => list.locator(`[data-open-question-skip^="${messageId}/"]`);
   const row = (messageId: string) => list.locator(`[data-open-question^="${messageId}/"]`);
-  await expect(skip(ids[0]!)).toHaveAccessibleName('Skip question 1: Which queue backs the retry worker?');
-  await expect(row(ids.at(-1)!).locator('.ib-oq-draft')).toHaveText('Draft · Skipped');
-  await expect(skip(ids.at(-1)!)).toHaveText('Unskip');
-  await skip(ids[0]!).click();
-  await expect(list).toBeVisible();
-  await expect(row(ids[0]!).locator('.ib-oq-draft')).toHaveText('Draft · Skipped');
-  await expect(skip(ids[0]!)).toBeFocused();
-  // The keyboard: down to the next row, then to its Skip, Enter.
-  await page.keyboard.press('ArrowDown');
-  await expect(row(ids[1]!)).toBeFocused();
-  await page.keyboard.press('ArrowDown');
-  await expect(skip(ids[1]!)).toBeFocused();
+  const skipMode = list.locator('[data-open-questions-skip-mode]');
+  // At rest the runbook row is quiet: the skip glyph for its number, "Skipped", no Skip pill anywhere.
+  await expect(row(ids.at(-1)!)).toHaveAttribute('data-skipped', '');
+  await expect(row(ids.at(-1)!).locator('.ib-oq-skipped')).toHaveText('Skipped');
+  await expect(row(ids.at(-1)!).locator('.ib-oq-draft')).toHaveCount(0);
+  await expect(list.locator('[data-open-question-skip]')).toHaveCount(0);
+
+  // The keyboard: End reaches "Skip…", Enter enters select mode, Space ticks, Escape drops the ticks.
+  await skipMode.focus();
   await page.keyboard.press('Enter');
-  await expect(row(ids[1]!).locator('.ib-oq-draft')).toHaveText('Draft · Skipped');
+  await expect(row(ids[0]!)).toHaveAttribute('role', 'menuitemcheckbox');
+  await expect(row(ids[0]!)).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(row(ids[0]!)).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
   await expect(list).toBeVisible();
-  await expect(skip(ids[1]!)).toBeFocused();
-  // Saved exactly as the card's Skip saved its own: a pick marked skipped, in the draft until the Send.
-  for (const id of [ids[0]!, ids[1]!]) {
-    // The row shows a pick being saved at once, as its card does: wait for the save itself.
-    await expect.poll(async () => (await serverQuestion(id)).state).toBe('picked');
-    const saved = await serverQuestion(id);
-    expect(skipShape(saved.answer)).toEqual({ ...skipShape(byCard.answer), kind: 'single' });
-  }
-  expect(skipShape(byCard.answer)).toMatchObject({ selected: [], skipped: true });
-  await expect(button).toHaveText('6 open questions');
+  await expect(pane).toBeVisible();
+  await expect(skipMode).toBeFocused();
+  await expect(row(ids[0]!)).toHaveAttribute('role', 'menuitem');
+
+  // The pointer: tick the queue (folded) and rate-limit (middle fold) questions; nothing saved until the button.
+  await skipMode.click();
+  await row(ids[0]!).click();
+  await row(ids[1]!).click();
+  await expect(row(ids[1]!)).toHaveAttribute('aria-checked', 'true');
+  await expect(list.locator('[data-open-questions-select-head]')).toHaveText('2 selected');
+  const apply = list.locator('[data-open-questions-apply]');
+  await expect(apply).toHaveText('Skip 2');
+  await expect(list.locator('[data-open-questions-skip-all]')).toHaveText(/^Skip all \d+$/);
+  expect((await serverQuestion(ids[0]!)).state).toBe('open');
   await page.mouse.move(10, 10);
   for (const scheme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
     await page.waitForTimeout(300);
-    await page.screenshot({ path: join(proofDir, `skip-desktop-${scheme}.png`) });
+    await page.screenshot({ path: join(proofDir, `skip-select-${scheme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
-  // The card reads as the list says: skipped, in the draft.
+  await apply.click();
+  await expect(list).toBeVisible();
+  await expect(skipMode).toBeFocused();
+  // Saved exactly as the card's Skip saved its own: a pick marked skipped, in the draft until the Send.
+  for (const id of [ids[0]!, ids[1]!]) {
+    await expect.poll(async () => (await serverQuestion(id)).state).toBe('picked');
+    const saved = await serverQuestion(id);
+    expect(skipShape(saved.answer)).toEqual({ ...skipShape(byCard.answer), kind: 'single' });
+    await expect(row(id)).toHaveAttribute('data-skipped', '');
+  }
+  expect(skipShape(byCard.answer)).toMatchObject({ selected: [], skipped: true });
+  await expect(button).toHaveText('6 open questions');
+  // At rest again: three skipped rows, quiet.
+  await page.mouse.move(10, 10);
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(proofDir, `skip-rest-${scheme}.png`) });
+  }
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
+  await skipMode.focus();
   await page.keyboard.press('Escape');
   await expect(list).toHaveCount(0);
   await expect(pane.locator('.ib-pfoot [data-foot-status] [data-draft-foot]')).toContainText('4 picks');
   expect(world.errors).toEqual([]);
 
-  // The phone sheet: Skip is a 44 px target; Unskip takes the queue skip back.
+  // The phone sheet: 44 px targets; tick the queue question and Unskip it.
   let own: Browser | null = null;
   try {
     own = await webkit.launch({ args: [] });
@@ -432,20 +457,49 @@ test('Skip from the list: what the card\'s Skip saves, the list stays open, seve
     await phone.locator('.ib-pfoot [data-open-questions]').click();
     const sheet = phone.locator('[data-open-questions-list]');
     await expect(sheet).toBeVisible();
-    const item = sheet.locator(`[data-open-question-skip^="${ids[0]}/"]`);
-    await expect(item).toHaveText('Unskip');
-    const box = (await item.boundingBox())!;
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    await phone.waitForTimeout(300);
-    await phone.screenshot({ path: join(proofDir, 'skip-phone-light.png') });
-    await phone.emulateMedia({ colorScheme: 'dark' });
-    await phone.waitForTimeout(300);
-    await phone.screenshot({ path: join(proofDir, 'skip-phone-dark.png') });
-    await item.click();
+    const phoneSkip = sheet.locator('[data-open-questions-skip-mode]');
+    expect((await phoneSkip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    for (const scheme of ['light', 'dark'] as const) {
+      await phone.emulateMedia({ colorScheme: scheme });
+      await phone.waitForTimeout(300);
+      await phone.screenshot({ path: join(proofDir, `skip-phone-rest-${scheme}.png`) });
+    }
+    await phone.emulateMedia({ colorScheme: 'light' });
+    await phoneSkip.click();
+    const queue = sheet.locator(`[data-open-question^="${ids[0]}/"]`);
+    const stripe = sheet.locator(`[data-open-question^="${ids[2]}/"]`);
+    const logging = sheet.locator(`[data-open-question^="${ids[6]}/"]`);
+    const apply = sheet.locator('[data-open-questions-apply]');
+    // Two open questions ticked: "Skip 2", as the approved phone shot.
+    await stripe.click();
+    await logging.click();
+    await expect(logging).toHaveAttribute('aria-checked', 'true');
+    await expect(apply).toHaveText('Skip 2');
+    const viewport = phone.viewportSize()!;
+    for (const target of [sheet.locator('[data-open-questions-cancel]'), sheet.locator('[data-open-questions-apply]'), sheet.locator('[data-open-questions-skip-all]'), sheet.locator('[data-open-questions-close]')]) {
+      const box = (await target.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      // The head and the bar stay in view; only the rows scroll.
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+    }
+    // Rows never squeeze into each other (only the list scrolls).
+    const boxes = await sheet.locator('.ib-oq-row').evaluateAll((els) => els.map((el) => el.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
+    for (let i = 1; i < boxes.length; i += 1) expect(boxes[i]!.top).toBeGreaterThanOrEqual(boxes[i - 1]!.bottom - 1);
+    for (const scheme of ['light', 'dark'] as const) {
+      await phone.emulateMedia({ colorScheme: scheme });
+      await phone.waitForTimeout(300);
+      await phone.screenshot({ path: join(proofDir, `skip-phone-select-${scheme}.png`) });
+    }
+    // A skipped row ticked too: the button names both; untick the two open ones and it reads Unskip 1.
+    await queue.click();
+    await expect(apply).toHaveText('Skip 2, unskip 1');
+    await stripe.click();
+    await logging.click();
+    await expect(apply).toHaveText('Unskip 1');
+    await apply.click();
     await expect(sheet).toBeVisible();
-    await expect(item).toHaveText('Skip');
-    await expect(sheet.locator(`[data-open-question^="${ids[0]}/"] .ib-oq-draft`)).toHaveCount(0);
+    await expect(queue).not.toHaveAttribute('data-skipped', '');
     await expect.poll(async () => (await serverQuestion(ids[0]!)).state).toBe('open');
     await context.close();
   } finally {
