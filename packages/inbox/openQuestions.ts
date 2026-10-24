@@ -13,6 +13,7 @@
 
 import type { InboxMessageWire, InboxQuestion } from '@plannotator/core/inbox-types';
 import { readInboxQuestionKind } from '@plannotator/core/inbox-types';
+import { inboxQuestionWaitsOnPerson } from '@plannotator/core/inbox-questions';
 import { isQuestionAnswerEmpty, type QuestionAnswer } from '@plannotator/core/question-block';
 import { formatCount } from './format';
 
@@ -36,8 +37,8 @@ const isQuestion = (q: InboxQuestion) => {
   return kind !== 'unknown' && kind !== 'action';
 };
 
-/** Open, or picked and not sent. */
-const waits = (q: InboxQuestion) => q.state === 'open' || q.state === 'picked';
+/** Open, or picked and not sent: core's one "waits on the person" rule (decision mode and the list read it too). */
+const waits = (q: InboxQuestion) => inboxQuestionWaitsOnPerson(q);
 
 /**
  * The thread's open questions, in thread order, and how many replaced ones

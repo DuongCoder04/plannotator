@@ -19,7 +19,9 @@ import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
-import type { InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import type { InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import { DecisionMode } from './decisions/DecisionMode';
+import { DecisionPill, decideEntryShown } from './decisions/entry';
 import {
   InboxApiError,
   inboxApi,
@@ -401,6 +403,35 @@ function Inbox() {
     storage.setItem(SIDEBAR_OPEN_COOKIE, String(next));
   }, []);
   const [latest, setLatest] = useState<ListModel | null>(null);
+  /**
+   * Decision mode (experimental, approval "inbox-decision-mode"): the
+   * projection while the feature is on, and the sitting (open, or tucked
+   * into its pill behind a thread). Off, nothing of it renders.
+   */
+  const [decisions, setDecisions] = useState<InboxDecision[] | null>(null);
+  const decisionsRef = useRef(decisions);
+  decisionsRef.current = decisions;
+  // `startNonce`: a new start while the sitting is open (another notification) moves it to that card.
+  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null; startNonce: number } | null>(null);
+  /** What opened decision mode: focus goes back there when the sitting ends. */
+  const decideOpener = useRef<HTMLElement | null>(null);
+  const [decideLeft, setDecideLeft] = useState(0);
+  const [decidePaused, setDecidePaused] = useState(0);
+  const decisionModeOnRef = useRef(false);
+  const questionListeners = useRef(new Set<(question: InboxQuestion) => void>());
+  const subscribeQuestions = useCallback((listener: (question: InboxQuestion) => void) => {
+    questionListeners.current.add(listener);
+    return () => void questionListeners.current.delete(listener);
+  }, []);
+  const refreshDecisions = useCallback(async () => {
+    if (!decisionModeOnRef.current) return;
+    try {
+      const next = await inboxApi.decisions();
+      if (decisionModeOnRef.current) setDecisions(next.decisions);
+    } catch {
+      // Off on the server (another window turned it off): the next settings read says so.
+    }
+  }, []);
   /** The latest list read's sections, for the event stream's `deliveries` (which reads again only while a delivery can move). */
   const latestSectionsRef = useRef<ListModel['sections'] | null>(null);
   latestSectionsRef.current = latest?.sections ?? null;
@@ -553,9 +584,35 @@ function Inbox() {
     // A click on a notification: the thread opens, and the list on screen catches up, even with a
     // thread open. The one exception to "the list holds still while a thread is open" (settle.ts):
     // the person was away, and the thread notified may not be on screen at all.
-    openThread: (threadId) => {
-      writeRoute({ page: 'inbox', project: null, thread: threadId });
-      void refreshList(true);
+    openThread: (threadId, questionId) => {
+      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode"):
+      // the question it notified about, else a Stopped one of that thread. The projection may not have the
+      // new question yet, so it is read once more before giving up on it.
+      const stoppedOf = (list: readonly InboxDecision[] | null) =>
+        (questionId ? list?.find((d) => d.id === questionId && d.question.stopped !== null) : undefined) ??
+        list?.find((d) => d.thread.id === threadId && d.question.stopped !== null);
+      const fallback = () => {
+        writeRoute({ page: 'inbox', project: null, thread: threadId });
+        void refreshList(true);
+      };
+      if (!decisionModeOnRef.current) return fallback();
+      const openOn = (decision: InboxDecision) => {
+        setDecide((current) => ({ tucked: false, start: decision.id, startNonce: (current?.startNonce ?? 0) + 1 }));
+        void refreshDecisions();
+        void refreshList(true);
+      };
+      const known = stoppedOf(decisionsRef.current);
+      if (known) return openOn(known);
+      if (!questionId) return fallback();
+      void inboxApi.decisions().then(
+        (model) => {
+          setDecisions(model.decisions);
+          const found = stoppedOf(model.decisions);
+          if (found) openOn(found);
+          else fallback();
+        },
+        () => fallback(),
+      );
     },
     // A click on a burst's notice: the list at rest, as it now is.
     openList: () => {
@@ -879,9 +936,11 @@ function Inbox() {
       unsubscribe = subscribeInboxEvents(first.cursor, {
         onRecord: (event) => {
           observeEvent(event);
+          if (event?.kind === 'question') for (const listener of questionListeners.current) listener(event.question);
           if (timer) clearTimeout(timer);
           timer = setTimeout(() => {
             void refreshList(false).then((next) => next && flushNotifications(next));
+            void refreshDecisions();
             const open = routeRef.current.thread;
             if (open) void refreshThread(open);
             // Picks and comments are unsent work too: the Drafts row follows them.
@@ -931,7 +990,7 @@ function Inbox() {
       if (draftsTimer) clearTimeout(draftsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
     };
-  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
+  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
   // Opening a thread: read it, record the look, and update its row in place.
   // While any thread is open the list holds still (settle.ts): the look
@@ -2069,6 +2128,19 @@ function Inbox() {
     }
   };
 
+  // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  const toggleExperimental = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current ? { ...current, experimental: { decision_mode: { on: next, env: current.experimental?.decision_mode.env ?? null } } } : current));
+    try {
+      const saved = await inboxApi.saveExperimental({ decision_mode: next });
+      setSettings((current) => (current ? { ...current, experimental: saved.experimental } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   // "Over your tailnet": saved to config.json and applied at once; the answer carries the address or why not.
   const [tailscaleBusy, setTailscaleBusy] = useState(false);
   const toggleTailscale = async (next: boolean, replaceExposed = false) => {
@@ -2107,6 +2179,38 @@ function Inbox() {
 
   const projects = latest?.projects ?? [];
   const latestSections = latest?.sections ?? [];
+  const latestRows = useMemo(() => new Map((latest?.sections ?? []).flatMap((section) => section.threads).map((row) => [row.thread_id, row] as const)), [latest]);
+  // Decision mode is on only while settings say so; with it off, nothing of it renders and nothing is read.
+  const decisionModeOn = settings?.experimental?.decision_mode.on === true;
+  decisionModeOnRef.current = decisionModeOn;
+  useEffect(() => {
+    if (decisionModeOn) void refreshDecisions();
+    else {
+      setDecisions(null);
+      setDecide(null);
+    }
+  }, [decisionModeOn, refreshDecisions]);
+  const decideCount = decisionModeOn ? (decisions?.length ?? 0) : 0;
+  const openDecide = (start: string | null = null) => {
+    const active = document.activeElement;
+    decideOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    setDecide((current) => ({ tucked: false, start, startNonce: (current?.startNonce ?? 0) + 1 }));
+    void refreshDecisions();
+  };
+  /** The sitting ended: focus back on what opened it, else on a Decide button still on screen. */
+  const closeDecide = () => {
+    setDecide(null);
+    void refreshList(true);
+    const opener = decideOpener.current;
+    decideOpener.current = null;
+    requestAnimationFrame(() => {
+      const target =
+        (opener?.isConnected ? opener : null) ??
+        document.querySelector<HTMLElement>('[data-decide-head]') ??
+        document.querySelector<HTMLElement>('[data-decide-nav]');
+      target?.focus({ preventScroll: true });
+    });
+  };
   // Pins (approval "inbox-pinned-threads"): an older Inbox sends no `pins`, so no Pinned section and no pin anywhere.
   const pinsOn = latest?.pins !== undefined;
   const pinRows = latest?.pins;
@@ -2313,6 +2417,7 @@ function Inbox() {
         context={context}
         error={settingsError}
         onToggleTool={toggleTool}
+        onToggleExperimental={(next) => void toggleExperimental(next)}
         agents={agents}
         onAgents={setAgents}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
@@ -2450,6 +2555,8 @@ function Inbox() {
           pinned={pinsOn ? pinnedIds : undefined}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
+          decideCount={decideEntryShown(decideCount) ? decideCount : 0}
+          onDecide={() => openDecide()}
           phone={phone}
           empty={
             projectAllArchived(filterProject) ? (
@@ -2605,6 +2712,8 @@ function Inbox() {
             updated={updated}
             onSearch={(opener) => openSearch(opener)}
             onCompose={(opener) => openCompose({}, opener)}
+            decideCount={decideEntryShown(decideCount) ? decideCount : 0}
+            onDecide={() => openDecide()}
             pins={pinRows}
             openThreadId={route.thread}
             onOpenPin={openPinned}
@@ -2717,6 +2826,26 @@ function Inbox() {
           onClose={() => closeCompose()}
         />
       )}
+      {decisionModeOn && decide && (
+        <DecisionMode
+          open={!decide.tucked}
+          decisions={decisions}
+          rows={latestRows}
+          start={decide.start}
+          startNonce={decide.startNonce}
+          phone={phone}
+          refresh={refreshDecisions}
+          subscribeQuestions={subscribeQuestions}
+          onLeft={setDecideLeft}
+          onPaused={setDecidePaused}
+          onTuck={(threadId, fileId) => {
+            setDecide((current) => (current ? { ...current, tucked: true } : current));
+            writeRoute({ page: 'inbox', project: null, thread: threadId, file: fileId ? { id: fileId, version: 'current', focus: null } : null });
+          }}
+          onClose={closeDecide}
+        />
+      )}
+      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} paused={decidePaused} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
       <div className="ib-sr" aria-live="polite" data-inbox-live="">
         {said}
       </div>

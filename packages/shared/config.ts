@@ -328,6 +328,15 @@ export interface PlannotatorConfig {
    * `{ text_size }`.
    */
   inboxTextSize?: number;
+  /**
+   * Experimental features, each off unless switched on (owner, approval
+   * "inbox-decision-mode": experimental features ship off by default behind a
+   * flag the person turns on). Read through `resolveExperimental`;
+   * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
+   * Settings → General → Experimental through POST /api/inbox/settings
+   * `{ experimental: { decision_mode } }`.
+   */
+  experimental?: { decisionMode?: boolean };
   inboxSound?: {
     enabled?: boolean;
     volume?: number;
@@ -718,9 +727,19 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
       ? { ...current.reviewAnalysis, ...partial.reviewAnalysis }
       : undefined;
     const mergedPrompts = mergePromptConfig(current.prompts, partial.prompts);
+    // One experimental switch saved keeps the others as they are.
+    // A hand-edited config.json may hold anything there: only plain objects are merged.
+    const plain = (value: unknown): Record<string, unknown> | undefined =>
+      value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+    const currentExperimental = plain(current.experimental);
+    const partialExperimental = plain(partial.experimental);
+    const mergedExperimental = currentExperimental || partialExperimental
+      ? { ...currentExperimental, ...partialExperimental } as PlannotatorConfig["experimental"]
+      : undefined;
     const merged = {
       ...current,
       ...partial,
+      experimental: mergedExperimental,
       diffOptions: mergedDiffOptions,
       theme: mergedTheme,
       reviewAnalysis: mergedReviewAnalysis,
@@ -1242,6 +1261,54 @@ export function resolveInboxPhones(
   if (v === "1" || v === "true" || v === "on") return true;
   if (v === "0" || v === "false" || v === "off" || v === "disabled") return false;
   return coerceConfigBoolean(config.inboxPhones, false);
+}
+
+/**
+ * The experimental features this build knows: the name PLANNOTATOR_EXPERIMENTAL
+ * lists (kebab case) and the key it is saved under in config.json
+ * `experimental` (camel case). Small on purpose: a fuller flag registry is a
+ * separate piece of work and can grow out of this table.
+ */
+export const EXPERIMENTAL_FEATURES = {
+  "decision-mode": "decisionMode",
+} as const;
+
+export type ExperimentalFeature = keyof typeof EXPERIMENTAL_FEATURES;
+
+/**
+ * What PLANNOTATOR_EXPERIMENTAL says about one feature, or undefined when it
+ * says nothing. The variable is a comma list of feature names: a name listed
+ * turns that feature on, a name with a leading `-` turns it off (`-decision-mode`);
+ * names are trimmed and compared case-insensitively, and unknown names are ignored.
+ */
+export function parseExperimentalEnv(name: ExperimentalFeature, env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const raw = env.PLANNOTATOR_EXPERIMENTAL;
+  if (!raw) return undefined;
+  let decided: boolean | undefined;
+  for (const part of raw.split(",")) {
+    const token = part.trim().toLowerCase();
+    if (token === name) decided = true;
+    else if (token === `-${name}`) decided = false;
+  }
+  return decided;
+}
+
+/**
+ * Whether an experimental feature is on.
+ *
+ * Priority (highest wins):
+ *   PLANNOTATOR_EXPERIMENTAL (comma list)  →  config.experimental.<key>  →  default false
+ */
+export function resolveExperimental(
+  config: PlannotatorConfig,
+  name: ExperimentalFeature,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const fromEnv = parseExperimentalEnv(name, env);
+  if (fromEnv !== undefined) return fromEnv;
+  const saved = config.experimental;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return false;
+  return parseConfigBoolean((saved as Record<string, unknown>)[EXPERIMENTAL_FEATURES[name]]) ?? false;
 }
 
 /** The PLANNOTATOR_INBOX_TAILSCALE override, or undefined when it does not decide. */

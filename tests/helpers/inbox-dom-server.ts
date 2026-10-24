@@ -85,6 +85,14 @@
  * guide }`: the inline image's id under `before.png`, the attached copy's under
  * `before.png (attached)`).
  *
+ * With `decisions` (decision mode, experimental; approval "inbox-decision-mode"):
+ * config.json turns decision mode on, and each project gets only this seed in
+ * place of the one above: Claude Code (`ses_da<i>`) asks two questions in one
+ * message (a Stopped pick-one of three, recommended, then a two-way), and
+ * Codex (`ses_db<i>`) asks one two-way question in a thread of its own. The
+ * world is `{ project, root, decide: { a, b, sessionA, sessionB } }`. A `send`
+ * line on stdin may carry `supersedes` (and `host`).
+ *
  * With `leaked-subject`, each project also gets a thread whose STORED subject
  * holds an agent's leaked tool-call text, as an Inbox older than the one-line
  * subject check kept it (tests/helpers/inbox-leaked-subject.ts); the world
@@ -214,6 +222,12 @@ if (whatsNewMode) {
   process.env.PLANNOTATOR_UPDATE_API_URL = `http://127.0.0.1:${releaseApi.port}/releases/latest`;
 }
 const openInMode = extra === "open-in";
+const decisionsMode = extra === "decisions";
+// Decision mode is experimental and off by default: this mode turns it on in the scratch config.json.
+if (decisionsMode) {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { decisionMode: true } }));
+}
 const restartMode = extra === "restart";
 const claudeDir = join(dataDir, "claude");
 const pluginFolder = (version: string) => join(claudeDir, "plugins", "cache", "plannotator", "plannotator", version);
@@ -344,6 +358,43 @@ for (let i = 0; i < count; i++) {
   mkdirSync(root, { recursive: true });
   const project = store.ensureProject({ name: `billing-${i}`, root });
   const author = { kind: "agent" as const, host: "claude-code", session: `ses_a${i}`, name: "Claude Code" };
+  if (decisionsMode) {
+    const sessionA = `ses_da${i}`;
+    const sessionB = `ses_db${i}`;
+    const a = store.sendMessage({
+      project_id: project.id,
+      author: { ...author, session: sessionA },
+      body: [
+        "Two calls before the refund worker ships.",
+        "",
+        ":::question",
+        "Which way should the worker go on a Stripe 409?",
+        "",
+        "Stopped: the refund worker cannot ship without this.",
+        "",
+        "- [ ] Retry with the same key — Stripe charges once per key",
+        "- [ ] Fail to the dead-letter queue — today's behavior",
+        "- [ ] Retry with a new key — fastest, can refund twice",
+        "",
+        "Recommended: Retry with the same key",
+        ":::",
+        "",
+        ":::question",
+        "Page on-call after 5 tries?",
+        "",
+        "- [ ] Yes, page on-call",
+        "- [ ] No, a daily digest",
+        ":::",
+      ].join("\n"),
+    }).message;
+    const b = store.sendMessage({
+      project_id: project.id,
+      author: { kind: "agent", host: "codex", session: sessionB, name: "Codex" },
+      body: [":::question", "Ship the new flag off by default?", "", "- [ ] Yes", "- [ ] No", ":::"].join("\n"),
+    }).message;
+    worlds.push({ project: project.id, root, decide: { a: a.id, b: b.id, sessionA, sessionB } } as unknown as World);
+    continue;
+  }
   const stopped = store.sendMessage({ project_id: project.id, author, body: STOPPED }).message;
   const waiting = store.sendMessage({ project_id: project.id, author: { ...author, session: `ses_b${i}` }, body: WAITING }).message;
   // One thread two sessions write in: A asks, then B posts a later update in it.
@@ -537,7 +588,7 @@ function tagHost(session: string): string {
 void (async () => {
   for await (const line of console) {
     const command = JSON.parse(line) as {
-      send?: { project: string; session: string; body: string; reply_to?: string };
+      send?: { project: string; session: string; body: string; reply_to?: string; supersedes?: string[]; host?: string };
       deliver?: { session: string };
       wait?: { thread: string; session: string };
       poll?: { session: string; body: Record<string, unknown> };
@@ -568,8 +619,14 @@ void (async () => {
       continue;
     }
     if (!command.send) continue;
-    const { project, session, body, reply_to } = command.send;
-    const sent = store.sendMessage({ project_id: project, author: { kind: "agent", host: "claude-code", session, name: "Claude Code" }, body, ...(reply_to ? { reply_to } : {}) });
+    const { project, session, body, reply_to, supersedes, host } = command.send;
+    const sent = store.sendMessage({
+      project_id: project,
+      author: { kind: "agent", host: host ?? "claude-code", session, name: host === "codex" ? "Codex" : "Claude Code" },
+      body,
+      ...(reply_to ? { reply_to } : {}),
+      ...(supersedes ? { supersedes } : {}),
+    });
     process.stdout.write(`${JSON.stringify({ sent: sent.message.id })}\n`);
   }
 })();
