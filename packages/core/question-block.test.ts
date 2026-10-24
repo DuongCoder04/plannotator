@@ -929,3 +929,57 @@ describe("a Context: line", () => {
     expect(q.choices[1]!.label).toBe("Keep it pinned Note: this wraps.");
   });
 });
+
+describe("review of #2139", () => {
+  test("pick any: a recommendation naming the start of one choice whole is that choice, not its split parts", () => {
+    const q = parseQuestionBlock("question-multi", ["Pick?", "Recommended: Search and replace", "- [ ] Search (fast)", "- [ ] Replace (slow)", "- [ ] Search and replace: both"].join("\n"))!;
+    expect(q.choices.map((c) => c.recommended)).toEqual([false, false, true]);
+    expect(q.suggestedText).toBeUndefined();
+  });
+
+  test("pick any: a list still names each choice", () => {
+    const q = parseQuestionBlock("question-multi", ["Pick?", "Recommended: Search and Replace", "- [ ] Search (fast)", "- [ ] Replace (slow)", "- [ ] Both"].join("\n"))!;
+    expect(q.choices.map((c) => c.recommended)).toEqual([true, true, false]);
+  });
+
+  test("a Context: line inside a code fence in a choice's continuation is code, not context", () => {
+    const task = parseQuestionBlock("question", ["Pick?", "- [ ] A", "  ```", "  Context: x", "  ```", "- [ ] B"].join("\n"))!;
+    expect(task.choices[0]).toMatchObject({ label: "A", description: "``` Context: x ```" });
+    expect(task.context).toBe("");
+    const plain = parseQuestionBlock("question", ["Pick?", "- A", "  ```", "  Context: x", "  ```", "- B", "Context: real"].join("\n"))!;
+    expect(plain.choices.map((c) => c.label)).toEqual(["A ``` Context: x ```", "B"]);
+    expect(plain.context).toBe("Context: real");
+    // After the fence closes the rule holds again.
+    const after = parseQuestionBlock("question", ["Pick?", "- [ ] A", "  ```", "  code", "  ```", "  Context: after", "- [ ] B"].join("\n"))!;
+    expect(after.choices[0]!.description).toBe("``` code ```");
+    expect(after.context).toBe("Context: after");
+  });
+
+  test("(your recommendation): a plan-review draft that holds the recommendation's words as Other", () => {
+    const md = [":::question", "What happens to a pin when you archive the thread?", "Recommended: Unpin it", "- [ ] Unpin it: the toast says so", "- [ ] Keep it pinned", ":::"].join("\n");
+    const indexed = indexQuestionBlocks([{ id: "b1", type: "directive", content: md.split("\n").slice(1, -1).join("\n"), directiveKind: "question", order: 0, startLine: 1 } as never]);
+    expect(indexed).toHaveLength(1);
+    const q = indexed[0]!.question;
+    expect(q.choices[0]!.recommended).toBe(true);
+    const draft: QuestionAnswer = { v: 1, key: q.key, kind: "single", prompt: q.prompt, selected: [], other: "Unpin it" };
+    expect(formatQuestionAnswersSection(questionExportItems(indexed), [draft])).toContain("(your recommendation)");
+    // Other words in Other are not the recommendation.
+    expect(formatQuestionAnswersSection(questionExportItems(indexed), [{ ...draft, other: "Ask me later" }])).not.toContain("(your recommendation)");
+  });
+
+  test("(your recommendation): an item with no recommended label whose suggestion begins one choice", () => {
+    const item = { key: "q-11111111", number: 1, prompt: "Pin?", recommendedLabels: [], suggestedText: "Unpin it", choiceLabels: ["Unpin it: the toast says", "Keep it pinned"], settled: false };
+    const pick = (selected: string[]): QuestionAnswer => ({ v: 1, key: item.key, kind: "single", prompt: item.prompt, selected });
+    expect(formatQuestionAnswersSection([item], [pick(["Unpin it: the toast says"])])).toContain("(your recommendation)");
+    expect(formatQuestionAnswersSection([item], [pick(["Keep it pinned"])])).not.toContain("(your recommendation)");
+    // Two choices it begins: ambiguous, never marked.
+    const two = { ...item, choiceLabels: ["Unpin it: now", "Unpin it (later)"] };
+    expect(formatQuestionAnswersSection([two], [pick(["Unpin it: now"])])).not.toContain("(your recommendation)");
+  });
+
+  test("the recommended row's answer (the suggestion as Other) exports as the recommendation", () => {
+    const item = { key: "q-22222222", number: 1, prompt: "Store?", recommendedLabels: [], suggestedText: "SQLite on the box", recommendation: "SQLite on the box", choiceLabels: ["Redis", "Memcached"], settled: false };
+    const other: QuestionAnswer = { v: 1, key: item.key, kind: "single", prompt: item.prompt, selected: [], other: "SQLite on the box" };
+    expect(formatQuestionAnswersSection([item], [other])).toContain("Other: SQLite on the box (your recommendation)");
+  });
+});

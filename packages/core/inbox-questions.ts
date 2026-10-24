@@ -46,6 +46,7 @@ import {
   isQuestionAnswered,
   capQuestionPrompt,
   MAX_QUESTION_PROMPT_CHARS,
+  normalizeQuestionText,
   parseQuestionAnswer,
   parseQuestionBlock,
   questionChoicesNeedCanonicalLabels,
@@ -204,16 +205,35 @@ export function inboxQuestionState(
   return "picked";
 }
 
-/** The choices with their older names, for `canonicalQuestionAnswer`. */
+// A `Context:` line a build through 0.28.26 joined onto the plain bullet
+// above it: `Keep it pinned forever Context: an archived thread…`.
+const STORED_CONTEXT_TAIL_RE = /^(.*?\S)\s+(?:[*_]{1,2})?context(?:[*_]{1,2})?\s*:[\s\S]*$/i;
+
+/**
+ * The choices with their older names, for `canonicalQuestionAnswer`. A label
+ * stored with a `Context:` line joined on (a record from 0.28.26 or older)
+ * also answers to the part before it, which is the label the card reads
+ * today, so the card's pick is not refused as an unknown choice. Not when
+ * another choice already has that name.
+ */
 function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionChoice[] {
+  const names = record.parsed.choices.map((choice, index) =>
+    [choice.label, ...(record.parsed.aliases[index] ?? [])].map(normalizeQuestionText),
+  );
   return record.parsed.choices.map((choice, index) => {
-    const aliases = record.parsed.aliases[index];
+    const aliases = [...(record.parsed.aliases[index] ?? [])];
+    const head = choice.label.match(STORED_CONTEXT_TAIL_RE)?.[1];
+    if (head) {
+      const key = normalizeQuestionText(head);
+      const taken = names.some((list, other) => other !== index && list.includes(key));
+      if (key && !taken && !names[index]!.includes(key)) aliases.push(head);
+    }
     return {
       label: choice.label,
       settled: choice.settled,
       recommended: choice.recommended,
       ...(choice.description !== null ? { description: choice.description } : {}),
-      ...(aliases ? { aliases } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
     };
   });
 }
@@ -348,14 +368,13 @@ function exportItem(record: InboxQuestionRecord, number: number): QuestionExport
     line: record.parsed.line,
     recommendedLabels: record.parsed.choices.filter((c) => c.recommended).map((c) => c.label),
     ...(record.parsed.suggested_text === null ? {} : { suggestedText: record.parsed.suggested_text }),
+    ...(record.parsed.recommendation === null ? {} : { recommendation: record.parsed.recommendation }),
+    choiceLabels: record.parsed.choices.map((c) => c.label),
     settled: settled.length > 0,
     settledLabels: settled,
     ...(needsChoices
       ? {
-          choices: record.parsed.choices.map((c, i) => ({
-            label: c.label,
-            ...(record.parsed.aliases[i] ? { aliases: record.parsed.aliases[i]! } : {}),
-          })),
+          choices: storedChoices(record).map(({ label, aliases }) => ({ label, ...(aliases ? { aliases } : {}) })),
         }
       : {}),
   };
@@ -525,7 +544,10 @@ export function composeInboxReaskBody(input: {
       const recommended = record.parsed.choices.filter((c) => c.recommended).map((c) => c.label);
       const suggested = record.parsed.suggested_text ?? undefined;
       section += `### ${record.prompt.replace(/\s+/g, " ").trim()} (${record.id})\n`;
-      section += formatQuestionAnswerLines(answer, { recommended: isQuestionAnswered(answer) && isRecommendedQuestionAnswer(answer, recommended, suggested) });
+      section += formatQuestionAnswerLines(answer, { recommended: isQuestionAnswered(answer) && isRecommendedQuestionAnswer(answer, recommended, suggested, {
+        ...(record.parsed.recommendation === null ? {} : { recommendation: record.parsed.recommendation }),
+        choiceLabels: record.parsed.choices.map((c) => c.label),
+      }) });
       section += "\n";
     }
     lines.push("", section.trimEnd());

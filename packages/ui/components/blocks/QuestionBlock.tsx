@@ -57,6 +57,10 @@ const DOUBLE_CLICK_REVERT_MS = 800;
 
 const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
+/** The double-click guard's name for the recommended row (never a label: it
+ *  holds a character no choice label can). */
+const SUGGESTION_ROW = '\u0000suggestion';
+
 const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(' ');
 
 /** The box every pill in the eyebrow shares (the status tags, the decision
@@ -322,9 +326,9 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   // recommendation names choices until the answer is exactly those choices:
   // ticking one box must not take away the one click that ticks the rest. A
   // pick-one or text question answered any way, a question with a settled
-  // choice, and a pick-any question recommending only a suggestion (whose
-  // Suggested line goes once the card is answered, so Accept would clear the
-  // ticks for something no longer shown) offer it no more.
+  // choice, and a pick-any question recommending only its own answer (the
+  // recommended row after the choices: Accept would clear the ticks for it,
+  // and the row is one click anyway) offer it no more.
   const offerAccept = !readOnly && hasRecommendation && !settled && (
     !answered
     || (question.kind === 'multi'
@@ -358,6 +362,23 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     } else if (checked) {
       const { other: _o, ...single } = rest;
       commit({ ...single, selected: [label] });
+    }
+  };
+
+  // The agent's recommended answer that is none of its choices
+  // (`suggestedText` on a pick question): one more answer row, after the
+  // choices and before "Other…". Picking it stores exactly what Accept
+  // recommended stores, the text as the "Other…" answer, so no label,
+  // index, key or host check of picked labels changes.
+  const pickSuggestion = (checked: boolean) => {
+    const text = question.suggestedText;
+    if (!text) return;
+    lastPickRef.current = { label: SUGGESTION_ROW, before: answer, at: now() };
+    const { skipped: _s, other: _o, ...rest } = base;
+    if (question.kind === 'multi') {
+      commit({ ...rest, selected, ...(checked ? { other: text } : {}) });
+    } else if (checked) {
+      commit({ ...rest, selected: [], other: text });
     }
   };
 
@@ -450,7 +471,12 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     : `Question${question.kind === 'multi' ? ' · pick any' : ''}`;
   const groupName = `question-${uid}`;
   const inputType = question.kind === 'multi' ? 'checkbox' : 'radio';
-  const other = answer?.other ?? '';
+  const storedOther = answer?.other ?? '';
+  // The recommended row holds the "Other…" answer when it is the agent's
+  // text; the Other field is then empty (typing there replaces it).
+  const suggestionRow = question.kind !== 'text' && !!question.suggestedText;
+  const suggestionPicked = suggestionRow && storedOther.trim() !== '' && storedOther.trim() === question.suggestedText!.trim();
+  const other = suggestionPicked ? '' : storedOther;
   const otherOn = other.trim() !== '';
 
   // A `Decision: when answered` question the host may switch off, or (with
@@ -468,18 +494,16 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     ? (recordingOn ? 'on' : 'off')
     : undefined;
 
-  const describedBy = [question.context ? contextId : null, question.suggestedText && !answered ? suggestId : null]
+  const describedBy = [question.context ? contextId : null, question.kind === 'text' && question.suggestedText && !answered ? suggestId : null]
     .filter(Boolean)
     .join(' ') || undefined;
 
-  // The suggestion the agent wrote that is not one of the choices (a choice
-  // question's `Recommended:` naming none of them; a text question's whole
-  // suggestion): "Accept recommended" fills it in, so the card shows it. The
-  // line only shows it: the footer's Accept recommended is the one button
-  // (a "Use" here did exactly the same thing).
-  const suggestedLine = question.suggestedText && !answered && (
+  // A text question's recommended answer: shown above the field with the
+  // same Recommended tag a choice carries; the footer's Accept recommended
+  // fills it in. (A pick question's is a row of its own, below.)
+  const suggestedLine = question.kind === 'text' && question.suggestedText && !answered && (
     <div id={suggestId} className="mt-2 text-[12.5px] text-muted-foreground" data-question-suggested="">
-      <Tag tone="rec">Suggested</Tag> {inline(question.suggestedText)}
+      <Tag tone="rec">Recommended</Tag> {inline(question.suggestedText)}
     </div>
   );
 
@@ -634,7 +658,6 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
         </>
       ) : (
         <>
-          {suggestedLine}
           <div
             className={cx('mt-2.5 grid gap-0.5', skipped && 'opacity-55')}
             role={inputType === 'radio' ? 'radiogroup' : 'group'}
@@ -673,6 +696,36 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                 </label>
               );
             })}
+            {suggestionRow && (
+              // The agent's recommended answer that is none of its choices:
+              // drawn exactly as a choice (the same control, row and tag), so
+              // the card reads as one list of answers.
+              <label
+                className={cx(
+                  'flex items-start gap-2.5 rounded-[7px] px-[9px] py-1.5 transition-colors',
+                  readOnly ? 'cursor-default' : 'cursor-pointer hover:bg-muted/45',
+                  suggestionPicked && 'bg-primary/12 hover:bg-primary/12',
+                )}
+                data-question-option=""
+                data-question-suggested=""
+                onPointerDown={onRowPointerDown}
+                onClickCapture={(event) => onRowClick(event, SUGGESTION_ROW)}
+              >
+                <input
+                  type={inputType}
+                  name={groupName}
+                  checked={suggestionPicked}
+                  onChange={(e) => pickSuggestion(e.target.checked)}
+                  className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
+                  data-question-control=""
+                  disabled={readOnly}
+                />
+                <span className="min-w-0 flex-1 select-text text-[13.5px] leading-[1.45] text-foreground" data-question-part="choice">
+                  <span className="font-[550]">{inline(question.suggestedText!)}</span>
+                  {' '}<Tag tone="rec">Recommended</Tag>
+                </span>
+              </label>
+            )}
             {/* A read-only card with no Other answer has nothing to show there (it drew a bare "+"). */}
             {(!readOnly || otherOn) && (
               <div className="flex items-center gap-2.5 rounded-[7px] px-[9px] py-[5px]">
