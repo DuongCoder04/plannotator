@@ -72,6 +72,7 @@ import {
   type InboxRowUnsent,
   type InboxSectionId,
 } from "@plannotator/core/inbox-types";
+import { inboxUrgencyOf } from "@plannotator/core/inbox-questions";
 
 /** The facts a thread is placed by (all on its list row). */
 export type InboxSectionFacts = Pick<
@@ -89,9 +90,9 @@ export function inboxSectionOf(row: InboxSectionFacts): InboxSectionId {
   // The person's Re-ask note is the last message: it waits on the agent (approval "inbox-reask").
   if (row.reask_pending === true) return "sent";
   if (row.questions.open > 0) {
-    if (row.questions.stopped) return "stopped";
-    if (row.questions.holds_up.length > 0) return "holding";
-    return "waiting";
+    // The urgency rule decision mode orders by (core inboxUrgencyOf).
+    const urgency = inboxUrgencyOf(row.questions);
+    return urgency === 0 ? "stopped" : urgency === 1 ? "holding" : "waiting";
   }
   if (row.answered_not_sent) return "new";
   if (row.sent !== null && row.sent.checked_at === null) return "sent";

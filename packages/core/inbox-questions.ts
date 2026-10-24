@@ -54,6 +54,7 @@ import {
   type QuestionExportItem,
   type QuestionKind,
 } from "./question-block";
+import { readInboxQuestionKind } from "./inbox-types";
 import type {
   InboxQuestion,
   InboxQuestionFacts,
@@ -274,6 +275,40 @@ export function isInboxQuestionSupersedable(state: InboxQuestionState): boolean 
   return state === "open" || state === "picked";
 }
 
+/**
+ * The one rule for "this waits on the person" (approval "inbox-decision-mode",
+ * brief §10): the list's sections (through `summarizeInboxQuestions`), a
+ * thread's open-questions list and decision mode's queue all read it, so the
+ * Decide count, the list and the popover cannot disagree.
+ *
+ * A question or action item waits on the person when it is `open`, or a
+ * question `picked` and not sent (its answer waits only for a Send). An action
+ * item the person marked is on its way (its Undo window: `picked`) and waits
+ * on nobody. Never an orphaned record, and never a kind this build does not
+ * know (no reader may answer one). Whether the message is still live (not
+ * closed by an archive) is already in `state`, which the store derives.
+ */
+export function inboxQuestionWaitsOnPerson(q: Pick<InboxQuestion, "state" | "kind" | "orphaned">): boolean {
+  if (q.orphaned) return false;
+  const kind = readInboxQuestionKind(q.kind);
+  if (kind === "unknown") return false;
+  if (q.state === "open") return true;
+  return q.state === "picked" && kind !== "action";
+}
+
+/**
+ * How urgently a waiting question holds an agent up: 0 Stopped (the agent
+ * cannot go on), 1 Holds up named work, 2 neither. The list's sections
+ * (Stopped on you, Holding up work, Waiting on you) and decision mode's order
+ * read it.
+ */
+export type InboxUrgency = 0 | 1 | 2;
+
+export function inboxUrgencyOf(facts: { stopped: string | boolean | null; holds_up: readonly string[] }): InboxUrgency {
+  if (facts.stopped !== null && facts.stopped !== false) return 0;
+  return facts.holds_up.length > 0 ? 1 : 2;
+}
+
 /** Workspaces' row summary over a thread's questions (open ones only for the badges). */
 export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): InboxQuestionSummary {
   let open = 0;
@@ -283,9 +318,8 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
   const holdsUp: string[] = [];
   let prompt: string | null = null;
   for (const q of questions) {
-    if (q.orphaned) continue;
-    // An action item the person marked is on its way (its Undo window): it waits on nobody's Send.
-    if (q.state === "picked" && q.kind !== "action") picked += 1;
+    if (!inboxQuestionWaitsOnPerson(q)) continue;
+    if (q.state === "picked") picked += 1;
     if (q.state !== "open") continue;
     open += 1;
     if (q.kind === "action") actions += 1;

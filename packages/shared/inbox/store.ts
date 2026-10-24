@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { inboxDecisionExcerpt, orderInboxDecisions, type InboxDecisionCandidate } from "./decisions";
 import {
   checkInboxAnswer,
   composeInboxReaskBody,
@@ -37,6 +38,7 @@ import {
   deriveInboxSubject,
   derivePersonThreadSubject,
   inboxQuestionState,
+  inboxQuestionWaitsOnPerson,
   isInboxQuestionSupersedable,
   parseInboxQuestionBlocks,
   parseInboxSupersedeRef,
@@ -58,6 +60,7 @@ import {
   type InboxAck,
   type InboxAddressee,
   type InboxAuthor,
+  type InboxDecision,
   type InboxGuideRef,
   type InboxLine,
   type InboxMessage,
@@ -1406,6 +1409,70 @@ export class InboxStore {
       if (row) out.push(row);
     }
     return out.sort((a, b) => b.last_at.localeCompare(a.last_at) || b.thread_id.localeCompare(a.thread_id));
+  }
+
+  /**
+   * Decision mode's projection (approval "inbox-decision-mode", brief §10):
+   * every question and action item that waits on the person (core's
+   * `inboxQuestionWaitsOnPerson`) in a live agent message, across threads, in
+   * queue order. A thread whose Re-ask note waits is left out: the list puts
+   * it in Sent, since the agent is about to ask again. Read only; no record.
+   */
+  openDecisions(filter: { projectId?: string | null } = {}): InboxDecision[] {
+    const candidates: InboxDecisionCandidate[] = [];
+    for (const [threadId] of this.threadMembers) {
+      const root = this.messages.get(threadId);
+      if (!root || root.thread_id !== threadId) continue;
+      if (filter.projectId && root.project_id !== filter.projectId) continue;
+      const waiting: { message: InboxMessage; question: InboxQuestion }[] = [];
+      for (const message of this.threadMessages(threadId)) {
+        if (message.author.kind !== "agent" || this.closedByArchive(message)) continue;
+        for (const question of this.questionsOf(message.id)) if (inboxQuestionWaitsOnPerson(question)) waiting.push({ message, question });
+      }
+      if (waiting.length === 0) continue;
+      const row = this.listRow(threadId);
+      if (!row || row.reask_pending === true) continue;
+      for (const { message, question } of waiting) {
+        const author = message.author as Extract<InboxAuthor, { kind: "agent" }>;
+        const inBlock = (ref: string) =>
+          [question.context ?? "", ...question.choices.flatMap((c) => [c.label, c.description ?? ""])].some((text) => text.includes(ref));
+        const images = [...(message.inline_images ?? [])].sort((a, b) => Number(inBlock(b.ref)) - Number(inBlock(a.ref)));
+        candidates.push({
+          seq: this.messageSeq.get(message.id) ?? 0,
+          decision: {
+            id: `${message.id}/${question.key}`,
+            question,
+            message: { id: message.id, created_at: message.created_at, author: message.author, excerpt: inboxDecisionExcerpt(message.body) },
+            pictures: {
+              inline: images.map((image) => ({
+                attachment_id: image.id,
+                ref: image.ref,
+                name: image.name,
+                media_type: image.media_type ?? null,
+                width: image.width ?? null,
+                height: image.height ?? null,
+              })),
+              attachments: (message.attachments ?? []).map((file) => ({
+                attachment_id: file.id,
+                name: file.name,
+                kind: file.kind,
+                size: file.size,
+                media_type: file.media_type ?? null,
+              })),
+            },
+            thread: { id: threadId, subject: row.subject, thread_name: row.thread_name, project: row.project, section: row.section },
+            session: {
+              key: author.session ? `s:${author.host ?? ""}\u0000${author.session}` : `m:${message.id}`,
+              host: author.host,
+              session: author.session,
+              name: author.name,
+              wakes: message.wakes === true,
+            },
+          },
+        });
+      }
+    }
+    return orderInboxDecisions(candidates);
   }
 
   /** The list, placed in its sections; a project filter keeps the sections and drops other rows. */

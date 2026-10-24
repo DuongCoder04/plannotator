@@ -20,6 +20,8 @@ import {
   resolveGuideHistory,
   resolveReviewProgress,
   resolveAgentTool,
+  resolveExperimental,
+  parseExperimentalEnv,
   agentToolHostOf,
   agentToolSaveFailed,
   AGENT_TOOL_DEFAULTS,
@@ -826,5 +828,40 @@ describe("resolveGitRemoteCheck precedence", () => {
       if (original === undefined) delete process.env[ENV_VAR];
       else process.env[ENV_VAR] = original;
     }
+  });
+});
+
+// Experimental features (approval "inbox-decision-mode"): off unless switched on,
+// PLANNOTATOR_EXPERIMENTAL decides over config.json, and saving one flag keeps the others.
+describe("experimental features", () => {
+  const savedDataDir = process.env.PLANNOTATOR_DATA_DIR;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "plannotator-experimental-"));
+    process.env.PLANNOTATOR_DATA_DIR = dir;
+  });
+  afterEach(() => {
+    if (savedDataDir === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
+    else process.env.PLANNOTATOR_DATA_DIR = savedDataDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("off by default; config.json turns it on; the env var decides both ways", () => {
+    expect(resolveExperimental({}, "decision-mode", {})).toBe(false);
+    expect(resolveExperimental({ experimental: { decisionMode: true } }, "decision-mode", {})).toBe(true);
+    expect(resolveExperimental({ experimental: { decisionMode: "true" as unknown as boolean } }, "decision-mode", {})).toBe(true);
+    expect(resolveExperimental({ experimental: [] as unknown as { decisionMode?: boolean } }, "decision-mode", {})).toBe(false);
+    expect(resolveExperimental({}, "decision-mode", { PLANNOTATOR_EXPERIMENTAL: "x, Decision-Mode" })).toBe(true);
+    expect(resolveExperimental({ experimental: { decisionMode: true } }, "decision-mode", { PLANNOTATOR_EXPERIMENTAL: "-decision-mode" })).toBe(false);
+    expect(resolveExperimental({ experimental: { decisionMode: true } }, "decision-mode", { PLANNOTATOR_EXPERIMENTAL: "something-else" })).toBe(true);
+    expect(parseExperimentalEnv("decision-mode", { PLANNOTATOR_EXPERIMENTAL: "" })).toBeUndefined();
+  });
+
+  test("saving one flag keeps the other experimental keys", () => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ experimental: { otherFlag: true } }));
+    saveConfig({ experimental: { decisionMode: true } });
+    expect(loadConfig().experimental).toEqual({ otherFlag: true, decisionMode: true } as unknown as { decisionMode?: boolean });
+    saveConfig({ inboxTextSize: 13 });
+    expect(loadConfig().experimental).toEqual({ otherFlag: true, decisionMode: true } as unknown as { decisionMode?: boolean });
   });
 });

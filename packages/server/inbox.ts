@@ -67,6 +67,8 @@ import {
   INBOX_TOOL_HOSTS,
   loadConfig,
   parseAutoUpdateEnv,
+  parseExperimentalEnv,
+  resolveExperimental,
   parseInboxToolEnv,
   parseUpdateCheckEnv,
   resolveAutoUpdate,
@@ -1369,6 +1371,34 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return updatesState();
   };
 
+  /**
+   * Experimental features (config.json `experimental`, PLANNOTATOR_EXPERIMENTAL
+   * wins): each switch, and whether the env var decides it. Read on every
+   * request, so a switch applies at once.
+   */
+  const decisionModeOn = () => resolveExperimental(loadConfig(), "decision-mode");
+  const experimentalState = () => ({
+    decision_mode: { on: decisionModeOn(), env: parseExperimentalEnv("decision-mode") ?? null },
+  });
+
+  /** Save `experimental: { decision_mode }`. `validateOnly`: check and write nothing. */
+  const saveExperimental = (input: unknown, validateOnly = false) => {
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      typeof (input as { decision_mode?: unknown }).decision_mode !== "boolean" ||
+      Object.keys(input).some((key) => key !== "decision_mode")
+    ) {
+      throw new InboxError("validation_error", "experimental: { decision_mode: boolean }.", { field: "experimental" });
+    }
+    const on = (input as { decision_mode: boolean }).decision_mode;
+    if (validateOnly) return experimentalState();
+    saveConfig({ experimental: { decisionMode: on } });
+    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    return experimentalState();
+  };
+
   /** What Settings and the connect snippets read. */
   const settingsModel = (via: RequestVia) => ({
     serverSession,
@@ -1398,6 +1428,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     text_size: textSizeState(),
     /** The guided review's diff layout (config.json `diffOptions.diffStyle`), shared with code review; null when never chosen. */
     diff_style: diffStyleState(),
+    /** Experimental features, each off unless switched on (Settings → General → Experimental). */
+    experimental: experimentalState(),
     store: store.diskUsage(),
     /** Whether this Inbox serves phones; the window shows the Phones block only then. */
     phones: phonesOn,
@@ -1998,6 +2030,17 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
       if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url)));
       if (path === "/api/inbox/threads/archived" && req.method === "GET") return json(archivedModel(url));
+      // Decision mode (experimental, approval "inbox-decision-mode"): a read-only projection of every
+      // decision waiting on the person. Off (the default), the route does not exist.
+      if (path === "/api/inbox/decisions") {
+        if (!decisionModeOn()) return json({ error: "Not found", code: "not_found" }, 404);
+        if (req.method !== "GET") return json({ error: "Use GET." }, 405);
+        // Another site's page must not read (or time) what waits on the person.
+        if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
+          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
+        }
+        return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
+      }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
       if (path === "/api/inbox/events" && req.method === "GET") {
       // Another site's page must not hold (or time) a stream of everything the Inbox holds:
@@ -2128,9 +2171,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.theme === undefined &&
           body.text_size === undefined &&
           body.diff_style === undefined &&
+          body.experimental === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, update_check or auto_update is required.");
         }
         // Updating changes this computer: never from a page that came through the tailnet.
         if (updateSwitches && via === "tailnet") return localOnly();
@@ -2161,6 +2205,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.theme !== undefined) saveTheme(body.theme, true);
         if (body.text_size !== undefined) saveTextSize(body.text_size, true);
         if (body.diff_style !== undefined) saveDiffStyle(body.diff_style, true);
+        if (body.experimental !== undefined) saveExperimental(body.experimental, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
@@ -2170,7 +2215,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const theme = body.theme === undefined ? themeState() : saveTheme(body.theme);
         const textSize = body.text_size === undefined ? textSizeState() : saveTextSize(body.text_size);
         const diffStyle = body.diff_style === undefined ? diffStyleState() : saveDiffStyle(body.diff_style);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle });
+        const experimental = body.experimental === undefined ? experimentalState() : saveExperimental(body.experimental);
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
