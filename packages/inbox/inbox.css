@@ -1097,6 +1097,26 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-prow .ib-desc a:hover { text-decoration: underline; }
 .ib-prow .ib-desc code, .ib-sframe code { font-family: var(--font-mono); font-size: var(--ib-fs-11-5, 11.5px); color: var(--foreground); }
 .ib-prow .ib-ctl { display: flex; align-items: center; gap: 10px; flex: none; }
+/* Settings → Appearance → Colors (components/Palettes.tsx): the half being assigned, then its palettes as tiles.
+   The row's own head is an .ib-prow without its rule; the tiles sit under it, in the card. */
+.ib-palrow { border-bottom: 1px solid var(--ib-sep-s, var(--ib-hair)); }
+.ib-palrow:last-child { border-bottom: 0; }
+.ib-palrow > .ib-palhead { border-bottom: 0; padding-bottom: 6px; }
+.ib-pals { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; max-height: 340px; overflow-y: auto; padding: 4px 16px 14px; overscroll-behavior: contain; }
+.ib-pal { position: relative; display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 6px 18px 6px 9px; border: 1px solid var(--ib-line); border-radius: var(--ib-rl-sm-s, 8px); color: var(--foreground); font-size: var(--ib-fs-12-5, 12.5px); cursor: pointer; min-width: 0; }
+.ib-pal:hover { background: var(--ib-hover); }
+.ib-pal[data-on] { border-color: color-mix(in oklch, var(--primary) 60%, transparent); background: color-mix(in oklch, var(--primary) 8%, transparent); font-weight: 550; }
+.ib-pal input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.ib-pal:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 1px; }
+.pn-inbox .ib-pal input:focus-visible { outline: none; }
+.ib-pal-sw { display: inline-flex; flex: none; }
+.ib-pal-sw > span { width: 12px; height: 12px; border-radius: 999px; border: 1px solid color-mix(in oklch, var(--foreground) 18%, transparent); }
+.ib-pal-sw > span + span { margin-left: -3px; }
+.ib-pal-n { flex: 1; min-width: 0; line-height: 1.25; overflow-wrap: break-word; }
+.ib-pal-ck { position: absolute; top: 4px; right: 4px; color: var(--primary); }
+@media (forced-colors: active) {
+  .ib-pal[data-on] { outline: 2px solid Highlight; outline-offset: -2px; }
+}
 .ib-prow .ib-paired { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
 .ib-prow .ib-paired .ib-ic { color: var(--success, var(--primary)); }
 .ib-sfp { font-family: var(--font-mono); font-size: var(--ib-fs-11-5, 11.5px); letter-spacing: 0.02em; color: var(--foreground); }
@@ -2353,6 +2373,10 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .pn-inbox .ib-theme-tg::after { content: ""; position: absolute; inset: -2px; }
   .ib-theme-tg .ib-ic { width: 18px; height: 18px; }
   .ib-seg-o { height: 40px; }
+  /* Colors on a phone: two tiles a row, 44 px each, and the whole list in the page (no box of its own to scroll). */
+  .ib-pals { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; overflow: visible; padding: 4px 12px 12px; }
+  .ib-pal { min-height: 44px; gap: 7px; padding-left: 8px; font-size: var(--ib-fs-14, 14px); }
+  .ib-pal-sw > span + span { margin-left: -5px; }
   /* a phone on its side is about 400 px tall: the projects scroll, the rest keeps its height */
   .ib-sb-sheet-in > .ib-side { overflow-y: auto; }
   .ib-sb-sheet-in .ib-brand, .ib-sb-sheet-in .ib-side-foot { flex: none; }
