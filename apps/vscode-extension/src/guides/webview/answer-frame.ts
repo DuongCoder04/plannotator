@@ -129,6 +129,9 @@ export function readAnswerMessage(data: unknown): AnswerFrameMessage | null {
 export function answerFrame(html: string, on: { link(link: string): void; external(url: string): void }): HTMLIFrameElement {
   const frame = document.createElement("iframe");
   frame.className = "pn-answer-frame";
+  // Never add allow-same-origin: the webview trusts only messages from its own origin
+  // (host-messages.ts), and this frame must stay opaque ("null") so the agent's page
+  // can never pass that check or reach the tab's DOM.
   frame.setAttribute("sandbox", "allow-scripts");
   frame.setAttribute("title", "The agent's answer");
   frame.setAttribute("referrerpolicy", "no-referrer");
