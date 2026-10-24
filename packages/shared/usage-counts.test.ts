@@ -19,13 +19,22 @@ import {
   todayUsageCounts,
   usageCountsDir,
   usageCountsEnvBlock,
+  usageCountFeatureOn,
   usageCountsStatus,
+  USAGE_COUNTS_CLOSE_DELAY_MAX_MS,
   USAGE_COUNTS_ENDPOINT,
 } from "./usage-counts";
 
 const DAY = 86_400_000;
 const NOON = Date.UTC(2026, 9, 24, 12); // 2026-10-24
-const ON: PlannotatorConfig = { experimental: { decisionMode: true } } as PlannotatorConfig;
+/** The feature on in config.json and the counts notice shown at its version. */
+const ON: PlannotatorConfig = { experimental: { decisionMode: true }, usageCountsNotice: { decisionMode: 1 } } as PlannotatorConfig;
+/**
+ * A source run records only where it could send: every test env names a
+ * loopback endpoint (a closed port unless a test passes its own), so nothing
+ * here can ever reach the network.
+ */
+const LOOPBACK = { PLANNOTATOR_TELEMETRY_URL: "http://127.0.0.1:9" };
 
 const dirs: string[] = [];
 function scratch(): string {
@@ -65,7 +74,7 @@ function fakeEndpoint(answer: (n: number) => string = () => "HTTP/1.1 204 No Con
 }
 
 function deps(dataDir: string, config: PlannotatorConfig, now: number, env: NodeJS.ProcessEnv = {}) {
-  return { dataDir, config: () => config, now, env };
+  return { dataDir, config: () => config, now, env: { ...LOOPBACK, ...env }, version: undefined, random: () => 0, sleep: async () => {} };
 }
 
 /** Record `events` (name → times) for the UTC day of `at`. */
@@ -112,6 +121,26 @@ describe("on or off", () => {
     expect(usageCountsStatus(ON, "decisionMode", { env: {}, now: Date.UTC(2027, 4, 1, 0) }).reason).toBe("ended");
   });
 
+  test("counting needs the notice shown at the feature's version", () => {
+    const noNotice = { experimental: { decisionMode: true } } as PlannotatorConfig;
+    expect(usageCountsStatus(noNotice, "decisionMode", { env: {}, now: NOON }).reason).toBe("notice");
+    expect(usageCountsStatus({ ...ON, usageCountsNotice: { decisionMode: 0 } } as PlannotatorConfig, "decisionMode", { env: {}, now: NOON }).reason).toBe("notice");
+    expect(usageCountsStatus({ ...ON, usageCountsNotice: { decisionMode: "1" } } as unknown as PlannotatorConfig, "decisionMode", { env: {}, now: NOON }).reason).toBe("notice");
+    expect(usageCountsStatus({ ...ON, usageCountsNotice: { decisionMode: 2 } } as PlannotatorConfig, "decisionMode", { env: {}, now: NOON }).on).toBe(true);
+  });
+
+  test("the feature counts only when its resolver AND config.json say on: never from the env alone", () => {
+    const envOnly = () => true; // what resolveExperimental answers for PLANNOTATOR_EXPERIMENTAL=decisionMode
+    const envOff = () => false; // and for PLANNOTATOR_EXPERIMENTAL=-decisionMode
+    const notInConfig = { usageCountsNotice: { decisionMode: 1 } } as PlannotatorConfig;
+    expect(usageCountFeatureOn(notInConfig, "decisionMode", envOnly)).toBe(false);
+    expect(usageCountsStatus(notInConfig, "decisionMode", { env: {}, now: NOON, resolveExperimental: envOnly }).reason).toBe("feature_off");
+    expect(usageCountFeatureOn(ON, "decisionMode", envOff)).toBe(false);
+    expect(usageCountFeatureOn(ON, "decisionMode", envOnly)).toBe(true);
+    expect(usageCountFeatureOn(ON, "decisionMode")).toBe(true);
+    expect(usageCountFeatureOn({ experimental: { decisionMode: 1 } } as unknown as PlannotatorConfig, "decisionMode", envOnly)).toBe(false);
+  });
+
   test("--off and --on write config.json's value", () => {
     expect(nextUsageCountsConfig(undefined, false)).toBe(false);
     expect(nextUsageCountsConfig(false, true)).toBeUndefined();
@@ -134,6 +163,29 @@ describe("recording", () => {
     }
     expect(recordUsageCount("decisionMode", "opened", deps(dataDir, ON, Date.UTC(2027, 4, 1)))).toBe(false);
     expect(existsSync(usageCountsDir(dataDir))).toBe(false);
+  });
+
+  test("no notice records nothing; an older notice records nothing until the new one is shown", () => {
+    const dataDir = scratch();
+    expect(recordUsageCount("decisionMode", "opened", deps(dataDir, { experimental: { decisionMode: true } } as PlannotatorConfig, NOON))).toBe(false);
+    const older = { ...ON, usageCountsNotice: { decisionMode: 0 } } as PlannotatorConfig;
+    expect(recordUsageCount("decisionMode", "opened", deps(dataDir, older, NOON))).toBe(false);
+    expect(existsSync(usageCountsDir(dataDir))).toBe(false);
+    expect(recordUsageCount("decisionMode", "opened", deps(dataDir, ON, NOON))).toBe(true);
+    // The notice version drops back (a newer registry): what waits is deleted, nothing more is recorded.
+    expect(recordUsageCount("decisionMode", "opened", deps(dataDir, older, NOON))).toBe(false);
+    expect(existsSync(join(usageCountsDir(dataDir), "counts.json"))).toBe(false);
+  });
+
+  test("a build that sends nowhere records nothing", () => {
+    const dataDir = scratch();
+    for (const version of [undefined, "0.0.0-dev"]) {
+      expect(recordUsageCount("decisionMode", "opened", { ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: "" }), version })).toBe(false);
+      expect(recordUsageCount("decisionMode", "opened", { ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: "https://example.com" }), version })).toBe(false);
+    }
+    expect(existsSync(usageCountsDir(dataDir))).toBe(false);
+    // A release records (and would send to the service; nothing here sends).
+    expect(recordUsageCount("decisionMode", "opened", { ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: "" }), version: "9.9.9" })).toBe(true);
   });
 
   test("counts add and cap at 100, day events stay 1, files are owner-only", () => {
@@ -171,7 +223,7 @@ describe("recording", () => {
     expect(recordUsageCount("decisionMode", "opened", deps(dataDir, { ...ON, usageCounts: false } as PlannotatorConfig, NOON))).toBe(false);
     expect(existsSync(join(usageCountsDir(dataDir), "counts.json"))).toBe(false);
     const facts = JSON.parse(readFileSync(join(usageCountsDir(dataDir), "facts.json"), "utf-8"));
-    expect(facts).toEqual({ v: 1, features: { decisionMode: { firstDay: "2026-10-23" } } });
+    expect(facts).toEqual({ v: 1, features: { decisionMode: { used: true } } });
   });
 
   test("forgetting every feature leaves only the first-day marker", () => {
@@ -179,14 +231,14 @@ describe("recording", () => {
     recordDay(dataDir, ON, NOON, { opened: 1 });
     forgetUsageCounts({ dataDir });
     expect(existsSync(join(usageCountsDir(dataDir), "counts.json"))).toBe(false);
-    expect(JSON.parse(readFileSync(join(usageCountsDir(dataDir), "facts.json"), "utf-8")).features.decisionMode).toEqual({ firstDay: "2026-10-24" });
+    expect(JSON.parse(readFileSync(join(usageCountsDir(dataDir), "facts.json"), "utf-8")).features.decisionMode).toEqual({ used: true });
   });
 
-  test("a day older than 30 days is dropped unsent", () => {
+  test("a day older than 3 days is dropped unsent (the service would refuse it)", () => {
     const dataDir = scratch();
-    recordDay(dataDir, ON, NOON - 31 * DAY, { opened: 1 });
-    recordDay(dataDir, ON, NOON - 2 * DAY, { opened: 1 });
-    expect(pendingUsageCountBatches(deps(dataDir, ON, NOON)).map((b) => b.day)).toEqual(["2026-10-22"]);
+    recordDay(dataDir, ON, NOON - 4 * DAY, { opened: 1 });
+    recordDay(dataDir, ON, NOON - 3 * DAY, { opened: 1 });
+    expect(pendingUsageCountBatches(deps(dataDir, ON, NOON)).map((b) => b.day)).toEqual(["2026-10-21"]);
   });
 });
 
@@ -195,18 +247,24 @@ describe("the two facts, worked out on this computer", () => {
     const dataDir = scratch();
     const at = (d: number) => Date.UTC(2026, 9, d, 15);
     // Used (opened) on the 1st, 2nd, 4th, 5th, 6th, 7th and 20th; on the 3rd the
-    // Inbox was open with it on but it was not used.
-    for (const d of [1, 2, 4, 5, 6, 7, 20]) recordDay(dataDir, ON, at(d), { active_day: 1, opened: 1 });
-    recordDay(dataDir, ON, at(3), { active_day: 1 });
-    const batches = pendingUsageCountBatches(deps(dataDir, ON, at(21)));
-    const byDay = Object.fromEntries(batches.map((b) => [b.day, JSON.parse(b.body).events]));
+    // Inbox was open with it on but it was not used. Each day is read back the
+    // next day, as the sender would.
+    const byDay: Record<string, Record<string, number>> = {};
+    for (const d of [1, 2, 3, 4, 5, 6, 7, 20]) {
+      recordDay(dataDir, ON, at(d), d === 3 ? { active_day: 1 } : { active_day: 1, opened: 1 });
+      for (const b of pendingUsageCountBatches(deps(dataDir, ON, at(d) + DAY))) byDay[b.day] = JSON.parse(b.body).events;
+    }
     expect(byDay["2026-10-01"]).toEqual({ active_day: 1, opened: 1, first_day: 1, days_last7: 1 });
     expect(byDay["2026-10-02"]).toEqual({ active_day: 1, opened: 1, days_last7: 2 }); // 2 days: 2-3
     expect(byDay["2026-10-03"]).toEqual({ active_day: 1, days_last7: 2 }); // 1st, 2nd: 2-3
-    expect(byDay["2026-10-05"].days_last7).toBe(4); // 1, 2, 4, 5: 4-5
-    expect(byDay["2026-10-07"].days_last7).toBe(6); // 1, 2, 4, 5, 6, 7: 6-7
+    expect(byDay["2026-10-05"]!.days_last7).toBe(4); // 1, 2, 4, 5: 4-5
+    expect(byDay["2026-10-07"]!.days_last7).toBe(6); // 1, 2, 4, 5, 6, 7: 6-7
     expect(byDay["2026-10-20"]).toEqual({ active_day: 1, opened: 1, days_last7: 1 });
-    expect(batches.filter((b) => JSON.parse(b.body).events.first_day).length).toBe(1);
+    expect(Object.values(byDay).filter((e) => e.first_day).length).toBe(1);
+    // facts.json holds no date but the used days of the last 10 days.
+    const facts = JSON.parse(readFileSync(join(usageCountsDir(dataDir), "facts.json"), "utf-8"));
+    expect(facts.features.decisionMode.used).toBe(true);
+    expect(Object.keys(facts.features.decisionMode).sort()).toEqual(["used", "usedDays"]);
   });
 
   test("first_day is sent once per install, even after counts went off and on", async () => {
@@ -387,10 +445,11 @@ describe("sending", () => {
 
   test("a build that is not a release with no test endpoint sends nothing and connects nowhere", async () => {
     const dataDir = scratch();
+    // Recorded by a build that could send (a test endpoint), then read by one that cannot.
     recordDay(dataDir, ON, NOON - DAY, { opened: 2 });
     let called = 0;
     const result = await sendUsageCounts({
-      ...deps(dataDir, ON, NOON),
+      ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: "" }),
       version: "0.0.0-dev",
       force: true,
       transport: async () => {
@@ -424,6 +483,68 @@ describe("sending", () => {
     }
   });
 
+  test("a closed day waits a random delay past its close; --send (force) does not wait", async () => {
+    const dataDir = scratch();
+    const endpoint = fakeEndpoint();
+    try {
+      const env = { PLANNOTATOR_TELEMETRY_URL: endpoint.url };
+      const half = { random: () => 0.5 };
+      recordDay(dataDir, ON, NOON - DAY, { opened: 1 });
+      const closedAt = Date.UTC(2026, 9, 24, 0, 0);
+      // The day closes at the first look after midnight; random 0.5 puts its send 2 hours later.
+      expect((await sendUsageCounts({ ...deps(dataDir, ON, closedAt, env), ...half })).status).toBe("nothing");
+      expect(pendingUsageCountBatches(deps(dataDir, ON, closedAt))[0]!.notBefore).toBe(closedAt + USAGE_COUNTS_CLOSE_DELAY_MAX_MS / 2);
+      expect((await sendUsageCounts({ ...deps(dataDir, ON, closedAt + 3_600_000, env), ...half })).status).toBe("nothing");
+      expect(endpoint.requests.length).toBe(0);
+      expect((await sendUsageCounts({ ...deps(dataDir, ON, closedAt + USAGE_COUNTS_CLOSE_DELAY_MAX_MS / 2, env), ...half })).sent).toBe(1);
+      recordDay(dataDir, ON, NOON, { opened: 1 });
+      expect((await sendUsageCounts({ ...deps(dataDir, ON, NOON + DAY, env), ...half, force: true })).sent).toBe(1);
+    } finally {
+      endpoint.stop();
+    }
+  });
+
+  test("batches of one attempt go with a random gap of 2 to 20 seconds between them", async () => {
+    const dataDir = scratch();
+    const endpoint = fakeEndpoint();
+    try {
+      recordDay(dataDir, ON, NOON - 3 * DAY, { opened: 1 });
+      recordDay(dataDir, ON, NOON - 2 * DAY, { opened: 1 });
+      recordDay(dataDir, ON, NOON - DAY, { opened: 1 });
+      const gaps: number[] = [];
+      const randoms = [0, 0.999, 0, 0.5];
+      const result = await sendUsageCounts({
+        ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: endpoint.url }),
+        random: () => randoms.shift() ?? 0,
+        sleep: async (ms) => void gaps.push(ms),
+      });
+      expect(result.sent).toBe(3);
+      expect(gaps).toHaveLength(2);
+      for (const g of gaps) expect(g >= 2_000 && g <= 20_000).toBe(true);
+    } finally {
+      endpoint.stop();
+    }
+  });
+
+  test("turning one feature off removes its sent-log lines and the send state", async () => {
+    const dataDir = scratch();
+    const endpoint = fakeEndpoint();
+    try {
+      recordDay(dataDir, ON, NOON - DAY, { opened: 1 });
+      await sendUsageCounts({ ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: endpoint.url }) });
+      expect(sentUsageCounts({ dataDir })).toHaveLength(1);
+      expect(existsSync(join(usageCountsDir(dataDir), "state.json"))).toBe(true);
+      forgetUsageCounts({ dataDir, feature: "decisionMode" });
+      expect(sentUsageCounts({ dataDir })).toEqual([]);
+      expect(existsSync(join(usageCountsDir(dataDir), "sent.jsonl"))).toBe(false);
+      expect(existsSync(join(usageCountsDir(dataDir), "state.json"))).toBe(false);
+      // Only the marker stays.
+      expect(JSON.parse(readFileSync(join(usageCountsDir(dataDir), "facts.json"), "utf-8"))).toEqual({ v: 1, features: { decisionMode: { used: true } } });
+    } finally {
+      endpoint.stop();
+    }
+  });
+
   test("the send window rules", () => {
     expect(isUsageCountsSendDue({}, NOON)).toBe(true);
     expect(isUsageCountsSendDue({ attemptedAt: NOON - 59 * 60_000 }, NOON)).toBe(false);
@@ -435,7 +556,9 @@ describe("sending", () => {
     const dataDir = scratch();
     recordDay(dataDir, ON, NOON - DAY, { opened: 2 });
     const report = describeUsageCounts({ ...deps(dataDir, ON, NOON), version: undefined });
-    expect(report.endpoint).toBeNull();
+    expect(report.endpoint).toBe("http://127.0.0.1:9/v1/counts");
+    expect(report.records).toBe(true);
+    expect(describeUsageCounts({ ...deps(dataDir, ON, NOON, { PLANNOTATOR_TELEMETRY_URL: "" }), version: undefined }).records).toBe(false);
     expect(report.features[0]!.counts).toEqual({ on: true, reason: "on" });
     expect(report.features[0]!.waiting.map((b) => b.body)).toEqual([
       '{"schema":1,"feature":"decisionMode","rev":1,"day":"2026-10-23","events":{"opened":2,"first_day":1,"days_last7":1}}',

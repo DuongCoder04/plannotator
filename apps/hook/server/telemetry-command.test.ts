@@ -16,6 +16,8 @@ import { recordUsageCount, usageCountsDir } from "@plannotator/shared/usage-coun
 import { NO_BROWSER } from "../../../tests/helpers/no-browser";
 
 const entry = resolve(import.meta.dir, "telemetry-command-entry.ts");
+/** The feature on in config.json and the counts notice shown. */
+const ON = { experimental: { decisionMode: true }, usageCountsNotice: { decisionMode: 1 } } as PlannotatorConfig;
 const DAY = 86_400_000;
 
 const requests: string[] = [];
@@ -58,8 +60,8 @@ function world(config: PlannotatorConfig): string {
   dirs.push(dataDir);
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, "config.json"), JSON.stringify(config));
-  // Recorded while counts were on, as the feature's code would.
-  const on = { dataDir, env: {}, config: () => ({ experimental: { decisionMode: true } }) as PlannotatorConfig };
+  // Recorded while counts were on, as the feature's code would, by a build that sends (here: to the loopback endpoint).
+  const on = { dataDir, env: { PLANNOTATOR_TELEMETRY_URL: url }, version: undefined, random: () => 0, config: () => ON };
   for (const event of ["active_day", "opened", "opened", "decided"] as const) recordUsageCount("decisionMode", event, { ...on, now: Date.now() - DAY });
   recordUsageCount("decisionMode", "opened", { ...on, now: Date.now() });
   return dataDir;
@@ -75,13 +77,14 @@ async function run(dataDir: string, args: string[], env: Record<string, string> 
   return { code, stdout, stderr };
 }
 
-const ON = { experimental: { decisionMode: true } } as PlannotatorConfig;
 
 describe("nothing is sent while counts are off", () => {
   const cases: [string, PlannotatorConfig, Record<string, string>][] = [
     ["counts off in config", { ...ON, usageCounts: false } as PlannotatorConfig, {}],
     ["counts off for the feature", { ...ON, usageCounts: { decisionMode: false } } as PlannotatorConfig, {}],
-    ["the feature off", {}, {}],
+    ["the feature off", { usageCountsNotice: { decisionMode: 1 } } as PlannotatorConfig, {}],
+    ["the notice never shown", { experimental: { decisionMode: true } } as PlannotatorConfig, {}],
+    ["an older notice shown", { experimental: { decisionMode: true }, usageCountsNotice: { decisionMode: 0 } } as PlannotatorConfig, {}],
     ["DO_NOT_TRACK=1, even with counts on in config", { ...ON, usageCounts: true } as PlannotatorConfig, { DO_NOT_TRACK: "1" }],
     ["PLANNOTATOR_TELEMETRY=0", ON, { PLANNOTATOR_TELEMETRY: "0" }],
     ["DO_NOT_TRACK=1 beside PLANNOTATOR_TELEMETRY=1", ON, { DO_NOT_TRACK: "1", PLANNOTATOR_TELEMETRY: "1" }],

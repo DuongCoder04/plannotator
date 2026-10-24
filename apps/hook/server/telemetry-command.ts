@@ -39,6 +39,7 @@ const REASON_TEXT: Record<UsageCountsReason, string> = {
   on: "on",
   unknown_feature: "not a counted feature",
   feature_off: "off (the feature is off)",
+  notice: "off (the counts notice has not been shown for this version)",
   ended: "off (counting ended)",
   PLANNOTATOR_TELEMETRY: "off (PLANNOTATOR_TELEMETRY)",
   DO_NOT_TRACK: "off (DO_NOT_TRACK)",
@@ -69,11 +70,11 @@ export async function runTelemetryCommand(args: string[], deps: TelemetryCommand
     return 0;
   }
   const actions = ["--show", "--off", "--on", "--send"].filter((f) => flags.has(f));
-  if (actions.length !== 1) return usage(err, actions.length ? "Pick one of --show, --off, --on." : "");
+  if (actions.length !== 1) return usage(err, actions.length ? "Pick one of --show, --off, --on, --send." : "");
   if (feature !== undefined && !usageCountFeature(feature)) return usage(err, `Not a counted feature: ${feature}`);
   if (feature !== undefined && (flags.has("--show") || flags.has("--send"))) return usage(err, "--feature goes with --off or --on.");
   const json = flags.has("--json");
-  if (json && (flags.has("--off") || flags.has("--on"))) return usage(err, "--json goes with --show.");
+  if (json && (flags.has("--off") || flags.has("--on"))) return usage(err, "--json goes with --show or --send.");
 
   if (flags.has("--off") || flags.has("--on")) {
     const on = flags.has("--on");
@@ -101,11 +102,11 @@ export async function runTelemetryCommand(args: string[], deps: TelemetryCommand
     return 0;
   }
   const lines: string[] = [];
-  lines.push(`Sent to: ${report.endpoint ?? "nowhere (this build does not send)"}`);
+  lines.push(`Sent to: ${report.endpoint ?? "nowhere (this build neither records nor sends)"}`);
   if (report.envBlock) lines.push(`${report.envBlock} is set: counts are off everywhere.`);
   for (const f of report.features) {
     lines.push("", `${f.name} (${f.id}, revision ${f.rev})`);
-    lines.push(`  Feature: ${f.enabled ? "on" : "off"}`);
+    lines.push(`  Feature: ${f.enabled ? "on" : "off"}; notice shown: ${f.noticeShown ? `version ${f.noticeShown}` : "no"} (needs ${f.noticeNeeded})`);
     lines.push(`  Counts: ${REASON_TEXT[f.counts.reason]}; counting ends ${f.collectUntil}`);
     lines.push("  What is counted:");
     for (const e of f.events) lines.push(`    ${e.id}: ${e.label}`);

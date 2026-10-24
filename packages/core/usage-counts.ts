@@ -30,13 +30,18 @@ export const USAGE_COUNTS_HOST = "counts.plannotator.ai";
 export const USAGE_COUNTS_PATH = "/v1/counts";
 /** The Worker refuses a larger body; a real batch is under 250 bytes. */
 export const USAGE_COUNTS_MAX_BODY_BYTES = 1024;
-/** The Worker takes a day at most this many days back (the client queue keeps 30). */
-export const USAGE_COUNTS_MAX_DAYS_BACK = 35;
-/** The client drops a day older than this unsent. */
-export const USAGE_COUNTS_QUEUE_DAYS = 30;
+/**
+ * The Worker takes a day at most this many days back. After that a day is
+ * closed for good: no batch can change it, so the read route serves it (and
+ * serves nothing newer), and a total can never be read before and after one
+ * install's batch to learn that batch.
+ */
+export const USAGE_COUNTS_MAX_DAYS_BACK = 3;
+/** The client drops a day older than this unsent (the Worker would refuse it). */
+export const USAGE_COUNTS_QUEUE_DAYS = USAGE_COUNTS_MAX_DAYS_BACK;
 /** The Worker deletes a feature's totals this many days after its counting ends. */
 export const USAGE_COUNTS_RETENTION_DAYS = 180;
-/** The read route hides a (day, rev) with fewer reporting install-days than this. */
+/** The read route hides any (day, rev) and any cell with fewer reports than this. */
 export const USAGE_COUNTS_MIN_REPORTS = 5;
 
 /**
@@ -62,7 +67,12 @@ export interface UsageCountFeatureDef {
   readonly name: string;
   /** Bumped when the feature changes in a way that matters to the counts. */
   readonly rev: number;
-  /** The notice version a person was shown (phase 2: the notice). */
+  /**
+   * The notice version a person must have been shown before anything is
+   * counted (config.json `usageCountsNotice.<id>`, written only by the notice
+   * UI). Bump it when what is counted changes: counting stops until the new
+   * notice is shown.
+   */
   readonly notice: number;
   /** The last UTC day counted. The client and the Worker both stop after it. */
   readonly collectUntil: string;
@@ -154,6 +164,14 @@ export function addUtcDays(day: string, days: number): string {
 /** Whole days from `from` to `to` (negative when `to` is earlier). */
 export function utcDaysBetween(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
+/**
+ * The newest day the read route may serve on `today`: a day no batch can
+ * still change (the Worker accepts a day for USAGE_COUNTS_MAX_DAYS_BACK days).
+ */
+export function usageCountsServedThrough(today: string): string {
+  return addUtcDays(today, -(USAGE_COUNTS_MAX_DAYS_BACK + 1));
 }
 
 // ── The days_last7 bucket ──

@@ -495,6 +495,12 @@ export interface PlannotatorConfig {
    * Written by `plannotator telemetry --off` / `--on`.
    */
   usageCounts?: boolean | Record<string, boolean>;
+  /**
+   * The usage-counts notice version the person was shown, per feature
+   * (`{ "decisionMode": 1 }`). Written only by the notice UI (phase 2).
+   * Counting needs at least the registry's `notice` for that feature.
+   */
+  usageCountsNotice?: Record<string, number>;
 }
 
 /** Parse the only server-writable call-review analysis flags. */

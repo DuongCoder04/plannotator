@@ -94,7 +94,7 @@ describe("the validator the client and the Worker share", () => {
     ["a fractional revision", body({ rev: 1.5 })],
     ["a day that is not a day", body({ day: "2026-13-01" })],
     ["a day with a time", body({ day: "2026-10-23T10:00:00Z" })],
-    ["a day 36 days back", body({ day: addUtcDays(TODAY, -36) })],
+    ["a day 4 days back", body({ day: addUtcDays(TODAY, -4) })],
     ["a day two days ahead", body({ day: addUtcDays(TODAY, 2) })],
     ["an unknown event", body({ events: { opened: 1, path: 1 } })],
     ["no events", body({ events: {} })],
@@ -119,9 +119,9 @@ describe("the validator the client and the Worker share", () => {
     expect(parseUsageCountsBatch(body({ day: end }), { today: addUtcDays(end, 2) })).not.toBeNull();
   });
 
-  test("allows one day of clock skew ahead and 35 days back", () => {
+  test("allows one day of clock skew ahead and 3 days back", () => {
     expect(parseUsageCountsBatch(body({ day: addUtcDays(TODAY, 1) }), { today: TODAY })).not.toBeNull();
-    expect(parseUsageCountsBatch(body({ day: addUtcDays(TODAY, -35) }), { today: TODAY })).not.toBeNull();
+    expect(parseUsageCountsBatch(body({ day: addUtcDays(TODAY, -3) }), { today: TODAY })).not.toBeNull();
   });
 });
 
