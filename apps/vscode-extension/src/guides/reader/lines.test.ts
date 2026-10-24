@@ -35,7 +35,13 @@ describe("which lines a selection in the Guide tab asks about", () => {
 
   it("unchanged rows take the side of the removed lines selected with them (the unified view reports them as new lines)", () => {
     // Second hunk: old 30 = new 29, old 31 removed, old 32 = new 30, old 33 = new 31.
-    expect(askLines({ start: 29, end: 31, side: "additions", endSide: "additions" }, PATCH)).toEqual({ side: "new", start: 29, end: 31 });
+    // Both ends are unchanged rows, but the removed line 31 lies between them: the old side, covering it.
+    expect(askLines({ start: 29, end: 31, side: "additions", endSide: "additions" }, PATCH)).toEqual({ side: "old", start: 30, end: 33 });
+    // Unchanged rows with nothing removed between them stay on the new side.
+    expect(askLines({ start: 30, end: 31, side: "additions", endSide: "additions" }, PATCH)).toEqual({ side: "new", start: 30, end: 31 });
+    expect(askLines({ start: 10, end: 12, side: "additions", endSide: "additions" }, PATCH)).toBeNull();
+    // Removed lines only (both ends deletions): the old side.
+    expect(askLines({ start: 12, end: 13, side: "deletions", endSide: "deletions" }, PATCH)).toEqual({ side: "old", start: 12, end: 13 });
     expect(askLines({ start: 29, end: 31, side: "additions", endSide: "deletions" }, PATCH)).toEqual({ side: "old", start: 30, end: 31 });
     expect(askLines({ start: 31, end: 31, side: "deletions", endSide: "additions" }, PATCH)).toEqual({ side: "old", start: 31, end: 33 });
     // Unchanged line above, removed lines (no added line between): the old side, old numbers.
@@ -47,6 +53,9 @@ describe("which lines a selection in the Guide tab asks about", () => {
     expect(askLines({ start: 12, end: 13, side: "deletions", endSide: "additions" }, PATCH)).toBeNull();
     // An endpoint the patch does not have (an expanded line far away): not guessed.
     expect(askLines({ start: 12, end: 200, side: "deletions", endSide: "additions" }, PATCH)).toBeNull();
+    expect(askLines({ start: 29, end: 200, side: "additions", endSide: "additions" }, PATCH)).toBeNull();
+    // Neither end in the patch, one side: the lines as selected.
+    expect(askLines({ start: 100, end: 105, side: "additions", endSide: "additions" }, PATCH)).toEqual({ side: "new", start: 100, end: 105 });
   });
 });
 
@@ -164,4 +173,22 @@ describe.skipIf(typeof document === "undefined")("a jump to a line", () => {
     expect(r.scrolled()).toBe(0);
     shell.remove();
   });
+
+  for (const type of ["wheel", "keydown", "pointerdown"] as const) {
+    it(`gives up when the reader moves on before the row is drawn (${type})`, async () => {
+      const shell = fileShell(`moved-${type}.ts`);
+      const r = row(8);
+      const jump = scrollToDiffLine(`moved-${type}.ts`, "new", 8, fast);
+      await new Promise((res) => setTimeout(res, 12));
+      window.dispatchEvent(new Event(type));
+      shell.appendChild(r.el);
+      expect(await jump).toBe(false);
+      expect(r.scrolled()).toBe(0);
+      // Once it is over, the reader's events stop touching later jumps.
+      const next = scrollToDiffLine(`moved-${type}.ts`, "new", 8, fast);
+      expect(await next).toBe(true);
+      expect(r.scrolled()).toBe(1);
+      shell.remove();
+    });
+  }
 });

@@ -4,15 +4,21 @@
  * never opens on the head), only the guide's files are asked about, and a
  * definition in a changed file is revealed on its own side.
  */
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as vscode from "vscode";
 import { ReaderModel, type ReaderSides } from "../reader-model";
 import type { LoadedGuide } from "../store";
+import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseGuideLink } from "../core/adapter";
-import { locateLink } from "./intel";
+import { locateLink, resolveSymbolForBuilder } from "./intel";
+import { searchDefinitions } from "../symbol-search";
+
+const originalReadFile = fsp.readFile;
+const originalReadFileSync = fs.readFileSync;
 import { guideFileAt, readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
 import { baseUri, docSideOf, headUri } from "./uris";
 
@@ -199,6 +205,41 @@ describe("a symlink in the change that leads out of the repository", () => {
     symlinkSync(join(dir, "credentials"), join(root, "src", "creds.ts"));
     expect(await locateLink(link("code:src/creds.ts"), m, sides)).toMatchObject({ error: expect.stringContaining("not a file inside the repository") });
     expect(await locateLink(link("code:src/deliver.ts#L2"), m, sides)).toMatchObject({ path: "src/deliver.ts", inChange: true });
+  });
+
+  it("a symbol: link naming it is refused before any language server is asked or the file is read", async () => {
+    installOpen();
+    opened.length = 0;
+    // The target outside the repository defines the symbol, so any read of it would find it.
+    writeFileSync(join(dir, "credentials"), "function secret() { return 'SECRET'; }\n");
+    const reads: string[] = [];
+    const asyncRead = spyOn(fsp, "readFile").mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      reads.push(String(p));
+      return (originalReadFile as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+    }) as typeof fsp.readFile);
+    const syncRead = spyOn(fs, "readFileSync").mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      reads.push(String(p));
+      return (originalReadFileSync as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.readFileSync);
+    try {
+      const m = linkModel();
+      const p = parseGuideLink("symbol:notes.md#secret");
+      if (!p?.ok) throw new Error("link");
+      expect(await locateLink(p.link, m, sides)).toEqual({ error: "notes.md is not a file inside the repository; not opened." });
+      expect(calls).toEqual([]);
+      expect(opened).toEqual([]);
+      expect(reads).toEqual([]);
+      // The builder's check and a path-less search over every changed path skip it unread too.
+      expect(await resolveSymbolForBuilder("secret", "notes.md", root, ["src/deliver.ts", "notes.md"])).toEqual({ status: "missing" });
+      expect(await searchDefinitions(root, ["src/deliver.ts", "notes.md"], "secret")).toEqual([]);
+      expect(reads.some((r) => r.includes("credentials") || r.endsWith("notes.md"))).toBe(false);
+      // A real file of the change is still read.
+      expect(await searchDefinitions(root, ["src/deliver.ts"], "retry")).toEqual([]);
+      expect(reads.some((r) => r.endsWith("deliver.ts"))).toBe(true);
+    } finally {
+      asyncRead.mockRestore();
+      syncRead.mockRestore();
+    }
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));

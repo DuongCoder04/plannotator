@@ -13,7 +13,7 @@ import { searchDefinitions } from "../symbol-search";
 import type { LinkInfo } from "../webview-protocol";
 import type { ReaderModel, ReaderSides } from "../reader-model";
 import { headUri } from "./uris";
-import { headLeavesRepo } from "../safe-path";
+import { headLeavesRepo, realFileInside } from "../safe-path";
 
 const CHAPTER_COLORS = ["charts.yellow", "charts.blue", "charts.purple", "charts.green", "charts.orange", "charts.red"];
 const CHAPTER_HEX = ["#e2b93d", "#3794ff", "#b180d7", "#89d185", "#d18616", "#f14c4c"];
@@ -61,8 +61,10 @@ async function workspaceSymbols(name: string, root: string): Promise<SymbolCandi
 
 /** Workspace symbols include import and re-export aliases: they are not where a symbol is defined. */
 function isImportLine(root: string, c: SymbolCandidate): boolean {
+  const real = realFileInside(root, c.path);
+  if (!real) return false;
   try {
-    const line = readFileSync(join(root, c.path), "utf8").split("\n")[c.line - 1] ?? "";
+    const line = readFileSync(real, "utf8").split("\n")[c.line - 1] ?? "";
     return /^\s*(import\b|export\s*(\*|\{|type\s*\{))/.test(line) || /^\s*[\w$,\s{}]*\}\s*from\s*["']/.test(line);
   } catch {
     return false;
@@ -103,6 +105,8 @@ function dedupe(list: SymbolCandidate[]): SymbolCandidate[] {
 /** Where a symbol is, in order: language server, then text search in the changed files. */
 export async function findSymbol(name: string, path: string | undefined, headRoot: string, changedPaths: readonly string[]): Promise<SymbolCandidate[]> {
   if (path) {
+    // A path that leaves the repository (a symlink out of it) is never handed to a language server or read.
+    if (!realFileInside(headRoot, path)) return [];
     const fromDoc = await documentSymbols(vscode.Uri.file(join(headRoot, path)), name, path);
     if (fromDoc.length) return fromDoc;
     const hits = await searchDefinitions(headRoot, [path], name);
@@ -160,6 +164,8 @@ export async function locateLink(link: GuideLink, reader: ReaderModel, sides: Re
     };
   }
   if (link.kind === "symbol") {
+    // Refused before anything is asked or read: the link's own path may be a symlink out of the repository.
+    if (link.path && outside(link.path)) return { error: `${link.path} is not a file inside the repository; not opened.` };
     const found = await findSymbol(link.name, link.path, headRoot, changed);
     if (found.length === 0) return { error: `No symbol named ${link.name} was found.` };
     const hit = { ...found[0] };
@@ -193,8 +199,10 @@ export function hoverText(hovers: vscode.Hover[] | undefined): string | undefine
 
 /** The column of `name` on a line (so hover and references answer for the symbol, not a keyword). */
 function nameColumn(root: string, path: string, line: number, name: string): number {
+  const real = realFileInside(root, path);
+  if (!real) return 0;
   try {
-    const text = readFileSync(join(root, path), "utf8").split("\n")[line - 1] ?? "";
+    const text = readFileSync(real, "utf8").split("\n")[line - 1] ?? "";
     const short = name.split(".").pop()!;
     const m = new RegExp(`\\b${short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).exec(text);
     return m ? m.index : 0;

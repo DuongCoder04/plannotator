@@ -55,3 +55,21 @@ export function readOwnFile(root: string, path: string): Buffer | null {
     return null;
   }
 }
+
+/**
+ * Why a head file was not opened, in words: gone from the disk, or not a file
+ * inside the repository (a symlink out of it, a folder). A path that names a
+ * place outside the root is never looked up, so the answer says nothing about
+ * what is there.
+ */
+export function headRefusal(root: string, path: string): string {
+  const leaves = !path || isAbsolute(path) || path.split(/[\\/]/).includes("..") || path.includes("\0");
+  if (!leaves) {
+    try {
+      lstatSync(join(root, path));
+    } catch {
+      return `${path} is not on disk.`;
+    }
+  }
+  return `${path} is not a file inside the repository (a link out of it is not opened).`;
+}

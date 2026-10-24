@@ -60,6 +60,7 @@ export interface ReaderPanelHandlers {
 export class ReaderPanel implements vscode.Disposable {
   readonly panel: vscode.WebviewPanel;
   private ready = false;
+  private engineUnavailable = false;
   private readonly queue: ToReader[] = [];
   private readonly subscription: vscode.Disposable;
   private nextReq = 1;
@@ -92,6 +93,11 @@ export class ReaderPanel implements vscode.Disposable {
     return this.ready;
   }
 
+  /** The Guide tab answered that it has no diagram engine: asking again will not help. */
+  get diagramEngineUnavailable(): boolean {
+    return this.engineUnavailable;
+  }
+
   /** Render a Mermaid source with the reader's engine (the builder's check); null when it could not be checked. */
   checkMermaid(source: string, timeoutMs = 15_000): Promise<{ ok: boolean; message?: string; line?: number } | null> {
     if (!this.ready) return Promise.resolve(null);
@@ -116,6 +122,7 @@ export class ReaderPanel implements vscode.Disposable {
       const done = this.mermaidChecks.get(msg.reqId);
       this.mermaidChecks.delete(msg.reqId);
       // No engine in the Guide tab: it could not check (null), not a refusal.
+      if (msg.unavailable) this.engineUnavailable = true;
       done?.(msg.unavailable ? null : { ok: msg.ok, message: msg.message, line: msg.line });
       return;
     }

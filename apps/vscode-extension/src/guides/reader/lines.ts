@@ -44,16 +44,20 @@ function patchRows(filePatch: string): PatchRow[] {
  * A selection across removed and added lines is not asked (the lines would
  * not be one stretch of either version).
  *
- * With the file's patch, unchanged rows take the side of the changed lines
- * the selection holds: in the unified view an unchanged row is reported as
- * an `additions` line (its new number), so removed lines plus the unchanged
- * lines around them are the old version's lines, numbered on that side.
+ * With the file's patch, the patch rows between the two ends decide, whatever
+ * side Pierre names for each end: in the unified view an unchanged row is
+ * reported as an `additions` line (its new number), so a selection whose ends
+ * are both unchanged rows can still hold removed lines between them. Removed
+ * lines with unchanged ones are the old version's lines, numbered on that
+ * side; removed and added lines together are refused; anything else is the
+ * new side. An end the patch does not have is not guessed at (unless neither
+ * end is in it and both name the same side).
  */
 export function askLines(range: SelectedLineRange, filePatch?: string): { side: "old" | "new"; start: number; end: number } | null {
   const startSide = range.side === "deletions" ? "old" : "new";
   const endSide = (range.endSide ?? range.side) === "deletions" ? "old" : "new";
-  if (startSide === endSide) return { side: startSide, start: Math.min(range.start, range.end), end: Math.max(range.start, range.end) };
-  if (!filePatch) return null;
+  const plain = startSide === endSide ? { side: startSide, start: Math.min(range.start, range.end), end: Math.max(range.start, range.end) } : null;
+  if (!filePatch) return plain;
   const rows = patchRows(filePatch);
   const indexOf = (side: "old" | "new", n: number): number => {
     const changed = rows.findIndex((r) => r.kind === (side === "old" ? "deletion" : "addition") && r[side] === n);
@@ -61,6 +65,7 @@ export function askLines(range: SelectedLineRange, filePatch?: string): { side: 
   };
   const a = indexOf(startSide, range.start);
   const b = indexOf(endSide, range.end);
+  if (a < 0 && b < 0) return plain;
   if (a < 0 || b < 0) return null;
   const slice = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
   const hasDeletion = slice.some((r) => r.kind === "deletion");
@@ -136,25 +141,37 @@ export function cancelDiffLineJump(): void {
   jumpGeneration++;
 }
 
+/** What the reader does that means it has moved on: a pending jump then gives up. */
+const MOVED_ON_EVENTS = ["wheel", "keydown", "pointerdown"] as const;
+
 /**
  * Scroll a file's line into the middle of the tab once its diff is drawn (it
  * mounts as it comes into view). Only the latest jump lands: a jump still
- * waiting when another starts (or `cancelDiffLineJump`) gives up, so a late
- * row never pulls the view away from where the reader went since.
+ * waiting when another starts (or `cancelDiffLineJump`) gives up, and so does
+ * one still waiting when the reader scrolls, presses a key or clicks, so a
+ * late row never pulls the view away from where the reader went since.
  */
 export async function scrollToDiffLine(path: string, side: "old" | "new", line: number, opts: { tries?: number; everyMs?: number; firstMs?: number } = {}): Promise<boolean> {
   const generation = ++jumpGeneration;
   const tries = opts.tries ?? 40;
-  for (let i = 0; i < tries; i++) {
-    await new Promise((r) => setTimeout(r, i === 0 ? (opts.firstMs ?? 120) : (opts.everyMs ?? 100)));
-    if (generation !== jumpGeneration) return false;
-    const shell = document.querySelector(`[data-guide-file-shell="${CSS.escape(path)}"]`);
-    const row = shell ? findDiffLine(shell, side, line) : null;
-    if (row) {
-      row.scrollIntoView({ block: "center" });
-      row.animate?.([{ outline: "2px solid var(--vscode-focusBorder, #007fd4)" }, { outline: "2px solid transparent" }], { duration: 1400 });
-      return true;
+  const movedOn = () => {
+    if (generation === jumpGeneration) jumpGeneration++;
+  };
+  for (const type of MOVED_ON_EVENTS) window.addEventListener(type, movedOn, { capture: true, passive: true });
+  try {
+    for (let i = 0; i < tries; i++) {
+      await new Promise((r) => setTimeout(r, i === 0 ? (opts.firstMs ?? 120) : (opts.everyMs ?? 100)));
+      if (generation !== jumpGeneration) return false;
+      const shell = document.querySelector(`[data-guide-file-shell="${CSS.escape(path)}"]`);
+      const row = shell ? findDiffLine(shell, side, line) : null;
+      if (row) {
+        row.scrollIntoView({ block: "center" });
+        row.animate?.([{ outline: "2px solid var(--vscode-focusBorder, #007fd4)" }, { outline: "2px solid transparent" }], { duration: 1400 });
+        return true;
+      }
     }
+    return false;
+  } finally {
+    for (const type of MOVED_ON_EVENTS) window.removeEventListener(type, movedOn, { capture: true });
   }
-  return false;
 }

@@ -82,7 +82,7 @@ import { approveAlwaysTarget, isKnownPullRequestUrl } from "../trust";
 import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeData, type TreeNode } from "./tree";
 import { ANSWER_VIEW_TYPE, RUN_VIEW_TYPE } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
-import { headLeavesRepo, realFileInside } from "../safe-path";
+import { headLeavesRepo, headRefusal, realFileInside } from "../safe-path";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
 import { ReaderPanel } from "./reader-panel";
 import { readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
@@ -1388,6 +1388,8 @@ export class GuidesController implements vscode.Disposable {
     let result: Awaited<ReturnType<ReaderPanel["checkMermaid"]>> = null;
     for (let i = 0; i < 20 && !result; i++) {
       result = await host.checkMermaid(source);
+      // Retry only while the tab is still loading; a tab without a diagram engine will not have one later.
+      if (!result && host.diagramEngineUnavailable) break;
       if (!result) await new Promise((r) => setTimeout(r, 250));
     }
     if (!result || this.reader !== reader) return;
@@ -1566,7 +1568,7 @@ export class GuidesController implements vscode.Disposable {
     if (!file || file.status === "deleted") return;
     const { sides } = this.reader;
     if (headLeavesRepo(sides, file)) {
-      void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+      void vscode.window.showWarningMessage(headRefusal(sides.head.kind === "fs" ? sides.head.root : sides.gitRoot, path));
       return;
     }
     const uri = headUri(sides, file);
@@ -1588,7 +1590,7 @@ export class GuidesController implements vscode.Disposable {
     else if (sides.head.kind === "fs") {
       const real = realFileInside(sides.head.root, path);
       if (!real) {
-        void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+        void vscode.window.showWarningMessage(headRefusal(sides.head.root, path));
         return;
       }
       uri = vscode.Uri.file(real);
@@ -1719,7 +1721,7 @@ export class GuidesController implements vscode.Disposable {
     const { model, sides } = this.reader;
     const file = model.files.get(path) ?? { path, status: "modified" };
     if (headLeavesRepo(sides, file)) {
-      void vscode.window.showWarningMessage(`${path} is not a file inside the repository (a link out of it is not opened).`);
+      void vscode.window.showWarningMessage(headRefusal(sides.head.kind === "fs" ? sides.head.root : sides.gitRoot, path));
       return;
     }
     const chapter = model.chapterOf(path);

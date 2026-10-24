@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { headLeavesRepo, readOwnFile, realFileInside } from "./safe-path";
+import { headLeavesRepo, headRefusal, readOwnFile, realFileInside } from "./safe-path";
 
 const dir = mkdtempSync(join(tmpdir(), "pn-safe-path-"));
 const root = join(dir, "repo");
@@ -48,5 +48,16 @@ describe("a guide file's head that leaves the repository", () => {
   it("a deleted file's head is empty, and a head revision is git's: neither leaves", () => {
     expect(headLeavesRepo(fs, { path: "creds.txt", status: "deleted" })).toBe(false);
     expect(headLeavesRepo({ head: { kind: "rev", rev: "abc" } }, { path: "creds.txt", status: "added" })).toBe(false);
+  });
+});
+
+describe("why a head file was not opened", () => {
+  it("a file that is simply gone is not on disk; a symlink out, a folder or a path up out of the root is not inside", () => {
+    expect(headRefusal(root, "missing.ts")).toBe("missing.ts is not on disk.");
+    expect(headRefusal(root, "creds.txt")).toBe("creds.txt is not a file inside the repository (a link out of it is not opened).");
+    expect(headRefusal(root, "src")).toContain("not a file inside the repository");
+    expect(headRefusal(root, "../secret.txt")).toContain("not a file inside the repository");
+    expect(headRefusal(root, "../nothing-here.txt")).toContain("not a file inside the repository");
+    expect(headRefusal(root, outside)).toContain("not a file inside the repository");
   });
 });

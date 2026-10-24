@@ -73,8 +73,11 @@ describe("messages between the Guide tab and the extension", () => {
     page.receive({ type: "ready" });
     const pending = p.checkMermaid("graph TD; A-->B");
     const ask = page.posted.at(-1) as { reqId: number };
+    expect(p.diagramEngineUnavailable).toBe(false);
     page.receive({ type: "mermaidResult", reqId: ask.reqId, ok: false, unavailable: true, message: "Failed to fetch dynamically imported module" });
     expect(await pending).toBeNull();
+    // Said once, so the extension stops asking a tab that has no engine.
+    expect(p.diagramEngineUnavailable).toBe(true);
   });
 });
 

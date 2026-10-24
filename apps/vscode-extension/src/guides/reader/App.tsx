@@ -77,6 +77,8 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   const [focusedFile, setFocusedFile] = useState<string | null>(null);
   const [revealFile, setRevealFile] = useState<{ path: string; token: number } | null>(null);
   const revealToken = useRef(0);
+  /** A `reveal` arrived: the opening scroll to the first chapter not reviewed no longer runs. */
+  const revealedRef = useRef(false);
   const [asks, setAsks] = useState<{ busy: boolean; markers: AnswerMarker[]; chapters: ChapterAnswers[]; agent: string | null }>({
     busy: false,
     markers: [],
@@ -135,6 +137,8 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
             .then((r) => post({ type: "mermaidResult", reqId: msg.reqId, ok: r.ok, ...(r.message && { message: r.message }), ...(r.line && { line: r.line }), ...(r.unavailable && { unavailable: true }) }));
         } else if (msg.type === "asks") setAsks({ busy: msg.busy, markers: msg.markers, chapters: msg.chapters, agent: msg.agent });
         else if (msg.type === "reveal") {
+          // A jump asked for before the opening scroll ran wins over it.
+          revealedRef.current = true;
           if (msg.path) {
             setBack(backHere(snapshot.guide.sections.length));
             reveal(msg.path);
@@ -150,7 +154,9 @@ export function ReaderApp({ init }: { init: ReaderInit }) {
   // Open on the first chapter not reviewed yet.
   useEffect(() => {
     if (init.startChapter <= 0) return;
-    const t = setTimeout(() => scrollToChapter(init.startChapter), 150);
+    const t = setTimeout(() => {
+      if (!revealedRef.current) scrollToChapter(init.startChapter);
+    }, 150);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
