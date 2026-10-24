@@ -50,6 +50,7 @@ export interface UpdateCommandDeps {
   now?: () => number;
   out?: (text: string) => void;
   err?: (text: string) => void;
+  fetchReleasePage?: () => Promise<FetchReleaseResult>;
   fetchRelease?: () => Promise<FetchReleaseResult>;
   runInstaller?: (launch: InstallerLaunch, write: (chunk: string) => void) => Promise<number>;
 }
@@ -97,6 +98,7 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
     now,
     enabled: () => true,
     force: true,
+    ...(deps.fetchReleasePage && { fetchReleasePage: deps.fetchReleasePage }),
     ...(deps.fetchRelease && { fetchRelease: deps.fetchRelease }),
   });
   if (checked.outcome === "failed") {

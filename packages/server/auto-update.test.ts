@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   AUTO_UPDATE_INTERVAL_MS,
   autoUpdatePaths,
+  autoUpdateCanInstall,
   compareStableVersions,
   deriveAutoUpdateNotice,
   installerCommand,
@@ -23,7 +24,7 @@ import {
   type AutoUpdateDeps,
   type InstallerLaunch,
 } from "./auto-update";
-import { RELEASE_CHECK_RETRY_MS } from "@plannotator/shared/update-check";
+import { RELEASE_API_FALLBACK_INTERVAL_MS, RELEASE_CHECK_RETRY_MS } from "@plannotator/shared/update-check";
 import type { SessionInfo } from "./sessions";
 
 const NOW = 1_800_000_000_000;
@@ -491,9 +492,21 @@ describe("a failed fetch gives the install window back", () => {
     // Inside the release check's backoff: no second request yet.
     expect(await runAutoUpdateCheck(deps({ now: () => NOW + 60_000, fetchLatestTag: async () => (fetches++, "v0.28.0") }))).toBe("no-release");
     expect(fetches).toBe(1);
-    // After it: the install window was not spent, so it asks and installs.
-    expect(await runAutoUpdateCheck(deps({ now: () => NOW + RELEASE_CHECK_RETRY_MS }))).toBe("launched");
+    // After it (only the API answers here, as behind a mirror: its hourly
+    // back-off): the install window was not spent, so it asks and installs.
+    expect(await runAutoUpdateCheck(deps({ now: () => NOW + RELEASE_CHECK_RETRY_MS }))).toBe("no-release");
+    expect(fetches).toBe(1);
+    expect(await runAutoUpdateCheck(deps({ now: () => NOW + RELEASE_API_FALLBACK_INTERVAL_MS }))).toBe("launched");
     expect(fetches).toBe(2);
+  });
+});
+
+describe("the toast steps aside for auto-update only when it can install", () => {
+  test("another session open: auto-update skips, so the toast must show; an install running or no other session: it steps aside", () => {
+    expect(autoUpdateCanInstall(dataDir, [session(100)], 100)).toBe(true);
+    expect(autoUpdateCanInstall(dataDir, [session(100), session(200)], 100)).toBe(false);
+    writeFileSync(autoUpdatePaths(dataDir).lock, String(process.pid));
+    expect(autoUpdateCanInstall(dataDir, [session(100), session(200)], 100)).toBe(true);
   });
 });
 

@@ -663,8 +663,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   /** Event streams open now (health's `event_streams`): Inbox tabs of one origin share one. */
   let openEventStreams = 0;
   const binaryPath = options.binaryPath !== undefined ? options.binaryPath : version !== "dev" ? process.execPath : null;
-  // The sidebar's Update button (packages/server/inbox-updates.ts): the hourly
-  // release check, the binary on disk, Update now, Remind me tomorrow.
+  // The sidebar's Update button (packages/server/inbox-updates.ts): the release
+  // check, the binary on disk, Update now, Remind me tomorrow.
   const updates = createInboxUpdates({
     dataDir,
     version,
@@ -2473,6 +2473,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const canonical = inboxCanonicalRedirect(req, url, port, via);
         if (canonical) return canonical;
         const page = options.htmlContent ?? NOT_BUILT_PAGE;
+        // A page load (or a refresh) asks for a new release when the answer is
+        // over a minute old: fire-and-forget, the button follows on the event stream.
+        if (req.method === "GET") updates.nudge();
         if (via === "tailnet") return tailnetWindowPage(req, page);
         return new Response(req.method === "HEAD" ? null : page, {
           headers: { ...WINDOW_PAGE_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },

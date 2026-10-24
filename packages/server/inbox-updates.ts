@@ -3,7 +3,7 @@
  * §4.2-4.4 and the owner's answers): one sidebar button whose state the
  * server works out from what is on this machine.
  *
- *   available   a newer stable release exists (the shared hourly check) and
+ *   available   a newer stable release exists (the shared release check) and
  *               nothing newer is installed yet; not snoozed for that version.
  *   updating    the install script runs (update.lock is held): the person
  *               pressed Update now, ran `plannotator update`, or auto-update
@@ -14,10 +14,12 @@
  *               (update-result.json); a background failure stays out of the
  *               sidebar.
  *
- * The Inbox is long-lived and one per machine, so it also runs the hourly
- * release check (never awaited by a request, never in a dev run, never while
- * PLANNOTATOR_UPDATE_CHECK is off). It re-reads the cache on its health tick,
- * so a check another process made reaches it without a second request.
+ * The Inbox is long-lived and one per machine, so it also runs the release
+ * check (never awaited by a request, never in a dev run, never while
+ * PLANNOTATOR_UPDATE_CHECK is off): at start and on a page load when the
+ * answer is over a minute old, and on its health tick when it is over 10
+ * minutes old. It re-reads the cache on that tick, so a check another process
+ * made reaches it without a second request.
  */
 
 import { spawn } from "node:child_process";
@@ -40,6 +42,7 @@ import {
   readReleaseNotes,
   readUpdateState,
   releaseSummary,
+  RELEASE_CHECK_ON_START_MS,
   releaseUrlFor,
   runReleaseCheck,
   UPDATE_SNOOZE_MS,
@@ -122,6 +125,9 @@ export interface InboxUpdatesOptions {
   binaryPath: string | null;
   healthTickMs: number;
   now?: () => number;
+  /** The release check's primary source (the "latest release" redirect). Default: GitHub's. */
+  fetchReleasePage?: () => Promise<FetchReleaseResult>;
+  /** The release check's fallback, the API. */
   fetchRelease?: () => Promise<FetchReleaseResult>;
   /** One release by its tag, for notes a version needs and the release check never saved. */
   fetchReleaseTag?: (version: string) => Promise<FetchReleaseResult>;
@@ -403,21 +409,34 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
     onDisk = version;
   };
 
-  const tick = async () => {
+  const sources = {
+    ...(options.fetchReleasePage && { fetchReleasePage: options.fetchReleasePage }),
+    ...(options.fetchRelease && { fetchRelease: options.fetchRelease }),
+  };
+
+  /** `freshForMs`: how young an answer must be to skip asking (start and page loads: 1 min). */
+  const tick = async (freshForMs?: number) => {
     if (ticking || stopped) return;
     ticking = true;
     try {
       await probeBinary();
       if (release) {
-        // The hourly check: answers from the cache within its window, so this
-        // asks GitHub at most once an hour (an hour after a failure, up to
-        // 6 h after GitHub's rate limit).
+        // Answers from the cache within its window, so this asks at most once
+        // every 10 minutes (once a minute for a start or a page load), and 10
+        // minutes after a failure.
         await runReleaseCheck({
           dataDir: options.dataDir,
           now,
           enabled: checksOn,
-          ...(options.fetchRelease && { fetchRelease: options.fetchRelease }),
+          ...(freshForMs !== undefined && { freshForMs }),
+          ...sources,
         });
+        // The update dialog's summary: the notes of a newer release the
+        // redirect named (it carries none), fetched once per version (throttled).
+        const latest = knownLatestRelease(readUpdateState(options.dataDir))?.version;
+        if (latest && isNewerStableVersion(latest, options.version) && !hasReleaseNotesContent(readReleaseNotes(latest, options.dataDir))) {
+          void ensureNotes(latest);
+        }
         // The "What's new" link's notes, when this run started on a newer
         // version and they are still missing (throttled per version).
         if (updated && !hasReleaseNotesContent(readReleaseNotes(updated, options.dataDir))) await ensureNotes(updated);
@@ -486,8 +505,18 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
       if (!release && !options.binaryPath) return;
       model = compute();
       updatedLink = computeUpdatedLink();
-      void tick();
+      // Every start asks (unless someone asked in the last minute): a restart
+      // never waits out an old answer.
+      void tick(RELEASE_CHECK_ON_START_MS);
       tickTimer = setInterval(() => void tick(), options.healthTickMs);
+    },
+    /**
+     * A page load: ask when the answer is over a minute old. Fire-and-forget;
+     * the button follows through the event stream when the answer changes.
+     */
+    nudge() {
+      if (stopped || !release) return;
+      void tick(RELEASE_CHECK_ON_START_MS);
     },
     stop() {
       stopped = true;
@@ -523,7 +552,7 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         now,
         enabled: () => true,
         force: true,
-        ...(options.fetchRelease && { fetchRelease: options.fetchRelease }),
+        ...sources,
       });
       refresh();
       return outcome.outcome === "failed" ? { ok: false, error: outcome.error } : { ok: true };
