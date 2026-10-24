@@ -984,6 +984,15 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-ranswer-a::before { content: "\2192\00a0"; color: var(--muted-foreground); font-weight: 400; }
 /* Answers to several messages: a quiet line naming the message above its rows (each message numbers its own Q1). */
 .ib-ranswers-g { padding: 4px 4px 0; font-size: var(--ib-fs-11, 11px); font-weight: 500; color: var(--muted-foreground); }
+/* The person's own sent reply (sentReply.ts): the answers it carried, under their words, in the message's type. */
+.ib-ranswers.ib-sentanswers { margin: 6px 0 4px; padding: 0; border-top: 0; max-width: 720px; }
+.ib-sentanswers .ib-ranswers-h { padding: 0 0 2px; font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-sentanswers .ib-ranswers-l { max-height: none; overflow: visible; }
+.ib-sentanswers .ib-ranswer { margin-inline: -4px; width: calc(100% + 8px); font-size: var(--ib-fs-14, 14px); min-height: 30px; }
+.ib-sentanswers div.ib-ranswer { cursor: default; }
+.ib-sentanswers div.ib-ranswer:hover { background: none; }
+.ib-sentanswers .ib-ranswers-g { padding: 6px 0 0; font-size: var(--ib-fs-12, 12px); }
+.ib-ranswer-a.ib-ranswer-skip { font-weight: 400; font-style: italic; color: var(--muted-foreground); }
 .ib-rfoot { display: flex; gap: 6px; padding: 6px 8px 8px; }
 /* The chips wrap as a row inside the box (a 440 px thread beside a file, a stacked pane, a phone); a chip never shrinks or breaks its own label. */
 .ib-rfoot { flex-wrap: wrap; }
@@ -2305,6 +2314,7 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-ranswer { min-height: 44px; align-items: center; }
   /* About two and a half rows, then it scrolls: with the keyboard up the box must not eat the thread. */
   .ib-ranswers-l { max-height: 110px; overscroll-behavior: contain; }
+  .ib-sentanswers .ib-ranswers-l { max-height: none; }
   .ib-route { padding: 10px 6px 8px; }
   .ib-opt { min-height: 44px; }
   /* menus are sheets from the bottom edge: New message's sessions, the annotations list */
@@ -2593,6 +2603,8 @@ label.ib-anote-r:hover { background: color-mix(in oklch, var(--muted) 40%, trans
 .ib-try-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ib-try-where { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .ib-try-where b { color: var(--foreground); font-weight: 550; }
+/* The notifications ask on the first-run screen sits in Try it's column, as wide as the prompt above it. */
+.ib-try .ib-askline { margin: 4px 0 0; max-width: 640px; }
 
 /* First run, "One next step" (the approved design inbox-connect-next-step, variant C): one card with the next step, then what is done and what is left. */
 .ib-cn { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 16px; padding: 20px 22px; border: 1px solid color-mix(in oklch, var(--primary) 50%, var(--border)); border-radius: 12px; background: var(--card); box-shadow: var(--card-shadow); }

@@ -190,6 +190,12 @@ export interface EmptyStateProps {
   onAgents: (next: InboxAgentsModel) => void;
   /** Open compose addressed to a live session. */
   onMessage: (session: string, opener: HTMLElement | null) => void;
+  /**
+   * The notifications ask (NotificationAsk with `firstRun`), drawn under
+   * "Try it": the moment before the first question arrives. App decides
+   * when (never while a one-time dialog is open).
+   */
+  ask?: ReactNode;
 }
 
 /**
@@ -203,7 +209,7 @@ export interface EmptyStateProps {
  * plugin is a command to copy, and the screen moves on by itself once the
  * agents are read again (App re-reads them while this screen shows).
  */
-export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage }: EmptyStateProps) {
+export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage, ask }: EmptyStateProps) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const [busy, setBusy] = useState<InboxAgentId | null>(null);
   const [error, setError] = useState<{ id: InboxAgentId; text: string } | null>(null);
@@ -496,6 +502,7 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
               <span>{TRY_PROMPT}</span>
               <CopyButton text={TRY_PROMPT} />
             </div>
+            {ask && <div data-first-run-ask="">{ask}</div>}
           </div>
           )}
           {context && !loading && (

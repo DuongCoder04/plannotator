@@ -1223,6 +1223,13 @@ function Inbox() {
     };
   }, [agentNoteReady]);
   const agentNoteOpen = typeof agentNote === 'object';
+  // The notification lines (the ask, "tab slept") stand down while a one-time
+  // dialog is open, so two never stack. After the agent-note dialog closes
+  // they come back on the same load: the first question usually lands on the
+  // load that showed the note dialog, and waiting for a reload meant it could
+  // never notify. A load that showed the sound dialog keeps them for the next
+  // load: that dialog already said what notifications need.
+  const askLinesFree = soundDialog === 'none' && !agentNoteOpen;
 
 
   // The list on screen catches up as the route changes (the layout effect above), not here.
@@ -2507,6 +2514,19 @@ function Inbox() {
         sessions={firstRunSessions}
         onAgents={setAgents}
         onMessage={(session, opener) => openCompose({ session }, opener)}
+        ask={
+          notifications.firstRunAsk && askLinesFree ? (
+            <NotificationAsk
+              kind={notifications.firstRunAsk}
+              firstRun
+              soundOn={sound.settings.enabled}
+              movedFrom={settings?.notifications.allowed_origin ?? null}
+              onTurnOn={() => void notifications.turnOn()}
+              onNotNow={notifications.notNow}
+              onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'general' })}
+            />
+          ) : null
+        }
       />
     );
   } else {
@@ -2525,7 +2545,7 @@ function Inbox() {
           lit={lit}
           notice={notice}
           ask={
-            notifications.ask && soundDialog === 'none' && agentNote === 'none' ? (
+            notifications.ask && askLinesFree ? (
               <NotificationAsk
                 kind={notifications.ask}
                 soundOn={sound.settings.enabled}
@@ -2534,7 +2554,7 @@ function Inbox() {
                 onNotNow={notifications.notNow}
                 onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'general' })}
               />
-            ) : notifications.slept && notifications.permission === 'granted' && soundDialog === 'none' && agentNote === 'none' ? (
+            ) : notifications.slept && notifications.permission === 'granted' && askLinesFree ? (
               <TabSleptLine slept={notifications.slept} onDismiss={notifications.dismissSlept} />
             ) : null
           }

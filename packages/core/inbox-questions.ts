@@ -666,6 +666,108 @@ export const INBOX_STILL_OPEN_LINE =
 
 const questionsWord = (n: number): string => `${n} question${n === 1 ? "" : "s"}`;
 
+/** The reply's first line as `composeInboxReplyBody` writes it ("Answered 2 questions.", "Skipped 1 question.", "Answered 1 question, skipped 2."). */
+export const INBOX_REPLY_SENTENCE_LINE = /^(?:Answered \d+ questions?(?:, skipped \d+)?|Skipped \d+ questions?)\.$/;
+
+const ANSWERS_SECTION_HEADING_LINE = `## ${QUESTION_ANSWERS_HEADING}`;
+const ANSWERS_GROUP_LINE = /^### Your message msg_[A-Za-z0-9]+$/;
+
+/**
+ * Where a reply's "Answers to your questions" section that starts at line
+ * `at` ends, read by the grammar `formatQuestionAnswersSection` and
+ * `composeInboxReplyBody` write: the heading, a blank line, the "N of M
+ * questions answered." line, a blank line, then `### …` blocks of answer
+ * lines (`Answer…`, `- …`, `> …`, `Note…`, `Skipped…`), each ended by a blank
+ * line; or, for answers on several messages, `### Your message <id>`
+ * sub-sections with the same grammar one level down. Returns the index of the
+ * first line after it, or null when the text does not follow that grammar
+ * exactly (then nothing may be cut).
+ */
+export function inboxAnswersSectionEnd(lines: readonly string[], at: number): number | null {
+  if (lines[at] !== ANSWERS_SECTION_HEADING_LINE || lines[at + 1] !== "") return null;
+  if (ANSWERS_GROUP_LINE.test(lines[at + 2] ?? "")) {
+    let i = at + 2;
+    let groups = 0;
+    while (i < lines.length && ANSWERS_GROUP_LINE.test(lines[i]!)) {
+      if (lines[i + 1] !== "") return null;
+      const end = answerBlocksEnd(lines, i + 2, "####");
+      if (end === null) return null;
+      i = end;
+      groups += 1;
+    }
+    return groups > 0 ? i : null;
+  }
+  return answerBlocksEnd(lines, at + 2, "###");
+}
+
+/** The "N of M questions answered." line at `from`, a blank line, then `<h> …` blocks of answer lines; the index after them. */
+function answerBlocksEnd(lines: readonly string[], from: number, h: "###" | "####"): number | null {
+  if (!/^\d+ of \d+ questions? answered\./.test(lines[from] ?? "") || lines[from + 1] !== "") return null;
+  let i = from + 2;
+  let blocks = 0;
+  while (i < lines.length && lines[i]!.startsWith(`${h} `)) {
+    i += 1;
+    let body = 0;
+    while (i < lines.length && lines[i] !== "") {
+      if (!/^(Answer|Note|Skipped|- |> |>$)/.test(lines[i]!)) return null;
+      i += 1;
+      body += 1;
+    }
+    if (body === 0 && lines[i - 1] !== `${h} Unanswered`) return null;
+    blocks += 1;
+    // The block's closing blank line; the section ends at the end of the text.
+    if (i < lines.length) i += 1;
+  }
+  return blocks > 0 ? i : null;
+}
+
+/** A person's reply body in its parts (`splitInboxReplyBody`). */
+export interface InboxReplyBodyParts {
+  /** The person's own words (without the reply's first line and the still-open line). */
+  words: string;
+  /** The "Answers to your questions" section was found (and is not in `words` or `rest`). */
+  answers: boolean;
+  /** What follows: the annotations' feedback and the skills block, as sent. */
+  rest: string;
+  /** Anything was taken out (the first line, the still-open line or the answers section). */
+  changed: boolean;
+}
+
+/**
+ * A person's reply as `composeInboxReplyBody` (plus the feedback and skills
+ * block the reply route appends) wrote it, in its parts, for showing the
+ * person what they sent: their words, then (drawn by the window from the
+ * questions themselves) the answers, then the rest. The parts the store
+ * writes for the agent come out: the first line ("Answered 2 questions."),
+ * the still-open line ("You have 1 other question open…") and the answers
+ * section, cut only when it follows its grammar exactly
+ * (`inboxAnswersSectionEnd`). `words` is what the folded line and search read
+ * (`replyWords`, `inboxSearchReplyText`). Display only: the stored body and
+ * what agents receive never change.
+ */
+export function splitInboxReplyBody(body: string): InboxReplyBodyParts {
+  const lines = body.split("\n");
+  let start = 0;
+  if (INBOX_REPLY_SENTENCE_LINE.test(lines[0] ?? "") && (lines.length === 1 || lines[1] === "")) start = Math.min(2, lines.length);
+  let sectionAt = -1;
+  let sectionEnd = -1;
+  for (let at = start; at < lines.length; at++) {
+    if (lines[at] !== ANSWERS_SECTION_HEADING_LINE || (at > start && lines[at - 1] !== "")) continue;
+    const end = inboxAnswersSectionEnd(lines, at);
+    if (end === null) continue;
+    sectionAt = at;
+    sectionEnd = end;
+    break;
+  }
+  const head = lines.slice(start, sectionAt >= 0 ? sectionAt : lines.length);
+  const tail = sectionAt >= 0 ? lines.slice(sectionEnd) : [];
+  // The still-open line is a paragraph of its own, after the words.
+  const open = head.findIndex((line, i) => INBOX_STILL_OPEN_LINE.test(line) && (i === 0 || head[i - 1] === "") && (i === head.length - 1 || head[i + 1] === ""));
+  const words = (open >= 0 ? head.slice(0, open) : head).join("\n").trim();
+  const rest = [...(open >= 0 ? head.slice(open + 1) : []), ...tail].join("\n").trim();
+  return { words, answers: sectionAt >= 0, rest, changed: start > 0 || open >= 0 || sectionAt >= 0 };
+}
+
 /**
  * The reply's first line: "Answered 2 questions.", "Skipped 3 questions.", or
  * "Answered 1 question, skipped 2." A skip is not an answer, so a Send of
