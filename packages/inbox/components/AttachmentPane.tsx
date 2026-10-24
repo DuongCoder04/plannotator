@@ -43,6 +43,7 @@ import {
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
 import { ImageAttachmentView } from './ImageAttachmentView';
+import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
 import { VideoAttachmentView, type VideoAttachmentViewHandle } from './VideoAttachmentView';
 import { OpenInControl, type OpenInSurface } from './OpenIn';
 import { AttachmentStepper, type StepSource } from './AttachmentStepper';
@@ -408,6 +409,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   };
   const guardRef = useRef<HTMLDivElement>(null);
   const memory = useRef(new Map<string, FileMemory>());
+  // The image viewer's "⌘ + scroll to zoom" hint shows once while the pane is open, not once per file (#2127).
+  const wheelHint = useRef<WheelHintGate>({ shown: false }).current;
   const remember = (id: string, patch: FileMemory) => memory.current.set(id, { ...memory.current.get(id), ...patch });
   /** How the last step was asked for, so focus lands in the right place once the next file is in. */
   const pendingStep = useRef<StepSource | null>(null);
@@ -1552,6 +1555,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               initialFit={memory.current.get(attachment.id)?.fit}
               onFitChange={(fit) => remember(attachment.id, { fit })}
               onSwipe={multi ? (dir) => step(dir, 'key') : undefined}
+              wheelHint={wheelHint}
             />
           )}
           {isVideo && (

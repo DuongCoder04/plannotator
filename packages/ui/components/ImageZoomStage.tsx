@@ -27,8 +27,36 @@ import {
   type ZoomSize,
   type ZoomViewport,
 } from './imageZoom';
+import { modKey, modKeySpoken } from '../utils/platform';
 
 export type { FitAxis, NaturalBox } from './imageZoom';
+
+/**
+ * Whether the "Use ⌘ + scroll to zoom" hint (#2127) was shown already. A host
+ * holds one for the life of its viewer (the lightbox while it is open, the
+ * Inbox's file pane) and hands it to every stage it mounts, so the hint shows
+ * once per viewer open, not once per image. Without one a stage keeps its own.
+ */
+export interface WheelHintGate {
+  shown: boolean;
+}
+
+/** The hint stays this long after the last wheel event that panned. */
+export const WHEEL_HINT_HOLD_MS = 2000;
+/** The hint's fade out (none under reduced motion). */
+export const WHEEL_HINT_FADE_MS = 300;
+
+/** What the hint says, on screen and to a screen reader. */
+export const wheelHintText = {
+  visible: { before: 'Use', key: modKey, after: '+ scroll to zoom' },
+  spoken: `Scrolling moves the image. To zoom, hold ${modKeySpoken} and scroll.`,
+};
+
+/** A device with a mouse or trackpad (a touch-only one never sends a wheel, and gets no hint). */
+function hasFinePointer(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+  return window.matchMedia('(any-pointer: fine)').matches;
+}
 
 /** A box being drawn in Region mode (#2100), in the image's own pixels. */
 export interface ZoomDraw {
@@ -106,6 +134,13 @@ function prefersReducedMotion(): boolean {
  *   page scrolls, Shift or a sideways swipe for the other axis), and zooms
  *   about the pointer when the whole image is on screen, where there is
  *   nothing to scroll. One wheel gesture keeps the meaning it started with.
+ * - The first time a plain wheel scrolls the image (once per `wheelHint`
+ *   gate: per viewer open), a pill in the middle of the stage says
+ *   "Use ⌘ + scroll to zoom" ("Ctrl" off macOS) and a polite live region says
+ *   it once (#2127). It takes no pointer, stays while the wheel keeps
+ *   scrolling and 2 s after, then fades (no fade under reduced motion); a
+ *   Ctrl/⌘ + wheel, a pinch or a press hides it at once. Never on a
+ *   touch-only device, never for Ctrl/⌘ + wheel or a pinch.
  * - Mouse or one-finger drag pans when there is something to pan; two
  *   fingers pinch-zoom about their midpoint and pan with it.
  * - Double click (or double tap) on the image zooms to twice the Fit scale
@@ -179,7 +214,9 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
   onViewChange?: (view: ZoomViewport, stage: ZoomSize, eased: boolean) => void;
   /** Drawn over the stage, untransformed, in stage pixels (after the image). */
   children?: React.ReactNode;
-}>(function ImageZoomStage({ src, alt, mode, onModeChange, onScaleChange, inset, padding, fitAxis, overlay, onImageLoad, onImageError, onBackgroundTap, className, imageClassName, radius = 6, stageAttributes, label, description, drawing = false, onDraw, onViewChange, children }, ref) {
+  /** The "⌘ + scroll to zoom" hint's gate, shared across the viewer's stages; `false` turns the hint off. Absent: once per stage. */
+  wheelHint?: WheelHintGate | false;
+}>(function ImageZoomStage({ src, alt, mode, onModeChange, onScaleChange, inset, padding, fitAxis, overlay, onImageLoad, onImageError, onBackgroundTap, className, imageClassName, radius = 6, stageAttributes, label, description, drawing = false, onDraw, onViewChange, children, wheelHint }, ref) {
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [dims, setDims] = useState<ZoomSize | null>(null);
@@ -214,6 +251,41 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
   // synthesized click, which then landed on whatever lay underneath.
   const closeArmed = useRef(0);
   const safariGesture = useRef<{ scale: number } | null>(null);
+
+  // The "⌘ + scroll to zoom" hint (#2127).
+  const ownGate = useRef<WheelHintGate>({ shown: false });
+  const gateRef = useRef<WheelHintGate | false>(wheelHint ?? ownGate.current);
+  gateRef.current = wheelHint ?? ownGate.current;
+  /** Mounted once shown; `visible` drives its opacity. */
+  const [hint, setHint] = useState<{ visible: boolean } | null>(null);
+  const [hintSpoken, setHintSpoken] = useState('');
+  const hintVisible = useRef(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideHint = useCallback(() => {
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = null;
+    if (!hintVisible.current) return;
+    hintVisible.current = false;
+    setHint({ visible: false });
+    // Said once already; an empty region is not read again as part of the stage.
+    setHintSpoken('');
+  }, []);
+  /** A plain wheel scrolled the image: show the hint the first time, keep it while the wheel keeps scrolling. */
+  const wheelPanned = useCallback(() => {
+    const gate = gateRef.current;
+    if (!hintVisible.current) {
+      if (!gate || gate.shown || !hasFinePointer()) return;
+      gate.shown = true;
+      hintVisible.current = true;
+      setHint({ visible: true });
+      setHintSpoken(wheelHintText.spoken);
+    }
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(hideHint, WHEEL_HINT_HOLD_MS);
+  }, [hideHint]);
+  useEffect(() => () => {
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+  }, []);
 
   const measure = useCallback((): StageBox | null => {
     const stage = stageRef.current;
@@ -356,6 +428,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
       const py = Number.isFinite(event.clientY) ? event.clientY - box.top : box.height / 2;
       if (event.ctrlKey || event.metaKey) {
         latch.current = null;
+        hideHint();
         if (Math.abs(dy) < 0.1 || safariGesture.current) return;
         gesture(zoomAt(viewRef.current, wheelZoomFactor(dy), px, py, image, box, limits()));
         return;
@@ -365,6 +438,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
       latch.current = { kind, until: now + WHEEL_LATCH_MS };
       if (kind === 'pan') {
         gesture(panBy(viewRef.current, -dx, -dy, image, box, limits()));
+        wheelPanned();
       } else if (Math.abs(dy) > Math.abs(dx)) {
         // A sideways swipe over a fitted image is not a zoom.
         gesture(zoomAt(viewRef.current, wheelZoomFactor(dy), px, py, image, box, limits()));
@@ -373,7 +447,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
     stage.addEventListener('wheel', onWheel, { passive: false });
     return () => stage.removeEventListener('wheel', onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure]);
+  }, [measure, hideHint, wheelPanned]);
 
   // Safari sends a trackpad pinch (and, on iOS, two fingers) as gesture
   // events, not Ctrl + wheel, and zooms the page with them unless they are
@@ -385,6 +459,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
     const onStart = (event: Event) => {
       event.preventDefault();
       measure();
+      hideHint();
       safariGesture.current = { scale: 1 };
     };
     const onChange = (event: Event) => {
@@ -412,7 +487,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
       stage.removeEventListener('gestureend', onEnd);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure]);
+  }, [measure, hideHint]);
 
   useImperativeHandle(
     ref,
@@ -515,6 +590,7 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     closeArmed.current = 0;
+    hideHint();
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     measure();
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -690,6 +766,21 @@ export const ImageZoomStage = forwardRef<ImageZoomStageHandle, {
         </div>
       )}
       {children}
+      {hint && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full bg-black/75 px-4 py-2 text-sm font-medium text-white shadow-lg motion-safe:transition-opacity motion-reduce:transition-none"
+          style={{ opacity: hint.visible ? 1 : 0, transitionDuration: hint.visible ? '150ms' : `${WHEEL_HINT_FADE_MS}ms` }}
+          aria-hidden="true"
+          data-wheel-hint={hint.visible ? 'shown' : 'hidden'}
+        >
+          {wheelHintText.visible.before}{' '}
+          <kbd className="mx-0.5 inline-block min-w-[1.5em] rounded border border-white/40 bg-white/10 px-1.5 py-px text-center font-sans text-[0.95em] leading-tight">{wheelHintText.visible.key}</kbd>{' '}
+          {wheelHintText.visible.after}
+        </div>
+      )}
+      <span className="sr-only" role="status" aria-live="polite" data-wheel-hint-live="">
+        {hintSpoken}
+      </span>
       {description && (
         <span id={descriptionId} hidden>
           {description}
