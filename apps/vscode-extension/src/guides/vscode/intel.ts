@@ -171,7 +171,7 @@ export async function locateLink(link: GuideLink, reader: ReaderModel, sides: Re
   return { error: "A chapter link has no code location." };
 }
 
-function hoverText(hovers: vscode.Hover[] | undefined): string | undefined {
+export function hoverText(hovers: vscode.Hover[] | undefined): string | undefined {
   const parts: string[] = [];
   for (const h of hovers ?? []) {
     for (const c of h.contents) {
@@ -199,6 +199,16 @@ function nameColumn(root: string, path: string, line: number, name: string): num
 
 /** Set while the popover asks the language server, so the guide's own hover line stays out of it. */
 export let askingLanguageServer = 0;
+
+/** Run `ask` with the guide's own hover line kept out of the language server's answer. */
+export async function withoutGuideHoverLine<T>(ask: () => Promise<T>): Promise<T> {
+  askingLanguageServer++;
+  try {
+    return await ask();
+  } finally {
+    askingLanguageServer--;
+  }
+}
 
 /** What the overview's hover popover shows for a link (SPEC 3.5). */
 export async function linkInfo(href: string, reader: ReaderModel, sides: ReaderSides): Promise<LinkInfo> {

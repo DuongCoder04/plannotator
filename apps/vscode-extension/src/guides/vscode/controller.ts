@@ -82,6 +82,9 @@ import { getChildren, getParent, getTreeItem, nodeId, relativeTime, type TreeDat
 import { ANSWER_VIEW_TYPE, diffColumnBesideAnswers } from "./tab-columns";
 import { GuideContentProvider, GUIDE_SCHEME, baseUri, guideSideOf, headPathOf, headUri } from "./uris";
 import { WebviewHost, webviewHtml, webviewOptions, type WebviewHandlers, type WebviewMode } from "./webview-host";
+import { ReaderPanel } from "./reader-panel";
+import { readerDefinition, readerHover, readerReferences, resolvePosition } from "./reader-intel";
+import type { FromReader, ReaderInit } from "../reader-protocol";
 import { pullRequestWorktreeInUse, removeDraftWorktree, type WorktreeUsers } from "../worktrees";
 
 interface Log {
@@ -130,7 +133,8 @@ export class GuidesController implements vscode.Disposable {
   private relay: Promise<RelayHost> | null = null;
   private run: RunEntry | null = null;
   private home: PanelEntry | null = null;
-  private readonly guidePanels = new Map<string, PanelEntry>();
+  /** The Guide tab (the reader), per guide id; one is open at a time. */
+  private readonly guidePanels = new Map<string, ReaderPanel>();
   private readonly draftPanels = new Map<string, PanelEntry>();
   private chapterView: { view: vscode.WebviewView; host: WebviewHost } | null = null;
   private reader: { model: ReaderModel; sides: ReaderSides } | null = null;
@@ -1166,7 +1170,10 @@ export class GuidesController implements vscode.Disposable {
 
   /** The Mermaid render check, in whichever Guides webview is open. */
   private async checkMermaid(source: string): Promise<{ ok: true; checked: boolean } | { ok: false; message: string; line?: number }> {
-    const hosts = [this.run?.panel?.host, this.home?.host, ...[...this.guidePanels.values()].map((p) => p.host), this.chapterView?.host].filter((h): h is WebviewHost => !!h && h.isReady);
+    const hosts: Array<{ checkMermaid(source: string): ReturnType<WebviewHost["checkMermaid"]> }> = [
+      ...[this.run?.panel?.host, this.home?.host, this.chapterView?.host].filter((h): h is WebviewHost => !!h && h.isReady),
+      ...[...this.guidePanels.values()].filter((p) => p.isReady),
+    ];
     for (const host of hosts) {
       const r = await host.checkMermaid(source);
       if (!r) continue;
@@ -1372,9 +1379,9 @@ export class GuidesController implements vscode.Disposable {
     const reader = this.reader;
     if (!reader || reader.model.loaded.sidecar.diagramCheck !== "unchecked") return;
     const source = reader.model.overview?.diagram?.source;
-    const host = this.guidePanels.get(reader.model.id)?.host;
+    const host = this.guidePanels.get(reader.model.id);
     if (!source || !host) return;
-    let result: Awaited<ReturnType<WebviewHost["checkMermaid"]>> = null;
+    let result: Awaited<ReturnType<ReaderPanel["checkMermaid"]>> = null;
     for (let i = 0; i < 20 && !result; i++) {
       result = await host.checkMermaid(source);
       if (!result) await new Promise((r) => setTimeout(r, 250));
@@ -1388,7 +1395,7 @@ export class GuidesController implements vscode.Disposable {
 
   private closeGuide(): void {
     if (!this.reader) return;
-    this.guidePanels.get(this.reader.model.id)?.panel.dispose();
+    this.guidePanels.get(this.reader.model.id)?.dispose();
     this.reader = null;
     this.asks.onReaderChanged(null);
     this.currentFile = null;
@@ -1420,17 +1427,148 @@ export class GuidesController implements vscode.Disposable {
     const id = this.reader.model.id;
     let p = this.guidePanels.get(id);
     if (!p) {
-      for (const [other, entry] of this.guidePanels) if (other !== id) entry.panel.dispose();
-      p = this.createPanel("plannotator.guides.guide", "Guide", "guide");
-      const entry = p;
+      for (const [other, entry] of this.guidePanels) if (other !== id) entry.dispose();
+      const entry = new ReaderPanel(this.context.extensionUri, "Guide", {
+        init: () => this.readerInit(id),
+        onMessage: (msg) => this.onReaderMessage(id, msg),
+        onReady: () => this.sendAsks(),
+      });
+      p = entry;
       this.guidePanels.set(id, entry);
       entry.panel.onDidDispose(() => {
         if (this.guidePanels.get(id) === entry) this.guidePanels.delete(id);
+        entry.dispose();
       });
     } else p.panel.reveal();
     p.panel.title = `Guide · ${this.reader.model.loaded.envelope.label || "local"}`;
-    const state = this.guideState();
-    if (state) p.host.show(state);
+  }
+
+  /** What the Guide tab needs to draw the open guide. */
+  private readerInit(id: string): ReaderInit | null {
+    if (!this.reader || this.reader.model.id !== id) return null;
+    const { model, sides } = this.reader;
+    const snapshot = snapshotOfGuide(model.loaded);
+    if (!snapshot) return null;
+    const env = model.loaded.envelope;
+    return {
+      guideId: model.id,
+      title: model.title,
+      label: env.label && env.label !== "local" ? env.label : "",
+      snapshot,
+      reviewed: [...model.reviewed],
+      chapterColors: model.chapters.map((_, i) => chapterColorCss(i)),
+      moved: sides.moved,
+      changedSince: [],
+      platform: process.platform === "darwin" ? "mac" : "other",
+      askAgent: this.asks.chapterAnswers(model.loaded, 0).agent,
+      startChapter: model.currentChapter,
+    };
+  }
+
+  /** A message from the Guide tab (already checked by `parseReaderMessage`). */
+  private async onReaderMessage(id: string, msg: Exclude<FromReader, { type: "ready" } | { type: "mermaidResult" }>): Promise<void> {
+    const reader = this.reader;
+    const panel = this.guidePanels.get(id);
+    if (!reader || reader.model.id !== id || !panel) return;
+    switch (msg.type) {
+      case "hover": {
+        const answer = await readerHover(msg.at, reader).catch((err) => {
+          this.log.warn(`[guides] hover: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        });
+        panel.send({ type: "hover", reqId: msg.reqId, answer });
+        return;
+      }
+      case "references": {
+        const count = await readerReferences(msg.at, reader).catch(() => null);
+        panel.send({ type: "references", reqId: msg.reqId, count });
+        return;
+      }
+      case "navigate":
+        return this.readerNavigate(msg.at, msg.action);
+      case "toggleReviewed":
+        return this.markChapterReviewed(msg.chapter + 1);
+      case "chapter":
+        if (reader.model.chapters[msg.chapter] && reader.model.currentChapter !== msg.chapter) {
+          reader.model.currentChapter = msg.chapter;
+          this.fireTree();
+          this.updateChapterView();
+          this.ui.updateStatus(null);
+        }
+        return;
+      case "openFile":
+        return this.openHeadFile(msg.path, msg.line);
+      case "openDiff":
+        return this.openFile(msg.path, undefined, vscode.ViewColumn.Beside);
+      case "openLocation":
+        return this.openHeadFile(msg.path, msg.line, msg.character);
+      case "link": {
+        const parsed = parseGuideLink(msg.href);
+        if (!parsed?.ok) return;
+        const link = parsed.link;
+        if (link.kind === "chapter") return void panel.send({ type: "reveal", chapter: link.chapter - 1 });
+        if (link.kind === "code" && reader.model.chapterOf(link.path) >= 0 && msg.action === "open") return void panel.send({ type: "reveal", path: link.path });
+        return this.openLink(msg.href, msg.action, vscode.ViewColumn.Beside);
+      }
+      case "ask":
+        if (msg.path && msg.start && msg.end) return this.asks.askAboutLines(msg.path, msg.start, msg.end, msg.question);
+        return this.asks.askChapter((msg.chapter ?? reader.model.currentChapter) + 1, msg.question);
+      case "openAnswer":
+        return this.asks.openAnswer(msg.id);
+      case "command":
+        if (msg.command === "export") return this.exportGuide(id);
+        if (msg.command === "outline") return void vscode.commands.executeCommand("plannotator.guides.tree.focus");
+        return this.refresh();
+      case "metric":
+        this.log.info(`[guides] reader ${msg.name}: ${Math.round(msg.ms)} ms`);
+        return;
+    }
+  }
+
+  /** ⌘/Ctrl-click or the hover card in the reader: a definition in the guide scrolls the reader there; anything else opens the real file beside it. */
+  private async readerNavigate(at: Parameters<typeof readerHover>[0], action: "definition" | "references" | "open"): Promise<void> {
+    const reader = this.reader;
+    if (!reader) return;
+    const panel = this.guidePanels.get(reader.model.id);
+    if (action === "definition") {
+      const def = await readerDefinition(at, reader);
+      if (!def) {
+        vscode.window.setStatusBarMessage(`No definition found for ${at.token}.`, 4000);
+        return;
+      }
+      if (def.inGuide && panel) {
+        panel.send({ type: "reveal", path: def.inGuide, line: def.range.start.line + 1 });
+        return;
+      }
+      await vscode.window.showTextDocument(def.uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: def.range });
+      vscode.window.setStatusBarMessage(`${def.uri.path.split("/").pop()} is not part of this change: opened beside, at the definition.`, 6000);
+      return;
+    }
+    const where = await resolvePosition(at, reader);
+    if (!where) {
+      vscode.window.setStatusBarMessage(`${at.token} is not at that place in the file any more.`, 4000);
+      return;
+    }
+    if (action === "references") {
+      try {
+        await vscode.commands.executeCommand("references-view.findReferences", where.uri, where.position);
+      } catch {
+        await vscode.window.showTextDocument(where.uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: new vscode.Range(where.position, where.position) });
+        await vscode.commands.executeCommand("editor.action.goToReferences");
+      }
+      return;
+    }
+    await vscode.window.showTextDocument(where.uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, selection: new vscode.Range(where.position, where.position) });
+  }
+
+  /** The real file (the head side) beside the reader, at a line when one is given. */
+  private async openHeadFile(path: string, line?: number, character = 0): Promise<void> {
+    if (!this.reader) return;
+    const file = this.reader.model.files.get(path) ?? { path, status: "modified" };
+    if (file.status === "deleted") return;
+    const uri = headUri(this.reader.sides, file);
+    const pos = line ? new vscode.Position(Math.max(0, line - 1), character) : undefined;
+    await vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.Beside, preview: true, ...(pos && { selection: new vscode.Range(pos, pos) }) });
   }
 
   private chapterState(): ChapterViewState {
@@ -1479,7 +1617,27 @@ export class GuidesController implements vscode.Disposable {
     this.updateChapterView();
   }
 
+  /** The reader's questions and answers: markers on the lines asked about, each chapter's list, whether one is being answered. */
+  private sendAsks(): void {
+    const reader = this.reader;
+    const panel = reader ? this.guidePanels.get(reader.model.id) : undefined;
+    if (!reader || !panel) return;
+    const loaded = reader.model.loaded;
+    const chapters = reader.model.chapters.map((_, chapter) => {
+      const a = this.asks.chapterAnswers(loaded, chapter);
+      return { chapter, items: a.items, agent: a.agent, busy: a.busy };
+    });
+    panel.send({
+      type: "asks",
+      busy: chapters[0]?.busy ?? false,
+      agent: chapters[0]?.agent ?? null,
+      markers: this.asks.lineAnswers(loaded),
+      chapters: chapters.map(({ chapter, items }) => ({ chapter, items })),
+    });
+  }
+
   updateChapterView(): void {
+    this.sendAsks();
     if (!this.chapterView) return;
     const state = this.chapterState();
     this.chapterView.view.title = state.empty ? "Chapter" : `Chapter ${state.n} · why this changed`;
@@ -1489,8 +1647,7 @@ export class GuidesController implements vscode.Disposable {
   private updateReaderViews(): void {
     this.fireTree();
     this.updateChapterView();
-    const state = this.guideState();
-    if (state && this.reader) this.guidePanels.get(this.reader.model.id)?.host.show(state);
+    if (this.reader) this.guidePanels.get(this.reader.model.id)?.send({ type: "reviewed", reviewed: [...this.reader.model.reviewed] });
     this.ui.refresh();
     this.ui.updateStatus(this.currentFile);
     this.updateEditorContext(vscode.window.activeTextEditor);

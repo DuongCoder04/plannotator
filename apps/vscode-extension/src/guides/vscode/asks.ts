@@ -28,7 +28,7 @@ import type { AnswerListItem } from "../webview-protocol";
 import { pickQuestion } from "./ask-box";
 import { AskThreads, type AskThreadSink, type ThreadAskResult } from "./ask-thread";
 import { resolveSymbolForBuilder } from "./intel";
-import { guideSideOf } from "./uris";
+import { guideSideOf, headUri } from "./uris";
 import type { WebviewHost, WebviewMode } from "./webview-host";
 
 export interface AsksPanel {
@@ -266,6 +266,48 @@ export class GuideAsks implements vscode.Disposable {
     const question = text?.trim().slice(0, MAX_QUESTION);
     if (question) return void await this.ask(reader.model.loaded, about, question, { codeColumn: column });
     await this.askWithBox(about, column);
+  }
+
+  /**
+   * The Guide tab: lines selected in a file's diff (head lines), and the
+   * question typed in the selection toolbar. The answer opens beside the
+   * guide and shows the agent's work as it goes; the lines get a marker in
+   * the reader.
+   */
+  async askAboutLines(path: string, start: number, end: number, question: string): Promise<void> {
+    const reader = this.host.reader();
+    if (!reader) return;
+    const chapter = reader.model.chapterOf(path);
+    const text = question.trim().slice(0, MAX_QUESTION);
+    if (chapter < 0 || !text) return;
+    const file = reader.model.files.get(path) ?? { path, status: "modified" };
+    let code: string | undefined;
+    try {
+      const doc = await vscode.workspace.openTextDocument(headUri(reader.sides, file));
+      const last = Math.min(end, doc.lineCount);
+      if (start <= last) code = capCode(doc.getText(new vscode.Range(start - 1, 0, last - 1, doc.lineAt(last - 1).text.length)));
+    } catch {
+      // the lines go without their code
+    }
+    const hash = this.headHash(reader, path);
+    const about: AskAbout = {
+      kind: "selection",
+      chapter,
+      chapterTitle: reader.model.chapters[chapter].title,
+      path,
+      side: "head",
+      lines: { start, end },
+      ...(code !== undefined && { code }),
+      ...(hash && { fileHash: hash }),
+    };
+    await this.ask(reader.model.loaded, about, text, { codeColumn: vscode.ViewColumn.Active });
+  }
+
+  /** Line answers of the guide, for the reader's markers (newest first). */
+  lineAnswers(guide: LoadedGuide): Array<{ id: string; path: string; start: number; end: number; question: string; status: AnswerRecord["status"] }> {
+    return this.answersOf(guide)
+      .filter((r) => r.about.kind === "selection" && r.about.path && r.about.lines && (r.about.side ?? "head") === "head")
+      .map((r) => ({ id: r.id, path: r.about.path!, start: r.about.lines!.start, end: r.about.lines!.end, question: r.question, status: this.live.has(r.id) ? "answering" : r.status }));
   }
 
   private selectionAbout(reader: { model: ReaderModel; sides: ReaderSides }, doc: vscode.TextDocument, sel: vscode.Selection, side: { path: string; side: "head" | "base" }, chapter: number): AskAbout {
