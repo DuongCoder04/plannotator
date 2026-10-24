@@ -3913,13 +3913,15 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-btn[aria-expanded="true"] .ib-oq-chev { transform: none; }
 @media (prefers-reduced-motion: reduce) { .ib-oq-chev { transition: none; } }
 .ib-oq-pos { z-index: 80; outline: none; }
-.ib-oq { width: min(460px, calc(100vw - 32px)); max-height: min(70vh, 560px); overflow-y: auto; padding: 6px; border-radius: var(--ib-lr-lg, 10px); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--ib-float-shadow); transform-origin: var(--transform-origin, bottom left); animation: ib-pm-in 120ms cubic-bezier(0.23, 1, 0.32, 1); outline: none; }
+.ib-oq { display: flex; flex-direction: column; width: min(460px, calc(100vw - 32px)); max-height: min(70vh, 560px); overflow: hidden; padding: 6px; border-radius: var(--ib-lr-lg, 10px); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--ib-float-shadow); transform-origin: var(--transform-origin, bottom left); animation: ib-pm-in 120ms cubic-bezier(0.23, 1, 0.32, 1); outline: none; }
 @media (prefers-reduced-motion: reduce) { .ib-oq { animation: none; } }
 .ib-oq-head { display: flex; justify-content: flex-end; }
 .ib-oq-x { margin-left: auto; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 8px; color: var(--muted-foreground); }
 .ib-oq-x:hover { background: var(--ib-hover); color: var(--foreground); }
 .ib-oq-x:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.ib-oq-list { display: flex; flex-direction: column; }
+/* Only the rows scroll: the sheet's close, the select head and the last row (or the select bar) stay in view. */
+.ib-oq-list { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ib-oq-head, .ib-oq-selhead, .ib-oq-sep, .ib-oq-last, .ib-oq-selbar, .ib-oq-list > .ib-oq-row { flex: none; }
 .ib-oq-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 16px; gap: 0 8px; align-items: center; width: 100%; padding: 7px 8px; border-radius: var(--ib-lr-sm, 8px); text-align: left; cursor: default; outline: none; user-select: none; }
 .ib-oq-row[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); }
 .ib-oq-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -3931,20 +3933,39 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-oq-badge { height: 20px; padding: 0 6px; font-size: var(--ib-fs-12, 12px); }
 .ib-oq-when { color: var(--muted-foreground); white-space: nowrap; }
 .ib-oq-go { display: grid; place-items: center; color: var(--muted-foreground); }
-/* Skip at a row's right (owner, 2026-10-24): its own menu item beside the row's, so the arrows reach it.
-   As wide as "Unskip", so the chevrons line up whatever a row's Skip reads. */
-.ib-oq-line { display: flex; align-items: center; gap: 2px; }
-.ib-oq-line > .ib-oq-row { flex: 1 1 auto; min-width: 0; }
-.ib-oq-line > .ib-tipwrap { display: flex; flex: none; }
-.ib-oq-skip { display: inline-flex; align-items: center; justify-content: center; min-width: calc(3.6em + 20px); min-height: 30px; padding: 0 10px; border-radius: 999px; background: var(--ib-fill); font-size: var(--ib-fs-12-5, 12.5px); font-weight: 500; color: var(--muted-foreground); cursor: default; outline: none; user-select: none; white-space: nowrap; }
-.ib-oq-skip[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); color: var(--foreground); }
-.ib-oq-skip[data-skipped] { color: var(--foreground); }
-.ib-oq-skip:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.ib-oq-skip[data-disabled] { opacity: 0.45; }
+/* A skipped question at rest (approval "oq-skip-select", variant A): quiet. Its number becomes the skip glyph
+   in an outlined circle, the prompt goes muted, the meta reads "Skipped · time · place". Nothing is struck. */
+.ib-oq-row[data-skipped] .ib-oq-p { color: var(--muted-foreground); }
+.ib-oq-row[data-skipped] .ib-oq-n { background: transparent; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 14%, transparent); }
+.ib-oq-skipped { color: var(--muted-foreground); }
+/* Select mode: the number turns into a round check; ticking fills it. */
+.ib-oq-ck { width: 20px; height: 20px; border-radius: 999px; align-self: start; margin-top: 1px; display: grid; place-items: center; box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--foreground) 30%, transparent); color: transparent; transition: background-color 120ms ease-out, box-shadow 120ms ease-out; }
+.ib-oq-row[data-checked] .ib-oq-ck { background: var(--primary); box-shadow: none; color: var(--primary-foreground); }
+.ib-oq-row[data-select] .ib-oq-go { visibility: hidden; }
+.ib-oq-row[data-disabled] { opacity: 0.45; }
+@media (prefers-reduced-motion: reduce) { .ib-oq-ck { transition: none; } }
+.ib-oq-selhead { display: flex; align-items: center; min-height: 26px; padding: 4px 8px 6px; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); }
+.ib-oq-selhead > :first-child { flex: 1 1 auto; }
+/* The list's last row: Re-ask on the left, a quiet "Skip…" on the right. */
+.ib-oq-last { display: flex; align-items: center; gap: 4px; }
+.ib-oq-last > .ib-tipwrap { display: flex; flex: 0 1 auto; min-width: 0; }
+.ib-oq-sp { flex: 1 1 auto; }
+.ib-oq-skipmode { display: inline-flex; align-items: center; min-height: 34px; padding: 6px 8px; border-radius: var(--ib-lr-sm, 8px); font-size: var(--ib-fs-13, 13px); font-weight: 500; color: var(--muted-foreground); cursor: default; outline: none; user-select: none; white-space: nowrap; }
+.ib-oq-skipmode[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); color: var(--foreground); }
+.ib-oq-skipmode:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+/* The select bar (in place of the last row while selecting): Cancel, Skip all N, the primary Skip N. */
+.ib-oq-selbar { display: flex; align-items: center; gap: 6px; padding: 6px 4px 2px; }
+.ib-oq-bbtn { display: inline-flex; align-items: center; justify-content: center; height: 30px; padding: 0 12px; border-radius: var(--ib-r10-s, 10px); font-size: var(--ib-fs-13, 13px); font-weight: 500; white-space: nowrap; background: var(--ib-fill); color: var(--foreground); cursor: default; outline: none; user-select: none; }
+.ib-oq-bbtn[data-highlighted] { background: var(--ib-fill-2, var(--ib-hover)); }
+.ib-oq-bbtn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.ib-oq-bbtn.ib-oq-ghost { background: transparent; color: var(--muted-foreground); }
+.ib-oq-bbtn.ib-oq-ghost[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); color: var(--foreground); }
+.ib-oq-bbtn.ib-oq-pri { background: var(--primary); color: var(--primary-foreground); }
+.ib-oq-bbtn.ib-oq-pri[data-highlighted] { background: color-mix(in oklch, var(--primary) 88%, var(--foreground)); }
+.ib-oq-bbtn.ib-oq-pri[data-disabled] { background: var(--ib-fill); color: var(--muted-foreground); }
 .ib-oq-sep { height: 1px; margin: 4px 0; background: var(--ib-hair); }
-/* Re-ask, at the list's foot (owner, 2026-10-23): what the foot's Re-ask button did. */
-/* Tip wraps the item in a span (it can be disabled): the span takes the row's width. */
-.ib-oq > .ib-tipwrap { display: block; }
+/* Re-ask, on the list's last row (owner, 2026-10-23): what the foot's Re-ask button did. Tip wraps it in a
+   span (it can be disabled): .ib-oq-last > .ib-tipwrap above. */
 .ib-oq-reask { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 8px; border-radius: var(--ib-lr-sm, 8px); font-size: var(--ib-fs-13, 13px); font-weight: 500; color: var(--foreground); cursor: default; outline: none; user-select: none; }
 .ib-oq-reask > svg { color: var(--muted-foreground); flex: none; }
 .ib-oq-reask[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); }
@@ -3961,7 +3982,13 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-pos[data-phone] .ib-oq-p { font-size: var(--ib-fs-15, 15px); }
 .ib-oq-pos[data-phone] .ib-oq-meta { font-size: var(--ib-fs-13, 13px); }
 .ib-oq-pos[data-phone] .ib-oq-reask { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
-.ib-oq-pos[data-phone] .ib-oq-skip { min-width: max(64px, calc(3.6em + 20px)); min-height: 44px; font-size: var(--ib-fs-14, 14px); }
+.ib-oq-pos[data-phone] .ib-oq-n, .ib-oq-pos[data-phone] .ib-oq-ck { width: 24px; height: 24px; margin-top: 0; }
+.ib-oq-pos[data-phone] .ib-oq-row { grid-template-columns: 24px minmax(0, 1fr) 16px; gap: 0 12px; }
+.ib-oq-pos[data-phone] .ib-oq-skipmode { min-height: 44px; padding: 6px 10px; font-size: var(--ib-fs-15, 15px); }
+.ib-oq-pos[data-phone] .ib-oq-selhead { min-height: 44px; padding: 0 0 4px 8px; font-size: var(--ib-fs-13, 13px); }
+.ib-oq-pos[data-phone] .ib-oq-selbar { padding: 8px 0 0; }
+.ib-oq-pos[data-phone] .ib-oq-bbtn { height: 44px; padding: 0 16px; border-radius: 12px; font-size: var(--ib-fs-15, 15px); }
+.ib-oq-pos[data-phone] .ib-oq-bbtn.ib-oq-pri { flex: 1 1 auto; }
 
 /* ── A thread's Artifacts (approval "inbox-thread-artifacts", variant Swap) ──
    The header's right side is icons only: Artifacts (with its count), Expand / Fold all, Archive, a hairline, the
