@@ -77,6 +77,8 @@ import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
 import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
+import { movePin, unpinnedWhere } from './pins';
+import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
 import { lookBoundary } from './folding';
@@ -860,6 +862,7 @@ function Inbox() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
+    let pinsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
     prepareInboxEvents();
@@ -896,6 +899,11 @@ function Inbox() {
             void refreshDrafts();
           }, 80);
         },
+        // The sidebar's pins changed (here, in another window, or a deleted thread left them): read `pins` again.
+        onPins: () => {
+          if (pinsTimer) clearTimeout(pinsTimer);
+          pinsTimer = setTimeout(() => void refreshList(false), 60);
+        },
         onStatus: (next, nextUpdated, nextRestart) => {
           setUpdate(next);
           if (nextUpdated !== undefined) setUpdated(nextUpdated);
@@ -921,6 +929,7 @@ function Inbox() {
       if (timer) clearTimeout(timer);
       if (deliveriesTimer) clearTimeout(deliveriesTimer);
       if (draftsTimer) clearTimeout(draftsTimer);
+      if (pinsTimer) clearTimeout(pinsTimer);
     };
   }, [refreshList, refreshSettings, refreshThread, refreshDrafts, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
@@ -1659,11 +1668,90 @@ function Inbox() {
   };
 
   /**
+   * Pin a thread to the sidebar, or unpin it (approval "inbox-pinned-threads"),
+   * from the row menu, the thread header or the pinned row's menu. A pin is the
+   * person's own write and moves no row. Pin says so in the live region only
+   * (the row appears in Pinned); Unpin shows the toast "Unpinned · Still in
+   * <section>" with Undo, which puts the pin back at its old place.
+   */
+  const setPin = async (row: Pick<InboxListRow, 'thread_id' | 'subject'>, pinned: boolean) => {
+    // Unpin's Undo puts this one thread back where it was, with the time it was first pinned.
+    const pinsNow = latestRef.current?.pins ?? [];
+    const index = pinsNow.findIndex((pin) => pin.thread_id === row.thread_id);
+    const pinnedAt = index >= 0 ? (pinsNow[index]!.pinned_at ?? null) : null;
+    // Where it still is, from the pinned row (an archived thread has none in the list) or the list.
+    const listed = (latestRef.current?.pins ?? []).find((pin) => pin.thread_id === row.thread_id) ?? rowOf(row.thread_id) ?? (threadRow?.thread_id === row.thread_id ? threadRow : null);
+    try {
+      await inboxApi.pin(row.thread_id, pinned);
+    } catch (cause) {
+      showError(cause);
+      return;
+    }
+    await refreshList(false);
+    const subject = row.subject ?? '(no subject)';
+    if (pinned) {
+      say(`Pinned “${subject}”`);
+      return;
+    }
+    const canUndo = index >= 0 && pinnedAt !== null;
+    showToast({
+      icon: 'unpin',
+      lead: 'Unpinned',
+      detail: unpinnedWhere(listed),
+      speech: `Unpinned “${subject}”. ${unpinnedWhere(listed)}.`,
+      onUndo: canUndo ? () => void restorePin({ thread_id: row.thread_id, index, pinned_at: pinnedAt! }, subject) : undefined,
+    });
+  };
+  /**
+   * Unpin's Undo: that one thread pinned again at its old place with its
+   * original `pinned_at`. Never a whole remembered order, which would bring
+   * back a pin another tab removed meanwhile.
+   */
+  const restorePin = async (restore: { thread_id: string; index: number; pinned_at: string }, subject: string) => {
+    try {
+      await inboxApi.pinRestore(restore);
+    } catch (cause) {
+      showError(cause);
+      return;
+    }
+    await refreshList(false);
+    dismissToast();
+    say(`Pinned “${subject}” again.`);
+  };
+  /** A pinned row's menu: Unpin, Move up, Move down, Copy link. */
+  const pinAction = async (row: InboxListRow, action: PinnedAction) => {
+    if (action === 'unpin') return void setPin(row, false);
+    if (action === 'copy-link') return void rowAction(row, 'copy-link');
+    const order = (latestRef.current?.pins ?? []).map((pin) => pin.thread_id);
+    const next = movePin(order, row.thread_id, action === 'up' ? -1 : 1);
+    if (next.every((id, i) => id === order[i])) return;
+    try {
+      await inboxApi.pinOrder(next);
+    } catch (cause) {
+      showError(cause);
+      return;
+    }
+    await refreshList(false);
+    say(action === 'up' ? 'Moved up.' : 'Moved down.');
+  };
+  /**
+   * A pinned row opens its thread and leaves the list as it is (the project
+   * filter and the sections), as a search result does; an archived thread
+   * opens as a deep link to it does. The open thread's pinned row does nothing.
+   */
+  const openPinned = (row: InboxListRow) => {
+    const now = routeRef.current;
+    if (now.page === 'inbox' && now.thread === row.thread_id) return;
+    go({ page: 'inbox', project: now.page === 'inbox' ? now.project : null, thread: row.thread_id });
+  };
+
+  /**
    * A thread row's right-click menu. Copy link and Copy thread ID say so in
    * the window's one toast; Mark read, Move back and Archive are the row's
    * hover action and the header's, with their toasts.
    */
   const rowAction = (row: InboxListRow, action: RowMenuAction) => {
+    if (action === 'pin' || action === 'unpin') return void setPin(row, action === 'pin');
     if (action === 'read' || action === 'unread') return void markRead(row.thread_id, action === 'read');
     if (action === 'archive') return void archive(row.thread_id, row.thread_id, true);
     const text = action === 'copy-link' ? threadLink(row.thread_id, settings, window.location.origin) : row.thread_id;
@@ -2019,6 +2107,10 @@ function Inbox() {
 
   const projects = latest?.projects ?? [];
   const latestSections = latest?.sections ?? [];
+  // Pins (approval "inbox-pinned-threads"): an older Inbox sends no `pins`, so no Pinned section and no pin anywhere.
+  const pinsOn = latest?.pins !== undefined;
+  const pinRows = latest?.pins;
+  const pinnedIds = useMemo(() => new Set((pinRows ?? []).map((pin) => pin.thread_id)), [pinRows]);
   // The open thread's row: the list's, else its own read's (an archived thread is not in the list).
   const openThreadRow = thread
     ? (latestSections.flatMap((section) => section.threads).find((row) => row.thread_id === thread.thread_id) ??
@@ -2355,6 +2447,7 @@ function Inbox() {
           onMarkRead={(row) => void markRead(row.thread_id, true)}
           onSendNow={(row) => void sendNowFromRow(row)}
           onRowAction={rowAction}
+          pinned={pinsOn ? pinnedIds : undefined}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
           phone={phone}
@@ -2391,6 +2484,8 @@ function Inbox() {
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
             onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
+            pinned={pinnedIds.has(thread.thread_id)}
+            onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
             replyRequest={replyFor}
             draftChanged={draftChanged}
             onReplyOpened={() => setReplyFor(null)}
@@ -2510,6 +2605,10 @@ function Inbox() {
             updated={updated}
             onSearch={(opener) => openSearch(opener)}
             onCompose={(opener) => openCompose({}, opener)}
+            pins={pinRows}
+            openThreadId={route.thread}
+            onOpenPin={openPinned}
+            onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => go({ page: 'drafts', project: null, thread: null })}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
