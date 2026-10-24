@@ -26,12 +26,12 @@ routes = [
 [observability]
 enabled = false
 
-# The totals. database_id is a placeholder: the owner replaces it with the id
-# `wrangler d1 create plannotator-telemetry` prints (README.md).
+# The totals: the D1 database `wrangler d1 create plannotator-telemetry` made
+# on the owner's account (2026-10-24). The id is not a secret.
 [[d1_databases]]
 binding = "COUNTS"
 database_name = "plannotator-telemetry"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "139cf99a-4a42-4b66-915e-92483b864121"
 migrations_dir = "migrations"
 
 # The brake on POST /v1/counts: 60 per minute per IP, its own namespace (the
