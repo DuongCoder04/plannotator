@@ -1571,6 +1571,13 @@ export interface InboxAgentRow {
    * alone: 1), for the plugin line that version reads.
    */
   plugin?: { installed: boolean; disabled?: boolean; managed?: boolean; generation?: "1" | "2" } | null;
+  /**
+   * An agent its MCP connection alone wakes (INBOX_MCP_WAKING_HOSTS: Codex),
+   * connected through MCP: whether this Inbox can wake it now (Codex: a Codex
+   * CLI INBOX_CODEX_QUEUE_MIN_VERSION or later it can run). Absent for every
+   * other row and from an older Inbox.
+   */
+  wakes?: boolean;
 }
 
 export interface InboxAgentsModel {

@@ -426,6 +426,29 @@ describe("a reply to a Codex thread", () => {
   });
 });
 
+describe("Settings → Agents: whether the Inbox can wake Codex", () => {
+  const codexRow = async (server: InboxServer) => {
+    const model = (await (await fetch(`${base(server)}/api/inbox/agents`)).json()) as { agents: { id: string; wakes?: boolean; reach: { kind: string; on: boolean } }[] };
+    return model.agents.find((agent) => agent.id === "codex")!;
+  };
+  const connectCodex = (fake: FakeAgents) => {
+    mkdirSync(join(fake.home, ".codex"), { recursive: true });
+    writeFileSync(join(fake.home, ".codex", "config.toml"), '[mcp_servers.plannotator-inbox]\ncommand = "plannotator"\nargs = ["inbox", "mcp"]\n');
+  };
+
+  test("a connected Codex that queues wakes; one before 0.149 does not; a row that is not connected says nothing", async () => {
+    const w = await world();
+    expect((await codexRow(w.server)).wakes).toBeUndefined();
+    connectCodex(w.fake);
+    const row = await codexRow(w.server);
+    expect(row.reach).toMatchObject({ kind: "mcp", on: true });
+    expect(row.wakes).toBe(true);
+    const old = await world({ env: { FAKE_CODEX_VERSION: "codex-cli 0.148.0" } });
+    connectCodex(old.fake);
+    expect((await codexRow(old.server)).wakes).toBe(false);
+  });
+});
+
 describe("tags and New message", () => {
   test("a Codex thread tagged in a Claude Code thread gets the tagged wake once; the owner is untouched", async () => {
     const w = await world();
