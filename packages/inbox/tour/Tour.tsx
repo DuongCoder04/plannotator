@@ -18,7 +18,7 @@ import { MessageBody } from '../components/Thread';
 import { Sidebar } from '../components/Sidebar';
 import { Tip } from '../components/Tip';
 import { TOUR_IMAGE_BASE } from '../images';
-import { TOUR_MOCK_STILL, preloadTourAssets, tourAssetLoaded, tourMockHtml } from './assets';
+import { TOUR_MOCK_STILL, preloadTourAssets, tourAssetLoaded, tourAssetNameOf, tourMockHtml } from './assets';
 import { sentAnswersOf } from '../sentReply';
 import type { ProjectFolder } from '../api';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
@@ -631,7 +631,7 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
   // A tile's zoom (the card's own button) opens the picture large; the viewer can pick it.
   const onImage = useCallback(
     (src: string, alt: string) => {
-      const name = decodeURIComponent(src.split('/').pop() ?? '');
+      const name = tourAssetNameOf(src);
       const choice = question?.question.parsed.choices.find((c) => c.image?.src === name);
       const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const pickable = choice && openThread === TOUR_THREAD && !state.sent && state.step <= 3;

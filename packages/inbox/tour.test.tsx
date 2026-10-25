@@ -226,6 +226,16 @@ function recordOf(id: string) {
   return { seq: 1, kind: 'message', id, first: true, message: { id, thread_id: id, project_id: 'p', reply_to: null, subject: null, body: '', created_at: new Date().toISOString(), resolved_at: null, idempotency_key: null, author: { kind: 'agent', host: 'claude-code', session: 'ses_first', name: null } } };
 }
 
+/** A tour started from a screen opens on its first card ("a fresh reminder"); Show me goes to step 1. */
+async function pastIntro(el: HTMLElement) {
+  await until(() => $(el, '[data-tour-intro-go]') !== null, 'the tour’s first card');
+  await until(() => document.activeElement === $(el, '[data-tour-intro] h2'), 'focus on the first card');
+  expect($(el, '[data-tour-intro] h2')!.textContent).toBe('The Inbox works beside your agents');
+  expect($(el, '[data-tour-exit]')).not.toBeNull();
+  await click($(el, '[data-tour-intro-go]'));
+  await until(() => coachKey(el) === '1', 'step 1');
+}
+
 async function openOnEntry(): Promise<HTMLElement> {
   const el = await renderApp();
   await until(() => $(el, '[data-tour-entry]') !== null, 'the entry screen');
@@ -235,7 +245,7 @@ async function openOnEntry(): Promise<HTMLElement> {
 /** Start the tour (the entry screen's button, else the first-run screen's quiet link) and walk to `step`. */
 async function walkTo(el: HTMLElement, step: number) {
   await click($(el, '[data-tour-start]') ?? $(el, '[data-tour-again] button'));
-  await until(() => coachKey(el) === '1', 'step 1');
+  await pastIntro(el);
   if (step === 1) return;
   await click($(el, '[data-thread-id="tour-vscode"]'));
   // happy-dom loads no picture, so the card draws its text rows (the e2e spec proves the tiles).
@@ -253,7 +263,10 @@ async function walkTo(el: HTMLElement, step: number) {
 
 test.skipIf(!hasDom)('Two paths: two equal cards; Connect my agents opens the real first-run screen and is remembered', async () => {
   const el = await openOnEntry();
-  expect(el.querySelectorAll('.ib-te-card')).toHaveLength(2);
+  expect(el.querySelectorAll('.ib-te-paths .ib-te-card')).toHaveLength(2);
+  // The bento's top tile: how the Inbox fits with your agents, in the owner's words.
+  expect($(el, '[data-tour-fit] h3')!.textContent).toBe('The Inbox works beside your agents');
+  expect($(el, '[data-tour-fit]')!.textContent).toContain('Your reply goes back into the same session, and it keeps working.');
   expect($(el, '[data-tour-start]')!.textContent).toContain('Start the tour');
   expect($(el, '[data-tour-connect]')!.textContent).toContain('Connect my agents');
   await click($(el, '[data-tour-connect]'));
@@ -320,7 +333,7 @@ test.skipIf(!hasDom)('Exit at any step gives the Inbox back; a pick other than t
   expect(config().inboxTour.skipped_at).toBeTruthy();
   // B, not the real answer: the replay says so.
   await click($(el, '[data-tour-again] button'));
-  await until(() => coachKey(el) === '1', 'step 1');
+  await pastIntro(el);
   await click($(el, '[data-thread-id="tour-vscode"]'));
   await until(() => radios(el).length === 4, 'the choices');
   await click(radios(el)[1]);
@@ -359,7 +372,7 @@ test.skipIf(!hasDom)('returning users: Settings → General → Take the tour; o
   await until(() => $(el, '[data-settings-take-tour]') !== null, 'Getting started');
   expect($(el, '[data-settings-tour]')!.textContent).toContain('See how the Inbox works through real threads from building Plannotator');
   await click($(el, '[data-settings-take-tour]'));
-  await until(() => coachKey(el) === '1', 'the tour');
+  await pastIntro(el);
   // Steps 1 to 5 play in full over the tailnet; step 6 cannot read the agents there.
   await act(async () => {
     window.location.hash = '#tour=6';
@@ -467,7 +480,7 @@ test.skipIf(!hasDom)('a failed settings read never blanks the first run: the scr
   await until(() => gets >= 2 && $(el, '[data-tour-again] button') !== null, 'the settings read again');
   expect($(el, '[data-tour-entry]')).toBeNull();
   await click($(el, '[data-tour-again] button'));
-  await until(() => coachKey(el) === '1', 'the tour');
+  await pastIntro(el);
 }, 90_000);
 
 test.skipIf(!hasDom)('a settings read that keeps failing: the first-run screen still draws', async () => {
@@ -516,7 +529,7 @@ test.skipIf(!hasDom)('Z never undoes into the Inbox while the tour is up; the to
   });
   await until(() => $(el, '[data-settings-take-tour]') !== null, 'Getting started');
   await click($(el, '[data-settings-take-tour]'));
-  await until(() => coachKey(el) === '1', 'the tour');
+  await pastIntro(el);
   expect(document.querySelector('[data-inbox-toast]')).toBeNull();
   const before = posts.length;
   await act(async () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', bubbles: true })));
@@ -582,7 +595,7 @@ test.skipIf(!hasDom)('content that cannot be had never starts the tour: no error
   });
   await until(() => $(el, '[data-settings-take-tour]') !== null, 'Getting started');
   await click($(el, '[data-settings-take-tour]'));
-  await until(() => coachKey(el) === '1', 'the tour');
+  await pastIntro(el);
 }, 90_000);
 
 test.skipIf(!hasDom)('the entry screen loads the tour early; content that cannot be had takes it away before Start', async () => {

@@ -66,6 +66,7 @@ import { EmptyState } from './components/EmptyState';
 import { Icon } from './icons';
 import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, loadTour, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
 import { TourEntry, tourEntryModel } from './tour/TourEntry';
+import { TOUR_FIT_LINES, TOUR_FIT_TITLE, TourIntro } from './tour/Fit';
 import { TOUR_FIRST_QUESTION_PROMPT, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded } from './tour/model';
 import { ThreadWait } from './components/ThreadWait';
 import { AgentNoteDialog } from './components/AgentNoteDialog';
@@ -2369,6 +2370,11 @@ function Inbox() {
    * tour line stand down, so the first-run screen shows; Settings → Getting started keeps the tour for later.
    */
   const [tourUnavailable, setTourUnavailable] = useState(false);
+  /**
+   * The tour's first card (the owner, for 0.28.31: "a fresh reminder"): how the Inbox fits with your agents,
+   * then Show me. Shown when the tour is started from a screen, over step 1; never on a reload or a link to a step.
+   */
+  const [tourIntro, setTourIntro] = useState(false);
   const tourReal = tourFixture?.threads.find((t) => t.id === TOUR_THREAD)?.real_answer ?? '';
   /** Raised when the person acted and the coach card changed: focus goes to its title. */
   const [coachFocus, setCoachFocus] = useState(0);
@@ -2483,6 +2489,7 @@ function Inbox() {
     }
     tourEnding.current = false;
     tourSynced.current = null;
+    setTourIntro(false);
     dispatchTourRaw({ type: 'goto', step: 1, realAnswer: tourReal });
     setTourArrivals({ count: 0, thread: null });
     // Notifications resume: the list the tour hid is read again, and what it brings is known, not news.
@@ -2498,6 +2505,7 @@ function Inbox() {
     tourSynced.current = 1;
     setTourArrivals({ count: 0, thread: null });
     setCoachFocus((n) => n + 1);
+    setTourIntro(true);
     saveTour({ seen: true });
     go({ page: 'tour', project: null, thread: null, step: 1 });
   };
@@ -2571,7 +2579,7 @@ function Inbox() {
       const active = document.activeElement;
       if (active && active !== document.body) return;
       if (last && last.isConnected && last !== document.body) return;
-      focusFirst(['[data-tour-viewer] [data-tour-viewer-close]', '[data-tour-coach] h2', '[data-tour-loading] h2', '[data-tour-file-problem] h2', '.ib-main .ib-empty h2', '[data-tour-exit]']);
+      focusFirst(['[data-tour-viewer] [data-tour-viewer-close]', '[data-tour-intro] h2', '[data-tour-coach] h2', '[data-tour-loading] h2', '[data-tour-file-problem] h2', '.ib-main .ib-empty h2', '[data-tour-exit]']);
       last = document.activeElement;
     };
     document.addEventListener('focusin', onFocusIn);
@@ -2586,8 +2594,20 @@ function Inbox() {
   /** What did not load in the tour (pictures, the mock): the coach says only what is on screen. */
   const [tourDegraded, setTourDegraded] = useState<TourDegraded>({});
   const degradeTour = useCallback((change: TourDegraded) => setTourDegraded((current) => ({ ...current, ...change })), []);
+  const tourIntroShown = tourOn && !!tourFixture && tourIntro && tourState.step === 1;
+  useEffect(() => {
+    if (tourOn && tourState.step !== 1) setTourIntro(false);
+  }, [tourOn, tourState.step]);
+  useEffect(() => {
+    if (!tourIntroShown) return;
+    say(`${TOUR_FIT_TITLE}. ${TOUR_FIT_LINES.join(' ')}`);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-tour-intro] h2')?.focus({ preventScroll: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourIntroShown]);
   const tourCoachCard =
-    tourOn && tourFixture && tourState.step < TOUR_STEPS ? tourCoach(tourState, { developer: tourFixture.developer, agent: 'Claude Code' }, tourDegraded) : null;
+    tourOn && tourFixture && tourState.step < TOUR_STEPS && !tourIntroShown
+      ? tourCoach(tourState, { developer: tourFixture.developer, agent: 'Claude Code' }, tourDegraded)
+      : null;
   const tourCoachKey = tourCoachCard ? `${tourState.step}:${tourCoachCard.key}:${tourCoachCard.title}` : null;
   const lastTourCoach = useRef<string | null>(null);
   useEffect(() => {
@@ -3336,6 +3356,16 @@ function Inbox() {
           onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'agents' })}
           onClosed={() => setAgentNote('shown')}
         />
+      )}
+      {tourIntroShown && (
+        <div className="ib-tour-layer">
+          <TourIntro
+            onGo={() => {
+              setTourIntro(false);
+              setCoachFocus((n) => n + 1);
+            }}
+          />
+        </div>
       )}
       {tourCoachCard && (
         <div className="ib-tour-layer">

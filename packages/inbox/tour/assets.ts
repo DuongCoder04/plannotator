@@ -27,6 +27,12 @@ export function tourAssetUrl(name: string): string {
   return urls.get(name) ?? `${ASSET_BASE}${encodeURIComponent(name)}`;
 }
 
+/** The asset's name for a URL tourAssetUrl gave out (its copy in memory, or the asset route). */
+export function tourAssetNameOf(src: string): string {
+  for (const [name, url] of urls) if (url === src) return name;
+  return decodeURIComponent(src.split('?')[0]!.split('/').pop() ?? '');
+}
+
 /** The picture is in memory (loaded when the tour started). */
 export function tourAssetLoaded(name: string): boolean {
   return urls.has(name);
