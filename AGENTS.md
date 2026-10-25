@@ -1583,6 +1583,42 @@ guide format names only github/gitlab, so a Bitbucket guide omits `source.pr.pla
 (anonymized) API responses and a fake API server live in `tests/test-fixtures/bitbucket/`;
 `scripts/bitbucket-live-smoke.sh` runs the real flow against a throwaway repo.
 
+**Which gh account a GitHub PR review runs as (#2157).** `gh` can hold several accounts per host and
+uses the active one. GitHub's `checkAuth` first asks only that gh is signed in (`checkGhAuth`:
+`gh auth status --active --hostname H`; when that fails, an older gh or a broken active login, it
+goes on as long as some account on the host is usable, because plain `gh auth status` exits 1 when
+ANY account on the host is broken). Then `ensureGhPRAccess` (`packages/shared/pr-github-account.ts`,
+vendored to Pi) checks, before the review opens, that the active account can read the PR
+(`gh api repos/O/R/pulls/N`; when that is refused but the repository is readable, the number is
+wrong and the fetch reports it as before; network and rate-limit failures give no verdict). Refused:
+every other account `gh auth status` lists for the host (`--json hosts` from gh v2.81.0, else the
+text with NO_COLOR=1 and ANSI stripped) is tried with its token (`gh auth token --hostname H --user L`,
+gh v2.40.0+) as GH_TOKEN (GH_ENTERPRISE_TOKEN off github.com and `*.ghe.com`); the first that can read
+it is used for THIS review only. `gh auth switch` is never run and gh's settings never change. None
+can: the review does not open (the CLI exits 1, like other startup failures) and the error names the
+active account, the accounts that can't see it, an account that reads the repo but not the PR ("the
+PR number may be wrong"), the accounts with no verdict (broken login, no token, offline, rate limit:
+"Couldn't check", with `gh auth switch -u <that one>`), else `gh auth login` / `gh auth switch -u
+<user>`, plus a note when GH_TOKEN is the active source. The choice is an in-memory override keyed
+by host/owner/repo, and the token goes ONLY where that PR needs it: the dispatch functions in
+`pr-provider.ts` run that repo's `gh` calls through `ghScopedRuntime`, which passes it as
+`CommandOptions.env` (an optional argument both runtimes add to the process env for that one child),
+so a `/api/pr-switch` to another repo runs as the active account; PR artifact downloads send it;
+agent jobs get it from their launch PR (`ghAccountEnvForPRUrl` in both runtimes' `agent-jobs.ts`).
+`checkAuth` answers `PRAuthResult { notice, childEnv }`: the Bun CLI prints the notice on stderr
+("Using gh account X for this review: …") and adds `childEnv` to this PR's checkout steps only (the
+clone, git fetches and worktree add of `--local`); it never goes in `process.env`, so the browser
+opener, the update wrapper, Ask AI providers and other children never see it. Pi notifies it and runs
+its checkout (clone, fork fetch, and every git step through `reviewRuntimeWithEnv`) with it; OpenCode
+logs it. A token is never printed, logged or put in an error. Tests: `pr-github-account.test.ts`,
+`packages/server/pr-gh-account.test.ts`, `apps/pi-extension/server/pr-gh-account.test.ts` and
+`apps/hook/server/review-gh-account-cli.test.ts` (including `--local`, through a git wrapper that logs
+which account's token each git call got), against a fake `gh` (`tests/helpers/fake-gh.ts`, which
+asserts `Bun.which("gh", { PATH })` finds it) first on the PATH the code under test STARTED with:
+`Bun.spawn` without an explicit env looks a command up through the PATH the process started with, not
+a later `process.env.PATH`, so a runtime test runs in a child process
+(`tests/helpers/gh-account-runtime-probe.ts`).
+
 Interaction-model changes worth knowing (F8 and siblings): the agent-mode `Approve` primary
 follows the `FeedbackButton` responsive pattern and is **icon-only below the `lg` breakpoint**,
 where the old `ApproveButton` showed a compact `OK` label — the `title` carries the accessible
@@ -3053,6 +3089,10 @@ Every plan, review, annotate (archive and goal-setup included, and the servers O
 - **Refusal:** `403`, `text/plain`, `X-Plannotator-Error: host_not_allowed`, a one-paragraph body naming the hostname (only when it parses as one) and `PLANNOTATOR_ALLOWED_HOSTS`; never a 404, so it cannot be mistaken for the app catch-all.
 
 Not covered, by design: the Inbox's tailnet listener ("Over your tailnet": it answers only the served MagicDNS name and the owner's Tailscale login, and never hands on `/mcp` or a connection route), the live-app proxy (`live-proxy-core.ts` has its own Host, Origin and WebSocket-origin checks), the compiled build's agent-terminal Node sidecar (`agent-terminal-node-sidecar.mjs`: bound to `127.0.0.1` on a port only the Bun server learns, never sent to the browser, and served only under the session's random-token PTY path; the browser's upgrade reaches the guarded annotate server first), the paste service (a public service, not a session) and the guides.show local static dev server (serves build output only). Tests: `packages/shared/request-host.test.ts` (the predicate), `packages/server/request-host.scenarios.ts` run by `packages/server/request-host.test.ts` (Bun, plus goal setup and the tailnet name) and `apps/pi-extension/server/request-host.test.ts` (Pi), and `apps/pi-extension/server/request-host-guard.test.ts` (the upgrade interception).
+
+### File-browser live refresh (`/api/reference/files/stream`)
+
+One engine for both runtimes, `packages/shared/file-browser-watch-core.ts` (vendored to Pi; transports `packages/server/reference-watch.ts` and `apps/pi-extension/server/file-browser-watch.ts`): construction deferred off the request path and a 30 s reconnect grace (#1313), so a reload reuses the warm watcher; an entry whose watching failed (could not start, or its root could not be watched: unreadable, gone, or no watches left; a deep folder hitting the system limit does not count) is rebuilt by the next subscription instead, its open tabs moved over. macOS and Windows use one native recursive `fs.watch`; Linux uses one `fs.watch` per folder (#1439), never per file. The Linux watcher: breadth-first scans, one at a time per subscription (a rename queues one re-list of its folder, plus a deep scan only when the name was a watched folder; the queue is deduplicated by walking up to the root, so a burst of 100k new files costs what #2155 did; Bun on Linux reports a move under one name only, which the re-list covers); symlinked folders are not followed; ignored folders (`isFileBrowserWatchExcludedPath`: the listing's `FILE_BROWSER_EXCLUDED` plus `.jj/`, which only the watcher skips) are never watched and never trigger a refresh; unreadable folders (EACCES) and folders whose watch fails are skipped, never fatal. A registry-wide budget of a quarter of `fs.inotify.max_user_watches`, kept between 1,024 and 8,192 (4,096 when unreadable): past it the folders nearest the root keep their watches (a new shallow folder takes the deepest watch's slot), deeper ones go unwatched, it is logged once per subscription, and a freed watch scans only the shallowest skipped folders, never the whole tree. Exact-file watches (the open document) are outside the budget. Tests: `packages/shared/file-browser-watch-directories.test.ts` (every platform, a fake filesystem and `fs.watch` through the `directories` backend and the `directoryFs` / `nativeWatch` seams) and `packages/shared/file-browser-watch-linux.test.ts` (real inotify, Linux only).
 
 ### Inbox Server (`packages/server/inbox.ts`)
 

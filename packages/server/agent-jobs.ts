@@ -31,6 +31,7 @@ import {
 } from "@plannotator/shared/agent-jobs";
 import { resolveGuideLaunchInstructions } from "@plannotator/shared/guide-instructions-store";
 import { gitColorFreeEnvironment } from "@plannotator/shared/review-core";
+import { ghAccountEnvForPRUrl } from "@plannotator/shared/pr-github-account";
 import type { GuideLaunchReview } from "@plannotator/shared/guide-format";
 import { crossOriginRefusalBody } from "@plannotator/shared/request-origin";
 import { isSameOriginRequest } from "./request-origin-guard";
@@ -326,6 +327,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           PWD: resolvePath(spawnCwd),
           PLANNOTATOR_AGENT_SOURCE: source,
           PLANNOTATOR_API_URL: getServerUrl(),
+          // A GitHub PR the active gh account can't see runs as the signed-in
+          // account chosen for its repo (#2157); a job for any other PR gets nothing.
+          ...ghAccountEnvForPRUrl(spawnOptions?.prUrl),
         },
       });
 

@@ -34,9 +34,13 @@ import {
 } from "../generated/pr-provider.ts";
 
 const prRuntime: PRRuntime = {
-	async runCommand(cmd, args) {
+	async runCommand(cmd, args, options) {
 		return new Promise((resolve, reject) => {
-			const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+			// options.env is added to (never replacing) the environment: another gh account's token (#2157).
+			const proc = spawn(cmd, args, {
+				stdio: ["ignore", "pipe", "pipe"],
+				...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+			});
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (chunk: Buffer) => {
@@ -51,9 +55,12 @@ const prRuntime: PRRuntime = {
 			});
 		});
 	},
-	async runCommandWithInput(cmd, args, input) {
+	async runCommandWithInput(cmd, args, input, options) {
 		return new Promise((resolve, reject) => {
-			const proc = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+			const proc = spawn(cmd, args, {
+				stdio: ["pipe", "pipe", "pipe"],
+				...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+			});
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (chunk: Buffer) => {
