@@ -48,7 +48,7 @@ export type { PRAuthResult, PRRef, PRMetadata, PRContext, PRReviewFileComment, P
 export { prRefFromMetadata, isSameProject, getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo, getCliName, getCliInstallUrl, getPRNumber, getPRPlatformCapabilities, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/shared/pr-types";
 export type { GithubPRMetadata } from "@plannotator/shared/pr-types";
 
-const runtime: PRRuntime = {
+const bunCommandRuntime: PRRuntime = {
   async runCommand(cmd, args, options) {
     const proc = Bun.spawn([cmd, ...args], {
       stdout: "pipe",
@@ -86,6 +86,29 @@ const runtime: PRRuntime = {
     return { stdout, stderr, exitCode };
   },
 };
+
+// Tests replace the command runner (setPRCommandRuntimeForTests) so no test
+// ever runs the real `gh` / `glab`: the review server calls these at startup
+// in PR mode (the platform user, viewed files, PR context).
+let testRuntime: PRRuntime | null = null;
+
+const runtime: PRRuntime = {
+  runCommand: (cmd, args, options) => (testRuntime ?? bunCommandRuntime).runCommand(cmd, args, options),
+  runCommandWithInput: (cmd, args, input, options) => {
+    const active = testRuntime ?? bunCommandRuntime;
+    if (!active.runCommandWithInput) return Promise.reject(new Error(`${cmd}: this runtime takes no input`));
+    return active.runCommandWithInput(cmd, args, input, options);
+  },
+};
+
+/**
+ * Tests only: run every PR platform command through `fake` instead of a real
+ * process (null puts the real runner back). Set it inside a test and restore
+ * it in afterEach: bun runs every test file in one process.
+ */
+export function setPRCommandRuntimeForTests(fake: PRRuntime | null): void {
+  testRuntime = fake;
+}
 
 /** The Bun command runner, exported for non-PR CLI consumers (commit avatars). */
 export const prCommandRuntime: PRRuntime = runtime;
