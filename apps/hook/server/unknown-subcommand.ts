@@ -10,6 +10,7 @@ const INTERNAL_SUBCOMMANDS = [
   "opencode-review",
   "opencode-review-directory",
   "opencode-annotate-last",
+  "dsh-plan",
   "copilot-plan",
   "claude-mod-plan",
 ] as const;

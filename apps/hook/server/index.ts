@@ -1,7 +1,8 @@
 /**
- * Plannotator CLI for Claude Code, Droid, Codex, Gemini CLI, and Copilot CLI
+ * Plannotator CLI for Claude Code, Droid, Codex, Gemini CLI, Copilot CLI, and
+ * DeepSeek Harness
  *
- * Supports thirteen modes:
+ * Supports fifteen modes:
  *
  * 1. Plan Review (default, no args):
  *    - Spawned by Claude/Gemini/Codex hook entrypoints
@@ -52,16 +53,22 @@
  * 11. OpenCode Last (`plannotator opencode-annotate-last`):
  *    - Internal structured last-message annotation bridge for OpenCode
  *
- * 12. Improve Context (`plannotator improve-context`):
+ * 12. DeepSeek Harness Plan (`plannotator dsh-plan`):
+ *    - Internal bridge mode used by the @plannotator/dsh plugin (apps/dsh-plugin)
+ *    - Reads `{ plan, timeoutSeconds?, cwd? }` from stdin
+ *    - Outputs `{ approved, feedback?, message?, savedPath?, answersOnly? }`,
+ *      with `message` composed from the `dsh` prompt templates (dsh-plan.ts)
+ *
+ * 13. Improve Context (`plannotator improve-context`):
  *    - Spawned by PreToolUse hook on EnterPlanMode
  *    - Reads improvement hook file from ~/.plannotator/hooks/
  *    - Returns additionalContext or silently passes through
  *
- * 13. Uninstall (`plannotator uninstall`):
+ * 14. Uninstall (`plannotator uninstall`):
  *    - Removes recognized installer-owned components across supported hosts
  *    - Preserves local data by default; `--purge` removes known local data
  *
- * 14. Guide tools (`plannotator guide list|export|share|unshare`):
+ * 15. Guide tools (`plannotator guide list|export|share|unshare`):
  *    - List saved Guided Reviews; export one (or a snapshot JSON) as a portable
  *      HTML file whose viewer loads from guides.show; share one as a link on
  *      guides.show (encrypted by default) and remove it again
@@ -201,6 +208,7 @@ import {
 } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionByAncestorPids, findCopilotSessionForCwd, getRecentCopilotMessages } from "./copilot-session";
 import { findDshSessionLog, getRecentDshMessages, resolveDshHome } from "./dsh-session";
+import { composeDshPlanOutput, dshPlanTimeoutFeedback, parseDshPlanInput } from "./dsh-plan";
 import { resolveLatestVibePlan } from "./vibe-plan";
 import { resolveClaudePlan } from "./claude-plan";
 import { takeModPlanApproval } from "./mod-plan-approval";
@@ -2171,6 +2179,78 @@ if (args[0] === "sessions") {
     ...(result.agentSwitch && { agentSwitch: result.agentSwitch }),
     ...(result.answersOnly && { answersOnly: true }),
   }));
+  process.exit(0);
+
+} else if (args[0] === "dsh-plan") {
+  // ============================================
+  // DEEPSEEK HARNESS PLAN REVIEW MODE
+  // ============================================
+  //
+  // Internal CLI bridge used by the @plannotator/dsh plugin to answer DSH's
+  // exit_plan_mode review. The stdin/stdout contract and the message
+  // composition live in dsh-plan.ts.
+
+  const parsed = parseDshPlanInput(await Bun.stdin.text());
+  if (!parsed.ok) {
+    console.error(parsed.error);
+    process.exit(1);
+  }
+  const { plan: planContent, timeoutSeconds, cwd: planCwd } = parsed.input;
+  if (planCwd) {
+    try {
+      process.chdir(planCwd);
+    } catch (error) {
+      console.error(`dsh-plan cannot use cwd ${planCwd}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
+  const planProject = (await detectProjectName()) ?? "_unknown";
+  const server = await startPlannotatorServer({
+    plan: planContent,
+    origin: "dsh",
+    // The plugin steers the approved-with-notes message dsh-plan composes
+    // into the agent after approving.
+    approvalNotesSupported: true,
+    sharingEnabled,
+    shareBaseUrl,
+    pasteApiUrl,
+    htmlContent: planHtmlContent,
+    onReady: async (url, isRemote, port) => {
+      await handleServerReady(url, isRemote, port);
+
+      if (isRemote && sharingEnabled) {
+        await writeRemoteShareLink(planContent, shareBaseUrl, "review the plan", "plan only").catch(() => {});
+      }
+    },
+  });
+
+  registerCliSession({
+    pid: process.pid,
+    port: server.port,
+    url: server.url,
+    mode: "plan",
+    project: planProject,
+    startedAt: new Date().toISOString(),
+    label: `plan-${planProject}`,
+  });
+
+  let result: Awaited<ReturnType<typeof server.waitForDecision>>;
+  try {
+    result = await waitForPlanReviewDecision({
+      waitForDecision: server.waitForDecision,
+      timeoutMs: timeoutSeconds === null ? null : timeoutSeconds * 1000,
+      timeoutResult: {
+        approved: false,
+        feedback: dshPlanTimeoutFeedback(timeoutSeconds ?? 0),
+      },
+    });
+    await waitForPlanReviewCloseDelay(1500);
+  } finally {
+    await server.stop();
+  }
+
+  console.log(JSON.stringify(composeDshPlanOutput(result)));
   process.exit(0);
 
 } else if (args[0] === "opencode-review" || args[0] === "opencode-review-directory") {
