@@ -38,6 +38,11 @@ const SHOWN_PROJECTS = 2;
 
 export interface SettingsPageProps {
   settings: SettingsModel | null;
+  /**
+   * Settings → General's first group, "Getting started" (approval
+   * "inbox-onboarding-tour", returning users): Take the tour. Absent: none.
+   */
+  onTakeTour?: () => void;
   context: ConnectContext | null;
   error: string | null;
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
@@ -180,8 +185,10 @@ function GeneralSection({
   onTestNotification,
   sound,
   onToggleExperimental,
+  onTakeTour,
 }: {
   onToggleExperimental?: (next: boolean) => void;
+  onTakeTour?: () => void;
   settings: SettingsModel;
   permission: NotificationPermission | 'unsupported';
   onToggleNotifications: (next: boolean) => void;
@@ -203,6 +210,25 @@ function GeneralSection({
       : reachText({ here: notificationsOn, enabled: settings.notifications.enabled, reach, origin: typeof window !== 'undefined' ? window.location.origin : '' });
   return (
     <>
+      {onTakeTour && (
+        <section className="ib-sgroup" data-settings-tour="" aria-labelledby="ib-g-start">
+          <h2 id="ib-g-start">Getting started</h2>
+          <div className="ib-card">
+            <div className="ib-prow">
+              <span className="ib-txt">
+                <span className="ib-l">Tour</span>
+                <span className="ib-desc">See how the Inbox works through real threads from building Plannotator · 2 min</span>
+              </span>
+              <span className="ib-ctl">
+                <button type="button" className="ib-btn" onClick={onTakeTour} data-settings-take-tour="">
+                  <Icon name="play" size={14} />
+                  Take the tour
+                </button>
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
       <section className="ib-sgroup" data-settings-theme={mode} aria-labelledby="ib-g-appearance">
         <h2 id="ib-g-appearance">Appearance</h2>
         <div className="ib-card">
@@ -657,6 +683,7 @@ export function SettingsPage(props: SettingsPageProps) {
             onTestNotification={onTestNotification}
             sound={sound}
             onToggleExperimental={props.onToggleExperimental}
+            onTakeTour={props.onTakeTour}
           />
         );
         break;

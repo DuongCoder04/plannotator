@@ -258,6 +258,9 @@ export function MessageBody({
   comments,
   sentAnswers,
   onJumpQuestion,
+  imageBase,
+  onImage,
+  pictureBadge,
 }: {
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
@@ -313,6 +316,16 @@ export function MessageBody({
   sentAnswers?: readonly SentAnswerGroup[];
   /** A row of `sentAnswers` was pressed: show its question. */
   onJumpQuestion?: (target: JumpTarget) => void;
+  /**
+   * Where the body's images load from, in place of the message's own image
+   * route (`inboxMessageImageBase`): the onboarding tour's assets
+   * (`inbox-tour:`, images.ts). Absent: the message's route.
+   */
+  imageBase?: string;
+  /** An image the body shows (a picture choice's zoom included) was opened: the host shows it. Absent: the thread's viewer. */
+  onImage?: (src: string, alt: string) => void;
+  /** A label over each picture choice's picture (ui QuestionBlock `pictureBadge`); absent: none. */
+  pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -368,7 +381,9 @@ export function MessageBody({
     },
     [imageOf, message.id],
   );
-  const onImageClick = useCallback((src: string, alt: string) => void openImage(src, alt), [openImage]);
+  const onImageRef = useRef(onImage);
+  onImageRef.current = onImage;
+  const onImageClick = useCallback((src: string, alt: string) => (onImageRef.current ? onImageRef.current(src, alt) : void openImage(src, alt)), [openImage]);
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -607,7 +622,7 @@ export function MessageBody({
         maxWidth={null}
         stickyActions={false}
         disableCodePathValidation
-        imageBaseDir={inboxMessageImageBase(message.id)}
+        imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
         onImageClick={onImageClick}
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
@@ -623,6 +638,7 @@ export function MessageBody({
         questionContractLines
         questionReadOnly={answerLocked}
         questionStatusLabel={statusLabel}
+        questionPictureBadge={pictureBadge}
         renderQuestionCard={renderReplacedCard ? questionCard : undefined}
         renderQuestionBelowPrompt={renderReplacesLine ? belowPrompt : undefined}
         renderDirectiveBlock={renderActions ? directiveBlock : undefined}
@@ -644,7 +660,7 @@ export function MessageBody({
           maxWidth={null}
           stickyActions={false}
           disableCodePathValidation
-          imageBaseDir={inboxMessageImageBase(message.id)}
+          imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
           onImageClick={onImageClick}
           resolveLocalLink={resolveLocalLink}
           refRepo={refRepo}
@@ -670,6 +686,8 @@ export function MessageBody({
 }
 
 export interface ThreadPaneProps {
+  /** A line under the subject, from the window (the tour's notifications ask, once more, in the first real thread). */
+  notice?: React.ReactNode;
   thread: InboxThread;
   /**
    * The thread's list row's `sent`: the person's reply is the last message
@@ -949,7 +967,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -3084,6 +3102,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
       <div className={`ib-pbody${one ? '' : ' ib-folding'}`} ref={bodyRef} hidden={artifactsOn}>
         {/* A focus target (the way back's fallback, a stacked thread), never a tab stop. */}
         <h2 className="ib-subject" dir="auto" tabIndex={-1}>{thread.subject ?? '(no subject)'}</h2>
+        {notice}
         {startedTo && (
           <div className="ib-tmeta" data-started-by="">
             <span>You started this thread</span>

@@ -22,6 +22,7 @@
  * .local/proof/first-run), named like the mock's (`c-<scenario>[-phone]-<scheme>.png`).
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  */
+import { markTourDecided } from '../helpers/tour-decided';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -89,6 +90,8 @@ function start(name: keyof typeof SETUPS): Computer {
   for (const dir of [home, bin, dataDir]) mkdirSync(dir, { recursive: true });
   const self = realpathSync(binary);
   for (const setup of SETUPS[name]!.setup) setup({ home, bin, binary: self });
+  // The first-run connect screen itself, not the tour's entry screen (inbox-tour.spec.ts proves that one).
+  markTourDecided(dataDir);
   const env: Record<string, string> = {
     // Only the stubs and the system's own tools: never the agents installed on the machine running the spec.
     PATH: `${bin}:/usr/bin:/bin`,

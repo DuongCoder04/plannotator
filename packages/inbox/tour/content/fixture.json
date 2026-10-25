@@ -1,0 +1,104 @@
+{
+  "v": 1,
+  "date": "2026-10-24",
+  "note": "The tour's content: two real threads from building Plannotator with its own Inbox (October 2026), condensed, never invented. Times are the real ones. Curated by hand; never built from a live Inbox. See AGENTS.md, The Inbox tour.",
+  "project": "plannotator",
+  "developer": "Plannotator’s developer",
+  "full": { "vs-a-thumb.webp": "vs-a.webp", "vs-b-thumb.webp": "vs-b.webp", "vs-c-thumb.webp": "vs-c.webp", "vs-d-thumb.webp": "vs-d.webp" },
+  "threads": [
+    {
+      "id": "tour-vscode",
+      "subject": "Guided Reviews in VS Code: spec and prototype",
+      "thread_name": "vscode guided reviews",
+      "slice": "This thread has 140 messages over two days. The tour shows the six around one decision.",
+      "real_answer": "A · Our guide reader in one tab",
+      "picture_label": "Mockup · VS Code",
+      "picture_label_short": "Mockup",
+      "messages": [
+        {
+          "id": "tour-vscode-1",
+          "who": "developer",
+          "time": "11:47",
+          "body": "Honestly I’m just struggling with this UX. I think using the native VS Code interfaces instead of building what we had designed as our own guide interface was a mistake. Launch an Opus agent to evaluate it and mock up alternatives."
+        },
+        {
+          "id": "tour-vscode-2",
+          "who": "agent",
+          "time": "11:48",
+          "body": "Understood. An Opus agent is evaluating it now: your Plannotator guide reader against the VS Code split, using the real screenshots, and 3 to 4 mocked alternatives, each with a short honest note on cost and what VS Code allows."
+        },
+        {
+          "id": "tour-vscode-3",
+          "who": "agent",
+          "time": "12:03",
+          "asks": true,
+          "body": "The evaluation is done. You were right: the native VS Code split is the problem. One guide is spread over six surfaces: three tabs, the sidebar tree, the chapter panel and the Comments panel. The chapter’s “why” sits in a 340 px side panel, away from the code it explains.\n\n**Recommended: A, our own guide reader in one VS Code tab.** Chapters with their prose beside the diffs, the whole chapter in one scroll, and hover and go to definition from VS Code’s real language server. Cost: medium, after a 2-day check that hover feels instant.\n\n:::question\nWhich direction for the VS Code guide interface?\n- [ ] A · Our guide reader in one tab — ![Direction A, mocked in VS Code: our guide reader in one tab](vs-a-thumb.webp) after a 2-day hover-speed check\n- [ ] B · Our reader beside a live native diff — ![Direction B, mocked in VS Code: our reader beside a live native diff](vs-b-thumb.webp) two half-width panes, one file at a time\n- [ ] C · VS Code’s multi-file diff per chapter — ![Direction C, mocked in VS Code: the multi-file diff per chapter](vs-c-thumb.webp) chapter prose only in a comment box\n- [ ] Ship 0.17.0 as is now — and do A as the next version\nRecommended: A · Our guide reader in one tab\n:::",
+          "attachments": [
+            { "name": "prototype.html", "kind": "Clickable mockups of the directions", "size": "77 KB", "mock": "vscode-mockups.html" },
+            { "name": "EVALUATION.md", "kind": "Markdown", "size": "11 KB" }
+          ],
+          "gallery": [
+            { "asset": "vs-d-thumb.webp", "full": "vs-d.webp", "name": "d1-clean.png", "caption": "D: the guide as a notebook (not offered: large cost)", "alt": "Direction D: the guide as a notebook" }
+          ]
+        },
+        {
+          "id": "tour-vscode-4",
+          "who": "agent",
+          "time": "12:18",
+          "replay": 1,
+          "body": "A it is, and it’s recorded as approved. An Opus builder has started.\n\n- **The speed check, first:** our reader in a VS Code tab, measuring hover from VS Code’s real language server. The target is under ~150 ms once warm.\n- **Then the build, matching mockups a1–a4:** chapters with their prose beside the diffs in one scroll; hover, go to definition and ⌘-click from VS Code.\n\nYou get the speed numbers first, then screenshots, then a review before anything merges."
+        },
+        {
+          "id": "tour-vscode-5",
+          "who": "agent",
+          "time": "13:25",
+          "replay": 2,
+          "body": "Direction A is built as PR #2134, and a VS Code test window is opening on this repo with it running.\n\n- **The speed check passed easily:** hover in 7 ms typical, 9 ms at worst, against a 150 ms target.\n- **The guide tab:** one tab with our guide reader, each chapter’s text beside its files’ diffs, all in one scroll.\n- **Ask:** select lines in a diff and ask; the answer opens beside.",
+          "gallery": [
+            { "asset": "built-a1.webp", "name": "a1.png", "caption": "The guide tab, built", "alt": "The built guide tab in VS Code (PR #2134)" },
+            { "asset": "built-a2.webp", "name": "a2.png", "caption": "A chapter, built", "alt": "A chapter in the built guide tab (PR #2134)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tour-graphite",
+      "subject": "Plannotator Graphite: three dark palettes for daylight",
+      "thread_name": "graphite",
+      "picture_label": "Screenshot · Inbox",
+      "picture_label_short": "Screenshot",
+      "messages": [
+        {
+          "id": "tour-graphite-1",
+          "who": "agent",
+          "time": "14:12",
+          "body": "Three “Plannotator Graphite” dark palettes are ready, each shown in the real Inbox next to today’s dark. Glare adds the same light to every pixel, so today’s background and cards merge by day. G2 Daylight is the only one that holds up in the glare test.\n\n:::question\nWhich Graphite should we ship as a new dark palette?\n- [ ] G2 Daylight — ![Screenshot of the Inbox in G2 Daylight](g2-thumb.webp) dark grey, clear surfaces, holds up in glare\n- [ ] G1 Deep — ![Screenshot of the Inbox in G1 Deep](g1-thumb.webp) closest to the mock, darker at night, weaker by day\n- [ ] G3 Stone — ![Screenshot of the Inbox in G3 Stone](g3-thumb.webp) in between, warm grey\nRecommended: G2 Daylight\n:::",
+          "answer": "G2 Daylight",
+          "sent_at": "14:19"
+        },
+        {
+          "id": "tour-graphite-2",
+          "who": "developer",
+          "time": "14:19",
+          "answers": "tour-graphite-1",
+          "delivered": "14:19"
+        },
+        {
+          "id": "tour-graphite-3",
+          "who": "agent",
+          "time": "14:25",
+          "body": "Graphite is PR #2137, and a reviewer is checking it now. Its dark half is G2 Daylight; its light half is today’s Plannotator light, byte for byte.",
+          "gallery": [
+            { "asset": "graphite-inbox.webp", "name": "graphite-inbox.png", "caption": "The Inbox in Graphite, dark", "alt": "The Inbox in Plannotator Graphite, dark" }
+          ]
+        },
+        {
+          "id": "tour-graphite-4",
+          "who": "agent",
+          "time": "14:37",
+          "body": "Graphite #2137 is merging. The Inbox palette picker is PR #2138: a Colors row in Settings → Appearance; a pick there holds in plan review too."
+        }
+      ]
+    }
+  ]
+}

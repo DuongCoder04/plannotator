@@ -4342,3 +4342,140 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-dm-tiles [data-question-zoom]::before { inset: -7px; }
   .pn-inbox .ib-dm-confirm1 .ib-btn { min-height: 44px; }
 }
+
+/* ───────────────── The onboarding tour (approval "inbox-onboarding-tour"; tour/) ─────────────────
+   The window's own list, thread and question card over the tour's fixture, with one bar on top while it
+   runs, a coach card beside what it points at, and the replay's marks. Every colour is a theme token, so it
+   follows every palette, light and dark. */
+.pn-inbox[data-tour] { --ib-tour-bar-h: 45px; display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+.pn-inbox[data-tour] > .ib-shell { min-height: 0; }
+.pn-inbox[data-tour] .ib-sb-panel { top: var(--ib-tour-bar-h); }
+.ib-tour-bar { display: flex; align-items: center; gap: 12px; height: var(--ib-tour-bar-h, 45px); box-sizing: border-box; position: relative; z-index: 20; padding: 6px 14px; background: color-mix(in oklch, var(--primary) 11%, var(--background)); border-bottom: 1px solid color-mix(in oklch, var(--primary) 30%, var(--border)); font-size: var(--ib-fs-13, 13px); color: var(--foreground); }
+.ib-tour-tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-weight: 650; font-size: var(--ib-fs-12, 12px); flex: none; }
+.pn-inbox .ib-tour-tag svg.ib-ic { stroke-width: 2; }
+.ib-tour-what { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-what b { font-weight: 600; }
+.ib-tour-steps { display: flex; align-items: center; gap: 5px; flex: none; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.ib-tour-dot { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in oklch, var(--muted-foreground) 35%, transparent); }
+.ib-tour-dot[data-on] { background: var(--primary); }
+.ib-tour-dot[data-done] { background: color-mix(in oklch, var(--primary) 55%, transparent); }
+.pn-inbox .ib-tour-exit { flex: none; height: 30px; padding: 0 12px; border-radius: 8px; font-weight: 550; color: var(--foreground); background: var(--card); box-shadow: 0 0 0 1px var(--border); }
+.pn-inbox .ib-tour-exit:hover { background: var(--muted); }
+.pn-inbox .ib-tour-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary-foreground); background: var(--primary); }
+
+/* The coach: one card per step, next to what it points at; not modal. */
+.ib-tour-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+.ib-tour-layer > * { pointer-events: auto; }
+.ib-tour-coach { position: fixed; z-index: 60; width: 300px; max-width: calc(100vw - 24px); padding: 14px 16px 12px; border-radius: 12px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 45%, var(--border)), var(--ib-float-shadow, 0 16px 40px -12px rgb(0 0 0 / 0.45)); font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; }
+.ib-tour-coach .ib-tc-eb { font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; color: var(--primary); letter-spacing: 0.02em; margin-bottom: 2px; }
+.ib-tour-coach h2 { margin: 0 0 4px; font-size: var(--ib-fs-15, 15px); font-weight: 650; line-height: 1.35; }
+.ib-tour-coach h2:focus { outline: none; }
+.ib-tour-coach h2:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.ib-tour-coach p { margin: 0; color: var(--muted-foreground); }
+.ib-tour-coach p b { color: var(--foreground); font-weight: 600; }
+.ib-tour-coach .ib-tc-acts { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.ib-tour-coach .ib-tc-acts .ib-sp { flex: 1; }
+.pn-inbox .ib-tc-back { height: 30px; padding: 0 8px; border-radius: 7px; color: var(--muted-foreground); font-weight: 500; }
+.pn-inbox .ib-tc-back:hover { color: var(--foreground); background: var(--muted); }
+.pn-inbox .ib-tc-next { height: 30px; padding: 0 12px; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+.ib-tc-do { font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary); font-weight: 600; display: inline-flex; gap: 5px; align-items: center; }
+.ib-tc-wait { display: inline-flex; align-items: center; gap: 8px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tc-wait::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklch, var(--primary) 30%, transparent); border-top-color: var(--primary); }
+/* What the step points at: the focus ring's colour, a little outside, and two slow pulses. */
+.pn-inbox .ib-tour-target { outline: 2px solid var(--primary) !important; outline-offset: 3px; border-radius: 10px; }
+@media (prefers-reduced-motion: no-preference) {
+  .pn-inbox .ib-tour-target { animation: ib-tour-pulse 1.4s ease-out 2; }
+  @keyframes ib-tour-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+  .ib-tour-coach { animation: ib-pm-in 160ms ease-out; }
+  .ib-tc-wait::before { animation: ib-spin 0.9s linear infinite; }
+}
+
+/* The replay's marks: what is a replay of the real thread says so. */
+.ib-tour-replay { display: flex; align-items: center; gap: 8px; margin: 22px 0 4px; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-tour-replay::before, .ib-tour-replay::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.ib-tour-realtime { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: var(--ib-fs-11, 11px); font-weight: 550; margin-left: 6px; white-space: nowrap; }
+.ib-tour-note { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: color-mix(in oklch, var(--primary) 8%, var(--card)); font-size: var(--ib-fs-13, 13px); color: var(--foreground); }
+.ib-tour-slice { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-tour-attach-h { display: flex; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.pn-inbox .ib-tour-filetile { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 420px; padding: 10px 12px; border-radius: 10px; background: var(--muted); text-align: left; margin-top: 10px; color: var(--foreground); }
+.pn-inbox button.ib-tour-filetile:hover { background: color-mix(in oklch, var(--muted) 70%, var(--primary) 10%); }
+.ib-tour-filetile .ib-tft-i { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; background: var(--card); color: var(--primary); box-shadow: 0 0 0 1px var(--border); flex: none; }
+.ib-tour-filetile .ib-tft-t { min-width: 0; display: flex; flex-direction: column; }
+.ib-tour-filetile .ib-tft-t b { font-weight: 600; font-size: var(--ib-fs-14, 14px); }
+.ib-tour-filetile .ib-tft-t span { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tour-filetile .ib-tft-o { margin-left: auto; font-size: var(--ib-fs-13, 13px); font-weight: 600; color: var(--primary); }
+.ib-tour-gal { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.pn-inbox .ib-tour-gal button { flex: 1 1 240px; max-width: 360px; text-align: left; border-radius: 9px; }
+.ib-tour-gal img { width: 100%; aspect-ratio: 1.6; object-fit: cover; object-position: top left; border-radius: 8px; box-shadow: 0 0 0 1px var(--border); display: block; }
+.ib-tour-gal .ib-kd { display: block; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); margin-top: 4px; }
+.ib-tour-gal .ib-tg-n { font-size: var(--ib-fs-13, 13px); font-weight: 550; margin-top: 6px; display: block; }
+
+/* The picture viewer (the file viewer's stand-in for the tour's pictures). */
+.ib-tour-viewer { position: fixed; inset: 0; z-index: 80; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: color-mix(in oklch, var(--background) 92%, black); color: var(--foreground); }
+.ib-tour-viewer header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: var(--ib-fs-13-5, 13.5px); min-width: 0; }
+.ib-tour-viewer header b { font-weight: 600; flex: none; }
+.ib-tour-viewer header .ib-mut { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-viewer header .ib-sp { flex: 1; }
+.ib-tour-viewer .ib-tv-stage { display: grid; place-items: center; overflow: auto; padding: 20px; min-height: 0; }
+.ib-tour-viewer .ib-tv-stage img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 0 0 1px var(--border); }
+.ib-tour-viewer footer { display: flex; justify-content: center; gap: 10px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+
+/* The mock beside the thread. */
+.ib-tour-file { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; flex: 1 1 auto; background: var(--card); border-radius: var(--ib-lr-pane, 10px); box-shadow: var(--ib-pane-shadow, 0 0 0 1px var(--border)); overflow: hidden; }
+.ib-tour-file header { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); min-width: 0; }
+.ib-tour-file .ib-tf-n { font-weight: 600; font-size: var(--ib-fs-14, 14px); flex: none; }
+.ib-tour-file .ib-tf-from { font-size: var(--ib-fs-12-5, 12.5px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-file header .ib-sp { flex: 1; }
+.ib-tour-file iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--background); }
+
+/* The entry screen: connecting is a first-class path. */
+.pn-inbox .ib-empty.ib-te-empty { max-width: 1180px; }
+.ib-te-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 900px; }
+.ib-te-card { display: flex; flex-direction: column; border-radius: 12px; background: var(--card); box-shadow: 0 0 0 1px var(--border), var(--card-shadow, none); overflow: hidden; }
+.ib-te-paths .ib-te-card { box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 35%, var(--border)), var(--card-shadow, none); }
+.ib-te-pic { position: relative; aspect-ratio: 16 / 8; background: #111; overflow: hidden; }
+.ib-te-pic img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+.ib-te-time { position: absolute; left: 10px; bottom: 10px; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; background: color-mix(in oklch, black 62%, transparent); color: white; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; }
+.ib-te-marks { display: flex; align-items: center; justify-content: center; gap: 14px; background: color-mix(in oklch, var(--primary) 8%, var(--muted)); }
+.ib-te-mk { position: relative; display: inline-flex; }
+.ib-te-mk .ib-mk.ib-big { width: var(--ib-mark-44); height: var(--ib-mark-44); border-radius: var(--ib-mark-44-r); background: var(--card); }
+.ib-te-mk .ib-mk.ib-big > svg, .ib-te-mk .ib-mk.ib-big > img { width: var(--ib-mark-44-g); height: var(--ib-mark-44-g); }
+.ib-te-mk[data-ready]::after { content: ""; position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--card); background: var(--muted-foreground); }
+.ib-te-mk[data-ready="true"]::after { background: var(--success); }
+.ib-te-marks .ib-te-count { background: var(--card); color: var(--foreground); box-shadow: 0 0 0 1px var(--border); }
+.ib-te-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px 18px 18px; flex: 1; }
+.pn-inbox .ib-te-body h3 { margin: 0; font-size: var(--ib-fs-16, 16px); font-weight: 650; }
+.ib-te-body p { margin: 0 0 6px; color: var(--muted-foreground); line-height: 1.5; font-size: var(--ib-fs-13-5, 13.5px); flex: 1; }
+.ib-tour-again, .ib-wn-tour { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.pn-inbox .ib-tour-again .ib-lnk, .pn-inbox .ib-wn-tour .ib-lnk { display: inline; margin: 0; font-size: inherit; position: relative; }
+.ib-wn-tour { margin: 18px 0 0; }
+.ib-tour-lead { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.pn-inbox .ib-tour-lead svg.ib-ic { color: var(--success); }
+.ib-tour-notified { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: var(--ib-fs-13-5, 13.5px); }
+.pn-inbox .ib-tour-notified svg.ib-ic { color: var(--success); }
+.ib-tour-notify-again { margin: 4px 0 12px; }
+
+/* A phone (PHONE_QUERY in phone.ts): one screen at a time, 44 px targets, sheets that never cover their target. */
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox[data-tour] { --ib-tour-bar-h: 52px; }
+  .ib-tour-bar { padding: 4px 10px; gap: 8px; }
+  .ib-tour-long { display: none; }
+  .pn-inbox .ib-tour-exit, .pn-inbox .ib-tour-chip { height: 44px; }
+  .pn-inbox .ib-tour-chip { padding: 0 10px; }
+  .ib-tour-coach { left: 10px; right: 10px; width: auto; max-width: none; bottom: calc(10px + env(safe-area-inset-bottom)); top: auto; }
+  .ib-tour-coach[data-at="top"] { top: calc(var(--ib-tour-bar-h, 52px) + 8px); bottom: auto; }
+  .pn-inbox .ib-tc-next, .pn-inbox .ib-tc-back { height: 44px; min-width: 44px; }
+  .ib-te-paths { grid-template-columns: minmax(0, 1fr); }
+  .ib-te-pic { aspect-ratio: 16 / 6; }
+  .pn-inbox .ib-te-body .ib-btn { height: 44px; width: 100%; justify-content: center; }
+  .pn-inbox .ib-tour-filetile { max-width: none; min-height: 56px; }
+  .pn-inbox .ib-tour-gal button { flex-basis: 100%; max-width: none; }
+  .pn-inbox .ib-tour-again .ib-lnk::after, .pn-inbox .ib-wn-tour .ib-lnk::after { content: ""; position: absolute; inset: -12px -6px; }
+  .pn-inbox .ib-tour-viewer footer .ib-btn { height: 44px; }
+  .pn-inbox .ib-tour-viewer header .ib-iconbtn { width: 44px; height: 44px; }
+  .ib-tour-viewer header .ib-mut { display: none; }
+  .ib-tour-file .ib-tf-from { display: none; }
+}
+/* The tour thread's controls that do nothing in the tour (Mark read, Archive, Reply): drawn quiet, still focusable, their tooltip says why. */
+.pn-inbox [data-tour-thread] button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.pn-inbox [data-tour-thread] button[aria-disabled="true"]:hover { background: none; }

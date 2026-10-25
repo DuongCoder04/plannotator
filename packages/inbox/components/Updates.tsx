@@ -512,12 +512,19 @@ export function WhatsNewPage({
   update,
   onBack,
   onUpdate,
+  onTakeTour,
 }: {
   model: WhatsNewModel | null;
   error: string | null;
   update: InboxHealth['update'];
   onBack: () => void;
   onUpdate: () => void;
+  /**
+   * The quiet line under the notes (approval "inbox-onboarding-tour",
+   * returning users: no dialog): "New: a 2-minute tour…". The window passes
+   * it while the tour was never taken. Absent: no line.
+   */
+  onTakeTour?: () => void;
 }) {
   const blocks = useMemo(() => parseMarkdownToBlocks(model?.notes ?? '', { frontmatter: false }), [model?.notes]);
   // The notes' images load from the copies the Inbox saved (never from GitHub:
@@ -605,6 +612,14 @@ export function WhatsNewPage({
           </div>
         ) : (
           model && <p className="ib-sum">The release has no notes. They are on GitHub.</p>
+        )}
+        {model && onTakeTour && (
+          <p className="ib-wn-tour" data-whats-new-tour="">
+            New: a 2-minute tour of how we built the Inbox with the Inbox.{' '}
+            <button type="button" className="ib-lnk" onClick={onTakeTour}>
+              Take the tour
+            </button>
+          </p>
         )}
         {/* The skipped releases come after this release's notes, folded when there are more than a few (decision 7). */}
         {model && model.skipped.length > 0 && <SkippedReleases since={model.since ?? model.current} skipped={model.skipped} />}

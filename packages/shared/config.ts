@@ -329,6 +329,13 @@ export interface PlannotatorConfig {
    */
   inboxTextSize?: number;
   /**
+   * The Inbox's onboarding tour, per machine (approval "inbox-onboarding-tour"):
+   * when it was started, finished or skipped, and whether the first real thread
+   * offers notifications once more. Written by the server only, through POST
+   * /api/inbox/settings `{ tour }`.
+   */
+  inboxTour?: { version?: number; seen_at?: string | null; finished_at?: string | null; skipped_at?: string | null; notify_again?: boolean };
+  /**
    * Experimental features, each off unless switched on (owner, approval
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;

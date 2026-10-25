@@ -17,6 +17,7 @@
  * with a contact sheet.
  */
 
+import { markTourDecided } from '../helpers/tour-decided';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -100,6 +101,8 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   // PATH: this world's own bin and the system's tools, never the agents installed on the machine running the
   // spec (the first-run screen speaks about the agents it finds: none here).
   const env = { PATH: `${binDir}:/usr/bin:/bin`, HOME: home, PLANNOTATOR_DATA_DIR: dataDir };
+  // The first-run connect screen, not the tour's entry screen (inbox-tour.spec.ts proves that one).
+  markTourDecided(dataDir);
   const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
   expect(started.status, started.stderr).toBe(0);
   const url = started.stdout.trim();
@@ -208,12 +211,14 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   await page.mouse.move(0, 0);
   await shot('1.2-first-run-first-step');
 
-  // One rhythm: the same gap between the heading, the step, Try it and the fold.
+  // One rhythm: the same gap between the heading, the step, Try it, the fold and the tour's quiet line
+  // (the tour was decided before this Inbox started: "Take the 2-minute tour" ends the screen).
+  await expect(empty.locator('[data-tour-again]')).toBeVisible();
   const boxes = await empty.evaluate((el) =>
     [...el.children].filter((child) => !child.classList.contains('ib-sr')).map((child) => child.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })),
   );
   const gaps = boxes.slice(1).map((box, i) => Math.round(box.top - boxes[i]!.bottom));
-  expect(gaps.length).toBe(3);
+  expect(gaps.length).toBe(4);
   expect(new Set(gaps).size).toBe(1);
 
   // Every other agent or editor, folded at the end: the picker without Plannotator's three hosts.
