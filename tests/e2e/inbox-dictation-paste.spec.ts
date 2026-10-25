@@ -500,6 +500,15 @@ test('the workaround on, the bug not hit: a dictation is inserted exactly once (
 test('an engine without the bug (this Chromium is neither 155 nor 156): the browser pastes, the page does not', async () => {
   const p = await context.newPage();
   try {
+    // Playwright 1.64 ships Chromium 156: on macOS that engine HAS the bug, so
+    // the workaround is on (chromiumPasteBugAffected) and this premise does not
+    // hold. Linux (CI) and any other version keep the native path.
+    const affected = await p.evaluate(() => {
+      const nav = navigator as Navigator & { userAgentData?: { brands?: { brand: string; version: string }[]; platform?: string } };
+      const major = Number(nav.userAgentData?.brands?.find((b) => b.brand === 'Chromium')?.version ?? /Chrome\/(\d+)/.exec(nav.userAgent)?.[1]);
+      return (major === 155 || major === 156) && /^mac/i.test(nav.userAgentData?.platform || nav.platform);
+    });
+    test.skip(affected, 'this Chromium is 155 or 156 on macOS, where the workaround is on by design');
     await recordPasteInputs(p, { drop: false, force: false });
     await p.goto(`${url}#thread=${threadId}`);
     await openReply(p);
