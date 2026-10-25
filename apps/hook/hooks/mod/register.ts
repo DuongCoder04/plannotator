@@ -476,7 +476,13 @@ export function register(on: On) {
     }
   })
 
-  on('classic.PermissionRequest', async ($: Engine, e: any, next: Next) => {
+  // Matched on ExitPlanMode alone (#2159): a plugin seated above that sends
+  // classic.PermissionRequest past this mod (cc-plugin-sec-default) makes the
+  // engine print "its classic.PermissionRequest hook was skipped" for every
+  // tool the hook is selected for. Unmatched, that was every permission prompt
+  // of every tool. Matched, the engine never selects it for another tool, and
+  // a skip during a plan approval is answered by the record plan.ts writes.
+  on('classic.PermissionRequest', { tool_name: PLAN_TOOL }, async ($: Engine, e: any, next: Next) => {
     const instance = mod
     // A subagent's ExitPlanMode keeps the classic hook (its tool.call was not ours).
     if (!instance || instance.isDisposed || e.tool_name !== PLAN_TOOL || e.agent_id) return next(e)

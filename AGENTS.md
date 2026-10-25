@@ -1054,7 +1054,12 @@ the plan (the plan file when it is an absolute `.md` regular file within the
    with `updatedInput.plan` = the approved text (#1670's "execute what was
    approved") and `setMode` to the reviewer's permission mode. Modules sit above
    the settings hooks in that chain, so the plugin's own PermissionRequest
-   command hook never runs: no second review. A different plan opens a new
+   command hook never runs: no second review. The mod's
+   `classic.PermissionRequest` hook is registered with the matcher
+   `{ tool_name: "ExitPlanMode" }` (#2159), so the engine never selects it for
+   another tool's permission prompt; unmatched, a guard seated above made
+   Claude Code print "its classic.PermissionRequest hook was skipped" at the
+   first permission prompt of every session. A different plan opens a new
    review instead. **When a plugin seated above sends
    `classic.PermissionRequest` past the mod** (Claude Code's built-in guard
    `cc-plugin-sec-default` does on Team/Enterprise accounts, #2007; the
