@@ -34,7 +34,7 @@ import { threadArtifacts } from '../artifacts';
 import { stepsOf } from '../stepping';
 import { formatInboxVideoTime, readInboxVideoTime } from '@plannotator/core/inbox-types';
 import { plural } from '../format';
-import { forgetTourMarkups, preloadTourAssets, tourAssetLoaded } from './assets';
+import { forgetTourMarkups, preloadTourAssets, tourAssetNameOf } from './assets';
 import { tourFileSource } from './fileSource';
 import { sentAnswersOf } from '../sentReply';
 import {
@@ -879,8 +879,8 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
   // A choice's magnifier opens the picture large; the viewer can pick it.
   const onImage = useCallback(
     (src: string, alt: string) => {
-      const name = decodeURIComponent(src.split('/').pop() ?? '');
-      const choice = question?.question.parsed.choices.find((c) => c.image?.src === name || tourAssetUrl(c.image?.src ?? '') === src);
+      const name = tourAssetNameOf(src);
+      const choice = question?.question.parsed.choices.find((c) => c.image?.src === name);
       const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const pickable = choice && openThread === TOUR_THREAD && !state.sent;
       const asset = choice?.image?.src ?? name;
@@ -1467,10 +1467,8 @@ function TourThreadPane({
 
 /** A tour image's src back to the name the body wrote (`built-a1.webp`): its blob URL or its asset route. */
 function inlineRefOf(src: string): string | null {
-  const name = /\/api\/inbox\/tour\/assets\/([a-z0-9][a-z0-9.-]*\.webp)(?:[?#]|$)/.exec(src)?.[1];
-  if (name) return name;
-  for (const candidate of ['built-a1.webp', 'built-a2.webp']) if (tourAssetLoaded(candidate) && tourAssetUrl(candidate) === src) return candidate;
-  return null;
+  const name = tourAssetNameOf(src);
+  return /^[a-z0-9][a-z0-9.-]*\.webp$/.test(name) ? name : null;
 }
 
 /** While the tour loads (its content, once per page): a quiet heading; Exit is in the bar above. */

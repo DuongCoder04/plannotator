@@ -9,6 +9,7 @@ import { HostMark, Icon } from '../icons';
 import { SidebarTrigger } from '../shell/sidebar';
 import { connectPlan, PLUGIN_HOSTS } from '../connectSteps';
 import { tourAssetUrl } from './model';
+import { TourFitPicture, TourFitText } from './Fit';
 
 export interface TourEntryModel {
   /** The agents' marks, each with whether it reaches the Inbox (null: unknown here, the tailnet page). */
@@ -54,6 +55,15 @@ export function TourEntry({ model, onStart, onConnect }: { model: TourEntryModel
       <div className="ib-lbody">
         <div className="ib-empty ib-te-empty" data-tour-entry="">
           <h2 tabIndex={-1}>Two ways to start</h2>
+          {/* The bento: how the Inbox fits with your agents, wide on top, then the two paths. */}
+          <section className="ib-te-card ib-te-fit" aria-labelledby="ib-te-fit-h" data-tour-fit="">
+            <div className="ib-te-fit-pic">
+              <TourFitPicture />
+            </div>
+            <div className="ib-te-body">
+              <TourFitText id="ib-te-fit-h" />
+            </div>
+          </section>
           <div className="ib-te-paths">
             <section className="ib-te-card ib-te-tour" aria-labelledby="ib-te-tour-h">
               <div className="ib-te-pic">
