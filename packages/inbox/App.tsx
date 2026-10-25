@@ -70,7 +70,7 @@ import { TOUR_FIRST_QUESTION_PROMPT, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCa
 import { ThreadWait } from './components/ThreadWait';
 import { AgentNoteDialog } from './components/AgentNoteDialog';
 import { cardReport, noteQuestionRows } from './agents';
-import type { InboxAgentRow, InboxAgentsModel, InboxConnectReport } from '@plannotator/core/inbox-types';
+import type { InboxAgentRow, InboxAgentsModel, InboxConnectReport, InboxTourChange } from '@plannotator/core/inbox-types';
 import { SettingsPage } from './components/Settings';
 import { ArchivedBlock } from './components/Archived';
 import { NotificationAsk, TabSleptLine } from './components/NotificationAsk';
@@ -281,7 +281,10 @@ function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
   if (route.artifacts && (route.thread !== readRoute().thread || route.msg)) route = { ...route, artifacts: false };
   const hash = hashOf(route);
   const next = hash || window.location.pathname + window.location.search;
-  if (options.replace) {
+  // Leaving the tour takes the tour's own entry, whatever leads out of it (a sidebar row, a search result, a link),
+  // so the browser's Back never reopens #tour=N.
+  const leavingTour = readRoute().page === 'tour' && route.page !== 'tour';
+  if (options.replace || leavingTour) {
     if (hash !== currentHash()) window.history.replaceState(window.history.state, '', next);
   } else {
     // Each entry remembers the one it was opened from, so a phone's way back can be the browser's own Back (closeTo).
@@ -2378,8 +2381,9 @@ function Inbox() {
     // The tour ended: its start point is forgotten with it.
     tourReturn.current = '';
     tourStartedHere.current = false;
-    // Left by the browser's Back: the same as Exit (the entry screen does not come back).
-    if (!tourEnding.current) saveTour({ skipped: true });
+    // Left by the browser's Back (or anything else not through endTour): the same as Exit there, finished on
+    // step 6 (the entry screen does not come back).
+    if (!tourEnding.current) saveTour(tourEndRecord(tourState.step === TOUR_STEPS));
     tourEnding.current = false;
     tourSynced.current = null;
     dispatchTourRaw({ type: 'goto', step: 1, realAnswer: tourReal });
@@ -2398,18 +2402,22 @@ function Inbox() {
     saveTour({ seen: true });
     go({ page: 'tour', project: null, thread: null, step: 1 });
   };
-  const endTour = (kind: 'exit' | 'finish' | 'arrivals' | 'settings') => {
+  /** What ending the tour records: finished once the person reached step 6, skipped before. */
+  const tourEndRecord = (finished: boolean): InboxTourChange =>
+    finished
+      ? { finished: true, notify_again: !(notifications.permission === 'granted' && settings?.notifications.enabled === true) }
+      : { skipped: true };
+  /**
+   * Ends the tour: `kind` is what it records, `to` where it goes. A place named (the chip's thread, Settings, a
+   * sidebar row on step 6) takes the tour's own entry. Without one it goes back to where the tour was started, as
+   * the browser's Back when that is the entry under the tour's own; else (a link or a reload) to that place, again
+   * in the tour's entry. Either way a later Back never reopens #tour=N.
+   */
+  const endTour = (kind: 'exit' | 'finish', to?: Route) => {
     tourEnding.current = true;
-    const notifying = notifications.permission === 'granted' && settings?.notifications.enabled === true;
-    saveTour(kind === 'finish' ? { finished: true, notify_again: !notifying } : { skipped: true });
-    const thread = kind === 'arrivals' ? tourArrivals.thread : null;
-    // The chip and the tour sidebar's Settings lead somewhere new: that place takes the tour's own entry, so Back
-    // goes to the screen before the tour, never into it again.
-    if (kind === 'arrivals') writeRoute({ page: 'inbox', project: null, thread }, { replace: true });
-    else if (kind === 'settings') writeRoute({ page: 'settings', project: null, thread: null }, { replace: true });
-    // Back to where the tour was started (Settings stays Settings), as the browser's Back when that is the entry
-    // under the tour's own, so a later Back never reopens #tour=N; else (a link or a reload) a new entry.
-    else if (!backTo(tourReturn.current)) go(routeOf(tourReturn.current));
+    saveTour(tourEndRecord(kind === 'finish'));
+    if (to) writeRoute(to, { replace: true });
+    else if (!backTo(tourReturn.current)) writeRoute(routeOf(tourReturn.current), { replace: true });
     showToast(
       kind === 'finish'
         ? { icon: 'check', lead: 'Tour finished', detail: 'Your Inbox is as you left it', speech: 'Tour finished. Your Inbox is as you left it.' }
@@ -2458,6 +2466,8 @@ function Inbox() {
   }, [tourCoachKey]);
   // Step 6 is real: Back in the tour bar has no step to go to, and Finish ends it.
   const tourStep6 = tourOn && tourState.step === TOUR_STEPS;
+  /** A sidebar row: on step 6 (the real sidebar shows there) it ends the tour, finished, in the tour's own entry. */
+  const leave = (to: Route) => (tourStep6 ? endTour('finish', to) : go(to));
   /** Step 6's notifications line: asked on the click only; hidden for the step by Not now (the first real thread asks once more). */
   const [tourAskHidden, setTourAskHidden] = useState(false);
   // Step 6 is the person's own screen: its heading takes focus (the coach card is gone) and the change is said.
@@ -2671,7 +2681,8 @@ function Inbox() {
               movedFrom={null}
               onTurnOn={() => void notifications.turnOn()}
               onNotNow={() => setTourAskHidden(true)}
-              onSettings={() => endTour('exit')}
+              // The last step: Settings → General, where notifications are, and the tour counts as finished.
+              onSettings={() => endTour('finish', { page: 'settings', project: null, thread: null, section: 'general' })}
             />
           ) : notifications.permission === 'granted' && settings?.notifications.enabled ? (
             <div className="ib-tour-notified" data-tour-notified="">
@@ -3011,7 +3022,7 @@ function Inbox() {
           step={tourFixture ? tourState.step : (route.step ?? 1)}
           phone={phone}
           arrivals={tourArrivals.count}
-          onArrivals={() => endTour('arrivals')}
+          onArrivals={() => endTour('exit', { page: 'inbox', project: null, thread: tourArrivals.thread })}
           onExit={() => endTour(tourStep6 ? 'finish' : 'exit')}
         />
       )}
@@ -3034,7 +3045,7 @@ function Inbox() {
               fixture={tourFixture}
               state={tourState}
               dispatch={dispatchTour}
-              onSettings={() => endTour('settings')}
+              onSettings={() => endTour('exit', { page: 'settings', project: null, thread: null })}
             />
           ) : (
           <Sidebar
@@ -3055,23 +3066,23 @@ function Inbox() {
             onDecide={() => openDecide()}
             pins={pinRows}
             openThreadId={route.thread}
-            onOpenPin={openPinned}
+            onOpenPin={(row) => (tourStep6 ? endTour('finish', { page: 'inbox', project: null, thread: row.thread_id }) : openPinned(row))}
             onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
-            onDrafts={() => go({ page: 'drafts', project: null, thread: null })}
+            onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
-            onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : go({ page: 'inbox', project: null, thread: null }))}
+            onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>
-              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : go({ page: 'inbox', project: projectId, thread: null })
+              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
             }
             refreshes={route.page === 'inbox' && route.thread === null}
             refreshSpin={refreshSpin}
-            onSettings={() => go({ page: 'settings', project: null, thread: null })}
+            onSettings={() => leave({ page: 'settings', project: null, thread: null })}
             onUpdate={pressUpdate}
-            onWhatsNew={openWhatsNew}
+            onWhatsNew={(version) => (tourStep6 ? endTour('finish', { page: 'whats-new', project: null, thread: null, version }) : openWhatsNew(version))}
             // Not on a page opened over the tailnet: Settings → Agents is local only there.
             restartClaudeCode={settings && settings.via !== 'tailnet' ? restartClaudeCode : 0}
-            onRestartSessions={() => go({ page: 'settings', project: null, thread: null, section: 'agents' })}
+            onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
           />
           )

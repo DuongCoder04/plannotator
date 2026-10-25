@@ -21,6 +21,9 @@
  *  - Leaving by the chip or the tour sidebar's Settings: Back never reopens
  *    the tour; a tour reached by a link exits to the Inbox, not to an earlier
  *    tour's start point.
+ *  - Step 6: How to allow opens Settings → General and the real sidebar's rows
+ *    end the tour, both recorded as finished; Exit after a reload goes to the
+ *    Inbox; Back never reopens the tour in any of them.
  *  - A pick other than the real answer: replayed with an honest note.
  *  - The fixture routes: read only, embedded in the binary, sandboxed.
  *
@@ -620,6 +623,77 @@ test('leaving by the chip or the tour sidebar’s Settings: Back never reopens t
   // The person's own Inbox list (a thread that arrived during the tour may wait behind "N new").
   await expect(page.locator(`[data-thread-id="${first}"]`).first()).toBeVisible();
   await focusKept(page);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('step 6 and after a reload: every way out leaves the tour behind; from step 6 it counts as finished, How to allow opens Settings → General', async ({ browser }) => {
+  const w = startWorld('step6');
+  const first = await agentWrites(w, 'A first real message.', 'First one');
+  const errors: string[] = [];
+  // The browser blocked notifications for this address: step 6 offers How to allow.
+  const { context, page } = await open(browser, w, errors);
+  await context.addInitScript(() => {
+    if (window.Notification) Object.defineProperty(window.Notification, 'permission', { get: () => 'denied' });
+  });
+  await page.reload();
+  const fromSettings = async () => {
+    await page.goto(`${w.url}#settings/general`);
+    await page.locator('[data-settings-take-tour]').click();
+    await expect(page).toHaveURL(/#tour=1$/);
+  };
+  const toStep6 = async () => {
+    await page.locator('[data-thread-id="tour-vscode"]').first().click();
+    await page.locator('[data-tour-message="ask"] [data-question-tile] label').nth(2).click();
+    await page.locator('[data-tour-send]').click();
+    await expect(page.locator('[data-tour-next]')).toBeVisible({ timeout: 10_000 });
+    await page.locator('[data-tour-next]').click();
+    await page.locator('[data-tour-mock-tile]').click();
+    await page.locator('[data-tour-next]').click();
+    await expect(step(page)).toHaveAttribute('aria-label', 'Step 6 of 6');
+  };
+  const neverTheTour = async () => {
+    await page.goBack();
+    await page.waitForTimeout(400);
+    await expect(page).not.toHaveURL(/#tour/);
+    await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  };
+  const finishedAt = () => config(w).inboxTour?.finished_at ?? null;
+
+  // How to allow: Settings → General, recorded as finished; Back never reopens the tour.
+  await fromSettings();
+  await toStep6();
+  const before = finishedAt();
+  await page.getByRole('button', { name: 'How to allow' }).click();
+  await expect(page).toHaveURL(/#settings\/general$/);
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await expect.poll(finishedAt).not.toBe(before);
+  await focusKept(page);
+  await neverTheTour();
+
+  // Step 6's real sidebar: its Inbox row and its Settings row end the tour (finished) in the tour's own entry.
+  for (const row of ['[data-inbox-nav]', '.ib-setrow .ib-nav']) {
+    await fromSettings();
+    await toStep6();
+    const was = finishedAt();
+    await page.locator(row).first().click();
+    await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+    await expect(page).not.toHaveURL(/#tour/);
+    await expect.poll(finishedAt).not.toBe(was);
+    await neverTheTour();
+  }
+
+  // A reload forgets where the tour started: Exit goes to the Inbox, in the tour's own entry.
+  await fromSettings();
+  await page.locator('[data-thread-id="tour-vscode"]').first().click();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
+  await page.reload();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
+  await page.locator('[data-tour-exit="exit"]').click();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await expect(page.locator(`[data-thread-id="${first}"]`).first()).toBeVisible();
+  await focusKept(page);
+  await neverTheTour();
   expect(errors).toEqual([]);
   await context.close();
 });
