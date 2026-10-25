@@ -117,6 +117,12 @@ async function open(browser: Browser, w: World, errors: string[], options: Param
   const context = await browser.newContext({ viewport: DESKTOP, colorScheme: 'light', ...options });
   await context.addInitScript(recordNotifications);
   const page = await context.newPage();
+  // PLANNOTATOR_E2E_CPU_THROTTLE=6: a slow CI runner on a fast laptop (Chromium only).
+  const throttle = Number(process.env.PLANNOTATOR_E2E_CPU_THROTTLE ?? '');
+  if (throttle > 1 && browser.browserType().name() === 'chromium') {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: throttle });
+  }
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -198,8 +204,11 @@ async function focusKept(page: Page): Promise<string> {
       const el = document.activeElement;
       return !el || el === document.body ? 'body' : `${el.tagName.toLowerCase()} ${el.textContent?.trim().slice(0, 40) ?? ''}`;
     });
-  // Within a few frames of the change (the screen that took the control's place renders first).
-  await expect.poll(where, { timeout: 1500 }).not.toBe('body');
+  // Within a few frames of the change (the screen that took the control's place renders first), and still held a
+  // moment later: focus on a control that is about to go would pass the first look and then drop to the page.
+  await expect.poll(where, { timeout: 3000 }).not.toBe('body');
+  await page.waitForTimeout(600);
+  await expect.poll(where, { timeout: 3000 }).not.toBe('body');
   return where();
 }
 
@@ -570,7 +579,7 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
 
 test('leaving by the chip or the tour sidebar’s Settings: Back never reopens the tour; a tour reached by a link forgets an earlier start point', async ({ browser }) => {
   const w = startWorld('leave');
-  await agentWrites(w, 'A first real message.', 'First one');
+  const first = await agentWrites(w, 'A first real message.', 'First one');
   const errors: string[] = [];
   const { context, page } = await open(browser, w, errors);
   const fromSettings = async () => {
@@ -608,7 +617,9 @@ test('leaving by the chip or the tour sidebar’s Settings: Back never reopens t
   await page.locator('[data-tour-exit="exit"]').click();
   await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await expect(page).not.toHaveURL(/#settings/);
-  await expect(page.locator(`[data-thread-id="${arrived}"]`).first()).toBeVisible();
+  // The person's own Inbox list (a thread that arrived during the tour may wait behind "N new").
+  await expect(page.locator(`[data-thread-id="${first}"]`).first()).toBeVisible();
+  await focusKept(page);
   expect(errors).toEqual([]);
   await context.close();
 });

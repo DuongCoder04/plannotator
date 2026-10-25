@@ -2416,15 +2416,26 @@ function Inbox() {
         : { icon: 'check', lead: 'You left the tour', detail: 'Your Inbox is as it was', speech: 'You left the tour. Your Inbox is back as it was.' },
       4200,
     );
-    // Focus never drops to the page once the Inbox is back (tried for up to a second of frames, while the browser's
-    // Back lands and the screen redraws).
-    let tries = 0;
+    // Focus never drops to the page once the Inbox is back. The browser's Back lands, and the screen redraws, some
+    // frames later on a slow machine; until the tour's own screen is gone the control that was pressed still holds
+    // focus and is about to go, so nothing counts as landed before then. Tried for up to 3 s.
+    const until = performance.now() + 3000;
+    let settled = 0;
     const land = () => {
+      if (performance.now() > until) return;
+      if (document.querySelector('[data-tour-bar]')) {
+        requestAnimationFrame(land);
+        return;
+      }
       const active = document.activeElement;
-      if (active && active !== document.body && active.isConnected) return;
-      // Back where it was started: its own Take the tour (Settings, What's new); else the thread, the first-run heading, the list.
-      focusFirst(['[data-settings-take-tour]', '[data-whats-new-tour] button', 'section.ib-pane h2.ib-subject', '.ib-main .ib-empty h2', '.ib-main .ib-lbody [data-thread-id]']);
-      if (++tries < 60 && (!document.activeElement || document.activeElement === document.body)) requestAnimationFrame(land);
+      if (!active || active === document.body || !active.isConnected) {
+        // Back where it was started: its own Take the tour (Settings, What's new); else the thread, the first-run heading, the list.
+        focusFirst(['[data-settings-take-tour]', '[data-whats-new-tour] button', 'section.ib-pane h2.ib-subject', '.ib-main .ib-empty h2', '.ib-main .ib-lbody [data-thread-id]', '.ib-main h1']);
+      }
+      const now = document.activeElement;
+      // Landed: focus held over a few frames (a screen that is still drawing can take the element away again).
+      settled = now && now !== document.body && now.isConnected ? settled + 1 : 0;
+      if (settled < 5) requestAnimationFrame(land);
     };
     requestAnimationFrame(land);
   };
