@@ -2361,14 +2361,23 @@ function Inbox() {
   }, [tourOn, tourFixture, route.step, tourState.step, tourReal]);
   /** The tour is ending through its own controls (Exit, Finish, the chip), not the browser's Back. */
   const tourEnding = useRef(false);
+  /** The screen the tour was started from: Exit and Finish go back to it (the browser's Back when it is the entry under this one). */
+  const tourReturn = useRef('');
+  /** The tour was started from a screen of this page (Start, Take the tour); not set for a link or a reload. */
+  const tourStartedHere = useRef(false);
   const tourWasOn = useRef(false);
   useEffect(() => {
     if (tourOn) {
       tourWasOn.current = true;
+      // Reached by a link or a reload, not from a screen: no start point to go back to (never an earlier tour's).
+      if (!tourStartedHere.current) tourReturn.current = '';
       return;
     }
     if (!tourWasOn.current) return;
     tourWasOn.current = false;
+    // The tour ended: its start point is forgotten with it.
+    tourReturn.current = '';
+    tourStartedHere.current = false;
     // Left by the browser's Back: the same as Exit (the entry screen does not come back).
     if (!tourEnding.current) saveTour({ skipped: true });
     tourEnding.current = false;
@@ -2379,10 +2388,9 @@ function Inbox() {
     void refreshList(false).then((next) => next && flushNotifications(next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tourOn]);
-  /** The screen the tour was started from: Exit and Finish go back to it (the browser's Back when it is the entry under this one). */
-  const tourReturn = useRef('');
   const startTour = () => {
     tourReturn.current = routeRef.current.page === 'tour' ? '' : hashOf(routeRef.current);
+    tourStartedHere.current = true;
     dispatchTourRaw({ type: 'goto', step: 1, realAnswer: tourReal });
     tourSynced.current = 1;
     setTourArrivals({ count: 0, thread: null });
@@ -2395,8 +2403,10 @@ function Inbox() {
     const notifying = notifications.permission === 'granted' && settings?.notifications.enabled === true;
     saveTour(kind === 'finish' ? { finished: true, notify_again: !notifying } : { skipped: true });
     const thread = kind === 'arrivals' ? tourArrivals.thread : null;
-    if (kind === 'arrivals') go({ page: 'inbox', project: null, thread });
-    else if (kind === 'settings') go({ page: 'settings', project: null, thread: null });
+    // The chip and the tour sidebar's Settings lead somewhere new: that place takes the tour's own entry, so Back
+    // goes to the screen before the tour, never into it again.
+    if (kind === 'arrivals') writeRoute({ page: 'inbox', project: null, thread }, { replace: true });
+    else if (kind === 'settings') writeRoute({ page: 'settings', project: null, thread: null }, { replace: true });
     // Back to where the tour was started (Settings stays Settings), as the browser's Back when that is the entry
     // under the tour's own, so a later Back never reopens #tour=N; else (a link or a reload) a new entry.
     else if (!backTo(tourReturn.current)) go(routeOf(tourReturn.current));

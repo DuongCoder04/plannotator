@@ -18,6 +18,9 @@
  *    not come back.
  *  - A real message mid-tour: a chip in the tour bar, no notification, no
  *    interruption; the chip leaves the tour to it.
+ *  - Leaving by the chip or the tour sidebar's Settings: Back never reopens
+ *    the tour; a tour reached by a link exits to the Inbox, not to an earlier
+ *    tour's start point.
  *  - A pick other than the real answer: replayed with an honest note.
  *  - The fixture routes: read only, embedded in the binary, sandboxed.
  *
@@ -561,6 +564,51 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
   await page.locator('[data-tour-arrivals]').click();
   await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`thread=${arrived}`));
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('leaving by the chip or the tour sidebar’s Settings: Back never reopens the tour; a tour reached by a link forgets an earlier start point', async ({ browser }) => {
+  const w = startWorld('leave');
+  await agentWrites(w, 'A first real message.', 'First one');
+  const errors: string[] = [];
+  const { context, page } = await open(browser, w, errors);
+  const fromSettings = async () => {
+    await page.goto(`${w.url}#settings/general`);
+    await page.locator('[data-settings-take-tour]').click();
+    await expect(page).toHaveURL(/#tour=1$/);
+  };
+  const neverTheTour = async () => {
+    await page.goBack();
+    await page.waitForTimeout(400);
+    await expect(page).not.toHaveURL(/#tour/);
+    await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  };
+
+  // The chip: the new thread takes the tour's entry; Back goes to Settings, where the tour started.
+  await fromSettings();
+  const arrived = await agentWrites(w, 'Build finished.', 'Build finished');
+  await page.locator('[data-tour-arrivals]').click();
+  await expect(page).toHaveURL(new RegExp(`thread=${arrived}`));
+  await neverTheTour();
+
+  // The tour sidebar's Settings: the same.
+  await fromSettings();
+  await page.locator('.ib-setrow .ib-nav').click();
+  await expect(page).toHaveURL(/#settings$/);
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await neverTheTour();
+
+  // A tour reached by a link after one started from Settings: Exit goes to the Inbox, not to that old start point.
+  await fromSettings();
+  await page.locator('[data-tour-exit="exit"]').click();
+  await expect(page).toHaveURL(/#settings\/general$/);
+  await page.goto(`${w.url}#tour=2`);
+  await expect(page.locator('[data-tour-coach]')).toHaveAttribute('data-tour-coach', '2');
+  await page.locator('[data-tour-exit="exit"]').click();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await expect(page).not.toHaveURL(/#settings/);
+  await expect(page.locator(`[data-thread-id="${arrived}"]`).first()).toBeVisible();
   expect(errors).toEqual([]);
   await context.close();
 });

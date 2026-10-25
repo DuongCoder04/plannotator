@@ -242,6 +242,23 @@ export interface QuestionBlockProps {
   pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
 }
 
+/** The picture tile's label (`pictureBadge`): a small dark chip over the picture's top-left corner. */
+const PICTURE_BADGE_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  left: 6,
+  top: 6,
+  zIndex: 1,
+  pointerEvents: 'none',
+  borderRadius: 4,
+  background: 'rgb(0 0 0 / 0.6)',
+  color: 'white',
+  padding: '0 6px',
+  fontSize: 10.5,
+  fontWeight: 600,
+  lineHeight: '18px',
+  letterSpacing: '0.02em',
+};
+
 /** A host's status tag (`statusLabel`): its words, and the tone of one of the card's own tags (default `open`). */
 export interface QuestionStatusLabel {
   label: string;
@@ -846,14 +863,16 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                       >
                         {choice.image && (
                           <span
-                            className="annotation-exclude select-none relative block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
+                            className="annotation-exclude select-none block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
+                            style={{ position: 'relative' }}
                             data-pinpoint-ignore=""
                           >
                             {(() => {
                               const badge = pictureBadge?.({ label: choice.label, image: choice.image });
                               return badge ? (
                                 <span
-                                  className="pointer-events-none absolute left-1.5 top-1.5 z-[1] rounded bg-black/60 px-1.5 text-[10.5px] font-semibold leading-[18px] tracking-[0.02em] text-white"
+                                  // Inline, not utility classes: no new class reaches the CSS of hosts that never draw it (the guides.show viewer).
+                                  style={PICTURE_BADGE_STYLE}
                                   data-question-picture-badge=""
                                 >
                                   {badge}
