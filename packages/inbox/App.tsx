@@ -2389,13 +2389,16 @@ function Inbox() {
         : { icon: 'check', lead: 'You left the tour', detail: 'Your Inbox is as it was', speech: 'You left the tour. Your Inbox is back as it was.' },
       4200,
     );
-    // Focus never drops to the page: the screen's heading takes it once the Inbox is back.
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        if (document.activeElement && document.activeElement !== document.body && document.activeElement.isConnected) return;
-        focusFirst(['section.ib-pane h2.ib-subject', '.ib-main .ib-empty h2', '.ib-main .ib-lhead h1', '.ib-main .ib-lhead-h']);
-      }),
-    );
+    // Focus never drops to the page: the thread, the first-run heading or the list's first row takes it once
+    // the Inbox is back (tried for a few frames, while the list redraws).
+    let tries = 0;
+    const land = () => {
+      const active = document.activeElement;
+      if (active && active !== document.body && active.isConnected) return;
+      focusFirst(['section.ib-pane h2.ib-subject', '.ib-main .ib-empty h2', '.ib-main .ib-lbody [data-thread-id]']);
+      if (++tries < 20 && (!document.activeElement || document.activeElement === document.body)) requestAnimationFrame(land);
+    };
+    requestAnimationFrame(land);
   };
   const tourCoachCard = tourOn && tourFixture && tourState.step < TOUR_STEPS ? tourCoach(tourState, { developer: tourFixture.developer, agent: 'Claude Code' }) : null;
   const tourCoachKey = tourCoachCard ? `${tourState.step}:${tourCoachCard.key}` : null;

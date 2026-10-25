@@ -17,6 +17,7 @@
  * with a contact sheet.
  */
 
+import { markTourDecided } from '../helpers/tour-decided';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -100,6 +101,8 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   // PATH: this world's own bin and the system's tools, never the agents installed on the machine running the
   // spec (the first-run screen speaks about the agents it finds: none here).
   const env = { PATH: `${binDir}:/usr/bin:/bin`, HOME: home, PLANNOTATOR_DATA_DIR: dataDir };
+  // The first-run connect screen, not the tour's entry screen (inbox-tour.spec.ts proves that one).
+  markTourDecided(dataDir);
   const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
   expect(started.status, started.stderr).toBe(0);
   const url = started.stdout.trim();
