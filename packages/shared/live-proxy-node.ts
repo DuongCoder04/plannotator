@@ -33,7 +33,7 @@
  * proxy origin.
  */
 
-import { getLiveProxyPortSelection, isLiveProxyAddressInUseError, LiveProxyPortInUseError } from "./live-proxy-port";
+import { createLiveProxyPortAttempts, getLiveProxyPortSelection } from "./live-proxy-port";
 import { createServer, request as httpRequest } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
@@ -388,6 +388,7 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
   server.requestTimeout = 0;
 
   const selection = getLiveProxyPortSelection();
+  const attempts = createLiveProxyPortAttempts(selection);
   let listening = false;
   for (const candidate of selection.ports) {
     try {
@@ -408,10 +409,10 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
       listening = true;
       break;
     } catch (error) {
-      if (!isLiveProxyAddressInUseError(error)) throw error;
+      attempts.failed(candidate, error);
     }
   }
-  if (!listening) throw new LiveProxyPortInUseError(selection);
+  if (!listening) throw attempts.exhausted();
 
   const address = server.address();
   if (!address || typeof address === "string") {
