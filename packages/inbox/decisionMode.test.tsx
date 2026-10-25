@@ -701,6 +701,31 @@ test.skipIf(!hasDom)('H2: the cards of a group whose reply is on its way are rea
   await until(() => dialog()!.querySelector('[data-decision-sent]') !== null, 'the card reads Sent');
 }, 30_000);
 
+test.skipIf(!hasDom)('the Sending lock clears on the card on screen once its reply fails, without moving the queue', async () => {
+  let release!: () => void;
+  const landed = new Promise<void>((r) => (release = r));
+  intercept = async (path) => {
+    if (!path.endsWith('/reply')) return null;
+    await landed;
+    return { status: 500, body: { error: 'The Inbox could not write.', code: 'error' } };
+  };
+  const el = await renderApp();
+  await openDecide(el);
+  await goTo('Ship the new flag off by default?');
+  choose('Yes');
+  await until(() => chipB().querySelector('[data-decision-hold]') !== null, "Codex's Hold");
+  act(() => button(chipB().querySelector('[data-decision-hold]')!, 'Hold').click());
+  act(() => button(chipB().querySelector('[data-decision-held]')!, 'Send').click());
+  await goTo('Ship the new flag off by default?');
+  await until(() => dialog()!.querySelector('[data-decision-sending]') !== null, 'the card read only while sending');
+  release();
+  await until(() => chipB().textContent?.includes('Not sent') === true, 'the failure');
+  // Same card, nothing else touched: the lock is gone and the choices are back.
+  await until(() => dialog()!.querySelector('[data-decision-sending]') === null, 'the lock cleared');
+  expect(prompt()).toBe('Ship the new flag off by default?');
+  expect(dialog()!.querySelectorAll('.ib-dm-choice').length).toBeGreaterThan(0);
+}, 30_000);
+
 test.skipIf(!hasDom)('H2: an unchanged retry replays its key; a changed answer takes a new one', async () => {
   let failing = true;
   intercept = (path) => (path.endsWith('/reply') && failing ? { status: 500, body: { error: 'The Inbox could not write.', code: 'error' } } : null);
@@ -792,6 +817,24 @@ test.skipIf(!hasDom)('M3: comments waiting in a thread count as its draft, and a
   expect(replies()).toHaveLength(0);
   expect((await questionsOf(world.decide.b))[0]!.state).toBe('picked');
 }, 40_000);
+
+test.skipIf(!hasDom)('comments made after the last list read are read fresh before a send: the reply goes from the thread', async () => {
+  const el = await renderApp();
+  await openDecide(el);
+  await goTo('Ship the new flag off by default?');
+  choose('Yes');
+  await until(() => chipB().querySelector('[data-decision-hold]') !== null, "Codex's Hold");
+  // A comment on the message, made elsewhere while the Hold runs; the window's list read is older than it.
+  const comment = { id: 'ann-dm-fresh', blockId: 'block-1', startOffset: 0, endOffset: 4, type: 'COMMENT', text: 'Check the flag name.', originalText: 'Ship', createdA: 1 };
+  expect((await apiPost(`/api/inbox/messages/${world.decide.b}/annotations`, { annotation: comment })).status).toBe(200);
+  try {
+    await until(() => chipB().querySelector('[data-decision-draft]') !== null, 'the draft line, from the fresh read');
+    expect(replies()).toHaveLength(0);
+    expect((await questionsOf(world.decide.b))[0]!.state).toBe('picked');
+  } finally {
+    await apiPost('/api/inbox/annotations/ann-dm-fresh/remove', {});
+  }
+}, 30_000);
 
 test.skipIf(!hasDom)('M4: the draft state follows the latest row: the draft discarded, the group starts its Hold', async () => {
   const thread = world.decide.a;

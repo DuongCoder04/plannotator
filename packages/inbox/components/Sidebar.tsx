@@ -45,8 +45,11 @@ export interface SidebarProps {
   /** Compose (a new message to a connected agent): the icon button beside Search. Absent: no button. */
   onCompose?: (opener: HTMLElement) => void;
   /**
-   * Decision mode (experimental): every decision waiting across threads. The
-   * "Decide N" row shows under Inbox while this is 2 or more. Absent or 0: no row.
+   * Decision mode (experimental): how many decisions wait across threads. The
+   * "Decide N" row shows under Inbox whenever this is above 0 (with
+   * `onDecide`); the caller applies the minimum, passing 0 below two
+   * decisions (`decideEntryShown`, `DECIDE_ENTRY_MIN` in decisions/entry.tsx).
+   * Absent or 0: no row.
    */
   decideCount?: number;
   onDecide?: () => void;
