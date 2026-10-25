@@ -4440,6 +4440,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-tour-filetile .ib-tft-t b { font-weight: 600; font-size: var(--ib-fs-14, 14px); }
 .ib-tour-filetile .ib-tft-t span { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-tour-filetile .ib-tft-o { margin-left: auto; font-size: var(--ib-fs-13, 13px); font-weight: 600; color: var(--primary); }
+.ib-tour-filetile .ib-tft-o.ib-tft-off { font-weight: 500; color: var(--muted-foreground); }
+.ib-tour-file [data-tour-file-problem] { padding: 32px 22px; }
 .ib-tour-gal { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
 .pn-inbox .ib-tour-gal button { flex: 1 1 240px; max-width: 360px; text-align: left; border-radius: 9px; }
 .ib-tour-gal img { width: 100%; aspect-ratio: 1.6; object-fit: cover; object-position: top left; border-radius: 8px; box-shadow: 0 0 0 1px var(--border); display: block; }

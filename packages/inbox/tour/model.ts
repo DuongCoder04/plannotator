@@ -147,8 +147,14 @@ export interface TourState {
   step: number;
   /** What the tour Inbox shows (steps 1 to 5): its list, or one of its two threads. */
   route: TourRoute;
-  /** The label picked on the tour question (a draft until Send). */
+  /**
+   * What the tour question's draft answers (until Send): a choice's label, the
+   * person's own words (`“…”`, Other), or `Skipped`; null while nothing is
+   * answered yet (a note alone stays in `answer`).
+   */
   picked: string | null;
+  /** The card's answer as the person left it (Other's words, a note, a skip), when it is more than a picked label. */
+  answer: QuestionAnswer | null;
   sent: boolean;
   delivered: boolean;
   /** How many replayed messages have arrived (0, 1, 2). */
@@ -159,12 +165,41 @@ export interface TourState {
   looked: boolean;
 }
 
-export const TOUR_START: TourState = { step: 1, route: 'list', picked: null, sent: false, delivered: false, arrived: 0, mock: false, looked: false };
+export const TOUR_START: TourState = { step: 1, route: 'list', picked: null, answer: null, sent: false, delivered: false, arrived: 0, mock: false, looked: false };
+
+/** A step read from the address (`#tour=…`): a whole number from 1 to 6, anything else (empty, 0, `abc`, 99, 2.5) the nearest of them, 1 when none. */
+export function tourStepOf(raw: string | null | undefined): number {
+  const n = Math.trunc(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, TOUR_STEPS);
+}
+
+/** What the card's skip records as the pick. */
+export const TOUR_SKIPPED = 'Skipped';
+
+/** The pick an answer on the tour card makes: a choice's label, the person's own words, or a skip; null for nothing yet (a note alone). */
+export function tourPickOf(answer: QuestionAnswer | null | undefined): string | null {
+  if (!answer) return null;
+  const label = answer.selected?.[0];
+  if (label) return label;
+  const other = answer.other?.trim();
+  if (other) return `“${other}”`;
+  if (answer.skipped) return TOUR_SKIPPED;
+  return null;
+}
+
+/** The replay's honest note starts with what the person did: "You picked B · …", "You answered “…”", "You skipped it". */
+export function tourPickWords(picked: string): string {
+  if (picked === TOUR_SKIPPED) return 'You skipped it';
+  if (picked.startsWith('“')) return `You answered ${picked}`;
+  return `You picked ${picked}`;
+}
 
 export type TourAction =
   | { type: 'open'; thread: string }
   | { type: 'list' }
-  | { type: 'pick'; label: string | null }
+  /** `answer`: the card's whole answer (Other's words, a note, a skip); absent for a label picked elsewhere (the viewer). */
+  | { type: 'pick'; label: string | null; answer?: QuestionAnswer | null }
   | { type: 'send' }
   | { type: 'delivered' }
   | { type: 'arrive' }
@@ -199,8 +234,16 @@ export function tourReducer(state: TourState, action: TourAction): TourState {
       return state.step === 6 ? state : { ...state, route: 'list', mock: false };
     case 'pick': {
       if (state.sent || state.route !== TOUR_THREAD || state.step > 3) return state;
-      if (action.label === null) return { ...state, picked: null, step: 2 };
-      return { ...state, picked: action.label, step: 3 };
+      // A label picked in the viewer keeps a note written on the card.
+      const answer =
+        action.answer !== undefined
+          ? action.answer
+          : action.label && state.answer?.note
+            ? { ...state.answer, selected: [action.label], other: undefined, skipped: undefined }
+            : null;
+      const picked = action.answer !== undefined ? tourPickOf(action.answer) : action.label;
+      if (picked === null) return { ...state, picked: null, answer, step: 2 };
+      return { ...state, picked, answer, step: 3 };
     }
     case 'send':
       if (state.sent || !state.picked || state.step !== 3) return state;
@@ -261,8 +304,18 @@ export interface TourCoach {
   target: TourTarget | null;
 }
 
+/**
+ * What did not load, so the coach never says what is not on screen: the
+ * pictures (the card then names its choices in words), and the mock (`missing`:
+ * not in this build; `down`: the Inbox server is not answering).
+ */
+export interface TourDegraded {
+  pictures?: boolean;
+  mock?: 'missing' | 'down' | null;
+}
+
 /** The coach card a state shows (steps 1 to 5; step 6 is the person's own screen and has none). */
-export function tourCoach(state: TourState, names: { developer: string; agent: string }): TourCoach | null {
+export function tourCoach(state: TourState, names: { developer: string; agent: string }, degraded: TourDegraded = {}): TourCoach | null {
   const { developer, agent } = names;
   if (state.step === 6) return null;
   const inThread = state.route === TOUR_THREAD;
@@ -277,6 +330,14 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
   // Left the thread mid-step: the way back to it.
   if (!inThread && !state.mock)
     return { key: `back-${state.step}`, title: 'The question is in this thread', text: 'The tour goes on where you left it.', action: 'Open it again.', target: 'row' };
+  if (state.step === 2 && degraded.pictures)
+    return {
+      key: '2',
+      title: 'Pick a direction',
+      text: `${agent} sent its choices as pictures of VS Code; they did not load here, so the card names each one.`,
+      action: 'Pick the direction you would build.',
+      target: 'choices',
+    };
   if (state.step === 2)
     return {
       key: '2',
@@ -318,10 +379,21 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
       action: 'Open prototype.html.',
       target: 'mock-tile',
     };
+  if (degraded.mock)
+    return {
+      key: '5-mock',
+      title: 'The mock could not load',
+      text:
+        degraded.mock === 'down'
+          ? 'The Inbox server is not answering, so prototype.html cannot run here. Go on when you like.'
+          : 'prototype.html is missing from this Plannotator, so it cannot run here. Go on when you like.',
+      next: true,
+      target: 'file',
+    };
   return {
     key: '5-mock',
     title: 'It runs right here',
-    text: `${agent}’s VS Code mockups, live and sandboxed. Switch directions at the bottom of it, then go on.`,
+    text: `${agent}’s VS Code mockups, live and sandboxed. Switch between its directions, then go on.`,
     next: true,
     target: 'file',
   };
@@ -431,7 +503,7 @@ export function tourMessages(fixture: TourFixture, threadId: string, state: Tour
     if (parsed.length > 0) {
       if (thread.id === TOUR_THREAD) {
         const p = parsed[0]!;
-        const answer = state.picked ? tourAnswer(state.picked, p.key, p.prompt) : null;
+        const answer = state.answer ? { ...state.answer, key: p.key, prompt: p.prompt } : state.picked ? tourAnswer(state.picked, p.key, p.prompt) : null;
         questions = [wireQuestion(m, p, answer, state.sent ? 'sent' : answer ? 'picked' : 'open', state.sent ? TOUR_REPLY_ID : null, answer ? tourIso(REPLY_TIME, now) : null)];
       } else {
         const reply = thread.messages.find((x) => x.answers === m.id);
@@ -450,7 +522,7 @@ export function tourMessages(fixture: TourFixture, threadId: string, state: Tour
         reply_to: m.id,
         author: PERSON,
         subject: thread.subject,
-        body: 'Answered 1 question.',
+        body: state.picked === TOUR_SKIPPED ? 'Skipped 1 question.' : 'Answered 1 question.',
         created_at: tourIso(REPLY_TIME, now),
         resolved_at: null,
         idempotency_key: null,

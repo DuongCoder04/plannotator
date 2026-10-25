@@ -47,9 +47,45 @@ export function readInboxPins(inboxDirPath: string): InboxPin[] {
   return out;
 }
 
-/** Write the pins whole (owner-only). No pins removes the file. */
+/**
+ * What pins.json holds before a write: nothing, a v1 file, a file this
+ * Plannotator cannot read (not JSON, not an object, unreadable), or a newer
+ * version's file. readInboxPins reads the last two as no pins, so a write must
+ * never simply replace them.
+ */
+export function inboxPinsFileState(inboxDirPath: string): "missing" | "ok" | "bad" | "newer" {
+  let raw: string;
+  try {
+    raw = readFileSync(fileOf(inboxDirPath), "utf8");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? "missing" : "bad";
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return "bad";
+  }
+  const file = value as { v?: unknown; pins?: unknown } | null;
+  if (!file || typeof file !== "object" || Array.isArray(file)) return "bad";
+  if (typeof file.v === "number" && file.v > 1) return "newer";
+  return file.v === 1 && Array.isArray(file.pins) ? "ok" : "bad";
+}
+
+/**
+ * Write the pins whole (owner-only). No pins removes the file. A pins.json a
+ * newer Plannotator wrote is never written over (refused: its pins come back
+ * with that version); one that cannot be read is moved aside first
+ * (`pins.json.unreadable-<time>`, kept for the person), since pins.json is the
+ * Inbox's own file and refusing would leave pinning broken for good.
+ */
 export function writeInboxPins(inboxDirPath: string, pins: readonly InboxPin[]): void {
   const file = fileOf(inboxDirPath);
+  const state = inboxPinsFileState(inboxDirPath);
+  if (state === "newer") {
+    throw new InboxError("pins_newer", "pins.json was written by a newer Plannotator; update Plannotator to change pins.");
+  }
+  if (state === "bad") renameSync(file, `${file}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   if (pins.length === 0) {
     try {
       unlinkSync(file);

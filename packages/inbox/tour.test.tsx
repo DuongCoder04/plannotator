@@ -28,6 +28,8 @@ import { join, resolve } from 'node:path';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
+const { __forgetTourFixtureForTests } = (hasDom ? await import('./tour/Tour') : {}) as typeof import('./tour/Tour');
+const { setStorageBackend, resetStorageBackend } = await import('@plannotator/ui/utils/storage');
 
 const SERVER_SCRIPT = resolve(import.meta.dir, '../../tests/helpers/inbox-dom-server.ts');
 
@@ -48,6 +50,8 @@ let savedHasFocus: typeof document.hasFocus;
 let permission: NotificationPermission = 'default';
 const notices: string[] = [];
 const posts: { path: string; body: Record<string, unknown> }[] = [];
+/** A test's own answer for a request (a failure, a stopped server: 'network'); null lets it reach the Inbox. */
+let intercept: ((path: string, method: string, body?: string) => Response | 'network' | null) | null = null;
 
 function loopback(path: string, method = 'GET', body?: string): Promise<{ status: number; text: string; type: string }> {
   return new Promise((done, fail) => {
@@ -84,6 +88,11 @@ beforeEach(async () => {
   childOut = (child.stdout as ReadableStream<Uint8Array>).getReader();
   port = (JSON.parse(await readLine()) as { port: number }).port;
   posts.length = 0;
+  intercept = null;
+  // Cookies, kept in memory per test (happy-dom's about:blank keeps none): the browser's memory of a tour
+  // decision that could not be saved is never carried between tests.
+  const jar = new Map<string, string>();
+  setStorageBackend({ getItem: (k) => jar.get(k) ?? null, setItem: (k, v) => void jar.set(k, v), removeItem: (k) => void jar.delete(k) });
   tailnetPage = false;
   savedFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -95,6 +104,9 @@ beforeEach(async () => {
       body = JSON.stringify(rest);
     }
     if (method === 'POST') posts.push({ path, body: body ? (JSON.parse(body) as Record<string, unknown>) : {} });
+    const forced = intercept?.(path, method, body);
+    if (forced === 'network') throw new TypeError('Failed to fetch');
+    if (forced) return forced;
     if (path.startsWith('/api/inbox/agents') && tailnetPage) return Response.json({ error: 'local only', code: 'local_only' }, { status: 403 });
     const answer = await loopback(path, method, body);
     if (method === 'GET' && path.startsWith('/api/inbox/settings') && answer.status === 200 && tailnetPage) {
@@ -150,6 +162,7 @@ afterEach(async () => {
   window.matchMedia = savedMatchMedia;
   (window as unknown as Record<string, unknown>).Notification = savedNotification;
   document.hasFocus = savedHasFocus;
+  resetStorageBackend();
   window.location.hash = '';
   childOut?.releaseLock();
   child?.kill();
@@ -433,3 +446,189 @@ test.skipIf(!hasDom)('⌘K does not open search over the replay (it shows the pe
   await chord();
   await until(() => document.querySelector('[data-search-palette]') !== null, 'search');
 }, 90_000);
+
+// ── What a user can end up in (tour QA, 2026-10-25): the tour keeps working, and so does the Inbox ──
+
+const activeIsPage = () => !document.activeElement || document.activeElement === document.body;
+
+test.skipIf(!hasDom)('a failed settings read never blanks the first run: the screen draws, the read is tried again, the tour stays reachable', async () => {
+  let gets = 0;
+  intercept = (path, method) => (path.startsWith('/api/inbox/settings') && method === 'GET' && gets++ === 0 ? Response.json({ error: 'busy' }, { status: 503 }) : null);
+  const el = await renderApp();
+  await until(() => $(el, '[data-inbox-empty]') !== null, 'the first-run screen without settings');
+  // Read again; once the settings come, the screen gains its quiet way to the tour (no swap under the person).
+  await until(() => gets >= 2 && $(el, '[data-tour-again] button') !== null, 'the settings read again');
+  expect($(el, '[data-tour-entry]')).toBeNull();
+  await click($(el, '[data-tour-again] button'));
+  await until(() => coachKey(el) === '1', 'the tour');
+}, 90_000);
+
+test.skipIf(!hasDom)('a settings read that keeps failing: the first-run screen still draws', async () => {
+  intercept = (path, method) => (path.startsWith('/api/inbox/settings') && method === 'GET' ? Response.json({ error: 'down' }, { status: 502 }) : null);
+  const el = await renderApp();
+  await until(() => $(el, '[data-inbox-empty]') !== null, 'the first-run screen');
+  expect($(el, '.ib-listcol[aria-busy="true"]')).toBeNull();
+}, 90_000);
+
+test.skipIf(!hasDom)('Forward after Exit, and a reload of that entry, never reopen the tour; odd #tour= values are normalized', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 3);
+  await click($(el, '[data-tour-exit="exit"]'));
+  await until(() => $(el, '[data-tour-bar]') === null && window.location.hash === '', 'out of the tour');
+  await act(async () => window.history.forward());
+  await wait(400);
+  expect(window.location.hash).toBe('');
+  expect($(el, '[data-tour-bar]')).toBeNull();
+  // A reload of an entry the tour ended from (its mark kept in history.state) opens the Inbox, not the tour.
+  window.history.pushState({ ibFrom: '', ibTourEnded: '' }, '', '#tour=4');
+  act(() => root?.unmount());
+  host?.remove();
+  const again = await renderApp();
+  await until(() => $(again, '[data-inbox-empty]') !== null, 'the Inbox after the reload');
+  expect(window.location.hash).toBe('');
+  expect($(again, '[data-tour-bar]')).toBeNull();
+  for (const [odd, step] of [['abc', 1], ['0', 1], ['', 1], ['99', 6], ['2.5', 2], ['-3', 1]] as const) {
+    await act(async () => {
+      window.location.hash = `#tour=${odd}`;
+    });
+    await until(() => window.location.hash === `#tour=${step}`, `#tour=${odd} as #tour=${step}`);
+  }
+}, 90_000);
+
+test.skipIf(!hasDom)('Z never undoes into the Inbox while the tour is up; the toast leaves when the tour starts', async () => {
+  const threadId = await firstMessage(':::question\nShip it?\n- [ ] Yes\n- [ ] No\n:::', 'Ship question');
+  const el = await renderApp();
+  await act(async () => {
+    window.location.hash = `#thread=${threadId}`;
+  });
+  await until(() => $(el, '[data-mark-read]') !== null, 'the thread');
+  await act(async () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true })));
+  await until(() => document.querySelector('[data-inbox-toast]') !== null, 'the Mark read toast');
+  await act(async () => {
+    window.location.hash = '#settings/general';
+  });
+  await until(() => $(el, '[data-settings-take-tour]') !== null, 'Getting started');
+  await click($(el, '[data-settings-take-tour]'));
+  await until(() => coachKey(el) === '1', 'the tour');
+  expect(document.querySelector('[data-inbox-toast]')).toBeNull();
+  const before = posts.length;
+  await act(async () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', bubbles: true })));
+  await wait(600);
+  expect(posts.slice(before).filter((p) => p.path.includes('/unread'))).toEqual([]);
+}, 90_000);
+
+test.skipIf(!hasDom)('a tour decision that cannot be saved is tried again, then said; Two paths does not come back', async () => {
+  intercept = (path, method, body) =>
+    path === '/api/inbox/settings' && method === 'POST' && body?.includes('skipped')
+      ? Response.json({ error: 'config.json could not be saved; nothing changed.', code: 'config_not_saved' }, { status: 500 })
+      : null;
+  const el = await openOnEntry();
+  await walkTo(el, 2);
+  await click($(el, '[data-tour-exit="exit"]'));
+  await until(() => document.querySelector('[data-inbox-toast] .ib-tlead')?.textContent === 'Not saved', 'the quiet failure', 200);
+  // Three tries: the first and two more.
+  expect(posts.filter((p) => p.path === '/api/inbox/settings' && (p.body.tour as Record<string, unknown> | undefined)?.skipped).length).toBe(3);
+  expect(config().inboxTour?.skipped_at ?? null).toBeNull();
+  act(() => root?.unmount());
+  host?.remove();
+  const again = await renderApp();
+  await until(() => $(again, '[data-inbox-empty]') !== null, 'the first-run screen');
+  expect($(again, '[data-tour-entry]')).toBeNull();
+}, 90_000);
+
+test.skipIf(!hasDom)('the step-6 chip ends the tour as finished, not skipped', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 1);
+  await act(async () => {
+    window.location.hash = '#tour=6';
+  });
+  await until(() => $(el, '.ib-empty h2')?.textContent === 'Now, let’s connect your agents', 'step 6');
+  await act(async () => pushRecord!(recordOf('msg_01REALMESSAGE000000000000')));
+  await until(() => $(el, '[data-tour-arrivals]') !== null, 'the chip');
+  await click($(el, '[data-tour-arrivals]'));
+  await until(() => !!config().inboxTour?.finished_at, 'finished remembered');
+  expect(config().inboxTour.skipped_at ?? null).toBeNull();
+}, 90_000);
+
+test.skipIf(!hasDom)('focus never drops to the page: could-not-load, Try again, a hash change mid-tour, Back out of the tour', async () => {
+  let fail = true;
+  intercept = (path) => (path.startsWith('/api/inbox/tour/fixture.json') && fail ? Response.json({ error: 'boom' }, { status: 500 }) : null);
+  __forgetTourFixtureForTests();
+  await act(async () => {
+    window.location.hash = '#tour=2';
+  });
+  const el = await renderApp();
+  await until(() => $(el, '[data-tour-loading="failed"]') !== null, 'could not load');
+  await until(() => document.activeElement === $(el, '[data-tour-loading] h2'), 'focus on the screen');
+  fail = false;
+  $(el, '[data-tour-loading] button')!.focus();
+  await click($(el, '[data-tour-loading] button'));
+  await until(() => coachKey(el) === '2', 'the tour loaded');
+  await until(() => !activeIsPage(), 'focus kept after Try again');
+  // A hash change mid-tour that takes the focused control away.
+  await until(() => radios(el).length === 4, 'the choices');
+  radios(el)[0]!.focus();
+  await act(async () => {
+    window.location.hash = '#tour=5';
+  });
+  await until(() => coachKey(el) === '5', 'step 5');
+  await until(() => !activeIsPage(), 'focus after the hash change');
+  // Out of the tour as the browser's Back would (no Exit): focus lands on the Inbox.
+  $(el, '[data-tour-mock-tile]')?.focus();
+  await act(async () => {
+    window.location.hash = '';
+  });
+  await until(() => $(el, '[data-tour-bar]') === null, 'out of the tour');
+  await until(() => !activeIsPage(), 'focus on the Inbox after Back');
+}, 90_000);
+
+test.skipIf(!hasDom)('the replay takes Other as an answer: kept on the card, and Send replays it honestly', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 2);
+  const field = () => $(el, '[data-tour-message="ask"] input[placeholder="Other…"], [data-tour-message="ask"] textarea[placeholder="Other…"]') as HTMLInputElement | null;
+  expect(field()).not.toBeNull();
+  const proto = field() instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(field(), 'Something else entirely');
+    field()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await until(() => coachKey(el) === '3', 'step 3 after Other');
+  expect(field()!.value).toBe('Something else entirely');
+  await click($(el, '[data-tour-send]'));
+  await until(() => $(el, '[data-tour-differs]') !== null, 'the note', 160);
+  expect($(el, '[data-tour-differs]')!.textContent).toBe('You answered “Something else entirely”. In the real thread the answer was A, so this is what Claude Code built.');
+  expect(writes()).toEqual([]);
+}, 90_000);
+
+test.skipIf(!hasDom)('degraded copy is true: pictures that did not load are not called pictures; a stopped server under the mock says so', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 2);
+  // happy-dom loads no picture, so the card names its choices as rows.
+  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'Pick a direction', 'the step-2 card without pictures');
+  await walkToFrom2(el);
+  intercept = (path, method) => (path.includes('vscode-mockups.html') && method === 'HEAD' ? 'network' : null);
+  await click($(el, '[data-tour-mock-tile]'));
+  await until(() => $(el, '[data-tour-file-problem="down"]') !== null, 'the mock’s problem');
+  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'The mock could not load', 'the coach says so');
+  expect($(el, '[data-tour-file] iframe')).toBeNull();
+  // The server answers again: Try again brings the mock.
+  intercept = null;
+  await click($(el, '[data-tour-file-retry]'));
+  await until(() => $(el, '[data-tour-file] iframe') !== null, 'the mock');
+  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'It runs right here', 'the coach');
+  expect($(el, '[data-tour-coach] p')!.textContent).not.toContain('bottom');
+  // A file named but not carried by the tour says so, and is not a control.
+  const chip = el.querySelector('.ib-tour-filechip');
+  expect(chip?.tagName).toBe('SPAN');
+  expect(chip?.textContent).toContain('Not in the tour');
+}, 90_000);
+
+/** From step 2: pick, Send, the replay, Next to step 5. */
+async function walkToFrom2(el: HTMLElement) {
+  await click(radios(el)[0]);
+  await until(() => coachKey(el) === '3', 'step 3');
+  await click($(el, '[data-tour-send]'));
+  await until(() => coachKey(el) === '4-works', 'the replay', 160);
+  await click($(el, '[data-tour-next]'));
+  await until(() => coachKey(el) === '5', 'step 5');
+}
