@@ -286,7 +286,7 @@ describe("an `agent` on PATH that may not be Cursor's", () => {
     const sig = CURSOR.altCommandsSignature!;
     for (const [name, body] of [
       ["agent-semver", 'echo "1.2.3"'],
-      ["agent-two-lines", 'echo "agent 2026.07.08-0c04a8a"'],
+      ["agent-prefixed-line", 'echo "agent 2026.07.08-0c04a8a"'],
       ["agent-fails", 'echo "2026.07.08-0c04a8a"; exit 2'],
       ["agent-silent", "true"],
     ] as const) {

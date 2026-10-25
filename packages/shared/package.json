@@ -4,6 +4,7 @@
   "private": true,
   "exports": {
     "./agents": "./agents.ts",
+    "./child-env": "./child-env.ts",
     "./annotatable": "./annotatable.ts",
     "./annotate-bundle": "./annotate-bundle.ts",
     "./diff-files": "./diff-files.ts",
@@ -102,6 +103,7 @@
     "./tailscale": "./tailscale.ts",
     "./plan-review-lifecycle": "./plan-review-lifecycle.ts",
     "./review-profiles": "./review-profiles.ts",
+    "./agent-program": "./agent-program.ts",
     "./commit-avatars": "./commit-avatars.ts",
     "./generated-files": "./generated-files.ts",
     "./annotate-client-lease": "./annotate-client-lease.ts",

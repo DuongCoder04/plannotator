@@ -714,6 +714,16 @@ export function createInboxLiveSessions(options: {
     return !!entry && isLive(entry);
   };
 
+  /**
+   * Whether `session` of `host` holds or made a bridge poll within the live
+   * window now: its connection (the Claude Code mod, Pi, OpenCode 2) will
+   * hand it the person's reply as a turn. MCP activity never counts.
+   */
+  const pollsNow = (host: string, session: string): boolean => {
+    const entry = sessions.get(session);
+    return !!entry && entry.host === host && isLive(entry);
+  };
+
   /** `{ host?, session }` naming a live session in any project, or null when it is not live (compose's Send). */
   const composeTarget = (to: unknown): { host: string; session: string; root: string | null } | null => {
     if (!to || typeof to !== "object" || Array.isArray(to)) {
@@ -869,6 +879,7 @@ export function createInboxLiveSessions(options: {
     route,
     allLive,
     isSessionLive,
+    pollsNow,
     composeTarget,
     connectionOf,
     deliveryConnectionOf,

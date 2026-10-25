@@ -211,15 +211,16 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   await page.mouse.move(0, 0);
   await shot('1.2-first-run-first-step');
 
-  // One rhythm: the same gap between the heading, the step, Try it, the fold and the tour's quiet line
+  // One rhythm: the same gap between the heading, the step, the line saying which agents a reply wakes, Try it, the fold and the tour's quiet line
   // (the tour was decided before this Inbox started: "Take the 2-minute tour" ends the screen).
   await expect(empty.locator('[data-tour-again]')).toBeVisible();
   const boxes = await empty.evaluate((el) =>
     [...el.children].filter((child) => !child.classList.contains('ib-sr')).map((child) => child.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })),
   );
   const gaps = boxes.slice(1).map((box, i) => Math.round(box.top - boxes[i]!.bottom));
-  expect(gaps.length).toBe(4);
+  expect(gaps.length).toBe(5);
   expect(new Set(gaps).size).toBe(1);
+  await expect(empty.locator('[data-wake-note]')).toContainText('Claude Code, Pi and OpenCode 2');
 
   // Every other agent or editor, folded at the end: the picker without Plannotator's three hosts.
   const byHand = empty.getByRole('button', { name: 'Another agent or editor', exact: true });
