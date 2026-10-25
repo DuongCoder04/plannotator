@@ -75,6 +75,7 @@ import {
   plannotatorToolTargets,
   plannotatorUnknownSessionText,
   PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT,
+  PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT,
   scriptOnlyAnnotateFlag,
   scriptOnlyAnnotateFlagText,
   type PlannotatorCloseOutcome,
@@ -122,6 +123,8 @@ export interface LaunchRecord {
    * the server shuts down.
    */
   closedByAgent?: boolean
+  /** The ready file's `tailnet` (a `--tailscale` session of a CLI that keeps Ask this session there, #2166). */
+  tailnet?: { ask: boolean }
 }
 
 /** The `pn-` session id of a launch: the six hex digits that end its launch id. */
@@ -758,6 +761,7 @@ export class PlannotatorMod {
     if (!ready) return false
     launch.url = ready.url
     launch.port = ready.port
+    if (ready.tailnet) launch.tailnet = ready.tailnet
     if (ready.target !== undefined) {
       // The server's own answer: it may have found a bare name elsewhere in the project.
       if (launch.target !== undefined && !plannotatorSameTarget(launch.target, ready.target)) {
@@ -833,7 +837,8 @@ export class PlannotatorMod {
   async runTool(input: unknown): Promise<{ text: string } | { deny: string }> {
     await this.adoptNewStoredLaunches()
     await this.touchLaunches()
-    const parsed = parsePlannotatorToolInput(input)
+    // The mod's launch can publish over the tailnet, so `tailscale` is accepted (#2166).
+    const parsed = parsePlannotatorToolInput(input, { tailscale: true })
     if (!parsed.ok) return { deny: parsed.error }
     const call = parsed.input
     switch (call.action) {
@@ -852,17 +857,54 @@ export class PlannotatorMod {
     // A list of files is one review of all of them (a bundle), named as such.
     const bundle = Array.isArray(call.target)
     const subject = bundle ? plannotatorBundleSubject(targets) : subjectFor(action, targets)
+    const tailscale = call.tailscale === true
     const opened = await this.open(action, plannotatorToolArgs(call), subject, gate ? { deliverApproval: true } : {})
     switch (opened.state) {
       case 'error':
         // An older CLI answers several paths with its ambiguity error.
         if (bundle && isOlderCliBundleRefusal(opened.text)) return { deny: PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT }
+        // A CLI from before `--tailscale` refuses the word (an unknown flag or file).
+        if (tailscale && opened.text.includes('--tailscale')) return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
         return { deny: opened.text }
       case 'starting':
         return { text: plannotatorToolOpenedText(opened.subject, undefined, gate, opened.sessionId, opened.target) }
       case 'ready':
-        return { text: plannotatorToolOpenedText(opened.subject, opened.url, gate, opened.sessionId, opened.target) }
+        if (tailscale && !opened.tailnet) {
+          // The CLI opened it without the tailnet's Ask this session (it
+          // predates #2166) or not on the tailnet at all (it ignored the
+          // flag): say so and do not leave it open, never a silent downgrade.
+          await this.abandonLaunch(opened.sessionId)
+          return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
+        }
+        return {
+          text: plannotatorToolOpenedText(
+            opened.subject,
+            opened.url,
+            gate,
+            opened.sessionId,
+            opened.target,
+            tailscale ? opened.tailnet : undefined,
+          ),
+        }
     }
+  }
+
+  /**
+   * Stop a review the tool just opened and must not leave running (a CLI too
+   * old for `tailscale`): TERM its process when the pid still names a
+   * plannotator process (`STOP_SCRIPT`), then forget it. Nothing is delivered.
+   */
+  private async abandonLaunch(sessionId: string): Promise<void> {
+    const launch = [...this.launches.values()].find((candidate) => sessionIdOf(candidate) === sessionId)
+    if (!launch) return
+    launch.settling = true
+    const pid = (await this.host.readFile(fileIn(launch.dir, 'pid')).catch(() => '')).trim()
+    if (/^\d+$/.test(pid)) {
+      await this.host.run(stopArgv(pid, [fileIn(launch.dir, 'result'), fileIn(launch.dir, 'exit')]), { timeoutMs: 5_000 }).catch(() => null)
+    }
+    await this.forget(launch)
+    await this.host.run(cleanupArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
+    this.host.debug(`abandoned ${launch.id}: the CLI cannot serve the tailnet session the tool asked for`)
   }
 
   // --- The agent's own sessions (list, close) ------------------------------
@@ -1037,7 +1079,7 @@ export class PlannotatorMod {
   ): Promise<
     | { state: 'error'; text: string }
     | { state: 'starting'; subject: string; sessionId: string; target?: PlannotatorTarget }
-    | { state: 'ready'; subject: string; url: string; sessionId: string; extra?: string; target?: PlannotatorTarget }
+    | { state: 'ready'; subject: string; url: string; sessionId: string; extra?: string; target?: PlannotatorTarget; tailnet?: { ask: boolean } }
   > {
     if (kind === 'annotate') {
       // Strict gates and --hook answer on the CLI's exit code, stdout or result
@@ -1073,7 +1115,14 @@ export class PlannotatorMod {
     // The launch's subject, told apart from a same-named open review, and its full target.
     const named = { subject: started.subject, ...(started.target !== undefined ? { target: started.target } : {}) }
     if (outcome === 'timeout') return { state: 'starting', sessionId, ...named }
-    return { state: 'ready', url: started.url as string, sessionId, ...named, ...(extra ? { extra } : {}) }
+    return {
+      state: 'ready',
+      url: started.url as string,
+      sessionId,
+      ...named,
+      ...(extra ? { extra } : {}),
+      ...(started.tailnet ? { tailnet: started.tailnet } : {}),
+    }
   }
 
   // --- Plan review -------------------------------------------------------------

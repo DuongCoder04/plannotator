@@ -100,6 +100,7 @@
     "./open-in-apps": "./open-in-apps.ts",
     "./port-range": "./port-range.ts",
     "./tailscale": "./tailscale.ts",
+    "./tailnet-audience": "./tailnet-audience.ts",
     "./plan-review-lifecycle": "./plan-review-lifecycle.ts",
     "./review-profiles": "./review-profiles.ts",
     "./commit-avatars": "./commit-avatars.ts",

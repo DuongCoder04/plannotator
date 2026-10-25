@@ -28,6 +28,11 @@ export interface PlannotatorToolInput {
   target?: string | string[]
   gate?: boolean
   options?: { base?: string; markdown?: boolean }
+  /**
+   * annotate, review, last: serve the page over the user's tailnet (the CLI's
+   * `--tailscale`). Only from a host that parses with `{ tailscale: true }`.
+   */
+  tailscale?: boolean
   /** close: a session id (`pn-` + 6 hex, as the results name it) or "all". */
   session?: string
 }
@@ -77,6 +82,47 @@ export const PLANNOTATOR_TOOL_INPUT_SCHEMA = {
   required: ['action'],
   additionalProperties: false,
 } as const
+
+/** The description line a host that publishes over the tailnet adds (see `PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION`). */
+export const PLANNOTATOR_TOOL_TAILSCALE_LINE =
+  '- `tailscale: true` (annotate, review, last): serve the page over the user\'s tailnet (HTTPS, never public) for their phone or another device; "Ask this session" works there for this computer\'s owner. Only when the user asks for that.'
+
+/**
+ * The description for a host that accepts `tailscale` (the Claude Code mod):
+ * the plain description with the tailscale line after the action lines.
+ */
+export const PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION = (() => {
+  const lines = PLANNOTATOR_TOOL_DESCRIPTION.split('\n')
+  const lastAction = lines.findIndex((line) => line.startsWith('- action "close"'))
+  return [...lines.slice(0, lastAction + 1), PLANNOTATOR_TOOL_TAILSCALE_LINE, ...lines.slice(lastAction + 1)].join('\n')
+})()
+
+/** The input schema for a host that accepts `tailscale`: the plain schema plus that one property. */
+export const PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA = {
+  ...PLANNOTATOR_TOOL_INPUT_SCHEMA,
+  properties: {
+    ...PLANNOTATOR_TOOL_INPUT_SCHEMA.properties,
+    tailscale: {
+      type: 'boolean',
+      description: 'annotate, review, last: serve the page over the user\'s tailnet (HTTPS, never public), to open on another device. "Ask this session" works there for the computer owner\'s Tailscale login.',
+    },
+  },
+} as const
+
+/** What a host's parser accepts beyond the plain contract. */
+export interface PlannotatorToolParseOptions {
+  /** Accept `tailscale` (the host can publish over the tailnet). Default false: the field is unknown. */
+  tailscale?: boolean
+}
+
+/**
+ * What a host answers a `tailscale` call with when its Plannotator CLI cannot
+ * serve it: a CLI without `--tailscale`, or one from before "Ask this session"
+ * was kept over the tailnet (its ready line carries no `tailnet` field). The
+ * review is not left open.
+ */
+export const PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT =
+  'Plannotator did not open: the installed Plannotator is too old to open a review over the tailnet from this tool. Ask the user to update Plannotator (`plannotator update`), or open it without `tailscale` for now.'
 
 /** Longest target or base accepted; a real path or URL is far shorter. */
 export const PLANNOTATOR_TOOL_MAX_TEXT = 4096
@@ -131,11 +177,11 @@ export function isPlannotatorToolOpenAction(action: PlannotatorToolAction): acti
  * action does not take are errors (a `false` the action ignores is allowed,
  * since models often fill defaults). The error text is for the model.
  */
-export function parsePlannotatorToolInput(value: unknown): PlannotatorToolParse {
+export function parsePlannotatorToolInput(value: unknown, parseOptions: PlannotatorToolParseOptions = {}): PlannotatorToolParse {
   const fail = (error: string): PlannotatorToolParse => ({ ok: false, error: `Invalid plannotator call: ${error}.` })
   if (!isRecord(value)) return fail('the input must be an object')
   for (const key of Object.keys(value)) {
-    if (!TOOL_KEYS.includes(key)) return fail(`unknown field "${key}"`)
+    if (!TOOL_KEYS.includes(key) && !(key === 'tailscale' && parseOptions.tailscale === true)) return fail(`unknown field "${key}"`)
   }
   const action = value.action
   if (typeof action !== 'string' || !ACTIONS.includes(action as PlannotatorToolAction)) {
@@ -170,6 +216,12 @@ export function parsePlannotatorToolInput(value: unknown): PlannotatorToolParse 
     if (typeof value.gate !== 'boolean') return fail('gate must be true or false')
     if (value.gate && action !== 'annotate' && action !== 'review') return fail('gate is for actions "annotate" and "review" only')
     if (value.gate) input.gate = true
+  }
+
+  if (value.tailscale !== undefined) {
+    if (typeof value.tailscale !== 'boolean') return fail('tailscale must be true or false')
+    if (value.tailscale && !opens) return fail('tailscale is for actions "annotate", "review" and "last" only')
+    if (value.tailscale) input.tailscale = true
   }
 
   if (value.options !== undefined) {
@@ -221,8 +273,8 @@ export function plannotatorToolTargets(input: PlannotatorToolInput): string[] {
  * The arguments the matching slash command would carry (`/plannotator-annotate
  * <these>`), one argument per element, never re-split. A list of annotate
  * targets passes a bare word as `./word`, so the CLI reads every entry as a
- * path. `last` has none, and neither do the actions that open nothing (list,
- * close).
+ * path. `last` has none but `--tailscale`, and the actions that open nothing
+ * (list, close) have none. `tailscale` becomes `--tailscale`.
  */
 export function plannotatorToolArgs(input: PlannotatorToolInput): string[] {
   switch (input.action) {
@@ -236,6 +288,7 @@ export function plannotatorToolArgs(input: PlannotatorToolInput): string[] {
           : plannotatorToolTargets(input)),
         ...(input.gate ? ['--gate'] : []),
         ...(input.options?.markdown ? ['--markdown'] : []),
+        ...(input.tailscale ? ['--tailscale'] : []),
       ]
     case 'review':
       // A review's `gate` is the host's alone (deliver a bare approval as a
@@ -243,9 +296,11 @@ export function plannotatorToolArgs(input: PlannotatorToolInput): string[] {
       // CLI older than `review --gate` refuses the flag.
       return [
         ...(input.options?.base ? ['--base', input.options.base] : []),
+        ...(input.tailscale ? ['--tailscale'] : []),
         ...plannotatorToolTargets(input),
       ]
     case 'last':
+      return input.tailscale ? ['--tailscale'] : []
     case 'list':
     case 'close':
       return []
@@ -277,9 +332,25 @@ export function plannotatorTargetLines(target: PlannotatorTarget | undefined): s
 }
 
 /**
+ * How a session served over the tailnet answers Ask AI: `ask` true when
+ * "Ask this session" answers there for the machine owner's Tailscale login.
+ */
+export interface PlannotatorTailnetOpen {
+  ask: boolean
+}
+
+/** The line the opened text adds for a session served over the tailnet. */
+export function plannotatorTailnetOpenedLine(tailnet: PlannotatorTailnetOpen): string {
+  return tailnet.ask
+    ? 'It is served over the user\'s tailnet (HTTPS, never public): they open the URL on their phone or another device. "Ask this session" answers there only for the Tailscale login that owns this computer.'
+    : 'It is served over the user\'s tailnet (HTTPS, never public): they open the URL on their phone or another device. "Ask this session" is not available on the other device for this review.'
+}
+
+/**
  * The tool's result once the session is open (`url`) or still starting (no
  * url). `sessionId` leads it when given; `target` (the full path or URL the
- * server opened, when known) follows it.
+ * server opened, when known) follows it. `tailnet` adds the line for a page
+ * served over the user's tailnet.
  */
 export function plannotatorToolOpenedText(
   subject: string,
@@ -287,6 +358,7 @@ export function plannotatorToolOpenedText(
   gate: boolean,
   sessionId?: string,
   target?: PlannotatorTarget,
+  tailnet?: PlannotatorTailnetOpen,
 ): string {
   const where = url ? `Opened ${subject} in Plannotator: ${url}` : `Plannotator is starting for ${subject}; it opens in the browser when ready.`
   const outcome = gate
@@ -297,6 +369,7 @@ export function plannotatorToolOpenedText(
     ...(sessionId ? [`Session: ${sessionId}`] : []),
     ...(targetLines ? [targetLines] : []),
     where,
+    ...(tailnet ? [plannotatorTailnetOpenedLine(tailnet)] : []),
     'The reviewer is looking at it now. End your turn now and wait: their decision arrives later as a message in this conversation that starts with "Plannotator:".',
     outcome,
     'Do not poll, reopen it, or run the plannotator CLI for this session.',
@@ -715,17 +788,23 @@ const COMMAND_ACTIONS: Record<string, PlannotatorToolAction> = {
  * paths, `looksLikeFilePath`, which become `target: [...]`, a review of
  * several files) plus `--gate` and `--markdown`; review `[target]` plus
  * `--base <ref>` and `--gate`; last with no arguments. `--json` is accepted
- * and dropped (the decision arrives as a message, not on stdout). The result passes
- * `parsePlannotatorToolInput`.
+ * and dropped (the decision arrives as a message, not on stdout). With
+ * `{ tailscale: true }` (a host that publishes over the tailnet) `--tailscale`
+ * on annotate, review and last becomes `tailscale: true`. The result passes
+ * `parsePlannotatorToolInput` with the same options.
  *
  * Everything else is null and runs as written: other subcommands, any other
- * flag (`--require-approval`, `--result-file`, `--hook`, `--tailscale`,
- * `--static`, `--app`, `--no-jina`, `--help`, ...), a repeated flag, several
+ * flag (`--require-approval`, `--result-file`, `--hook`, `--tailscale` for a
+ * host without that option, `--static`, `--app`, `--no-jina`, `--help`, ...),
+ * a repeated flag, several
  * targets that are not all file paths (or for review), an environment prefix,
  * and any shell syntax (`cd x && ...`,
  * pipes, redirects, substitutions), so scripted strict gates keep the CLI.
  */
-export function plannotatorCommandToToolInput(command: string): PlannotatorToolInput | null {
+export function plannotatorCommandToToolInput(
+  command: string,
+  parseOptions: PlannotatorToolParseOptions = {},
+): PlannotatorToolInput | null {
   const words = simpleShellCommandWords(command)
   if (!words || words.length < 2) return null
   const program = words[0] as string
@@ -750,6 +829,7 @@ export function plannotatorCommandToToolInput(command: string): PlannotatorToolI
     if (word === '--json') continue
     if (word === '--gate' && (action === 'annotate' || action === 'review')) call.gate = true
     else if (word === '--markdown' && action === 'annotate') options.markdown = true
+    else if (word === '--tailscale' && parseOptions.tailscale === true) call.tailscale = true
     else if (word === '--base' && action === 'review') {
       const value = rest[index + 1]
       if (value === undefined || value.startsWith('-')) return null
@@ -766,6 +846,6 @@ export function plannotatorCommandToToolInput(command: string): PlannotatorToolI
     call.target = targets
   } else if (targets.length === 1) call.target = targets[0]
   if (Object.keys(options).length > 0) call.options = options
-  const parsed = parsePlannotatorToolInput(call)
+  const parsed = parsePlannotatorToolInput(call, parseOptions)
   return parsed.ok ? parsed.input : null
 }
