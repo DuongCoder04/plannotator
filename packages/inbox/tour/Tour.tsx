@@ -18,6 +18,7 @@ import { MessageBody } from '../components/Thread';
 import { Sidebar } from '../components/Sidebar';
 import { Tip } from '../components/Tip';
 import { TOUR_IMAGE_BASE } from '../images';
+import { TOUR_MOCK_STILL, preloadTourAssets, tourAssetLoaded, tourMockHtml } from './assets';
 import { sentAnswersOf } from '../sentReply';
 import type { ProjectFolder } from '../api';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
@@ -32,6 +33,8 @@ import {
   tourAssetUrl,
   tourCanBack,
   tourFullPicture,
+  tourPickOf,
+  tourPickWords,
   tourMessages,
   tourQuestion,
   tourSections,
@@ -39,6 +42,7 @@ import {
   tourWaitingCount,
   type TourAction,
   type TourCoach as TourCoachModel,
+  type TourDegraded,
   type TourFixture,
   type TourFixtureMessage,
   type TourPicture,
@@ -50,27 +54,61 @@ import {
 
 let fixtureLoad: Promise<TourFixture> | null = null;
 
-/** The fixture, read once per page (and again after a failed read). */
-export function useTourFixture(active: boolean): { fixture: TourFixture | null; error: string | null; retry: () => void } {
+/** For tests: the next tour reads the fixture again (a page reads it once). */
+export function __forgetTourFixtureForTests(): void {
+  fixtureLoad = null;
+}
+
+/**
+ * The whole tour, loaded once per page before it shows (assets.ts): the
+ * fixture (tried three times), then every picture and the mock into memory.
+ * Resolves null when the fixture cannot be had: the tour then never starts
+ * (the window offers the first-run screen instead, and Settings keeps the
+ * tour for later). Never rejects. The entry screen calls it early, so Start
+ * is at once.
+ */
+export function loadTour(): Promise<TourFixture | null> {
+  fixtureLoad ??= (async () => {
+    for (const wait of [0, 400, 1200]) {
+      if (wait) await new Promise((done) => setTimeout(done, wait));
+      try {
+        const fixture = parseTourFixture(await inboxApi.tourFixture());
+        await preloadTourAssets(fixture);
+        return fixture;
+      } catch {
+        // Tried again, then the tour is not offered on this load.
+      }
+    }
+    throw new Error('no tour');
+  })();
+  return fixtureLoad.then(
+    (fixture) => fixture,
+    () => {
+      fixtureLoad = null;
+      return null;
+    },
+  );
+}
+
+/** The tour's content while it shows: `unavailable` once it cannot be had (the window then leaves the tour, quietly). */
+export function useTourFixture(active: boolean): { fixture: TourFixture | null; unavailable: boolean } {
   const [fixture, setFixture] = useState<TourFixture | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
+    // Forgotten once the tour is left, so the next start (Settings) tries again rather than leaving at once.
+    if (!active) setUnavailable(false);
     if (!active || fixture) return;
     let gone = false;
-    fixtureLoad ??= inboxApi.tourFixture().then(parseTourFixture);
-    fixtureLoad.then(
-      (f) => !gone && (setFixture(f), setError(null)),
-      (cause: unknown) => {
-        fixtureLoad = null;
-        if (!gone) setError(cause instanceof Error ? cause.message : String(cause));
-      },
-    );
+    void loadTour().then((f) => {
+      if (gone) return;
+      if (f) setFixture(f);
+      else setUnavailable(true);
+    });
     return () => {
       gone = true;
     };
-  }, [active, fixture, attempt]);
-  return { fixture, error, retry: () => setAttempt((n) => n + 1) };
+  }, [active, fixture]);
+  return { fixture, unavailable };
 }
 
 /**
@@ -175,7 +213,10 @@ const TARGET_SELECTORS: Record<TourTarget, string> = {
 /** The element a coach card points at, when it is on screen. */
 export function tourTargetElement(target: TourTarget | null, root: ParentNode = document): HTMLElement | null {
   if (!target) return null;
-  return root.querySelector<HTMLElement>(TARGET_SELECTORS[target]);
+  const el = root.querySelector<HTMLElement>(TARGET_SELECTORS[target]);
+  // Pictures that did not load: the card draws its choices as rows, and the coach points at the card.
+  if (!el && target === 'choices') return root.querySelector<HTMLElement>('[data-tour-message="ask"] .question-block');
+  return el;
 }
 
 type Side = 'right' | 'left' | 'below' | 'above' | 'corner';
@@ -393,6 +434,8 @@ export interface TourViewerPicture {
 /** A picture large, over the window (the file viewer's stand-in): Close and Escape leave it, focus goes back where it was. */
 export function TourViewer({ picture, onPick, onClose }: { picture: TourViewerPicture; onPick: (label: string) => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  // A picture that is not here: the caption and the picture's own words, calmly, in its place.
+  const [failed, setFailed] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus();
@@ -432,7 +475,13 @@ export function TourViewer({ picture, onPick, onClose }: { picture: TourViewerPi
           </Tip>
         </header>
         <div className="ib-tv-stage">
-          <img src={tourAssetUrl(picture.asset)} alt={picture.alt} />
+          {failed ? (
+            <p className="ib-tv-words" data-tour-viewer-words="">
+              {picture.alt}
+            </p>
+          ) : (
+            <img src={tourAssetUrl(picture.asset)} alt={picture.alt} onError={() => setFailed(true)} />
+          )}
         </div>
         {picture.pick && (
           <footer>
@@ -514,11 +563,13 @@ function MessageHead({ who, host, to, time, project, replay }: { who: string; ho
 }
 
 function Gallery({ pictures, onOpen }: { pictures: TourPicture[]; onOpen: (picture: TourPicture, opener: HTMLElement) => void }) {
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   return (
     <div className="ib-tour-gal">
       {pictures.map((p) => (
         <button key={p.name} type="button" onClick={(event) => onOpen(p, event.currentTarget)} aria-label={`Open ${p.name}, ${p.caption}`} data-tour-picture={p.asset}>
-          <img src={tourAssetUrl(p.asset)} alt="" loading="lazy" />
+          {/* A picture that did not load leaves its name and caption, never a broken image. */}
+          {!failed.has(p.asset) && <img src={tourAssetUrl(p.asset)} alt="" loading="lazy" onError={() => setFailed((now) => new Set(now).add(p.asset))} />}
           <span className="ib-tg-n">{p.name}</span>
           <span className="ib-kd">{p.caption}</span>
         </button>
@@ -538,6 +589,8 @@ export interface TourMainProps {
   stacked: { thread: boolean; file: boolean };
   reduced: boolean;
   say: (text: string) => void;
+  /** What did not load (the pictures, the mock), so the coach says only what is on screen. */
+  onDegraded?: (change: TourDegraded) => void;
 }
 
 /** The view on top, for `.pn-inbox[data-view]` (the window's phone and stacked rules read it). */
@@ -546,8 +599,24 @@ export function tourView(state: TourState): 'list' | 'thread' | 'file' {
   return state.route === 'list' ? 'list' : 'thread';
 }
 
-export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say }: TourMainProps) {
+export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say, onDegraded }: TourMainProps) {
   const [viewer, setViewer] = useState<{ picture: TourViewerPicture; opener: HTMLElement | null } | null>(null);
+  const degradedRef = useRef(onDegraded);
+  degradedRef.current = onDegraded;
+  // A tour picture that fails (assets missing, the server stopped): once the question's card has drawn its
+  // choices as rows instead of pictures, the coach stops calling them pictures.
+  useEffect(() => {
+    const onError = (event: Event) => {
+      const img = event.target;
+      if (!(img instanceof HTMLImageElement) || !img.src.includes('/api/inbox/tour/assets/')) return;
+      requestAnimationFrame(() => {
+        const card = document.querySelector('[data-tour-message="ask"] .question-block');
+        if (card && !card.querySelector('[data-question-tiles]')) degradedRef.current?.({ pictures: true });
+      });
+    };
+    document.addEventListener('error', onError, true);
+    return () => document.removeEventListener('error', onError, true);
+  }, []);
   const question = useMemo(() => tourQuestion(fixture), [fixture]);
   const sections = useMemo(() => tourSections(fixture, state), [fixture, state]);
   const openThread = state.route === 'list' ? null : state.route;
@@ -613,7 +682,9 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
     />
   ) : null;
 
-  const file = state.mock ? <TourFilePane phone={phone} stacked={stacked.file} onClose={() => dispatch({ type: 'closeMock' }, { focusCoach: false })} /> : null;
+  const file = state.mock ? (
+    <TourFilePane phone={phone} stacked={stacked.file} onClose={() => dispatch({ type: 'closeMock' }, { focusCoach: false })} onState={(mock) => onDegraded?.({ mock })} />
+  ) : null;
 
   let main: ReactNode;
   if (phone) main = file ?? pane ?? list;
@@ -779,7 +850,8 @@ function TourThreadPane({
             const q = m.questions?.find((x) => x.key === key);
             if (!q?.answer) return null;
             if (q.state === 'sent') return `Sent ${tour ? tourTime('12:17') : fx?.sent_at ? tourTime(fx.sent_at) : ''}`.trim();
-            return 'Picked · in your draft';
+            if (q.answer.skipped) return 'Skipped · in your draft';
+            return tourPickOf(q.answer) ? 'Picked · in your draft' : 'Note · in your draft';
           };
           const sentAnswers = view.reply || fx?.answers ? sentAnswersOf(m, wires, (asking) => `Claude Code’s message, ${tourTime(fixtureTime(fixture, asking.id))}`) : undefined;
           const arrival = view.replay ? fx?.replay : undefined;
@@ -809,7 +881,7 @@ function TourThreadPane({
                 <div className="ib-msg">
                   {arrival === 1 && pickDiffers(state, realAnswer) && (
                     <p className="ib-tour-note" data-tour-differs="">
-                      You picked {state.picked}. In the real thread the answer was {realAnswer.split(' · ')[0]}, so this is what Claude Code built.
+                      {tourPickWords(state.picked!)}. In the real thread the answer was {realAnswer.split(' · ')[0]}, so this is what Claude Code built.
                     </p>
                   )}
                   <MessageBody
@@ -819,9 +891,11 @@ function TourThreadPane({
                     readOnly={!isAgent || !tour || !asks || state.sent}
                     answers={answers}
                     onPick={(_key, answer) => {
-                      const label = answer?.selected?.[0] ?? null;
-                      dispatch({ type: 'pick', label });
-                      if (label) say(`Picked ${label}. Press Send.`);
+                      // Other's words, a skip and a note are the replay's too: kept on the card, and Send replays them.
+                      const before = state.picked;
+                      const picked = tourPickOf(answer);
+                      dispatch({ type: 'pick', label: picked, answer });
+                      if (picked && (answer?.selected?.length || before === null)) say(`${tourPickWords(picked)}. Press Send.`);
                     }}
                     footerFor={footerFor}
                     sentAnswers={sentAnswers}
@@ -870,6 +944,8 @@ function TourThreadPane({
                                 {a.kind} · {a.size}
                               </span>
                             </span>
+                            {/* Named, not opened: the tour carries only the mock. Not a control, and it says so. */}
+                            <span className="ib-tft-o ib-tft-off">Not in the tour</span>
                           </span>
                         ),
                       )}
@@ -932,9 +1008,32 @@ function fixtureTime(fixture: TourFixture, messageId: string): string {
   return '12:00';
 }
 
-/** prototype.html beside the thread: the real mockups Claude Code sent, live and sandboxed (no allow-same-origin). */
-function TourFilePane({ phone, stacked, onClose }: { phone: boolean; stacked: boolean; onClose: () => void }) {
+/**
+ * The mock's own policy inside its srcdoc frame (the frame also inherits the
+ * window's): its inline scripts and styles, pictures from data: and blob:,
+ * nothing fetched, the same as the asset route serves it with.
+ */
+const MOCK_FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; base-uri 'none'";
+
+function mockSrcdoc(html: string): string {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${MOCK_FRAME_CSP}">`;
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (head) => `${head}${meta}`) : `${meta}${html}`;
+}
+
+/**
+ * prototype.html beside the thread: the real mockups Claude Code sent, live and sandboxed (no allow-same-origin),
+ * drawn from the copy the tour loaded when it started, so a server that stops mid-tour changes nothing. Without
+ * that copy: a still picture of it (direction A), else a quiet card naming what it is; never an error.
+ */
+function TourFilePane({ phone, stacked, onClose, onState }: { phone: boolean; stacked: boolean; onClose: () => void; onState: (mock: 'still' | 'none' | null) => void }) {
   const covers = phone || stacked;
+  const html = tourMockHtml();
+  const shows: 'live' | 'still' | 'none' = html ? 'live' : tourAssetLoaded(TOUR_MOCK_STILL) ? 'still' : 'none';
+  const stateRef = useRef(onState);
+  stateRef.current = onState;
+  useEffect(() => {
+    stateRef.current(shows === 'live' ? null : shows);
+  }, [shows]);
   return (
     <section className="ib-tour-file" aria-label="prototype.html" data-tour-file="">
       <header>
@@ -945,7 +1044,9 @@ function TourFilePane({ phone, stacked, onClose }: { phone: boolean; stacked: bo
           </button>
         )}
         <span className="ib-tf-n">prototype.html</span>
-        <span className="ib-mut ib-tf-from">from Claude Code · {tourTime('12:03')} · runs here, sandboxed</span>
+        <span className="ib-mut ib-tf-from">
+          from Claude Code · {tourTime('12:03')} · {shows === 'live' ? 'runs here, sandboxed' : shows === 'still' ? 'direction A' : 'clickable mockups of the directions'}
+        </span>
         <span className="ib-sp" />
         {!covers && (
           <Tip content="Close the file">
@@ -955,30 +1056,37 @@ function TourFilePane({ phone, stacked, onClose }: { phone: boolean; stacked: bo
           </Tip>
         )}
       </header>
-      <iframe title="The VS Code mockups Claude Code sent" sandbox="allow-scripts" src={tourAssetUrl('vscode-mockups.html')} />
+      {shows === 'live' ? (
+        <iframe title="The VS Code mockups Claude Code sent" sandbox="allow-scripts" srcDoc={mockSrcdoc(html!)} />
+      ) : shows === 'still' ? (
+        <div className="ib-tf-still" data-tour-file-still="">
+          <img src={tourAssetUrl(TOUR_MOCK_STILL)} alt="Direction A, mocked in VS Code: our guide reader in one tab, chapters beside their diffs" />
+        </div>
+      ) : (
+        <div className="ib-empty ib-tf-card" data-tour-file-card="">
+          <h2 tabIndex={-1}>prototype.html</h2>
+          <p className="ib-mut">One VS Code window with all four directions to click through, the same ones the question showed.</p>
+        </div>
+      )}
     </section>
   );
 }
 
-/** Where the tour's own screens are loading or could not load: Exit is in the bar above. */
-export function TourLoading({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+/** While the tour loads (its content, once per page): a quiet heading; Exit is in the bar above. */
+export function TourLoading() {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Focus never drops to the page: when nothing holds it (a reload of #tour=N), the screen's heading takes it.
+  useEffect(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body || !active.isConnected) headingRef.current?.focus({ preventScroll: true });
+  }, []);
   return (
     <section className="ib-listcol" aria-label="Tour">
       <div className="ib-lbody">
-        <div className="ib-empty" data-tour-loading={error ? 'failed' : 'loading'} aria-busy={!error || undefined}>
-          {error ? (
-            <>
-              <h2>The tour could not load</h2>
-              <p className="ib-mut">{error}</p>
-              <div>
-                <button type="button" className="ib-btn" onClick={onRetry}>
-                  Try again
-                </button>
-              </div>
-            </>
-          ) : (
-            <h2>Loading the tour…</h2>
-          )}
+        <div className="ib-empty" data-tour-loading="loading" aria-busy="true">
+          <h2 ref={headingRef} tabIndex={-1}>
+            Loading the tour…
+          </h2>
         </div>
       </div>
     </section>
