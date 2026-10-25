@@ -356,10 +356,11 @@ export class PlannotatorMod {
           tools: session.inboxTools,
           ...(session.inboxToolName ? { toolName: session.inboxToolName } : {}),
           isBusy: () => this.turns.busy,
-          // Send now goes into a running main turn, never into this session's own Ask question.
+          // Send now goes into a running main turn, never into this session's own Ask question, and
+          // never into a turn another plugin's prompt started (that plugin may read its answer as its own).
           steerableTurn: () => {
             const turn = this.turns.runningTurn
-            return turn !== null && !this.turns.ownsTurn(turn) ? turn : null
+            return turn !== null && !this.turns.ownsTurn(turn) && !this.turns.isOtherPluginTurn(turn) ? turn : null
           },
           ...(session.cwd ? { cwd: session.cwd } : {}),
           ...(session.root ? { root: session.root } : {}),
