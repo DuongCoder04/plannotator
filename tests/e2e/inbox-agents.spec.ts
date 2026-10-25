@@ -239,13 +239,38 @@ test('plannotator inbox connects the agents found; the note is asked once per ag
     await page.reload();
     await expectNoDialog(page);
 
-    // A run that connects only an agent with no note file (Cursor): news, but no question, so no dialog.
+    // Cursor's global User Rules have no supported file path: offer manual copy without reporting installation.
     mkdirSync(join(fake.home, '.cursor'), { recursive: true });
     const cursor = run(['--no-open']);
     expect(cursor.status, cursor.stderr).toBe(0);
     expect(cursor.stderr).toContain('Connected Cursor to the Inbox (new on this computer).');
     await page.reload();
-    await expectNoDialog(page);
+    const cursorDialog = dialogOf(page);
+    await expect(cursorDialog).toBeVisible({ timeout: 15_000 });
+    await expect(cursorDialog.getByRole('heading', { name: 'Add the note to Cursor?' })).toBeVisible();
+    await expect(rowsOf(page).locator('.ib-anote-path')).toHaveCount(0);
+    await expect(cursorDialog.locator('[data-anote-primary]')).toHaveText('Show note to copy');
+    await cursorDialog.locator('[data-anote-primary]').click();
+    await expect(cursorDialog.getByRole('heading', { name: 'Copy the note into Cursor Settings → Rules' })).toBeVisible();
+    await expect(rowsOf(page).locator('.ib-anote-st')).toHaveText('Copy manually');
+    await expect(cursorDialog.locator('.ib-anote-doneline')).toContainText('Plannotator cannot detect, update or remove a copied rule.');
+    await expect(cursorDialog.locator('.ib-anote-note pre')).toContainText('## Plannotator Inbox');
+    await expect(cursorDialog.locator('.ib-anote-note pre')).not.toContainText('plannotator-inbox:start');
+    expect(existsSync(join(fake.home, '.cursor', 'rules'))).toBe(false);
+    const noteRecords = JSON.parse(readFileSync(join(root, 'data', 'inbox', 'agent-notes.json'), 'utf8')) as { notes: Record<string, unknown> };
+    expect(noteRecords.notes).not.toHaveProperty('cursor');
+    expect(config(root).inboxAgentNotes.asked).toContain('cursor');
+    await cursorDialog.getByRole('button', { name: 'Done' }).click();
+    await expect(cursorDialog).toHaveCount(0);
+    await page.goto(`${url}#settings/agents`);
+    const cursorSettings = page.locator('[data-agent="cursor"]');
+    const cursorNoteRow = cursorSettings.locator('.ib-agrow').filter({ hasText: 'Note in its instructions' });
+    await expect(cursorNoteRow).toContainText('copy into Settings → Rules');
+    await expect(cursorNoteRow.getByRole('switch')).toHaveCount(0);
+    await cursorSettings.getByRole('button', { name: 'Show note' }).click();
+    await expect(cursorSettings.locator('.ib-agnote')).toContainText('Plannotator cannot detect, update or remove a copied rule.');
+    await expect(cursorSettings.locator('.ib-agnote pre')).toContainText('## Plannotator Inbox');
+    await expect(cursorSettings.locator('.ib-agnote pre')).not.toContainText('plannotator-inbox:start');
   } finally {
     await context.close().catch(() => {});
     await removeInboxScratch(root);

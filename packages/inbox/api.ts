@@ -827,7 +827,7 @@ export const inboxApi = {
 };
 
 /** One note the dialog asked to add: written, or why not. */
-export type InboxNoteResult = { ok: true; agent: InboxNoteAgentId; action: string; path: string } | { ok: false; agent: InboxNoteAgentId; reason: string; path: string | null };
+export type InboxNoteResult = { ok: true; agent: InboxNoteAgentId; action: string; path: string | null } | { ok: false; agent: InboxNoteAgentId; reason: string; path: string | null };
 
 /** One store line as the event stream carries it (packages/server/inbox.ts, `eventPayload`). */
 export type InboxEvent =

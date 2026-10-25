@@ -33,7 +33,7 @@ import { handleInboxServerReady, startInboxServer } from "@plannotator/server/in
 import { exposureWarning, type InboxTailscaleState } from "@plannotator/server/inbox-tailscale";
 import { openBrowser } from "@plannotator/server/browser";
 import { agentSpec, createAgentEnvironment, formatConnectReport, inboxConnectDisabled } from "@plannotator/server/inbox-agents";
-import { addInboxNote, inboxNotesDisabled, markNotesAsked } from "@plannotator/server/inbox-agent-notes";
+import { addInboxNote, INBOX_NOTE_BODY, inboxNotesDisabled, markNotesAsked } from "@plannotator/server/inbox-agent-notes";
 import { INBOX_AGENT_LABELS, INBOX_AUTO_SEND_AFTER_MS, INBOX_NOTE_AGENT_IDS, type InboxConnectReport, type InboxNoteAgentId } from "@plannotator/core/inbox-types";
 import { writeUrlQr } from "@plannotator/server/qr";
 import { getCliVersion } from "./cli";
@@ -314,6 +314,12 @@ async function writeNotes(dataDir: string, list: string): Promise<number> {
   const added: InboxNoteAgentId[] = [];
   for (const id of ids as InboxNoteAgentId[]) {
     const label = INBOX_AGENT_LABELS[id];
+    if (id === "cursor") {
+      process.stdout.write(`${INBOX_NOTE_BODY}\n\n`);
+      process.stderr.write("Cursor User Rules are managed in Cursor Settings → Rules. Copy the block above there; Plannotator cannot detect, update or remove a copied rule.\n");
+      added.push(id);
+      continue;
+    }
     // Never a file for an agent that is not on this computer.
     if (!agentSpec(id).detect(environment)) {
       ok = false;
@@ -342,7 +348,7 @@ async function writeNotes(dataDir: string, list: string): Promise<number> {
   }
   // The window never asks about an agent whose note is there now; the others are still asked, once each.
   await markNotesAsked(added, { dataDir, selfCommand: selfCommand(), environment });
-  if (ok) process.stderr.write("Each agent reads it from its next session. Remove it in the Inbox's Settings or with plannotator uninstall.\n");
+  if (ok && added.some((id) => id !== "cursor")) process.stderr.write("Managed notes are read from each agent's next session. Remove them in the Inbox's Settings or with plannotator uninstall.\n");
   return ok ? 0 : 1;
 }
 
