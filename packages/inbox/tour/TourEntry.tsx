@@ -57,7 +57,8 @@ export function TourEntry({ model, onStart, onConnect }: { model: TourEntryModel
           <div className="ib-te-paths">
             <section className="ib-te-card ib-te-tour" aria-labelledby="ib-te-tour-h">
               <div className="ib-te-pic">
-                <img src={tourAssetUrl('vs-a-thumb.webp')} alt="" />
+                {/* Not here: the card keeps its calm ground, never a broken image. */}
+                <img src={tourAssetUrl('vs-a-thumb.webp')} alt="" onError={(event) => (event.currentTarget.style.visibility = 'hidden')} />
                 <span className="ib-te-time">
                   <Icon name="play" size={12} />2 min
                 </span>

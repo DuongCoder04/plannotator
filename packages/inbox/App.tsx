@@ -64,7 +64,7 @@ import { inboxThreadShortcuts } from './shortcuts/thread.shortcuts';
 import { isComposingKey, isEditableTarget, isRepeatKey } from './shortcuts/guards';
 import { EmptyState } from './components/EmptyState';
 import { Icon } from './icons';
-import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
+import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, loadTour, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
 import { TourEntry, tourEntryModel } from './tour/TourEntry';
 import { TOUR_FIRST_QUESTION_PROMPT, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded } from './tour/model';
 import { ThreadWait } from './components/ThreadWait';
@@ -2363,6 +2363,12 @@ function Inbox() {
   const [tourState, dispatchTourRaw] = useReducer(tourReducer, TOUR_START);
   const tourContent = useTourFixture(tourOn);
   const tourFixture = tourContent.fixture;
+  /**
+   * The tour's content cannot be had on this load (the fixture did not come, three tries): the tour is never
+   * shown, and never an error (the owner: the tour is all positive). The entry screen and the first-run screen's
+   * tour line stand down, so the first-run screen shows; Settings → Getting started keeps the tour for later.
+   */
+  const [tourUnavailable, setTourUnavailable] = useState(false);
   const tourReal = tourFixture?.threads.find((t) => t.id === TOUR_THREAD)?.real_answer ?? '';
   /** Raised when the person acted and the coach card changed: focus goes to its title. */
   const [coachFocus, setCoachFocus] = useState(0);
@@ -2635,7 +2641,27 @@ function Inbox() {
   // The first-run screen drew without the settings (their read failed or was late): it stays, and once the
   // settings come it gains its quiet "Take the tour" line rather than turning into the entry screen under the person.
   const firstRunDrawnBare = useRef(false);
-  const showTourEntry = firstRun && !!settings?.tour && !tourDecided && !firstRunDrawnBare.current;
+  const showTourEntry = firstRun && !!settings?.tour && !tourDecided && !firstRunDrawnBare.current && !tourUnavailable;
+  // The entry screen loads the tour while it shows, so Start is at once; content that cannot be had takes the
+  // entry screen away before anyone presses Start (the first-run screen shows instead).
+  useEffect(() => {
+    if (!showTourEntry) return;
+    let gone = false;
+    void loadTour().then((fixture) => !gone && fixture === null && setTourUnavailable(true));
+    return () => {
+      gone = true;
+    };
+  }, [showTourEntry]);
+  // Started, and the content cannot be had: the tour leaves without a word, back where it was started (the
+  // first-run screen, Settings), recording nothing.
+  useEffect(() => {
+    if (!tourOn || !tourContent.unavailable) return;
+    setTourUnavailable(true);
+    tourEnding.current = true;
+    writeRoute(routeOf(tourReturn.current), { replace: true });
+    landFocusAfterTour();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourOn, tourContent.unavailable]);
   // While there are no settings, they are read again (1 s, then doubling to 15 s): one failed or hung read
   // never leaves the window without them. A read late by 1.5 s draws the first-run screen anyway.
   const settingsMissing = settings === null && latest !== null;
@@ -2831,7 +2857,7 @@ function Inbox() {
       onMessage={(session, opener) => openCompose({ session }, opener)}
       heading={opts.tour ? 'Now, let’s connect your agents' : undefined}
       lead={opts.tour ? 'Back in your own Inbox. Nothing from the tour was kept.' : undefined}
-      onTakeTour={opts.tour || !settings?.tour ? undefined : startTour}
+      onTakeTour={opts.tour || !settings?.tour || tourUnavailable ? undefined : startTour}
       tryPrompt={opts.tour ? TOUR_FIRST_QUESTION_PROMPT : undefined}
       ask={
         opts.tour ? (
@@ -2873,7 +2899,7 @@ function Inbox() {
 
   let main: ReactNode;
   if (tourOn && !tourFixture) {
-    main = <TourLoading error={tourContent.error} onRetry={tourContent.retry} />;
+    main = <TourLoading />;
   } else if (tourOn && tourFixture && tourState.step < TOUR_STEPS) {
     main = <TourMain fixture={tourFixture} state={tourState} dispatch={dispatchTour} phone={phone} stacked={stack} reduced={reducedMotion} say={say} onDegraded={degradeTour} />;
   } else if (tourOn) {
@@ -2949,7 +2975,9 @@ function Inbox() {
           if (!backTo(hash)) go(routeOf(hash));
         }}
         onUpdate={pressUpdate}
-        onTakeTour={settings?.tour && settings.tour.seen_at === null && settings.tour.skipped_at === null && settings.tour.finished_at === null ? startTour : undefined}
+        onTakeTour={
+          settings?.tour && !tourUnavailable && settings.tour.seen_at === null && settings.tour.skipped_at === null && settings.tour.finished_at === null ? startTour : undefined
+        }
       />
     );
   } else if (route.page === 'drafts') {

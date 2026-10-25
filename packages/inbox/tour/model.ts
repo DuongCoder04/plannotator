@@ -13,6 +13,7 @@ import { parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
 import type { InboxListRow, InboxListSection, InboxMessageWire, InboxQuestion, InboxSectionId } from '@plannotator/core/inbox-types';
 import { INBOX_SECTIONS } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
+import { tourAssetLoaded, tourAssetUrl } from './assets';
 
 export const TOUR_STEPS = 6;
 
@@ -91,7 +92,7 @@ export interface TourFixture {
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const ASSET_RE = /^[a-z0-9][a-z0-9.-]*\.(webp|html)$/;
 
-/** The fixture as the server serves it, checked: anything else is refused (the tour then says it could not load). */
+/** The fixture as the server serves it, checked: anything else is refused (the tour is then not offered on this load). */
 export function parseTourFixture(input: unknown): TourFixture {
   const fail = (why: string): never => {
     throw new Error(`The tour's content is not readable: ${why}.`);
@@ -305,13 +306,15 @@ export interface TourCoach {
 }
 
 /**
- * What did not load, so the coach never says what is not on screen: the
- * pictures (the card then names its choices in words), and the mock (`missing`:
- * not in this build; `down`: the Inbox server is not answering).
+ * What the tour is drawing in place of a piece that is not here, so the coach
+ * says only what is on screen, and always as what it shows, never as a
+ * failure (the owner: the tour is all positive): the pictures (the card names
+ * its choices in words), the mock (`still`: a still picture of it; `none`:
+ * the coach describes it).
  */
 export interface TourDegraded {
   pictures?: boolean;
-  mock?: 'missing' | 'down' | null;
+  mock?: 'still' | 'none' | null;
 }
 
 /** The coach card a state shows (steps 1 to 5; step 6 is the person's own screen and has none). */
@@ -334,7 +337,7 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
     return {
       key: '2',
       title: 'Pick a direction',
-      text: `${agent} sent its choices as pictures of VS Code; they did not load here, so the card names each one.`,
+      text: `These are ${agent}’s four directions for the VS Code guide, each named on the card.`,
       action: 'Pick the direction you would build.',
       target: 'choices',
     };
@@ -382,11 +385,11 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
   if (degraded.mock)
     return {
       key: '5-mock',
-      title: 'The mock could not load',
+      title: 'The mock behind the pictures',
       text:
-        degraded.mock === 'down'
-          ? 'The Inbox server is not answering, so prototype.html cannot run here. Go on when you like.'
-          : 'prototype.html is missing from this Plannotator, so it cannot run here. Go on when you like.',
+        degraded.mock === 'still'
+          ? `Direction A as ${agent} mocked it in VS Code: our guide reader in one tab, chapters beside their diffs. Go on when you like.`
+          : `prototype.html is one VS Code window with all four directions to click through, the same ones the question showed. Go on when you like.`,
       next: true,
       target: 'file',
     };
@@ -586,12 +589,15 @@ export function tourWaitingCount(state: TourState): number {
   return state.sent ? 0 : 1;
 }
 
-/** The URL a tour asset loads from (read only; the server serves only names its manifest lists). */
-export function tourAssetUrl(name: string): string {
-  return `/api/inbox/tour/assets/${encodeURIComponent(name)}`;
-}
+/** The URL a tour asset loads from: in memory once the tour loaded it, else the read-only asset route (assets.ts). */
+export { tourAssetUrl };
 
-/** The larger picture the viewer shows for a tile's thumbnail (the fixture's `full` map), else the thumbnail itself. */
+/**
+ * The larger picture the viewer shows for a tile's thumbnail (the fixture's `full` map), else the thumbnail
+ * itself: also when the larger one is not in memory and the thumbnail is.
+ */
 export function tourFullPicture(fixture: TourFixture, name: string): string {
-  return fixture.full[name] ?? name;
+  const full = fixture.full[name];
+  if (!full) return name;
+  return !tourAssetLoaded(full) && tourAssetLoaded(name) ? name : full;
 }

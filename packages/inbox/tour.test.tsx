@@ -21,7 +21,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -29,6 +29,7 @@ import { join, resolve } from 'node:path';
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
 const { __forgetTourFixtureForTests } = (hasDom ? await import('./tour/Tour') : {}) as typeof import('./tour/Tour');
+const { __forgetTourAssetsForTests } = await import('./tour/assets');
 const { setStorageBackend, resetStorageBackend } = await import('@plannotator/ui/utils/storage');
 
 const SERVER_SCRIPT = resolve(import.meta.dir, '../../tests/helpers/inbox-dom-server.ts');
@@ -92,6 +93,11 @@ beforeEach(async () => {
   // Cookies, kept in memory per test (happy-dom's about:blank keeps none): the browser's memory of a tour
   // decision that could not be saved is never carried between tests.
   const jar = new Map<string, string>();
+  // Each test loads the tour's content itself (a page loads it once).
+  if (hasDom) {
+    __forgetTourFixtureForTests();
+    __forgetTourAssetsForTests();
+  }
   setStorageBackend({ getItem: (k) => jar.get(k) ?? null, setItem: (k, v) => void jar.set(k, v), removeItem: (k) => void jar.delete(k) });
   tailnetPage = false;
   savedFetch = globalThis.fetch;
@@ -281,7 +287,8 @@ test.skipIf(!hasDom)('the walk: a replay that writes nothing but the tour settin
   await until(() => coachKey(el) === '5-mock', 'the mock open');
   const frame = $(el, '[data-tour-file] iframe') as HTMLIFrameElement;
   expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
-  expect(frame.getAttribute('src')).toBe('/api/inbox/tour/assets/vscode-mockups.html');
+  // Drawn from the copy the tour loaded when it started.
+  expect(frame.getAttribute('srcdoc')).toContain('<');
   await click($(el, '[data-tour-next]'));
   await until(() => window.location.hash === '#tour=6', 'step 6');
   await until(() => $(el, '.ib-empty h2')?.textContent === 'Now, let’s connect your agents', 'step 6’s screen');
@@ -550,21 +557,62 @@ test.skipIf(!hasDom)('the step-6 chip ends the tour as finished, not skipped', a
   expect(config().inboxTour.skipped_at ?? null).toBeNull();
 }, 90_000);
 
-test.skipIf(!hasDom)('focus never drops to the page: could-not-load, Try again, a hash change mid-tour, Back out of the tour', async () => {
-  let fail = true;
-  intercept = (path) => (path.startsWith('/api/inbox/tour/fixture.json') && fail ? Response.json({ error: 'boom' }, { status: 500 }) : null);
-  __forgetTourFixtureForTests();
+/** Every word the tour may never show: the tour is all positive (the owner, on #2178). */
+const NEVER_IN_THE_TOUR = /could not|couldn’t|not answering|did not load|didn’t load|try again|error|failed|missing/i;
+
+test.skipIf(!hasDom)('content that cannot be had never starts the tour: no error, the first-run screen, the tour kept in Settings', async () => {
+  intercept = (path) => (path.startsWith('/api/inbox/tour/fixture.json') ? Response.json({ error: 'boom' }, { status: 500 }) : null);
+  // A link (or a reload) of #tour=2: the tour leaves without a word.
   await act(async () => {
     window.location.hash = '#tour=2';
   });
   const el = await renderApp();
-  await until(() => $(el, '[data-tour-loading="failed"]') !== null, 'could not load');
-  await until(() => document.activeElement === $(el, '[data-tour-loading] h2'), 'focus on the screen');
-  fail = false;
-  $(el, '[data-tour-loading] button')!.focus();
-  await click($(el, '[data-tour-loading] button'));
+  await until(() => $(el, '[data-tour-bar]') === null && $(el, '[data-inbox-empty]') !== null, 'the first-run screen');
+  expect(el.textContent ?? '').not.toMatch(NEVER_IN_THE_TOUR);
+  expect(window.location.hash).toBe('');
+  // The entry screen and the first-run screen's tour line stand down; nothing recorded.
+  expect($(el, '[data-tour-entry]')).toBeNull();
+  expect($(el, '[data-tour-again]')).toBeNull();
+  expect(existsSync(join(dir!, 'data', 'config.json')) ? (config().inboxTour?.skipped_at ?? null) : null).toBeNull();
+  await until(() => !activeIsPage(), 'focus on the Inbox');
+  // Settings → Getting started keeps it: once the content can be had, it starts.
+  intercept = null;
+  await act(async () => {
+    window.location.hash = '#settings/general';
+  });
+  await until(() => $(el, '[data-settings-take-tour]') !== null, 'Getting started');
+  await click($(el, '[data-settings-take-tour]'));
+  await until(() => coachKey(el) === '1', 'the tour');
+}, 90_000);
+
+test.skipIf(!hasDom)('the entry screen loads the tour early; content that cannot be had takes it away before Start', async () => {
+  intercept = (path) => (path.startsWith('/api/inbox/tour/fixture.json') ? 'network' : null);
+  const el = await renderApp();
+  await until(() => $(el, '[data-inbox-empty]') !== null && $(el, '[data-tour-entry]') === null, 'the first-run screen in place of the entry screen');
+  expect(el.textContent ?? '').not.toMatch(NEVER_IN_THE_TOUR);
+}, 90_000);
+
+test.skipIf(!hasDom)('focus never drops to the page: the loading screen, a hash change mid-tour, Back out of the tour', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((done) => (release = done));
+  let first = true;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).startsWith('/api/inbox/tour/fixture.json') && first) {
+      first = false;
+      await held;
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  await act(async () => {
+    window.location.hash = '#tour=2';
+  });
+  const el = await renderApp();
+  await until(() => $(el, '[data-tour-loading]') !== null, 'the loading screen');
+  await until(() => document.activeElement === $(el, '[data-tour-loading] h2'), 'focus on the loading screen');
+  release();
   await until(() => coachKey(el) === '2', 'the tour loaded');
-  await until(() => !activeIsPage(), 'focus kept after Try again');
+  await until(() => !activeIsPage(), 'focus kept once the tour shows');
   // A hash change mid-tour that takes the focused control away.
   await until(() => radios(el).length === 4, 'the choices');
   radios(el)[0]!.focus();
@@ -600,27 +648,53 @@ test.skipIf(!hasDom)('the replay takes Other as an answer: kept on the card, and
   expect(writes()).toEqual([]);
 }, 90_000);
 
-test.skipIf(!hasDom)('degraded copy is true: pictures that did not load are not called pictures; a stopped server under the mock says so', async () => {
+test.skipIf(!hasDom)('everything loads when the tour starts: a server that stops mid-tour changes nothing, and the mock runs from memory', async () => {
   const el = await openOnEntry();
   await walkTo(el, 2);
-  // happy-dom loads no picture, so the card names its choices as rows.
-  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'Pick a direction', 'the step-2 card without pictures');
+  // From here on the server answers nothing.
+  intercept = (path) => (path.startsWith('/api/inbox/tour/') ? 'network' : null);
   await walkToFrom2(el);
-  intercept = (path, method) => (path.includes('vscode-mockups.html') && method === 'HEAD' ? 'network' : null);
   await click($(el, '[data-tour-mock-tile]'));
-  await until(() => $(el, '[data-tour-file-problem="down"]') !== null, 'the mock’s problem');
-  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'The mock could not load', 'the coach says so');
-  expect($(el, '[data-tour-file] iframe')).toBeNull();
-  // The server answers again: Try again brings the mock.
-  intercept = null;
-  await click($(el, '[data-tour-file-retry]'));
-  await until(() => $(el, '[data-tour-file] iframe') !== null, 'the mock');
-  await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'It runs right here', 'the coach');
+  await until(() => coachKey(el) === '5-mock', 'the mock open');
+  const frame = $(el, '[data-tour-file] iframe') as HTMLIFrameElement;
+  expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
+  expect(frame.getAttribute('srcdoc')).toContain('Content-Security-Policy');
+  expect($(el, '[data-tour-coach] h2')!.textContent).toBe('It runs right here');
   expect($(el, '[data-tour-coach] p')!.textContent).not.toContain('bottom');
+  expect(el.textContent ?? '').not.toMatch(NEVER_IN_THE_TOUR);
   // A file named but not carried by the tour says so, and is not a control.
   const chip = el.querySelector('.ib-tour-filechip');
   expect(chip?.tagName).toBe('SPAN');
   expect(chip?.textContent).toContain('Not in the tour');
+}, 90_000);
+
+test.skipIf(!hasDom)('a piece that is not here degrades quietly: the pictures named on the card, the mock as a still, else described', async () => {
+  for (const missing of ['mock', 'mock and still'] as const) {
+    __forgetTourFixtureForTests();
+    __forgetTourAssetsForTests();
+    intercept = (path) =>
+      path.includes('vscode-mockups.html') || path.includes('-thumb.webp') || (missing === 'mock and still' && path.endsWith('/vs-a.webp'))
+        ? Response.json({ error: 'Not found' }, { status: 404 })
+        : null;
+    act(() => root?.unmount());
+    host?.remove();
+    await act(async () => {
+      window.location.hash = '#tour=2';
+    });
+    const el = await renderApp();
+    // happy-dom draws no picture, so the card names its choices as rows, and the coach says so calmly.
+    await until(() => $(el, '[data-tour-coach] h2')?.textContent === 'Pick a direction', 'the step-2 card without pictures');
+    await act(async () => {
+      window.location.hash = '#tour=5';
+    });
+    await until(() => coachKey(el) === '5', 'step 5');
+    await click($(el, '[data-tour-mock-tile]'));
+    await until(() => coachKey(el) === '5-mock', 'the mock’s place');
+    expect($(el, '[data-tour-coach] h2')!.textContent).toBe('The mock behind the pictures');
+    expect($(el, missing === 'mock' ? '[data-tour-file-still]' : '[data-tour-file-card]')).not.toBeNull();
+    expect($(el, '[data-tour-file] iframe')).toBeNull();
+    expect(el.textContent ?? '').not.toMatch(NEVER_IN_THE_TOUR);
+  }
 }, 90_000);
 
 /** From step 2: pick, Send, the replay, Next to step 5. */
