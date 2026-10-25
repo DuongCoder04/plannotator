@@ -187,6 +187,7 @@ jobs:
           packages/inbox/wordsOnlyTwoAsks.test.tsx
           packages/inbox/firstRunNotifications.test.tsx
           packages/inbox/sentReply.test.tsx
+          packages/inbox/skillHighlightSent.test.ts
           packages/inbox/threadFoot.test.tsx
           packages/inbox/replyDrafts.test.tsx
           packages/inbox/skipNote.test.tsx

@@ -741,9 +741,11 @@ export interface InboxReplyBodyParts {
  * writes for the agent come out: the first line ("Answered 2 questions."),
  * the still-open line ("You have 1 other question open…") and the answers
  * section, cut only when it follows its grammar exactly
- * (`inboxAnswersSectionEnd`). `words` is what the folded line and search read
- * (`replyWords`, `inboxSearchReplyText`). Display only: the stored body and
- * what agents receive never change.
+ * (`inboxAnswersSectionEnd`). The folded line (`replyWords`) and search
+ * (`inboxSearchReplyText`) read the words with their own, looser rule (they
+ * cut at the first heading or still-open line, grammar or not); for a body
+ * the store wrote the three give the same words (reply-display.test.ts checks
+ * search). Display only: the stored body and what agents receive never change.
  */
 export function splitInboxReplyBody(body: string): InboxReplyBodyParts {
   const lines = body.split("\n");

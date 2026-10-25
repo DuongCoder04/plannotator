@@ -9,7 +9,8 @@
  * what they answered, read from the questions themselves (each sent question
  * names the reply that carried it, `sent_reply_id`), then the comments and
  * files as before. `splitInboxReplyBody` takes the agent-facing parts out of
- * the words, by the same rule the folded line and search read (`replyWords`).
+ * the words. The folded line (`replyWords`) and search read the words with
+ * their own, looser rule; for a body the store wrote they give the same text.
  */
 import { isInboxActionReport, isInboxNote, type InboxMessageWire } from '@plannotator/core/inbox-types';
 import { splitInboxReplyBody, type InboxReplyBodyParts } from '@plannotator/core/inbox-questions';

@@ -47,6 +47,12 @@ let permission: NotificationPermission = 'default';
 let asked = 0;
 /** The agents this computer has, as GET /api/inbox/agents answers. */
 let agentsModel: InboxAgentsModel;
+/** Changes to what GET /api/inbox/settings answers: a page opened over the tailnet, a sound dialog due. */
+let settingsOver: (settings: Record<string, any>) => void = () => {};
+/** The sound dialog's claim answers yes (the one page that shows it). */
+let soundShows = false;
+/** The page came through the tailnet (settings `via`). */
+let tailnetPage = false;
 const posts: { path: string; body: Record<string, unknown> }[] = [];
 
 const NOTE = '<!-- plannotator-inbox:start v1 -->\n## Plannotator Inbox\n<!-- plannotator-inbox:end -->';
@@ -117,6 +123,9 @@ beforeEach(async () => {
 
   permission = 'default';
   asked = 0;
+  settingsOver = () => {};
+  soundShows = false;
+  tailnetPage = false;
   agentsModel = model();
   posts.length = 0;
   savedFetch = globalThis.fetch;
@@ -136,8 +145,19 @@ beforeEach(async () => {
       agentsModel = { ...agentsModel, notes_offered: true, notes_asked: ['codex'] };
       return Response.json({ ...agentsModel, results: [] });
     }
+    // Over the tailnet the agents are local only, as the real listener answers.
+    if (path.startsWith('/api/inbox/agents') && tailnetPage) return Response.json({ error: 'local only', code: 'local_only' }, { status: 403 });
     if (path.startsWith('/api/inbox/agents')) return Response.json(agentsModel);
+    if (path.startsWith('/api/inbox/sound/dialog')) {
+      const settings = JSON.parse((await loopback('/api/inbox/settings')).text) as { sound: unknown };
+      return Response.json({ show: soundShows, sound: settings.sound });
+    }
     const answer = await loopback(path, method, body);
+    if (method === 'GET' && path.startsWith('/api/inbox/settings') && answer.status === 200) {
+      const settings = JSON.parse(answer.text) as Record<string, any>;
+      settingsOver(settings);
+      return Response.json(settings);
+    }
     return new Response(answer.text, { status: answer.status, headers: { 'Content-Type': 'application/json' } });
   }) as typeof fetch;
   savedEventSource = (globalThis as Record<string, unknown>).EventSource;
@@ -172,6 +192,7 @@ afterEach(async () => {
   globalThis.fetch = savedFetch;
   (globalThis as Record<string, unknown>).EventSource = savedEventSource;
   (window as unknown as Record<string, unknown>).Notification = savedNotification;
+  setUrl('about:blank');
   childOut?.releaseLock();
   child?.kill();
   await child?.exited;
@@ -205,6 +226,11 @@ async function renderApp(): Promise<HTMLElement> {
   return host;
 }
 
+/** happy-dom's page address (about:blank by default, whose origin is "null"). */
+function setUrl(url: string) {
+  (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(url);
+}
+
 const firstRunAsk = (el: HTMLElement) => el.querySelector<HTMLElement>('[data-first-run-ask] [data-notification-ask]');
 const listAsk = (el: HTMLElement) => el.querySelector<HTMLElement>('.ib-listcol [data-notification-ask]:not([data-first-run-ask] *)');
 const noteDialog = () => document.querySelector<HTMLDialogElement>('dialog[data-dialog="agent-note"]');
@@ -212,7 +238,15 @@ const buttonIn = (el: Element, name: string) => [...el.querySelectorAll('button'
 
 test.skipIf(!hasDom)('the note dialog first, never with the ask; after it closes the ask shows on the same load, on the first-run screen and above the list', async () => {
   const el = await renderApp();
-  await until(() => noteDialog() !== null, 'the agent-note dialog');
+  // Not before the note dialog is decided (the agents settle after a second read, about 2.5 s): the
+  // dialog would open over a line the person may be pressing, and Turn on would stack the browser's
+  // prompt on it. Checked on every tick until the dialog opens.
+  let askBeforeDialog = false;
+  await until(() => {
+    if (firstRunAsk(el) !== null) askBeforeDialog = true;
+    return noteDialog() !== null;
+  }, 'the agent-note dialog');
+  expect(askBeforeDialog).toBe(false);
   // Two one-time surfaces never stack: no ask while the dialog is open.
   expect(firstRunAsk(el)).toBeNull();
 
@@ -278,4 +312,74 @@ test.skipIf(!hasDom)('blocked: the first-run screen says the first question cann
   expect(firstRunAsk(el)!.getAttribute('data-notification-ask')).toBe('blocked');
   expect(firstRunAsk(el)!.textContent).toContain('so you get no notice when an agent asks you its first question');
   expect(buttonIn(firstRunAsk(el)!, 'How to allow')).toBeDefined();
+}, 30_000);
+
+test.skipIf(!hasDom)('the ask above the list waits for the note dialog too, and comes back on the same load once it closes', async () => {
+  // An Inbox that already has a thread: the list, not the first-run screen.
+  await firstMessage('Hello from Claude Code.');
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  act(() => {
+    root = createRoot(host!);
+    root.render(<InboxApp />);
+  });
+  const el = host;
+  await until(() => el.querySelector('.ib-lbody [data-thread-id]') !== null, 'the list');
+  let askBeforeDialog = false;
+  await until(() => {
+    if (listAsk(el) !== null) askBeforeDialog = true;
+    return noteDialog() !== null;
+  }, 'the agent-note dialog');
+  expect(askBeforeDialog).toBe(false);
+  expect(listAsk(el)).toBeNull();
+  await act(async () => document.querySelector<HTMLButtonElement>('[data-anote-notnow]')!.click());
+  await until(() => listAsk(el) !== null, 'the ask above the list after the dialog');
+  expect(listAsk(el)!.getAttribute('data-notification-ask')).toBe('ask');
+}, 30_000);
+
+test.skipIf(!hasDom)('moved: allowed at another port of this computer, the first-run screen says so with Allow', async () => {
+  setUrl('http://localhost:61000/');
+  agentsModel = model({ notes_asked: ['codex'], notes_offered: true });
+  await loopback('/api/inbox/settings', 'POST', JSON.stringify({ notifications: { enabled: true, allowed_origin: 'http://localhost:52817' } }));
+  const el = await renderApp();
+  await until(() => firstRunAsk(el) !== null, 'the moved line');
+  const line = firstRunAsk(el)!;
+  expect(line.getAttribute('data-notification-ask')).toBe('moved');
+  expect(line.textContent).toContain('Notifications are off at this address.');
+  expect(line.textContent).toContain('localhost:52817');
+  expect(buttonIn(line, 'Allow')).toBeDefined();
+}, 30_000);
+
+test.skipIf(!hasDom)('over the tailnet: the first-run screen asks nothing (another device; the first run is set up on this computer)', async () => {
+  tailnetPage = true;
+  settingsOver = (settings) => {
+    settings.via = 'tailnet';
+  };
+  const el = await renderApp();
+  // The note dialog is never decided for a tailnet page's sake (its agents are local only), so give the window time.
+  await wait(3500);
+  expect(el.querySelector('[data-inbox-empty]')).not.toBeNull();
+  expect(firstRunAsk(el)).toBeNull();
+  expect(noteDialog()).toBeNull();
+}, 30_000);
+
+test.skipIf(!hasDom)('a load that showed the sound dialog: no ask while it is open, and none after it closes on that load', async () => {
+  settingsOver = (settings) => {
+    settings.sound = { ...settings.sound, dialog_due: true };
+  };
+  soundShows = true;
+  const el = await renderApp();
+  let askBeforeSound = false;
+  await until(() => {
+    if (firstRunAsk(el) !== null) askBeforeSound = true;
+    return buttonIn(document.body, 'Keep it on') !== undefined;
+  }, 'the sound dialog');
+  expect(askBeforeSound).toBe(false);
+  expect(firstRunAsk(el)).toBeNull();
+  await act(async () => buttonIn(document.body, 'Keep it on')!.click());
+  await until(() => buttonIn(document.body, 'Keep it on') === undefined, 'the sound dialog closing');
+  await wait(3500);
+  expect(firstRunAsk(el)).toBeNull();
+  // And the note dialog waits for a later load too.
+  expect(noteDialog()).toBeNull();
 }, 30_000);

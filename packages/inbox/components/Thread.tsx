@@ -626,6 +626,7 @@ export function MessageBody({
       )}
       {replyParts && sentAnswers && sentAnswers.length > 0 && <SentAnswers groups={sentAnswers} onJump={onJumpQuestion} />}
       {replyParts && restShown && (
+        <div data-sent-rest="">
         <Viewer
           blocks={restBlocks}
           markdown={restShown}
@@ -647,6 +648,7 @@ export function MessageBody({
           readOnly
           questionDecisionLines={false}
         />
+        </div>
       )}
       {skills && <SkillsLine split={skills} />}
       {tagLabels && (
