@@ -14,13 +14,9 @@
  * 2. Teardown gets a reconnect grace window. A reload or transient disconnect
  *    reuses the warm watcher instead of rebuilding it from scratch.
  * 3. On macOS and Windows the content watcher is the platform's native
- *    recursive fs.watch (measured at ~0ms for the same tree). chokidar
- *    remains the Linux backend (recursive fs.watch is unreliable there) and
- *    the runtime fallback whenever native watching fails. That fallback is a
- *    correctness fallback, not a performance one: the deferred warmup moves
- *    the scan off the first request, but a chokidar scan of a large tree
- *    still saturates the event loop while it runs. The reconnect grace keeps
- *    that a once-per-session cost instead of a per-reconnect one.
+ *    recursive fs.watch. Linux uses one fs.watch per directory, not per file,
+ *    and stops with a logged refresh if the bounded directory-watch budget is
+ *    exceeded. Chokidar remains the fallback on other platforms.
  *
  * The registry is transport-generic: the Bun runtime subscribes
  * ReadableStream controllers, the Pi runtime subscribes node:http responses.
@@ -28,8 +24,9 @@
  */
 
 import chokidar, { type FSWatcher as ChokidarWatcher } from "chokidar";
-import { watch as nodeFsWatch, statSync, type FSWatcher as NodeWatcher } from "node:fs";
-import { resolve } from "node:path";
+import { lstatSync, watch as nodeFsWatch, statSync, type FSWatcher as NodeWatcher } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 
 export interface FileBrowserChangeEvent {
 	type: "ready" | "changed";
@@ -53,13 +50,10 @@ export interface FileBrowserWatchRegistryOptions<S> {
 	/** Reconnect grace before an unsubscribed watcher is torn down. */
 	teardownGraceMs?: number;
 	debounceMs?: number;
-	/**
-	 * Tests force "chokidar" to exercise the fallback backend everywhere, or
-	 * "native" to exercise the native branch and its fallback paths on
-	 * platforms where auto would pick chokidar (Linux CI).
-	 */
+	/** Tests force the platform fallback (named "chokidar" for compatibility),
+	 * or force the native branch and its fallback paths on Linux CI. */
 	contentWatchBackend?: "auto" | "chokidar" | "native";
-	/** Test seam for native-watch failure modes. Defaults to fs.watch. */
+	/** Test seam for fs.watch failure modes in native and directory backends. */
 	nativeWatch?: typeof nodeFsWatch;
 }
 
@@ -67,10 +61,16 @@ export interface WatchEntryHandle {
 	readonly key: string;
 }
 
+interface DirectoryWatch {
+	watcher: NodeWatcher;
+	identity: string;
+}
+
 interface WatchEntry<S> extends WatchEntryHandle {
 	key: string;
 	subscribers: Map<S, string>;
 	contentWatcher: ChokidarWatcher | NodeWatcher | null;
+	directoryWatchers?: Map<string, DirectoryWatch>;
 	gitWatcher: ChokidarWatcher | null;
 	debounceTimer: ReturnType<typeof setTimeout> | null;
 	/** Deferred off-request construction (#1313). */
@@ -98,6 +98,9 @@ export interface FileBrowserWatchRegistry<S> {
 
 const DEFAULT_TEARDOWN_GRACE_MS = 30_000;
 const DEFAULT_DEBOUNCE_MS = 180;
+// The 228-directory workspace measured for #1313 fits; this registry cap
+// bounds directory-watch growth on much larger trees.
+const MAX_DIRECTORY_WATCHES = 512;
 
 function getFileSignature(filePath: string): string {
 	try {
@@ -143,6 +146,7 @@ export function createFileBrowserWatchRegistry<S>(
 	const options = { ...initialOptions };
 	const watchers = new Map<string, WatchEntry<S>>();
 	let contentWatcherStarts = 0;
+	let directoryWatcherCount = 0;
 
 	const teardownGraceMs = () => options.teardownGraceMs ?? DEFAULT_TEARDOWN_GRACE_MS;
 	const debounceMs = () => options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
@@ -183,6 +187,18 @@ export function createFileBrowserWatchRegistry<S>(
 		return !entry.closed && watchers.get(entry.key) === entry;
 	}
 
+	function closeDirectoryWatchers(directoryWatchers: Map<string, DirectoryWatch>): void {
+		for (const { watcher } of directoryWatchers.values()) {
+			try {
+				watcher.close();
+			} catch {
+				// Continue releasing the remaining directory watches.
+			}
+		}
+		directoryWatcherCount -= directoryWatchers.size;
+		directoryWatchers.clear();
+	}
+
 	function startChokidarContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): ChokidarWatcher {
 		const watcher = chokidar.watch(target.watchPath, {
 			ignoreInitial: true,
@@ -196,6 +212,137 @@ export function createFileBrowserWatchRegistry<S>(
 		watcher.on("all", () => scheduleBroadcast(entry, "files"));
 		watcher.on("error", () => scheduleBroadcast(entry, "files"));
 		return watcher;
+	}
+
+	async function startDirectoryContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): Promise<void> {
+		const directoryWatchers = new Map<string, DirectoryWatch>();
+		let failed = false;
+		entry.directoryWatchers = directoryWatchers;
+
+		const closeAll = () => closeDirectoryWatchers(directoryWatchers);
+
+		const fail = (reason: string, error?: unknown) => {
+			if (failed) return;
+			failed = true;
+			closeAll();
+			console.error(`[plannotator] Directory file watching stopped for ${target.watchPath}: ${reason}`, error ?? "");
+			scheduleBroadcast(entry, "files");
+		};
+
+		const removeDirectoryTree = (directory: string): void => {
+			const prefix = `${directory}${sep}`;
+			const removed = new Map<string, DirectoryWatch>();
+			for (const [path, owned] of directoryWatchers) {
+				if (path !== directory && !path.startsWith(prefix)) continue;
+				removed.set(path, owned);
+				directoryWatchers.delete(path);
+			}
+			closeDirectoryWatchers(removed);
+		};
+
+		const watchChildren = async (directory: string): Promise<void> => {
+			let children;
+			try {
+				children = await readdir(directory, { withFileTypes: true });
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
+				fail("directory scan failed", error);
+				return;
+			}
+
+			const childDirectories = new Set(children.filter((child) => child.isDirectory()).map((child) => join(directory, child.name)));
+			const prefix = `${directory}${sep}`;
+			for (const path of directoryWatchers.keys()) {
+				if (!path.startsWith(prefix)) continue;
+				const remainder = path.slice(prefix.length);
+				if (!remainder.includes(sep) && !childDirectories.has(path)) {
+					removeDirectoryTree(path);
+				}
+			}
+			for (const childPath of childDirectories) {
+				if (!target.ignored?.(childPath)) await watchTree(childPath);
+				if (failed || !isCurrent(entry)) return;
+			}
+		};
+
+		const watchTree = async (directory: string): Promise<void> => {
+			if (failed || !isCurrent(entry) || target.ignored?.(directory)) return;
+			let identity: string;
+			try {
+				const stats = statSync(directory, { bigint: true });
+				if (!stats.isDirectory()) return;
+				identity = `${stats.dev}:${stats.ino}`;
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+					removeDirectoryTree(directory);
+					return;
+				}
+				fail("directory inspection failed", error);
+				return;
+			}
+
+			const existing = directoryWatchers.get(directory);
+			if (existing?.identity === identity) return;
+			if (existing) removeDirectoryTree(directory);
+			if (directoryWatcherCount >= MAX_DIRECTORY_WATCHES) {
+				fail(`registry directory watch limit (${MAX_DIRECTORY_WATCHES}) reached`);
+				return;
+			}
+
+			let watcher: NodeWatcher;
+			try {
+				watcher = (options.nativeWatch ?? nodeFsWatch)(directory, { persistent: true }, (event, filename) => {
+					if (directoryWatchers.get(directory)?.watcher !== watcher) return;
+					scheduleBroadcast(entry, "files");
+					if (event === "rename" || filename == null) void watchChildren(directory);
+					if (filename == null) return;
+					const changedPath = join(directory, filename.toString());
+					try {
+						if (lstatSync(changedPath).isDirectory()) {
+							if (!target.ignored?.(changedPath)) void watchTree(changedPath);
+						} else if (event === "rename") {
+							removeDirectoryTree(changedPath);
+						}
+					} catch (error) {
+						if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+							removeDirectoryTree(changedPath);
+						} else {
+							fail("directory inspection failed", error);
+						}
+					}
+				});
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+					scheduleBroadcast(entry, "files");
+					return;
+				}
+				fail("watch creation failed", error);
+				return;
+			}
+			directoryWatchers.set(directory, { watcher, identity });
+			directoryWatcherCount += 1;
+			watcher.on("error", (error) => {
+				if (directoryWatchers.get(directory)?.watcher !== watcher) return;
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+					removeDirectoryTree(directory);
+					scheduleBroadcast(entry, "files");
+					return;
+				}
+				fail("watcher error", error);
+			});
+			await watchChildren(directory);
+		};
+
+		await watchTree(target.watchPath);
+		if (failed || !isCurrent(entry)) closeAll();
+	}
+
+	function startFallbackContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): void {
+		if (process.platform === "linux") {
+			void startDirectoryContentWatcher(entry, target);
+			return;
+		}
+		entry.contentWatcher = startChokidarContentWatcher(entry, target);
 	}
 
 	function startContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): void {
@@ -228,9 +375,8 @@ export function createFileBrowserWatchRegistry<S>(
 					}
 				});
 				watcher.on("error", (error) => {
-					// Native watching failed at runtime. Swap to the chokidar backend
-					// and force one refresh so anything that changed during the swap
-					// window is not lost.
+					// Native watching failed at runtime. Swap to the platform fallback
+					// and force one refresh so changes during the swap are not lost.
 					try {
 						watcher.close();
 					} catch {
@@ -242,7 +388,7 @@ export function createFileBrowserWatchRegistry<S>(
 							error,
 						);
 						contentWatcherStarts += 1;
-						entry.contentWatcher = startChokidarContentWatcher(entry, target);
+						startFallbackContentWatcher(entry, target);
 						scheduleBroadcast(entry, "files");
 					}
 				});
@@ -256,7 +402,7 @@ export function createFileBrowserWatchRegistry<S>(
 				);
 			}
 		}
-		entry.contentWatcher = startChokidarContentWatcher(entry, target);
+		startFallbackContentWatcher(entry, target);
 	}
 
 	function buildWatchers(entry: WatchEntry<S>, target: FileBrowserWatchTarget): void {
@@ -301,6 +447,7 @@ export function createFileBrowserWatchRegistry<S>(
 		entry.debounceTimer = null;
 		entry.warmupTimer = null;
 		entry.teardownTimer = null;
+		if (entry.directoryWatchers) closeDirectoryWatchers(entry.directoryWatchers);
 		try {
 			void entry.contentWatcher?.close();
 		} catch {
