@@ -102,6 +102,7 @@
     "./tailscale": "./tailscale.ts",
     "./plan-review-lifecycle": "./plan-review-lifecycle.ts",
     "./review-profiles": "./review-profiles.ts",
+    "./agent-program": "./agent-program.ts",
     "./commit-avatars": "./commit-avatars.ts",
     "./generated-files": "./generated-files.ts",
     "./annotate-client-lease": "./annotate-client-lease.ts",
