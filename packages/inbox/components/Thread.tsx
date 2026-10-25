@@ -261,6 +261,7 @@ export function MessageBody({
   imageBase,
   onImage,
   pictureBadge,
+  inlineRefOf,
 }: {
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
@@ -304,6 +305,8 @@ export function MessageBody({
     onSave: (annotation: Annotation) => Promise<boolean>;
     onUnanchored?: (report: { attempted: readonly string[]; unanchored: readonly string[] }) => void;
     onPainted?: () => void;
+    /** Words the comment box opens with for this selection (the tour's suggested comment); absent: an empty box. */
+    suggest?: (selectedText: string) => string | undefined;
   };
   /**
    * The person's own sent reply (sentReply.ts): the answers it carried, read
@@ -326,6 +329,12 @@ export function MessageBody({
   onImage?: (src: string, alt: string) => void;
   /** A label over each picture choice's picture (ui QuestionBlock `pictureBadge`); absent: none. */
   pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
+  /**
+   * The src as the body wrote it, read back from an image URL the body drew: what finds the image's captured
+   * file (`inline_images`, by `ref`). Absent: the message's own image route (inlineImageRefFromSrc). The
+   * tour passes its own, for images drawn from its assets.
+   */
+  inlineRefOf?: (src: string) => string | null;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -361,17 +370,20 @@ export function MessageBody({
   const openImageRef = useRef(onOpenInlineImage);
   openImageRef.current = onOpenInlineImage;
   const [fallback, setFallback] = useState<{ src: string; alt: string } | null>(null);
+  const refOfRef = useRef(inlineRefOf);
+  refOfRef.current = inlineRefOf;
+  const refOf = useCallback((src: string) => (refOfRef.current ? refOfRef.current(src) : inlineImageRefFromSrc(src, message.id)), [message.id]);
   const imageOf = useCallback(
     (src: string | null) => {
-      const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
+      const ref = src ? refOf(src) : null;
       return ref === null ? null : (inlineRef.current.find((image) => image.ref === ref) ?? null);
     },
-    [message.id],
+    [refOf],
   );
   /** Open one of the body's images: its captured file in the viewer, else the lightbox. False: not one of them. */
   const openImage = useCallback(
     (src: string | null, alt: string): boolean => {
-      if (!src || inlineImageRefFromSrc(src, message.id) === null) return false;
+      if (!src || refOf(src) === null) return false;
       // An image that failed to load (outside the project, gone) opens nothing: an empty lightbox helps no one.
       if ([...(bodyRef.current?.querySelectorAll<HTMLImageElement>('img[data-ib-broken]') ?? [])].some((img) => img.getAttribute('src') === src)) return true;
       const image = imageOf(src);
@@ -379,7 +391,7 @@ export function MessageBody({
       else setFallback({ src, alt });
       return true;
     },
-    [imageOf, message.id],
+    [imageOf, refOf],
   );
   const onImageRef = useRef(onImage);
   onImageRef.current = onImage;
@@ -391,7 +403,7 @@ export function MessageBody({
       // A question card's picture (a picture choice, `Shows:`): the card makes it pick, or opens it with its own button.
       if (img.hasAttribute('data-question-picture')) continue;
       const src = img.getAttribute('src');
-      const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
+      const ref = src ? refOf(src) : null;
       if (ref === null || img.hasAttribute('data-ib-broken')) continue;
       const image = imageOf(src);
       const name = image?.name ?? ref.split(/[\\/]/).pop() ?? 'image';
@@ -615,6 +627,7 @@ export function MessageBody({
         onSelectAnnotation={comments ? selectComment : noop}
         selectedAnnotationId={comments ? selectedComment : null}
         textComments={comments !== undefined}
+        suggestComment={comments?.suggest}
         allowImages={false}
         onRestoreReport={comments ? restoreReport : undefined}
         mode="selection"

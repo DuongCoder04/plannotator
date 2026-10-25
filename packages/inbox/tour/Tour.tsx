@@ -1,53 +1,78 @@
 /**
- * The Inbox's onboarding tour (approval "inbox-onboarding-tour"): the window's
- * own list, thread and question card, fed from the tour's fixture instead of
- * the person's store. Picks and Send change only the tour's state
- * (model.ts); nothing here calls a route that writes. The person's own Inbox
- * stays mounted in App, untouched, and comes back on exit.
- *
- * What is here: the tour bar, the coach card, the tour Inbox (list, thread,
- * the mock beside it), the picture viewer, and the hook that loads the
- * fixture (GET /api/inbox/tour/fixture.json, served lazily from the binary).
+ * The Inbox's onboarding tour (approval "inbox-onboarding-tour", v2): the
+ * window's own list, thread, question card, attachment tiles, viewers,
+ * comments, reply box, Artifacts view and compose dialog, fed from the tour's
+ * fixture instead of the person's store. The viewers read through the tour's
+ * file source (tour/fileSource.ts) and compose through the tour's transport,
+ * so picks, comments, drawings, Sends and the new thread change only the
+ * tour's state (model.ts); nothing here calls a route that writes. The
+ * person's own Inbox stays mounted in App, untouched, and comes back on exit.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { inboxApi } from '../api';
+import type { InboxAnnotationRecord, InboxAttachmentState, InboxInlineImage, InboxMessageWire } from '@plannotator/core/inbox-types';
+import { readInboxAttachmentKind } from '@plannotator/core/inbox-types';
+import type { Annotation } from '@plannotator/ui/types';
+import type { QuestionAnswer } from '@plannotator/core/question-block';
+import { inboxApi, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { Icon, HostMark } from '../icons';
 import { InboxList } from '../components/InboxList';
 import { MessageBody } from '../components/Thread';
 import { Sidebar } from '../components/Sidebar';
 import { Tip } from '../components/Tip';
+import { AttachmentTiles } from '../components/AttachmentTiles';
+import { AttachmentPane, type AttachmentPaneHandle } from '../components/AttachmentPane';
+import { ArtifactsView } from '../components/ArtifactsView';
+import { ReplyAnswers, draftAnswerWords, type DraftAnswer } from '../components/ReplyAnswers';
+import { AnnotationsChip } from '../components/AnnotationsChip';
+import { ComposeDialog, type ComposeTransport } from '../compose/ComposeDialog';
+import { InboxFileSourceProvider } from '../fileSource';
 import { TOUR_IMAGE_BASE } from '../images';
-import { TOUR_MOCK_STILL, preloadTourAssets, tourAssetLoaded, tourMockHtml } from './assets';
+import { annotationOf } from '../attachments';
+import { kindDefaultView } from '../fileView';
+import { threadArtifacts } from '../artifacts';
+import { stepsOf } from '../stepping';
+import { formatInboxVideoTime, readInboxVideoTime } from '@plannotator/core/inbox-types';
+import { plural } from '../format';
+import { forgetTourMarkups, preloadTourAssets, tourAssetLoaded } from './assets';
+import { tourFileSource } from './fileSource';
 import { sentAnswersOf } from '../sentReply';
-import type { ProjectFolder } from '../api';
-import type { QuestionAnswer } from '@plannotator/core/question-block';
 import {
+  TOUR_FILM_REPLY_ID,
+  TOUR_FILM_THREAD,
+  TOUR_NEW_THREAD,
   TOUR_PROJECT_ID,
-  TOUR_SIDE_THREAD,
+  TOUR_REPLY_ID,
+  TOUR_SESSION,
   TOUR_STEPS,
   TOUR_THREAD,
+  filmTimings,
+  newThreadTimings,
   parseTourFixture,
   pickDiffers,
   replayTimings,
   tourAssetUrl,
+  tourAttachments,
   tourCanBack,
+  tourFileOf,
   tourFullPicture,
+  tourInlineImageId,
+  tourMessages,
   tourPickOf,
   tourPickWords,
-  tourMessages,
   tourQuestion,
+  tourRecord,
   tourSections,
+  tourSubject,
   tourTime,
   tourWaitingCount,
   type TourAction,
   type TourCoach as TourCoachModel,
   type TourDegraded,
   type TourFixture,
-  type TourFixtureMessage,
-  type TourPicture,
   type TourState,
   type TourTarget,
+  type TourUi,
 } from './model';
 
 // ─────────────────────────── Loading the fixture ───────────────────────────
@@ -61,11 +86,9 @@ export function __forgetTourFixtureForTests(): void {
 
 /**
  * The whole tour, loaded once per page before it shows (assets.ts): the
- * fixture (tried three times), then every picture and the mock into memory.
- * Resolves null when the fixture cannot be had: the tour then never starts
- * (the window offers the first-run screen instead, and Settings keeps the
- * tour for later). Never rejects. The entry screen calls it early, so Start
- * is at once.
+ * fixture (tried three times), then every picture and text file into memory.
+ * Resolves null when the fixture cannot be had: the tour then never starts.
+ * Never rejects.
  */
 export function loadTour(): Promise<TourFixture | null> {
   fixtureLoad ??= (async () => {
@@ -95,8 +118,9 @@ export function useTourFixture(active: boolean): { fixture: TourFixture | null; 
   const [fixture, setFixture] = useState<TourFixture | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
-    // Forgotten once the tour is left, so the next start (Settings) tries again rather than leaving at once.
     if (!active) setUnavailable(false);
+    // The tour ended: its drawings go (blob URLs held only for it).
+    if (!active) forgetTourMarkups();
     if (!active || fixture) return;
     let gone = false;
     void loadTour().then((f) => {
@@ -112,15 +136,15 @@ export function useTourFixture(active: boolean): { fixture: TourFixture | null; 
 }
 
 /**
- * The replay after Send (step 4): delivered, then the two messages the real
- * thread got next, on timers. A state reached directly (a reload of
- * `#tour=4`) has everything already, so nothing is scheduled.
+ * The replays after each Send: thread A (delivered, then two messages),
+ * the film (delivered, the reply) and the new thread (delivered, the reply),
+ * on timers. A state reached directly (a reload of `#tour=N`) has everything
+ * already, so nothing is scheduled.
  */
 export function useTourReplay(state: TourState, dispatch: (action: TourAction) => void, reduced: boolean, say: (text: string) => void): void {
-  const sent = state.sent;
-  const done = state.delivered && state.arrived >= 2;
+  const aDone = state.delivered && state.arrived >= 2;
   useEffect(() => {
-    if (!sent || done) return;
+    if (!state.sent || aDone) return;
     const t = replayTimings(reduced);
     const timers = [
       setTimeout(() => {
@@ -133,31 +157,50 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
       }, t.first),
       setTimeout(() => {
         dispatch({ type: 'arrive' });
-        say('New message from Claude Code: the pull request, with screenshots.');
+        say('New message from Claude Code: the pull request, with screenshots in the message.');
       }, t.second),
     ];
     return () => timers.forEach(clearTimeout);
-    // Scheduled once per Send; the state it reached is read by the reducer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sent]);
+  }, [state.sent]);
+  useEffect(() => {
+    if (!state.filmSent || state.filmArrived) return;
+    const t = filmTimings(reduced);
+    const timers = [
+      setTimeout(() => {
+        dispatch({ type: 'filmDelivered' });
+        say('Delivered to Claude Code.');
+      }, t.delivered),
+      setTimeout(() => {
+        dispatch({ type: 'filmArrive' });
+        say('New message from Claude Code about the film, replayed from the real thread.');
+      }, t.reply),
+    ];
+    return () => timers.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.filmSent]);
+  const sentNew = state.compose === 'sent';
+  useEffect(() => {
+    if (!sentNew || state.newArrived) return;
+    const t = newThreadTimings(reduced);
+    const timers = [
+      setTimeout(() => {
+        dispatch({ type: 'newDelivered' });
+        say('Delivered to Claude Code.');
+      }, t.delivered),
+      setTimeout(() => {
+        dispatch({ type: 'newArrive' });
+        say('New message from Claude Code in your new thread.');
+      }, t.reply),
+    ];
+    return () => timers.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sentNew]);
 }
 
 // ─────────────────────────── The tour bar ───────────────────────────
 
-export function TourBar({
-  step,
-  phone,
-  arrivals,
-  onArrivals,
-  onExit,
-}: {
-  step: number;
-  phone: boolean;
-  /** Real messages that reached the person's Inbox during the tour (choice 7: a chip, never an interruption). */
-  arrivals: number;
-  onArrivals: () => void;
-  onExit: () => void;
-}) {
+export function TourBar({ step, phone, arrivals, onArrivals, onExit }: { step: number; phone: boolean; arrivals: number; onArrivals: () => void; onExit: () => void }) {
   const real = step === TOUR_STEPS;
   return (
     <div className="ib-tour-bar" role="region" aria-label="Tour" data-tour-bar="">
@@ -200,34 +243,84 @@ export function TourBar({
 
 // ─────────────────────────── The coach card ───────────────────────────
 
+const row = (id: string) => `[data-thread-id="${id}"]:is(button, a, [role="button"])`;
+
 const TARGET_SELECTORS: Record<TourTarget, string> = {
-  row: `[data-thread-id="${TOUR_THREAD}"]:is(button, a, [role="button"])`,
-  choices: `[data-tour-message="ask"] [data-question-tiles]`,
-  send: '[data-tour-send]',
+  row: row(TOUR_THREAD),
+  'film-row': row(TOUR_FILM_THREAD),
+  'new-row': row(TOUR_NEW_THREAD),
+  choices: '[data-tour-message="ask"] [data-question-tiles]',
+  phrase: '[data-tour-phrase-host]',
+  composer: '[data-comment-popover]',
+  'eval-tile': '[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]',
+  'eval-line': '[data-attachment-pane] .ib-docscroll',
+  file: '[data-attachment-pane]',
+  reply: '[data-tour-reply]',
+  'reply-box': '[data-tour-thread] .ib-rbox',
   delivered: '[data-tour-delivered]',
-  arrival: '[data-tour-arrival="2"]',
-  'mock-tile': '[data-tour-mock-tile]',
-  file: '[data-tour-file]',
+  'inline-img': `[data-tour-thread] img[data-inline-image="${tourInlineImageId('built-a1.webp')}"]`,
+  markup: '[data-attachment-pane] [data-markup-open]',
+  'image-foot': '[data-attachment-pane] [data-image-composer]',
+  'art-button': '[data-tour-thread] [data-artifacts-button]',
+  'art-grid': '[data-tour-thread] [data-artifacts-view]',
+  'film-tile': '[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="guides-vscode.mp4"]',
+  'film-rail': '[data-attachment-pane] [data-video-rail]',
+  'film-composer': '[data-attachment-pane] [data-video-composer]',
+  'film-send': '[data-tour-film-send]',
+  'compose-btn': '[data-open-compose]',
+  'compose-to': '[data-compose] [data-compose-to]',
+  'compose-send': '[data-compose] .ib-cp-foot [data-compose-send], [data-compose] .ib-cp-bar [data-compose-send]',
+  arrival: '[data-tour-arrival-last]',
 };
 
-/** The element a coach card points at, when it is on screen. */
+/** The element a coach card points at, when it is on screen (the visible one of several). */
 export function tourTargetElement(target: TourTarget | null, root: ParentNode = document): HTMLElement | null {
   if (!target) return null;
-  const el = root.querySelector<HTMLElement>(TARGET_SELECTORS[target]);
-  // Pictures that did not load: the card draws its choices as rows, and the coach points at the card.
+  const all = [...root.querySelectorAll<HTMLElement>(TARGET_SELECTORS[target])];
+  const el = all.find((e) => e.getClientRects().length > 0) ?? all[0] ?? null;
   if (!el && target === 'choices') return root.querySelector<HTMLElement>('[data-tour-message="ask"] .question-block');
   return el;
 }
 
+/** What the card is placed against: the phrase's own words (a CSS highlight, not an element), else the target's box. */
+function targetRect(target: TourTarget | null): DOMRect | null {
+  if (target === 'phrase' || target === 'eval-line') {
+    const range = phraseRanges.get(target === 'phrase' ? 'message' : 'file');
+    if (range) {
+      const r = range.getBoundingClientRect();
+      if (r.width > 0 || r.height > 0) return r;
+    }
+  }
+  return tourTargetElement(target)?.getBoundingClientRect() ?? null;
+}
+
 type Side = 'right' | 'left' | 'below' | 'above' | 'corner';
 
-const SIDES: Record<TourTarget, Side[]> = {
+const SIDES: Partial<Record<TourTarget, Side[]>> = {
   row: ['below', 'above', 'right'],
+  'film-row': ['below', 'above', 'right'],
+  'new-row': ['below', 'right', 'above'],
   choices: ['left', 'right', 'above', 'below'],
-  send: ['above', 'left', 'right'],
+  phrase: ['below', 'above', 'left'],
+  composer: ['left', 'right', 'above', 'below'],
+  'eval-tile': ['above', 'left', 'right', 'below'],
+  'eval-line': ['left', 'below', 'above'],
+  reply: ['above', 'left', 'right'],
+  'reply-box': ['above', 'left'],
   delivered: ['left', 'above', 'below'],
+  'inline-img': ['left', 'above', 'right'],
+  markup: ['above', 'left'],
+  'image-foot': ['above', 'left'],
+  'art-button': ['below', 'left'],
+  'art-grid': ['corner'],
+  'film-tile': ['above', 'left', 'right', 'below'],
+  'film-rail': ['above', 'left'],
+  'film-composer': ['above', 'left'],
+  'film-send': ['above', 'left', 'right'],
+  'compose-btn': ['right', 'below'],
+  'compose-to': ['right', 'below', 'left'],
+  'compose-send': ['right', 'above', 'left'],
   arrival: ['left', 'above', 'right'],
-  'mock-tile': ['left', 'above', 'right', 'below'],
   file: ['corner'],
 };
 
@@ -244,12 +337,7 @@ function scrollerOf(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
-/**
- * A phone: the coach is a sheet at the top or the bottom. Scroll what it
- * points at into the room the sheet leaves (its top first when it is taller),
- * so the sheet never covers the control it asks for. Once per card, so it
- * never fights the person's own scrolling.
- */
+/** A phone: scroll what the sheet points at into the room the sheet leaves, once per card. */
 function fitAroundSheet(target: HTMLElement, sheet: HTMLElement | null, reduced: boolean): void {
   requestAnimationFrame(() => {
     const scroller = scrollerOf(target);
@@ -266,6 +354,55 @@ function fitAroundSheet(target: HTMLElement, sheet: HTMLElement | null, reduced:
   });
 }
 
+/**
+ * The "How it's organised" card's picture (step 1's opener): the tour's own
+ * list and thread in miniature, drawn from the fixture: a project in the
+ * sidebar, a row per thread (one subject each), a thread that reads like an
+ * email, and its files as the familiar tiles.
+ */
+export function OrientPicture({ fixture }: { fixture: TourFixture }) {
+  const a = fixture.threads.find((t) => t.id === TOUR_THREAD)!;
+  const film = fixture.threads.find((t) => t.id === TOUR_FILM_THREAD);
+  const ask = a.messages.find((m) => m.asks);
+  const files = ask?.attachments ?? [];
+  return (
+    <div className="ib-tour-orient" role="img" aria-label="The Inbox in small: a project in the sidebar, one row per thread, a thread read like an email, its files as tiles." data-tour-orient="">
+      <div className="ib-to-side" aria-hidden="true">
+        <span className="ib-to-lbl">Projects</span>
+        <span className="ib-to-proj">
+          <Icon name="folder" size={12} />
+          {fixture.project}
+        </span>
+      </div>
+      <div className="ib-to-list" aria-hidden="true">
+        {[a, film].filter(Boolean).map((t) => (
+          <span key={t!.id} className="ib-to-row" data-on={t!.id === TOUR_THREAD ? '' : undefined}>
+            <span className="ib-to-chip">{t!.thread_name}</span>
+            <span className="ib-to-subj">{tourSubject(t!)}</span>
+          </span>
+        ))}
+      </div>
+      <div className="ib-to-mail" aria-hidden="true">
+        <span className="ib-to-from">
+          <HostMark host="claude-code" />
+          <b>Claude Code</b>
+          <span className="ib-mut">to you · {tourTime(ask?.time ?? '12:03')}</span>
+        </span>
+        <span className="ib-to-line" />
+        <span className="ib-to-line ib-short" />
+        <span className="ib-to-tiles">
+          {files.map((f) => (
+            <span key={f.name} className="ib-to-tile">
+              <Icon name={readInboxAttachmentKind(f.kind) === 'image' ? 'photo' : readInboxAttachmentKind(f.kind) === 'html' ? 'code' : 'doc'} size={12} />
+              {f.name}
+            </span>
+          ))}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function TourCoach({
   coach,
   step,
@@ -273,6 +410,7 @@ export function TourCoach({
   phone,
   reduced,
   focusTick,
+  fixture,
   onBack,
   onNext,
 }: {
@@ -283,6 +421,7 @@ export function TourCoach({
   reduced: boolean;
   /** Raised when the person acted and the card changed: focus goes to its title. */
   focusTick: number;
+  fixture: TourFixture | null;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -294,8 +433,7 @@ export function TourCoach({
   const measure = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    const target = tourTargetElement(coach.target);
-    // The coach and the outline it draws around what it points at.
+    const target = coach.target === 'phrase' || coach.target === 'eval-line' ? null : tourTargetElement(coach.target);
     for (const old of document.querySelectorAll('.ib-tour-target')) if (old !== target) old.classList.remove('ib-tour-target');
     target?.classList.add('ib-tour-target');
     const w = el.offsetWidth;
@@ -304,23 +442,20 @@ export function TourCoach({
     const vh = window.innerHeight;
     const bar = document.querySelector('[data-tour-bar]')?.getBoundingClientRect().bottom ?? 0;
     const m = 12;
+    const r = targetRect(coach.target);
     if (phone) {
-      // A sheet at the bottom, or at the top when what it points at is low on the screen: never over its target.
-      // Decided once per card (fitAroundSheet then scrolls the target into the room left), so it never flips.
       if (sheetAt.current?.key !== coach.key) {
-        const r = target?.getBoundingClientRect();
         const low = r ? r.top + Math.min(r.height, vh / 2) / 2 > vh * 0.5 : false;
         sheetAt.current = { key: coach.key, at: low ? 'top' : 'bottom' };
       }
       setPlace({ left: 0, top: 0, at: sheetAt.current.at });
       return;
     }
-    const r = target?.getBoundingClientRect();
-    if (!r || coach.target === 'file') {
+    const sides = coach.target ? (SIDES[coach.target] ?? ['corner']) : ['corner'];
+    if (!r || sides[0] === 'corner') {
       setPlace({ left: m, top: Math.max(bar + m, vh - h - 16), at: 'bottom' });
       return;
     }
-    const sides = SIDES[coach.target!];
     for (const side of sides) {
       let x = 0;
       let y = 0;
@@ -334,7 +469,6 @@ export function TourCoach({
       setPlace({ left: x, top: y, at: 'bottom' });
       return;
     }
-    // Nowhere free: a corner away from the target's middle.
     const left = r.left + r.width / 2 > vw / 2 ? m : vw - w - m;
     setPlace({ left, top: Math.max(bar + m, vh - h - 16), at: 'bottom' });
   }, [coach.target, coach.key, phone]);
@@ -342,15 +476,13 @@ export function TourCoach({
   useLayoutEffect(() => {
     measure();
     const target = tourTargetElement(coach.target);
-    if (target && coach.target !== 'file') {
-      // The picture choices: their question's prompt comes into view with them.
+    if (target && coach.target !== 'file' && coach.target !== 'art-grid') {
       if (phone) fitAroundSheet(coach.target === 'choices' ? (target.closest<HTMLElement>('.question-block') ?? target) : target, ref.current, reduced);
       else target.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
     }
     const again = () => measure();
     window.addEventListener('resize', again);
     document.addEventListener('scroll', again, true);
-    // Pictures load and messages arrive: follow what moves.
     const tick = setInterval(again, 300);
     return () => {
       window.removeEventListener('resize', again);
@@ -372,30 +504,36 @@ export function TourCoach({
 
   const style = phone ? undefined : place ? { left: place.left, top: place.top } : { visibility: 'hidden' as const };
   return (
-    <div
-      ref={ref}
-      className="ib-tour-coach"
-      role="region"
-      aria-label={`Tour, step ${step} of ${TOUR_STEPS}`}
-      data-tour-coach={coach.key}
-      data-at={phone ? (place?.at ?? 'bottom') : undefined}
-      style={style}
-    >
+    <div ref={ref} className={`ib-tour-coach${coach.picture ? ' ib-tc-wide' : ''}`} role="region" aria-label={`Tour, step ${step} of ${TOUR_STEPS}`} data-tour-coach={coach.key} data-at={phone ? (place?.at ?? 'bottom') : undefined} style={style}>
       <div className="ib-tc-eb">
         Step {step} of {TOUR_STEPS}
       </div>
       <h2 ref={titleRef} tabIndex={-1}>
         {coach.title}
       </h2>
-      <p>
-        {coach.text}
-        {coach.action && (
-          <>
-            {' '}
-            <b>{coach.action}</b>
-          </>
-        )}
-      </p>
+      {coach.text && (
+        <p>
+          {coach.text}
+          {coach.action && (
+            <>
+              {' '}
+              <b>{coach.action}</b>
+            </>
+          )}
+        </p>
+      )}
+      {coach.picture === 'orient' && fixture && <OrientPicture fixture={fixture} />}
+      {coach.items && (
+        <ul className="ib-tour-also" data-tour-also="">
+          {coach.items.map((item) => (
+            <li key={item.title}>
+              <span aria-hidden="true">{item.mark}</span>
+              <b>{item.title}</b>
+              <span>{item.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="ib-tc-acts">
         {canBack && (
           <button type="button" className="ib-tc-back" onClick={onBack} data-tour-back="">
@@ -405,7 +543,7 @@ export function TourCoach({
         <span className="ib-sp" />
         {coach.next ? (
           <button type="button" className="ib-tc-next" onClick={onNext} data-tour-next="">
-            Next
+            {coach.nextLabel ?? 'Next'}
           </button>
         ) : coach.wait ? (
           <span className="ib-tc-wait">Replaying…</span>
@@ -420,21 +558,90 @@ export function TourCoach({
   );
 }
 
-// ─────────────────────────── The picture viewer ───────────────────────────
+// ─────────────────────────── The tour's words to point at ───────────────────────────
+
+/**
+ * The phrase a coach card points at (step 3's words in the message, step 4's
+ * line in EVALUATION.md): drawn with the CSS Custom Highlight API, so the
+ * message's DOM never changes (the comment highlighter's own marks stay its).
+ */
+const phraseRanges = new Map<'message' | 'file', Range>();
+const TOUR_PHRASE_HIGHLIGHT = 'ib-tour-phrase';
+
+function rangeOfText(root: Element, phrase: string): Range | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let text = '';
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    nodes.push(n as Text);
+    text += (n as Text).data;
+  }
+  const at = text.indexOf(phrase);
+  if (at < 0) return null;
+  const range = document.createRange();
+  let offset = 0;
+  let started = false;
+  for (const node of nodes) {
+    const end = offset + node.data.length;
+    if (!started && at < end) {
+      range.setStart(node, at - offset);
+      started = true;
+    }
+    if (started && at + phrase.length <= end) {
+      range.setEnd(node, at + phrase.length - offset);
+      return range;
+    }
+    offset = end;
+  }
+  return null;
+}
+
+/** Keep the tour's phrase highlights drawn while their step shows: re-found as the page redraws. */
+function useTourPhrases(want: { message?: string | null; file?: string | null }) {
+  useEffect(() => {
+    const highlights = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights;
+    const HighlightCtor = (globalThis as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    const draw = () => {
+      phraseRanges.clear();
+      const msgRoot = document.querySelector('[data-tour-message="ask"] .ib-body');
+      const fileRoot = document.querySelector('[data-attachment-pane] .ib-docscroll');
+      const m = want.message && msgRoot ? rangeOfText(msgRoot, want.message) : null;
+      const f = want.file && fileRoot ? rangeOfText(fileRoot, want.file) : null;
+      if (m) phraseRanges.set('message', m);
+      if (f) phraseRanges.set('file', f);
+      // A marker the coach can find and screen readers ignore (the words stay as they are).
+      for (const el of document.querySelectorAll('[data-tour-phrase-host]')) el.removeAttribute('data-tour-phrase-host');
+      if (m) (m.startContainer.parentElement as HTMLElement | null)?.setAttribute('data-tour-phrase-host', '');
+      if (highlights && HighlightCtor) {
+        const ranges = [m, f].filter((r): r is Range => r !== null);
+        if (ranges.length > 0) highlights.set(TOUR_PHRASE_HIGHLIGHT, new HighlightCtor(...ranges));
+        else highlights.delete(TOUR_PHRASE_HIGHLIGHT);
+      }
+    };
+    draw();
+    const timer = setInterval(draw, 500);
+    return () => {
+      clearInterval(timer);
+      phraseRanges.clear();
+      highlights?.delete(TOUR_PHRASE_HIGHLIGHT);
+      for (const el of document.querySelectorAll('[data-tour-phrase-host]')) el.removeAttribute('data-tour-phrase-host');
+    };
+  }, [want.message, want.file]);
+}
+
+// ─────────────────────────── The picture viewer (a choice's magnifier) ───────────────────────────
 
 export interface TourViewerPicture {
   asset: string;
   name: string;
   caption: string;
   alt: string;
-  /** The choice this picture shows, when it can still be picked from the viewer. */
   pick?: string;
 }
 
-/** A picture large, over the window (the file viewer's stand-in): Close and Escape leave it, focus goes back where it was. */
+/** A choice's picture large, over the window: Close and Escape leave it, focus goes back where it was. */
 export function TourViewer({ picture, onPick, onClose }: { picture: TourViewerPicture; onPick: (label: string) => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  // A picture that is not here: the caption and the picture's own words, calmly, in its place.
   const [failed, setFailed] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -448,7 +655,6 @@ export function TourViewer({ picture, onPick, onClose }: { picture: TourViewerPi
       return;
     }
     if (event.key !== 'Tab') return;
-    // Focus stays in the viewer.
     const items = [...(ref.current?.querySelectorAll<HTMLElement>('button') ?? [])];
     if (items.length === 0) return;
     const first = items[0]!;
@@ -501,13 +707,26 @@ export function TourViewer({ picture, onPick, onClose }: { picture: TourViewerPi
 
 // ─────────────────────────── The tour Inbox ───────────────────────────
 
-/** The tour's one project, as the sidebar draws a folder. */
 function tourFolder(fixture: TourFixture): ProjectFolder {
-  return { id: TOUR_PROJECT_ID, key: 'tour', name: fixture.project, root: '', created_at: '', threads: 2, unread: 0, listed: 2, archived: 0 };
+  return { id: TOUR_PROJECT_ID, key: 'tour', name: fixture.project, root: '', created_at: '', threads: 3, unread: 0, listed: 3, archived: 0 };
 }
 
-/** The tour Inbox's sidebar: the window's own, with the tour's one project. */
-export function TourNavigation({ fixture, state, dispatch, onSettings }: { fixture: TourFixture | null; state: TourState; dispatch: (a: TourAction) => void; onSettings: () => void }) {
+/** The tour Inbox's sidebar: the window's own, with the tour's one project; New message is live in step 8 only. */
+export function TourNavigation({
+  fixture,
+  state,
+  dispatch,
+  onSettings,
+  onCompose,
+  say,
+}: {
+  fixture: TourFixture | null;
+  state: TourState;
+  dispatch: (a: TourAction) => void;
+  onSettings: () => void;
+  onCompose: (opener: HTMLElement) => void;
+  say: (text: string) => void;
+}) {
   const folders = fixture ? [tourFolder(fixture)] : [];
   const waiting = tourWaitingCount(state);
   return (
@@ -520,6 +739,8 @@ export function TourNavigation({ fixture, state, dispatch, onSettings }: { fixtu
       update={null}
       restarting={false}
       updated={null}
+      onSearch={() => say('Search finds your own threads; it is not part of the tour.')}
+      onCompose={onCompose}
       onInbox={() => dispatch({ type: 'list' })}
       onProject={() => dispatch({ type: 'list' })}
       onSettings={onSettings}
@@ -527,6 +748,288 @@ export function TourNavigation({ fixture, state, dispatch, onSettings }: { fixtu
       onWhatsNew={() => {}}
       connectPrompt={false}
     />
+  );
+}
+
+/** The tour's compose: one live session (Claude Code in the tour's project), and a Send that only tells the tour. */
+export function tourComposeTransport(fixture: TourFixture, onSent: () => void): ComposeTransport {
+  const project = { id: TOUR_PROJECT_ID, name: fixture.project, root: '' };
+  const model: ComposeSessionsModel = {
+    serverSession: 'tour',
+    home: '',
+    projects: [
+      {
+        project,
+        sessions: [{ session: TOUR_SESSION, host: 'claude-code', started_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), busy: false, idle_since: null, last_thread: null }],
+      },
+    ] as ComposeSessionsModel['projects'],
+  };
+  return {
+    sessions: async () => model,
+    startThread: async () => {
+      onSent();
+      return { thread_id: TOUR_NEW_THREAD, project };
+    },
+    drafts: false,
+    uploads: false,
+  };
+}
+
+const noop = () => {};
+
+export interface TourMainProps {
+  fixture: TourFixture;
+  state: TourState;
+  dispatch: (action: TourAction, options?: { focusCoach?: boolean }) => void;
+  phone: boolean;
+  stacked: { thread: boolean; file: boolean };
+  reduced: boolean;
+  say: (text: string) => void;
+  onDegraded?: (change: TourDegraded) => void;
+  /** What is on screen that the state does not hold (TourUi): the coach follows it. */
+  onUi?: (ui: TourUi) => void;
+  /** Step 8's compose: open it (the sidebar's, the list header's New message). */
+  onCompose: (opener: HTMLElement) => void;
+}
+
+/** The view on top, for `.pn-inbox[data-view]`. */
+export function tourView(state: TourState): 'list' | 'thread' | 'file' {
+  if (state.file) return 'file';
+  return state.route === 'list' ? 'list' : 'thread';
+}
+
+/** The ui the coach follows, read from the page every 300 ms while the tour shows. */
+function useTourUi(onUi: ((ui: TourUi) => void) | undefined) {
+  const last = useRef('');
+  useEffect(() => {
+    if (!onUi) return;
+    const read = () => {
+      const pinned = document.querySelector('[data-attachment-pane] [data-video-time][data-pinned]');
+      const to = document.querySelector('[data-compose] [data-compose-to]')?.getAttribute('data-compose-to');
+      const ui: TourUi = {
+        composing: document.querySelector('[data-comment-popover]') !== null,
+        drawn: document.querySelector('[data-attachment-pane] [data-image-composer] .ib-markup') !== null,
+        pinnedAt: pinned?.textContent?.trim() || null,
+        toChosen: to === TOUR_SESSION,
+      };
+      const key = JSON.stringify(ui);
+      if (key !== last.current) {
+        last.current = key;
+        onUi(ui);
+      }
+    };
+    read();
+    const timer = setInterval(read, 300);
+    return () => clearInterval(timer);
+  }, [onUi]);
+}
+
+export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say, onDegraded, onUi, onCompose }: TourMainProps) {
+  const [viewer, setViewer] = useState<{ picture: TourViewerPicture; opener: HTMLElement | null } | null>(null);
+  const degradedRef = useRef(onDegraded);
+  degradedRef.current = onDegraded;
+  useTourUi(onUi);
+  useEffect(() => {
+    const onError = (event: Event) => {
+      const img = event.target;
+      if (!(img instanceof HTMLImageElement) || !img.src.includes('/api/inbox/tour/assets/')) return;
+      requestAnimationFrame(() => {
+        const card = document.querySelector('[data-tour-message="ask"] .question-block');
+        if (card && !card.querySelector('[data-question-tiles]')) degradedRef.current?.({ pictures: true });
+      });
+    };
+    document.addEventListener('error', onError, true);
+    return () => document.removeEventListener('error', onError, true);
+  }, []);
+  const question = useMemo(() => tourQuestion(fixture), [fixture]);
+  const sections = useMemo(() => tourSections(fixture, state), [fixture, state]);
+  const openThread = state.route === 'list' ? null : state.route;
+  const files = useMemo(() => tourAttachments(fixture, state), [fixture, state]);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // The real viewers over the tour's files: a comment saved there goes to the tour's state, never anywhere else.
+  const source = useMemo(
+    () =>
+      tourFileSource(fixture, {
+        onSave: (record) => {
+          dispatch({ type: 'comment', record }, { focusCoach: true });
+          say('Comment saved in the tour.');
+        },
+        onRemove: (id) => dispatch({ type: 'uncomment', id }),
+        threadOf: (messageId) => fixture.threads.find((t) => t.messages.some((m) => m.id === messageId))?.id ?? TOUR_THREAD,
+      }),
+    [fixture, dispatch, say],
+  );
+
+  // The phrases the coach points at, highlighted while their step shows.
+  const ask = question?.message;
+  const evalPhrase = ask?.attachments?.find((a) => a.name === 'EVALUATION.md')?.suggest?.phrase ?? null;
+  useTourPhrases({
+    message: state.step === 3 && openThread === TOUR_THREAD ? (ask?.suggest?.phrase ?? null) : null,
+    file: state.step === 4 && state.file ? evalPhrase : null,
+  });
+
+  const closeViewer = useCallback(() => {
+    const opener = viewer?.opener;
+    setViewer(null);
+    requestAnimationFrame(() => opener?.isConnected && opener.focus());
+  }, [viewer]);
+
+  // A choice's magnifier opens the picture large; the viewer can pick it.
+  const onImage = useCallback(
+    (src: string, alt: string) => {
+      const name = decodeURIComponent(src.split('/').pop() ?? '');
+      const choice = question?.question.parsed.choices.find((c) => c.image?.src === name || tourAssetUrl(c.image?.src ?? '') === src);
+      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const pickable = choice && openThread === TOUR_THREAD && !state.sent;
+      const asset = choice?.image?.src ?? name;
+      setViewer({
+        picture: {
+          asset: tourFullPicture(fixture, asset),
+          name: choice ? `${choice.label.split(' · ')[0]}: ${asset}` : asset,
+          caption: choice ? `${choice.label}${choice.description ? ` · ${choice.description.replace(/!\[[^\]]*\]\([^)]*\)\s*/g, '')}` : ''}` : alt,
+          alt: alt || choice?.label || name,
+          pick: pickable ? choice!.label : undefined,
+        },
+        opener,
+      });
+    },
+    [fixture, question, openThread, state.sent],
+  );
+
+  const openFile = useCallback(
+    (attachment: InboxAttachmentState, view?: 'full' | 'side' | null) => {
+      const full = phone || stacked.file ? true : (view ?? kindDefaultView(attachment)) === 'full';
+      dispatch({ type: 'openFile', id: attachment.id, full }, { focusCoach: true });
+      say(`${attachment.name} is open${full ? ' full screen' : ' beside the thread'}.`);
+    },
+    [dispatch, phone, stacked.file, say],
+  );
+
+  const list = (
+    <InboxList
+      title="Inbox"
+      path={null}
+      sections={sections}
+      filtered={false}
+      narrow={openThread !== null && !phone && !stacked.thread}
+      selectedThreadId={openThread}
+      notice={null}
+      onShowNew={noop}
+      onOpen={(r) => dispatch({ type: 'open', thread: r.thread_id }, { focusCoach: true })}
+      onCompose={state.step === 8 && state.compose !== 'sent' ? onCompose : undefined}
+      phone={phone}
+    />
+  );
+
+  const threadFiles = openThread ? files.filter((a) => fixture.threads.find((t) => t.id === openThread)?.messages.some((m) => m.id === a.message_id)) : [];
+  const pane = openThread ? (
+    <TourThreadPane
+      fixture={fixture}
+      threadId={openThread}
+      state={state}
+      files={threadFiles}
+      dispatch={dispatch}
+      phone={phone}
+      stacked={stacked.thread}
+      withFile={state.file !== null}
+      reduced={reduced}
+      onImage={onImage}
+      onOpenFile={openFile}
+      say={say}
+    />
+  ) : null;
+
+  const openAttachment = state.file ? (files.find((a) => a.id === state.file!.id) ?? null) : null;
+  const paneRef = useRef<AttachmentPaneHandle>(null);
+  const [paneFocus, setPaneFocus] = useState(0);
+  useEffect(() => {
+    if (state.file) setPaneFocus((n) => n + 1);
+  }, [state.file?.id]);
+  const steps = useMemo(() => {
+    if (!openThread) return [];
+    const wires = tourMessages(fixture, openThread, state).map((v) => v.wire);
+    return stepsOf(threadArtifacts(wires, threadFiles.filter((a) => a.ref === undefined), threadFiles.filter((a) => a.ref !== undefined)));
+  }, [fixture, openThread, state, threadFiles]);
+  const records = state.comments.filter((r) => r.attachment_id !== '' && r.thread_id === openThread);
+  const waitingHere = state.comments.filter((r) => r.thread_id === openThread && r.sent_reply_id === null).length;
+  const file = openAttachment ? (
+    <AttachmentPane
+      ref={paneRef}
+      attachment={openAttachment}
+      attachments={threadFiles}
+      records={records}
+      agent="Claude Code"
+      projectName={fixture.project}
+      projectRoot=""
+      version="current"
+      onVersion={noop}
+      full={state.file!.full}
+      fullLocked={phone || stacked.file}
+      phone={phone}
+      steps={steps}
+      onStep={(id) => {
+        const next = threadFiles.find((a) => a.id === id);
+        if (next) dispatch({ type: 'openFile', id, full: state.file!.full });
+      }}
+      onOpenLinked={(id) => dispatch({ type: 'openFile', id, full: state.file!.full })}
+      onToggleFull={() => dispatch({ type: 'fullFile', full: !state.file!.full })}
+      onKeepView={noop}
+      focusId={null}
+      focusRequest={paneFocus}
+      readOnly={false}
+      onSaved={noop}
+      onRemoved={noop}
+      onOpenAt={(id) => dispatch({ type: 'openFile', id, full: state.file!.full })}
+      onClose={() => dispatch({ type: 'closeFile' }, { focusCoach: true })}
+      strip={{
+        picks: openThread === TOUR_THREAD && state.picked && !state.sent ? 1 : 0,
+        annotations: waitingHere,
+        onWriteReply: () => {
+          dispatch({ type: 'fullFile', full: false });
+          dispatch({ type: 'closeFile' });
+          dispatch({ type: 'reply', open: true });
+        },
+      }}
+    />
+  ) : null;
+
+  let main: ReactNode;
+  if (phone) main = file ?? pane ?? list;
+  else if (file)
+    main = stacked.file || state.file!.full ? (
+      file
+    ) : (
+      <>
+        {pane}
+        {file}
+      </>
+    );
+  else if (pane && stacked.thread) main = pane;
+  else
+    main = (
+      <>
+        {list}
+        {pane}
+      </>
+    );
+
+  return (
+    <InboxFileSourceProvider source={source}>
+      {main}
+      {viewer && (
+        <TourViewer
+          picture={viewer.picture}
+          onClose={closeViewer}
+          onPick={(label) => {
+            setViewer(null);
+            dispatch({ type: 'pick', label });
+            say(`Picked ${label}.`);
+          }}
+        />
+      )}
+    </InboxFileSourceProvider>
   );
 }
 
@@ -562,207 +1065,61 @@ function MessageHead({ who, host, to, time, project, replay }: { who: string; ho
   );
 }
 
-function Gallery({ pictures, onOpen }: { pictures: TourPicture[]; onOpen: (picture: TourPicture, opener: HTMLElement) => void }) {
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
-  return (
-    <div className="ib-tour-gal">
-      {pictures.map((p) => (
-        <button key={p.name} type="button" onClick={(event) => onOpen(p, event.currentTarget)} aria-label={`Open ${p.name}, ${p.caption}`} data-tour-picture={p.asset}>
-          {/* A picture that did not load leaves its name and caption, never a broken image. */}
-          {!failed.has(p.asset) && <img src={tourAssetUrl(p.asset)} alt="" loading="lazy" onError={() => setFailed((now) => new Set(now).add(p.asset))} />}
-          <span className="ib-tg-n">{p.name}</span>
-          <span className="ib-kd">{p.caption}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-const noop = () => {};
-
-export interface TourMainProps {
-  fixture: TourFixture;
-  state: TourState;
-  dispatch: (action: TourAction, options?: { focusCoach?: boolean }) => void;
-  phone: boolean;
-  /** A window too narrow for two panes (stack.ts): the thread covers the list, the mock covers the thread. */
-  stacked: { thread: boolean; file: boolean };
-  reduced: boolean;
-  say: (text: string) => void;
-  /** What did not load (the pictures, the mock), so the coach says only what is on screen. */
-  onDegraded?: (change: TourDegraded) => void;
-}
-
-/** The view on top, for `.pn-inbox[data-view]` (the window's phone and stacked rules read it). */
-export function tourView(state: TourState): 'list' | 'thread' | 'file' {
-  if (state.mock) return 'file';
-  return state.route === 'list' ? 'list' : 'thread';
-}
-
-export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say, onDegraded }: TourMainProps) {
-  const [viewer, setViewer] = useState<{ picture: TourViewerPicture; opener: HTMLElement | null } | null>(null);
-  const degradedRef = useRef(onDegraded);
-  degradedRef.current = onDegraded;
-  // A tour picture that fails (assets missing, the server stopped): once the question's card has drawn its
-  // choices as rows instead of pictures, the coach stops calling them pictures.
-  useEffect(() => {
-    const onError = (event: Event) => {
-      const img = event.target;
-      if (!(img instanceof HTMLImageElement) || !img.src.includes('/api/inbox/tour/assets/')) return;
-      requestAnimationFrame(() => {
-        const card = document.querySelector('[data-tour-message="ask"] .question-block');
-        if (card && !card.querySelector('[data-question-tiles]')) degradedRef.current?.({ pictures: true });
-      });
-    };
-    document.addEventListener('error', onError, true);
-    return () => document.removeEventListener('error', onError, true);
-  }, []);
-  const question = useMemo(() => tourQuestion(fixture), [fixture]);
-  const sections = useMemo(() => tourSections(fixture, state), [fixture, state]);
-  const openThread = state.route === 'list' ? null : state.route;
-
-  const closeViewer = useCallback(() => {
-    const opener = viewer?.opener;
-    setViewer(null);
-    // Back to the magnifier (or picture) that opened it.
-    requestAnimationFrame(() => opener?.isConnected && opener.focus());
-  }, [viewer]);
-
-  // A tile's zoom (the card's own button) opens the picture large; the viewer can pick it.
-  const onImage = useCallback(
-    (src: string, alt: string) => {
-      const name = decodeURIComponent(src.split('/').pop() ?? '');
-      const choice = question?.question.parsed.choices.find((c) => c.image?.src === name);
-      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      const pickable = choice && openThread === TOUR_THREAD && !state.sent && state.step <= 3;
-      setViewer({
-        picture: {
-          asset: tourFullPicture(fixture, name),
-          name: choice ? `${choice.label.split(' · ')[0]}: ${name}` : name,
-          caption: choice ? `${choice.label}${choice.description ? ` · ${choice.description.replace(/!\[[^\]]*\]\([^)]*\)\s*/g, '')}` : ''}` : alt,
-          alt: alt || choice?.label || name,
-          pick: pickable ? choice!.label : undefined,
-        },
-        opener,
-      });
-    },
-    [fixture, question, openThread, state.sent, state.step],
-  );
-
-  const openPicture = useCallback((p: TourPicture, opener: HTMLElement) => setViewer({ picture: { asset: p.full ?? p.asset, name: p.name, caption: p.caption, alt: p.alt }, opener }), []);
-
-  const list = (
-    <InboxList
-      title="Inbox"
-      path={null}
-      sections={sections}
-      filtered={false}
-      narrow={openThread !== null && !phone && !stacked.thread}
-      selectedThreadId={openThread}
-      notice={null}
-      onShowNew={noop}
-      onOpen={(row) => dispatch({ type: 'open', thread: row.thread_id }, { focusCoach: true })}
-      phone={phone}
-    />
-  );
-
-  const pane = openThread ? (
-    <TourThreadPane
-      fixture={fixture}
-      threadId={openThread}
-      state={state}
-      dispatch={dispatch}
-      phone={phone}
-      stacked={stacked.thread}
-      withFile={state.mock}
-      reduced={reduced}
-      onImage={onImage}
-      onOpenPicture={openPicture}
-      say={say}
-    />
-  ) : null;
-
-  const file = state.mock ? (
-    <TourFilePane phone={phone} stacked={stacked.file} onClose={() => dispatch({ type: 'closeMock' }, { focusCoach: false })} onState={(mock) => onDegraded?.({ mock })} />
-  ) : null;
-
-  let main: ReactNode;
-  if (phone) main = file ?? pane ?? list;
-  else if (file) main = stacked.file ? file : (
-      <>
-        {pane}
-        {file}
-      </>
-    );
-  else if (pane && stacked.thread) main = pane;
-  else
-    main = (
-      <>
-        {list}
-        {pane}
-      </>
-    );
-
-  return (
-    <>
-      {main}
-      {viewer && (
-        <TourViewer
-          picture={viewer.picture}
-          onClose={closeViewer}
-          onPick={(label) => {
-            setViewer(null);
-            dispatch({ type: 'pick', label });
-            say(`Picked ${label}. Press Send.`);
-            // The pick lands on the card: focus goes to Send, the next thing to press.
-            requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-tour-send]')?.focus());
-          }}
-        />
-      )}
-    </>
-  );
-}
+/** "Claude Code's message, 12:03 PM": how a reply's list names the message it answers. */
+const messageName = (time: string) => `Claude Code’s message, ${tourTime(time)}`;
 
 function TourThreadPane({
   fixture,
   threadId,
   state,
+  files,
   dispatch,
   phone,
   stacked,
   withFile,
   reduced,
   onImage,
-  onOpenPicture,
+  onOpenFile,
   say,
 }: {
   fixture: TourFixture;
   threadId: string;
   state: TourState;
+  files: InboxAttachmentState[];
   dispatch: TourMainProps['dispatch'];
   phone: boolean;
   stacked: boolean;
   withFile: boolean;
   reduced: boolean;
   onImage: (src: string, alt: string) => void;
-  onOpenPicture: (p: TourPicture, opener: HTMLElement) => void;
+  onOpenFile: (attachment: InboxAttachmentState, view?: 'full' | 'side' | null) => void;
   say: (text: string) => void;
 }) {
   const thread = fixture.threads.find((t) => t.id === threadId)!;
-  const tour = threadId === TOUR_THREAD;
+  const isA = threadId === TOUR_THREAD;
+  const isFilm = threadId === TOUR_FILM_THREAD;
   const views = useMemo(() => tourMessages(fixture, threadId, state), [fixture, threadId, state]);
   const wires = useMemo(() => views.map((v) => v.wire), [views]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const realAnswer = thread.real_answer ?? '';
-  // Every picture is labelled as what it is ("Mockup · VS Code", on a phone "Mockup"), so none reads as the Inbox itself.
   const pictureLabel = (phone ? thread.picture_label_short : null) ?? thread.picture_label ?? null;
+  const subject = tourSubject(thread);
+  const artifacts = useMemo(() => threadArtifacts(wires, files.filter((a) => a.ref === undefined), files.filter((a) => a.ref !== undefined)), [wires, files]);
+  const counts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of state.comments) if (r.attachment_id && r.sent_reply_id === null) m.set(r.path, (m.get(r.path) ?? 0) + 1);
+    return m;
+  }, [state.comments]);
+  const waiting = state.comments.filter((r) => r.thread_id === threadId && r.sent_reply_id === null);
 
-  // Step 4: follow the thread's end as the replay arrives, the way the Inbox follows an arrival at the bottom.
+  // A replay follows the thread's end, the way the Inbox follows an arrival at the bottom.
+  const arrivals = `${state.delivered}${state.arrived}${state.filmDelivered}${state.filmArrived}${state.newDelivered}${state.newArrived}`;
   useEffect(() => {
-    if (!tour || state.step !== 4 || !state.sent) return;
     const body = bodyRef.current;
-    if (body) body.scrollTo({ top: body.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
-  }, [tour, state.step, state.sent, state.delivered, state.arrived, reduced]);
+    if (!body) return;
+    if ((isA && state.sent && state.step === 6 && state.arrived < 2) || (isFilm && state.filmSent) || threadId === TOUR_NEW_THREAD) body.scrollTo({ top: body.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrivals]);
 
   const back = (
     <button type="button" className="ib-pback" onClick={() => dispatch({ type: 'list' }, { focusCoach: true })} aria-label="Back to Inbox" data-tour-thread-back="">
@@ -778,31 +1135,141 @@ function TourThreadPane({
       </button>
     </Tip>
   );
+  const artifactsButton = artifacts.length > 0 && (
+    <Tip content={state.artifactsOpen ? 'Back to the thread' : 'Artifacts: every file, image and guided review in this thread'}>
+      <button
+        type="button"
+        className="ib-iconbtn ib-artbtn"
+        aria-label={`Artifacts, ${artifacts.length}`}
+        aria-pressed={state.artifactsOpen}
+        onClick={() => dispatch({ type: 'artifacts', open: !state.artifactsOpen }, { focusCoach: true })}
+        data-artifacts-button=""
+      >
+        <Icon name="artifacts" size={17} />
+        <span className="ib-artbtn-n" aria-hidden="true">
+          {artifacts.length}
+        </span>
+      </button>
+    </Tip>
+  );
 
-  const pickedFoot = state.picked && !state.sent;
-  const foot = !tour ? null : state.sent ? null : pickedFoot ? (
-    <button
-      type="button"
-      className="ib-btn ib-pri"
-      data-tour-send=""
-      onClick={() => {
-        dispatch({ type: 'send' }, { focusCoach: true });
-        say('Sent. Sending to Claude Code.');
-      }}
-    >
-      <Icon name="send" size={15} />
-      Send
-    </button>
+  // ── the reply box: thread A until its Send, the film's once its comment waits ──
+  const asking = views.find((v) => v.fixture?.asks);
+  const question = asking?.wire.questions?.[0];
+  const draftAnswers: DraftAnswer[] =
+    isA && !state.sent && question?.answer
+      ? [{ id: `${asking!.wire.id}/${question.key}`, messageId: asking!.wire.id, key: question.key, number: question.position + 1, prompt: question.prompt, answer: draftAnswerWords(question.answer), messageName: messageName(asking!.fixture!.time) }]
+      : [];
+  const canReply = isA ? !state.sent && !!state.picked : isFilm ? !state.filmSent && waiting.length > 0 : false;
+  const boxOpen = canReply && (state.replyOpen || (isFilm && waiting.length > 0));
+  const sendReady = isA ? state.step === 5 : isFilm && state.step === 7;
+  const sendNow = () => {
+    if (isA) {
+      dispatch({ type: 'send' }, { focusCoach: true });
+      say('Sent. Sending to Claude Code.');
+    } else {
+      dispatch({ type: 'filmSend' }, { focusCoach: true });
+      say('Sent. Sending to Claude Code.');
+    }
+  };
+  const editRecord = async (record: InboxAnnotationRecord, text: string) => {
+    dispatch({ type: 'comment', record: { ...record, annotation: { ...record.annotation, text }, updated_at: new Date().toISOString() } });
+  };
+  const removeRecord = async (record: InboxAnnotationRecord) => dispatch({ type: 'uncomment', id: record.id });
+  const openRecord = (record: InboxAnnotationRecord) => {
+    const at = files.find((a) => a.id === record.attachment_id);
+    if (at) onOpenFile(at);
+  };
+  const chipName = (record: InboxAnnotationRecord) => {
+    const m = thread.messages.find((x) => x.id === record.message_id);
+    return messageName(m?.time ?? '12:03');
+  };
+  const sendButton = (attr: Record<string, string>) => (
+    <Tip content={sendReady ? 'Send it, in the tour: a replay of the real thread' : 'In the tour, Send comes after the comments'}>
+      <button type="button" className="ib-btn ib-pri" aria-disabled={!sendReady || undefined} onClick={() => sendReady && sendNow()} {...attr}>
+        <Icon name="send" size={15} />
+        Send
+      </button>
+    </Tip>
+  );
+  const replyBox = boxOpen ? (
+    <div className="ib-rbox ib-tour-rbox" data-tour-rbox="">
+      <textarea className="ib-rtext" readOnly rows={2} placeholder="Your words go here in a real reply." aria-label="Your reply (the tour carries no words)" />
+      {draftAnswers.length > 0 && <ReplyAnswers answers={draftAnswers} onJump={noop} />}
+      <div className="ib-rfoot">
+        {draftAnswers.length > 0 && (
+          <span className="ib-rchip" data-picks-chip="">
+            <Icon name="check" size={13} />
+            {plural(draftAnswers.length, 'pick')}
+          </span>
+        )}
+        <AnnotationsChip records={waiting} attachments={files} onEdit={editRecord} onRemove={removeRecord} onOpen={openRecord} messageName={chipName} />
+      </div>
+    </div>
   ) : null;
 
+  const footStatus = isA && !state.sent && state.picked ? `${plural(1, 'pick')}${waiting.length > 0 ? `, ${plural(waiting.length, 'comment')}` : ''}` : null;
+  let foot: ReactNode;
+  if (boxOpen)
+    foot = (
+      <>
+        {replyBox}
+        <div className="ib-acts">
+          {sendButton(isA ? { 'data-tour-send': '' } : { 'data-tour-film-send': '' })}
+          {isA && (
+            <button type="button" className="ib-btn ib-ghost" onClick={() => dispatch({ type: 'reply', open: false })}>
+              Cancel
+            </button>
+          )}
+        </div>
+      </>
+    );
+  else if (canReply)
+    foot = (
+      <div className="ib-acts ib-footrow" data-foot-row="">
+        <div className="ib-footbtns" data-foot-buttons="">
+          <button type="button" className="ib-btn ib-pri" data-tour-reply="" onClick={() => dispatch({ type: 'reply', open: true }, { focusCoach: true })}>
+            <Icon name="send" size={15} />
+            Send
+          </button>
+          <button type="button" className="ib-btn" onClick={() => dispatch({ type: 'reply', open: true })}>
+            <Icon name="pen" size={15} />
+            Edit draft
+          </button>
+        </div>
+        {footStatus && (
+          <div className="ib-footstatus" data-foot-status="">
+            <span className="ib-draft-foot">
+              <span className="ib-draft-pill">Draft</span> <span className="ib-st">{footStatus}</span>
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  else
+    foot = (
+      <div className="ib-acts ib-footrow" data-foot-row="">
+        <div className="ib-footbtns" data-foot-buttons="">
+          <Tip content={isA && !state.sent ? 'In the tour, pick an answer above first' : isFilm && !state.filmSent ? 'Comment on the film first; the comment goes with the reply' : 'Replies are not part of the tour'}>
+            <button type="button" className="ib-btn" aria-disabled="true" onClick={noop}>
+              <Icon name="reply" size={15} />
+              Reply
+            </button>
+          </Tip>
+        </div>
+      </div>
+    );
+
+  const lastArrival = [...views].reverse().find((v) => v.replay)?.wire.id ?? null;
   const replayAt = views.findIndex((v) => v.replay);
   return (
-    <section className={`ib-pane${withFile ? ' ib-withfile' : ''}`} aria-label={thread.subject} data-thread-id={thread.id} data-tour-thread="">
+    <section className={`ib-pane${withFile ? ' ib-withfile' : ''}`} aria-label={subject} data-thread-id={thread.id} data-tour-thread="">
       <div className="ib-phead">
         {phone ? (
           <>
             {back}
             <span className="ib-sp" />
+            {artifactsButton}
             {offInTour('Archive', 'archive', false)}
           </>
         ) : (
@@ -815,6 +1282,7 @@ function TourThreadPane({
             )}
             {offInTour('Mark read', 'checkCircle', true)}
             <span className="ib-sp" />
+            {artifactsButton}
             {offInTour('Archive', 'archive', false)}
             {!stacked && (
               <>
@@ -829,253 +1297,185 @@ function TourThreadPane({
           </>
         )}
       </div>
-      <div className="ib-pbody" ref={bodyRef}>
-        <h2 className="ib-subject" dir="auto" tabIndex={-1}>
-          {thread.subject}
-        </h2>
-        {thread.slice && (
-          <p className="ib-tour-slice">
-            <Icon name="chevD" size={14} />
-            {thread.slice}
-          </p>
-        )}
-        {views.map((view, index) => {
-          const m = view.wire;
-          const fx = view.fixture;
-          const isAgent = m.author.kind === 'agent';
-          const asks = !!fx?.asks;
-          const question = m.questions?.[0];
-          const answers = new Map<string, QuestionAnswer>(question?.answer ? [[question.key, question.answer]] : []);
-          const footerFor = (key: string) => {
-            const q = m.questions?.find((x) => x.key === key);
-            if (!q?.answer) return null;
-            if (q.state === 'sent') return `Sent ${tour ? tourTime('12:17') : fx?.sent_at ? tourTime(fx.sent_at) : ''}`.trim();
-            if (q.answer.skipped) return 'Skipped · in your draft';
-            return tourPickOf(q.answer) ? 'Picked · in your draft' : 'Note · in your draft';
-          };
-          const sentAnswers = view.reply || fx?.answers ? sentAnswersOf(m, wires, (asking) => `Claude Code’s message, ${tourTime(fixtureTime(fixture, asking.id))}`) : undefined;
-          const arrival = view.replay ? fx?.replay : undefined;
-          return (
-            <div key={m.id}>
-              {index === replayAt && (
-                <div className="ib-tour-replay" role="note">
-                  <Icon name="replay" size={14} />
-                  Replay of the real thread: what Claude Code did next
-                </div>
-              )}
-              <article
-                className="ib-message"
-                data-author={m.author.kind}
-                data-tour-message={asks ? 'ask' : view.reply ? 'reply' : undefined}
-                data-tour-arrival={arrival}
-                data-arrived={arrival !== undefined && arrival === state.arrived ? '' : undefined}
-              >
-                <MessageHead
-                  who={view.who}
-                  host={isAgent ? 'claude-code' : null}
-                  to={view.to}
-                  time={view.time}
-                  project={fixture.project}
-                  replay={view.replay}
-                />
-                <div className="ib-msg">
-                  {arrival === 1 && pickDiffers(state, realAnswer) && (
-                    <p className="ib-tour-note" data-tour-differs="">
-                      {tourPickWords(state.picked!)}. In the real thread the answer was {realAnswer.split(' · ')[0]}, so this is what Claude Code built.
-                    </p>
-                  )}
-                  <MessageBody
-                    message={m}
-                    projectRoot=""
-                    onOpenAttachment={noop}
-                    readOnly={!isAgent || !tour || !asks || state.sent}
-                    answers={answers}
-                    onPick={(_key, answer) => {
-                      // Other's words, a skip and a note are the replay's too: kept on the card, and Send replays them.
-                      const before = state.picked;
-                      const picked = tourPickOf(answer);
-                      dispatch({ type: 'pick', label: picked, answer });
-                      if (picked && (answer?.selected?.length || before === null)) say(`${tourPickWords(picked)}. Press Send.`);
-                    }}
-                    footerFor={footerFor}
-                    sentAnswers={sentAnswers}
-                    imageBase={TOUR_IMAGE_BASE}
-                    onImage={onImage}
-                    pictureBadge={pictureLabel ? () => pictureLabel : undefined}
-                  />
-                  {fx?.attachments && fx.attachments.length > 0 && (
-                    <>
-                      <div className="ib-tour-attach-h">
-                        <Icon name="clip" size={14} />
-                        Attached
-                      </div>
-                      {fx.attachments.map((a) =>
-                        a.mock ? (
-                          <button
-                            key={a.name}
-                            type="button"
-                            className="ib-tour-filetile"
-                            onClick={() => {
-                              dispatch({ type: 'openMock' }, { focusCoach: true });
-                              say(`${a.name} is open beside the thread.`);
-                            }}
-                            data-tour-mock-tile=""
-                            aria-label={`Open ${a.name}, ${a.kind}, ${a.size}`}
-                          >
-                            <span className="ib-tft-i">
-                              <Icon name="code" size={20} />
-                            </span>
-                            <span className="ib-tft-t">
-                              <b>{a.name}</b>
-                              <span>
-                                {a.kind} · {a.size}
-                              </span>
-                            </span>
-                            <span className="ib-tft-o">{state.mock ? 'Open beside' : 'Open'}</span>
-                          </button>
-                        ) : (
-                          <span key={a.name} className="ib-tour-filetile ib-tour-filechip">
-                            <span className="ib-tft-i">
-                              <Icon name="doc" size={20} />
-                            </span>
-                            <span className="ib-tft-t">
-                              <b>{a.name}</b>
-                              <span>
-                                {a.kind} · {a.size}
-                              </span>
-                            </span>
-                            {/* Named, not opened: the tour carries only the mock. Not a control, and it says so. */}
-                            <span className="ib-tft-o ib-tft-off">Not in the tour</span>
-                          </span>
-                        ),
-                      )}
-                    </>
-                  )}
-                  {fx?.gallery && fx.gallery.length > 0 && <Gallery pictures={fx.gallery} onOpen={onOpenPicture} />}
-                  {view.reply && (
-                    <div className="ib-delivered" data-delivery={state.delivered ? 'delivered' : 'sending'} data-tour-delivered="" tabIndex={-1}>
-                      <span className="ib-dl-main">
-                        <Icon name={state.delivered ? 'check' : 'send'} size={14} />
-                        <span className="ib-dl-text">{state.delivered ? `Delivered to Claude Code, ${tourTime('12:17')}` : 'Sending to Claude Code…'}</span>
-                      </span>
-                      <span className="ib-tour-realtime">Replay</span>
-                    </div>
-                  )}
-                  {fx?.delivered && (
-                    <div className="ib-delivered" data-delivery="delivered">
-                      <span className="ib-dl-main">
-                        <Icon name="check" size={14} />
-                        <span className="ib-dl-text">Delivered to Claude Code, {tourTime(fx.delivered)}</span>
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </article>
-            </div>
-          );
-        })}
-      </div>
-      <div className="ib-pfoot">
-        <div className="ib-acts ib-footrow" data-foot-row="">
-          <div className="ib-footbtns" data-foot-buttons="">
-            {foot ?? (
-              <Tip content={tour && !state.sent ? 'In the tour, pick an answer above; Send replays it' : 'Replies are not part of the tour'}>
-                <button type="button" className="ib-btn" aria-disabled="true" onClick={noop}>
-                  <Icon name="reply" size={15} />
-                  Reply
-                </button>
-              </Tip>
-            )}
-          </div>
-          {pickedFoot && (
-            <div className="ib-footstatus" data-foot-status="">
-              <span className="ib-draft-foot">
-                <span className="ib-draft-pill">Draft</span> <span className="ib-st">1 pick</span>
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function fixtureTime(fixture: TourFixture, messageId: string): string {
-  for (const t of fixture.threads) {
-    const m: TourFixtureMessage | undefined = t.messages.find((x) => x.id === messageId);
-    if (m) return m.time;
-  }
-  return '12:00';
-}
-
-/**
- * The mock's own policy inside its srcdoc frame (the frame also inherits the
- * window's): its inline scripts and styles, pictures from data: and blob:,
- * nothing fetched, the same as the asset route serves it with.
- */
-const MOCK_FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; base-uri 'none'";
-
-function mockSrcdoc(html: string): string {
-  const meta = `<meta http-equiv="Content-Security-Policy" content="${MOCK_FRAME_CSP}">`;
-  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (head) => `${head}${meta}`) : `${meta}${html}`;
-}
-
-/**
- * prototype.html beside the thread: the real mockups Claude Code sent, live and sandboxed (no allow-same-origin),
- * drawn from the copy the tour loaded when it started, so a server that stops mid-tour changes nothing. Without
- * that copy: a still picture of it (direction A), else a quiet card naming what it is; never an error.
- */
-function TourFilePane({ phone, stacked, onClose, onState }: { phone: boolean; stacked: boolean; onClose: () => void; onState: (mock: 'still' | 'none' | null) => void }) {
-  const covers = phone || stacked;
-  const html = tourMockHtml();
-  const shows: 'live' | 'still' | 'none' = html ? 'live' : tourAssetLoaded(TOUR_MOCK_STILL) ? 'still' : 'none';
-  const stateRef = useRef(onState);
-  stateRef.current = onState;
-  useEffect(() => {
-    stateRef.current(shows === 'live' ? null : shows);
-  }, [shows]);
-  return (
-    <section className="ib-tour-file" aria-label="prototype.html" data-tour-file="">
-      <header>
-        {covers && (
-          <button type="button" className="ib-pback" onClick={onClose} aria-label="Back to the thread" data-tour-file-back="">
-            <Icon name="chevL" size={18} />
-            <span className="ib-pback-l">Thread</span>
-          </button>
-        )}
-        <span className="ib-tf-n">prototype.html</span>
-        <span className="ib-mut ib-tf-from">
-          from Claude Code · {tourTime('12:03')} · {shows === 'live' ? 'runs here, sandboxed' : shows === 'still' ? 'direction A' : 'clickable mockups of the directions'}
-        </span>
-        <span className="ib-sp" />
-        {!covers && (
-          <Tip content="Close the file">
-            <button type="button" className="ib-iconbtn" onClick={onClose} aria-label="Close the file">
-              <Icon name="x" />
-            </button>
-          </Tip>
-        )}
-      </header>
-      {shows === 'live' ? (
-        <iframe title="The VS Code mockups Claude Code sent" sandbox="allow-scripts" srcDoc={mockSrcdoc(html!)} />
-      ) : shows === 'still' ? (
-        <div className="ib-tf-still" data-tour-file-still="">
-          <img src={tourAssetUrl(TOUR_MOCK_STILL)} alt="Direction A, mocked in VS Code: our guide reader in one tab, chapters beside their diffs" />
+      {state.artifactsOpen ? (
+        <div className="ib-artbody">
+          <ArtifactsView
+            artifacts={artifacts}
+            annotationCounts={counts}
+            openId={state.file?.id ?? null}
+            onOpen={(artifact) => onOpenFile(artifact.attachment)}
+            onOpenGuide={noop}
+            onBack={phone ? undefined : () => dispatch({ type: 'artifacts', open: false }, { focusCoach: true })}
+            phone={phone}
+          />
         </div>
       ) : (
-        <div className="ib-empty ib-tf-card" data-tour-file-card="">
-          <h2 tabIndex={-1}>prototype.html</h2>
-          <p className="ib-mut">One VS Code window with all four directions to click through, the same ones the question showed.</p>
+        <div className="ib-pbody" ref={bodyRef}>
+          <h2 className="ib-subject" dir="auto" tabIndex={-1}>
+            {subject}
+          </h2>
+          {thread.slice && (
+            <p className="ib-tour-slice">
+              <Icon name="chevD" size={14} />
+              {thread.slice}
+            </p>
+          )}
+          {thread.person && (
+            <p className="ib-tour-slice" data-tour-started="">
+              <Icon name="pen" size={14} />
+              You started this thread · to Claude Code in {fixture.project}
+            </p>
+          )}
+          {views.map((view, index) => {
+            const m = view.wire;
+            const fx = view.fixture;
+            const isAgent = m.author.kind === 'agent';
+            const asks = !!fx?.asks;
+            const q = m.questions?.[0];
+            const answers = new Map<string, QuestionAnswer>(q?.answer ? [[q.key, q.answer]] : []);
+            const footerFor = (key: string) => {
+              const found = m.questions?.find((x) => x.key === key);
+              if (!found?.answer) return null;
+              if (found.state === 'sent') return `Sent ${tourTime(thread.reply_time ?? '12:17')}`;
+              if (found.answer.skipped) return 'Skipped · in your draft';
+              return tourPickOf(found.answer) ? 'Picked · in your draft' : 'Note · in your draft';
+            };
+            const sentAnswers = view.reply && isA ? sentAnswersOf(m, wires, (a) => messageName(views.find((v) => v.wire.id === a.id)?.fixture?.time ?? '12:03')) : undefined;
+            const messageComments = state.comments.filter((r) => r.message_id === m.id && r.message).map((r) => annotationOf(r) as Annotation);
+            const takesComments = isAgent && isA && asks && !state.sent;
+            const sentHere = view.reply ? state.comments.filter((r) => r.sent_reply_id === m.id) : [];
+            const delivered = view.reply && (m.id === TOUR_REPLY_ID ? state.delivered : m.id === TOUR_FILM_REPLY_ID ? state.filmDelivered : state.newDelivered);
+            const replyTime = m.id === TOUR_REPLY_ID ? (thread.reply_time ?? '12:17') : m.id === TOUR_FILM_REPLY_ID ? (thread.reply_time ?? '18:10') : (thread.compose?.time ?? '13:06');
+            const myFiles = files.filter((a) => a.message_id === m.id && a.ref === undefined);
+            const note = fx?.attachments?.find((a) => a.note)?.note;
+            return (
+              <div key={m.id}>
+                {index === replayAt && !thread.person && (
+                  <div className="ib-tour-replay" role="note">
+                    <Icon name="replay" size={14} />
+                    Replay of the real thread: what Claude Code did next
+                  </div>
+                )}
+                <article
+                  className="ib-message"
+                  data-author={m.author.kind}
+                  data-tour-message={asks ? 'ask' : view.reply ? 'reply' : undefined}
+                  data-tour-arrival={view.replay ? (fx?.replay ?? 1) : undefined}
+                  data-tour-arrival-last={m.id === lastArrival ? '' : undefined}
+                >
+                  <MessageHead who={view.who} host={isAgent ? 'claude-code' : null} to={view.to} time={view.time} project={fixture.project} replay={view.replay} />
+                  <div className="ib-msg">
+                    {isA && fx?.replay === 1 && pickDiffers(state, realAnswer) && (
+                      <p className="ib-tour-note" data-tour-differs="">
+                        {tourPickWords(state.picked!)}. In the real thread the answer was {realAnswer.split(' · ')[0]}, so this is what Claude Code built.
+                      </p>
+                    )}
+                    {(m.body || view.reply) && (
+                      <MessageBody
+                        message={m}
+                        projectRoot=""
+                        onOpenAttachment={(a) => {
+                          const found = files.find((x) => x.id === a.id);
+                          if (found) onOpenFile(found);
+                        }}
+                        onOpenInlineImage={(image: InboxInlineImage) => {
+                          const found = files.find((x) => x.id === image.id);
+                          if (found) onOpenFile(found, 'full');
+                        }}
+                        inlineRefOf={inlineRefOf}
+                        readOnly={!isAgent || !isA || !asks || state.sent}
+                        answers={answers}
+                        onPick={(_key, answer) => {
+                          const picked = tourPickOf(answer);
+                          dispatch({ type: 'pick', label: picked, answer });
+                          if (picked) say(`${tourPickWords(picked)}.`);
+                        }}
+                        footerFor={footerFor}
+                        sentAnswers={sentAnswers}
+                        imageBase={TOUR_IMAGE_BASE}
+                        onImage={(src, alt) => {
+                          const ref = inlineRefOf(src);
+                          const image = ref ? files.find((x) => x.ref === ref && x.message_id === m.id) : null;
+                          if (image) onOpenFile(image, 'full');
+                          else onImage(src, alt);
+                        }}
+                        pictureBadge={pictureLabel ? () => pictureLabel : undefined}
+                        comments={
+                          takesComments
+                            ? {
+                                annotations: messageComments,
+                                onSave: async (annotation) => {
+                                  dispatch(
+                                    {
+                                      type: 'comment',
+                                      record: tourRecord({ id: annotation.id, thread: threadId, message: m.id, messageAt: m.created_at, annotation: annotation as unknown as Record<string, unknown> }),
+                                    },
+                                    { focusCoach: true },
+                                  );
+                                  say('Comment saved in the tour. It goes with your reply.');
+                                  return true;
+                                },
+                                suggest: (selected) => {
+                                  const s = fx?.suggest;
+                                  if (!s?.phrase) return undefined;
+                                  const words = selected.replace(/\s+/g, ' ').trim();
+                                  return words && (s.phrase.includes(words) || words.includes(s.phrase)) ? s.comment : undefined;
+                                },
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                    {myFiles.length > 0 && <AttachmentTiles attachments={myFiles} annotationCounts={counts} onOpen={(a) => onOpenFile(a)} openId={state.file?.id ?? null} />}
+                    {note && <p className="ib-tour-filenote">{note}</p>}
+                    {sentHere.length > 0 && (
+                      <div className="ib-tour-sentcomments" data-tour-sent-comments="">
+                        <Icon name="comment" size={13} />
+                        <span>{plural(sentHere.length, 'comment')} went with this reply</span>
+                        {sentHere
+                          .map((r) => readInboxVideoTime(annotationOf(r)))
+                          .filter((t): t is number => t !== null)
+                          .map((t) => (
+                            <span key={t} className="ib-tour-moment">
+                              at {formatInboxVideoTime(t)}, with its frame
+                            </span>
+                          ))}
+                      </div>
+                    )}
+                    {view.reply && (
+                      <div className="ib-delivered" data-delivery={delivered ? 'delivered' : 'sending'} data-tour-delivered="" tabIndex={-1}>
+                        <span className="ib-dl-main">
+                          <Icon name={delivered ? 'check' : 'send'} size={14} />
+                          <span className="ib-dl-text">{delivered ? `Delivered to Claude Code, ${tourTime(replyTime)}` : 'Sending to Claude Code…'}</span>
+                        </span>
+                        <span className="ib-tour-realtime">Replay</span>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              </div>
+            );
+          })}
         </div>
       )}
+      <div className="ib-pfoot" hidden={state.artifactsOpen}>
+        {foot}
+      </div>
     </section>
   );
+}
+
+/** A tour image's src back to the name the body wrote (`built-a1.webp`): its blob URL or its asset route. */
+function inlineRefOf(src: string): string | null {
+  const name = /\/api\/inbox\/tour\/assets\/([a-z0-9][a-z0-9.-]*\.webp)(?:[?#]|$)/.exec(src)?.[1];
+  if (name) return name;
+  for (const candidate of ['built-a1.webp', 'built-a2.webp']) if (tourAssetLoaded(candidate) && tourAssetUrl(candidate) === src) return candidate;
+  return null;
 }
 
 /** While the tour loads (its content, once per page): a quiet heading; Exit is in the bar above. */
 export function TourLoading() {
   const headingRef = useRef<HTMLHeadingElement>(null);
-  // Focus never drops to the page: when nothing holds it (a reload of #tour=N), the screen's heading takes it.
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body || !active.isConnected) headingRef.current?.focus({ preventScroll: true });
@@ -1093,7 +1493,6 @@ export function TourLoading() {
   );
 }
 
-/** Reduced motion, read once and followed. */
 const REDUCED_QUERY = '(prefers-reduced-motion: reduce)';
 
 export function useReducedMotion(): boolean {
@@ -1108,4 +1507,17 @@ export function useReducedMotion(): boolean {
   return reduced;
 }
 
-export { TOUR_SIDE_THREAD, tourCanBack };
+/** Thread A's question message: its suggested words (for tests and the e2e walk). */
+export function tourMessagePhrase(fixture: TourFixture): string | null {
+  return tourQuestion(fixture)?.message.suggest?.phrase ?? null;
+}
+
+export { tourCanBack, tourFileOf };
+
+/** The compose request the tour opens: its suggested words. */
+export function tourComposeBody(fixture: TourFixture): string {
+  return fixture.threads.find((t) => t.id === TOUR_NEW_THREAD)?.compose?.body ?? '';
+}
+
+export { ComposeDialog };
+export type { InboxMessageWire };
