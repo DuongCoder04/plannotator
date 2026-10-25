@@ -117,19 +117,20 @@ Write the draft to `RELEASE_NOTES_v<VERSION>.md` in the repo root and tell the u
 
 ## Phase 2: Version Bump
 
-Bump the version string in these **7 files** (and only these — other package.json files use stub versions):
+Bump the version string in these **8 files** (and only these — other package.json files use stub versions):
 
 | File | Field |
 |------|-------|
 | `package.json` (root) | `"version"` |
 | `apps/opencode-plugin/package.json` | `"version"` |
+| `apps/dsh-plugin/package.json` | `"version"` |
 | `apps/pi-extension/package.json` | `"version"` |
 | `apps/hook/.claude-plugin/plugin.json` | `"version"` |
 | `apps/copilot/plugin.json` | `"version"` |
 | `openpackage.yml` (root) | `version:` |
 | `packages/server/package.json` | `"version"` |
 
-Read each file, confirm the current version matches expectations, then update all 7 atomically.
+Read each file, confirm the current version matches expectations, then update all 8 atomically.
 
 Do not bump the VS Code extension (`apps/vscode-extension/package.json`) — it has independent versioning.
 
@@ -143,7 +144,8 @@ Run builds in dependency order:
 bun run build:review    # 1. Code review editor (standalone Vite build)
 bun run build:hook      # 2. Plan review + hook server (copies review's built HTML into hook dist)
 bun run build:opencode  # 3. OpenCode plugin (copies built HTML from hook + review)
-bun run build:pi        # 4. Pi extension (chains review → hook → pi internally, safe to run after 1-2)
+bun run build:dsh       # 4. DeepSeek Harness plugin (Node bundle; no HTML)
+bun run build:pi        # 5. Pi extension (chains review → hook → pi internally, safe to run after 1-2)
 ```
 
 `build:pi` chains review and hook internally, so after steps 1-2 it only runs the pi-specific build.
@@ -175,7 +177,7 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    ```
    chore: bump version to X.Y.Z
    ```
-   Stage only the 7 version-bumped files. Do not stage the release notes file (it's untracked by design).
+   Stage only the 8 version-bumped files. Do not stage the release notes file (it's untracked by design).
 
 2. **Create and push the tag:**
    ```bash
@@ -189,14 +191,14 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    - Runs tests
    - Cross-compiles binaries for 6 platforms (macOS ARM64/x64, Linux x64/ARM64, Windows x64/ARM64)
    - Compiles paste service binaries (same 6 platforms)
-   - Packs the two npm packages in a credential-free job
+   - Packs the three npm packages in a credential-free job
    - Downloads pinned, checksum-verified Syft and Grype binaries; generates and schema-validates the release-wide CycloneDX SBOM after all shipped subjects exist
    - Forces the repository-owned, suppression-free Grype configuration, retries the official database update up to three times, requires a valid/active schema-v6 database no more than 120 hours old with no pending update, and preserves the machine-readable scan/database/policy evidence as a workflow artifact
    - Rejects every scanner-side ignored match, then blocks before any attestation or publication on CISA KEV or fixable Critical findings classified as shipped/runtime or unknown-applicability. High, development-only, and no-fix Critical findings are report-only but remain in the evidence
    - Generates SLSA build provenance attestations for all 12 binaries via `actions/attest-build-provenance` (signed through Sigstore, recorded in Rekor)
-   - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and both npm tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
+   - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and all three npm tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
    - Creates the GitHub Release with all binaries, SHA256 sidecars, the versioned CycloneDX SBOM, and its SHA256 sidecar attached
-   - Publishes `@plannotator/opencode` and `@plannotator/pi-extension` to npm with provenance
+   - Publishes `@plannotator/opencode`, `@plannotator/dsh` and `@plannotator/pi-extension` to npm with provenance
 
    **SBOM scope:** the public document is a release-wide Syft inventory of the monorepo's locked build inputs and dependencies. It is deliberately not described as exact binary runtime contents. Coverage testing found that Bun standalone executables hide bundled JavaScript dependency metadata from Syft. The OpenCode tarball is similarly opaque; the Pi tarball exposes only a partial view through nested package-lock files. The scope and limitations are also embedded in the CycloneDX metadata.
 
@@ -214,7 +216,7 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    - All jobs pass, including `release-security`, `attest`, `release`, and `npm-publish`
    - `release-security-evidence` records the Syft/Grype versions, active database schema/build/checksum/update status, all Grype matches, and an `ACCEPT` policy decision
    - The GitHub Release was created with all binary artifacts, SHA256 sidecars, the versioned `plannotator-X.Y.Z-release-sbom.cdx.json`, and its `.sha256` sidecar
-   - npm packages published successfully (check with `npm view @plannotator/opencode version` and `npm view @plannotator/pi-extension version`)
+   - npm packages published successfully (check with `npm view @plannotator/opencode version`, `npm view @plannotator/dsh version` and `npm view @plannotator/pi-extension version`)
 
    A pull request proves generation, schema/sentinel validation, database policy, Grype evaluation, least-privilege job wiring, and all report artifacts. GitHub OIDC issuance, publication to the artifact-attestation service, and final release-asset publication only run for a real eligible `v*` tag. For the first release after this control lands, complete this bounded tag-only verification before calling the rollout complete:
 
@@ -255,11 +257,12 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
 ## Checklist
 
 Before tagging, verify:
-- [ ] All 7 version files bumped consistently
+- [ ] All 8 version files bumped consistently
 - [ ] Release notes drafted and reviewed
 - [ ] `bun run build:review` succeeded
 - [ ] `bun run build:hook` succeeded
 - [ ] `bun run build:opencode` succeeded
+- [ ] `bun run build:dsh` succeeded
 - [ ] `bun run build:pi` succeeded (or pi-specific build step)
 - [ ] Version bump committed
 - [ ] Pi parity gate passed (imports, vendor.sh, dry-run pack)

@@ -1135,6 +1135,7 @@ jobs:
             plannotator-paste-win32-x64.exe
             plannotator-paste-win32-arm64.exe
             npm-packages/plannotator-opencode.tgz
+            npm-packages/plannotator-dsh.tgz
             npm-packages/plannotator-pi-extension.tgz
           sbom-path: release-sbom/${{ needs.release-security.outputs.sbom-name }}
 
@@ -1216,6 +1217,7 @@ jobs:
           bun run build:review
           bun run build:hook
           bun run build:opencode
+          bun run build:dsh
           bun run build:pi
 
       - name: Create package artifact directory
@@ -1224,6 +1226,10 @@ jobs:
       - name: Pack @plannotator/opencode
         working-directory: apps/opencode-plugin
         run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-opencode.tgz"
+
+      - name: Pack @plannotator/dsh
+        working-directory: apps/dsh-plugin
+        run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-dsh.tgz"
 
       - name: Pack @plannotator/pi-extension
         working-directory: apps/pi-extension
@@ -1343,6 +1349,9 @@ jobs:
 
       - name: Publish @plannotator/opencode
         run: npm publish ./npm-packages/plannotator-opencode.tgz --ignore-scripts --provenance --access public
+
+      - name: Publish @plannotator/dsh
+        run: npm publish ./npm-packages/plannotator-dsh.tgz --ignore-scripts --provenance --access public
 
       - name: Publish @plannotator/pi-extension
         run: npm publish ./npm-packages/plannotator-pi-extension.tgz --ignore-scripts --provenance --access public
