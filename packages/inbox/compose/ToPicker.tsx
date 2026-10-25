@@ -144,7 +144,7 @@ export function ToPicker({
           onChange={(event) => setQuery(event.target.value)}
         />
       </div>
-      <div className="ib-cp-list" role="listbox" id={`ib-cp-list-${uid}`} aria-label="Live agent sessions">
+      <div className="ib-cp-list" role="listbox" id={`ib-cp-list-${uid}`} aria-label="Agents: live sessions, and new sessions the Inbox starts">
         {rows.length === 0 && startRows.length === 0 && <div className="ib-cp-none">No live session matches.</div>}
         {rows.map(({ target, started }, i) => {
           const folder = tildePath(target.project.root, home);

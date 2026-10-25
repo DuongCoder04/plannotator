@@ -228,6 +228,9 @@ describe("the ACP runner", () => {
     expect((await post(w, `/api/inbox/acp/${key}/stop`, {})).status).toBe(200);
     const stopped = await ended(w, key, 2);
     expect(stopped.turn!.outcome).toBe("stopped");
+    // A stopped turn's last words are not posted as its answer.
+    expect(stopped.turn!.answered).toBe("none");
+    expect(agentMessages(w, started.thread_id, key)).toHaveLength(1);
     const outcomes = w.log().filter((e) => e.event === "permission").map((e) => e.outcome);
     expect(outcomes.at(-1)).toEqual({ outcome: "cancelled" });
     expect(w.log().some((e) => e.event === "cancel")).toBe(true);

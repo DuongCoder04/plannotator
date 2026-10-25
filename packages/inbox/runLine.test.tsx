@@ -57,7 +57,8 @@ const turn = (over: Partial<InboxRunTurn> = {}): InboxRunTurn => ({
 
 function status(over: Partial<InboxRunStatus> = {}): InboxRunStatus {
   const turns = over.turns ?? [turn()];
-  return {
+  // Through JSON, as the wire carries it: `turn` and `turns` are separate copies (never one object).
+  return JSON.parse(JSON.stringify({
     key: KEY,
     agent: 'grok',
     label: 'Grok Build',
@@ -72,9 +73,10 @@ function status(over: Partial<InboxRunStatus> = {}): InboxRunStatus {
     activity: { tools: [{ id: 't1', title: 'Read src/invoice.ts', status: 'completed' }, { id: 't2', title: 'Run `bun test`', status: 'in_progress' }], text: 'Looking at the totals.' },
     queued: [],
     resume_command: 'cd ~/billing && grok -r 01a1747b-a761-7f32-bbe8-6990bc50db00',
+    resume: { command: 'grok -r 01a1747b-a761-7f32-bbe8-6990bc50db00', folder: '~/billing' },
     approve_rest: false,
     ...over,
-  };
+  }));
 }
 
 const draw = (node: React.ReactNode) => act(() => root!.render(node));
@@ -156,9 +158,10 @@ test.skipIf(!hasDom)("the permission card: the agent's own options in order, the
 
 test.skipIf(!hasDom)('the foot: the resume command with Copy, and no line without one', () => {
   draw(<RunFoot run={status()} />);
-  expect(host!.querySelector('[data-run-resume]')!.textContent).toBe('cd ~/billing && grok -r 01a1747b-a761-7f32-bbe8-6990bc50db00');
+  expect(host!.querySelector('[data-run-resume]')!.textContent).toBe('grok -r 01a1747b-a761-7f32-bbe8-6990bc50db00');
+  expect(text()).toContain('in ~/billing');
   expect(text()).toContain('Close it in Grok Build before you reply here.');
-  draw(<RunFoot run={status({ resume_command: null })} />);
+  draw(<RunFoot run={status({ resume_command: null, resume: null })} />);
   expect(host!.querySelector('[data-run-foot]')).toBeNull();
 });
 

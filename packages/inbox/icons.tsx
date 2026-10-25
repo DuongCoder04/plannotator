@@ -201,11 +201,10 @@ export function HostMark({ host, big }: { host: string | null | undefined; big?:
       mark = <CursorIcon />;
       break;
     case 'grok':
-      // Grok Build: a plain round mark with a slash, drawn here (no brand asset in the repo).
+      // Grok Build: a plain letter G, drawn here (no brand asset in the repo).
       mark = (
-        <svg className="ib-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-          <circle cx="12" cy="12" r="7.5" />
-          <path d="M6 18 18 6" />
+        <svg className="ib-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M17.6 8.4A6.6 6.6 0 1 0 18.6 12H12.6" />
         </svg>
       );
       break;

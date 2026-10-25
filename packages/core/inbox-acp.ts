@@ -95,6 +95,8 @@ export interface InboxRunStatus {
   queued: string[];
   /** The command that opens this session in the agent's own CLI (`cd <folder> && grok -r <id>`), or null. */
   resume_command: string | null;
+  /** The same, in two parts for the foot: the agent's command (`grok -r <id>`) and the folder it runs in (`~/billing`). */
+  resume: { command: string; folder: string } | null;
   /** "Approve the rest of this turn" is on. */
   approve_rest: boolean;
 }

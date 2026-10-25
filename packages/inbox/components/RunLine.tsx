@@ -66,6 +66,11 @@ function useNow(on: boolean): number {
   return now;
 }
 
+/** One turn, compared by what it is (the wire carries `turn` and `turns` as separate copies). */
+export function sameTurn(a: InboxRunTurn | null, b: InboxRunTurn | null): boolean {
+  return !!a && !!b && a.started_at === b.started_at && a.replies.join(',') === b.replies.join(',');
+}
+
 /** The turn that carried a message (the latest one, when a retry carried it again), or null. */
 export function turnOf(run: InboxRunStatus, messageId: string): InboxRunTurn | null {
   for (let i = run.turns.length - 1; i >= 0; i--) if (run.turns[i]!.replies.includes(messageId)) return run.turns[i]!;
@@ -79,7 +84,7 @@ export function turnOf(run: InboxRunStatus, messageId: string): InboxRunTurn | n
  */
 export function RunLine({ run, messageId, onChanged }: { run: InboxRunStatus; messageId: string; onChanged: () => void }) {
   const turn = turnOf(run, messageId);
-  const current = turn !== null && run.turn === turn && run.state !== 'idle';
+  const current = sameTurn(turn, run.turn) && run.state !== 'idle';
   const queued = run.queued.includes(messageId);
   const now = useNow(current);
   const [open, setOpen] = useState(false);
@@ -120,8 +125,8 @@ export function RunLine({ run, messageId, onChanged }: { run: InboxRunStatus; me
     words = inboxRunOutcomeWords(turn!, label);
   }
   const lastTurn = run.turns.at(-1);
-  const retry = !current && turn?.outcome === 'failed' && lastTurn === turn && run.state === 'idle';
-  const activity = (current || (turn && run.turn === turn)) && (run.activity.tools.length > 0 || run.activity.text.trim() !== '');
+  const retry = !current && turn?.outcome === 'failed' && sameTurn(lastTurn ?? null, turn) && run.state === 'idle';
+  const activity = (current || sameTurn(turn, run.turn)) && (run.activity.tools.length > 0 || run.activity.text.trim() !== '');
 
   return (
     <div className="ib-run" data-run-line={state} data-run-message={messageId}>
@@ -176,6 +181,7 @@ function toolStatusWord(status: string): string {
   if (status === 'completed') return 'done';
   if (status === 'failed') return 'failed';
   if (status === 'in_progress') return 'running';
+  if (status === 'stopped') return 'stopped';
   return 'waiting';
 }
 
@@ -248,19 +254,30 @@ function optionWords(name: string): string {
   return trimmed ? trimmed[0]!.toUpperCase() + trimmed.slice(1) : 'Choose';
 }
 
-/** The thread foot's line: open this session in the agent's own CLI, and close it there before replying. */
-export function RunFoot({ run }: { run: InboxRunStatus }) {
+/**
+ * The thread foot's line: open this session in the agent's own CLI, and close
+ * it there before replying. "Open in Grok Build: `grok -r <id>` in ~/billing ·
+ * Copy" (Copy takes the whole `cd … && grok -r …`). On a phone it folds behind
+ * one line, so the thread keeps its room.
+ */
+export function RunFoot({ run, phone = false }: { run: InboxRunStatus; phone?: boolean }) {
   const [copied, setCopied] = useState(false);
   if (!run.resume_command) return null;
-  return (
-    <div className="ib-runfoot" data-run-foot="">
-      <span className="ib-runfoot-l">Open in {run.label}:</span>
+  const command = run.resume?.command ?? run.resume_command;
+  const body = (
+    <>
       <code className="ib-runfoot-cmd" data-run-resume="">
-        {run.resume_command}
+        {command}
       </code>
+      {run.resume && (
+        <span className="ib-runfoot-in">
+          in <bdi>{run.resume.folder}</bdi>
+        </span>
+      )}
       <button
         type="button"
         className="ib-copy"
+        aria-label={copied ? 'Copied' : `Copy the command that opens this session in ${run.label}`}
         onClick={async () => {
           if (await copyTextToClipboard(run.resume_command!)) {
             setCopied(true);
@@ -271,6 +288,23 @@ export function RunFoot({ run }: { run: InboxRunStatus }) {
         {copied ? 'Copied' : 'Copy'}
       </button>
       <span className="ib-runfoot-note">Close it in {run.label} before you reply here.</span>
+    </>
+  );
+  if (phone) {
+    return (
+      <details className="ib-runfoot ib-runfoot-fold" data-run-foot="">
+        <summary>
+          <Icon name="terminal" size={15} />
+          Open in {run.label}
+        </summary>
+        <div className="ib-runfoot-body">{body}</div>
+      </details>
+    );
+  }
+  return (
+    <div className="ib-runfoot" data-run-foot="">
+      <span className="ib-runfoot-l">Open in {run.label}:</span>
+      {body}
     </div>
   );
 }

@@ -75,7 +75,7 @@ export interface InboxRunAgent {
   id: InboxRunAgentId;
   descriptor: AgentDescriptor;
   /** The command that opens a session in the agent's own CLI, in its folder; absent when it has none (Cursor's CLI does not open ACP sessions). */
-  resumeCommand?: (folder: string, acpSessionId: string) => string;
+  resumeCommand?: (acpSessionId: string) => string;
   /** It updates itself when it starts (Settings → Agents says so). */
   selfUpdates: boolean;
 }
@@ -90,7 +90,7 @@ export const INBOX_RUN_AGENTS: readonly InboxRunAgent[] = [
     id: "grok",
     descriptor: GROK,
     // Verified live: a session made over ACP opens in Grok's CLI by id ("Session … found locally").
-    resumeCommand: (folder, id) => `cd ${shellWord(folder)} && grok -r ${shellWord(id)}`,
+    resumeCommand: (id) => `grok -r ${shellWord(id)}`,
     selfUpdates: true,
   },
 ];
@@ -577,7 +577,10 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       if (turn.stopTimer) clearTimeout(turn.stopTimer);
       turn.permission?.answer({ outcome: { outcome: "cancelled" } });
       if (!stopped) {
-        turnRecord.answered = delivered ? postFinalText(record, turn) : null;
+        // The final text only for a turn that ended by itself: a stopped turn's last words are its plan, not an answer.
+        turnRecord.answered = delivered && turnRecord.outcome === "done" ? postFinalText(record, turn) : delivered ? wroteInInbox(record, turn) : null;
+        // A tool still running when the turn ended did not finish.
+        if (turnRecord.outcome !== "done") for (const tool of turn.tools) if (tool.status !== "completed" && tool.status !== "failed") tool.status = "stopped";
         turnRecord.ended_at = iso(now());
         if (opened && client && record.acp_session_id) await client.closeSession(record.acp_session_id);
         lastActivity.set(key, { tools: turn.tools, text: turn.text });
@@ -592,9 +595,12 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
   };
 
   /** No Inbox message from the session this turn: post the turn's final text as its message. */
-  const postFinalText = (record: SessionRecord, turn: LiveTurn): InboxRunTurn["answered"] => {
+  const wroteInInbox = (record: SessionRecord, turn: LiveTurn): InboxRunTurn["answered"] => {
     const latest = store.latestAgentMessages().get(record.key);
-    if (latest && latest.created_at >= turn.record.started_at) return "inbox";
+    return latest && latest.created_at >= turn.record.started_at ? "inbox" : "none";
+  };
+  const postFinalText = (record: SessionRecord, turn: LiveTurn): InboxRunTurn["answered"] => {
+    if (wroteInInbox(record, turn) === "inbox") return "inbox";
     const text = (turn.segment.trim() || turn.text.trim()).slice(-FINAL_TEXT_MAX);
     const reply = turn.replies.at(-1);
     if (!text || !reply) return "none";
@@ -629,6 +635,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     const agent = agentById.get(record.agent)!;
     const turn = turns.get(key) ?? null;
     const activity = turn ? { tools: turn.tools, text: turn.text } : (lastActivity.get(key) ?? { tools: [], text: "" });
+    const resume = record.acp_session_id && agent.resumeCommand ? agent.resumeCommand(record.acp_session_id) : null;
     const queued = store.pendingReplies(key, { tags: false }).filter((r) => !isInboxNote(r) && !(turn?.replies ?? []).some((t) => t.id === r.id)).map((r) => r.id);
     return {
       key,
@@ -644,7 +651,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       permission: turn?.permission ? { id: turn.permission.id, title: turn.permission.title, kind: turn.permission.kind, options: turn.permission.options, at: turn.permission.at } : null,
       activity: { tools: activity.tools.map((t) => ({ ...t })), text: activity.text },
       queued,
-      resume_command: record.acp_session_id && agent.resumeCommand ? agent.resumeCommand(options.displayPath(record.cwd), record.acp_session_id) : null,
+      resume_command: resume ? `cd ${shellWord(options.displayPath(record.cwd))} && ${resume}` : null,
+      resume: resume ? { command: resume, folder: options.displayPath(record.cwd) } : null,
       approve_rest: turn?.approveRest ?? false,
     };
   };

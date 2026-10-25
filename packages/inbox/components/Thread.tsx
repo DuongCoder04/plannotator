@@ -3597,7 +3597,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         </div>
       )}
       <div className="ib-pfoot" hidden={artifactsOn}>
-        {agentRun && <RunFoot run={agentRun} />}
+        {agentRun && <RunFoot run={agentRun} phone={phone} />}
         {/* One status region, always mounted, so a screen reader announces the note when it appears. */}
         <div role="status" id={noteId} data-asker-note="">
           {showAskerNote && asking && <AskerEndedNote asking={asking} project={thread.project.name} anyLive={anyOtherLive} />}
