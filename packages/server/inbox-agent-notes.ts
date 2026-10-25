@@ -17,7 +17,7 @@
  *    `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (Pi reads only one); `AGENTS.md`
  *    created only when none does.
  *  - Gemini CLI: `~/.gemini/<context.fileName>`, default `GEMINI.md`.
- *  - Cursor: manual copy to Settings → Rules; Cursor documents no supported global rules file.
+ *  - Cursor: copied by hand into Customize → Rules in the app; Cursor documents no global rules file, so nothing is written.
  *
  * The block sits between markers at the END of the file. Exactly one start
  * before exactly one end: the block is ours; none: appended; anything else:
@@ -67,6 +67,9 @@ export const INBOX_NOTE_BODY = [
   "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` when the person isn't here to answer in this chat: to ask a decision only they can make (as a `:::question` block), or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`. When they are here, ask in this chat instead.",
 ].join("\n");
+
+/** Cursor keeps its global rules in the app, so its note is copied by hand (the body only, never the markers). */
+export const CURSOR_NOTE_REASON = "Cursor keeps its rules in the app: copy the note into Customize → Rules yourself. Plannotator can't see, update or remove that copy.";
 
 export const INBOX_NOTE_BLOCK = `${INBOX_NOTE_START}\n${INBOX_NOTE_BODY}\n${INBOX_NOTE_END}`;
 
@@ -175,7 +178,7 @@ export function noteTarget(agent: InboxNoteAgentId, e: AgentEnvironment): NoteTa
   const exists = (path: string) => existsSync(path);
   switch (agent) {
     case "cursor":
-      return { path: null, create: false, reason: "Cursor User Rules are managed in Settings → Rules; Plannotator cannot install, update or remove a copied rule." };
+      return { path: null, create: false, reason: CURSOR_NOTE_REASON };
     case "claude-code":
       return { path: claudeRulesFile(e), create: !exists(claudeRulesFile(e)), reason: null };
     case "codex": {
