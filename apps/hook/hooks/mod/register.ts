@@ -275,6 +275,47 @@ function reminderOn(): boolean {
   return !!allowed?.inboxReminder && inboxRanHere && !!inboxToolName
 }
 
+/**
+ * Settles with `reminderOn()` once the first session.start has decided it
+ * (the switch, inbox.json, plannotator_inbox registered), or with false on its
+ * early returns (`-p`, the mod off). The engine runs prompt.context BEFORE
+ * session.start finishes (seen live on 2.1.310: the Inbox tool was registered
+ * about 230 ms after prompt.context returned), so prompt.context and the
+ * prompt.submit fallback wait on this, bounded, instead of reading the
+ * not-yet-set module state.
+ */
+let reminderGateValue: boolean | null = null
+let resolveReminderGate: (on: boolean) => void = () => undefined
+const reminderGate = new Promise<boolean>((resolve) => {
+  resolveReminderGate = resolve
+})
+function settleReminderGate(on: boolean): void {
+  if (reminderGateValue !== null) return
+  reminderGateValue = on
+  resolveReminderGate(on)
+}
+/** The longest prompt.context / prompt.submit wait for session.start's decision. */
+const REMINDER_GATE_WAIT_MS = 2_500
+/**
+ * The decision, waiting at most REMINDER_GATE_WAIT_MS for session.start;
+ * `null` when it has not decided by then (the caller then knows nothing).
+ */
+async function reminderGateDecided($: Engine): Promise<boolean | null> {
+  if (reminderGateValue !== null) return reminderGateValue
+  const controller = new AbortController()
+  const waited = Promise.resolve()
+    .then(() => $.clock.sleep(REMINDER_GATE_WAIT_MS, { signal: controller.signal }))
+    .then(
+      () => null,
+      () => null,
+    )
+  try {
+    return await Promise.race([reminderGate, waited])
+  } finally {
+    controller.abort()
+  }
+}
+
 /** `$.clock.now()` at this process's first session.start: tells a resumed session from one started here. */
 let processStartedAt: number | null = null
 
@@ -449,17 +490,23 @@ export function register(on: On) {
   on('session.start', async ($: Engine, e: any, next: Next) => {
     const result = await next(e)
     if (allowed) return result
-    allowed = await resolveAllowed($, e)
-    if (!allowed) return result
-    processStartedAt = await Promise.resolve($.clock.now()).catch(() => null)
-    // Before the instance exists: it owns the Inbox link when the tool is registered.
-    if (allowed.inboxTool) await registerInboxTool($, allowed)
-    // The reminder for the plugin's SessionStart `compact` command hook
-    // (hooks.json), which prints it after a compaction: the conversation then
-    // holds it again whether or not prompt.context reaches this mod. Unset
-    // when the reminder is off (a value inherited from a parent Claude Code
-    // must not speak for this session).
-    await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName))).catch(() => undefined)
+    try {
+      allowed = await resolveAllowed($, e)
+      if (!allowed) return result
+      processStartedAt = await Promise.resolve($.clock.now()).catch(() => null)
+      // Before the instance exists: it owns the Inbox link when the tool is registered.
+      if (allowed.inboxTool) await registerInboxTool($, allowed)
+      // The reminder for the plugin's SessionStart `compact` command hook
+      // (hooks.json), which prints it after a compaction: the conversation then
+      // holds it again whether or not prompt.context reaches this mod. Unset
+      // when the reminder is off (a value inherited from a parent Claude Code
+      // must not speak for this session).
+      await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName))).catch(() => undefined)
+    } finally {
+      // Decided (or inert): prompt.context, which the engine may already be
+      // running, adds the block now, without waiting for the commands and tools below.
+      settleReminderGate(reminderOn())
+    }
     const instance = await currentMod($)
     if (!instance) return result
     await registerCommands($)
@@ -481,14 +528,23 @@ export function register(on: On) {
   // same line goes as `prompt.submit` context instead (below). This hook
   // running is the evidence that stops that copy: it records the conversation
   // as reached and the machine as one where prompt.context works.
+  //
+  // The engine runs this hook while session.start may still be registering
+  // the tool, so it waits for session.start's decision (bounded). When that
+  // does not come in time the hook adds nothing, but it still records that it
+  // ran, so the machine is never taken for one where prompt.context is skipped.
   on('prompt.context', async ($: Engine, e: any, next: Next) => {
-    if (!reminderOn() || !inboxToolName) return next(e)
-    const result = await next({ ...e, blocks: withInboxReminder(Array.isArray(e.blocks) ? e.blocks : [], inboxToolName) })
+    const decided = await reminderGateDecided($)
+    if (decided === false) return next(e)
+    const toolName = decided ? inboxToolName : null
+    const result = toolName ? await next({ ...e, blocks: withInboxReminder(Array.isArray(e.blocks) ? e.blocks : [], toolName) }) : await next(e)
     try {
       const state = reminderConversation(String(await $.session.id()))
       state.contextRan = true
-      state.delivered = true
-      await writeContextWorks($, true)
+      if (toolName) {
+        state.delivered = true
+        await writeContextWorks($, true)
+      }
     } catch {
       // Bookkeeping only: the block above is what matters.
     }
@@ -594,7 +650,8 @@ export function register(on: On) {
     // prompt.context runs, the prompt carries the same line as context.
     let entering = e
     let reminderFor: ReminderConversation | null = null
-    if (reminderOn() && inboxToolName && !ref.fromUs) {
+    // A prompt typed while session.start is still deciding waits for it (bounded), as prompt.context does.
+    if (!ref.fromUs && (await reminderGateDecided($)) === true && inboxToolName) {
       try {
         const state = reminderConversation(String(await $.session.id()))
         const copy = inboxReminderSubmitCopy({

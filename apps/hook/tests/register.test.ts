@@ -20,6 +20,7 @@ function world(
     modEnv?: string
     env?: Record<string, string>
     cliStderr?: string
+    /** Answers `$.http.fetch` (a value, or a promise of one: a slow Inbox). */
     fetch?: (e: any) => any
     sessionId?: () => string
     /** Tool names `$.tool.register` refuses, as a session without a tool registrar would. */
@@ -107,7 +108,7 @@ function world(
     return { value: undefined }
   })
   // The bridge: no server answers (an older binary), so the loop stops.
-  on('http.fetch', ($: any, e: any) => ({ value: options.fetch?.(e) ?? { status: 404, ok: false, headers: {}, text: '' } }))
+  on('http.fetch', async ($: any, e: any) => ({ value: (await options.fetch?.(e)) ?? { status: 404, ok: false, headers: {}, text: '' } }))
   return { files, runs, submits, contexts, logs, clock, env, registered, tools, store }
 }
 
@@ -730,6 +731,78 @@ describe('register', () => {
     await $.turn.complete({ turnId: 'sub-1', ...firstTurn, agentId: 'agent-1' })
     expect(w.store.get('inboxReminderContextWorks')).toBe(true)
     await $.turn.complete({ turnId: 'turn-2', ...firstTurn })
+    expect(w.store.get('inboxReminderContextWorks')).toBe(false)
+  })
+
+  // Live on 2.1.310 the engine ran prompt.context BEFORE the mod's
+  // session.start had registered plannotator_inbox (#2167 review): the block
+  // was missing from every process's first conversation, and the first turn
+  // then taught false on a standard machine. prompt.context waits for
+  // session.start's decision now.
+  test('prompt.context while session.start is still registering the tool (a slow Inbox /mcp): the block lands and the store learns true', async ($: any, on: any) => {
+    let release: () => void = () => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const answer = inbox(TOOLS, [])
+    const w = world(on, {
+      files: withRegistry(),
+      fetch: async (e: any) => {
+        await held
+        return answer(e)
+      },
+    })
+    on('prompt.context', ($: any, e: any) => ({ blocks: e.blocks }))
+    on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
+
+    const starting = $.session.start(SESSION)
+    const context = $.prompt.context({ blocks: [{ name: 'currentDate', text: '2026-10-25' }] })
+    // Neither can finish while the Inbox has not answered.
+    await w.clock.settle()
+    expect(w.tools.some((t) => t.name === 'plannotator_inbox')).toBe(false)
+    release()
+    await starting
+    const blocks = (await context).blocks
+    await $.turn.complete({ turnId: 'turn-1', ...firstTurn })
+
+    expect(blocks).toEqual([{ name: 'currentDate', text: '2026-10-25' }, { name: 'plannotatorInbox', text: REMINDER }])
+    expect(w.store.get('inboxReminderContextWorks')).toBe(true)
+  })
+
+  test('a machine wrongly learned false by an older build: the next working prompt.context sets it back to true', async ($: any, on: any) => {
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), store: { inboxReminderContextWorks: false } })
+    on('prompt.context', ($: any, e: any) => ({ blocks: e.blocks }))
+    on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
+    await $.session.start(SESSION)
+
+    await $.prompt.submit({ text: 'Refactor the handler.' })
+    await $.prompt.context({ blocks: [] })
+    await $.turn.complete({ turnId: 'turn-1', ...firstTurn })
+
+    // One accepted duplicate (the copy on the first prompt), then today's path.
+    expect(w.contexts).toEqual([[REMINDER]])
+    expect(w.store.get('inboxReminderContextWorks')).toBe(true)
+  })
+
+  test('a resumed session (started long before this process) teaches nothing from its first turn here', { plugins: [GUARD] }, async ($: any, on: any) => {
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), store: { inboxReminderContextWorks: true } })
+    on('session.usage', () => ({ value: { startedAt: w.clock.now() - 3_600_000, context: { window: 200_000 }, rateLimits: [] } }))
+    on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
+    await $.session.start(SESSION)
+
+    await $.turn.complete({ turnId: 'turn-1', ...firstTurn })
+
+    expect(w.store.get('inboxReminderContextWorks')).toBe(true)
+  })
+
+  test('a session started by this process (startedAt just before its first session.start) still teaches false', { plugins: [GUARD] }, async ($: any, on: any) => {
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), store: { inboxReminderContextWorks: true } })
+    on('session.usage', () => ({ value: { startedAt: w.clock.now() - 2_000, context: { window: 200_000 }, rateLimits: [] } }))
+    on('turn.complete', ($: any, e: any) => ({ text: e.answer }))
+    await $.session.start(SESSION)
+
+    await $.turn.complete({ turnId: 'turn-1', ...firstTurn })
+
     expect(w.store.get('inboxReminderContextWorks')).toBe(false)
   })
 
