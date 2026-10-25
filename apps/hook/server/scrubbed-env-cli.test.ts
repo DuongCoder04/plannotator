@@ -11,8 +11,11 @@
  * 39 git calls of a review carried the token, and so did `agent models`,
  * `opencode models`, `pi --list-models` and `copilot help config`.
  *
- * The CLI runs as a child of this test (never in-process, so no test preload
- * can mask what the runtime does), in a scratch git repository, with a
+ * The CLI runs as a child of this test (`bun run`, never in-process), so no
+ * test preload can mask what the runtime does: tests/setup/gh-tripwire.ts
+ * wraps Bun.spawn / Bun.spawnSync / Bun.which to use the live env, but only in
+ * the `bun test` process, and `bun run` loads no `[test]` preload. The CLI
+ * runs in a scratch git repository, with a
  * scratch HOME and data dir and a PATH that starts with logging stubs: `git`
  * logs and then runs the real git; `gh` and every agent CLI only log. No real
  * agent CLI or gh ever runs. tests/child-env-guard.test.ts is the matching
@@ -136,6 +139,11 @@ function makeWorld() {
     TMPDIR: tmpdir(),
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    // gh is only ever the stub above; even so, never a real token or config
+    // (the rule tests/setup/gh-tripwire.ts holds for the test process).
+    GH_CONFIG_DIR: join(home, "gh-config"),
+    GH_TOKEN: "plannotator-test-fake-token",
+    GH_PROMPT_DISABLED: "1",
     NO_BROWSER,
     PLANNOTATOR_BROWSER: NO_BROWSER,
     PLANNOTATOR_SKIP_BROWSER_OPEN: "1",
