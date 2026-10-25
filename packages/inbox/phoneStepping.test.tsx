@@ -505,6 +505,31 @@ test.skipIf(!hasDom)('Previous and Next show on every file, an HTML page include
   expect(document.activeElement).toBe(pill());
 });
 
+test.skipIf(!hasDom)('focus never leaves the open sheet for the page behind: Shift+Tab out of Previous closes it (as Tab out of the grid does), focus back on the pill; Shift+Tab from Next stays inside', async () => {
+  stubViews();
+  await render(plan);
+  await openSheet();
+  // From Next, Shift+Tab is the browser's own move to Previous: nothing closes.
+  const fromNext = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => nextButton()!.dispatchEvent(fromNext));
+  expect(fromNext.defaultPrevented).toBe(false);
+  expect(document.querySelector('[data-image-peek-sheet]')).not.toBeNull();
+  // From Previous (the sheet's first control), Shift+Tab would land behind the backdrop: the sheet closes instead.
+  prevButton()!.focus();
+  const fromPrev = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => prevButton()!.dispatchEvent(fromPrev));
+  await settle(80);
+  expect(fromPrev.defaultPrevented).toBe(true);
+  expect(document.querySelector('[data-image-peek-sheet]')).toBeNull();
+  expect(document.activeElement).toBe(pill());
+  // Tab out of the grid still closes it too.
+  await openSheet();
+  await act(async () => document.querySelector<HTMLElement>('.pn-inbox-peek [role="grid"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })));
+  await settle(80);
+  expect(document.querySelector('[data-image-peek-sheet]')).toBeNull();
+  expect(document.activeElement).toBe(pill());
+});
+
 test.skipIf(!hasDom)('ImagePeek without a header is the sheet it was: no header, and Shift+Tab from the grid still closes it', async () => {
   const { ImagePeek } = await import('@plannotator/ui/components/ImagePeek');
   const closed: string[] = [];

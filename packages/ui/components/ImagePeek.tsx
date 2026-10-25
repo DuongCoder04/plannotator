@@ -53,8 +53,10 @@ export interface ImagePeekProps {
   className?: string;
   /**
    * The sheet only: controls drawn above the grid, outside it (the Inbox's
-   * Previous / Next). Shift+Tab from the grid moves into them; Escape in them
-   * closes the sheet. Absent (the default): the sheet is unchanged.
+   * Previous / Next). Shift+Tab from the grid moves into them; Escape in them,
+   * or Shift+Tab out of the first, closes the sheet (`onClose('key')`), so
+   * focus never leaves it for the page behind. Absent (the default): the
+   * sheet is unchanged.
    */
   sheetHeader?: React.ReactNode;
 }
@@ -265,7 +267,11 @@ export const ImagePeek = forwardRef<ImagePeekHandle, ImagePeekProps>(function Im
           <div
             className="px-3 pt-2 text-popover-foreground"
             onKeyDown={(event) => {
-              if (event.key !== 'Escape') return;
+              // Escape closes the sheet; so does Shift+Tab out of its first control (focus leaving the sheet
+              // closes it, as Tab out of the grid does: the host puts focus back on its opener).
+              const first = event.currentTarget.querySelector<HTMLElement>('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+              const leaving = event.key === 'Tab' && event.shiftKey && event.target === first;
+              if (event.key !== 'Escape' && !leaving) return;
               event.preventDefault();
               event.stopPropagation();
               onClose('key');
