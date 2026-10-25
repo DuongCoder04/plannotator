@@ -334,7 +334,7 @@ export interface InboxServerOptions {
    * Codex CLI besides `agentEnvironment`'s PATH (default: the ChatGPT app's,
    * never under the test sandbox), and how often to look for replies to queue.
    */
-  codexWake?: { extraClis?: readonly string[]; now?: () => number };
+  codexWake?: { extraClis?: readonly string[]; now?: () => number; queueTimeoutMs?: number };
 }
 
 /**
@@ -1942,6 +1942,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     autoSendAfterMs: options.autoSendAfterMs ?? INBOX_AUTO_SEND_AFTER_MS,
     // A Codex thread has no connection that polls: it is there until Codex says its thread is gone.
     wakeOnlyStatus: (session) => codexWake.status(session),
+    uncertainItemsOf: (session) => codexWake.uncertainItems(session),
   });
 
   // The Codex wake: the person's items for a Codex thread go in as a new turn through `codex queue`,
@@ -1954,6 +1955,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     waitingOverMcp: (session, threadId) => live.waitingOverMcp(session, threadId),
     ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
     ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
+    ...(options.codexWake?.queueTimeoutMs ? { queueTimeoutMs: options.codexWake.queueTimeoutMs } : {}),
   });
 
   // A reply that waited 5 minutes on a busy session goes into its running turn by itself, as if the person
@@ -1999,6 +2001,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   store.setDeliveryPresence({
     connection: live.deliveryConnectionOf,
     askerLive: live.askerLive,
+    // A Codex reply whose `codex queue` ran out of time may not have gone: its row says it is saved, not queued.
+    uncertain: (session, itemId) => codexWake.uncertain(session, itemId),
     autoSendAfterMs: live.autoSendAfterMs,
     waitOf: live.waitOf,
   });

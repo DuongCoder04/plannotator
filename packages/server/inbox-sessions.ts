@@ -87,6 +87,12 @@ export interface InboxRecipientConnection {
    */
   auto_send_after_ms: number;
   /**
+   * Items that may not have reached this session (a Codex thread whose
+   * `codex queue` call ran out of time): the line says they are saved for the
+   * agent's next read, not queued. Absent when none. Additive.
+   */
+  uncertain?: string[];
+  /**
    * The items waiting on this session, by id: since when it waits on the
    * busy session (`since`, the "Undelivered N min"), and since when it may go
    * in by itself (`auto_since`: the first time the session was seen busy with
@@ -200,6 +206,8 @@ export function createInboxLiveSessions(options: {
    * session never "ends" for want of a poll: only `dead` ends it.
    */
   wakeOnlyStatus?: (session: string) => "alive" | "dead" | null;
+  /** The items of a session the Inbox wakes itself that may not have reached it (a `codex queue` that ran out of time). */
+  uncertainItemsOf?: (session: string) => string[];
 }) {
   const { store, serverSession } = options;
   const now = options.now ?? Date.now;
@@ -452,6 +460,11 @@ export function createInboxLiveSessions(options: {
     auto_send_after_ms: autoSendAfterMs,
     waits: {},
   });
+  /** `uncertain` on a connection: the items that may not have reached the session (absent when none). */
+  const uncertainOf = (session: string): { uncertain?: string[] } => {
+    const items = options.uncertainItemsOf?.(session) ?? [];
+    return items.length > 0 ? { uncertain: items } : {};
+  };
 
   /**
    * Whether the session that asked is still there, with the grace above: it
@@ -664,7 +677,7 @@ export function createInboxLiveSessions(options: {
   /** How a session is connected now (live, no grace), or null when its connection does not poll. */
   const connectionOf = (session: string): InboxRecipientConnection | null => {
     const entry = sessions.get(session);
-    if (!entry || !isLive(entry)) return options.wakeOnlyStatus?.(session) === "alive" ? wakeOnlyConnection() : null;
+    if (!entry || !isLive(entry)) return options.wakeOnlyStatus?.(session) === "alive" ? { ...wakeOnlyConnection(), ...uncertainOf(session) } : null;
     return {
       busy: entry.busy,
       idle_since: entry.busy === false && entry.idleSince !== null ? iso(entry.idleSince) : null,
@@ -679,6 +692,7 @@ export function createInboxLiveSessions(options: {
           { since: iso(clock.since), auto_since: clock.autoSince === null ? null : iso(clock.autoSince) },
         ]),
       ),
+      ...uncertainOf(session),
     };
   };
 

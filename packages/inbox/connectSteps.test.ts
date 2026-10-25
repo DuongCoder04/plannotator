@@ -6,7 +6,7 @@
  */
 import { expect, test } from 'bun:test';
 import { INBOX_TOOL_COST, inboxToolCostText } from '@plannotator/core/inbox-types';
-import { MCP_DONE_NOTE, WAKE_LINE, blockedText, connectPlan, connectRowOf, doneNote, laterNote, stepEyebrow, stepText, stepTitle } from './connectSteps';
+import { MCP_DONE_NOTE, MCP_WAKE_LINE, WAKE_LINE, blockedText, mcpWakeLine, mcpWakingHostsHere, wakeLine, connectPlan, connectRowOf, doneNote, laterNote, stepEyebrow, stepText, stepTitle } from './connectSteps';
 import { SCENARIOS, agentsModel, missing, ready, toolOff, viaMcp } from './connectSteps.fixtures';
 
 const ids = (rows: { id: string }[]) => rows.map((row) => row.id);
@@ -189,6 +189,20 @@ test('the plugin turned off by managed settings: said so, and claude plugin enab
 test('the wake line names the hosts a reply wakes, and what other agents do instead', () => {
   expect(WAKE_LINE).toContain('Claude Code, Pi and OpenCode 2');
   expect(WAKE_LINE).toContain('the next time they check the Inbox');
+  // Deliberately pinned: without Codex on this computer the lines are #2168's, word for word; Codex adds its clause only when its row is here.
+  expect(WAKE_LINE).toBe("With Plannotator's connection, your replies arrive as a new turn on their own in Claude Code, Pi and OpenCode 2. Other agents see your reply the next time they check the Inbox.");
+  expect(MCP_WAKE_LINE).toBe("These reach the Inbox through MCP: they see your reply the next time they check it, and can't be woken.");
+  expect(wakeLine(['codex'])).toBe(
+    "With Plannotator's connection, your replies arrive as a new turn on their own in Claude Code, Pi and OpenCode 2, and in Codex 0.149 or later through MCP. Other agents see your reply the next time they check the Inbox.",
+  );
+  expect(mcpWakeLine(['codex'])).toBe(
+    "These reach the Inbox through MCP: Codex 0.149 or later gets your reply as a new turn on its own; the others see it the next time they check the Inbox, and can't be woken.",
+  );
+  // Only a Codex row that is on this computer counts.
+  expect(mcpWakingHostsHere(SCENARIOS.typical())).toEqual(['codex']);
+  expect(mcpWakingHostsHere(SCENARIOS.none())).toEqual([]);
+  expect(mcpWakingHostsHere(agentsModel({ 'claude-code': ready() }))).toEqual([]);
+  expect(wakeLine(mcpWakingHostsHere(agentsModel({ 'claude-code': ready() })))).toBe(WAKE_LINE);
 });
 
 test('a Connect step for an MCP agent says it is not woken (Codex 0.149+ is: the Inbox queues the reply into its thread)', () => {

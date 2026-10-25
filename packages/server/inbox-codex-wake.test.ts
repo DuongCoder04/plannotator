@@ -263,6 +263,59 @@ describe("a reply to a Codex thread", () => {
     expect(queues(w.fake)).toHaveLength(1);
   });
 
+  test("a codex queue that hangs and runs out of time is never sent again and never marked delivered, across a restart; the line says saved", async () => {
+    const w = await world();
+    w.server.stop();
+    const environment = createAgentEnvironmentFor({ platform: "linux", homeDir: w.fake.home, env: { ...w.fake.env, FAKE_CODEX_QUEUE_DELAY_MS: "20000" } });
+    const start = async () => {
+      const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [], queueTimeoutMs: 400 } });
+      servers.push(server);
+      return server;
+    };
+    let server = await start();
+    let client = await connect(server);
+    const sent = await codexSends(client, w.project, "Ship it?");
+    const response = await reply(server, sent.message_id, { idempotency_key: "k1", words: "Yes." });
+    const replyId = ((await response.json()) as { reply: { id: string } }).reply.id;
+    const before = Date.now();
+    await server.codexWake.sweep();
+    expect(queues(w.fake)).toHaveLength(1);
+    // The hung call was killed (fake.remove() fails the test if it still runs).
+    for (let waited = 0; waited < 2000 && w.fake.live().length > 0; waited += 50) await Bun.sleep(50);
+    expect(w.fake.live()).toEqual([]);
+    expect(server.codexWake.uncertain(THREAD, replyId)).toBe(true);
+
+    const check = async (s: InboxServer, c: Client) => {
+      // The thread's next turn calls a tool: it may never have got the reply, so that is no delivery.
+      await c.callTool({ name: "search", arguments: { query: "ship", project_path: w.project }, _meta: codexMeta(THREAD, Date.now() + 5) });
+      await Bun.sleep(150);
+      expect((await thread(s, sent.thread_id)).messages.find((m) => m.id === replyId)!.delivery ?? null).toBeNull();
+      // Its line and its row say saved, not queued.
+      const sessions = (await (await fetch(`${base(s)}/api/inbox/threads/${sent.thread_id}/sessions?asker=${THREAD}`)).json()) as { asker: { connection: { uncertain?: string[] } | null } };
+      expect(sessions.asker.connection?.uncertain).toEqual([replyId]);
+      const rows = (await (await fetch(`${base(s)}/api/inbox/threads`)).json()) as { sections: { threads: { thread_id: string; delivery: { state: string; reason: string } | null }[] }[] };
+      expect(rows.sections.flatMap((section) => section.threads).find((t) => t.thread_id === sent.thread_id)!.delivery).toMatchObject({ state: "saved", reason: "reads" });
+      // And it is never sent again.
+      await s.codexWake.sweep();
+      expect(queues(w.fake)).toHaveLength(1);
+    };
+    await check(server, client);
+    expect(before).toBeLessThan(Date.now());
+
+    // A restart reads the claim back as uncertain, not as queued.
+    server.stop();
+    server = await start();
+    client = await connect(server);
+    expect(server.codexWake.uncertain(THREAD, replyId)).toBe(true);
+    await check(server, client);
+
+    // The agent reads the thread: the reply is settled the ordinary way, and the claim is done with.
+    await client.callTool({ name: "read_thread", arguments: { agent_session: THREAD, thread_id: sent.thread_id }, _meta: codexMeta(THREAD) });
+    await server.codexWake.sweep();
+    expect(server.codexWake.uncertain(THREAD, replyId)).toBe(false);
+    expect(readdirSync(join(w.dataDir, "inbox", "codex-queue"))).toEqual([]);
+  }, 30_000);
+
   test("a turn during a codex queue that then fails is no delivery: the reply is tried again", async () => {
     const w = await world();
     const failFile = join(w.fake.root, "fail");

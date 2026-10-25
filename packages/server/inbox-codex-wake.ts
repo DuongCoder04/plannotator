@@ -27,11 +27,17 @@
  *    reads it (wait_for_reply, read_thread). A turn that starts while the
  *    call still runs counts, once the call exits 0. Until then the window says
  *    "Queued for Codex; it gets this as its next turn.";
+ *  - a call that ran out of time (or that the Inbox's stop cut short) may or
+ *    may not have queued: it is kept claimed (never sent twice), never marked
+ *    delivered by a turn, and the window says "Saved for Codex. It sees it
+ *    when it next reads this thread.";
  *  - a thread Codex does not know (exit 1, "no rollout found") is ended: the
  *    reply is saved for the next agent, and the session is alive again the
  *    next time it calls the Inbox;
- *  - any other failure is tried again later (30 s, doubling to 10 min); a
- *    call that ran out of time may have queued, so it is not tried again.
+ *  - any other failure is tried again later (30 s, doubling to 10 min). With
+ *    no Codex CLI found at all, nothing is retried on a timer: the reply waits
+ *    for the next look (any person's item, a Codex thread's next message, a
+ *    thread coming back, an Inbox restart).
  *
  * The text goes to `codex queue` as an argument, so while the call runs (a
  * few hundred milliseconds) it can be read in the process list (`ps`) by
@@ -106,6 +112,14 @@ export interface InboxCodexWake {
    * before that turn started has reached it.
    */
   noteToolCall(session: string, turnStartedAt: number | null): void;
+  /**
+   * Whether `codex queue` may or may not have queued this item for this
+   * session (the call ran out of time, or the Inbox stopped while it ran):
+   * the window says it is saved for the agent's next read, not queued.
+   */
+  uncertain(session: string, itemId: string): boolean;
+  /** The items of `session` that are uncertain (see `uncertain`). */
+  uncertainItems(session: string): string[];
   /** Look for items to queue now (the Inbox runs it on every store line, a retry coming due, a wait ending). */
   sweep(): Promise<void>;
   stop(): void;
@@ -155,6 +169,8 @@ export function createInboxCodexWake(options: {
   /** Where to look for a Codex CLI besides PATH. Default: the ChatGPT and Codex apps' own (macOS), never under the test sandbox. */
   extraClis?: readonly string[];
   now?: () => number;
+  /** How long one `codex queue` may take. Default INBOX_CODEX_QUEUE_TIMEOUT_MS; tests shorten it. */
+  queueTimeoutMs?: number;
   log?: (line: string) => void;
 }): InboxCodexWake {
   const { store, environment } = options;
@@ -221,6 +237,13 @@ export function createInboxCodexWake(options: {
   /** Calls running now, by claim key: when it was queued (ms), and whether a turn already took it (recorded on exit 0). */
   const inFlight = new Map<string, { at: number; session: string; itemId: string; taken: boolean }>();
   const claimed = new Set<string>();
+  /**
+   * Claims whose call may or may not have queued: it ran out of time, or the
+   * Inbox stopped while it ran. Never sent again (no double send), never
+   * marked delivered by a turn (the call may never have queued): the window
+   * says the reply is saved for the agent's next read.
+   */
+  const uncertain = new Set<string>();
   try {
     for (const name of readdirSync(dir)) {
       const dot = name.indexOf(".");
@@ -230,10 +253,12 @@ export function createInboxCodexWake(options: {
       if (!isCodexThreadId(session)) continue;
       claimed.add(name);
       try {
-        const at = (JSON.parse(readFileSync(join(dir, name, "queued.json"), "utf8")) as { at?: unknown }).at;
-        if (typeof at === "number") (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(itemId, at);
+        const record = JSON.parse(readFileSync(join(dir, name, "queued.json"), "utf8")) as { at?: unknown; timed_out?: unknown };
+        if (typeof record.at === "number" && record.timed_out !== true) (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(itemId, record.at);
+        else uncertain.add(name);
       } catch {
-        // Claimed and never finished (the Inbox stopped mid-call): never queued again.
+        // Claimed and never finished (the Inbox stopped mid-call): never queued again, and not known to have gone.
+        uncertain.add(name);
       }
     }
   } catch {
@@ -241,6 +266,7 @@ export function createInboxCodexWake(options: {
   }
   const dropClaim = (itemId: string, session: string) => {
     claimed.delete(`${itemId}.${session}`);
+    uncertain.delete(`${itemId}.${session}`);
     queued.get(session)?.delete(itemId);
     rmSync(claimDir(itemId, session), { recursive: true, force: true });
   };
@@ -296,22 +322,30 @@ export function createInboxCodexWake(options: {
     const flight = { at, session, itemId: item.id, taken: false };
     inFlight.set(key, flight);
     // `--name=value`: a value that starts with "-" would be read as a flag.
-    const run = await environment.run([path, "queue", `--thread=${session}`, `--message=${text}`], { timeoutMs: INBOX_CODEX_QUEUE_TIMEOUT_MS, signal: stopping.signal });
+    const run = await environment.run([path, "queue", `--thread=${session}`, `--message=${text}`], { timeoutMs: options.queueTimeoutMs ?? INBOX_CODEX_QUEUE_TIMEOUT_MS, signal: stopping.signal });
     inFlight.delete(key);
     if (stopping.signal.aborted && run.exitCode !== 0) {
-      // Stopped mid-call: it may have queued, so it stays claimed.
+      // Stopped mid-call: it may have queued, so it stays claimed (no queued.json: uncertain after a restart).
+      uncertain.add(key);
       return;
     }
-    if (run.exitCode === 0 || run.timedOut) {
+    if (run.timedOut) {
+      // It may or may not have queued: kept claimed (never twice) and uncertain (never marked delivered by a turn).
       retryAt.delete(key);
-      if (run.timedOut) log(`codex queue ran out of time for ${item.id} (thread ${session}); it may have gone, so it is not sent again.`);
+      log(`codex queue ran out of time for ${item.id} (thread ${session}); it may not have gone, and is not sent again: the agent sees it when it reads the thread.`);
       if (!claimed.has(key)) return;
-      if (flight.taken && run.exitCode === 0) {
+      uncertain.add(key);
+      writeFileSync(join(claimDir(item.id, session), "queued.json"), `${JSON.stringify({ at, timed_out: true })}\n`);
+      return;
+    }
+    if (run.exitCode === 0) {
+      retryAt.delete(key);
+      if (!claimed.has(key)) return;
+      if (flight.taken) {
         delivered(item.id, session);
         return;
       }
-      // A call that ran out of time may have queued: never twice.
-      writeFileSync(join(claimDir(item.id, session), "queued.json"), `${JSON.stringify({ at, ...(run.timedOut ? { timed_out: true } : {}) })}\n`);
+      writeFileSync(join(claimDir(item.id, session), "queued.json"), `${JSON.stringify({ at })}\n`);
       (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(item.id, at);
       return;
     }
@@ -402,11 +436,13 @@ export function createInboxCodexWake(options: {
     if (line.kind !== "message") return;
     const message = line.record as InboxMessage;
     if (message.author.kind === "agent") {
-      if (message.wakes === true && message.author.host === INBOX_CODEX_HOST && message.author.session) knownSessions().add(message.author.session);
-      return;
+      // A Codex message that wakes: also a moment to look again (a reply that waited for a Codex CLI to appear).
+      if (message.wakes !== true || message.author.host !== INBOX_CODEX_HOST || !message.author.session) return;
+      knownSessions().add(message.author.session);
+    } else {
+      if (message.to?.host === INBOX_CODEX_HOST) knownSessions().add(message.to.session);
+      for (const tag of message.tags ?? []) if (tag.host === INBOX_CODEX_HOST && tag.wakes) knownSessions().add(tag.session);
     }
-    if (message.to?.host === INBOX_CODEX_HOST) knownSessions().add(message.to.session);
-    for (const tag of message.tags ?? []) if (tag.host === INBOX_CODEX_HOST && tag.wakes) knownSessions().add(tag.session);
     if (knownSessions().size === 0 || sweepQueued) return;
     sweepQueued = true;
     setTimeout(() => {
@@ -435,6 +471,8 @@ export function createInboxCodexWake(options: {
     knownCli: () => cliAnswer?.cli ?? null,
     wakes: async (host, session, meta) => host === INBOX_CODEX_HOST && isCodexThreadId(session) && codexCallWakes(meta, session) && (await cli()) !== null,
     status: (session) => (!knownSessions().has(session) ? null : dead.has(session) ? "dead" : "alive"),
+    uncertain: (session, itemId) => uncertain.has(`${itemId}.${session}`),
+    uncertainItems: (session) => [...uncertain].filter((key) => key.endsWith(`.${session}`)).map((key) => key.slice(0, key.indexOf("."))),
     noteToolCall,
     sweep,
     stop: () => {

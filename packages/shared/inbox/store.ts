@@ -475,6 +475,12 @@ export interface InboxDeliveryPresence {
   connection(session: string): InboxDeliveryConnection | null;
   /** Whether the session that asked is still there, with the sessions route's grace (`askerLive`). */
   askerLive(session: string): boolean;
+  /**
+   * Whether an item may not have reached its session though it was handed on
+   * (a Codex `codex queue` call that ran out of time): the row says it is
+   * saved for the agent's next read. Absent: never.
+   */
+  uncertain?(session: string, itemId: string): boolean;
   /** The server's wait before an item goes into a busy session's turn by itself (`INBOX_AUTO_SEND_AFTER_MS`). Absent: never. */
   autoSendAfterMs?: number;
   /**
@@ -1378,6 +1384,7 @@ export class InboxStore {
       return connection ? { busy: connection.busy, send_now: connection.send_now } : null;
     };
     const askerLive = (session: string): boolean => (presence ? presence.askerLive(session) : true);
+    const uncertain = (session: string | null, itemId: string): boolean => !!session && presence?.uncertain?.(session, itemId) === true;
     // How long it waited on a busy session, and whether it goes in by itself (approval "inbox-busy-agent-reply"):
     // the server's clock while it waits, the item's own record once the Inbox marked it.
     const waitOf = (item: InboxMessage, session: string | null) => {
@@ -1426,7 +1433,7 @@ export class InboxStore {
           delivered: !!last.delivery,
           undelivered: !last.delivery && !askerLive(lastTo.session),
           askerEnded: false,
-          wakes: true,
+          wakes: !uncertain(lastTo.session, last.id),
           sendingNow: !!last.deliver_now_at,
           connection,
           ...waitOf(last, lastTo.session),
@@ -1456,7 +1463,7 @@ export class InboxStore {
         delivered: !!deliveredAt,
         undelivered: false,
         askerEnded,
-        wakes: wakingSession !== null || (askedSession !== null && connection != null),
+        wakes: (wakingSession !== null || (askedSession !== null && connection != null)) && !uncertain(replySession, last.id),
         sendingNow: !!last.deliver_now_at,
         connection,
         ...waitOf(last, replySession),

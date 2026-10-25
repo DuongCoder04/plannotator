@@ -247,13 +247,33 @@ export function mcpWakeName(host: string): string {
 }
 const BRIDGE_HOSTS = INBOX_WAKING_HOSTS.filter((host) => !INBOX_MCP_WAKING_HOSTS.includes(host));
 
-/** Which agents a reply wakes, built from the one list (INBOX_WAKING_HOSTS). */
-export const WAKE_LINE = `With Plannotator's connection, your replies arrive as a new turn on their own in ${andList(BRIDGE_HOSTS.map(wakeName))}, and in ${andList(
-  INBOX_MCP_WAKING_HOSTS.map(mcpWakeName),
-)} through MCP. Other agents see your reply the next time they check the Inbox.`;
+/**
+ * Which agents a reply wakes, built from the one list (INBOX_WAKING_HOSTS).
+ * `mcpHosts`: the agents MCP alone wakes that are on this computer (Codex,
+ * when its row is present); none, the line names Plannotator's hosts only.
+ */
+export function wakeLine(mcpHosts: readonly string[] = []): string {
+  const mcp = INBOX_MCP_WAKING_HOSTS.filter((host) => mcpHosts.includes(host));
+  const through = mcp.length > 0 ? `, and in ${andList(mcp.map(mcpWakeName))} through MCP` : '';
+  return `With Plannotator's connection, your replies arrive as a new turn on their own in ${andList(BRIDGE_HOSTS.map(wakeName))}${through}. Other agents see your reply the next time they check the Inbox.`;
+}
 
-/** Over the "Another agent or editor" picker: every agent there reaches the Inbox through MCP; only Codex is woken. */
-export const MCP_WAKE_LINE = `These reach the Inbox through MCP: ${andList(INBOX_MCP_WAKING_HOSTS.map(mcpWakeName))} gets your reply as a new turn on its own; the others see it the next time they check the Inbox, and can't be woken.`;
+/** Over the "Another agent or editor" picker: every agent there reaches the Inbox through MCP; only an MCP-waking agent present (Codex) is woken. */
+export function mcpWakeLine(mcpHosts: readonly string[] = []): string {
+  const mcp = INBOX_MCP_WAKING_HOSTS.filter((host) => mcpHosts.includes(host));
+  if (mcp.length === 0) return "These reach the Inbox through MCP: they see your reply the next time they check it, and can't be woken.";
+  return `These reach the Inbox through MCP: ${andList(mcp.map(mcpWakeName))} gets your reply as a new turn on its own; the others see it the next time they check the Inbox, and can't be woken.`;
+}
+
+/** The agents MCP alone wakes whose row is on this computer (detected): the wake lines name only those. */
+export function mcpWakingHostsHere(model: InboxAgentsModel | null | undefined): string[] {
+  return (model?.agents ?? []).filter((row) => row.detected && INBOX_MCP_WAKING_HOSTS.includes(row.id)).map((row) => row.id);
+}
+
+/** The wake line on a computer without an agent MCP alone wakes (no Codex): Plannotator's hosts only. */
+export const WAKE_LINE = wakeLine();
+/** The picker's line on a computer without Codex. */
+export const MCP_WAKE_LINE = mcpWakeLine();
 
 /** "Already connected" for an agent reached through MCP. */
 export const MCP_DONE_NOTE = 'MCP · sees replies when it checks';
