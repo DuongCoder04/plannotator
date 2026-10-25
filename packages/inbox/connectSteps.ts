@@ -181,16 +181,16 @@ export function stepText(row: ConnectRow): { text: string; cost?: string } {
         cost: inboxToolCostText(row.id as 'pi' | 'opencode'),
       };
     case 'mcp-only':
-      return { text: `Replies don't wake the session. Plannotator's ${word} does, and lets you message a running session.` };
+      return { text: `${row.label} sees your replies only when it checks the Inbox. With Plannotator's ${word}, they arrive as a new turn on their own, and you can message a running session.` };
     case 'missing':
-      if (row.id === 'claude-code') return { text: "Plannotator's plugin connects it: your replies come back into the session by themselves." };
+      if (row.id === 'claude-code') return { text: "Plannotator's plugin connects it: your replies arrive as a new turn on their own." };
       if (row.id === 'opencode' && row.generation === '1') {
-        return { text: "Plannotator's plugin connects it. OpenCode 1 checks for your replies itself; on OpenCode 2 they come back into the session by themselves." };
+        return { text: "Plannotator's plugin connects it. OpenCode 1 sees your replies when it checks the Inbox; on OpenCode 2 they arrive as a new turn on their own." };
       }
-      if (row.id === 'opencode') return { text: "Plannotator's plugin connects it: on OpenCode 2 your replies come back into the session by themselves." };
+      if (row.id === 'opencode') return { text: "Plannotator's plugin connects it: on OpenCode 2 your replies arrive as a new turn on their own." };
       return { text: `Plannotator's ${word} connects it.` };
     case 'connect':
-      return { text: `Adds the Inbox's MCP server to ${row.label}. Replies don't wake ${row.label}: it checks for them itself.` };
+      return { text: `Adds the Inbox's MCP server to ${row.label}. ${row.label} sees your replies when it checks the Inbox; it can't be woken.` };
     case 'manual':
       return { text: row.reason ? `Only you can add it here: ${row.reason}.` : 'Only you can add it here.' };
     default:
@@ -224,6 +224,26 @@ export function blockedText(plan: ConnectPlan, opts: { skipped: readonly string[
   return { text: parts.join(' '), settings: toolOff.length > 0 };
 }
 
+/**
+ * The plain statement of which agents a reply wakes, said once on the
+ * first-run screen: Plannotator's own connections put the person's reply into
+ * the session as a new turn; an agent reached through MCP reads it when it
+ * next checks. OpenCode 1 has the tool but no wake, hence "OpenCode 2".
+ */
+export const WAKE_LINE =
+  "With Plannotator's connection, your replies arrive as a new turn on their own in Claude Code, Pi and OpenCode 2. Other agents see your reply the next time they check the Inbox.";
+
+/** Over the "Another agent or editor" picker: every agent there reaches the Inbox through MCP. */
+export const MCP_WAKE_LINE = "These reach the Inbox through MCP: they see your reply the next time they check it, and can't be woken.";
+
+/** "Already connected" for an agent reached through MCP. */
+export const MCP_DONE_NOTE = 'MCP · sees replies when it checks';
+
+/** The MCP fold under a Plannotator host's install step. */
+export function mcpFoldHint(label: string): string {
+  return `Works, but ${label} sees your replies only when it checks the Inbox; they don't arrive as a new turn.`;
+}
+
 /** What the "Already connected" line says after the name. */
 export function doneNote(row: ConnectRow, opts: { live: boolean; turnedOn: boolean }): string {
   if (row.state === 'ready') {
@@ -231,8 +251,8 @@ export function doneNote(row: ConnectRow, opts: { live: boolean; turnedOn: boole
     const word = isPluginHost(row.id) ? PLUGIN_WORD[row.id] : 'plugin';
     return opts.live ? `${word} · running now` : word;
   }
-  if (row.state === 'mcp-only') return 'MCP, no wake';
-  return 'MCP';
+  // MCP-only, Plannotator's host or not: nothing wakes it, it reads replies when it checks.
+  return MCP_DONE_NOTE;
 }
 
 /** What the "Left to do" line says after the name. */

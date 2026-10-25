@@ -110,18 +110,20 @@ test.skipIf(!hasDom)('one group per agent found, with its switches and the state
   expect(group(el, 'claude-code').querySelector('.ib-agvia')?.textContent).toBe("Plannotator's plugin");
   expect(rows(group(el, 'claude-code'))).toEqual([
     { k: 'Reaches the Inbox', v: 'the plannotator_inbox tool', sw: 'true', sub: null },
+    { k: 'Your replies', v: 'arrive as a new turn', sw: null, sub: null },
     { k: 'Reminder at session start', v: 'one line when a session starts', sw: 'true', sub: null },
     { k: 'Note in its instructions', v: '~/.claude/rules/plannotator-inbox.md · would createShow', sw: 'false', sub: null },
   ]);
   expect(rows(group(el, 'codex'))).toEqual([
     { k: 'Reaches the Inbox', v: 'plannotator-inbox in ~/.codex/config.toml', sw: 'true', sub: null },
+    { k: 'Your replies', v: "seen when it checks the Inbox; it can't be woken", sw: null, sub: null },
     { k: 'Note in its instructions', v: '~/.codex/AGENTS.md · marked sectionShow', sw: 'true', sub: null },
   ]);
-  expect(rows(group(el, 'pi'))[2]!.sub).toBe("You edited this note, so Plannotator won't update it. Turning it off removes it as you left it.");
+  expect(rows(group(el, 'pi'))[3]!.sub).toBe("You edited this note, so Plannotator won't update it. Turning it off removes it as you left it.");
   // Pi and OpenCode send the tool with every request: the measured cost sits under the switch (INBOX_TOOL_COST).
   expect(rows(group(el, 'pi'))[0]!.sub).toBe(`Adds the tool to every Pi request: ${inboxToolCostText('pi')}.`);
   expect(rows(group(el, 'opencode'))[0]!.sub).toBe(`Adds the tool to every OpenCode request: ${inboxToolCostText('opencode')}.`);
-  const opencode = rows(group(el, 'opencode'))[2]!;
+  const opencode = rows(group(el, 'opencode'))[3]!;
   expect(opencode.sw).toBeNull();
   expect(opencode.sub).toContain('OpenCode 1');
   expect(group(el, 'cursor').querySelector('.ib-agstate')?.textContent).toBe('Removed outside Plannotator');
@@ -216,7 +218,7 @@ test.skipIf(!hasDom)('a second click while a change to that agent saves is ignor
 
 test.skipIf(!hasDom)('OpenCode with no AGENTS.md says "no file yet", never "would create"; PLANNOTATOR_INBOX_NOTES=0 says notes are off', () => {
   const el = mount(model({ notes_env_off: true }));
-  expect(rows(group(el, 'opencode'))[2]!.v).toBe('~/.config/opencode/AGENTS.md · no file yetShow');
+  expect(rows(group(el, 'opencode'))[3]!.v).toBe('~/.config/opencode/AGENTS.md · no file yetShow');
   expect([...el.querySelectorAll('[role="note"]')].map((n) => n.textContent).join(' ')).toContain('PLANNOTATOR_INBOX_NOTES=0 is set');
 });
 
@@ -240,4 +242,24 @@ test.skipIf(!hasDom)('Claude Code connected by hand through MCP: shown, never sw
   base.agents[0] = mcp('claude-code', 'Claude Code', '~/.claude.json');
   const el = mount(base);
   expect(rows(group(el, 'claude-code'))[0]).toEqual({ k: 'Reaches the Inbox', v: 'plannotator-inbox in ~/.claude.json', sw: null, sub: null });
+});
+
+test.skipIf(!hasDom)('Your replies: a new turn through Plannotator\'s own tool, seen when it checks for an MCP agent or OpenCode 1, nothing for an agent that does not reach the Inbox', () => {
+  const el = mount(
+    model({
+      agents: [
+        tool('claude-code', 'Claude Code'),
+        mcp('codex', 'Codex', '~/.codex/config.toml'),
+        tool('opencode', 'OpenCode', { plugin: { installed: true, generation: '1' } }),
+        tool('pi', 'Pi', { reach: { kind: 'tool', on: false, state: 'off', path: null, locked: false, reason: null } }),
+        mcp('cursor', 'Cursor', '~/.cursor/mcp.json', { reach: { kind: 'mcp', on: false, state: 'removed', path: '~/.cursor/mcp.json', locked: false, reason: null } }),
+      ],
+    }),
+  );
+  const replies = (id: string) => group(el, id).querySelector('[data-agent-replies]');
+  expect(replies('claude-code')?.getAttribute('data-agent-replies')).toBe('wake');
+  expect(replies('codex')?.getAttribute('data-agent-replies')).toBe('check');
+  expect(replies('opencode')?.querySelector('.ib-agv')?.textContent).toBe("seen when it checks the Inbox; OpenCode 1 can't be woken");
+  expect(replies('pi')).toBeNull();
+  expect(replies('cursor')).toBeNull();
 });

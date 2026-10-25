@@ -9,13 +9,16 @@ import {
   OPENCODE_PLUGIN_LINES,
   PI_EXTENSION_INSTALL,
   PLUGIN_HOSTS,
+  MCP_WAKE_LINE,
   TRY_PROMPT,
+  WAKE_LINE,
   blockedText,
   connectPlan,
   doneNote,
   harnessOf,
   isPluginHost,
   laterNote,
+  mcpFoldHint,
   stepEyebrow,
   stepText,
   stepTitle,
@@ -130,7 +133,7 @@ function McpFold({ host, context }: { host: PluginHost; context: ConnectContext 
   return (
     <Fold label="Use MCP instead" id={id}>
       <CodeBox text={text} label={host === 'opencode' ? 'opencode.json' : undefined} />
-      <p className="ib-cn-hint">Works, but your replies won&apos;t come back into the session by themselves.</p>
+      <p className="ib-cn-hint">{mcpFoldHint(host === 'claude-code' ? 'Claude Code' : host === 'pi' ? 'Pi' : 'OpenCode')}</p>
     </Fold>
   );
 }
@@ -283,7 +286,7 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
         <h3 ref={stepHeading} tabIndex={-1}>
           Connect your first agent
         </h3>
-        <p>Plannotator&apos;s own connections bring your replies back into the session by themselves. Which agent do you use?</p>
+        <p>With Plannotator&apos;s own connection, your replies arrive as a new turn on their own. Which agent do you use?</p>
         <div className="ib-cn-acts">
           <Choice
             label="Your agent"
@@ -491,6 +494,12 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
           {hero}
           {lists}
           {!loading && (
+            <p className="ib-note ib-cn-wake" data-wake-note="">
+              <Icon name="info" />
+              <span>{WAKE_LINE}</span>
+            </p>
+          )}
+          {!loading && (
           <div className="ib-try">
             <h3 ref={tryHeading} tabIndex={-1}>
               Try it
@@ -525,6 +534,10 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
           )}
           {context && !loading && (
             <Fold label="Another agent or editor" sub="VS Code, Zed, JetBrains, Goose, any MCP client" id={pickerId}>
+              <p className="ib-note ib-cn-wake" data-wake-note="mcp">
+                <Icon name="info" />
+                <span>{MCP_WAKE_LINE}</span>
+              </p>
               <ConnectPicker harnesses={OTHER_HARNESSES} initial="vscode" context={context} icons />
             </Fold>
           )}

@@ -2648,6 +2648,8 @@ label.ib-anote-r:hover { background: color-mix(in oklch, var(--muted) 40%, trans
 .ib-cl li > .ib-mut { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); min-width: 0; overflow-wrap: anywhere; }
 .ib-cl li.ib-mut { color: var(--muted-foreground); }
 .pn-inbox .ib-cl svg.ib-cl-tick { width: 14px; height: 14px; flex: none; color: var(--success); stroke-width: 2.2; }
+.ib-empty .ib-note.ib-cn-wake { align-items: flex-start; margin: 0; line-height: 1.5; font-size: var(--ib-fs-13, 13px); }
+.pn-inbox .ib-empty .ib-note.ib-cn-wake svg.ib-ic { flex: none; margin-top: 2px; }
 .ib-cl-ring { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); flex: none; }
 .ib-cl-ring.ib-cl-dash { border-style: dashed; }
 .ib-cl li.ib-cl-now { font-weight: 550; }
