@@ -531,14 +531,16 @@ test('on an iPhone (WebKit): the same mode, the toolbar bottom right with 44 px 
       const barBox = (await bar(page).boundingBox())!;
       expect(barBox.x + barBox.width).toBeGreaterThan(viewport.width - 40);
       expect(barBox.y + barBox.height).toBeGreaterThan(viewport.height - 80);
-      for (const control of ['[data-full-view-exit="back"]', '[data-full-view-pen]', '[data-full-view-comments]', '[data-full-view-more]', '[data-full-view-hide]']) {
+      for (const control of ['[data-full-view-exit="back"]', '[data-full-view-pen]', '[data-full-view-comments]', '[data-full-view-position]', '[data-full-view-more]', '[data-full-view-hide]']) {
         const b = (await bar(page).locator(control).boundingBox())!;
         expect(b.width).toBeGreaterThanOrEqual(44);
         expect(b.height).toBeGreaterThanOrEqual(44);
       }
-      await expect(bar(page).locator('[data-full-view-position]')).toHaveCount(0);
+      // The position is the `1/3 ⌄` pill (one tap to every file); the whole toolbar stays on screen.
+      await expect(bar(page).locator('[data-full-view-position]')).toHaveAttribute('aria-label', '1/3: file 1 of 3, turnkey.html. Show every file');
+      expect(barBox.x).toBeGreaterThanOrEqual(0);
       await expect(bar(page).getByRole('button', { name: 'Side by side' })).toHaveCount(0);
-      // ⋯'s rows are 44 px targets on a phone too (the position, Download, the other version).
+      // ⋯'s rows are 44 px targets on a phone too (Download, the other version).
       await bar(page).locator('[data-full-view-more]').click();
       const rows = page.locator('[data-full-view-menu] [role="menuitem"]');
       await expect(rows.first()).toBeVisible();

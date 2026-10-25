@@ -3,7 +3,6 @@
 export const FILE_BROWSER_EXCLUDED = [
 	"node_modules/",
 	".git/",
-	".jj/",
 	".claude/",
 	".agents/",
 	"dist/",
@@ -43,6 +42,23 @@ export function isFileBrowserExcludedPath(relativePath: string): boolean {
 		.split("/")
 		.filter(Boolean)
 		.some((part) => FILE_BROWSER_EXCLUDED_NAMES.has(part));
+}
+
+/**
+ * Folders only the live-refresh watcher skips, on top of FILE_BROWSER_EXCLUDED.
+ * `.jj/` is Jujutsu's store: jj rewrites it on every command, which would
+ * refresh the file browser for nothing, and on Linux it would spend directory
+ * watches on its object folders. It holds no documents, so the file listing
+ * and folder annotate keep FILE_BROWSER_EXCLUDED alone and are not changed.
+ */
+const FILE_BROWSER_WATCH_ONLY_EXCLUDED_NAMES = new Set([".jj"]);
+
+export function isFileBrowserWatchExcludedPath(relativePath: string): boolean {
+	if (isFileBrowserExcludedPath(relativePath)) return true;
+	return relativePath
+		.replace(/\\/g, "/")
+		.split("/")
+		.some((part) => FILE_BROWSER_WATCH_ONLY_EXCLUDED_NAMES.has(part));
 }
 
 export interface VaultNode {
