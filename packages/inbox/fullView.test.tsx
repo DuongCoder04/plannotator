@@ -824,12 +824,12 @@ test.skipIf(!hasDom)('a one-file thread: the chip names the file once as full sc
   expect(host!.querySelector('[data-full-view-position]')).toBeNull();
 });
 
-test.skipIf(!hasDom)('a phone: the same mode; ‹ Back to the thread leads (44 px), no N/M or Exit; the count opens the bottom sheet, whose foot holds the position; ⋯ opens the peek too', async () => {
+test.skipIf(!hasDom)('a phone: the same mode; ‹ Back to the thread leads (44 px), the 2/3 pill and no Exit; the count opens the bottom sheet, whose foot holds the position too; ⋯ no longer lists the files', async () => {
   stubViews();
   const harness = harnessOf();
   await render(<Pane start={page} harness={harness} phone />);
   expect(dock()!.classList.contains('ib-fvdock-phone')).toBe(true);
-  expect(controls()).toEqual(['leave:back', 'pen', 'count', 'more', 'hide:hide']);
+  expect(controls()).toEqual(['leave:back', 'pen', 'count', 'position', 'more', 'hide:hide']);
   // No corner on a phone: the handle is tapped.
   expect(host!.querySelector('.ib-fvzone')).toBeNull();
   await click(host!.querySelector('[data-full-view-comments]'));
@@ -843,12 +843,11 @@ test.skipIf(!hasDom)('a phone: the same mode; ‹ Back to the thread leads (44 p
   await act(async () => document.querySelector<HTMLElement>('.pn-inbox-peek [role="grid"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   await settle();
 
-  // ⋯ on a phone offers every file of the thread first.
+  // ⋯ on a phone holds Open in, Download and the versions only: the files are the pill's (phoneStepping.test.tsx).
   await click(host!.querySelector('[data-full-view-more]'));
-  const item = document.querySelector<HTMLElement>('[data-full-view-menu-position]');
-  expect(item!.textContent).toBe('2 of 3 · Every file in this thread');
-  await click(item);
-  expect(document.querySelector('.pn-inbox-peek [role="grid"]')).not.toBeNull();
+  expect(document.querySelector('[data-full-view-menu-position]')).toBeNull();
+  await act(async () => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  await settle();
 
   // ‹ goes back to the thread.
   await click(host!.querySelector('[data-full-view-exit="back"]'));
