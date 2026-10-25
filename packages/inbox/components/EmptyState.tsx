@@ -286,7 +286,7 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
         <h3 ref={stepHeading} tabIndex={-1}>
           Connect your first agent
         </h3>
-        <p>With Plannotator&apos;s own connection, your replies arrive as a new turn on their own. Which agent do you use?</p>
+        <p>Which agent do you use?</p>
         <div className="ib-cn-acts">
           <Choice
             label="Your agent"

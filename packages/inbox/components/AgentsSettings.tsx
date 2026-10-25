@@ -189,12 +189,15 @@ function stateOf(row: InboxAgentRow): { text: string; tone: 'on' | 'off' | 'bad'
  * What happens to the person's reply, for an agent that reaches the Inbox:
  * Plannotator's own connection puts it into the session as a new turn; an
  * agent reached through MCP (or OpenCode 1, which has the tool but no wake)
- * reads it when it next checks. Null when the agent does not reach the Inbox.
+ * reads it when it next checks. Null when the agent does not reach the Inbox,
+ * or when it is not known (Claude Code on Windows).
  */
-export function repliesOf(row: InboxAgentRow): { text: string; wakes: boolean } | null {
+export function repliesOf(row: InboxAgentRow, platform?: ConnectContext['platform']): { text: string; wakes: boolean } | null {
   if (!row.reach.on) return null;
   if (row.reach.kind === 'tool') {
     if (row.tool?.mod_off) return null;
+    // Claude Code's mod stands down on Windows (no /bin/sh), so nothing wakes it there: say no more than the Reaches row.
+    if (row.id === 'claude-code' && platform === 'windows') return null;
     if (row.id === 'opencode' && row.plugin?.generation === '1') return { text: "seen when it checks the Inbox; OpenCode 1 can't be woken", wakes: false };
     return { text: 'arrive as a new turn', wakes: true };
   }
@@ -230,8 +233,11 @@ function AgentGroup({
   pending,
   busy,
   sessions,
+  platform,
 }: {
   row: InboxAgentRow;
+  /** This computer's platform (the window's), for what wakes a session. */
+  platform?: ConnectContext['platform'];
   noteText: string;
   onChange: (change: Change) => void;
   pending: Set<string>;
@@ -284,7 +290,7 @@ function AgentGroup({
   const modOff = row.tool?.mod_off === true;
   // Claude Code's MCP entry is one the person added by hand (`claude mcp add`): Plannotator never writes or removes it.
   const handMcp = row.id === 'claude-code' && reach.kind === 'mcp';
-  const replies = repliesOf(row);
+  const replies = repliesOf(row, platform);
   const reachSwitchable = (reach.kind === 'tool' || reach.kind === 'mcp') && reach.state !== 'foreign' && reach.state !== 'unreadable' && !modOff && !handMcp;
   const note = row.note;
   const noteOn = note?.state === 'added' || note?.state === 'edited';
@@ -499,6 +505,7 @@ export function AgentsSettings({ model, onModel, context }: { model: InboxAgents
             pending={pending}
             busy={busy.has(row.id)}
             onChange={(input) => void change(row.id, input)}
+            {...(context ? { platform: context.platform } : {})}
             {...(model.sessions && (row.id === 'claude-code' || row.id === 'pi' || row.id === 'opencode') && model.sessions[row.id] ? { sessions: model.sessions[row.id] } : {})}
           />
         ))}

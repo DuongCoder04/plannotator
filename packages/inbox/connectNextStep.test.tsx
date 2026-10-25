@@ -413,8 +413,9 @@ test.skipIf(!hasDom)('the screen says plainly which agents a reply wakes: once u
   expect(m.el.querySelector('[data-wake-note] [title], [data-wake-note][title]')).toBeNull();
 });
 
-test.skipIf(!hasDom)('nothing found: the first step says replies arrive as a new turn with Plannotator\'s own connection', () => {
+test.skipIf(!hasDom)('nothing found: the card asks which agent; the line under it says what a reply does, once', () => {
   const m = mount(SCENARIOS.none());
-  expect(text(card(m.el).querySelector('p'))).toBe("With Plannotator's own connection, your replies arrive as a new turn on their own. Which agent do you use?");
+  expect(text(card(m.el).querySelector('p'))).toBe('Which agent do you use?');
+  expect(m.el.querySelectorAll('[data-wake-note=""]')).toHaveLength(1);
   expect(text(m.el.querySelector('[data-wake-note]'))).toBe(WAKE_LINE);
 });

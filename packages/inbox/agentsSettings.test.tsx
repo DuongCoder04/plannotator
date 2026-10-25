@@ -14,7 +14,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { inboxToolCostText, type InboxAgentRow, type InboxAgentsModel } from '@plannotator/core/inbox-types';
 
 const hasDom = typeof document !== 'undefined';
-const { AgentsSettings } = (hasDom ? await import('./components/AgentsSettings') : {}) as typeof import('./components/AgentsSettings');
+const { AgentsSettings, repliesOf } = (hasDom ? await import('./components/AgentsSettings') : {}) as typeof import('./components/AgentsSettings');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -262,4 +262,13 @@ test.skipIf(!hasDom)('Your replies: a new turn through Plannotator\'s own tool, 
   expect(replies('opencode')?.querySelector('.ib-agv')?.textContent).toBe("seen when it checks the Inbox; OpenCode 1 can't be woken");
   expect(replies('pi')).toBeNull();
   expect(replies('cursor')).toBeNull();
+});
+
+test.skipIf(!hasDom)('Your replies on Windows: Claude Code\'s mod stands down there, so its group says nothing about a new turn', () => {
+  const claude = tool('claude-code', 'Claude Code');
+  expect(repliesOf(claude, 'mac')).toEqual({ text: 'arrive as a new turn', wakes: true });
+  expect(repliesOf(claude, 'windows')).toBeNull();
+  // Pi's own extension still wakes it on Windows; an MCP agent is the same everywhere.
+  expect(repliesOf(tool('pi', 'Pi'), 'windows')?.wakes).toBe(true);
+  expect(repliesOf(mcp('codex', 'Codex', '~/.codex/config.toml'), 'windows')?.wakes).toBe(false);
 });
