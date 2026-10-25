@@ -5,7 +5,7 @@
  *   1. Add an entry to AGENT_CONFIG below (origin key, display name, badge CSS classes,
  *      optional AI provider types)
  *   2. If detection is via environment variable, add it to the detection chain
- *      in apps/hook/server/index.ts (detectedOrigin constant)
+ *      in apps/hook/server/detect-origin.ts (detectOrigin)
  *   3. That's it — all UI components read from this config automatically
  */
 

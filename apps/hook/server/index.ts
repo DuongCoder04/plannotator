@@ -177,7 +177,8 @@ import {
   waitForPlanReviewCloseDelay,
   waitForPlanReviewDecision,
 } from "@plannotator/shared/plan-review-lifecycle";
-import { AGENT_CONFIG, type Origin } from "@plannotator/shared/agents";
+import type { Origin } from "@plannotator/shared/agents";
+import { detectOrigin } from "./detect-origin";
 import {
   findDroidSessionLogsByAncestorWalk,
   findDroidSessionLogsForCwd,
@@ -790,35 +791,8 @@ const shareBaseUrl = process.env.PLANNOTATOR_SHARE_URL || undefined;
 const pasteApiUrl = process.env.PLANNOTATOR_PASTE_URL || undefined;
 
 // Detect calling agent from environment variables set by agent runtimes.
-// Priority:
-//   PLANNOTATOR_ORIGIN (explicit override, validated against AGENT_CONFIG)
-//   > Amp plugin wrappers (PLANNOTATOR_ORIGIN=amp)
-//   > Droid command wrappers (PLANNOTATOR_ORIGIN=droid)
-//   > Codex (CODEX_THREAD_ID)
-//   > Copilot CLI (COPILOT_CLI)
-//   > OpenCode (OPENCODE)
-//   > Gemini CLI (GEMINI_CLI)
-//   > oh-my-pi harness (OMPCODE) — checked last because OMP exports OMPCODE
-//     into every shell it spawns; runtimes launched from an OMP session must
-//     still be detected as themselves. OMPCODE still wins over the terminal
-//     fallback below.
-//
-//   > Mistral Vibe — detected from the pre_tool hook payload (hook_event_name
-//     "pre_tool" + tool_name "exit_plan_mode" is unambiguous vs Claude/Gemini),
-//     so the installer's hook command needs no env prefix. PLANNOTATOR_ORIGIN=
-//     mistral-vibe remains the manual override above.
-//
-// To add a new agent, also add an entry to AGENT_CONFIG in
-// packages/core/agents.ts (see header comment there).
-const originOverride = process.env.PLANNOTATOR_ORIGIN as Origin | undefined;
-const detectedOrigin: Origin =
-  (originOverride && originOverride in AGENT_CONFIG) ? originOverride :
-  process.env.CODEX_THREAD_ID ? "codex" :
-  process.env.COPILOT_CLI ? "copilot-cli" :
-  process.env.OPENCODE ? "opencode" :
-  process.env.GEMINI_CLI ? "gemini-cli" :
-  process.env.OMPCODE ? "oh-my-pi" :
-  "claude-code";
+// The priority chain (and how to add an agent) is documented on detectOrigin.
+const detectedOrigin: Origin = detectOrigin(process.env);
 
 type OpenCodeBridgeAgent = {
   name: string;
