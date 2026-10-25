@@ -1787,6 +1787,9 @@ if (args[0] === "sessions") {
   const isCopilot = detectedOrigin === "copilot-cli";
   const isVibe = detectedOrigin === "mistral-vibe";
   const isDsh = detectedOrigin === "dsh";
+  // DSH_SHELL is inherited by anything started from a DSH terminal, so only an
+  // explicit PLANNOTATOR_ORIGIN=dsh skips the Copilot ancestor check below.
+  const isExplicitDsh = isDsh && process.env.PLANNOTATOR_ORIGIN === "dsh";
 
   // Collect up to N recent assistant messages so the user can pick the right
   // one — defaults to the same selection as the legacy "last message"
@@ -1803,7 +1806,7 @@ if (args[0] === "sessions") {
   // earlier branch claims the invocation.
   let copilotLockSessionDir: string | null = null;
   let copilotSessionDir: string | null = null;
-  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isDsh) {
+  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isExplicitDsh) {
     copilotLockSessionDir = findCopilotSessionByAncestorPids();
     copilotSessionDir = copilotLockSessionDir ??
       (isCopilot ? findCopilotSessionForCwd(projectRoot) : null);
@@ -1827,11 +1830,12 @@ if (args[0] === "sessions") {
     if (text) {
       lastMessage = { messageId: "stdin", text, lineNumbers: [] };
     }
-  } else if (isDsh) {
+  } else if (isDsh && !copilotLockSessionDir) {
     // DeepSeek Harness path: DSH_SESSION_ID names the calling agent's session;
     // its log lives under $DSH_HOME/sessions/<project>/<session>/. Checked
     // before Codex so PLANNOTATOR_ORIGIN=dsh wins over an inherited
-    // CODEX_THREAD_ID.
+    // CODEX_THREAD_ID. A Copilot CLI among our ancestors was started from a
+    // DSH terminal and is the real caller, so its lock wins.
     const dshSessionId = process.env.DSH_SESSION_ID;
     const dshLog = dshSessionId ? findDshSessionLog(dshSessionId) : null;
     if (process.env.PLANNOTATOR_DEBUG) {

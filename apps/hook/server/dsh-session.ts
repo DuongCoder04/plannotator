@@ -108,17 +108,34 @@ export function findDshSessionLog(
   return best?.path ?? null;
 }
 
+const ZSTD_FRAME_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/**
+ * Decompress a multi-frame log. DSH appends one zstd frame per write, so a
+ * read that lands mid-append ends in a truncated frame: drop frames from the
+ * end until the rest decodes, keeping every complete message before it.
+ */
+function decompressDshLog(bytes: Buffer): string {
+  let end = bytes.length;
+  for (;;) {
+    try {
+      return Buffer.from(Bun.zstdDecompressSync(bytes.subarray(0, end))).toString("utf-8");
+    } catch (error) {
+      end = end > 0 ? bytes.lastIndexOf(ZSTD_FRAME_MAGIC, end - 1) : -1;
+      if (end <= 0) throw error;
+    }
+  }
+}
+
 /**
  * The log as JSONL text. A `.zstd` log is read whole and decompressed; one
- * retry covers a read that lands while DSH is appending a frame.
+ * retry covers a read that fails outright.
  */
 function readDshSessionText(logPath: string): string | null {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const bytes = readFileSync(logPath);
-      return logPath.endsWith(".zstd")
-        ? Buffer.from(Bun.zstdDecompressSync(bytes)).toString("utf-8")
-        : bytes.toString("utf-8");
+      return logPath.endsWith(".zstd") ? decompressDshLog(bytes) : bytes.toString("utf-8");
     } catch {
       if (attempt === 0) Bun.sleepSync(100);
     }

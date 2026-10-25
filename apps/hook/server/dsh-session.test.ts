@@ -106,6 +106,22 @@ describe("getRecentDshMessages", () => {
     expect(getRecentDshMessages(log, 1).map((m) => m.messageId)).toEqual(["m3"]);
   });
 
+  // Catches: one half-written append frame (a read racing DSH's write) making
+  // the whole log unreadable, so `last` finds nothing in a live session.
+  test("a truncated last frame keeps the messages before it", () => {
+    const home = makeDshHome();
+    const dir = sessionDir(home, "s1");
+    const log = join(dir, "session.v4.jsonl.zstd");
+    const partial = Bun.zstdCompressSync(Buffer.from(assistantRow("m5", [text("Third answer.")]) + "\n"));
+    writeFileSync(log, Buffer.concat([
+      Bun.zstdCompressSync(Buffer.from(firstBatch)),
+      Bun.zstdCompressSync(Buffer.from(secondBatch)),
+      partial.subarray(0, Math.floor(partial.length / 2)),
+    ]));
+
+    expect(getRecentDshMessages(log, 25).map((m) => m.messageId)).toEqual(["m3", "m1"]);
+  });
+
   // Catches: a corrupt log throwing out of annotate-last instead of reporting
   // that no message was found.
   test("an undecodable log yields no messages", () => {
