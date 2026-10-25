@@ -30,6 +30,8 @@ import {
   putOff,
   skipAnswer,
   swipeChoices,
+  answerNeedsConfirm,
+  irreversibleChoices,
 } from './decisions/model';
 
 function question(key: string, extra: Partial<InboxQuestion> = {}): InboxQuestion {
@@ -229,5 +231,52 @@ describe('answers', () => {
     expect(skipAnswer(A1.question, 'later').note).toBe('later');
     expect(swipeChoices(A1.question)).toEqual(['Yes', 'No']);
     expect(swipeChoices({ ...A1.question, kind: 'multi' })).toBeNull();
+  });
+});
+
+describe('the contract lines (approval "inbox-decision-mode", agent contract lines)', () => {
+  const oneWay = (extra: Partial<InboxQuestion> = {}) =>
+    question('q-del', {
+      prompt: 'Delete the 3 duplicate invoices now?',
+      choices: [
+        { label: 'Delete now', description: 'The report is right today', recommended: false, settled: false },
+        { label: 'Wait for month-end close', description: null, recommended: true, settled: false },
+      ],
+      recommendation: 'Wait for month-end close',
+      reversible: { value: false, why: 'Deleted invoices cannot be restored.' },
+      ...extra,
+    });
+
+  test('a one-way question never swipes, nor does a picture choice; a plain two-way one still does', () => {
+    expect(swipeChoices(question('q-1'))).toEqual(['Yes', 'No']);
+    expect(swipeChoices(oneWay())).toBeNull();
+    const pictures = question('q-2', {
+      choices: [
+        { label: 'A', description: null, recommended: false, settled: false, image: { alt: 'A', src: 'a.png' } },
+        { label: 'B', description: null, recommended: false, settled: false, image: { alt: 'B', src: 'b.png' } },
+      ],
+    });
+    expect(swipeChoices(pictures)).toBeNull();
+  });
+
+  test('every choice but the recommendation is marked; with no recommendation, every choice; none on a reversible question', () => {
+    expect(irreversibleChoices(oneWay())).toEqual(['Delete now']);
+    const none = oneWay({ choices: oneWay().choices.map((c) => ({ ...c, recommended: false })), recommendation: null });
+    expect(irreversibleChoices(none)).toEqual(['Delete now', 'Wait for month-end close']);
+    expect(irreversibleChoices(question('q-1'))).toEqual([]);
+  });
+
+  test('a pick that cannot be undone asks first; the recommendation, a Skip and a reversible question never do', () => {
+    const q = oneWay();
+    expect(answerNeedsConfirm(q, choiceAnswer(q, ['Delete now'], ''))).toBe(true);
+    expect(answerNeedsConfirm(q, choiceAnswer(q, ['Wait for month-end close'], ''))).toBe(false);
+    expect(answerNeedsConfirm(q, skipAnswer(q, ''))).toBe(false);
+    expect(answerNeedsConfirm(q, { ...choiceAnswer(q, [], ''), other: 'Delete only the oldest one' })).toBe(true);
+    const plain = question('q-1');
+    expect(answerNeedsConfirm(plain, choiceAnswer(plain, ['Yes'], ''))).toBe(false);
+    // A text question: its suggested text is the recommendation; anything else asks.
+    const text = oneWay({ kind: 'text', choices: [], recommendation: null, suggested_text: 'Drop the table' });
+    expect(answerNeedsConfirm(text, { ...choiceAnswer(text, [], ''), kind: 'text', text: 'Drop the table' })).toBe(false);
+    expect(answerNeedsConfirm(text, { ...choiceAnswer(text, [], ''), kind: 'text', text: 'Drop both tables' })).toBe(true);
   });
 });

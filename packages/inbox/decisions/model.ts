@@ -433,10 +433,43 @@ export function answerWords(answer: QuestionAnswer | null): string {
   return words.length > 120 ? `${words.slice(0, 119)}…` : words;
 }
 
-/** The two-way choice a swipe answers: a single question with exactly two choices (brief §3: touch only, two-way only). */
+/**
+ * The two-way choice a swipe answers: a single question with exactly two choices (brief §3: touch only,
+ * two-way only), never a picture choice and never one marked `Reversible: no` (brief §11 question 4).
+ */
 export function swipeChoices(question: InboxQuestion): [string, string] | null {
   if (readInboxQuestionKind(question.kind) !== 'single' || question.choices.length !== 2) return null;
+  if (question.reversible || question.choices.some((choice) => choice.image)) return null;
   return [question.choices[0]!.label, question.choices[1]!.label];
+}
+
+/**
+ * The choices of a `Reversible: no` question that cannot be undone, the "Can't be undone" tag and the
+ * confirm step (approval "inbox-decision-mode", agent contract lines; contract-compare.html, pair 2): every
+ * choice but the recommended ones, so the recommendation still answers in one tap; with no recommendation,
+ * every choice. Empty on a reversible question.
+ */
+export function irreversibleChoices(question: InboxQuestion): string[] {
+  if (!question.reversible) return [];
+  const recommended = question.choices.filter((choice) => choice.recommended);
+  return question.choices.filter((choice) => recommended.length === 0 || !choice.recommended).map((choice) => choice.label);
+}
+
+/**
+ * Whether an answer to a `Reversible: no` question asks once more before it counts: any answer except a
+ * Skip (nothing is chosen) and the agent's own recommendation (its recommended choices, or its suggested
+ * text as the text or the Other answer). False on a reversible question.
+ */
+export function answerNeedsConfirm(question: InboxQuestion, answer: QuestionAnswer): boolean {
+  if (!question.reversible || answer.skipped) return false;
+  const recommended = question.choices.filter((choice) => choice.recommended).map((choice) => choice.label);
+  const suggested = question.suggested_text?.trim() ?? '';
+  const text = answer.text?.trim() ?? '';
+  const other = answer.other?.trim() ?? '';
+  if (text) return suggested === '' || text !== suggested;
+  if (other && (suggested === '' || other !== suggested)) return true;
+  if (answer.selected.length === 0) return false;
+  return answer.selected.some((label) => !recommended.includes(label));
 }
 
 /** The head's line: "5 of 16 · 6 agents waiting". */
