@@ -80,7 +80,8 @@ async function agentSends(send: Record<string, unknown>): Promise<string> {
   return (JSON.parse(await readLine()) as { sent: string }).sent;
 }
 
-const TESTS = 26;
+/** One seeded world per test (and one to spare): raise it with each test added. */
+const TESTS = 28;
 
 beforeAll(async () => {
   if (!hasDom) return;
