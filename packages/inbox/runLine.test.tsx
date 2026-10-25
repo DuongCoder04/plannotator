@@ -171,3 +171,25 @@ test.skipIf(!hasDom)('runKeyOf: the run_ session a thread is addressed to, or th
   expect(runKeyOf({ messages: [{ id: 'msg_B', author: { kind: 'agent', host: 'grok', session: KEY } }] } as never)).toBe(KEY);
   expect(runKeyOf({ messages: [{ id: 'msg_C', author: { kind: 'agent', host: 'claude-code', session: 'abc' } }] } as never)).toBeNull();
 });
+
+test.if(hasDom)('a 👍 to a session the Inbox runs is never "delivered": it waits until the session reads the thread', async () => {
+  const { ackPillLine } = await import('./components/Thread');
+  type Ack = Parameters<typeof ackPillLine>[0];
+  const ack = {
+    label: 'Looks good',
+    at: '2026-10-25T10:00:00.000Z',
+    settled_seq: 12,
+    note_id: 'msg_01HZY3T5R4M2Q8W9X6V7B1N0KQ',
+    delivered_at: '2026-10-25T10:00:11.000Z',
+  } as unknown as Ack;
+  const time = () => '10:00 AM';
+  const ran = ackPillLine(ack, 'Grok Build', true, time, undefined, Date.now(), true);
+  expect(ran.state).toBe('saved');
+  expect(ran.text).not.toContain('Delivered');
+  expect(ran.text).toContain('when it next reads this thread');
+  // Inside the Undo window it still says when it goes, as for any agent.
+  const pending = { ...(ack as object), settled_seq: null, delivered_at: null } as unknown as Ack;
+  expect(ackPillLine(pending, 'Grok Build', true, time, undefined, Date.now(), true).state).toBe('pending');
+  // Another agent's 👍 keeps its delivery line.
+  expect(ackPillLine(ack, 'Claude Code', true, time).state).toBe('delivered');
+});

@@ -19,6 +19,7 @@ import { stepsOf } from '../stepping';
 import { artifactKey, artifactOfFile, threadArtifacts } from '../artifacts';
 import { ArtifactsView } from './ArtifactsView';
 import { RunFoot, RunLine, runKeyOf, useRunStatus } from './RunLine';
+import { isInboxRunHost } from '@plannotator/core/inbox-acp';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
@@ -871,7 +872,12 @@ export function ackPillLine(
   time: (iso: string) => string = whenTime,
   connection?: RecipientConnection | null,
   now: number = Date.now(),
+  /** A session the Inbox runs: a 👍 starts no turn there, so it is never "delivered"; the session sees it when it reads the thread. */
+  runner = false,
 ): { state: AckPillState; text: string } {
+  if (runner && ack.settled_seq != null && !ack.not_sent) {
+    return { state: 'saved', text: `You, ${time(ack.at)} · Saved for ${agent}. It sees it when it next reads this thread.` };
+  }
   if (ack.delivered_at) {
     // Marked by the Inbox to go in by itself: say how it went in (into the running turn, or when it ended).
     const marked = ack.deliver_now_by === 'auto' && ack.deliver_now_at && ack.wait_started_at;
@@ -912,16 +918,19 @@ export function AckPill({
   agent,
   wakes = false,
   connection,
+  runner = false,
 }: {
   ack: NonNullable<InboxMessageWire['ack']>;
   agent: string;
   wakes?: boolean;
+  /** The message's session is one the Inbox runs (ackPillLine's `runner`). */
+  runner?: boolean;
   /** How the agent's session is connected now (the sessions route's `asker.connection`); undefined while unknown. */
   connection?: RecipientConnection | null;
 }) {
   // The wait on a busy session is written in whole minutes: its own clock, while the 👍 waits.
   const now = useMinuteClock(!ack.delivered_at && !!ack.note_id);
-  const line = ackPillLine(ack, agent, wakes, whenTime, connection, now);
+  const line = ackPillLine(ack, agent, wakes, whenTime, connection, now, runner);
   return (
     <p className="ib-ackpill" data-ack-pill={line.state}>
       <span className="ib-ackchip">
@@ -3457,7 +3466,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 )}
                 {message.guide && <GuideCard guide={message.guide} onOpen={() => onOpenGuide(message.id)} />}
                 {isAgent && message.ack && (
-                  <AckPill ack={message.ack} agent={name} wakes={message.wakes === true} connection={message.id === ackWaiting?.id ? ackConnection : undefined} />
+                  <AckPill ack={message.ack} agent={name} wakes={message.wakes === true} connection={message.id === ackWaiting?.id ? ackConnection : undefined} runner={message.author.kind === 'agent' && isInboxRunHost(message.author.host)} />
                 )}
                 {message === lastAgent && liveMessage(lastAgent) && waitingHoldsUp.length > 0 && (
                   <div className="ib-waitfoot">

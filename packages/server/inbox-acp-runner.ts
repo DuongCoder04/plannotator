@@ -44,6 +44,7 @@ import { GROK, resolveAgentLaunch, type AgentDescriptor } from "@plannotator/acp
 import { ownToolAutoAllow, type OwnTools } from "@plannotator/acp-client/permission-policy";
 import {
   INBOX_RUN_AGENT_LABELS,
+  isInboxRunHost,
   type InboxRowRun,
   type InboxRunAgentId,
   type InboxRunAgentInfo,
@@ -138,6 +139,11 @@ interface LiveTurn {
   acpSessionId: string | null;
   /** session/load is replaying: its updates are history, not this turn. */
   loading: boolean;
+  /** The process this turn runs on: Stop and its kill reach this one, never another turn's. */
+  client: AcpClient | null;
+  /** Stop gave up waiting: the turn ends here even though its process still runs another turn. */
+  abandon: () => void;
+  abandoned: Promise<void>;
 }
 
 interface AgentProcess {
@@ -423,46 +429,52 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       return proc.client;
     }
     if (proc?.starting) return proc.starting;
-    const resolved = await resolveLaunch(agent);
-    if (!resolved.ok) throw new InboxError("agent_unavailable", resolved.reason);
-    proc = { client: null, starting: null, idleTimer: null };
-    processes.set(agent.id, proc);
-    const starting = AcpClient.start(
-      { ...resolved.launch, cwd },
-      {
-        onUpdate,
-        requestPermission: onPermission,
-        // Never logged or kept: an agent's stderr may hold anything.
-        onStderr: () => {},
-        // Method names only reach here; nothing is kept.
-        onExtNotification: () => {},
-        onExit: () => {
-          const current = processes.get(agent.id);
-          if (current === proc) processes.delete(agent.id);
+    // Recorded before anything is awaited: a second turn arriving meanwhile waits for this one process.
+    const mine: AgentProcess = { client: null, starting: null, idleTimer: null };
+    processes.set(agent.id, mine);
+    const current = () => !stopped && processes.get(agent.id) === mine;
+    const starting = (async () => {
+      const resolved = await resolveLaunch(agent);
+      if (!resolved.ok) throw new InboxError("agent_unavailable", resolved.reason);
+      if (!current()) throw new InboxError("agent_unavailable", `${agent.descriptor.label} was not started: the Inbox is stopping.`);
+      const client = await AcpClient.start(
+        { ...resolved.launch, cwd },
+        {
+          onUpdate,
+          requestPermission: onPermission,
+          // Never logged or kept: an agent's stderr may hold anything.
+          onStderr: () => {},
+          // Method names only reach here; nothing is kept.
+          onExtNotification: () => {},
+          onExit: () => {
+            if (processes.get(agent.id) === mine) processes.delete(agent.id);
+          },
         },
-      },
-      { name: "plannotator-inbox", title: "Plannotator Inbox", version: options.version },
-      { env: agentEnv(), augmentPath: false },
-    ).then(
-      (client) => {
-        proc!.client = client;
-        proc!.starting = null;
-        return client;
-      },
-      (error) => {
-        if (processes.get(agent.id) === proc) processes.delete(agent.id);
-        throw error;
-      },
-    );
-    proc.starting = starting;
+        { name: "plannotator-inbox", title: "Plannotator Inbox", version: options.version },
+        { env: agentEnv(), augmentPath: false },
+      );
+      // The Inbox stopped (or this process was replaced) while it started: it never runs a turn.
+      if (!current()) {
+        client.kill();
+        throw new InboxError("agent_unavailable", `${agent.descriptor.label} was not started: the Inbox is stopping.`);
+      }
+      mine.client = client;
+      mine.starting = null;
+      return client;
+    })().catch((error: unknown) => {
+      if (processes.get(agent.id) === mine) processes.delete(agent.id);
+      throw error;
+    });
+    mine.starting = starting;
     return starting;
   };
 
   /** Plain words for a failed turn, never the agent's stderr. */
   const failureWords = (error: unknown, client: AcpClient | null, label: string): string => {
     if (error instanceof InboxError) return error.message;
-    if (client?.hasExited) return `${label} stopped while it ran.`;
     const message = error instanceof Error ? error.message : String(error);
+    // The process ended under the turn: the SDK rejects with "ACP connection closed", sometimes before the exit is seen.
+    if (client?.hasExited || (client && /^ACP connection closed/i.test(message))) return `${label} stopped while it ran.`;
     return message.split("\n")[0]!.slice(0, 300) || `${label} could not run this.`;
   };
 
@@ -504,7 +516,14 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     const agent = agentById.get(record.agent)!;
     const label = agent.descriptor.label;
     const turnRecord: InboxRunTurn = { replies: replies.map((r) => r.id), started_at: iso(now()), ended_at: null, outcome: null, error: null, answered: null };
+    let abandon = () => {};
+    const abandoned = new Promise<void>((resolve) => {
+      abandon = resolve;
+    });
     const turn: LiveTurn = {
+      client: null,
+      abandon: () => abandon(),
+      abandoned,
       record: turnRecord,
       replies,
       state: "starting",
@@ -529,6 +548,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     let opened = false;
     try {
       client = await ensureClient(agent, record.cwd);
+      turn.client = client;
       if (turn.stopRequested) throw new StopBeforePrompt();
       if (record.acp_session_id === null) {
         const made = await client.newSession(record.cwd, mcpServers(record));
@@ -563,8 +583,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       turn.state = "working";
       changed(key);
       const text = replies.map((reply) => inboxWakeText(options.replyCommand(reply, false, key), INBOX_RUN_MCP_SERVER)).join("\n\n");
-      const answer = await client.prompt(record.acp_session_id!, text);
-      turnRecord.outcome = answer.stopReason === "cancelled" || turn.stopRequested ? "stopped" : "done";
+      const answer = await Promise.race([client.prompt(record.acp_session_id!, text), turn.abandoned.then(() => null)]);
+      turnRecord.outcome = answer === null || answer.stopReason === "cancelled" || turn.stopRequested ? "stopped" : "done";
     } catch (error) {
       if (error instanceof StopBeforePrompt || turn.stopRequested) {
         turnRecord.outcome = "stopped";
@@ -582,7 +602,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
         // A tool still running when the turn ended did not finish.
         if (turnRecord.outcome !== "done") for (const tool of turn.tools) if (tool.status !== "completed" && tool.status !== "failed") tool.status = "stopped";
         turnRecord.ended_at = iso(now());
-        if (opened && client && record.acp_session_id) await client.closeSession(record.acp_session_id);
+        if (opened && client && !client.hasExited && record.acp_session_id) await client.closeSession(record.acp_session_id);
         lastActivity.set(key, { tools: turn.tools, text: turn.text });
         turns.delete(key);
         write();
@@ -676,6 +696,11 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
 
   /** The row as the window's list shows it: a waiting permission puts it in Stopped on you. */
   const decorateRow = (row: InboxListRow): InboxListRow => {
+    // A 👍 to a session the Inbox runs starts no turn: the session sees it only when it reads the thread, never "delivered".
+    const ack = row.delivery;
+    if (ack && ack.kind === "ack" && ack.reason !== "ack_pending" && isInboxRunHost(ack.host) && runsThread(row.thread_id)) {
+      row = { ...row, delivery: { ...ack, state: "saved", reason: "reads", send_now: false, at: null } };
+    }
     const run = rowRun(row.thread_id);
     if (!run) return row;
     return run.state === "permission" ? { ...row, run, section: "stopped", unread: true } : { ...row, run };
@@ -773,13 +798,17 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     const turn = turns.get(key);
     if (!turn) return status(key);
     turn.stopRequested = true;
-    const client = processes.get(record.agent)?.client ?? null;
+    // This turn's own process, never another session's.
+    const client = turn.client;
     turn.permission?.answer({ outcome: { outcome: "cancelled" } });
     if (client && turn.acpSessionId) void client.cancel(turn.acpSessionId);
-    // An agent that does not end the turn: its process group is killed.
+    // An agent that does not end the turn: its process group is killed, unless another turn runs on it,
+    // which keeps it: this turn ends here as stopped.
     turn.stopTimer ??= setTimeout(() => {
       if (turns.get(key) !== turn) return;
-      client?.dispose();
+      const shared = [...turns.entries()].some(([other, t]) => other !== key && t.client !== null && t.client === client);
+      if (client && !shared) client.dispose();
+      turn.abandon();
     }, stopGraceMs);
     changed(key);
     return status(key);
@@ -869,6 +898,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       live.setRunnerBusy(key, false);
     }
     if (turns.size > 0) write();
+    // Every process a turn holds, and every process the map holds.
+    for (const turn of turns.values()) turn.client?.kill();
     for (const proc of processes.values()) {
       if (proc.idleTimer) clearTimeout(proc.idleTimer);
       proc.client?.kill();

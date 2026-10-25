@@ -208,7 +208,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 new AgentSideConnection((conn): Agent => ({
   async initialize(params) {
-    log({ event: "initialize", clientCapabilities: params.clientCapabilities, clientInfo: params.clientInfo });
+    log({ event: "initialize", pid: process.pid, clientCapabilities: params.clientCapabilities, clientInfo: params.clientInfo });
     // Like claude-agent-acp: terminal sign-ins only for a client that can run them.
     const authMethods = params.clientCapabilities?.auth?.terminal
       ? [{ id: "claude-ai-login", name: "Claude Subscription", type: "terminal" as const, args: ["--cli", "auth", "login", "--claudeai"] }]
@@ -258,7 +258,7 @@ new AgentSideConnection((conn): Agent => ({
   async prompt(params) {
     const session = sessions.get(params.sessionId)!;
     const text = params.prompt.map((b) => (b.type === "text" ? b.text : "")).join("");
-    log({ event: "prompt", text, model: currentModel, effort: currentEffort, mode: currentMode ?? null });
+    log({ event: "prompt", pid: process.pid, sessionId: params.sessionId, text, model: currentModel, effort: currentEffort, mode: currentMode ?? null });
     const update = (u: Record<string, unknown>) => conn.sessionUpdate({ sessionId: params.sessionId, update: u as never });
     let toolNo = 0;
     session.cancelled = false;

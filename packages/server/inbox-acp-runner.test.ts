@@ -5,7 +5,9 @@
  * (the CLI from source) the runner hands it, so its answers land through the
  * Inbox's own MCP tools. Every test has its own temp data dir.
  *
- * Spec "Inbox replies as real turns for Cursor and Grok", step 1, tests 1 to 9.
+ * Spec "Inbox replies as real turns for Cursor and Grok", step 1, tests 1 to 9,
+ * plus the review's: one process for turns that start together, Stop reaching
+ * only its own turn, an agent crash, and a tailnet guest.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -13,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { InboxRunStatus } from "@plannotator/core/inbox-acp";
 import type { InboxListSection, InboxMessage, InboxThread } from "@plannotator/core/inbox-types";
+import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 
 type InboxListModel = { sections: InboxListSection[] };
 import { INBOX_NEW_THREAD_INSTRUCTION, INBOX_WAKE_INSTRUCTION } from "@plannotator/shared/inbox/connection";
@@ -33,8 +36,10 @@ afterAll(() => removeStubbedHtml(stubs));
 
 const roots: string[] = [];
 const servers: InboxServer[] = [];
+const restoreEnv: (() => void)[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) server.stop();
+  for (const restore of restoreEnv.splice(0)) restore();
   // The agents' process groups get SIGTERM, then SIGKILL after 3 s.
   await Bun.sleep(100);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -52,7 +57,53 @@ interface World {
   restart: () => Promise<InboxServer>;
 }
 
-async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionError?: string; [k: string]: unknown }): Promise<World> {
+const MAGIC = "macbook-pro.tail0000.ts.net";
+const OWNER = "owner@example.com";
+const GUEST = "guest@example.com";
+
+/** Tailscale as a scripted CLI (inbox-tailscale.test.ts's): this machine's owner, and serve on and off. */
+const fakeTailscale: TailscaleRunner = (() => {
+  const serve = new Map<number, string>();
+  return (args) => {
+    const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+    if (args[0] === "status") {
+      return ok(JSON.stringify({ Self: { DNSName: `${MAGIC}.`, UserID: 42 }, User: { "42": { ID: 42, LoginName: OWNER, DisplayName: "Owner" } } }));
+    }
+    if (args[1] === "status") {
+      const TCP = Object.fromEntries([...serve.keys()].map((p) => [String(p), { HTTPS: true }]));
+      const Web = Object.fromEntries([...serve].map(([p, proxy]) => [`${MAGIC}:${p}`, { Handlers: { "/": { Proxy: proxy } } }]));
+      return ok(serve.size === 0 ? "{}" : JSON.stringify({ TCP, Web }));
+    }
+    const httpsPort = Number(/--https=(\d+)/.exec(args.join(" "))![1]);
+    if (args.includes("off")) {
+      serve.delete(httpsPort);
+      return ok();
+    }
+    serve.set(httpsPort, args.at(-1)!);
+    return ok(`Available within your tailnet:\n\nhttps://${MAGIC}:${httpsPort}/\n|-- proxy ${args.at(-1)}\n`);
+  };
+})();
+
+function setEnv(name: string, value: string | undefined): void {
+  const previous = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  restoreEnv.push(() => {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  });
+}
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0); // inbox-guard: own child (the fake agent and its grandchild, never an Inbox)
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionError?: string; [k: string]: unknown }, opts: { tailnet?: boolean; setAsideDelayMs?: number } = {}): Promise<World> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-acp-runner-")));
   roots.push(root);
   const project = join(root, "billing");
@@ -63,6 +114,13 @@ async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionErro
   const scriptPath = join(root, "script.json");
   const logPath = join(root, "fake.log");
   writeFileSync(scriptPath, JSON.stringify({ loadSession: true, closeSession: true, steps: [], ...script }));
+  if (opts.tailnet) {
+    // The tailnet's owner and allowed logins are read from config.json in the data dir (loadConfig reads the env's).
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxTailscaleAllow: [GUEST] }));
+    setEnv("PLANNOTATOR_DATA_DIR", dataDir);
+    setEnv("PLANNOTATOR_INBOX_TAILSCALE", undefined);
+  }
   const env = {
     PATH: process.env.PATH ?? "",
     HOME: home,
@@ -76,6 +134,8 @@ async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionErro
       selfCommand: [process.execPath, "run", CLI],
       agentEnvironment: createAgentEnvironmentFor({ platform: process.platform, homeDir: home, env }),
       acpRunner: { launches: { grok: { command: process.execPath, args: [FAKE_AGENT], env: { FAKE_ACP_SCRIPT: scriptPath, FAKE_ACP_LOG: logPath } } }, stopGraceMs: 1500 },
+      ...(opts.tailnet ? { tailscale: fakeTailscale, publishTailnet: true, phones: false } : {}),
+      ...(opts.setAsideDelayMs !== undefined ? { setAsideDelayMs: opts.setAsideDelayMs } : {}),
     });
   const server = await make();
   servers.push(server);
@@ -243,20 +303,136 @@ describe("the ACP runner", () => {
     const stubborn = await until(() => w.log().find((e) => e.event === "stubborn")?.pid as number | undefined, "the stubborn child");
     const agentPid = await until(() => w.server.runner.pids()[0], "the agent's pid");
     await w.restart();
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0); // inbox-guard: own child (the fake agent and its grandchild, never an Inbox)
-        return true;
-      } catch {
-        return false;
-      }
-    };
     await until(() => !alive(agentPid) && !alive(stubborn), "the agent and its grandchild to be gone", 10_000);
     const run = await status(w, key);
     expect(run.turn!.outcome).toBe("interrupted");
     expect(w.server.store.pendingReplies(key)).toHaveLength(0);
     await Bun.sleep(300);
     expect(w.log().filter((e) => e.event === "prompt")).toHaveLength(1);
+  }, 60_000);
+
+  test("10: two idle sessions get a reply in the same tick: one agent process runs both turns, and none is left after the Inbox stops", async () => {
+    const w = await world({ steps: [{ sleep: 300 }, { say: "answer" }] });
+    const a = await startRun(w, "Session A, please.");
+    const b = await startRun(w, "Session B, please.");
+    await ended(w, a.run.key, 1);
+    await ended(w, b.run.key, 1);
+    // Both sessions are idle and the process is gone (a restart): the next two turns start together.
+    await w.restart();
+    const before = w.log().filter((e) => e.event === "initialize").length;
+    const answerA = agentMessages(w, a.thread_id, a.run.key)[0]!;
+    const answerB = agentMessages(w, b.thread_id, b.run.key)[0]!;
+    // Written in one synchronous tick, as two Sends the event loop handles back to back.
+    w.server.store.sendReply(answerA.id, { idempotency_key: "r-a", words: "And again for A." });
+    w.server.store.sendReply(answerB.id, { idempotency_key: "r-b", words: "And again for B." });
+    const doneA = await ended(w, a.run.key, 2);
+    const doneB = await ended(w, b.run.key, 2);
+    expect(doneA.turn!.outcome).toBe("done");
+    expect(doneB.turn!.outcome).toBe("done");
+    const inits = w.log().filter((e) => e.event === "initialize").slice(before);
+    expect(inits).toHaveLength(1);
+    const prompts = w.log().filter((e) => e.event === "prompt").slice(-2);
+    expect(new Set(prompts.map((e) => e.pid))).toEqual(new Set([inits[0]!.pid]));
+    expect(agentMessages(w, a.thread_id, a.run.key)).toHaveLength(2);
+    expect(agentMessages(w, b.thread_id, b.run.key)).toHaveLength(2);
+    const pid = inits[0]!.pid as number;
+    w.server.stop();
+    servers.splice(servers.indexOf(w.server), 1);
+    await until(() => !alive(pid), "the agent to be gone after stop", 6_000);
+    // Every process the runner ever started is gone.
+    for (const e of w.log().filter((e) => e.event === "initialize")) expect(alive(e.pid as number)).toBe(false);
+  }, 60_000);
+
+  test("11: Stop on one of two turns running at once stops only that one, even past the grace; the other runs on and answers", async () => {
+    // One long step: the agent does not end A's turn within the 1.5 s grace, so Stop gives up on it,
+    // and must not kill the process B's turn runs on.
+    const w = await world({ turns: [[{ sleep: 4000 }, { say: "finished" }]] });
+    const a = await startRun(w, "Session A, please.");
+    const b = await startRun(w, "Session B, please.");
+    await until(async () => (await status(w, a.run.key)).state === "working" && (await status(w, b.run.key)).state === "working", "both turns working");
+    expect(w.server.runner.pids()).toHaveLength(1);
+    const pid = w.server.runner.pids()[0]!;
+    expect((await post(w, `/api/inbox/acp/${a.run.key}/stop`, {})).status).toBe(200);
+    const stoppedA = await ended(w, a.run.key, 1);
+    expect(stoppedA.turn!.outcome).toBe("stopped");
+    // B's turn still runs on the same process.
+    expect((await status(w, b.run.key)).state).toBe("working");
+    expect(alive(pid)).toBe(true);
+    const doneB = await ended(w, b.run.key, 1);
+    expect(doneB.turn!.outcome).toBe("done");
+    expect(doneB.turn!.answered).toBe("final_text");
+    expect(agentMessages(w, b.thread_id, b.run.key).map((m) => m.body)).toContain("finished");
+    expect(agentMessages(w, a.thread_id, a.run.key)).toHaveLength(0);
+    // Only A's session was cancelled.
+    expect(w.log().filter((e) => e.event === "cancel")).toHaveLength(1);
+  }, 60_000);
+
+  test("12: the agent crashes mid-turn: the turn fails in plain words, nothing is sent again, and the next reply starts a new process", async () => {
+    const w = await world({ turns: [[{ say: "Looking at it" }, { exit: 3 }], [{ say: "back again" }]] });
+    const started = await startRun(w);
+    const key = started.run.key;
+    const failed = await ended(w, key, 1);
+    expect(failed.turn!.outcome).toBe("failed");
+    expect(failed.turn!.error).toBe("Grok Build stopped while it ran.");
+    // The message reached the agent before it crashed: never sent again.
+    expect(w.server.store.pendingReplies(key)).toHaveLength(0);
+    expect(w.server.runner.pids()).toHaveLength(0);
+    const first = w.log().find((e) => e.event === "initialize")!.pid as number;
+    expect(alive(first)).toBe(false);
+    // The person writes again: a new process loads the session (its first prompt, so turn 1's script again exits).
+    const root = thread(w, started.thread_id).messages[0]!;
+    expect((await reply(w, root, "Try again, please.")).status).toBe(200);
+    await ended(w, key, 2);
+    expect(w.log().filter((e) => e.event === "initialize")).toHaveLength(2);
+    expect(w.log().filter((e) => e.event === "loadSession")).toHaveLength(1);
+  }, 60_000);
+
+  test("13: a tailnet guest is refused with owner_only on the runner and on the threads it runs; the owner is let in", async () => {
+    const w = await world({ steps: [{ say: "ok" }] }, { tailnet: true });
+    const listener = w.server.tailscale.listenerPort();
+    expect(listener).not.toBeNull();
+    const origin = `https://${MAGIC}:${w.server.port}`;
+    const through = (path: string, login: string, init: { method?: string; body?: Record<string, unknown> } = {}) =>
+      fetch(`http://127.0.0.1:${listener}${path}`, {
+        method: init.method ?? "GET",
+        headers: { Host: `${MAGIC}:${w.server.port}`, "Tailscale-User-Login": login, Origin: origin, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+        ...(init.body ? { body: JSON.stringify({ serverSession: w.server.serverSession, ...init.body }) } : {}),
+      });
+    const codeOf = async (r: Response) => [r.status, ((await r.json()) as { code?: string }).code];
+    expect(await codeOf(await through("/api/inbox/acp", GUEST))).toEqual([403, "owner_only"]);
+    expect(
+      await codeOf(await through("/api/inbox/acp/start", GUEST, { method: "POST", body: { agent: "grok", project_id: w.projectId, body: "hi", idempotency_key: "k-guest" } })),
+    ).toEqual([403, "owner_only"]);
+    expect((await through("/api/inbox/acp", OWNER)).status).toBe(200);
+    // The owner starts a session through the tailnet; the guest may not steer it.
+    const started = await through("/api/inbox/acp/start", OWNER, { method: "POST", body: { agent: "grok", project_id: w.projectId, body: "From my phone.", idempotency_key: "k-owner" } });
+    expect(started.status).toBe(200);
+    const { thread_id, run } = (await started.json()) as { thread_id: string; run: { key: string } };
+    await ended(w, run.key, 1);
+    expect(await codeOf(await through(`/api/inbox/acp/${run.key}/stop`, GUEST, { method: "POST", body: {} }))).toEqual([403, "owner_only"]);
+    const answer = agentMessages(w, thread_id, run.key)[0]!;
+    expect(await codeOf(await through(`/api/inbox/messages/${answer.id}/reply`, GUEST, { method: "POST", body: { idempotency_key: "r-guest", words: "Delete everything." } }))).toEqual([403, "owner_only"]);
+    expect(thread(w, thread_id).messages.some((m) => m.body.includes("Delete everything."))).toBe(false);
+    expect((await through(`/api/inbox/messages/${answer.id}/reply`, OWNER, { method: "POST", body: { idempotency_key: "r-owner", words: "Thanks." } })).status).toBe(200);
+  }, 60_000);
+
+  test("14: a 👍 on the session's answer runs no turn, and the row never says it was delivered", async () => {
+    const w = await world({ steps: answersInInbox("Totals fixed.") }, { setAsideDelayMs: 200 });
+    const started = await startRun(w);
+    const key = started.run.key;
+    await ended(w, key, 1);
+    const answer = agentMessages(w, started.thread_id, key)[0]!;
+    expect((await post(w, `/api/inbox/messages/${answer.id}/ack`, {})).status).toBe(200);
+    await until(() => w.server.store.message(answer.id)?.ack?.settled_seq != null, "the 👍 to settle");
+    const row = await until(async () => {
+      const list = (await (await fetch(`${w.base}/api/inbox/threads?archived=exclude`)).json()) as InboxListModel;
+      const found = list.sections.flatMap((s) => s.threads).find((r) => r.thread_id === started.thread_id);
+      return found?.delivery?.kind === "ack" && found.delivery.reason !== "ack_pending" ? found : null;
+    }, "the row's 👍 delivery");
+    expect(row.delivery).toMatchObject({ kind: "ack", state: "saved", reason: "reads", at: null });
+    await Bun.sleep(300);
+    expect(w.log().filter((e) => e.event === "prompt")).toHaveLength(1);
+    expect((await status(w, key)).turns).toHaveLength(1);
   }, 60_000);
 
   test("7: a failing session/load sends nothing and says why", async () => {
