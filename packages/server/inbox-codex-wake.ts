@@ -6,9 +6,12 @@
  * itself. A Codex session is learned from its MCP calls: the stdio shim
  * (`plannotator inbox mcp`) sends as `agent_host: "codex"`, `agent_session:
  * <thread id>` (Codex names its thread on every tool call,
- * `params._meta.threadId`), and the message is marked `wakes` when this Inbox
- * can run a Codex CLI that queues (packages/server/inbox-mcp.ts). Then each
- * item waiting for that session (`InboxStore.pendingReplies`) is handed to
+ * `params._meta.threadId`), and the message is marked `wakes` when the call
+ * comes from a thread that keeps running (its turn metadata's `turn_trigger`
+ * is not `exec`: a `codex exec` run exits after its turn, so its agent keeps
+ * wait_for_reply) and this Inbox can run a Codex CLI that queues
+ * (packages/server/inbox-mcp.ts). Then each item waiting for that session
+ * (`InboxStore.pendingRepliesFor`) is handed to
  * `codex queue --thread=<id> --message=<the wake text>` exactly once:
  *
  *  - an idle thread starts the turn within about a second, a busy one gets it
@@ -21,7 +24,8 @@
  *  - exit 0 means queued, not delivered: the item is "Delivered" once the
  *    thread calls an Inbox tool from a turn that started after it was queued
  *    (`x-codex-turn-metadata.turn_started_at_unix_ms`), or when the agent
- *    reads it (wait_for_reply, read_thread). Until then the window says
+ *    reads it (wait_for_reply, read_thread). A turn that starts while the
+ *    call still runs counts, once the call exits 0. Until then the window says
  *    "Queued for Codex; it gets this as its next turn.";
  *  - a thread Codex does not know (exit 1, "no rollout found") is ended: the
  *    reply is saved for the next agent, and the session is alive again the
@@ -29,22 +33,29 @@
  *  - any other failure is tried again later (30 s, doubling to 10 min); a
  *    call that ran out of time may have queued, so it is not tried again.
  *
- * No Send now and no going in by itself after five minutes: Codex never takes
- * a message mid-turn.
+ * The text goes to `codex queue` as an argument, so while the call runs (a
+ * few hundred milliseconds) it can be read in the process list (`ps`) by
+ * other processes of this user and, on a shared machine, by anyone who can
+ * list processes.
+ *
+ * A sweep is one pass over the person's messages (bucketed by recipient), and
+ * runs only when it can find something: a store line, a retry coming due, a
+ * thread coming back, a wait_for_reply ending, and once at start. No Send now
+ * and no going in by itself after five minutes: Codex never takes a message
+ * mid-turn.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { INBOX_CODEX_HOST, codexCliQueues, isCodexThreadId, parseCodexCliVersion, type InboxMessage } from "@plannotator/core/inbox-types";
-import { inboxWakeText, type InboxReplyCommand } from "@plannotator/shared/inbox/connection";
+import { isAbsolute, join } from "node:path";
+import { INBOX_CODEX_HOST, codexCallWakes, codexCliQueues, isCodexThreadId, parseCodexCliVersion, type InboxMessage } from "@plannotator/core/inbox-types";
+import { INBOX_TOOL_NAME, inboxWakeText, type InboxReplyCommand } from "@plannotator/shared/inbox/connection";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import type { AgentEnvironment } from "./inbox-agents";
 
 /** The ChatGPT desktop app's own Codex CLI (macOS), used when no `codex` is on PATH. */
 export const INBOX_CODEX_DESKTOP_CLI = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
-
-/** How often the Inbox looks for items to queue (a person's item is looked at at once too). */
-export const INBOX_CODEX_SWEEP_MS = 5_000;
+/** The Codex app's own Codex CLI (macOS). */
+export const INBOX_CODEX_APP_CLI = "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex";
 
 /** One `codex queue` may take this long. */
 export const INBOX_CODEX_QUEUE_TIMEOUT_MS = 30_000;
@@ -77,8 +88,12 @@ export interface InboxCodexWake {
   cli(): Promise<InboxCodexCli | null>;
   /** The last probe's answer, without waiting (null before the first one finished). */
   knownCli(): InboxCodexCli | null;
-  /** Whether a message from this host and session wakes it: a Codex thread id, and a Codex CLI that queues. */
-  wakes(host: unknown, session: unknown): Promise<boolean>;
+  /**
+   * Whether a message from this host and session, sent by a tool call with
+   * this `_meta`, wakes it: a Codex thread id, the call from that thread and
+   * not from `codex exec`, and a Codex CLI that queues.
+   */
+  wakes(host: unknown, session: unknown, meta: unknown): Promise<boolean>;
   /**
    * How a session stands for the presence rules: `alive` (a Codex session the
    * Inbox wakes), `dead` (Codex did not know its thread), null (not a Codex
@@ -91,28 +106,43 @@ export interface InboxCodexWake {
    * before that turn started has reached it.
    */
   noteToolCall(session: string, turnStartedAt: number | null): void;
-  /** Look for items to queue now (tests; the Inbox runs it on a timer and on every person's item). */
+  /** Look for items to queue now (the Inbox runs it on every store line, a retry coming due, a wait ending). */
   sweep(): Promise<void>;
   stop(): void;
+}
+
+/** The text a body is put in for, so the tool names are named only outside the person's words. */
+const BODY_SLOT = "\u0000PLANNOTATOR_BODY\u0000";
+
+/**
+ * The wake text as Codex reads it: `inboxWakeText`, with the tools named as
+ * Codex lists them (`send_message`, `read_thread` of the plannotator-inbox
+ * MCP server, not the `plannotator_inbox` tool of Plannotator's own
+ * connections). The person's words are never touched.
+ */
+export function codexWakeText(command: InboxReplyCommand): string {
+  const template = inboxWakeText({ ...command, body: BODY_SLOT }).split(`${INBOX_TOOL_NAME} `).join("");
+  return template.replace(BODY_SLOT, () => command.body);
 }
 
 /** The wake text, cut to INBOX_CODEX_MESSAGE_MAX_BYTES with a pointer to the thread when the reply is longer. */
 export function codexQueueMessage(command: InboxReplyCommand): string {
   const clean = (text: string) => text.replace(/\u0000/g, "");
-  const full = clean(inboxWakeText(command));
+  const body = clean(command.body);
+  const full = codexWakeText({ ...command, body });
   if (Buffer.byteLength(full) <= INBOX_CODEX_MESSAGE_MAX_BYTES) return full;
   const note = `\n\n[Cut here: the rest is in the Inbox. read_thread with message_id ${command.id} shows it whole.]`;
-  const overhead = Buffer.byteLength(clean(inboxWakeText({ ...command, body: note })));
-  let body = clean(command.body);
+  const overhead = Buffer.byteLength(codexWakeText({ ...command, body: note }));
   const room = Math.max(0, INBOX_CODEX_MESSAGE_MAX_BYTES - overhead - 16);
   // Cut on a character, never inside one.
   const bytes = Buffer.from(body);
+  let cut = body;
   if (bytes.length > room) {
     let end = room;
     while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
-    body = bytes.subarray(0, end).toString("utf8");
+    cut = bytes.subarray(0, end).toString("utf8");
   }
-  return clean(inboxWakeText({ ...command, body: `${body}${note}` }));
+  return codexWakeText({ ...command, body: `${cut}${note}` });
 }
 
 export function createInboxCodexWake(options: {
@@ -120,11 +150,10 @@ export function createInboxCodexWake(options: {
   environment: AgentEnvironment;
   /** The wake command for an item and the session it goes to (the bridge's `replyCommand`). */
   commandOf: (item: InboxMessage, session: string) => InboxReplyCommand;
-  /** The session holds a wait_for_reply open now: that call returns the item, so it is not queued as well. */
-  waitingOverMcp?: (session: string) => boolean;
-  /** Where to look for a Codex CLI besides PATH. Default: the ChatGPT app's (macOS), never under the test sandbox. */
+  /** The session holds a wait_for_reply open now that returns items of this thread: those are not queued as well. */
+  waitingOverMcp?: (session: string, threadId: string) => boolean;
+  /** Where to look for a Codex CLI besides PATH. Default: the ChatGPT and Codex apps' own (macOS), never under the test sandbox. */
   extraClis?: readonly string[];
-  sweepMs?: number;
   now?: () => number;
   log?: (line: string) => void;
 }): InboxCodexWake {
@@ -138,14 +167,19 @@ export function createInboxCodexWake(options: {
   const extraClis =
     options.extraClis ??
     (environment.platform === "darwin"
-      ? [...(process.env.PLANNOTATOR_TEST_SANDBOX ? [] : [INBOX_CODEX_DESKTOP_CLI]), join(environment.homeDir, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex")]
+      ? [
+          ...(process.env.PLANNOTATOR_TEST_SANDBOX ? [] : [INBOX_CODEX_DESKTOP_CLI, INBOX_CODEX_APP_CLI]),
+          join(environment.homeDir, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+          join(environment.homeDir, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+        ]
       : []);
 
   // ── The CLI ──
   let cliAnswer: { cli: InboxCodexCli | null; at: number } | null = null;
   let cliProbe: Promise<InboxCodexCli | null> | null = null;
   const probe = async (): Promise<InboxCodexCli | null> => {
-    const candidates = [environment.which("codex"), ...extraClis].filter((path): path is string => !!path && existsSync(path));
+    // Only absolute paths: a relative PATH entry would name another file wherever the Inbox runs.
+    const candidates = [environment.which("codex"), ...extraClis].filter((path): path is string => !!path && isAbsolute(path) && existsSync(path));
     for (const path of [...new Set(candidates)]) {
       const run = await environment.run([path, "--version"], { timeoutMs: 10_000, signal: stopping.signal });
       const version = parseCodexCliVersion(run.stdout);
@@ -181,6 +215,8 @@ export function createInboxCodexWake(options: {
   const claimDir = (itemId: string, session: string) => join(dir, `${itemId}.${session}`);
   /** What was queued and not yet seen delivered, per session: item id -> when it was queued (ms). */
   const queued = new Map<string, Map<string, number>>();
+  /** Calls running now, by claim key: when it was queued (ms), and whether a turn already took it (recorded on exit 0). */
+  const inFlight = new Map<string, { at: number; session: string; itemId: string; taken: boolean }>();
   const claimed = new Set<string>();
   try {
     for (const name of readdirSync(dir)) {
@@ -205,6 +241,14 @@ export function createInboxCodexWake(options: {
     queued.get(session)?.delete(itemId);
     rmSync(claimDir(itemId, session), { recursive: true, force: true });
   };
+  const delivered = (itemId: string, session: string) => {
+    try {
+      store.recordDelivery(itemId, { host: INBOX_CODEX_HOST, session });
+    } catch {
+      // Gone, or no longer this session's.
+    }
+    dropClaim(itemId, session);
+  };
 
   /** Whether the item goes to `session` through a wake: its owner's message woke, it is addressed to it, or a waking tag. */
   const wakesItem = (item: InboxMessage, session: string): boolean => {
@@ -216,6 +260,19 @@ export function createInboxCodexWake(options: {
 
   const retryAt = new Map<string, { at: number; wait: number }>();
   const failuresSaid = new Set<string>();
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A sweep when the earliest retry comes due (never a timer that runs while nothing waits). */
+  const scheduleRetry = () => {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    if (retryAt.size === 0 || stopping.signal.aborted) return;
+    const next = Math.min(...[...retryAt.values()].map((retry) => retry.at));
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void sweep();
+    }, Math.max(0, next - now()) + 10);
+    (retryTimer as { unref?: () => void }).unref?.();
+  };
 
   const queueOne = async (path: string, item: InboxMessage, session: string): Promise<void> => {
     const key = `${item.id}.${session}`;
@@ -232,20 +289,27 @@ export function createInboxCodexWake(options: {
     claimed.add(key);
     const text = codexQueueMessage(options.commandOf(item, session));
     const at = now();
-    // Counted as queued from before the call: an idle thread starts its turn while `codex queue` is still
-    // running, and that turn's first tool call may come before the call returns.
-    (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(item.id, at);
+    // An idle thread starts its turn while `codex queue` still runs; that turn's tool call is kept until the call exits 0.
+    const flight = { at, session, itemId: item.id, taken: false };
+    inFlight.set(key, flight);
     // `--name=value`: a value that starts with "-" would be read as a flag.
     const run = await environment.run([path, "queue", `--thread=${session}`, `--message=${text}`], { timeoutMs: INBOX_CODEX_QUEUE_TIMEOUT_MS, signal: stopping.signal });
+    inFlight.delete(key);
     if (stopping.signal.aborted && run.exitCode !== 0) {
       // Stopped mid-call: it may have queued, so it stays claimed.
       return;
     }
     if (run.exitCode === 0 || run.timedOut) {
-      // A call that ran out of time may have queued: never twice. Already delivered meanwhile: nothing to keep.
-      if (claimed.has(key)) writeFileSync(join(claimDir(item.id, session), "queued.json"), `${JSON.stringify({ at, ...(run.timedOut ? { timed_out: true } : {}) })}\n`);
       retryAt.delete(key);
       if (run.timedOut) log(`codex queue ran out of time for ${item.id} (thread ${session}); it may have gone, so it is not sent again.`);
+      if (!claimed.has(key)) return;
+      if (flight.taken && run.exitCode === 0) {
+        delivered(item.id, session);
+        return;
+      }
+      // A call that ran out of time may have queued: never twice.
+      writeFileSync(join(claimDir(item.id, session), "queued.json"), `${JSON.stringify({ at, ...(run.timedOut ? { timed_out: true } : {}) })}\n`);
+      (queued.get(session) ?? queued.set(session, new Map()).get(session)!).set(item.id, at);
       return;
     }
     dropClaim(item.id, session);
@@ -273,30 +337,40 @@ export function createInboxCodexWake(options: {
   let sweeping: Promise<void> | null = null;
   let again = false;
   const sweepOnce = async (): Promise<void> => {
-    const sessions = [...knownSessions()];
+    const sessions = knownSessions();
+    if (sessions.size === 0 && claimed.size === 0) return;
+    // One pass over the messages, bucketed by recipient (dead sessions included, for their claims).
+    const pending = store.pendingRepliesFor(sessions, { tags: true });
     const pendingKeys = new Set<string>();
     const work: { item: InboxMessage; session: string }[] = [];
-    for (const session of sessions) {
-      for (const item of store.pendingReplies(session, { tags: true })) {
+    for (const [session, items] of pending) {
+      for (const item of items) {
         if (!wakesItem(item, session)) continue;
         const key = `${item.id}.${session}`;
         pendingKeys.add(key);
-        if (!dead.has(session) && !claimed.has(key) && !options.waitingOverMcp?.(session)) work.push({ item, session });
+        if (dead.has(session) || claimed.has(key)) continue;
+        // An open wait_for_reply returns it: it is not queued as a turn as well.
+        if (options.waitingOverMcp?.(session, item.thread_id)) continue;
+        work.push({ item, session });
       }
     }
-    // A claim whose item no longer waits (delivered, read, deleted) is done with.
+    // A claim whose item no longer waits (delivered, read, deleted) is done with; one in flight is kept.
     for (const key of [...claimed]) {
-      if (pendingKeys.has(key)) continue;
+      if (pendingKeys.has(key) || inFlight.has(key)) continue;
       const dot = key.indexOf(".");
       dropClaim(key.slice(0, dot), key.slice(dot + 1));
     }
-    if (work.length === 0) return;
-    const found = await cli();
-    if (!found) return;
-    for (const { item, session } of work) {
-      if (stopping.signal.aborted) return;
-      await queueOne(found.path, item, session);
+    for (const key of [...retryAt.keys()]) if (!pendingKeys.has(key)) retryAt.delete(key);
+    if (work.length > 0) {
+      const found = await cli();
+      if (found) {
+        for (const { item, session } of work) {
+          if (stopping.signal.aborted) return;
+          await queueOne(found.path, item, session);
+        }
+      }
     }
+    scheduleRetry();
   };
   const sweep = (): Promise<void> => {
     if (stopping.signal.aborted) return Promise.resolve();
@@ -319,7 +393,7 @@ export function createInboxCodexWake(options: {
     return sweeping;
   };
 
-  // A person's item, or a Codex message that wakes, is looked at at once; the timer retries and prunes.
+  // A person's item, or a Codex message that wakes, is looked at at once (one pass, after the line lands).
   let sweepQueued = false;
   const unsubscribe = store.subscribe((line) => {
     if (line.kind !== "message") return;
@@ -330,15 +404,13 @@ export function createInboxCodexWake(options: {
     }
     if (message.to?.host === INBOX_CODEX_HOST) knownSessions().add(message.to.session);
     for (const tag of message.tags ?? []) if (tag.host === INBOX_CODEX_HOST && tag.wakes) knownSessions().add(tag.session);
-    if (sweepQueued) return;
+    if (knownSessions().size === 0 || sweepQueued) return;
     sweepQueued = true;
     setTimeout(() => {
       sweepQueued = false;
       void sweep();
     }, 0);
   });
-  const timer = setInterval(() => void sweep(), options.sweepMs ?? INBOX_CODEX_SWEEP_MS);
-  (timer as { unref?: () => void }).unref?.();
   // The first look: items left from before a restart. The CLI is probed only when something waits.
   void sweep();
 
@@ -349,29 +421,22 @@ export function createInboxCodexWake(options: {
       void sweep();
     }
     if (turnStartedAt === null) return;
+    for (const flight of inFlight.values()) if (flight.session === session && flight.at < turnStartedAt) flight.taken = true;
     const items = queued.get(session);
     if (!items) return;
-    for (const [itemId, at] of [...items]) {
-      if (at >= turnStartedAt) continue;
-      try {
-        store.recordDelivery(itemId, { host: INBOX_CODEX_HOST, session });
-      } catch {
-        // Gone, or no longer this session's.
-      }
-      dropClaim(itemId, session);
-    }
+    for (const [itemId, at] of [...items]) if (at < turnStartedAt) delivered(itemId, session);
   };
 
   return {
     cli,
     knownCli: () => cliAnswer?.cli ?? null,
-    wakes: async (host, session) => host === INBOX_CODEX_HOST && isCodexThreadId(session) && (await cli()) !== null,
+    wakes: async (host, session, meta) => host === INBOX_CODEX_HOST && isCodexThreadId(session) && codexCallWakes(meta, session) && (await cli()) !== null,
     status: (session) => (!knownSessions().has(session) ? null : dead.has(session) ? "dead" : "alive"),
     noteToolCall,
     sweep,
     stop: () => {
       stopping.abort();
-      clearInterval(timer);
+      if (retryTimer) clearTimeout(retryTimer);
       unsubscribe();
     },
   };

@@ -9,8 +9,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { INBOX_CODEX_MESSAGE_MAX_BYTES, codexQueueMessage } from "./inbox-codex-wake";
-import { codexCliQueues, codexThreadOfCall, codexTurnStartedAt, isCodexThreadId, parseCodexCliVersion, type InboxThread } from "@plannotator/core/inbox-types";
+import { INBOX_CODEX_MESSAGE_MAX_BYTES, codexQueueMessage, codexWakeText } from "./inbox-codex-wake";
+import { codexCallWakes, codexCliQueues, codexThreadOfCall, codexTurnStartedAt, codexTurnTrigger, isCodexThreadId, parseCodexCliVersion, type InboxThread } from "@plannotator/core/inbox-types";
 import {
   INBOX_BRIDGE_POLL_PATH,
   INBOX_MESSAGE_INSTRUCTION,
@@ -56,7 +56,7 @@ async function world(options: { codex?: boolean; env?: Record<string, string> } 
   mkdirSync(project, { recursive: true });
   const environment = createAgentEnvironmentFor({ platform: "linux", homeDir: fake.home, env: { ...fake.env, ...options.env } });
   const start = async () => {
-    const server = await startInboxServer({ dataDir, agentEnvironment: environment, codexWake: { extraClis: [], sweepMs: 60_000 } });
+    const server = await startInboxServer({ dataDir, agentEnvironment: environment, codexWake: { extraClis: [] } });
     servers.push(server);
     return server;
   };
@@ -72,16 +72,23 @@ async function connect(server: InboxServer): Promise<Client> {
   return client;
 }
 
-/** What Codex puts on every tool call (seen on codex-cli 0.160.0). */
-function codexMeta(thread: string, turnStartedAt = Date.now()) {
-  return { threadId: thread, sessionId: thread, "x-codex-turn-metadata": { thread_id: thread, turn_started_at_unix_ms: turnStartedAt, codex_version: "0.160.0" } };
+/** What Codex puts on every tool call (seen on codex-cli 0.160.0: `turn_trigger` is `user` in the TUI, `exec` in `codex exec`). */
+function codexMeta(thread: string, turnStartedAt = Date.now(), trigger = "user") {
+  return {
+    threadId: thread,
+    sessionId: thread,
+    "x-codex-turn-metadata": { thread_id: thread, turn_started_at_unix_ms: turnStartedAt, turn_trigger: trigger, codex_version: "0.160.0" },
+  };
 }
 
-async function codexSends(client: Client, project: string, body: string, thread = THREAD) {
+/** A wake line as Codex reads it: its MCP tools by their own names. */
+const asCodex = (line: string) => line.split("plannotator_inbox ").join("");
+
+async function codexSends(client: Client, project: string, body: string, thread = THREAD, trigger = "user") {
   const result = await client.callTool({
     name: "send_message",
     arguments: { body, project_path: project, agent_session: thread, agent_host: "codex", agent_name: "Codex" },
-    _meta: codexMeta(thread),
+    _meta: codexMeta(thread, Date.now(), trigger),
   });
   const text = (result.content as { text: string }[])[0]!.text;
   return { ...(result.structuredContent as { message_id: string; thread_id: string }), text };
@@ -127,6 +134,22 @@ describe("the pure parts", () => {
     expect(codexThreadOfCall({ threadId: "abc" }, "codex-mcp-client")).toBeNull();
     expect(codexTurnStartedAt(codexMeta(THREAD, 1234))).toBe(1234);
     expect(codexTurnStartedAt({ threadId: THREAD })).toBeNull();
+    expect(codexTurnTrigger(codexMeta(THREAD, 1, "exec"))).toBe("exec");
+    // A `codex exec` run exits after its turn: it is never woken.
+    expect(codexCallWakes(codexMeta(THREAD), THREAD)).toBe(true);
+    expect(codexCallWakes(codexMeta(THREAD, 1, "exec"), THREAD)).toBe(false);
+    expect(codexCallWakes(codexMeta(THREAD), OTHER_THREAD)).toBe(false);
+    expect(codexCallWakes(undefined, THREAD)).toBe(false);
+  });
+
+  test("the wake names the tools as Codex lists them, and never touches the person's words", () => {
+    const command = { type: "reply" as const, id: "msg_X", thread_id: "msg_T", reply_to: "msg_A", subject: "S", body: "Ask plannotator_inbox send_message to do it.", url: "u" };
+    const text = codexWakeText(command);
+    expect(text.split("\n")[1]).toBe(asCodex(INBOX_WAKE_INSTRUCTION));
+    expect(text).toContain("answer in the same thread: send_message with reply_to");
+    expect(text).toContain("more: read_thread");
+    expect(text).toContain("Ask plannotator_inbox send_message to do it.");
+    expect(text.replace(command.body, "")).not.toContain("plannotator_inbox");
   });
 
   test("a reply too long for one argument is cut on a character, with where the rest is", () => {
@@ -137,7 +160,8 @@ describe("the pure parts", () => {
     expect(text).not.toContain("�");
     expect(text).toContain("read_thread with message_id msg_X");
     const short = { type: "reply" as const, id: "msg_X", thread_id: "msg_T", reply_to: "msg_A", subject: "S", body: "-- go", url: "u" };
-    expect(codexQueueMessage(short)).toBe(inboxWakeText(short));
+    expect(codexQueueMessage(short)).toBe(codexWakeText(short));
+    expect(codexQueueMessage(short)).toBe(asCodex(inboxWakeText(short)));
   });
 });
 
@@ -164,7 +188,7 @@ describe("a reply to a Codex thread", () => {
     const message = argOf(calls[0]!.args, "message")!;
     const lines = message.split("\n");
     expect(lines[0]).toBe(`Plannotator Inbox: Ship the worker today? (${replyId})`);
-    expect(lines[1]).toBe(INBOX_WAKE_INSTRUCTION);
+    expect(lines[1]).toBe(asCodex(INBOX_WAKE_INSTRUCTION));
     expect(message).toContain("Yes, ship it.");
     // Every value goes as --name=value, so text that starts with "-" is never read as a flag.
     expect(calls[0]!.args).toEqual(["queue", `--thread=${THREAD}`, `--message=${message}`]);
@@ -228,15 +252,87 @@ describe("a reply to a Codex thread", () => {
       arguments: { body: "Going with backoff.", reply_to: sent.message_id, agent_session: THREAD, agent_host: "codex" },
       _meta: codexMeta(THREAD, Date.now()),
     });
+    // Not yet: the call has not said it queued.
+    await Bun.sleep(100);
+    expect((await thread(w.server, sent.thread_id)).messages.find((m) => m.id === replyId)!.delivery ?? null).toBeNull();
+    // Once it exits 0, the turn that took it counts.
+    await sweeping;
+    expect((await thread(w.server, sent.thread_id)).messages.find((m) => m.id === replyId)!.delivery).toMatchObject({ host: "codex", session: THREAD });
+    await w.server.codexWake.sweep();
+    expect(readdirSync(join(w.dataDir, "inbox", "codex-queue"))).toEqual([]);
+    expect(queues(w.fake)).toHaveLength(1);
+  });
+
+  test("a turn during a codex queue that then fails is no delivery: the reply is tried again", async () => {
+    const w = await world();
+    const failFile = join(w.fake.root, "fail");
+    writeFileSync(failFile, "1");
+    w.server.stop();
+    let clock = Date.now();
+    const environment = createAgentEnvironmentFor({ platform: "linux", homeDir: w.fake.home, env: { ...w.fake.env, FAKE_CODEX_QUEUE_FAIL_FILE: failFile, FAKE_CODEX_QUEUE_DELAY_MS: "800" } });
+    const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [], now: () => clock } });
+    servers.push(server);
+    const client = await connect(server);
+    const sent = await codexSends(client, w.project, "Ship it?");
+    const response = await reply(server, sent.message_id, { idempotency_key: "k1", words: "Yes." });
+    const replyId = ((await response.json()) as { reply: { id: string } }).reply.id;
+    const sweeping = server.codexWake.sweep();
+    for (let waited = 0; waited < 3000 && queues(w.fake).length === 0; waited += 25) await Bun.sleep(25);
+    // A turn of that thread calls a tool while the call runs (it started after the queue began).
+    await client.callTool({ name: "read_thread", arguments: { agent_session: THREAD }, _meta: codexMeta(THREAD, clock + 1) });
+    await sweeping;
+    expect((await thread(server, sent.thread_id)).messages.find((m) => m.id === replyId)!.delivery ?? null).toBeNull();
+    writeFileSync(failFile, "");
+    clock += 31_000;
+    await server.codexWake.sweep();
+    expect(queues(w.fake)).toHaveLength(2);
+  });
+
+  test("a tool call with no session (search) from the thread's next turn still records the delivery", async () => {
+    const w = await world();
+    const sent = await codexSends(w.client, w.project, "Which retry policy?");
+    const response = await reply(w.server, sent.message_id, { idempotency_key: "k1", words: "Backoff." });
+    const replyId = ((await response.json()) as { reply: { id: string } }).reply.id;
+    await w.server.codexWake.sweep();
+    await w.client.callTool({ name: "search", arguments: { query: "retry", project_path: w.project }, _meta: codexMeta(THREAD, Date.now() + 5) });
     for (let waited = 0; waited < 2000; waited += 25) {
       if ((await thread(w.server, sent.thread_id)).messages.find((m) => m.id === replyId)?.delivery) break;
       await Bun.sleep(25);
     }
     expect((await thread(w.server, sent.thread_id)).messages.find((m) => m.id === replyId)!.delivery).toMatchObject({ host: "codex", session: THREAD });
-    await sweeping;
+  });
+
+  test("a codex exec run is never woken: its agent is told to wait_for_reply, it is not live, and nothing is queued", async () => {
+    const w = await world();
+    const sent = await codexSends(w.client, w.project, "Ship it?", THREAD, "exec");
+    expect(sent.text).toContain("Call wait_for_reply");
+    expect((await thread(w.server, sent.thread_id)).messages[0]!.wakes).toBeUndefined();
+    await Bun.sleep(100);
+    const sessions = (await (await fetch(`${base(w.server)}/api/inbox/threads/${sent.thread_id}/sessions`)).json()) as { sessions: { session: string }[] };
+    expect(sessions.sessions.map((s) => s.session)).not.toContain(THREAD);
+    await reply(w.server, sent.message_id, { idempotency_key: "k1", words: "Yes." });
     await w.server.codexWake.sweep();
-    expect(readdirSync(join(w.dataDir, "inbox", "codex-queue"))).toEqual([]);
+    expect(queues(w.fake)).toEqual([]);
+    expect(w.server.codexWake.status(THREAD)).toBeNull();
+  });
+
+  test("an open wait on one thread holds back only that thread's reply; another thread's reply to the same session is queued", async () => {
+    const w = await world();
+    const a = await codexSends(w.client, w.project, "A?");
+    const b = await w.client.callTool({
+      name: "send_message",
+      arguments: { body: "B?", project_path: w.project, agent_session: THREAD, agent_host: "codex", thread: "other work" },
+      _meta: codexMeta(THREAD),
+    });
+    const bSent = b.structuredContent as { message_id: string; thread_id: string };
+    expect(bSent.thread_id).not.toBe(a.thread_id);
+    const waiting = w.client.callTool({ name: "wait_for_reply", arguments: { agent_session: THREAD, thread_id: a.thread_id, timeout_seconds: 3 }, _meta: codexMeta(THREAD) });
+    await Bun.sleep(200);
+    await reply(w.server, bSent.message_id, { idempotency_key: "kb", words: "for B" });
+    await w.server.codexWake.sweep();
     expect(queues(w.fake)).toHaveLength(1);
+    expect(argOf(queues(w.fake)[0]!.args, "message")).toContain("for B");
+    await waiting;
   });
 
   test("a thread blocked in wait_for_reply gets the reply from that call, and it is not queued as a turn as well", async () => {
@@ -271,7 +367,7 @@ describe("a reply to a Codex thread", () => {
     w.server.stop();
     const fake = w.fake;
     const environment = createAgentEnvironmentFor({ platform: "linux", homeDir: fake.home, env: { ...fake.env, FAKE_CODEX_UNKNOWN_FILE: unknown } });
-    const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [], sweepMs: 60_000 } });
+    const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [] } });
     servers.push(server);
     const client = await connect(server);
     const sent = await codexSends(client, w.project, "Ship it?");
@@ -300,7 +396,7 @@ describe("a reply to a Codex thread", () => {
     w.server.stop();
     const environment = createAgentEnvironmentFor({ platform: "linux", homeDir: w.fake.home, env: { ...w.fake.env, FAKE_CODEX_QUEUE_FAIL_FILE: failFile } });
     let clock = Date.now();
-    const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [], sweepMs: 60_000, now: () => clock } });
+    const server = await startInboxServer({ dataDir: w.dataDir, agentEnvironment: environment, codexWake: { extraClis: [], now: () => clock } });
     servers.push(server);
     const client = await connect(server);
     const sent = await codexSends(client, w.project, "Ship it?");
@@ -352,7 +448,7 @@ describe("tags and New message", () => {
     expect(calls).toHaveLength(1);
     expect(argOf(calls[0]!.args, "thread")).toBe(THREAD);
     const lines = argOf(calls[0]!.args, "message")!.split("\n");
-    expect(lines[1]).toBe(INBOX_TAGGED_INSTRUCTION);
+    expect(lines[1]).toBe(asCodex(INBOX_TAGGED_INSTRUCTION));
   });
 
   test("New message to a live Codex thread is queued with the New message wake", async () => {
@@ -369,7 +465,7 @@ describe("tags and New message", () => {
     await w.server.codexWake.sweep();
     const calls = queues(w.fake);
     expect(calls).toHaveLength(1);
-    expect(argOf(calls[0]!.args, "message")!.split("\n")[1]).toBe(INBOX_MESSAGE_INSTRUCTION);
+    expect(argOf(calls[0]!.args, "message")!.split("\n")[1]).toBe(asCodex(INBOX_MESSAGE_INSTRUCTION));
   });
 
   test("two threads each get their own reply, and only theirs", async () => {

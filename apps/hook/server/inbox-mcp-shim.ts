@@ -27,7 +27,7 @@
  * stdout carries JSON-RPC only; anything else goes to stderr.
  */
 
-import { INBOX_CODEX_HOST, INBOX_CODEX_NAME, codexThreadOfCall, inboxId, isCodexThreadId } from "@plannotator/core/inbox-types";
+import { INBOX_CODEX_HOST, INBOX_CODEX_NAME, INBOX_HOST_NAMES, INBOX_WAKING_HOSTS, codexThreadOfCall, inboxId, isCodexThreadId } from "@plannotator/core/inbox-types";
 import { inboxStatus, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
 import { INBOX_MAX_REQUEST_BYTES, inboxRequestTooLargeMessage } from "@plannotator/shared/inbox/connection";
 
@@ -43,7 +43,7 @@ const AUTHOR_TOOLS = new Set(["send_message", "submit_guide", "card"]);
  * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex, which the
  * Inbox wakes itself through `codex queue`.
  */
-export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = { "claude-code": "Claude Code", pi: "Pi", opencode: "OpenCode", [INBOX_CODEX_HOST]: INBOX_CODEX_NAME };
+export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = Object.fromEntries(INBOX_WAKING_HOSTS.map((host) => [host, INBOX_HOST_NAMES[host]!]));
 
 /** A host session id: what Claude Code, Pi and OpenCode use (UUIDs, `ses_` ids), and nothing that could carry anything else. */
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

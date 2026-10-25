@@ -212,7 +212,7 @@ export function createInboxLiveSessions(options: {
    * asked is not "ended" while it talks to the Inbox); it never makes a
    * session live for New message, which needs a connection that wakes it.
    */
-  const mcpSeen = new Map<string, { lastSeen: number; holding: number; host?: string; name?: string }>();
+  const mcpSeen = new Map<string, { lastSeen: number; holding: number; host?: string; name?: string; waits?: (string | null)[] }>();
   const mcpEntry = (session: string) => {
     let entry = mcpSeen.get(session);
     if (!entry) {
@@ -221,8 +221,12 @@ export function createInboxLiveSessions(options: {
     }
     return entry;
   };
-  /** The session holds a wait_for_reply open now. */
-  const waitingOverMcp = (session: string): boolean => (mcpSeen.get(session)?.holding ?? 0) > 0;
+  /**
+   * The session holds a wait_for_reply open now that would return an item of
+   * `threadId`: a wait on that thread, or one on every thread it asked (null).
+   */
+  const waitingOverMcp = (session: string, threadId: string): boolean =>
+    (mcpSeen.get(session)?.waits ?? []).some((thread) => thread === null || thread === threadId);
   /** A tool call named this agent session (and, when the call said so, its host and name: the tag list's MCP rows). */
   const seenOverMcp = (session: string, who: { host?: unknown; name?: unknown } = {}) => {
     if (!session) return;
@@ -231,16 +235,19 @@ export function createInboxLiveSessions(options: {
     if (typeof who.host === "string" && who.host.trim() && who.host.length <= 64) entry.host = who.host.trim();
     if (typeof who.name === "string" && who.name.trim() && who.name.length <= 80) entry.name = who.name.trim();
   };
-  /** A wait_for_reply for this session is open: present until it answers. */
-  const holdOverMcp = (session: string): (() => void) => {
+  /** A wait_for_reply for this session is open (on `threadId`, or null: every thread it asked): present until it answers. */
+  const holdOverMcp = (session: string, threadId: string | null = null): (() => void) => {
     const entry = mcpEntry(session);
     entry.holding += 1;
     entry.lastSeen = now();
+    (entry.waits ??= []).push(threadId);
     let released = false;
     return () => {
       if (released) return;
       released = true;
       entry.holding = Math.max(0, entry.holding - 1);
+      const at = entry.waits?.indexOf(threadId) ?? -1;
+      if (at >= 0) entry.waits!.splice(at, 1);
       entry.lastSeen = now();
     };
   };

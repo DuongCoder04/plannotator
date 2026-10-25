@@ -4110,25 +4110,53 @@ export class InboxStore {
     const out: { message: InboxMessage; seq: number }[] = [];
     for (const message of this.messages.values()) {
       if (message.author.kind !== "person") continue;
-      const owner = this.isOwner(message, session);
-      const tag = owner ? null : tagOf(message, session);
-      if (tag) {
-        if (tag.delivery || options.tags === false) continue;
-        out.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
-        continue;
-      }
-      if (message.delivery || !owner) continue;
-      // A 👍 taken back before it went is never delivered.
-      if (isAckNote(message) && !this.ackNoteLive(message)) continue;
-      const seq = this.messageSeq.get(message.id) ?? 0;
-      // A New message, or a reply the person sent to another session, is
-      // settled only by its delivery to the session it names (its own
-      // wait_for_reply records one), never by another agent's read; so is a
-      // reply that tags agents.
-      if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) continue;
-      out.push({ message, seq });
+      if (this.pendingFor(message, session, options)) out.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
     }
     return out.sort((a, b) => a.seq - b.seq).map((entry) => entry.message);
+  }
+
+  /**
+   * `pendingReplies` for many sessions in ONE pass over the messages (the
+   * Codex wake, which delivers for every Codex thread itself): each session
+   * that has something waiting, with its items oldest first. A person's item
+   * is looked at only for its owner and the sessions it tags.
+   */
+  pendingRepliesFor(sessions: ReadonlySet<string>, options: { tags?: boolean } = {}): Map<string, InboxMessage[]> {
+    const found = new Map<string, { message: InboxMessage; seq: number }[]>();
+    if (sessions.size === 0) return new Map();
+    for (const message of this.messages.values()) {
+      if (message.author.kind !== "person") continue;
+      const candidates: string[] = [];
+      if (message.to) candidates.push(message.to.session);
+      else {
+        const asked = message.reply_to ? this.messages.get(message.reply_to) : undefined;
+        if (asked?.author.kind === "agent" && asked.author.session) candidates.push(asked.author.session);
+      }
+      for (const tag of message.tags ?? []) candidates.push(tag.session);
+      for (const session of new Set(candidates)) {
+        if (!sessions.has(session) || !this.pendingFor(message, session, options)) continue;
+        const list = found.get(session) ?? found.set(session, []).get(session)!;
+        list.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
+      }
+    }
+    return new Map([...found].map(([session, list]) => [session, list.sort((a, b) => a.seq - b.seq).map((entry) => entry.message)]));
+  }
+
+  /** Whether a person's `message` waits for `session` (the rules of `pendingReplies`). */
+  private pendingFor(message: InboxMessage, session: string, options: { tags?: boolean }): boolean {
+    const owner = this.isOwner(message, session);
+    const tag = owner ? null : tagOf(message, session);
+    if (tag) return !tag.delivery && options.tags !== false;
+    if (message.delivery || !owner) return false;
+    // A 👍 taken back before it went is never delivered.
+    if (isAckNote(message) && !this.ackNoteLive(message)) return false;
+    const seq = this.messageSeq.get(message.id) ?? 0;
+    // A New message, or a reply the person sent to another session, is
+    // settled only by its delivery to the session it names (its own
+    // wait_for_reply records one), never by another agent's read; so is a
+    // reply that tags agents.
+    if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
+    return true;
   }
 
   /**

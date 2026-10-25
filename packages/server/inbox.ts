@@ -329,7 +329,7 @@ export interface InboxServerOptions {
    * Codex CLI besides `agentEnvironment`'s PATH (default: the ChatGPT app's,
    * never under the test sandbox), and how often to look for replies to queue.
    */
-  codexWake?: { extraClis?: readonly string[]; sweepMs?: number; now?: () => number };
+  codexWake?: { extraClis?: readonly string[]; now?: () => number };
 }
 
 /**
@@ -774,9 +774,19 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         recordAttachments: (paths, project, base) =>
           recordInboxAttachments(store.dir, paths, { base, at: new Date().toISOString() }),
         // An open wait_for_reply keeps its session present (never "ended").
-        presence: { seen: (session) => live.seenOverMcp(session), hold: (session) => live.holdOverMcp(session) },
+        presence: {
+          seen: (session) => live.seenOverMcp(session),
+          hold: (session, threadId) => {
+            const release = live.holdOverMcp(session, threadId);
+            return () => {
+              release();
+              // A Codex thread's wait ended: what it left (a wait cut short) is queued as a turn now.
+              if (codexWake.status(session) !== null) void codexWake.sweep();
+            };
+          },
+        },
         // A Codex thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
-        sessionWakes: (host, session) => codexWake.wakes(host, session),
+        sessionWakes: (host, session, meta) => codexWake.wakes(host, session, meta),
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
@@ -1867,22 +1877,26 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     try {
       const body = (await req.json()) as unknown;
       for (const call of Array.isArray(body) ? body : [body]) {
-        const args = (call as { method?: unknown; params?: { arguments?: { agent_session?: unknown; agent_host?: unknown; agent_name?: unknown } } } | null)?.params
-          ?.arguments;
-        if ((call as { method?: unknown } | null)?.method !== "tools/call" || typeof args?.agent_session !== "string") continue;
+        if ((call as { method?: unknown } | null)?.method !== "tools/call") continue;
+        const params = (call as { params?: { arguments?: Record<string, unknown>; _meta?: unknown } }).params;
+        const args = params?.arguments;
+        const session = typeof args?.agent_session === "string" ? args.agent_session.trim() : null;
         // Who it is, when the call says: an MCP agent the person can tag (inbox-tags.ts).
-        live.seenOverMcp(args.agent_session.trim(), { host: args.agent_host, name: args.agent_name });
-        // A Codex thread (the shim sends as its thread, inbox-codex-wake.ts): it is there, it read what was
-        // queued before this turn started, and while this Inbox can wake it, it is live for New message and tags.
-        // Codex names its thread on every call (`_meta.threadId`); a command its shell runs says host codex.
-        const session = args.agent_session.trim();
-        const meta = (call as { params?: { _meta?: unknown } }).params?._meta;
-        const fromThread = codexThreadOfCall(meta) === session;
-        if (fromThread || (args.agent_host === INBOX_CODEX_HOST && isCodexThreadId(session))) {
-          codexWake.noteToolCall(session, fromThread ? codexTurnStartedAt(meta) : null);
-          if (await codexWake.wakes(INBOX_CODEX_HOST, session)) {
-            await live.seenWakeOnly(session, INBOX_CODEX_HOST, (args as { project_path?: unknown }).project_path);
+        if (session) live.seenOverMcp(session, { host: args?.agent_host, name: args?.agent_name });
+        // A Codex thread (inbox-codex-wake.ts). Codex names its thread on every call (`_meta.threadId`), so a
+        // tool without a session (search, get_guide_brief) counts too: it is there, and it read what was queued
+        // before this turn started. While this Inbox can wake it (not a `codex exec` run), it is live for New
+        // message, compose and tags. A command its shell runs (host codex, CODEX_THREAD_ID) is presence only.
+        const meta = params?._meta;
+        const thread = codexThreadOfCall(meta);
+        if (thread && (!session || session === thread)) {
+          if (!session) live.seenOverMcp(thread, { host: INBOX_CODEX_HOST });
+          codexWake.noteToolCall(thread, codexTurnStartedAt(meta));
+          if (await codexWake.wakes(INBOX_CODEX_HOST, thread, meta)) {
+            await live.seenWakeOnly(thread, INBOX_CODEX_HOST, args?.project_path);
           }
+        } else if (session && args?.agent_host === INBOX_CODEX_HOST && isCodexThreadId(session)) {
+          codexWake.noteToolCall(session, null);
         }
       }
     } catch {
@@ -1924,9 +1938,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     environment: agentEnvironment,
     commandOf: (item, session) => replyCommand(item, false, session),
     // A thread blocked in wait_for_reply gets the reply from that call, not as another turn as well.
-    waitingOverMcp: (session) => live.waitingOverMcp(session),
+    waitingOverMcp: (session, threadId) => live.waitingOverMcp(session, threadId),
     ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
-    ...(options.codexWake?.sweepMs ? { sweepMs: options.codexWake.sweepMs } : {}),
     ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
   });
 

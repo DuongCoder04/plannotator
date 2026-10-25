@@ -214,7 +214,7 @@ export interface InboxMcpContext {
    * wait_for_reply holds the session present while it waits
    * (packages/server/inbox-sessions.ts).
    */
-  presence?: { seen: (session: string) => void; hold: (session: string) => () => void };
+  presence?: { seen: (session: string) => void; hold: (session: string, threadId?: string | null) => () => void };
   /** The ⌘K search index (packages/server/inbox-search.ts), for the agents' read-only search tool. */
   searchIndex?: InboxSearchIndex;
   /**
@@ -230,7 +230,7 @@ export interface InboxMcpContext {
    * id, and a Codex CLI that runs `codex queue`; packages/server/inbox-codex-wake.ts).
    * Absent: only a caller's own connection wakes it (`callerWakes`).
    */
-  sessionWakes?: (host: unknown, session: unknown) => Promise<boolean>;
+  sessionWakes?: (host: unknown, session: unknown, meta: unknown) => Promise<boolean>;
 }
 
 
@@ -253,7 +253,8 @@ export function callerWakes(ctx: unknown): boolean {
 export async function senderWakes(context: Pick<InboxMcpContext, "sessionWakes">, ctx: unknown, input: { agent_host?: string; agent_session?: string }): Promise<boolean> {
   if (callerWakes(ctx)) return true;
   if (!context.sessionWakes) return false;
-  return context.sessionWakes(input.agent_host?.trim(), input.agent_session?.trim()).catch(() => false);
+  const meta = (ctx as { mcpReq?: { _meta?: unknown } } | undefined)?.mcpReq?._meta;
+  return context.sessionWakes(input.agent_host?.trim(), input.agent_session?.trim(), meta).catch(() => false);
 }
 
 /** The send tools' last sentence for a caller whose reply arrives by itself. */
@@ -1071,7 +1072,14 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
       guarded(async () => {
         // An open wait is presence: the session that asked is not "ended" while it waits here.
         const holder = input.agent_session?.trim();
-        const release = holder ? context.presence?.hold(holder) : undefined;
+        // Which thread the wait returns from (null: every thread it asked), so a Codex wake leaves just those to it.
+        let scope: string | null = null;
+        try {
+          scope = threadOf(store, input);
+        } catch {
+          // Refused below.
+        }
+        const release = holder ? context.presence?.hold(holder, scope) : undefined;
         try {
           const single = threadOf(store, input);
           const caller = input.agent_session?.trim() || null;

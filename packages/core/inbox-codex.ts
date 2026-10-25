@@ -63,6 +63,30 @@ export function codexThreadOfCall(meta: unknown, clientName?: string | null): st
   return isCodexThreadId(record.threadId) ? record.threadId : null;
 }
 
+/**
+ * What started the Codex turn a tool call belongs to (`turn_trigger`: `user`
+ * in the TUI and the apps, `exec` in `codex exec`), or null when the call
+ * does not say.
+ */
+export function codexTurnTrigger(meta: unknown): string | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const turn = (meta as Record<string, unknown>)[INBOX_CODEX_TURN_META_KEY];
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return null;
+  const trigger = (turn as Record<string, unknown>).turn_trigger;
+  return typeof trigger === "string" ? trigger : null;
+}
+
+/**
+ * Whether a Codex tool call comes from a thread the Inbox can wake: it names
+ * its thread, and the turn is not a `codex exec` run (exec exits after its
+ * turn, so nothing would ever run a queued message; its agent keeps
+ * `wait_for_reply`).
+ */
+export function codexCallWakes(meta: unknown, session: unknown): boolean {
+  const thread = codexThreadOfCall(meta);
+  return thread !== null && thread === session && codexTurnTrigger(meta) !== "exec";
+}
+
 /** When the Codex turn a tool call belongs to started (ms since the epoch), from its turn metadata; null when it does not say. */
 export function codexTurnStartedAt(meta: unknown): number | null {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
