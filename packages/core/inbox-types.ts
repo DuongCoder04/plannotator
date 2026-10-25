@@ -24,6 +24,7 @@ import { INBOX_CARD_ACTION_ON, type InboxCard } from "./inbox-cards";
 export * from "./inbox-attachments";
 export * from "./inbox-open-in";
 export * from "./inbox-delivery";
+export * from "./inbox-codex";
 // The Board's cards (approval "inbox-board"), the same way.
 export * from "./inbox-cards";
 // The surface bridge's messages (the phone, PLAN step S1), the same way.
@@ -260,6 +261,19 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
   codex: "Codex",
   cursor: "Cursor",
 };
+
+/**
+ * The agent hosts a person's reply wakes as a new turn by itself: Claude Code,
+ * Pi and OpenCode 2 through Plannotator's own connection (OpenCode 1 has the
+ * tool but no wake), and Codex through MCP alone, where the Inbox puts the
+ * reply into the Codex thread with `codex queue` (Codex CLI
+ * INBOX_CODEX_QUEUE_MIN_VERSION or later; packages/server/inbox-codex-wake.ts).
+ * The one list: wording that names which agents a reply wakes reads it.
+ */
+export const INBOX_WAKING_HOSTS = ["claude-code", "pi", "opencode", "codex"] as const;
+
+/** Of INBOX_WAKING_HOSTS, the ones an MCP connection alone wakes (no Plannotator plugin): Codex. */
+export const INBOX_MCP_WAKING_HOSTS: readonly string[] = ["codex"];
 
 /** How the person sees an agent: the name it gave, else its host's name, else "An agent". */
 export function inboxAgentName(author: { kind: string; host?: string | null; name?: string | null } | null | undefined): string {

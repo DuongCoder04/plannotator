@@ -75,6 +75,20 @@ test('MCP agents come after every Plannotator host; one the person turned off or
   expect(stepText(plan.steps[3]!).text).toBe("Only you can add it here: Cline's MCP command is not verified.");
 });
 
+// Deliberately pinned: Codex is the one agent its MCP connection alone wakes (the Inbox runs `codex queue`),
+// from the version that has it; every other MCP agent still checks for replies itself.
+test('Codex through MCP gets your replies back in the session by itself (Codex 0.149+); other MCP agents check themselves', () => {
+  const model = agentsModel({
+    codex: { detected: true, reach: { kind: 'mcp', on: false, state: 'not_connected', path: null, locked: false, reason: null } },
+    gemini: { detected: true, reach: { kind: 'mcp', on: false, state: 'not_connected', path: null, locked: false, reason: null } },
+  });
+  const plan = connectPlan(model);
+  expect(stepText(plan.steps.find((row) => row.id === 'codex')!).text).toBe(
+    "Adds the Inbox's MCP server to Codex. With Codex 0.149 or later, your replies come back into the session by themselves.",
+  );
+  expect(stepText(plan.steps.find((row) => row.id === 'gemini')!).text).toBe("Adds the Inbox's MCP server to Gemini CLI. Replies don't wake Gemini CLI: it checks for them itself.");
+});
+
 test('an older Inbox without the plugin field: the tool means the plugin is installed', () => {
   const row = { ...agentsModel({ pi: viaMcp('pi') }).agents.find((agent) => agent.id === 'pi')! };
   delete row.plugin;

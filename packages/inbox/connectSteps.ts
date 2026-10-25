@@ -4,9 +4,10 @@
  * about each agent on this computer, as the one most useful thing to do next
  * and the short lists of what is done and what is left. Plannotator's own
  * connections come first (Claude Code, Pi, OpenCode: replies wake the
- * session), agents reached through MCP after. Pure.
+ * session), agents reached through MCP after (Codex's replies wake it too:
+ * the Inbox runs `codex queue`). Pure.
  */
-import { INBOX_AGENT_IDS, inboxToolCostText, type InboxAgentId, type InboxAgentRow, type InboxAgentsModel } from '@plannotator/core/inbox-types';
+import { INBOX_AGENT_IDS, INBOX_CODEX_QUEUE_MIN_VERSION, INBOX_MCP_WAKING_HOSTS, inboxToolCostText, type InboxAgentId, type InboxAgentRow, type InboxAgentsModel } from '@plannotator/core/inbox-types';
 import type { HarnessId } from './harnesses';
 
 /** Plannotator's own connections, in the order the screen offers them. */
@@ -190,6 +191,11 @@ export function stepText(row: ConnectRow): { text: string; cost?: string } {
       if (row.id === 'opencode') return { text: "Plannotator's plugin connects it: on OpenCode 2 your replies come back into the session by themselves." };
       return { text: `Plannotator's ${word} connects it.` };
     case 'connect':
+      // Codex: the Inbox wakes it itself through `codex queue` (INBOX_MCP_WAKING_HOSTS), from the version that has it.
+      if (INBOX_MCP_WAKING_HOSTS.includes(row.id)) {
+        const version = INBOX_CODEX_QUEUE_MIN_VERSION.replace(/\.0$/, '');
+        return { text: `Adds the Inbox's MCP server to ${row.label}. With ${row.label} ${version} or later, your replies come back into the session by themselves.` };
+      }
       return { text: `Adds the Inbox's MCP server to ${row.label}. Replies don't wake ${row.label}: it checks for them itself.` };
     case 'manual':
       return { text: row.reason ? `Only you can add it here: ${row.reason}.` : 'Only you can add it here.' };

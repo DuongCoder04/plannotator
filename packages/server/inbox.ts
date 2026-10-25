@@ -53,7 +53,11 @@ import {
   INBOX_TOUR_VERSION,
   type InboxTourChange,
   type InboxTourState,
+  INBOX_CODEX_HOST,
   INBOX_HOST_NAMES,
+  codexThreadOfCall,
+  codexTurnStartedAt,
+  isCodexThreadId,
   isInboxId,
   isInboxSoundVolume,
   isInboxTextSize,
@@ -130,6 +134,7 @@ import { createInboxOpenInRoute, systemOpenInLauncher, type InboxOpenInLauncher 
 import { recordInboxAttachments, sweepStaleInboxSendTemps } from "@plannotator/shared/inbox/attachments";
 import { inboxBodyForAgent, inboxUploadAttachments, removeInboxAttachmentFiles, removeInboxUploads } from "@plannotator/shared/inbox/uploads";
 import { createInboxLiveSessions } from "./inbox-sessions";
+import { createInboxCodexWake, type InboxCodexWake } from "./inbox-codex-wake";
 import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, CLAUDE_PLUGIN_UPDATE_COMMAND, createClaudePluginInstallReader, piSessionOutdated } from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
@@ -319,6 +324,12 @@ export interface InboxServerOptions {
   agentEnvironment?: AgentEnvironment;
   /** Tests: how the search index slices its build (packages/shared/inbox/search.ts). Default: 5 ms slices that yield. */
   searchIndex?: InboxSearchIndexOptions;
+  /**
+   * The Codex wake (packages/server/inbox-codex-wake.ts): where to look for a
+   * Codex CLI besides `agentEnvironment`'s PATH (default: the ChatGPT app's,
+   * never under the test sandbox), and how often to look for replies to queue.
+   */
+  codexWake?: { extraClis?: readonly string[]; sweepMs?: number; now?: () => number };
 }
 
 /**
@@ -352,6 +363,8 @@ export interface InboxServer {
   search: InboxSearchIndex;
   /** The background capture of images messages show (inbox-message-images.ts): tests wait on its `idle`. */
   imageCapture: InboxImageCapture;
+  /** The Codex wake (inbox-codex-wake.ts): tests run its sweep. */
+  codexWake: InboxCodexWake;
   stop: () => void;
 }
 
@@ -762,6 +775,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           recordInboxAttachments(store.dir, paths, { base, at: new Date().toISOString() }),
         // An open wait_for_reply keeps its session present (never "ended").
         presence: { seen: (session) => live.seenOverMcp(session), hold: (session) => live.holdOverMcp(session) },
+        // A Codex thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
+        sessionWakes: (host, session) => codexWake.wakes(host, session),
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
@@ -1857,6 +1872,18 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if ((call as { method?: unknown } | null)?.method !== "tools/call" || typeof args?.agent_session !== "string") continue;
         // Who it is, when the call says: an MCP agent the person can tag (inbox-tags.ts).
         live.seenOverMcp(args.agent_session.trim(), { host: args.agent_host, name: args.agent_name });
+        // A Codex thread (the shim sends as its thread, inbox-codex-wake.ts): it is there, it read what was
+        // queued before this turn started, and while this Inbox can wake it, it is live for New message and tags.
+        // Codex names its thread on every call (`_meta.threadId`); a command its shell runs says host codex.
+        const session = args.agent_session.trim();
+        const meta = (call as { params?: { _meta?: unknown } }).params?._meta;
+        const fromThread = codexThreadOfCall(meta) === session;
+        if (fromThread || (args.agent_host === INBOX_CODEX_HOST && isCodexThreadId(session))) {
+          codexWake.noteToolCall(session, fromThread ? codexTurnStartedAt(meta) : null);
+          if (await codexWake.wakes(INBOX_CODEX_HOST, session)) {
+            await live.seenWakeOnly(session, INBOX_CODEX_HOST, (args as { project_path?: unknown }).project_path);
+          }
+        }
       }
     } catch {
       // Not JSON: the MCP handler answers it.
@@ -1886,6 +1913,21 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     displayFolder: (path) => displayPath(path, agentEnvironment) ?? path,
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),
     autoSendAfterMs: options.autoSendAfterMs ?? INBOX_AUTO_SEND_AFTER_MS,
+    // A Codex thread has no connection that polls: it is there until Codex says its thread is gone.
+    wakeOnlyStatus: (session) => codexWake.status(session),
+  });
+
+  // The Codex wake: the person's items for a Codex thread go in as a new turn through `codex queue`,
+  // once each (inbox-codex-wake.ts). Worded like any bridge command.
+  const codexWake = createInboxCodexWake({
+    store,
+    environment: agentEnvironment,
+    commandOf: (item, session) => replyCommand(item, false, session),
+    // A thread blocked in wait_for_reply gets the reply from that call, not as another turn as well.
+    waitingOverMcp: (session) => live.waitingOverMcp(session),
+    ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
+    ...(options.codexWake?.sweepMs ? { sweepMs: options.codexWake.sweepMs } : {}),
+    ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
   });
 
   // A reply that waited 5 minutes on a busy session goes into its running turn by itself, as if the person
@@ -2814,6 +2856,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     clearInterval(deliveryWatch);
     clearInterval(autoSendWatch);
     unsubscribeWaits();
+    codexWake.stop();
     void mcp.close().catch(() => {});
     server.stop(true);
     // The tailnet mapping and the door listener, the Wi-Fi listener and its
@@ -2825,7 +2868,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     tailnetStopFailedPort = tailscale.stop().failedPort;
   };
 
-  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, stop };
+  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, codexWake, stop };
 }
 
 /** Print where the Inbox is, and open it when a person asked for it. */

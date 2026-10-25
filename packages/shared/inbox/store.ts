@@ -4588,6 +4588,25 @@ export class InboxStore {
     return new Map([...latest].map(([session, { message }]) => [session, message]));
   }
 
+  /**
+   * The agent sessions on `host` the person's items can wake: sessions whose
+   * messages came through a waking connection (`wakes`), sessions a person's
+   * message is addressed to (`to`), and sessions a reply tags with a wake.
+   * One pass over the messages (the Codex wake builds its index from it once).
+   */
+  wakingSessionsOfHost(host: string): Set<string> {
+    const out = new Set<string>();
+    for (const message of this.messages.values()) {
+      if (message.author.kind === "agent") {
+        if (message.wakes === true && message.author.host === host && message.author.session) out.add(message.author.session);
+        continue;
+      }
+      if (message.to?.host === host) out.add(message.to.session);
+      for (const tag of message.tags ?? []) if (tag.host === host && tag.wakes) out.add(tag.session);
+    }
+    return out;
+  }
+
   /** The thread each agent session last wrote in (any project): compose's "Last: <subject>". */
   lastThreadsBySession(): Map<string, { id: string; subject: string | null; at: string; project_id: string }> {
     const latest = new Map<string, { message: InboxMessage; seq: number }>();

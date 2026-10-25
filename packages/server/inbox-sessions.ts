@@ -130,6 +130,13 @@ interface SeenSession {
   plugin: LoadedPlugin | null;
   /** Claude Code's version (`engine`); null when it sent none. */
   engine: string | null;
+  /**
+   * A session the Inbox wakes itself, with no connection that polls (Codex:
+   * `codex queue`; packages/server/inbox-codex-wake.ts): seen from its MCP
+   * calls, live while it called within `INBOX_WAKE_ONLY_LIVE_MS` and its
+   * thread is not known to have ended. Its id, for that check.
+   */
+  wakeOnly?: string;
 }
 
 /**
@@ -160,6 +167,14 @@ export const INBOX_MCP_AGENTS_MAX = 30;
  */
 export const INBOX_ASKER_GRACE_MS = 60_000;
 
+/**
+ * How long a session the Inbox wakes itself (Codex) is listed as live after
+ * its last Inbox tool call: New message, compose and tags offer it that long.
+ * Its thread takes a queued message whenever it runs, so this only bounds
+ * the list.
+ */
+export const INBOX_WAKE_ONLY_LIVE_MS = 60 * 60_000;
+
 const iso = (ms: number) => new Date(ms).toISOString();
 const finiteMs = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null);
 
@@ -179,6 +194,12 @@ export function createInboxLiveSessions(options: {
   restartCommandOf?: (host: string, folder: string, session: string) => string | null;
   /** How long a reply waits on a busy session before it goes in by itself. Default `INBOX_AUTO_SEND_AFTER_MS`. */
   autoSendAfterMs?: number;
+  /**
+   * For a session the Inbox wakes itself, with no polling connection (Codex):
+   * `alive`, `dead` (its thread is gone), or null (not such a session). Such a
+   * session never "ends" for want of a poll: only `dead` ends it.
+   */
+  wakeOnlyStatus?: (session: string) => "alive" | "dead" | null;
 }) {
   const { store, serverSession } = options;
   const now = options.now ?? Date.now;
@@ -200,6 +221,8 @@ export function createInboxLiveSessions(options: {
     }
     return entry;
   };
+  /** The session holds a wait_for_reply open now. */
+  const waitingOverMcp = (session: string): boolean => (mcpSeen.get(session)?.holding ?? 0) > 0;
   /** A tool call named this agent session (and, when the call said so, its host and name: the tag list's MCP rows). */
   const seenOverMcp = (session: string, who: { host?: unknown; name?: unknown } = {}) => {
     if (!session) return;
@@ -373,7 +396,55 @@ export function createInboxLiveSessions(options: {
     trackWaitsOf(session, entry, at);
   };
 
-  const isLive = (entry: SeenSession) => entry.holding > 0 || now() - entry.lastSeen <= INBOX_SESSION_LIVE_MS;
+  const isLive = (entry: SeenSession) =>
+    entry.wakeOnly !== undefined
+      ? now() - entry.lastSeen <= INBOX_WAKE_ONLY_LIVE_MS && options.wakeOnlyStatus?.(entry.wakeOnly) !== "dead"
+      : entry.holding > 0 || now() - entry.lastSeen <= INBOX_SESSION_LIVE_MS;
+
+  /**
+   * A session the Inbox wakes itself (Codex) called an Inbox tool: it is live
+   * (New message, compose and tags offer it), in the project its
+   * `project_path` names. Never over a session whose connection polls.
+   */
+  const seenWakeOnly = async (session: string, host: string, projectPath: unknown): Promise<void> => {
+    if (!session) return;
+    const root = await rootOf(projectPath);
+    const at = now();
+    const known = sessions.get(session);
+    if (known && known.wakeOnly === undefined) return;
+    const entry: SeenSession = known ?? {
+      host,
+      root,
+      startedAt: at,
+      lastSeen: at,
+      holding: 0,
+      busy: null,
+      idleSince: null,
+      sendNow: false,
+      cwd: null,
+      folder: null,
+      plugin: null,
+      engine: null,
+      tags: true,
+      wakeOnly: session,
+    };
+    entry.lastSeen = at;
+    if (root !== null) entry.root = root;
+    if (typeof projectPath === "string" && projectPath) entry.cwd = projectPath;
+    sessions.set(session, entry);
+  };
+
+  /** How a session the Inbox wakes itself is connected: it takes the item as its next turn; nothing else is known. */
+  const wakeOnlyConnection = (): InboxRecipientConnection => ({
+    busy: null,
+    idle_since: null,
+    send_now: false,
+    outdated: null,
+    engine: null,
+    restart_command: null,
+    auto_send_after_ms: autoSendAfterMs,
+    waits: {},
+  });
 
   /**
    * Whether the session that asked is still there, with the grace above: it
@@ -384,6 +455,9 @@ export function createInboxLiveSessions(options: {
    * (`InboxMessage.wakes`).
    */
   const askerLive = (session: string): boolean => {
+    // A session the Inbox wakes itself (Codex) is there until its thread is known to be gone.
+    const wakeOnly = options.wakeOnlyStatus?.(session) ?? null;
+    if (wakeOnly !== null) return wakeOnly === "alive";
     const recent = (entry: { holding: number; lastSeen: number } | undefined) =>
       !!entry && (entry.holding > 0 || now() - entry.lastSeen <= INBOX_ASKER_GRACE_MS);
     if (recent(sessions.get(session)) || recent(mcpSeen.get(session))) return true;
@@ -583,7 +657,7 @@ export function createInboxLiveSessions(options: {
   /** How a session is connected now (live, no grace), or null when its connection does not poll. */
   const connectionOf = (session: string): InboxRecipientConnection | null => {
     const entry = sessions.get(session);
-    if (!entry || !isLive(entry)) return null;
+    if (!entry || !isLive(entry)) return options.wakeOnlyStatus?.(session) === "alive" ? wakeOnlyConnection() : null;
     return {
       busy: entry.busy,
       idle_since: entry.busy === false && entry.idleSince !== null ? iso(entry.idleSince) : null,
@@ -617,7 +691,7 @@ export function createInboxLiveSessions(options: {
   /** The fields a list row's delivery reads (`InboxStore.setDeliveryPresence`): `connectionOf` without its plugin checks. */
   const deliveryConnectionOf = (session: string): { busy: boolean | null; send_now: boolean } | null => {
     const entry = sessions.get(session);
-    if (!entry || !isLive(entry)) return null;
+    if (!entry || !isLive(entry)) return options.wakeOnlyStatus?.(session) === "alive" ? { busy: null, send_now: false } : null;
     return { busy: entry.busy, send_now: entry.sendNow };
   };
 
@@ -814,11 +888,13 @@ export function createInboxLiveSessions(options: {
   return {
     pollStarted,
     stateChanged,
+    seenWakeOnly,
     liveFor,
     askerLive,
     replyTarget,
     seenOverMcp,
     holdOverMcp,
+    waitingOverMcp,
     route,
     allLive,
     isSessionLive,
