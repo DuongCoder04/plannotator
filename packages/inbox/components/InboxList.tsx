@@ -1,4 +1,4 @@
-import { memo, useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useId, useLayoutEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
 import { agentName, formatCount, shortTime, waitCount } from '../format';
@@ -19,6 +19,7 @@ import { rowTimeIso, rowWait } from '../rowDelivery';
 import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { decideLabel } from '../decisions/entry';
+import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 
 export interface InboxListProps {
   title: string;
@@ -99,15 +100,54 @@ function RowMark({ row }: { row: InboxListRow }) {
   return <AuthorMark author={rowAgent(row)} />;
 }
 
-function badgeOf(row: InboxListRow): string | null {
-  if (row.section === 'stopped') return 'Stopped';
-  if (row.section === 'holding') return `Holds up ${row.questions.holds_up.length}`;
-  return null;
+/**
+ * The row has keyboard focus (`:focus-visible`): its badge's card shows, as it
+ * does on hover (approval "inbox-row-badges"). A click's focus does not count.
+ */
+function useKeyboardFocus(enabled: boolean): [boolean, { onFocus: (e: FocusEvent<HTMLElement>) => void; onBlur: () => void }] {
+  const [on, setOn] = useState(false);
+  return [
+    on,
+    {
+      onFocus: (e) => {
+        if (!enabled || e.target !== e.currentTarget) return;
+        let visible = false;
+        try {
+          visible = e.currentTarget.matches(':focus-visible');
+        } catch {
+          visible = false;
+        }
+        setOn(visible);
+      },
+      onBlur: () => setOn(false),
+    },
+  ];
 }
 
-/** The badge's class: its tint names the state (Stopped in the destructive colour, Holds up in the warning one). */
-function badgeClass(row: InboxListRow): string {
-  return row.section === 'stopped' ? 'ib-badge ib-b-stop' : 'ib-badge ib-b-hold';
+/** The row's badge with its hover card (wide and two-line rows), or null. */
+function badgeOf(row: InboxListRow, kbd: boolean): ReactNode {
+  if (!rowHasBadge(row)) return null;
+  const card = <WaitCard row={row} agent={agentName(rowAgent(row))} mark={<RowMark row={row} />} time={shortTime(rowTimeIso(row))} />;
+  return <RowBadge row={row} card={card} open={kbd} />;
+}
+
+/** The badge card's words for a screen reader, beside the row (the row names it in `aria-describedby`). */
+function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
+  if (!rowHasBadge(row)) return null;
+  return (
+    <span hidden id={id}>
+      {badgeDescription(row)}
+    </span>
+  );
+}
+
+/** The agent's mark in its own column, just before the time (approval "inbox-row-badges"). */
+function MarkCol({ row }: { row: InboxListRow }) {
+  return (
+    <span className="ib-mcol" data-mark-col="">
+      <RowMark row={row} />
+    </span>
+  );
 }
 
 /**
@@ -214,23 +254,25 @@ function PinnedWords() {
 
 /**
  * Below this list width the wide row of every project leaves its subject cell
- * too little room (the project and badge columns are fixed at 130px and
- * 104px), so the list draws the two-line rows instead.
+ * too little room (the project, badge and mark columns are fixed at 130px,
+ * 48px and 40px), so the list draws the two-line rows instead.
  */
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
 
 /**
- * One row of the wide list. With every project shown it is five columns:
- * project, badge, subject, count, time. In one project's list (`filtered`)
+ * One row of the wide list. With every project shown it is six columns:
+ * project, badge, subject, count, the agent's mark, time. In one project's list (`filtered`)
  * the project and badge columns are not rendered at all: the badge, when the
  * row has one, leads the subject cell, so a row starts at the list's left edge
  * instead of after an empty block.
  */
 function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
-  const badge = badgeOf(row);
+  const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
+  const wordsId = useId();
+  const badgeEl = badgeOf(row, kbd);
   const sent = row.section === 'sent';
-  const badgeEl = badge && <span className={badgeClass(row)}>{badge}</span>;
   return (
+    <>
     <button
       type="button"
       className={`ib-row${row.unread ? ' ib-u' : ''}${sent ? ' ib-sent' : ''}${selected ? ' ib-sel' : ''}`}
@@ -241,20 +283,24 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
       aria-keyshortcuts={keys}
       data-section={row.section}
       data-lit={lit ? '' : undefined}
+      aria-describedby={rowHasBadge(row) ? wordsId : undefined}
+      {...focus}
     >
       {!filtered && <ClipText className="ib-p" text={row.project.name} />}
       {!filtered && <span>{badgeEl}</span>}
       <span className="ib-subj">
         {filtered && badgeEl}
-        <RowMark row={row} />
         <SubjectLine row={row} pinned={pinned} />
       </span>
       <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{countOf(row)}</span>
+      <MarkCol row={row} />
       <span className="ib-t">
         <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
       </span>
       {pinned && <PinnedWords />}
     </button>
+    <BadgeWords row={row} id={wordsId} />
+    </>
   );
 }
 
@@ -322,9 +368,12 @@ function RowWithAction({
 }
 
 function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
-  const badge = badgeOf(row);
+  const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
+  const wordsId = useId();
+  const badge = badgeOf(row, kbd);
   const count = countOf(row);
   return (
+    <>
     <button
       type="button"
       className={`ib-nrow${row.unread ? ' ib-u' : ''}${row.section === 'sent' ? ' ib-sent' : ''}${selected ? ' ib-sel' : ''}`}
@@ -335,21 +384,25 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
       aria-keyshortcuts={keys}
       data-section={row.section}
       data-lit={lit ? '' : undefined}
+      aria-describedby={rowHasBadge(row) ? wordsId : undefined}
+      {...focus}
     >
       <div className="ib-l1">
         <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-        <span className={`ib-t${count ? '' : ' ib-alone'}`}>
+        <MarkCol row={row} />
+        <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </div>
       <div className="ib-l2">
-        {badge && <span className={badgeClass(row)}>{badge}</span>}
-        <RowMark row={row} />
+        {badge}
         <SubjectLine row={row} pinned={pinned} />
       </div>
       {pinned && <PinnedWords />}
     </button>
+    <BadgeWords row={row} id={wordsId} />
+    </>
   );
 }
 
@@ -361,11 +414,14 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
  * which wraps rather than pushing anything off the row.
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
-  const badge = badgeOf(row);
+  const wordsId = useId();
+  // A phone: the icons only, no card (the thread shows the details).
+  const badge = rowHasBadge(row) ? <RowBadge row={row} /> : null;
   const count = countOf(row);
   const guide = row.guide && row.section !== 'sent';
   const chip = chipName(row);
   return (
+    <>
     <button
       type="button"
       className={`ib-mrow${row.unread ? ' ib-u' : ''}${row.section === 'sent' ? ' ib-sent' : ''}`}
@@ -376,11 +432,12 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       data-menu={menu ? '' : undefined}
       data-section={row.section}
       data-lit={lit ? '' : undefined}
+      aria-describedby={rowHasBadge(row) ? wordsId : undefined}
     >
       <span className="ib-m1">
-        <RowMark row={row} />
         <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         {pinned && <PinMark />}
+        <MarkCol row={row} />
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
@@ -388,7 +445,7 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
       {(badge || chip || count || guide) && (
         <span className="ib-m3">
-          {badge && <span className={badgeClass(row)}>{badge}</span>}
+          {badge}
           {chip && (
             <span className="ib-key">
               <span className="ib-keyt" dir="auto">{chip}</span>
@@ -405,6 +462,8 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       )}
       {pinned && <PinnedWords />}
     </button>
+    <BadgeWords row={row} id={wordsId} />
+    </>
   );
 }
 

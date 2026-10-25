@@ -39,6 +39,7 @@ import {
   derivePersonThreadSubject,
   inboxQuestionState,
   inboxQuestionWaitsOnPerson,
+  inboxRowWaits,
   isInboxQuestionSupersedable,
   parseInboxQuestionBlocks,
   parseInboxSupersedeRef,
@@ -1288,6 +1289,9 @@ export class InboxStore {
           }
         : null;
     const participants = this.participantsOf(messages);
+    const waits = summary.questions.stopped || summary.questions.holds_up.length > 0
+      ? inboxRowWaits(messages.filter((m) => !isAckNote(m)).flatMap((m) => this.questionsOf(m.id)))
+      : [];
     // An agent wrote after the person archived the thread (mail apps' rule):
     // it comes back to the list while something there waits (an agent
     // message after the archive the person has not looked at, a live
@@ -1340,6 +1344,8 @@ export class InboxStore {
       last_agent_at: lastAgentAt,
       ...(root.started_by_person && root.to ? { addressee: { host: root.to.host, session: root.to.session } } : {}),
       ...(participants.length > 1 ? { participants } : {}),
+      // What the Stopped / Holds up badge holds (approval "inbox-row-badges"): the window's hover card.
+      ...(waits.length > 0 ? { waits } : {}),
     };
     // An action item's report that lands after agent news the person has not looked at: the row shows the news
     // (New), not Sent; `sent` stays on the row for its delivery tick.
