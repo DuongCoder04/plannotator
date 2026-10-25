@@ -14,6 +14,11 @@
  * Hold its reply reaches the agent's own wait_for_reply as ONE reply carrying
  * both answers; Codex replaces its question while it is on screen and the card
  * swaps under a banner; the end screen. Then a phone (WebKit, iPhone 15).
+ * Then the agent contract lines (approval "inbox-decision-mode", "Agent
+ * contract lines"): a picture choice drawn as the thread card's tiles (the
+ * picture answers, its zoom opens the viewer and answers nothing), its Stakes
+ * and Why lines, and a `Reversible: no` question whose pick asks once more
+ * (Cancel answers nothing; the confirm counts), on a desktop and a phone.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * PNGs, light and dark, land in PLANNOTATOR_DECISION_SHOTS, or
@@ -40,7 +45,7 @@ const q = (prompt: string, choices: string[], extra: string[] = [], kind = 'ques
   [`:::${kind}`, prompt, '', ...extra, ...(extra.length ? [''] : []), ...choices.map((c) => `- [ ] ${c}`), ':::'].join('\n');
 
 /** A real PNG mock (a phone frame: a light screen, a dark header and a coloured pay bar), so the card has a picture to lead with. */
-function mockPng(width = 240, height = 360): Buffer {
+function mockPng(width = 240, height = 360, accent: [number, number, number] = [91, 63, 230]): Buffer {
   const table = new Uint32Array(256).map((_, n) => {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
@@ -67,7 +72,7 @@ function mockPng(width = 240, height = 360): Buffer {
       const header = y >= 24 && y < 44 && x >= 28 && x < 150;
       const row = (y - 64) % 46 < 30 && y >= 64 && y < 250 && x >= 28 && x < width - 28;
       const pay = y >= height - 70 && y < height - 34 && x >= 28 && x < width - 28;
-      const rgb = edge ? [200, 204, 214] : pay ? [91, 63, 230] : header ? [24, 24, 30] : row ? [236, 238, 244] : [255, 255, 255];
+      const rgb = edge ? [200, 204, 214] : pay ? accent : header ? [24, 24, 30] : row ? [236, 238, 244] : [255, 255, 255];
       raw.set(rgb, y * (width * 3 + 1) + 1 + x * 3);
     }
   }
@@ -307,4 +312,168 @@ test('a phone (WebKit, iPhone 15): the card is a full-screen column with 44 px t
   } finally {
     await own.close();
   }
+});
+
+/** The card of this prompt, through the read-only overview ("All"). */
+async function goToCard(page: Page, prompt: string): Promise<void> {
+  const dialog = page.locator('[data-decision-mode]');
+  await dialog.locator('[data-decision-overview]').click();
+  await dialog.locator('.ib-dm-allrow', { hasText: prompt }).click();
+  await expect(promptOf(page)).toHaveText(prompt);
+}
+
+async function stateOf(prompt: string): Promise<{ state: string; selected: string[] } | null> {
+  const threads = (await (await fetch(`http://127.0.0.1:${port()}/api/inbox/threads`)).json()) as { sections: { threads: { thread_id: string }[] }[] };
+  for (const row of threads.sections.flatMap((s) => s.threads)) {
+    const model = (await (await fetch(`http://127.0.0.1:${port()}/api/inbox/threads/${row.thread_id}`)).json()) as { thread: { messages: { questions?: { prompt: string; state: string; answer: { selected: string[] } | null }[] }[] } };
+    const found = model.thread.messages.flatMap((m) => m.questions ?? []).find((q) => q.prompt === prompt);
+    if (found) return { state: found.state, selected: found.answer?.selected ?? [] };
+  }
+  return null;
+}
+
+test('the contract lines: picture tiles (the picture answers, its zoom never does), Stakes and Why, and a one-way pick that asks once more', async () => {
+  const { page, claude, codex } = world;
+  const DRAWERS = 'Which checkout drawer should ship?';
+  const INVOICES = 'Delete the 3 duplicate invoices in the legacy billing system now?';
+  const accents: Record<string, [number, number, number]> = { a: [224, 112, 56], b: [91, 63, 230], c: [36, 150, 104] };
+  for (const [name, accent] of Object.entries(accents)) writeFileSync(join(world.web, 'design', `drawer-${name}.png`), mockPng(240, 360, accent));
+  await claude.send(
+    {
+      project_path: world.web,
+      subject: 'Checkout drawer for 4.2',
+      body: [
+        'Three drawer options for 4.2. All pass the accessibility checks.',
+        '',
+        ':::question',
+        DRAWERS,
+        'Stakes: ships to all of checkout on Thursday; changing it later costs a week of QA.',
+        'Holds up: the 4.2 release',
+        '',
+        '- [ ] A · Total on top — ![Drawer A](design/drawer-a.png) closest to today',
+        '- [ ] B · Total pinned with Pay — ![Drawer B](design/drawer-b.png) the total never scrolls away',
+        '- [ ] C · Three steps — ![Drawer C](design/drawer-c.png) most room, one more tap',
+        '',
+        'Recommended: B · Total pinned with Pay',
+        '',
+        'Why: on a 320 px screen only B keeps the total next to the button.',
+        ':::',
+      ].join('\n'),
+    },
+    { wakes: true },
+  );
+  await codex.send(
+    {
+      project_path: world.billing,
+      subject: 'Legacy invoices',
+      body: [
+        ':::question',
+        INVOICES,
+        'Stakes: they inflate this month’s revenue report by €1,840 until they’re gone.',
+        'Reversible: no — deleted invoices cannot be restored.',
+        '',
+        'The duplicates are in `invoices/legacy` and match their originals line for line.',
+        '',
+        '- [ ] Delete now — the report is right today',
+        '- [ ] Wait for month-end close — finance deletes them with the close',
+        '',
+        'Recommended: Wait for month-end close',
+        ':::',
+      ].join('\n'),
+    },
+    { wakes: true },
+  );
+
+  // A phone first (nothing is answered there): two tiles across, the one-way confirm. A context per scheme
+  // (WebKit repaints a scheme switched mid-page only in part).
+  const own = await webkit.launch({ args: [] });
+  try {
+    for (const scheme of ['light', 'dark'] as const) {
+      const context = await own.newContext({ ...devices['iPhone 15'], colorScheme: scheme, reducedMotion: 'reduce' });
+      const phone = await context.newPage();
+      await phone.goto(world.url);
+      await phone.locator('[data-decide-head]').tap();
+      await goToCard(phone, DRAWERS);
+      const tiles = card(phone).locator('[data-decision-tiles] [data-question-tile]');
+      await expect(tiles).toHaveCount(3);
+      const [first, second] = [await tiles.nth(0).boundingBox(), await tiles.nth(1).boundingBox()];
+      expect(Math.round(first!.y)).toBe(Math.round(second!.y));
+      await tiles.nth(0).scrollIntoViewIfNeeded();
+      await phone.waitForTimeout(300);
+      await phone.screenshot({ path: join(proofDir, `contract-phone-tiles-${scheme}.png`) });
+      await goToCard(phone, INVOICES);
+      const del = card(phone).locator('.ib-dm-choice', { hasText: 'Delete now' });
+      // Stacked, each choice holds its own words and tag (nothing spills over the next one).
+      const [a, b] = [await del.boundingBox(), await card(phone).locator('.ib-dm-choice', { hasText: 'Wait for month-end close' }).boundingBox()];
+      const tag = await del.locator('[data-decision-irreversible]').boundingBox();
+      expect(tag!.y + tag!.height).toBeLessThanOrEqual(a!.y + a!.height);
+      expect(a!.y + a!.height).toBeLessThanOrEqual(b!.y);
+      await del.tap();
+      const step = card(phone).locator('[data-decision-confirm-pick]');
+      await expect(step).toBeInViewport();
+      for (const button of await step.locator('.ib-btn').all()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      await phone.waitForTimeout(300);
+      await phone.screenshot({ path: join(proofDir, `contract-phone-confirm-${scheme}.png`) });
+      await card(phone).locator('[data-decision-confirm-cancel]').tap();
+      await expect(step).toHaveCount(0);
+      await context.close();
+    }
+  } finally {
+    await own.close();
+  }
+  expect((await stateOf(INVOICES))?.state).toBe('open');
+
+  await page.goto(world.url);
+  await page.locator('[data-decide-head]').click();
+  const dialog = page.locator('[data-decision-mode]');
+  await goToCard(page, DRAWERS);
+  await expect(card(page).locator('[data-decision-stakes]')).toHaveText('Ships to all of checkout on Thursday; changing it later costs a week of QA.');
+  await expect(card(page).locator('[data-decision-why]')).toHaveText('Why Claude Code recommends it: On a 320 px screen only B keeps the total next to the button.');
+  const tiles = card(page).locator('[data-decision-tiles] [data-question-tile]');
+  await expect(tiles).toHaveCount(3);
+  // Each tile's picture loaded (the captured file), and no choice picture is the hero.
+  for (let i = 0; i < 3; i++) await expect.poll(() => tiles.nth(i).locator('[data-question-picture]').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  await expect(card(page).locator('[data-decision-pictures]')).toHaveCount(0);
+  expect(await dialog.locator('[title]').count()).toBe(0);
+  await shot(page, 'contract-tiles');
+
+  // The zoom opens the viewer and answers nothing.
+  await tiles.nth(2).locator('[data-question-zoom]').click();
+  await expect(page.locator('[data-image-lightbox]')).toBeVisible();
+  await shot(page, 'contract-zoom');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-image-lightbox]')).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(promptOf(page)).toHaveText(DRAWERS);
+  expect((await stateOf(DRAWERS))?.state).toBe('open');
+
+  // The picture answers, with its label, and the viewer stays shut.
+  await tiles.nth(1).locator('[data-question-picture]').click();
+  await expect(page.locator('[data-image-lightbox]')).toHaveCount(0);
+  await expect.poll(async () => (await stateOf(DRAWERS))?.selected).toEqual(['B · Total pinned with Pay']);
+
+  // A one-way question: the badge, "Can't be undone" on the choice that is not the recommendation, a confirm.
+  await goToCard(page, INVOICES);
+  await expect(card(page).locator('[data-decision-one-way]')).toContainText('One-way');
+  await expect(card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).locator('[data-decision-irreversible]')).toHaveText('Can’t be undone');
+  await expect(card(page).locator('.ib-dm-choice', { hasText: 'Wait for month-end close' }).locator('[data-decision-irreversible]')).toHaveCount(0);
+  await expect(card(page).locator('[data-decision-stakes]')).toContainText('€1,840');
+  await shot(page, 'contract-one-way');
+  await card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).click();
+  const confirm = card(page).locator('[data-decision-confirm-pick]');
+  await expect(confirm).toContainText('Delete now? Deleted invoices cannot be restored.');
+  await expect(card(page).locator('[data-decision-confirm-cancel]')).toBeFocused();
+  await shot(page, 'contract-confirm');
+  await card(page).locator('[data-decision-confirm-cancel]').click();
+  await expect(confirm).toHaveCount(0);
+  expect((await stateOf(INVOICES))?.state).toBe('open');
+  await card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).click();
+  await card(page).locator('[data-decision-confirm-yes]').click();
+  await expect.poll(async () => (await stateOf(INVOICES))?.selected).toEqual(['Delete now']);
+
+  await dialog.locator('[data-decision-close]').click();
+  const keep = dialog.locator('[data-decision-keep-draft]');
+  if (await keep.isVisible().catch(() => false)) await keep.click();
+  await expect(dialog).toBeHidden();
+  expect(world.errors).toEqual([]);
 });

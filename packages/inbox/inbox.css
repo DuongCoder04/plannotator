@@ -4333,7 +4333,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-dm-main { padding: 18px 16px 14px; overflow: visible; }
   .ib-dm-prompt { font-size: var(--ib-fs-22, 22px); }
   .ib-dm-choices.ib-dm-two { flex-direction: column; }
-  .ib-dm-two .ib-dm-choice { min-height: 72px; }
+  /* Stacked, a choice is as tall as its words (a basis of 0 left a description or a tag outside its box). */
+  .ib-dm-two .ib-dm-choice { flex: none; min-height: 72px; }
   .ib-dm-choice, .pn-inbox .ib-dm-lnk, .pn-inbox .ib-dm-file, .pn-inbox .ib-dm-open, .pn-inbox .ib-dm-go { min-height: 44px; }
   .ib-dm-ctx { max-height: none; }
   .ib-dm-peek { display: none; }

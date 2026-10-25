@@ -62,11 +62,12 @@ function decision(q: InboxQuestion, pictures: InboxDecision['pictures'] = { inli
 }
 
 const DRAWERS = question({
-  stakes: 'Ships to all of checkout on Thursday; changing it later costs a week of QA.',
-  why: 'On a 320 px screen only B keeps the total next to the button.',
+  // As an agent writes them (after the label, lower case): the card draws each as a sentence.
+  stakes: 'ships to all of checkout on Thursday; changing it later costs a week of QA.',
+  why: 'on a 320 px screen only B keeps the total next to the button.',
   holds_up: ['the 4.2 release'],
   choices: [
-    { label: 'A · Total on top', description: 'Closest to today', recommended: false, settled: false, image: { alt: 'Drawer A', src: 'drawer-a.png' } },
+    { label: 'A · Total on top', description: 'closest to today', recommended: false, settled: false, image: { alt: 'Drawer A', src: 'drawer-a.png' } },
     { label: 'B · Total pinned with Pay', description: 'The total never scrolls away', recommended: true, settled: false, image: { alt: 'Drawer B', src: 'drawer-b.png' } },
     { label: 'C · Three steps', description: 'Most room, one more tap', recommended: false, settled: false, image: { alt: 'Drawer C', src: 'drawer-c.png' } },
   ],
@@ -81,7 +82,7 @@ const INVOICES = question({
   key: 'q-2',
   prompt: 'Delete the 3 duplicate invoices in the legacy billing system now?',
   stakes: 'They inflate this month’s revenue report by €1,840 until they’re gone.',
-  reversible: { value: false, why: 'Deleted invoices cannot be restored.' },
+  reversible: { value: false, why: 'deleted invoices cannot be restored.' },
   choices: [
     { label: 'Delete now', description: 'The report is right today', recommended: false, settled: false },
     { label: 'Wait for month-end close', description: 'Finance deletes them with the close', recommended: true, settled: false },
@@ -172,6 +173,8 @@ describe.skipIf(!hasDom)('decision mode: the contract lines', () => {
       '/api/inbox/attachments/att_c/image',
     ]);
     expect(tiles[1]!.textContent).toContain('Recommended');
+    // The answer is the label as written; a description is drawn as a sentence.
+    expect(tiles[0]!.querySelector('[data-question-tile-description]')!.textContent).toBe('Closest to today');
     // The choice pictures are their tiles, never the hero on the left.
     expect($('[data-decision-pictures]')).toBeNull();
     // Real radios, so the keyboard reaches each tile.
@@ -242,6 +245,8 @@ describe.skipIf(!hasDom)('decision mode: the contract lines', () => {
     expect(box.getAttribute('role')).toBe('alertdialog');
     expect(box.textContent).toContain('Delete now?');
     expect(box.textContent).toContain('Deleted invoices cannot be restored.');
+    // One way to answer at a time: no Answer button beside the step.
+    expect($('[data-decision-answer]')).toBeNull();
     // The safe button holds focus: Enter there cancels, never deletes.
     expect(document.activeElement).toBe($('[data-decision-confirm-cancel]'));
     press($('[data-decision-confirm-cancel]')!);

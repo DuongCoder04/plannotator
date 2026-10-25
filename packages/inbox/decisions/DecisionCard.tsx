@@ -43,12 +43,20 @@ export interface CardFacts {
   shows: { kind: 'image' | 'link'; label: string; src: string } | null;
 }
 
+/** A line the card draws as a sentence: its first letter capitalised, as contract-compare.html draws them. */
+function sentence(text: string | null | undefined): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+  const first = trimmed.charAt(0);
+  return first.toLocaleLowerCase() !== first.toLocaleUpperCase() && first === first.toLocaleLowerCase() ? first.toLocaleUpperCase() + trimmed.slice(1) : trimmed;
+}
+
 export function cardFacts(decision: InboxDecision): CardFacts {
   const q = decision.question;
   return {
-    stakes: q.stakes?.trim() || null,
-    why: q.why?.trim() || null,
-    irreversible: q.reversible ? { why: q.reversible.why?.trim() || null } : null,
+    stakes: sentence(q.stakes),
+    why: sentence(q.why),
+    irreversible: q.reversible ? { why: sentence(q.reversible.why) } : null,
     shows: q.shows ?? null,
   };
 }
@@ -229,6 +237,8 @@ export function DecisionCard(props: DecisionCardProps) {
   const [confirming, setConfirming] = useState<{ answer: QuestionAnswer; words: string } | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const oneWay = irreversibleChoices(q);
+  /** The choices as the card draws them: each description a sentence (the labels are the answers, as written). */
+  const shownChoices = q.choices.map((choice) => (choice.description ? { ...choice, description: sentence(choice.description) } : choice));
   // Picture choices: each choice's picture URL, and the pictures that failed to load (a tile then shows its alt text).
   const [failedPictures, setFailedPictures] = useState<ReadonlySet<string>>(() => new Set());
   const tileUrls = q.choices.map((choice) => {
@@ -303,7 +313,10 @@ export function DecisionCard(props: DecisionCardProps) {
 
   // The confirm step takes focus on its safe button: Enter there cancels, never answers.
   useEffect(() => {
-    if (confirming) confirmCancelRef.current?.focus({ preventScroll: true });
+    if (!confirming) return;
+    // On a phone the step can open below the fold: it comes into view with the focus.
+    confirmCancelRef.current?.focus();
+    confirmCancelRef.current?.closest('[data-decision-confirm-pick]')?.scrollIntoView?.({ block: 'nearest' });
   }, [confirming]);
 
   /** An answer counts at once, unless it cannot be undone: then it asks once more first. */
@@ -524,7 +537,7 @@ export function DecisionCard(props: DecisionCardProps) {
           {showTiles && (
             <div className="ib-dm-tiles" role={kind === 'multi' ? 'group' : 'radiogroup'} aria-labelledby={promptId} data-decision-tiles="">
               <QuestionPictureTiles
-                choices={q.choices}
+                choices={shownChoices}
                 urls={tileUrls}
                 selected={selected}
                 inputType={kind === 'multi' ? 'checkbox' : 'radio'}
@@ -568,7 +581,7 @@ export function DecisionCard(props: DecisionCardProps) {
           )}
           {kind === 'single' && !showTiles && (
             <fieldset className={`ib-dm-choices${q.choices.length === 2 ? ' ib-dm-two' : ''}`} aria-labelledby={promptId}>
-              {q.choices.map((choice) => {
+              {shownChoices.map((choice) => {
                 const on = selected.includes(choice.label);
                 const isSaved = saved?.selected.includes(choice.label) === true;
                 return (
@@ -610,7 +623,7 @@ export function DecisionCard(props: DecisionCardProps) {
           )}
           {kind === 'multi' && !showTiles && (
             <fieldset className="ib-dm-choices" aria-labelledby={promptId}>
-              {q.choices.map((choice) => {
+              {shownChoices.map((choice) => {
                 const on = selected.includes(choice.label);
                 return (
                   <label key={choice.label} className="ib-dm-choice ib-dm-check" data-on={on ? '' : undefined} data-recommended={choice.recommended ? '' : undefined}>
@@ -637,12 +650,12 @@ export function DecisionCard(props: DecisionCardProps) {
               })}
             </fieldset>
           )}
-          {kind === 'multi' && (
+          {kind === 'multi' && !confirming && (
             <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" disabled={selected.length === 0} onClick={() => commitChoice(selected)}>
               Answer with {formatCount(selected.length)}
             </button>
           )}
-          {kind === 'single' && selected.length > 0 && !(saved && sameSet(saved.selected, selected) && !saved.other) && (
+          {kind === 'single' && !confirming && selected.length > 0 && !(saved && sameSet(saved.selected, selected) && !saved.other) && (
             <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" onClick={() => commitChoice(selected)}>
               Answer
             </button>
