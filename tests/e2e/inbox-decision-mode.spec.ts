@@ -403,10 +403,10 @@ test('the contract lines: picture tiles (the picture answers, its zoom never doe
       await phone.screenshot({ path: join(proofDir, `contract-phone-tiles-${scheme}.png`) });
       await goToCard(phone, INVOICES);
       const del = card(phone).locator('.ib-dm-choice', { hasText: 'Delete now' });
-      // Stacked, each choice holds its own words and tag (nothing spills over the next one).
+      // Stacked, each choice holds its own words (its description never spills over the next one).
       const [a, b] = [await del.boundingBox(), await card(phone).locator('.ib-dm-choice', { hasText: 'Wait for month-end close' }).boundingBox()];
-      const tag = await del.locator('[data-decision-irreversible]').boundingBox();
-      expect(tag!.y + tag!.height).toBeLessThanOrEqual(a!.y + a!.height);
+      const words = await del.locator('.ib-dm-chd').boundingBox();
+      expect(words!.y + words!.height).toBeLessThanOrEqual(a!.y + a!.height);
       expect(a!.y + a!.height).toBeLessThanOrEqual(b!.y);
       await del.tap();
       const step = card(phone).locator('[data-decision-confirm-pick]');
@@ -452,20 +452,24 @@ test('the contract lines: picture tiles (the picture answers, its zoom never doe
   await expect(page.locator('[data-image-lightbox]')).toHaveCount(0);
   await expect.poll(async () => (await stateOf(DRAWERS))?.selected).toEqual(['B · Total pinned with Pay']);
 
-  // A one-way question: the badge, "Can't be undone" on the choice that is not the recommendation, a confirm.
+  // A one-way question: the badge, and a confirm for every answer (the grammar does not say which choice is one-way).
   await goToCard(page, INVOICES);
   await expect(card(page).locator('[data-decision-one-way]')).toContainText('One-way');
-  await expect(card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).locator('[data-decision-irreversible]')).toHaveText('Can’t be undone');
-  await expect(card(page).locator('.ib-dm-choice', { hasText: 'Wait for month-end close' }).locator('[data-decision-irreversible]')).toHaveCount(0);
+  await expect(card(page).locator('[data-decision-irreversible]')).toHaveCount(0);
   await expect(card(page).locator('[data-decision-stakes]')).toContainText('€1,840');
   await shot(page, 'contract-one-way');
   await card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).click();
   const confirm = card(page).locator('[data-decision-confirm-pick]');
-  await expect(confirm).toContainText('Delete now? Deleted invoices cannot be restored.');
+  await expect(confirm).toContainText("Delete now? Can't be undone: deleted invoices cannot be restored.");
   await expect(card(page).locator('[data-decision-confirm-cancel]')).toBeFocused();
   await shot(page, 'contract-confirm');
   await card(page).locator('[data-decision-confirm-cancel]').click();
   await expect(confirm).toHaveCount(0);
+  expect((await stateOf(INVOICES))?.state).toBe('open');
+  // The recommended (safe) choice asks too; Cancel again.
+  await card(page).locator('.ib-dm-choice', { hasText: 'Wait for month-end close' }).click();
+  await expect(confirm).toContainText('Wait for month-end close?');
+  await card(page).locator('[data-decision-confirm-cancel]').click();
   expect((await stateOf(INVOICES))?.state).toBe('open');
   await card(page).locator('.ib-dm-choice', { hasText: 'Delete now' }).click();
   await card(page).locator('[data-decision-confirm-yes]').click();

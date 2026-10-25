@@ -1586,6 +1586,7 @@ export class InboxStore {
                 kind: file.kind,
                 size: file.size,
                 media_type: file.media_type ?? null,
+                paths: [file.path, ...(file.named_path ? [file.named_path] : [])],
               })),
             },
             thread: { id: threadId, subject: row.subject, thread_name: row.thread_name, project: row.project, section: row.section },

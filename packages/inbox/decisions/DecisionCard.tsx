@@ -8,9 +8,10 @@
  * lines", 2026-10-24; drawn as contract-compare.html has them), read from the
  * question by `cardFacts`: the Stakes line under the prompt, the Shows picture
  * leading on the left (a Shows file is one of the card's references), the Why
- * line under the answers, and for `Reversible: no` a "One-way" badge, a
- * "Can't be undone" tag on each choice that is not the recommendation, no
- * swipe, and a confirm step before such a pick counts. Picture choices are the
+ * line under the answers, and for `Reversible: no` a "One-way" badge, no
+ * swipe, and a confirm step before any answer but a Skip counts (the grammar
+ * does not say which choice is the one-way one, so the recommendation asks
+ * too). Picture choices are the
  * thread card's own tiles (ui's `QuestionPictureTiles`): the picture picks and
  * the zoom button opens the viewer, never both.
  */
@@ -26,7 +27,7 @@ import { agentName, formatCount, shortTime } from '../format';
 import { HostMark, Icon } from '../icons';
 import { inboxMessageImageBase, inboxMessageImageUrl } from '../images';
 import { Tip } from '../components/Tip';
-import { answerNeedsConfirm, answerWords, choiceAnswer, irreversibleChoices, otherAnswer, skipAnswer, swipeChoices, textAnswer } from './model';
+import { answerNeedsConfirm, answerWords, choiceAnswer, confirmLabel, otherAnswer, skipAnswer, swipeChoices, textAnswer } from './model';
 
 /**
  * The contract lines a card shows (the question's additive `stakes`, `why`,
@@ -43,12 +44,15 @@ export interface CardFacts {
   shows: { kind: 'image' | 'link'; label: string; src: string } | null;
 }
 
-/** A line the card draws as a sentence: its first letter capitalised, as contract-compare.html draws them. */
-function sentence(text: string | null | undefined): string | null {
+/**
+ * A line the card draws as a sentence, as contract-compare.html draws them: its first letter capitalised,
+ * but only when its first word is plain lower-case letters (a-z, then a space, or a punctuation mark and a
+ * space), so a URL, a path, `code` or a name such as iOS stays as written.
+ */
+export function sentence(text: string | null | undefined): string | null {
   const trimmed = text?.trim();
   if (!trimmed) return null;
-  const first = trimmed.charAt(0);
-  return first.toLocaleLowerCase() !== first.toLocaleUpperCase() && first === first.toLocaleLowerCase() ? first.toLocaleUpperCase() + trimmed.slice(1) : trimmed;
+  return /^[a-z]+[,;:.!?]?(?:\s|$)/.test(trimmed) ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1) : trimmed;
 }
 
 export function cardFacts(decision: InboxDecision): CardFacts {
@@ -56,7 +60,8 @@ export function cardFacts(decision: InboxDecision): CardFacts {
   return {
     stakes: sentence(q.stakes),
     why: sentence(q.why),
-    irreversible: q.reversible ? { why: sentence(q.reversible.why) } : null,
+    // The reason follows "Can't be undone:", so it stays as the agent wrote it.
+    irreversible: q.reversible ? { why: q.reversible.why?.trim() || null } : null,
     shows: q.shows ?? null,
   };
 }
@@ -105,10 +110,19 @@ export function choicePictureUrl(decision: InboxDecision, src: string): string {
   return image ? `/api/inbox/attachments/${encodeURIComponent(image.attachment_id)}/image` : inboxMessageImageUrl(decision.message.id, src);
 }
 
-/** The attached file a `Shows:` link names (by its file name), if the message carries it. */
-function showsFile(decision: InboxDecision, src: string): InboxDecision['pictures']['attachments'][number] | null {
-  const name = src.split(/[?#]/)[0]!.split(/[\\/]/).pop() ?? '';
-  return decision.pictures.attachments.find((file) => file.name === name) ?? null;
+/**
+ * The attached file a `Shows:` link names, if the message carries it: by its path when the link has a
+ * folder (the file's real path, or the path it was named by, ends with it), else by its file name.
+ */
+export function showsFile(decision: InboxDecision, src: string): InboxDecision['pictures']['attachments'][number] | null {
+  const path = (src.split(/[?#]/)[0] ?? '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  const name = path.split('/').pop() ?? '';
+  const files = decision.pictures.attachments;
+  if (path.includes('/')) {
+    const byPath = files.find((file) => (file.paths ?? []).some((p) => { const at = p.replace(/\\/g, '/'); return at === path || at.endsWith(`/${path}`); }));
+    if (byPath) return byPath;
+  }
+  return files.find((file) => file.name === name) ?? null;
 }
 
 /**
@@ -236,7 +250,6 @@ export function DecisionCard(props: DecisionCardProps) {
   /** A pick on a `Reversible: no` question waiting for its confirm (contract-compare.html, pair 2). */
   const [confirming, setConfirming] = useState<{ answer: QuestionAnswer; words: string } | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
-  const oneWay = irreversibleChoices(q);
   /** The choices as the card draws them: each description a sentence (the labels are the answers, as written). */
   const shownChoices = q.choices.map((choice) => (choice.description ? { ...choice, description: sentence(choice.description) } : choice));
   // Picture choices: each choice's picture URL, and the pictures that failed to load (a tile then shows its alt text).
@@ -349,14 +362,6 @@ export function DecisionCard(props: DecisionCardProps) {
   const shownFile = facts.shows?.kind === 'link' ? showsFile(decision, facts.shows.src) : null;
   const files = decision.pictures.attachments.filter((f) => f.kind !== 'image' && f.attachment_id !== shownFile?.attachment_id);
   const recommendedLabels = q.choices.filter((c) => c.recommended).map((c) => c.label);
-  /** The "Can't be undone" tag on a choice that is not the recommendation of a one-way question. */
-  const irreversibleTag = (label: string) =>
-    oneWay.includes(label) ? (
-      <span className="ib-dm-irrev" data-decision-irreversible="">
-        <Icon name="lock" size={13} />
-        Can&rsquo;t be undone
-      </span>
-    ) : null;
   /** The tile pictures, for the viewer's stepping (a zoom opens on its own tile). */
   const tilePictures: CardPicture[] = q.choices.flatMap((choice, index) =>
     choice.image && tileUrls[index] ? [{ attachmentId: '', name: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
@@ -573,7 +578,6 @@ export function DecisionCard(props: DecisionCardProps) {
                 renderBadges={(choice) => (
                   <>
                     {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
-                    {irreversibleTag(choice.label)}
                   </>
                 )}
               />
@@ -613,8 +617,7 @@ export function DecisionCard(props: DecisionCardProps) {
                           <InlineMarkdown text={choice.description} />
                         </span>
                       )}
-                      {irreversibleTag(choice.label)}
-                    </span>
+                      </span>
                     {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
                   </label>
                 );
@@ -642,8 +645,7 @@ export function DecisionCard(props: DecisionCardProps) {
                           <InlineMarkdown text={choice.description} />
                         </span>
                       )}
-                      {irreversibleTag(choice.label)}
-                    </span>
+                      </span>
                     {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
                   </label>
                 );
@@ -718,7 +720,8 @@ export function DecisionCard(props: DecisionCardProps) {
           {confirming && (
             <div className="ib-dm-confirm1" role="alertdialog" aria-labelledby={`${promptId}-confirm`} aria-describedby={`${promptId}-confirm-d`} data-decision-confirm-pick="">
               <span>
-                <b id={`${promptId}-confirm`}>{confirming.words}?</b> <span id={`${promptId}-confirm-d`}>{facts.irreversible?.why ?? "This can't be undone."}</span>
+                <b id={`${promptId}-confirm`}>{confirming.words}?</b>{' '}
+                <span id={`${promptId}-confirm-d`}>{facts.irreversible?.why ? `Can't be undone: ${facts.irreversible.why}` : "Can't be undone."}</span>
               </span>
               <button type="button" className="ib-btn" ref={confirmCancelRef} data-decision-confirm-cancel="" onClick={cancelConfirm}>
                 Cancel
@@ -727,13 +730,14 @@ export function DecisionCard(props: DecisionCardProps) {
                 type="button"
                 className="ib-btn ib-dm-danger"
                 data-decision-confirm-yes=""
+                aria-label={confirming.words}
                 onClick={() => {
                   const answer = confirming.answer;
                   setConfirming(null);
                   props.onAnswer(answer);
                 }}
               >
-                {confirming.words}
+                {confirmLabel(confirming.words)}
               </button>
             </div>
           )}

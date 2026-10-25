@@ -4251,8 +4251,6 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-stakes { font-weight: 600; }
 .ib-dm-stakes svg { color: color-mix(in oklab, var(--warning, oklch(0.75 0.15 80)) 60%, var(--foreground)); }
 .ib-badge.ib-b-oneway { border-color: transparent; background: color-mix(in oklab, var(--destructive) 10%, transparent); color: color-mix(in oklab, var(--destructive) 70%, var(--foreground)); }
-.ib-dm-irrev { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; width: max-content; max-width: 100%; font-size: var(--ib-fs-12-5, 12.5px); font-weight: 600; line-height: 1.3; color: color-mix(in oklab, var(--destructive) 70%, var(--foreground)); }
-.ib-dm-two .ib-dm-irrev { flex-basis: 100%; }
 .ib-dm-confirm1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-radius: var(--ib-lr-md, 9px); background: color-mix(in oklab, var(--destructive) 10%, var(--card)); font-size: var(--ib-fs-14, 14px); line-height: 1.45; }
 .ib-dm-confirm1 > span { flex: 1 1 260px; min-width: 0; }
 .pn-inbox .ib-btn.ib-dm-danger { background: var(--destructive); border-color: var(--destructive); color: var(--destructive-foreground, #fff); font-weight: 600; }
@@ -4270,7 +4268,6 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-tiles [data-question-tile-label] { font-size: var(--ib-fs-14-5, 14.5px); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .ib-dm-tiles [data-question-tile-description] { font-size: var(--ib-fs-13, 13px); line-height: 1.4; }
 .ib-dm-tiles .ib-dm-rec { align-self: flex-start; margin-top: 4px; font-size: var(--ib-fs-12, 12px); }
-.ib-dm-tiles .ib-dm-irrev { margin-top: 2px; }
 .pn-inbox .ib-dm-tiles [data-question-zoom] { right: 7px; top: 7px; width: 30px; height: 30px; border-radius: 8px; background: var(--card); box-shadow: var(--ib-float-shadow); }
 .ib-dm-more { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -10px; }
 .ib-dm-more .ib-dm-lnk { color: var(--muted-foreground); }
@@ -4333,7 +4330,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-dm-main { padding: 18px 16px 14px; overflow: visible; }
   .ib-dm-prompt { font-size: var(--ib-fs-22, 22px); }
   .ib-dm-choices.ib-dm-two { flex-direction: column; }
-  /* Stacked, a choice is as tall as its words (a basis of 0 left a description or a tag outside its box). */
+  /* Stacked, a choice is as tall as its words (a basis of 0 left a description outside its box). */
   .ib-dm-two .ib-dm-choice { flex: none; min-height: 72px; }
   .ib-dm-choice, .pn-inbox .ib-dm-lnk, .pn-inbox .ib-dm-file, .pn-inbox .ib-dm-open, .pn-inbox .ib-dm-go { min-height: 44px; }
   .ib-dm-ctx { max-height: none; }

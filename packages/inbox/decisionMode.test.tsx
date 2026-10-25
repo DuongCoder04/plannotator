@@ -702,6 +702,8 @@ test.skipIf(!hasDom)('H2: the cards of a group whose reply is on its way are rea
   await until(() => dialog()!.querySelector('[data-decision-sent]') !== null, 'the card reads Sent');
 }, 30_000);
 
+// Guards how the lock is rendered (from state, so the render that ends the send clears it), not a reproduced
+// bug: the ref-based lock this replaced passed it too, since its final render happened to land after the ref cleared.
 test.skipIf(!hasDom)('the Sending lock clears on the card on screen once its reply fails, without moving the queue', async () => {
   let release!: () => void;
   const landed = new Promise<void>((r) => (release = r));

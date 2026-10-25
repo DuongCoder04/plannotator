@@ -3,13 +3,13 @@
  * "inbox-decision-mode", "Agent contract lines", 2026-10-24; drawn as
  * contract-compare.html has them): the Stakes line, a Shows picture leading,
  * the Why line, picture choices as the thread card's own tiles, and a
- * `Reversible: no` question's One-way badge, "Can't be undone" tags and
- * confirm step.
+ * `Reversible: no` question's One-way badge and confirm step.
  *
  * What regresses if this fails: a picture choice's picture no longer answers
  * (or a zoom answers, or a pick opens the viewer), a one-way pick counts
- * without its confirm (or the recommendation now asks too, or Escape answers
- * instead of cancelling), a one-way or picture question swipes, or Stakes /
+ * without its confirm (whichever choice the agent recommended: the grammar
+ * does not say which one is one-way), a Skip asks, Escape answers instead of
+ * cancelling, a one-way or picture question swipes, or Stakes /
  * Why / Shows stop showing.
  *
  * DOM-gated (DOM_TESTS=1, happy-dom), from the test.yml DOM list.
@@ -21,7 +21,7 @@ import type { InboxDecision, InboxQuestion } from '@plannotator/core/inbox-types
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 
 const hasDom = typeof document !== 'undefined';
-const { DecisionCard, cardPictures } = (hasDom ? await import('./decisions/DecisionCard') : {}) as typeof import('./decisions/DecisionCard');
+const { DecisionCard, cardPictures, sentence, showsFile } = (hasDom ? await import('./decisions/DecisionCard') : {}) as typeof import('./decisions/DecisionCard');
 
 function question(extra: Partial<InboxQuestion>): InboxQuestion {
   return {
@@ -227,24 +227,23 @@ describe.skipIf(!hasDom)('decision mode: the contract lines', () => {
     expect($$('.ib-dm-refs .ib-dm-file')).toHaveLength(1);
   });
 
-  test('Reversible: no: the One-way badge, "Can’t be undone" on the choice that is not the recommendation, no swipe', () => {
+  test('Reversible: no: the One-way badge, no tag on any one choice, no swipe', () => {
     render(decision(INVOICES), { touch: true });
     expect($('[data-decision-one-way]')!.textContent).toContain('One-way');
-    const rows = $$('.ib-dm-choice');
-    expect(rows[0]!.querySelector('[data-decision-irreversible]')!.textContent).toBe('Can’t be undone');
-    expect(rows[1]!.querySelector('[data-decision-irreversible]')).toBeNull();
+    // The grammar does not say which choice is one-way, so no choice is marked as the one.
+    expect($('[data-decision-irreversible]')).toBeNull();
     // A two-way choice on a touch screen would offer a swipe; a one-way one never does.
     expect($('.ib-dm-swipehint')).toBeNull();
   });
 
-  test('a one-way pick asks once more before it counts; Cancel, then the recommendation answers in one tap', () => {
+  test('a one-way pick asks once more before it counts; Cancel answers nothing; the safe recommended choice asks too', () => {
     const seen = render(decision(INVOICES));
     press($$('.ib-dm-choice input')[0]!);
     expect(seen.answers).toHaveLength(0);
     const box = $('[data-decision-confirm-pick]')!;
     expect(box.getAttribute('role')).toBe('alertdialog');
     expect(box.textContent).toContain('Delete now?');
-    expect(box.textContent).toContain('Deleted invoices cannot be restored.');
+    expect(box.textContent).toContain("Delete now? Can't be undone: deleted invoices cannot be restored.");
     // One way to answer at a time: no Answer button beside the step.
     expect($('[data-decision-answer]')).toBeNull();
     // The safe button holds focus: Enter there cancels, never deletes.
@@ -253,8 +252,36 @@ describe.skipIf(!hasDom)('decision mode: the contract lines', () => {
     expect($('[data-decision-confirm-pick]')).toBeNull();
     expect(seen.answers).toHaveLength(0);
     expect($$<HTMLInputElement>('.ib-dm-choice input')[0]!.checked).toBe(false);
+    // The safe choice is recommended, and it asks too.
     press($$('.ib-dm-choice input')[1]!);
+    expect(seen.answers).toHaveLength(0);
+    expect($('[data-decision-confirm-pick]')!.textContent).toContain('Wait for month-end close?');
+    press($('[data-decision-confirm-yes]')!);
     expect(seen.answers.map((a) => a.selected)).toEqual([['Wait for month-end close']]);
+  });
+
+  test('the destructive choice recommended still asks once more; a Skip answers at once', () => {
+    const risky = { ...INVOICES, choices: INVOICES.choices.map((c) => ({ ...c, recommended: c.label === 'Delete now' })), recommendation: 'Delete now' };
+    const seen = render(decision(risky));
+    press($$('.ib-dm-choice input')[0]!);
+    expect(seen.answers).toHaveLength(0);
+    expect($('[data-decision-confirm-pick]')!.textContent).toContain('Delete now?');
+    press($('[data-decision-confirm-cancel]')!);
+    press($('[data-decision-skip]')!);
+    expect($('[data-decision-confirm-pick]')).toBeNull();
+    expect(seen.answers.map((a) => a.skipped)).toEqual([true]);
+  });
+
+  test("a long answer's confirm button is cut, its accessible name whole", () => {
+    const long = 'Delete every duplicate invoice in the legacy billing system today';
+    const seen = render(decision({ ...INVOICES, choices: [{ label: long, description: null, recommended: false, settled: false }, ...INVOICES.choices.slice(1)] }));
+    press($$('.ib-dm-choice input')[0]!);
+    const yes = $('[data-decision-confirm-yes]')!;
+    expect(yes.textContent!.length).toBeLessThanOrEqual(40);
+    expect(yes.textContent!.endsWith('…')).toBe(true);
+    expect(yes.getAttribute('aria-label')).toBe(long);
+    press(yes);
+    expect(seen.answers.map((a) => a.selected)).toEqual([[long]]);
   });
 
   test('a one-way pick confirmed counts; Escape cancels the step, never answers', () => {
@@ -273,6 +300,26 @@ describe.skipIf(!hasDom)('decision mode: the contract lines', () => {
     press(yes);
     expect(seen.answers.map((a) => a.selected)).toEqual([['Delete now']]);
     expect($('[data-decision-confirm-pick]')).toBeNull();
+  });
+
+  test('a line is drawn as a sentence only when its first word is plain lower-case letters', () => {
+    expect(sentence('on a 320 px screen')).toBe('On a 320 px screen');
+    expect(sentence('ships, then QA.')).toBe('Ships, then QA.');
+    for (const kept of ['https://example.com/plan', 'src/foo.ts breaks', 'iOS users only', '`npm` is pinned', '4.2 ships Thursday', 'Already a sentence.']) expect(sentence(kept)).toBe(kept);
+  });
+
+  test('a Shows file with a folder is matched by its path, else by its name', () => {
+    const files: InboxDecision['pictures']['attachments'] = [
+      { attachment_id: 'att_old', name: 'plan.md', kind: 'markdown', size: 1, media_type: null, paths: ['/work/web/archive/plan.md'] },
+      { attachment_id: 'att_new', name: 'plan.md', kind: 'markdown', size: 1, media_type: null, paths: ['/work/web/docs/plan.md'] },
+    ];
+    const d = decision(question({}), { inline: [], attachments: files });
+    expect(showsFile(d, 'docs/plan.md')?.attachment_id).toBe('att_new');
+    expect(showsFile(d, './archive/plan.md')?.attachment_id).toBe('att_old');
+    // No path matches (an older Inbox sends no paths, or another folder): the name.
+    expect(showsFile(d, 'other/plan.md')?.attachment_id).toBe('att_old');
+    expect(showsFile(d, 'plan.md')?.attachment_id).toBe('att_old');
+    expect(showsFile(d, 'missing.md')).toBeNull();
   });
 
   test('an older record without the lines draws as before', () => {
