@@ -122,6 +122,99 @@ export function withInboxReminder<T extends { name: string; text: string }>(bloc
   return [...blocks, { name: INBOX_REMINDER_BLOCK, text: inboxReminderText(toolName) }]
 }
 
+/**
+ * `$.store` key: whether this machine's Claude Code runs the mod's
+ * `prompt.context` hook. `true`: seen running (the block reaches the model);
+ * `false`: a conversation's first turn completed without it (a guard plugin
+ * seated above the mod, Claude Code's `cc-plugin-sec-default` on
+ * Team/Enterprise accounts, sent the event past it, #2159); absent: not
+ * learned yet. Read once per process.
+ */
+export const STORE_INBOX_REMINDER_CONTEXT_WORKS = 'inboxReminderContextWorks'
+
+/**
+ * The variable the mod sets to the reminder text (with the tool's full
+ * registered name) at session start, for the plugin's `SessionStart` command
+ * hook matched on `compact` (hooks.json): after a compaction that hook prints
+ * it, and the engine adds the line to the conversation. Unset when the
+ * reminder is off. `$.env.set` needs the name spelled as a literal in
+ * register.ts; register.test.ts keeps that spelling equal to this constant.
+ */
+export const INBOX_REMINDER_ENV = 'PLANNOTATOR_INBOX_REMINDER'
+
+/**
+ * A session whose `$.session.usage().startedAt` is this much older than the
+ * process's first `session.start` was started by an earlier process (a
+ * `--resume` / `--continue`, an in-process `/resume`): its first turn here is
+ * not the conversation's first, so it teaches nothing about `prompt.context`.
+ */
+export const INBOX_REMINDER_RESUMED_SLACK_MS = 60_000
+
+/** The stored `inboxReminderContextWorks`: a boolean, or undefined for anything else. */
+export function readReminderContextWorks(value: unknown): boolean | undefined {
+  return value === true || value === false ? value : undefined
+}
+
+/**
+ * Whether a `prompt.submit` carries the reminder as `context` (the learned
+ * fallback for a machine where `prompt.context` is skipped). Only on a
+ * conversation that has not had it by either path, only while this machine
+ * has no evidence that `prompt.context` runs, and never on a meta prompt or a
+ * slash command (a command may run no model turn, and the copy would be
+ * marked delivered for nothing).
+ */
+export function inboxReminderSubmitCopy(input: {
+  delivered: boolean
+  contextWorks: boolean | undefined
+  isMeta: boolean
+  command: boolean
+}): boolean {
+  return !input.delivered && input.contextWorks !== true && !input.isMeta && !input.command
+}
+
+/**
+ * What the first main-loop `turn.complete` of a conversation teaches.
+ * `done: false`: not decided yet, look again at the next one (an aborted turn
+ * may end before the first request was built, before `prompt.context` had its
+ * chance). `write: false`: store `inboxReminderContextWorks = false` (the
+ * conversation's first request went out without the mod's `prompt.context`).
+ */
+export function inboxReminderFirstTurnLesson(input: {
+  contextRan: boolean
+  aborted: boolean
+  resumed: boolean
+  contextWorks: boolean | undefined
+}): { done: boolean; write: false | null } {
+  if (input.aborted) return { done: false, write: null }
+  if (input.contextRan || input.resumed || input.contextWorks === false) return { done: true, write: null }
+  return { done: true, write: false }
+}
+
+/**
+ * Whether the session was started by an earlier process: `startedAt` is the
+ * session's first launch (`$.session.usage()`), `processStartedAt` this
+ * process's first `session.start`, both in `$.clock.now()` milliseconds. An
+ * unreadable `startedAt` counts as not resumed.
+ */
+export function reminderSessionResumed(startedAt: unknown, processStartedAt: number | null): boolean {
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || processStartedAt === null) return false
+  return startedAt < processStartedAt - INBOX_REMINDER_RESUMED_SLACK_MS
+}
+
+/**
+ * The value of `PLANNOTATOR_INBOX_REMINDER`: the reminder naming the tool by
+ * its registered full name while the reminder is on, else undefined (unset,
+ * which also clears a value inherited from a parent Claude Code). The hook
+ * prints it with `echo`, so a value with a backslash (dash's `echo` reads
+ * escapes) or a leading `-` is never published; neither occurs in the fixed
+ * text or an engine-made tool name.
+ */
+export function inboxReminderEnvValue(on: boolean, toolName: string | null): string | undefined {
+  if (!on || !toolName) return undefined
+  const text = inboxReminderText(toolName)
+  return text.includes('\\') || text.startsWith('-') ? undefined : text
+}
+
 /** `$.store` key: the Inbox tool list last read live, used when the Inbox is stopped at session start. */
 export const STORE_INBOX_TOOLS = 'inboxTools'
 
