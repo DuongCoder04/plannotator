@@ -138,6 +138,7 @@ import {
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/shared/guide-viewer-manifest";
 import {
   MARKER_ENGINES,
+  resolveMarkerBinary,
   composeMarkerReviewPrompt,
   buildMarkerCommand,
   parseMarkerStreamOutput,
@@ -1523,15 +1524,16 @@ export async function startReviewServer(
           // authenticated/usable — a broken claude repair would itself become
           // the newest failed job and hijack the recovery panel next render,
           // a doom loop. Marker engines' binary name can differ from the
-          // engine id (Cursor's CLI binary is `agent`, not `cursor`), so
-          // resolve via MARKER_ENGINES[...].binary before falling back to the
-          // engine id itself for claude/codex.
+          // engine id (Cursor's CLI is `cursor-agent`, or Cursor's own
+          // `agent`), so resolve via resolveMarkerBinary before falling back to
+          // the engine id itself for claude/codex.
           const failedEngine = typeof config?.engine === "string" && config.engine ? config.engine : undefined;
-          const failedEngineBinary = failedEngine
-            ? MARKER_ENGINES[failedEngine as MarkerEngineId]?.binary ?? failedEngine
-            : undefined;
+          const failedMarker = failedEngine ? MARKER_ENGINES[failedEngine as MarkerEngineId] : undefined;
+          const failedEngineInstalled = failedMarker
+            ? !!(await resolveMarkerBinary(failedMarker, (name) => Bun.which(name) ?? null))
+            : !!failedEngine && !!Bun.which(failedEngine);
           const repairEngine =
-            failedEngine && Bun.which(failedEngineBinary!)
+            failedEngine && failedEngineInstalled
               ? failedEngine
               : Bun.which("claude")
                 ? "claude"

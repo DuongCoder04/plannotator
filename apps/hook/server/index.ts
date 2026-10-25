@@ -127,6 +127,7 @@ import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { announceTailscaleSession, enableTailscaleServe } from "@plannotator/server/tailscale-serve";
 import { takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
 import { readTailnetOwner, setSessionTailnetOwner, setSessionTailnetServedUrl } from "@plannotator/server/session-tailnet";
+import { scrubModSessionEnv } from "./mod-session-env";
 import { resolveAnnotateTarget } from "./annotate-resolution";
 import { annotateDecisionTarget, reviewDecisionTarget, takeHostReviewId, targetText } from "./decision-target";
 import { formatSessionsJson, formatSessionsTable } from "./sessions-output";
@@ -282,6 +283,9 @@ takeHostResultPath();
 takeHostMessagesPath();
 // The `pn-` id a host gave this review, for the `sessions/` registry.
 const hostReviewId = takeHostReviewId();
+// What the Claude Code mod sets for its plugin's own hooks (the Inbox reminder):
+// nothing this process starts, Claude agent jobs included, may inherit it.
+scrubModSessionEnv();
 
 const rawArgs = process.argv.slice(2);
 // The Board's cards from a shell (unreleased, HIDDEN_SUBCOMMANDS): a thin
