@@ -295,7 +295,8 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
 
   const accounts = await listGhAccounts(runtime, ref.host);
   const active = accounts.find((a) => a.active);
-  const others = accounts.filter((a) => !a.active && a.login !== active?.login);
+  // An entry with no login (a rejected env token) is not an account to try.
+  const others = accounts.filter((a) => !a.active && a.login !== "" && a.login !== active?.login);
   const repo = `${ref.owner}/${ref.repo}`;
   const envVar = ghTokenEnvVar(ref.host);
 
@@ -324,7 +325,7 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
         // so name that token plainly: it is what the person has to fix.
         const why = active.state !== "success"
           ? `GitHub rejected the token in ${active.tokenSource} (invalid or expired)`
-          : `the token in ${active.tokenSource}${active.login ? ` (account ${active.login})` : ""} can't see ${repo}`;
+          : `The token in ${active.tokenSource}${active.login ? ` (account ${active.login})` : ""} can't see ${repo}`;
         return {
           login: account.login,
           childEnv: env,
