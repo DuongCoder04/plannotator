@@ -1369,6 +1369,35 @@ export function isInboxSoundVolume(value: unknown): value is number {
 }
 
 /**
+ * The onboarding tour (approval "inbox-onboarding-tour"; config.json
+ * `inboxTour`, through GET and POST /api/inbox/settings `tour`), kept per
+ * machine and written by the server only. `seen_at`: the tour was started;
+ * `finished_at`: it reached the end; `skipped_at`: the person left it, or
+ * chose "Connect my agents" on the entry screen. Once finished or skipped the
+ * first-run screen no longer opens on the entry screen; a quiet "Take the
+ * tour" link stays. `notify_again`: the tour ended with notifications not on,
+ * so the person's first real thread offers them once more, inline.
+ */
+export interface InboxTourState {
+  version: number;
+  seen_at: string | null;
+  finished_at: string | null;
+  skipped_at: string | null;
+  notify_again: boolean;
+}
+
+/** What POST /api/inbox/settings `tour` takes: each `true` stamps now; `notify_again` sets the flag. */
+export interface InboxTourChange {
+  seen?: boolean;
+  finished?: boolean;
+  skipped?: boolean;
+  notify_again?: boolean;
+}
+
+/** The tour's content version: the fixture's `v`, recorded with each stamp. */
+export const INBOX_TOUR_VERSION = 1;
+
+/**
  * The Inbox window's text size (config.json `inboxTextSize`, through GET and
  * POST /api/inbox/settings `text_size`): the body size in px the whole type
  * ramp scales from (packages/inbox/inbox.css `--ib-type`). 14 is the window

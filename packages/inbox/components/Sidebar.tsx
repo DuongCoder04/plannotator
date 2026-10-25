@@ -89,6 +89,8 @@ export interface SidebarProps {
    * the connect prompt names; null until the settings load.
    */
   mcpCommand?: readonly string[] | null;
+  /** The foot's Copy prompt pill (default true). The onboarding tour's sidebar leaves it out: it is for the person's own agents. */
+  connectPrompt?: boolean;
 }
 
 /**
@@ -359,7 +361,7 @@ export function Sidebar(props: SidebarProps) {
       </div>
       <div className="ib-side-foot">
         {/* Copy prompt first, then the Update button or "What's new in X", then the Settings row. */}
-        <CopyConnectPrompt mcpCommand={props.mcpCommand ?? null} />
+        {props.connectPrompt !== false && <CopyConnectPrompt mcpCommand={props.mcpCommand ?? null} />}
         <UpdateButton
           update={props.update}
           restarting={props.restarting}

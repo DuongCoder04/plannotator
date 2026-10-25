@@ -196,6 +196,16 @@ export interface EmptyStateProps {
    * when (never while a one-time dialog is open).
    */
   ask?: ReactNode;
+  /** The screen's heading in place of "No agent has written yet" (the tour's step 6: "Now, let's connect your agents"). */
+  heading?: string;
+  /** A line above everything (the tour's step 6: back in the person's own Inbox). */
+  lead?: string;
+  /**
+   * "Want to see it work first? Take the 2-minute tour" at the screen's foot
+   * (approval "inbox-onboarding-tour"): once the tour was finished or left,
+   * the entry screen no longer opens and this quiet link stays. Absent: none.
+   */
+  onTakeTour?: () => void;
 }
 
 /**
@@ -209,7 +219,7 @@ export interface EmptyStateProps {
  * plugin is a command to copy, and the screen moves on by itself once the
  * agents are read again (App re-reads them while this screen shows).
  */
-export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage, ask }: EmptyStateProps) {
+export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage, ask, heading, lead, onTakeTour }: EmptyStateProps) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const [busy, setBusy] = useState<InboxAgentId | null>(null);
   const [error, setError] = useState<{ id: InboxAgentId; text: string } | null>(null);
@@ -469,7 +479,13 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
       </div>
       <div className="ib-lbody">
         <div className="ib-empty" data-inbox-empty="" aria-busy={loading || undefined}>
-          <h2>No agent has written yet</h2>
+          {lead && (
+            <p className="ib-tour-lead" role="status">
+              <Icon name="check" size={14} />
+              {lead}
+            </p>
+          )}
+          <h2 tabIndex={-1}>{heading ?? 'No agent has written yet'}</h2>
           {hero}
           {lists}
           {!loading && (
@@ -509,6 +525,15 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
             <Fold label="Another agent or editor" sub="VS Code, Zed, JetBrains, Goose, any MCP client" id={pickerId}>
               <ConnectPicker harnesses={OTHER_HARNESSES} initial="vscode" context={context} icons />
             </Fold>
+          )}
+          {onTakeTour && (
+            <p className="ib-tour-again" data-tour-again="">
+              Want to see it work first?{' '}
+              <button type="button" className="ib-lnk" onClick={onTakeTour}>
+                Take the 2-minute tour
+              </button>
+              : how we built the Inbox with the Inbox.
+            </p>
           )}
           <div className="ib-sr" aria-live="polite">
             {said}

@@ -50,6 +50,9 @@ import {
   type InboxCardColumn,
   INBOX_SOUND_DEFAULT_VOLUME,
   INBOX_TEXT_SIZE_DEFAULT,
+  INBOX_TOUR_VERSION,
+  type InboxTourChange,
+  type InboxTourState,
   INBOX_HOST_NAMES,
   isInboxId,
   isInboxSoundVolume,
@@ -141,6 +144,7 @@ import { createInboxUpdates, type InboxUpdatesOptions } from "./inbox-updates";
 import { INBOX_WHATS_NEW_IMAGE_PATH, whatsNewImageRoute } from "./inbox-whats-new-images";
 import { inboxCanonicalBaseUrl, inboxCanonicalRedirect } from "./inbox-canonical";
 import { createInboxWindows, parseWindowId, parseWindowOrigin, parseWindowPermission } from "./inbox-windows";
+import { handleInboxTourRequest } from "./inbox-tour";
 import {
   agentSpec,
   claudeCodeModOn,
@@ -1313,6 +1317,54 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
 
   /**
+   * The onboarding tour (config.json `inboxTour`, approval
+   * "inbox-onboarding-tour"): when it was started, finished or skipped, and
+   * whether the first real thread offers notifications once more. Kept per
+   * machine, so a port change keeps it.
+   */
+  const tourState = (): InboxTourState => {
+    const value = loadConfig().inboxTour;
+    const stamp = (v: unknown) => (typeof v === "string" && v ? v : null);
+    return {
+      version: typeof value?.version === "number" ? value.version : INBOX_TOUR_VERSION,
+      seen_at: stamp(value?.seen_at),
+      finished_at: stamp(value?.finished_at),
+      skipped_at: stamp(value?.skipped_at),
+      notify_again: value?.notify_again === true,
+    };
+  };
+
+  const saveTour = (input: unknown, validateOnly = false): InboxTourState => {
+    const keys = ["seen", "finished", "skipped", "notify_again"];
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).length === 0 ||
+      Object.entries(input).some(([key, value]) => !keys.includes(key) || typeof value !== "boolean")
+    ) {
+      throw new InboxError("validation_error", "tour: { seen?, finished?, skipped?, notify_again? }, each a boolean.", { field: "tour" });
+    }
+    if (validateOnly) return tourState();
+    const change = input as InboxTourChange;
+    const now = new Date().toISOString();
+    const current = tourState();
+    const next: InboxTourState = {
+      version: INBOX_TOUR_VERSION,
+      seen_at: change.seen ? now : current.seen_at,
+      finished_at: change.finished ? now : current.finished_at,
+      skipped_at: change.skipped ? now : current.skipped_at,
+      notify_again: change.notify_again ?? current.notify_again,
+    };
+    saveConfig({ inboxTour: next });
+    const saved = tourState();
+    if (saved.seen_at !== next.seen_at || saved.finished_at !== next.finished_at || saved.skipped_at !== next.skipped_at || saved.notify_again !== next.notify_again) {
+      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    }
+    return saved;
+  };
+
+  /**
    * The diff layout guided reviews draw (config.json `diffOptions.diffStyle`),
    * the same setting code review reads and writes, so a choice in either holds
    * in the other: `split` or `unified`, null while never chosen.
@@ -1452,6 +1504,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     diff_style: diffStyleState(),
     /** Experimental features, each off unless switched on (Settings → General → Experimental). */
     experimental: experimentalState(),
+    /** The onboarding tour: started, finished or skipped, and whether the first real thread offers notifications once more. */
+    tour: tourState(),
     store: store.diskUsage(),
     /** Whether this Inbox serves phones; the window shows the Phones block only then. */
     phones: phonesOn,
@@ -2057,6 +2111,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // What reached the pairing code, and step 1's checks of this computer, are this computer's own business too.
     if (via === "tailnet" && (path === "/api/inbox/pairing" || path === "/api/inbox/pairing/checks")) return localOnly();
 
+    // The onboarding tour's fixture and assets (inbox-tour.ts): read only, served from the binary on demand.
+    const tourAnswer = await handleInboxTourRequest(req, path);
+    if (tourAnswer) return tourAnswer;
+
     try {
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
       if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url)));
@@ -2203,9 +2261,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.text_size === undefined &&
           body.diff_style === undefined &&
           body.experimental === undefined &&
+          body.tour === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, update_check or auto_update is required.");
         }
         // Updating changes this computer: never from a page that came through the tailnet.
         if (updateSwitches && via === "tailnet") return localOnly();
@@ -2237,6 +2296,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.text_size !== undefined) saveTextSize(body.text_size, true);
         if (body.diff_style !== undefined) saveDiffStyle(body.diff_style, true);
         if (body.experimental !== undefined) saveExperimental(body.experimental, true);
+        if (body.tour !== undefined) saveTour(body.tour, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
@@ -2247,7 +2307,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const textSize = body.text_size === undefined ? textSizeState() : saveTextSize(body.text_size);
         const diffStyle = body.diff_style === undefined ? diffStyleState() : saveDiffStyle(body.diff_style);
         const experimental = body.experimental === undefined ? experimentalState() : saveExperimental(body.experimental);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental });
+        const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
