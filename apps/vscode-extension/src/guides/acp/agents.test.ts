@@ -18,8 +18,8 @@ import {
   readAgentOptions,
   resolveAgentLaunch,
   type AgentDescriptor,
-} from "./agents";
-import { planSpawn, shimEntry } from "./spawn-plan";
+} from "@plannotator/acp-client/agents";
+import { planSpawn, shimEntry } from "@plannotator/acp-client/spawn-plan";
 
 /** What `npm install -g` writes on Windows for a package bin. */
 const NPM_SHIM = [
@@ -132,8 +132,21 @@ describe("the agent registry", () => {
 
 describe("starting an agent", () => {
   it("tries the program's other names", () => {
-    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]))).toEqual({ ok: true, command: "/bin/agent", args: ["acp"], source: "path" });
+    const cursorAnswers = () => "2026.07.08-0c04a8a";
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", cursorAnswers)).toEqual({ ok: true, command: "/bin/agent", args: ["acp"], source: "path" });
     expect(resolveAgentLaunch(KILO, {}, FOUND(["kilocode"]))).toEqual({ ok: true, command: "/bin/kilocode", args: ["acp"], source: "path" });
+  });
+
+  it("skips an other name another agent owns: Grok Build's `agent` is not Cursor", () => {
+    // ~/.grok/bin/agent → grok: it answers `--version` as Grok, so Cursor is "not installed".
+    const grokAnswers = () => "grok 1.0.70 (f50904eaee6c) [stable]";
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", grokAnswers)).toMatchObject({ ok: false, reason: "agent" });
+    // A program that does not answer at all is not taken either.
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", () => null)).toMatchObject({ ok: false, reason: "agent" });
+    // Its own name is trusted without asking.
+    let asked = 0;
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["cursor-agent", "agent"]), undefined, "darwin", () => (asked++, null))).toMatchObject({ ok: true, command: "/bin/cursor-agent" });
+    expect(asked).toBe(0);
   });
 
   it("says how to install a missing agent", () => {
@@ -192,7 +205,7 @@ describe("cheap defaults", () => {
 
 describe("installing an agent on Windows", () => {
   it("types the documented PowerShell command, the same npm command, or nothing (the docs instead)", async () => {
-    const { installCommandFor } = await import("./agents");
+    const { installCommandFor } = await import("@plannotator/acp-client/agents");
     const win = (a: AgentDescriptor) => installCommandFor(a.installCommand, a.installCommandWindows, "win32");
     expect(win(CURSOR)).toBe("irm 'https://cursor.com/install?win32=true' | iex");
     expect(win(OPENCODE)).toBe("npm install -g opencode-ai");

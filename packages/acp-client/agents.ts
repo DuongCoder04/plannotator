@@ -1,5 +1,7 @@
 /**
- * Which agents can write a guide, and how to start them over ACP.
+ * Which agents Plannotator can start over ACP, and how: Guides' agents (the
+ * VS Code extension, `KNOWN_AGENTS`) and the Inbox runner's (packages/server/
+ * inbox-acp-runner.ts, which picks its own entries, `GROK` first).
  *
  * A small, bundled list: every entry's launch command and install command come
  * from the agent's own documentation (the source is linked on each entry). An
@@ -17,10 +19,32 @@
  * builder tools), the model and effort the user picked, and the prompt.
  */
 
-import { findExecutable } from "../sources/runner";
-import type { ManagedAdapterSpec, ManagedLaunch } from "./adapters";
+import { spawnSync } from "node:child_process";
+import { findExecutable } from "./which";
 import { readEffortSelect, readModelSelect, type ConfigChoice, type ConfigSelect } from "./client";
 import type { AuthMethod, SessionConfigOption } from "@agentclientprotocol/sdk";
+
+/** An npm package that starts the agent's ACP server, pinned to one version (Guides installs it: the extension's adapters.ts). */
+export interface ManagedAdapterSpec {
+  package: string;
+  /** Exact version (published at least 7 days before it was pinned). */
+  version: string;
+  /** The package's `bin` entry to run. */
+  bin: string;
+  /**
+   * `npm install --before`: the day the pin was chosen less 7 days, so every
+   * dependency npm resolves was published at least 7 days before the pin.
+   */
+  before: string;
+}
+
+/** What `managedLaunch` answers: run `command args` (with `env`). */
+export interface ManagedLaunch {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  dir: string;
+}
 
 export interface AgentDescriptor {
   id: string;
@@ -70,6 +94,27 @@ export interface AgentDescriptor {
    * Without `command`, the program that starts the agent (as resolved) runs `args`.
    */
   signIn?: { command?: string; args: readonly string[] };
+  /**
+   * The first line `<program> --version` prints, as this agent prints it. A
+   * program found under one of `altCommands` is used only when it answers
+   * this way: another agent may install the same generic name (Grok Build
+   * installs `agent`, which Cursor also uses).
+   */
+  versionShape?: RegExp;
+}
+
+/**
+ * The first line a program prints for `--version`, or null (it did not start,
+ * failed, or took more than 3 s).
+ */
+export function probeVersionLine(path: string): string | null {
+  try {
+    const ran = spawnSync(path, ["--version"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    if (ran.status !== 0 || typeof ran.stdout !== "string") return null;
+    return ran.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -150,6 +195,8 @@ export const CURSOR: AgentDescriptor = {
   command: "cursor-agent",
   altCommands: ["agent"],
   args: ["acp"],
+  // `cursor-agent --version`: `2026.07.08-0c04a8a`. Grok Build installs an `agent` too (~/.grok/bin/agent → grok).
+  versionShape: /^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/,
   installCommand: "curl https://cursor.com/install -fsS | bash",
   // https://cursor.com/docs/cli/installation, "Windows (native, PowerShell)".
   installCommandWindows: "irm 'https://cursor.com/install?win32=true' | iex",
@@ -205,6 +252,24 @@ export const PI: AgentDescriptor = {
   requires: { command: "pi", label: "Pi", installCommand: "npm install -g @earendil-works/pi-coding-agent", docsUrl: "https://github.com/svkozak/pi-acp" },
   docsUrl: "https://github.com/svkozak/pi-acp",
   note: "Can't write guides yet: pi-acp does not pass MCP servers on to Pi (its README says they are \"accepted … but not wired through to pi\"), so Pi cannot reach the guide's tools.",
+};
+
+/**
+ * Grok Build, xAI's terminal agent, in its ACP mode (`grok agent stdio`).
+ * Source: ~/.grok/README.md ("Agent mode", "Installation"). Not one of Guides'
+ * agents: the Inbox runner starts it. It updates itself when it starts.
+ */
+export const GROK: AgentDescriptor = {
+  id: "grok",
+  label: "Grok Build",
+  engine: "grok",
+  command: "grok",
+  args: ["agent", "stdio"],
+  installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash",
+  installCommandWindows: null,
+  docsUrl: "https://x.ai/cli",
+  // `grok --version`: `grok 1.0.70 (f50904eaee6c) [stable]`.
+  versionShape: /^grok \d+\.\d+\.\d+\b/,
 };
 
 /** The known agents, in the order the picker lists them (installed ones first). */
@@ -272,6 +337,8 @@ export function resolveAgentLaunch(
   find: (name: string) => string | null = findExecutable,
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   platform: NodeJS.Platform = process.platform,
+  /** `--version`'s first line, for a program found under an alternative name (`versionShape`). */
+  probeVersion: (path: string) => string | null = probeVersionLine,
 ): AdapterResolution {
   const configured = override.command?.trim();
   if (configured) {
@@ -286,7 +353,10 @@ export function resolveAgentLaunch(
   }
   for (const name of [agent.command, ...(agent.altCommands ?? [])]) {
     const found = find(name);
-    if (found) return { ok: true, command: found, args: [...agent.args], source: "path" };
+    if (!found) continue;
+    // An alternative name another agent may own: only when it answers like this agent.
+    if (name !== agent.command && agent.versionShape && !agent.versionShape.test(probeVersion(found) ?? "")) continue;
+    return { ok: true, command: found, args: [...agent.args], source: "path" };
   }
   const copy = agent.adapter ? managed(agent) : null;
   if (copy) return { ok: true, command: copy.command, args: copy.args, ...(copy.env && { env: copy.env }), source: "managed" };

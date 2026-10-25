@@ -11,6 +11,15 @@
  * a callback that shows the agent's own options; this module never answers
  * one by itself, except "cancelled" for a request still open when the turn is
  * cancelled, which ACP requires.
+ *
+ * An agent's own extension notifications (`_x.ai/*` from Grok Build) can carry
+ * secrets: Grok's `_x.ai/mcp/servers_updated` carries the person's MCP server
+ * env values, API keys included. The client hands a host only the method name
+ * (`onExtNotification`), never the params, and keeps no copy; extension
+ * requests answer "method not found".
+ *
+ * Shared by the VS Code extension's Guides and the Inbox's ACP runner
+ * (packages/server/inbox-acp-runner.ts).
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -36,7 +45,7 @@ import {
   type SessionConfigOption,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
-import { augmentedPath } from "../sources/runner";
+import { augmentedPath } from "./which";
 import { planSpawn } from "./spawn-plan";
 
 export interface AgentLaunch {
@@ -53,6 +62,19 @@ export interface AcpClientHandlers {
   requestPermission(request: RequestPermissionRequest, signal: AbortSignal): Promise<RequestPermissionResponse>;
   onStderr?(text: string): void;
   onExit?(info: { code: number | null; signal: NodeJS.Signals | null }): void;
+  /**
+   * An extension notification arrived (`_vendor/...`). Only its method name:
+   * the params never leave this module (they can carry secrets).
+   */
+  onExtNotification?(method: string): void;
+}
+
+/** How to start the agent's process beyond its launch. */
+export interface AcpStartOptions {
+  /** The environment the agent starts from (default: this process's). */
+  env?: Readonly<Record<string, string | undefined>>;
+  /** Append the usual program folders to PATH (default true; the Inbox passes its own PATH as it is). */
+  augmentPath?: boolean;
 }
 
 export interface AcpClientInfo {
@@ -171,6 +193,13 @@ export class AcpClient {
       releaseTerminal: async () => notOffered("terminal/release"),
       waitForTerminalExit: async () => notOffered("terminal/wait_for_exit"),
       killTerminal: async () => notOffered("terminal/kill"),
+      // The method name only: the params are dropped here, never stored or passed on.
+      extNotification: async (method: string) => {
+        this.handlers.onExtNotification?.(method);
+      },
+      extMethod: async (method: string) => {
+        throw RequestError.methodNotFound(method);
+      },
     };
     this.connection = new ClientSideConnection((_agent: Agent) => client, stream);
     child.stderr?.setEncoding("utf8");
@@ -188,11 +217,12 @@ export class AcpClient {
   }
 
   /** Start the agent process and run `initialize`. */
-  static async start(launch: AgentLaunch, handlers: AcpClientHandlers, clientInfo: AcpClientInfo): Promise<AcpClient> {
+  static async start(launch: AgentLaunch, handlers: AcpClientHandlers, clientInfo: AcpClientInfo, options: AcpStartOptions = {}): Promise<AcpClient> {
     const plan = planSpawn(launch.command, launch.args);
+    const base = options.env ?? process.env;
     const child = spawn(plan.command, plan.args, {
       cwd: launch.cwd,
-      env: { ...process.env, PATH: augmentedPath(), ...plan.env, ...launch.env },
+      env: { ...base, PATH: options.augmentPath === false ? (base.PATH ?? "") : augmentedPath(base), ...plan.env, ...launch.env } as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
       // Its own process group, so Cancel can stop everything the agent started.
       detached: process.platform !== "win32",
@@ -220,7 +250,7 @@ export class AcpClient {
     const agentVersion = client.initializeResult.protocolVersion;
     if (agentVersion !== PROTOCOL_VERSION) {
       client.dispose();
-      throw new Error(`The agent speaks ACP protocol version ${String(agentVersion)}; this extension speaks version ${PROTOCOL_VERSION}. Update the adapter, then try again.`);
+      throw new Error(`The agent speaks ACP protocol version ${String(agentVersion)}; Plannotator speaks version ${PROTOCOL_VERSION}. Update the adapter, then try again.`);
     }
     return client;
   }
@@ -295,6 +325,22 @@ export class AcpClient {
   /** `session/set_mode`, for adapters that expose session modes rather than a `mode` config option. */
   async setMode(sessionId: string, modeId: string): Promise<void> {
     await this.raceExit(this.connection.setSessionMode({ sessionId, modeId }), "session/set_mode");
+  }
+
+  /** The agent advertised `session/close` (`sessionCapabilities.close`). */
+  get canCloseSession(): boolean {
+    const caps = this.agentCapabilities as AgentCapabilities & { sessionCapabilities?: { close?: unknown } };
+    return !!caps.sessionCapabilities?.close;
+  }
+
+  /** `session/close`: the agent lets go of the session (only when advertised; a failure is ignored). */
+  async closeSession(sessionId: string): Promise<void> {
+    if (!this.canCloseSession || this.exited) return;
+    try {
+      await this.raceExit(this.connection.closeSession({ sessionId }), "session/close");
+    } catch {
+      // Closing is best effort: the session is still on disk.
+    }
   }
 
   prompt(sessionId: string, text: string): Promise<PromptResponse> {
