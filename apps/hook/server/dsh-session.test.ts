@@ -122,6 +122,21 @@ describe("getRecentDshMessages", () => {
     expect(getRecentDshMessages(log, 25).map((m) => m.messageId)).toEqual(["m3", "m1"]);
   });
 
+  // Catches: a tail too short to hold the next frame's magic making the reader
+  // drop the newest complete frame and serve an older answer.
+  test("a partial magic number after the last frame keeps that frame", () => {
+    const home = makeDshHome();
+    const dir = sessionDir(home, "s1");
+    const log = join(dir, "session.v4.jsonl.zstd");
+    writeFileSync(log, Buffer.concat([
+      Bun.zstdCompressSync(Buffer.from(firstBatch)),
+      Bun.zstdCompressSync(Buffer.from(secondBatch)),
+      Buffer.from([0x28, 0xb5]),
+    ]));
+
+    expect(getRecentDshMessages(log, 25).map((m) => m.messageId)).toEqual(["m3", "m1"]);
+  });
+
   // Catches: a corrupt log throwing out of annotate-last instead of reporting
   // that no message was found.
   test("an undecodable log yields no messages", () => {

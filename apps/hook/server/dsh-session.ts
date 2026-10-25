@@ -111,20 +111,33 @@ export function findDshSessionLog(
 const ZSTD_FRAME_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
 /**
+ * Where a log being appended to can end: the whole file; the file without a
+ * 1-3 byte tail, too short to hold the next frame's magic; then each frame
+ * start, last first.
+ */
+function* dshLogEnds(bytes: Buffer): Generator<number> {
+  yield bytes.length;
+  for (let cut = 1; cut <= 3 && cut < bytes.length; cut++) yield bytes.length - cut;
+  for (let at = bytes.lastIndexOf(ZSTD_FRAME_MAGIC); at > 0; at = bytes.lastIndexOf(ZSTD_FRAME_MAGIC, at - 1)) {
+    yield at;
+  }
+}
+
+/**
  * Decompress a multi-frame log. DSH appends one zstd frame per write, so a
- * read that lands mid-append ends in a truncated frame: drop frames from the
- * end until the rest decodes, keeping every complete message before it.
+ * read that lands mid-append ends in a truncated frame: cut it off and keep
+ * every complete message before it.
  */
 function decompressDshLog(bytes: Buffer): string {
-  let end = bytes.length;
-  for (;;) {
+  let lastError: unknown;
+  for (const end of dshLogEnds(bytes)) {
     try {
       return Buffer.from(Bun.zstdDecompressSync(bytes.subarray(0, end))).toString("utf-8");
     } catch (error) {
-      end = end > 0 ? bytes.lastIndexOf(ZSTD_FRAME_MAGIC, end - 1) : -1;
-      if (end <= 0) throw error;
+      lastError = error;
     }
   }
+  throw lastError;
 }
 
 /**
