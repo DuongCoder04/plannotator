@@ -103,6 +103,7 @@ const Tag: React.FC<{ tone: 'rec' | 'ok' | 'skip' | 'open' | 'warn'; children: R
     )}
     style={style}
     data-pinpoint-ignore=""
+    data-question-tag={tone}
   >
     {children}
   </span>
