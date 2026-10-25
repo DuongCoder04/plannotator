@@ -89,11 +89,6 @@ function toWebSocketPayload(data: unknown): string | ArrayBuffer {
 }
 
 /**
- * Start the loopback reverse proxy for one live annotate session.
- * The caller owns its lifecycle: stop() closes tracked WS upstreams and the
- * listener.
- */
-/**
  * Bun.serve reports every failed listen as EADDRINUSE ("Is port N in use?",
  * errno 0), a port it may not bind (EACCES) included. Bun.listen reports the
  * real code, so ask it once on the same address to learn which it was.
@@ -109,6 +104,11 @@ function actualListenError(port: number, error: unknown): unknown {
   return error;
 }
 
+/**
+ * Start the loopback reverse proxy for one live annotate session.
+ * The caller owns its lifecycle: stop() closes tracked WS upstreams and the
+ * listener.
+ */
 export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
   const target = new URL(opts.targetUrl);
   if (target.protocol !== "http:") {
