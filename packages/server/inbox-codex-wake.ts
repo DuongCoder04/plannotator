@@ -178,8 +178,11 @@ export function createInboxCodexWake(options: {
   let cliAnswer: { cli: InboxCodexCli | null; at: number } | null = null;
   let cliProbe: Promise<InboxCodexCli | null> | null = null;
   const probe = async (): Promise<InboxCodexCli | null> => {
-    // Only absolute paths: a relative PATH entry would name another file wherever the Inbox runs.
-    const candidates = [environment.which("codex"), ...extraClis].filter((path): path is string => !!path && isAbsolute(path) && existsSync(path));
+    // Only absolute paths: a relative PATH entry would name another file wherever the Inbox runs. The `codex` on
+    // PATH is the one the person uses: when there is one, an app's own CLI is never tried instead.
+    const onPath = environment.which("codex");
+    const first = onPath && isAbsolute(onPath) ? [onPath] : [];
+    const candidates = (first.length > 0 ? first : extraClis).filter((path) => isAbsolute(path) && existsSync(path));
     for (const path of [...new Set(candidates)]) {
       const run = await environment.run([path, "--version"], { timeoutMs: 10_000, signal: stopping.signal });
       const version = parseCodexCliVersion(run.stdout);

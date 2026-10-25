@@ -22,7 +22,7 @@ import {
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
 import { createAgentEnvironmentFor } from "./inbox-agents";
 import { startInboxServer, type InboxServer } from "./inbox";
-import { INBOX_REPLY_ARRIVES_TEXT } from "./inbox-mcp";
+import { INBOX_REPLY_ARRIVES_TEXT, INBOX_REPLY_WAITS_TEXT } from "./inbox-mcp";
 
 const THREAD = "019a2b3c-4d5e-7f00-8a9b-0c1d2e3f4a5b";
 const OTHER_THREAD = "019a2b3c-4d5e-7f00-8a9b-0c1d2e3f4a5c";
@@ -305,7 +305,7 @@ describe("a reply to a Codex thread", () => {
   test("a codex exec run is never woken: its agent is told to wait_for_reply, it is not live, and nothing is queued", async () => {
     const w = await world();
     const sent = await codexSends(w.client, w.project, "Ship it?", THREAD, "exec");
-    expect(sent.text).toContain("Call wait_for_reply");
+    expect(sent.text).toContain(INBOX_REPLY_WAITS_TEXT);
     expect((await thread(w.server, sent.thread_id)).messages[0]!.wakes).toBeUndefined();
     await Bun.sleep(100);
     const sessions = (await (await fetch(`${base(w.server)}/api/inbox/threads/${sent.thread_id}/sessions`)).json()) as { sessions: { session: string }[] };
@@ -350,7 +350,7 @@ describe("a reply to a Codex thread", () => {
   test("without a Codex CLI that queues, nothing wakes: the message is MCP-only and nothing is run", async () => {
     for (const w of [await world({ codex: false }), await world({ env: { FAKE_CODEX_VERSION: "codex-cli 0.148.0" } })]) {
       const sent = await codexSends(w.client, w.project, "Ship it?");
-      expect(sent.text).toContain("Call wait_for_reply");
+      expect(sent.text).toContain(INBOX_REPLY_WAITS_TEXT);
       expect((await thread(w.server, sent.thread_id)).messages[0]!.wakes).toBeUndefined();
       await reply(w.server, sent.message_id, { idempotency_key: "k1", words: "Yes." });
       await w.server.codexWake.sweep();

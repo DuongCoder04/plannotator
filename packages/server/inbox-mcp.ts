@@ -226,8 +226,13 @@ export interface InboxMcpContext {
    */
   findProjects?: (path: string) => Promise<{ projects: InboxProject[]; unresolved: boolean }>;
   /**
-   * Whether the Inbox itself wakes a session from this host (Codex: a thread
-   * id, and a Codex CLI that runs `codex queue`; packages/server/inbox-codex-wake.ts).
+   * Whether the Inbox itself knows the sender's session is woken by the
+   * person's reply, whatever its own connection said: a Claude Code, Pi or
+   * OpenCode session whose bridge polls now (the stdio shim run inside it
+   * sends as that session, and the connection delivers the reply), or a Codex
+   * thread the Inbox wakes itself (`meta`: the call's `_meta`; a thread id,
+   * not `codex exec`, and a Codex CLI that runs `codex queue`;
+   * packages/server/inbox-codex-wake.ts).
    * Absent: only a caller's own connection wakes it (`callerWakes`).
    */
   sessionWakes?: (host: unknown, session: unknown, meta: unknown) => Promise<boolean>;
@@ -247,8 +252,8 @@ export function callerWakes(ctx: unknown): boolean {
 
 /**
  * Whether a sender's session is woken by the person's reply: its own
- * connection says so (`callerWakes`), or the Inbox wakes it itself (Codex,
- * `sessionWakes`).
+ * connection says so (`callerWakes`), or the Inbox knows that session is
+ * woken (`sessionWakes`: its bridge polls now, or a Codex thread it wakes).
  */
 export async function senderWakes(context: Pick<InboxMcpContext, "sessionWakes">, ctx: unknown, input: { agent_host?: string; agent_session?: string }): Promise<boolean> {
   if (callerWakes(ctx)) return true;
@@ -260,6 +265,10 @@ export async function senderWakes(context: Pick<InboxMcpContext, "sessionWakes">
 /** The send tools' last sentence for a caller whose reply arrives by itself. */
 export const INBOX_REPLY_ARRIVES_TEXT =
   "The person's reply arrives in this session by itself, as a new message once the session is idle: end your turn, or go on with other work; do not call wait_for_reply.";
+
+/** The same place for a sender nothing wakes (an MCP client, OpenCode 1, an older connection, a session whose bridge does not poll): it has to ask. */
+export const INBOX_REPLY_WAITS_TEXT =
+  "The person's reply won't arrive in this session by itself: call wait_for_reply with this thread_id for the answer, or go on and read_thread later.";
 
 
 function threadUrl(base: string, threadId: string): string {
@@ -934,7 +943,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           supersededWords(sent.structured.superseded as string[]) +
           (sent.done > 0 ? `, marking ${sent.done} action item${sent.done === 1 ? "" : "s"} done` : "");
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : "Call wait_for_reply with this thread_id for the answer, or go on and read_thread later."}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}`,
+          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}`,
           sent.structured,
         );
       }),

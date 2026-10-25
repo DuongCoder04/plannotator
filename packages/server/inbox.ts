@@ -55,6 +55,7 @@ import {
   type InboxTourState,
   INBOX_CODEX_HOST,
   INBOX_MCP_WAKING_HOSTS,
+  INBOX_WAKING_HOSTS,
   INBOX_HOST_NAMES,
   codexThreadOfCall,
   codexTurnStartedAt,
@@ -178,6 +179,9 @@ import {
   type InboxConnectReport,
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
+
+/** The hosts whose own connection polls the bridge and wakes its session with the reply: the waking hosts but Codex, which the Inbox wakes itself. */
+const BRIDGE_WAKING_HOSTS: ReadonlySet<string> = new Set(INBOX_WAKING_HOSTS.filter((host) => !INBOX_MCP_WAKING_HOSTS.includes(host)));
 
 /** Where a request came in: the window's loopback port, or the tailnet-only listener `tailscale serve` points at. */
 type RequestVia = "local" | "tailnet";
@@ -786,11 +790,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             };
           },
         },
-        // A Codex thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
-        sessionWakes: (host, session, meta) => codexWake.wakes(host, session, meta),
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
+        // A Claude Code, Pi or OpenCode session whose bridge polls now is woken by the reply, whoever sent for it
+        // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID). A Codex
+        // thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
+        sessionWakes: async (host, session, meta) =>
+          (typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session)) ||
+          codexWake.wakes(host, session, meta),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );

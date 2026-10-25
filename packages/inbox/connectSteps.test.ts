@@ -6,7 +6,7 @@
  */
 import { expect, test } from 'bun:test';
 import { INBOX_TOOL_COST, inboxToolCostText } from '@plannotator/core/inbox-types';
-import { blockedText, connectPlan, connectRowOf, doneNote, laterNote, stepEyebrow, stepText, stepTitle } from './connectSteps';
+import { MCP_DONE_NOTE, WAKE_LINE, blockedText, connectPlan, connectRowOf, doneNote, laterNote, stepEyebrow, stepText, stepTitle } from './connectSteps';
 import { SCENARIOS, agentsModel, missing, ready, toolOff, viaMcp } from './connectSteps.fixtures';
 
 const ids = (rows: { id: string }[]) => rows.map((row) => row.id);
@@ -21,7 +21,7 @@ test('typical: Pi turns on first (1 of 2), OpenCode is left to install, Claude C
   expect(ids(plan.later)).toEqual(['opencode']);
   expect(laterNote(plan.later[0]!, { skipped: false, toolEnv: null })).toBe('install');
   expect(doneNote(plan.done[0]!, { live: true, turnedOn: false })).toBe('plugin · running now');
-  expect(doneNote(plan.done[1]!, { live: false, turnedOn: false })).toBe('MCP');
+  expect(doneNote(plan.done[1]!, { live: false, turnedOn: false })).toBe(MCP_DONE_NOTE);
 });
 
 test('Not now puts a step off: the next one comes up, the put-off one stays in Left to do as later', () => {
@@ -38,7 +38,10 @@ test('plugin missing: Claude Code installs before Pi gets its extension; Pi thro
   expect(plan.next?.id).toBe('claude-code');
   expect(stepTitle(plan.next!)).toBe("Connect Claude Code with Plannotator's plugin");
   expect(ids(plan.done)).toEqual(['pi', 'codex']);
-  expect(doneNote(plan.done.find((row) => row.id === 'pi')!, { live: false, turnedOn: false })).toBe('MCP, no wake');
+  expect(doneNote(plan.done.find((row) => row.id === 'pi')!, { live: false, turnedOn: false })).toBe(MCP_DONE_NOTE);
+  // An MCP-only host and an MCP agent say the same thing: neither is woken.
+  expect(doneNote(plan.done.find((row) => row.id === 'codex')!, { live: false, turnedOn: false })).toBe(MCP_DONE_NOTE);
+  expect(stepText(plan.later[0]!).text).toContain('sees your replies only when it checks the Inbox');
   expect(ids(plan.later)).toEqual(['pi']);
   expect(stepTitle(plan.later[0]!)).toBe("Give Pi Plannotator's extension");
   expect(ids(plan.absent)).toEqual(['opencode']);
@@ -84,9 +87,9 @@ test('Codex through MCP gets your replies back in the session by itself (Codex 0
   });
   const plan = connectPlan(model);
   expect(stepText(plan.steps.find((row) => row.id === 'codex')!).text).toBe(
-    "Adds the Inbox's MCP server to Codex. With Codex 0.149 or later, your replies come back into the session by themselves.",
+    "Adds the Inbox's MCP server to Codex. Codex 0.149 or later: your replies arrive as a new turn on their own.",
   );
-  expect(stepText(plan.steps.find((row) => row.id === 'gemini')!).text).toBe("Adds the Inbox's MCP server to Gemini CLI. Replies don't wake Gemini CLI: it checks for them itself.");
+  expect(stepText(plan.steps.find((row) => row.id === 'gemini')!).text).toBe("Adds the Inbox's MCP server to Gemini CLI. Gemini CLI sees your replies when it checks the Inbox; it can't be woken.");
 });
 
 test('an older Inbox without the plugin field: the tool means the plugin is installed', () => {
@@ -161,7 +164,7 @@ test('Claude Code mod off: the plugin gives no tool, so it is not connected and 
 test('OpenCode 1 on PATH: the step names the version, and the row carries it for the plugin line', () => {
   const plan = connectPlan(agentsModel({ opencode: { ...missing('opencode'), plugin: { installed: false, generation: '1' } } }));
   expect(plan.next?.generation).toBe('1');
-  expect(stepText(plan.next!).text).toContain('OpenCode 1 checks for your replies itself');
+  expect(stepText(plan.next!).text).toContain('OpenCode 1 sees your replies when it checks the Inbox');
 });
 
 test('a hand-added MCP entry still counts when the plugin is disabled or its mod off: connected (MCP), never a step', () => {
@@ -179,4 +182,17 @@ test('the plugin turned off by managed settings: said so, and claude plugin enab
   const why = blockedText(plan, { skipped: [], toolEnv: null }).text;
   expect(why).toContain("managed settings turn Plannotator's plugin off");
   expect(why).not.toContain('claude plugin enable');
+});
+
+// Deliberately pinned (owner's ask, "say plainly which agents a reply wakes"): the hosts named are exactly the ones whose
+// connection wakes a session. OpenCode 1 has the tool but no wake, so the line says OpenCode 2.
+test('the wake line names the hosts a reply wakes, and what other agents do instead', () => {
+  expect(WAKE_LINE).toContain('Claude Code, Pi and OpenCode 2');
+  expect(WAKE_LINE).toContain('the next time they check the Inbox');
+});
+
+test('a Connect step for an MCP agent says it is not woken (Codex 0.149+ is: the Inbox queues the reply into its thread)', () => {
+  const plan = connectPlan(agentsModel({ gemini: { detected: true, reach: { kind: 'mcp', on: false, state: 'not_connected', path: null, locked: false, reason: null } } }));
+  expect(plan.next?.id).toBe('gemini');
+  expect(stepText(plan.next!).text).toBe("Adds the Inbox's MCP server to Gemini CLI. Gemini CLI sees your replies when it checks the Inbox; it can't be woken.");
 });

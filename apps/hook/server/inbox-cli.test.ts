@@ -513,6 +513,36 @@ describe("plannotator inbox mcp inside an agent session", () => {
     expect(await poll("another-session")).toEqual([]);
   }, 90_000);
 
+  test("the shim inside a Claude Code session whose bridge polls now is told the reply arrives by itself; without the poll, to wait_for_reply", async () => {
+    const box = sandbox();
+    const project = gitProject(box);
+    const registry = (await background(box)).registry!;
+    const client = await shim(box, project, { PLANNOTATOR_SESSION_TAG: `claude-code:${CLAUDE_SESSION}` });
+    const textOf = (result: unknown) => ((result as { content: { text: string }[] }).content[0]!.text);
+
+    // No bridge poll for that session yet: nothing will hand it the reply, so it must ask.
+    const before = textOf(await client.callTool({ name: "send_message", arguments: { body: "Before the poll.", idempotency_key: "wake-0" } }));
+    expect(before).toContain("reply won't arrive in this session by itself");
+
+    // The mod's wake polls the bridge as that session (held open, as the mod's long poll is).
+    const controller = new AbortController();
+    const held = fetch(`http://127.0.0.1:${registry.port}${INBOX_BRIDGE_POLL_PATH}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${registry.token}` },
+      body: JSON.stringify({ session: CLAUDE_SESSION, host: "claude-code", waitMs: 20_000 }),
+      signal: controller.signal,
+    }).catch(() => undefined);
+    cleanups.push(() => {
+      controller.abort();
+      return held.then(() => undefined);
+    });
+    await Bun.sleep(300);
+
+    const after = textOf(await client.callTool({ name: "send_message", arguments: { body: "After the poll.", idempotency_key: "wake-1" } }));
+    expect(after).toContain("The person's reply arrives in this session by itself");
+    expect(after).not.toContain("wait_for_reply with this thread_id");
+  }, 90_000);
+
   test("an explicit agent_session wins; a malformed tag is ignored (one fresh id per process); Pi's PI_SESSION_ID is that session", async () => {
     const box = sandbox();
     const project = gitProject(box);

@@ -149,7 +149,7 @@ Agents are told to write an action item only for a true blocker: something you m
 
 ## Connecting your agent
 
-Before any agent has written, the Inbox window shows one next step for this computer: Plannotator's own connections first (Claude Code, Pi and OpenCode, whose replies come back into the session by themselves), then agents that reach it through MCP. A tool that is off turns on with one click. A plugin that is missing shows its install command to copy; the window never installs anything, and it moves on by itself once you have. Below the step, a short list says which agents are already connected and what is left.
+Before any agent has written, the Inbox window shows one next step for this computer: Plannotator's own connections first (Claude Code, Pi and OpenCode 2, where your reply arrives in the session as a new turn on its own), then agents that reach it through MCP, which see your reply the next time they check the Inbox (except Codex 0.149 or later, where it arrives as a new turn too). A tool that is off turns on with one click. A plugin that is missing shows its install command to copy; the window never installs anything, and it moves on by itself once you have. Below the step, a short list says which agents are already connected and what is left.
 
 ### Claude Code
 
