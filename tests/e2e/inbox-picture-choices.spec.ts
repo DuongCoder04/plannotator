@@ -11,7 +11,11 @@
  * from the message image route; the zoom button opens the thread's viewer
  * without picking; a click on a picture picks it; Send; the agent's
  * wait_for_reply gets the plain label. Then an iPhone 15 in WebKit does the
- * same on a second question. Screenshots, light and dark, land in
+ * same on a second question. Last, images the Inbox refuses to serve (a
+ * hidden folder outside the project: 403 image_hidden; a missing file: 404)
+ * show as their alt text, never a broken-image icon, and a card whose
+ * pictures are refused falls back to text rows, on the desktop and on the
+ * iPhone. Screenshots, light and dark, land in
  * PLANNOTATOR_QUESTION_CONTRACT_SHOTS (default .local/proof/question-contract/).
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
@@ -109,6 +113,7 @@ interface World {
   page: Page;
   errors: string[];
   project: string;
+  root: string;
 }
 
 let world: World;
@@ -144,12 +149,15 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   writeFileSync(join(project, 'shots', 'drawer-a.png'), png(640, 480, [37, 99, 235]));
   writeFileSync(join(project, 'shots', 'drawer-b.png'), png(640, 480, [22, 163, 74]));
   writeFileSync(join(project, 'shots', 'both.png'), png(960, 400, [217, 119, 6]));
+  // Refused images: a hidden folder outside the project (the route answers 403 image_hidden).
+  mkdirSync(join(root, 'elsewhere', '.secret'), { recursive: true });
+  for (const name of ['shot.png', 'raw.png', 'both.png', 'a.png']) writeFileSync(join(root, 'elsewhere', '.secret', name), png(640, 480, [190, 18, 60]));
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const claude = await SimAgent.connect({ binary, env, name: 'Claude Code', host: 'claude-code' });
-  world = { dataDir, url, env, claude, context, page, errors, project };
+  world = { dataDir, url, env, claude, context, page, errors, project, root };
   await fetch(`http://127.0.0.1:${registry().port}/api/inbox/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notifications: { dismissed: true } }) });
 });
 
@@ -260,6 +268,88 @@ test('iPhone (WebKit): two tiles across, a tap picks, Send, the agent gets the l
     const questions = answer.questions as { answer: { selected: string[] } }[];
     expect(questions[0]!.answer.selected).toEqual(['Tabs', 'Sidebar']);
     expect(String((answer.reply as { body: string }).body)).not.toContain('![');
+    await context.close();
+  } finally {
+    await own.close();
+  }
+});
+
+/** A body naming images the Inbox refuses: a hidden folder outside the project, and a file that is not there. */
+function refusedBody(root: string): string {
+  const hidden = (name: string) => join(root, 'elsewhere', '.secret', name);
+  return [
+    'The screenshots are in my scratch folder.',
+    '',
+    `![Hidden screenshot](${hidden('shot.png')})`,
+    '',
+    `![Missing screenshot](${join(root, 'gone', 'missing.png')})`,
+    '',
+    `<p><img src="${hidden('raw.png')}" alt="Raw HTML screenshot"></p>`,
+    '',
+    ':::question',
+    'Which drawer should ship?',
+    `Shows: ![Both drawers](${hidden('both.png')})`,
+    '',
+    `- [ ] A · Total on top — ![Drawer A](${hidden('a.png')})`,
+    `- [ ] B · Total pinned — ![Drawer B](${join(root, 'gone', 'b.png')})`,
+    ':::',
+  ].join('\n');
+}
+
+/** The message body the refused images are in. */
+const bodyOf = (messageId: string) => `section.ib-pane .ib-body[data-message-id="${messageId}"]`;
+
+/** Waits until every image the message drew has loaded or failed, and the window has drawn what follows. */
+async function settled(page: Page, messageId: string): Promise<void> {
+  await expect.poll(() => page.locator(bodyOf(messageId)).locator('img').evaluateAll((imgs) => imgs.every((img) => (img as HTMLImageElement).complete))).toBe(true);
+  await page.waitForTimeout(400);
+}
+
+/** What a refused body must look like: no broken <img>, the alt text in chips, text rows on the card. */
+async function expectQuiet(page: Page, messageId: string): Promise<void> {
+  const body = page.locator(bodyOf(messageId));
+  const broken = await body.locator('img').evaluateAll((imgs) => imgs.filter((img) => (img as HTMLImageElement).naturalWidth === 0).map((img) => (img as HTMLImageElement).alt || img.getAttribute('src')));
+  expect(broken).toEqual([]);
+  for (const text of ['Hidden screenshot', 'Missing screenshot', 'Raw HTML screenshot']) await expect(body.locator('[data-image-unavailable]', { hasText: text })).toBeVisible();
+  const card = body.locator('fieldset.question-block');
+  await expect(card.locator('[data-question-shows]')).toContainText('Both drawers');
+  await expect(card.locator('[data-question-tile]')).toHaveCount(0);
+  await expect(card.locator('label[data-question-option]')).toHaveCount(2);
+}
+
+test('refused images show as their alt text, never a broken image; the card falls back to text rows (desktop and iPhone)', async () => {
+  const { page, claude, project, root } = world;
+  const sent = await claude.send({ project_path: project, subject: 'Scratch screenshots', thread: 'scratch-screenshots', body: refusedBody(root) }, { wakes: true });
+  const threadId = sent.thread_id as string;
+  const messageId = (sent.message as { id?: string } | undefined)?.id ?? (sent.message_id as string);
+  // The route really refuses them.
+  const port = registry().port;
+  const hiddenAnswer = await fetch(`http://127.0.0.1:${port}/api/inbox/messages/${messageId}/image?path=${encodeURIComponent(join(root, 'elsewhere', '.secret', 'shot.png'))}`);
+  expect(hiddenAnswer.status).toBe(403);
+  expect(((await hiddenAnswer.json()) as { code: string }).code).toBe('image_hidden');
+  const goneAnswer = await fetch(`http://127.0.0.1:${port}/api/inbox/messages/${messageId}/image?path=${encodeURIComponent(join(root, 'gone', 'missing.png'))}`);
+  expect(goneAnswer.status).toBe(404);
+
+  await page.goto(`${world.url}#thread=${threadId}`);
+  await expect(page.locator(bodyOf(messageId)).locator('fieldset.question-block')).toBeVisible();
+  await settled(page, messageId);
+  await shot(page, 'refused-desktop', page.locator(bodyOf(messageId)));
+  await expectQuiet(page, messageId);
+  expect(world.errors).toEqual([]);
+
+  const own = await webkit.launch({ args: [] });
+  try {
+    const context = await own.newContext({ ...devices['iPhone 15'], colorScheme: 'light' });
+    const phone = await context.newPage();
+    await phone.goto(`${world.url}#thread=${threadId}`);
+    await expect(phone.locator(bodyOf(messageId)).locator('fieldset.question-block')).toBeVisible();
+    await settled(phone, messageId);
+    for (const scheme of ['light', 'dark'] as const) {
+      await phone.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+      await phone.waitForTimeout(300);
+      await phone.screenshot({ path: join(proofDir, `refused-phone-${scheme}.png`), fullPage: true });
+    }
+    await expectQuiet(phone, messageId);
     await context.close();
   } finally {
     await own.close();

@@ -223,6 +223,20 @@ describe('contract lines on the card', () => {
     expect(card.querySelector('[data-question-part="context"]')).toBeNull();
   });
 
+  test.skipIf(!hasDom)('a Shows picture that fails to load is its label, never a broken image', async () => {
+    const el = await mount(<Harness markdown={SINGLE} />);
+    const thumb = el.querySelector<HTMLImageElement>('[data-question-shows] img')!;
+    await act(async () => {
+      thumb.dispatchEvent(new Event('error'));
+    });
+    const shows = el.querySelector<HTMLElement>('[data-question-shows]')!;
+    expect(shows.querySelector('img')).toBeNull();
+    expect(shows.querySelector('[data-question-shows-open]')).toBeNull();
+    expect(shows.textContent).toContain('Both drawers');
+    // The choices' own pictures still load as tiles.
+    expect(tiles(el)).toHaveLength(3);
+  });
+
   test.skipIf(!hasDom)('Shows as a file is a link', async () => {
     const el = await mount(<Harness markdown={`:::question\nRestructure the nav?\nShows: [the nav plan](docs-nav-plan.md)\n- [ ] Yes\n- [ ] No\n:::`} />);
     const shows = el.querySelector('[data-question-shows]')!;
