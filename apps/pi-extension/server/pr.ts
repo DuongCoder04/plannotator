@@ -33,7 +33,7 @@ import {
 	submitPRReview as submitPRReviewCore,
 } from "../generated/pr-provider.ts";
 
-const prRuntime: PRRuntime = {
+const nodeCommandRuntime: PRRuntime = {
 	async runCommand(cmd, args) {
 		return new Promise((resolve, reject) => {
 			const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -71,6 +71,29 @@ const prRuntime: PRRuntime = {
 		});
 	},
 };
+
+// Tests replace the command runner (setPRCommandRuntimeForTests) so no test
+// ever runs the real `gh` / `glab`: the review server calls these at startup
+// in PR mode (the platform user, viewed files, PR context).
+let testRuntime: PRRuntime | null = null;
+
+const prRuntime: PRRuntime = {
+	runCommand: (cmd, args) => (testRuntime ?? nodeCommandRuntime).runCommand(cmd, args),
+	runCommandWithInput: (cmd, args, input) => {
+		const active = testRuntime ?? nodeCommandRuntime;
+		if (!active.runCommandWithInput) return Promise.reject(new Error(`${cmd}: this runtime takes no input`));
+		return active.runCommandWithInput(cmd, args, input);
+	},
+};
+
+/**
+ * Tests only: run every PR platform command through `fake` instead of a real
+ * process (null puts the real runner back). Set it inside a test and restore
+ * it in afterEach: bun runs every test file in one process.
+ */
+export function setPRCommandRuntimeForTests(fake: PRRuntime | null): void {
+	testRuntime = fake;
+}
 
 /** The Node command runner, exported for non-PR CLI consumers (commit avatars). */
 export const prCommandRuntime: PRRuntime = prRuntime;
