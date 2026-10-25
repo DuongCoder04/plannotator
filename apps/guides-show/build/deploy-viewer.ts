@@ -22,10 +22,12 @@
  * build time); it is published under /meta/<version>/manifest.<builtAt>.json,
  * never under the immutable /v1/ tree.
  */
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ViewerManifest } from './manifest-plugin';
-import { clampConcurrency, MAX_CONCURRENCY, publishViewer, uploadPlan, withRetry } from './viewer-upload';
+import { runCommand } from './run-command';
+import { clampConcurrency, existingFromGet, MAX_CONCURRENCY, publishViewer, uploadPlan, withRetry, WRANGLER_TIMEOUT_MS } from './viewer-upload';
 
 const args = process.argv.slice(2);
 const opt = (name: string, dflt?: string) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : dflt; };
@@ -51,36 +53,33 @@ function walk(dir: string, prefix = ''): string[] {
 const CONTENT_TYPES: Record<string, string> = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.map': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const ctype = (f: string) => CONTENT_TYPES[path.extname(f)] ?? 'application/octet-stream';
 
-async function wrangler(argv: string[]): Promise<{ code: number; out: string; err: string }> {
-  const proc = Bun.spawn(['bunx', 'wrangler', ...argv], { cwd: path.resolve(import.meta.dirname, '..'), stdout: 'pipe', stderr: 'pipe' });
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  return { code, out, err };
+/** One wrangler call, killed after WRANGLER_TIMEOUT_MS (a hung call then fails and is retried). */
+function wrangler(argv: string[]) {
+  return runCommand(['bunx', 'wrangler', ...argv], { cwd: path.resolve(import.meta.dirname, '..'), timeoutMs: WRANGLER_TIMEOUT_MS });
 }
 
-/** Wrangler's own message for a missing key (local and remote `r2 object get`). */
-const KEY_MISSING = /specified key does not exist/i;
-
 /**
- * The object's bytes, or null when the key does not exist. Any other failure
- * (an R2 500, a network error) is retried and, if it lasts, aborts the
- * deploy: reading it as "missing" would skip the add-only guard.
+ * The object's bytes, or null when the key does not exist (`existingFromGet`
+ * decides). Retried; a failure that lasts aborts the deploy. The temp file is
+ * removed whatever happened, a failed or partial download included.
  */
 async function existingBytes(key: string): Promise<Uint8Array | null> {
   return withRetry(async () => {
-    const tmp = `/tmp/guides-show-verify-${process.pid}-${Math.random().toString(36).slice(2)}`;
-    const r = await wrangler(['r2', 'object', 'get', `${bucket}/${key}`, '--file', tmp, target]);
-    if (r.code !== 0) {
-      if (KEY_MISSING.test(`${r.out}\n${r.err}`)) return null;
-      throw new Error(`could not read ${key}\n${r.err || r.out}`);
+    const tmp = path.join(tmpdir(), `guides-show-verify-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    try {
+      const r = await wrangler(['r2', 'object', 'get', `${bucket}/${key}`, '--file', tmp, target]);
+      return existingFromGet(key, { ...r, file: existsSync(tmp) ? new Uint8Array(readFileSync(tmp)) : null });
+    } finally {
+      rmSync(tmp, { force: true });
     }
-    try { return new Uint8Array(readFileSync(tmp)); } finally { rmSync(tmp, { force: true }); }
-  }, { onRetry: (attempt, _e, delay) => console.log(`  retrying read of ${key} in ${delay / 1000}s (attempt ${attempt} failed)`) });
+  }, { onRetry: (attempt, error, delay) => console.log(`  retrying read of ${key} in ${delay / 1000}s (attempt ${attempt} failed: ${String(error instanceof Error ? error.message : error).split('\n')[0]})`) });
 }
 
 async function put(key: string, file: string, contentType: string, cacheControl?: string): Promise<void> {
   const argv = ['r2', 'object', 'put', `${bucket}/${key}`, '--file', file, '--content-type', contentType];
   if (cacheControl) argv.push('--cache-control', cacheControl);
   const r = await wrangler([...argv, target]);
+  if (r.timedOut) throw new Error(`wrangler timed out after ${WRANGLER_TIMEOUT_MS / 1000}s`);
   if (r.code !== 0) throw new Error(r.err || r.out || `wrangler exited ${r.code}`);
 }
 

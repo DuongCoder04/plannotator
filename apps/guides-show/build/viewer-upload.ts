@@ -148,37 +148,99 @@ export async function publishViewer(opts: PublishOptions): Promise<number> {
   return uploaded;
 }
 
+/** A wrangler call that runs longer than this is killed and retried. */
+export const WRANGLER_TIMEOUT_MS = 120_000;
+
+/** Wrangler 4's message for a key that is not in the bucket (local and remote `r2 object get`). */
+export const KEY_MISSING = /The specified key does not exist\./;
+
+export interface WranglerGetResult {
+  code: number;
+  out: string;
+  err: string;
+  timedOut?: boolean;
+  /** The bytes of the `--file` it wrote, or null when there is no file. */
+  file: Uint8Array | null;
+}
+
+/**
+ * What an `r2 object get` said about a key: its bytes, or null when the key
+ * does not exist. Only wrangler's own "The specified key does not exist."
+ * counts as missing. Anything else (an R2 500, a network error, a timeout,
+ * exit 0 without a file) throws, so the caller retries and then stops the
+ * deploy: reading it as missing would skip the add-only guard.
+ */
+export function existingFromGet(key: string, r: WranglerGetResult): Uint8Array | null {
+  if (r.timedOut) throw new Error(`reading ${key} timed out`);
+  if (r.code !== 0) {
+    if (KEY_MISSING.test(`${r.out}\n${r.err}`)) return null;
+    throw new Error(`could not read ${key} (exit ${r.code})\n${(r.err || r.out).trim()}`);
+  }
+  if (!r.file) throw new Error(`wrangler exited 0 for ${key} but wrote no file`);
+  return r.file;
+}
+
+export interface VerifyFile {
+  /** Path relative to the viewer build directory. */
+  rel: string;
+  /** Size of the local file in bytes. */
+  size: number;
+}
+
+export interface HeadResult {
+  status: number;
+  /** The size the site reports (Content-Length), or null when it gives none. */
+  size: number | null;
+}
+
 export interface VerifyOptions {
   /** `https://guides.show/v1/`; a trailing slash is added when missing. */
   baseUrl: string;
-  files: readonly string[];
-  /** Resolves with the HTTP status of a HEAD request, or rejects. */
-  head: (url: string) => Promise<number>;
+  files: readonly VerifyFile[];
+  head: (url: string) => Promise<HeadResult>;
+  /**
+   * Counts the body a GET returns, to confirm a size the HEAD did not match
+   * or did not give (a proxy may drop or zero Content-Length on a HEAD).
+   * Without it the HEAD's answer stands.
+   */
+  getSize?: (url: string) => Promise<number | null>;
   concurrency?: number;
   retry?: RetryOptions;
 }
 
 /**
- * HEADs every file under the base URL and returns the ones that do not answer
- * 200 (`rel: status` or `rel: error`). A network error is retried; a 404 is
- * retried too, briefly, in case an edge has not seen the object yet.
+ * HEADs every file under the base URL and returns the problems, one line each
+ * (`rel: HTTP 404`, `rel: 1200 bytes on the site, 1300 here`). A network error
+ * or a status other than 200 is retried briefly, in case an edge has not seen
+ * the object yet; a size that differs from the local file is reported at once
+ * (a different file under the same content-hashed key), after `getSize`
+ * confirms it.
  */
 export async function findMissing(opts: VerifyOptions): Promise<string[]> {
   const base = opts.baseUrl.endsWith('/') ? opts.baseUrl : `${opts.baseUrl}/`;
-  const missing: string[] = [];
-  const check = async (rel: string) => {
+  const problems: string[] = [];
+  const check = async ({ rel, size }: VerifyFile) => {
+    let found: HeadResult;
     try {
-      await withRetry(async () => {
-        const status = await opts.head(`${base}${rel}`);
-        if (status !== 200) throw new Error(`HTTP ${status}`);
+      found = await withRetry(async () => {
+        const r = await opts.head(`${base}${rel}`);
+        if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+        return r;
       }, opts.retry);
     } catch (error) {
-      missing.push(`${rel}: ${firstLine(error)}`);
+      problems.push(`${rel}: ${firstLine(error)}`);
+      return;
     }
+    let siteSize = found.size;
+    if (siteSize !== size && opts.getSize) {
+      try { siteSize = await opts.getSize(`${base}${rel}`); } catch (error) { problems.push(`${rel}: ${firstLine(error)}`); return; }
+    }
+    if (siteSize === null) problems.push(`${rel}: the site gave no size (Content-Length)`);
+    else if (siteSize !== size) problems.push(`${rel}: ${siteSize} bytes on the site, ${size} here`);
   };
   // `check` never rejects, so the pool visits every file.
   await runPool(opts.files, opts.concurrency ?? MAX_CONCURRENCY, check);
-  return missing.sort();
+  return problems.sort();
 }
 
 function errorText(error: unknown): string {
