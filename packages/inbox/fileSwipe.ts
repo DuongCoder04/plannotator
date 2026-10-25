@@ -208,9 +208,17 @@ export function useFileSwipe(area: RefObject<HTMLElement | null>, options: FileS
       }, ms);
       timers.add(timer);
     };
+    /** Once a spring-back or slide-in has run, the file carries no inline transition (unless a new swipe took it meanwhile). */
+    const clearTransitionAfter = (ms: number) =>
+      later(ms, () => {
+        if (mode !== 'swipe') el.style.transition = '';
+      });
     const springBack = () => {
-      draw(0, prefersReducedMotion() ? null : `transform 260ms cubic-bezier(0.32, 0.72, 0, 1)`);
+      const reduced = prefersReducedMotion();
+      draw(0, reduced ? null : `transform 260ms cubic-bezier(0.32, 0.72, 0, 1)`);
       store.set(null);
+      if (reduced) el.style.transition = '';
+      else clearTransitionAfter(260);
     };
     const onStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
@@ -278,6 +286,7 @@ export function useFileSwipe(area: RefObject<HTMLElement | null>, options: FileS
       if (!canStep(dir) || wouldAsk() || prefersReducedMotion()) {
         // An end (the note), a typed comment (the question row) or reduced motion: no slide, the step (or its answer) at once.
         draw(0, null);
+        el.style.transition = '';
         store.set(null);
         onStep(dir);
         return;
@@ -289,34 +298,40 @@ export function useFileSwipe(area: RefObject<HTMLElement | null>, options: FileS
         onStep(dir);
         draw(dir > 0 ? w * 0.25 : -w * 0.25, null, '0');
         frame = requestAnimationFrame(() => {
-          frame = requestAnimationFrame(() => draw(0, `transform ${SWIPE_SLIDE_MS + 40}ms cubic-bezier(0.23, 1, 0.32, 1), opacity ${SWIPE_SLIDE_MS}ms ease-out`, ''));
+          frame = requestAnimationFrame(() => {
+            draw(0, `transform ${SWIPE_SLIDE_MS + 40}ms cubic-bezier(0.23, 1, 0.32, 1), opacity ${SWIPE_SLIDE_MS}ms ease-out`, '');
+            clearTransitionAfter(SWIPE_SLIDE_MS + 40);
+          });
         });
       });
     };
-    // A gesture that starts on the file is followed on its first target as well as the document: a touch
-    // keeps firing at the element it started on, and that element may be drawn again mid-gesture (Pierre's
-    // code view does), after which it is out of the page and nothing it gets bubbles to the file.
-    let following: EventTarget[] = [];
+    // The file's own listeners are there for the whole time the swipe is on, and touchmove is not passive
+    // from the touch's first move (iOS treats a touch's moves as cancelable only for listeners present when
+    // it began). preventDefault runs only once a swipe is decided (`onMove`), so a vertical scroll stays native.
+    // A gesture is also followed on its first target: a touch keeps firing at the element it started on, and
+    // that element may be drawn again mid-gesture (Pierre's code view does), after which it is out of the page
+    // and nothing it gets bubbles to the file.
+    let following: EventTarget | null = null;
     let seen: Event | null = null;
-    const follow = (targets: EventTarget[]) => {
-      for (const target of following) {
-        target.removeEventListener('touchmove', onMoveAny as EventListener, true);
-        target.removeEventListener('touchend', onEndAny as EventListener, true);
-        target.removeEventListener('touchcancel', onEndAny as EventListener, true);
+    const follow = (target: EventTarget | null) => {
+      if (following) {
+        following.removeEventListener('touchmove', onMoveAny as EventListener);
+        following.removeEventListener('touchend', onEndAny as EventListener);
+        following.removeEventListener('touchcancel', onEndAny as EventListener);
       }
-      following = targets;
-      for (const target of following) {
-        target.addEventListener('touchmove', onMoveAny as EventListener, { capture: true, passive: false });
-        target.addEventListener('touchend', onEndAny as EventListener, true);
-        target.addEventListener('touchcancel', onEndAny as EventListener, true);
+      following = target;
+      if (following) {
+        following.addEventListener('touchmove', onMoveAny as EventListener, { passive: false });
+        following.addEventListener('touchend', onEndAny as EventListener);
+        following.addEventListener('touchcancel', onEndAny as EventListener);
       }
     };
     const onStartEl = (event: TouchEvent) => {
       onStart(event);
       const first = event.composedPath()[0];
-      follow(start === null ? [] : first && first !== document ? [document, first] : [document]);
+      follow(start !== null && first && first !== el ? first : null);
     };
-    // The same event reaches the document and the target while the target is in the page: handled once.
+    // The same event reaches the target and the file while the target is in the page: handled once.
     const onMoveAny = (event: TouchEvent) => {
       if (event === seen) return;
       seen = event;
@@ -328,12 +343,18 @@ export function useFileSwipe(area: RefObject<HTMLElement | null>, options: FileS
       // A second finger lifting while one stays down is not the end of the gesture.
       if (event.type === 'touchend' && event.touches.length > 0) return;
       onEnd();
-      follow([]);
+      follow(null);
     };
     el.addEventListener('touchstart', onStartEl, { passive: true });
+    el.addEventListener('touchmove', onMoveAny, { passive: false });
+    el.addEventListener('touchend', onEndAny);
+    el.addEventListener('touchcancel', onEndAny);
     return () => {
       el.removeEventListener('touchstart', onStartEl);
-      follow([]);
+      el.removeEventListener('touchmove', onMoveAny);
+      el.removeEventListener('touchend', onEndAny);
+      el.removeEventListener('touchcancel', onEndAny);
+      follow(null);
       for (const timer of timers) clearTimeout(timer);
       cancelAnimationFrame(frame);
       el.style.transform = '';

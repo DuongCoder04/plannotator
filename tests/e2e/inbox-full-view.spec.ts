@@ -537,7 +537,7 @@ test('on an iPhone (WebKit): the same mode, the toolbar bottom right with 44 px 
         expect(b.height).toBeGreaterThanOrEqual(44);
       }
       // The position is the `1/3 ⌄` pill (one tap to every file); the whole toolbar stays on screen.
-      await expect(bar(page).locator('[data-full-view-position]')).toHaveAttribute('aria-label', 'File 1 of 3, show every file');
+      await expect(bar(page).locator('[data-full-view-position]')).toHaveAttribute('aria-label', '1/3: file 1 of 3, turnkey.html. Show every file');
       expect(barBox.x).toBeGreaterThanOrEqual(0);
       await expect(bar(page).getByRole('button', { name: 'Side by side' })).toHaveCount(0);
       // ⋯'s rows are 44 px targets on a phone too (Download, the other version).

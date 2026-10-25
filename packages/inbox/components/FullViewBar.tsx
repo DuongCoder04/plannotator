@@ -379,8 +379,12 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
               aria-haspopup="grid"
               aria-expanded={position.open}
               aria-controls={position.open ? position.peekId : undefined}
-              // A phone's pill is short to say (the step itself names the file in the live region).
-              aria-label={phone ? `File ${position.index + 1} of ${position.total}, show every file` : `${position.index + 1} of ${position.total}, ${position.name}. Show every file in this thread`}
+              // A phone's pill: its name starts with the text it shows (WCAG 2.5.3, Label in Name), then says it in words.
+              aria-label={
+                phone
+                  ? `${position.index + 1}/${position.total}: file ${position.index + 1} of ${position.total}, ${position.name}. Show every file`
+                  : `${position.index + 1} of ${position.total}, ${position.name}. Show every file in this thread`
+              }
               onClick={() => position.onOpenChange(!position.open)}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown' && !position.open) {

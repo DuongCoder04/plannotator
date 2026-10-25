@@ -211,12 +211,12 @@ test('which files take the swipe', () => {
   for (const kind of ['html', 'mermaid', 'graphviz', 'video'] as const) expect(fileSwipeMode(kind, false)).toBe('none');
 });
 
-test.skipIf(!hasDom)('the pill: "File 2 of 5, show every file", after the count; one tap opens the sheet, Escape puts focus back on it, a pick steps', async () => {
+test.skipIf(!hasDom)('the pill: named "2/5: file 2 of 5, plan.txt. Show every file" (its visible text first), after the count; one tap opens the sheet, Escape puts focus back on it, a pick steps', async () => {
   stubViews();
   const opened = await render(plan);
   const button = pill()!;
   expect(button).not.toBeNull();
-  expect(button.getAttribute('aria-label')).toBe('File 2 of 5, show every file');
+  expect(button.getAttribute('aria-label')).toBe('2/5: file 2 of 5, plan.txt. Show every file');
   expect(button.classList.contains('ib-fvpill')).toBe(true);
   expect(button.textContent).toBe('2/5');
   expect(button.getAttribute('aria-haspopup')).toBe('grid');
@@ -240,7 +240,7 @@ test.skipIf(!hasDom)('the pill: "File 2 of 5, show every file", after the count;
   await act(async () => cell.click());
   await settle();
   expect(opened).toEqual([spec.id]);
-  expect(pill()!.getAttribute('aria-label')).toBe('File 5 of 5, show every file');
+  expect(pill()!.getAttribute('aria-label')).toBe('5/5: file 5 of 5, spec.pdf. Show every file');
 });
 
 test.skipIf(!hasDom)('a desktop keeps its own N/M (named by the file) and the inline peek; no swipe there', async () => {
@@ -439,4 +439,75 @@ test.skipIf(!hasDom)('a typed comment: the swipe springs back and the question r
   expect(area().style.transform).toBe('');
   expect(host!.querySelector('[data-step-guard]')).not.toBeNull();
   expect(host!.querySelector('[data-guard-discard]')!.textContent).toContain('plan.txt');
+});
+
+test.skipIf(!hasDom)('a decided swipe cancels its moves (no scroll under it); the moves before the decision and a vertical scroll are left to the browser', async () => {
+  stubViews();
+  reducedMotion(false);
+  await render(notes);
+  sized(area());
+  const moves: Event[] = [];
+  await act(async () => {
+    touchEvent(area(), 'touchstart', [{ x: 200, y: 300 }]);
+    // Under the 10 px decision: not the swipe's yet.
+    moves.push(touchEvent(area(), 'touchmove', [{ x: 196, y: 301 }]));
+    // Decided: a swipe. This move and every one after it are cancelled, vertical drift included.
+    moves.push(touchEvent(area(), 'touchmove', [{ x: 160, y: 304 }]));
+    moves.push(touchEvent(area(), 'touchmove', [{ x: 120, y: 330 }]));
+  });
+  expect(moves.map((m) => m.defaultPrevented)).toEqual([false, true, true]);
+  await act(async () => {
+    touchEvent(area(), 'touchend', [{ x: 120, y: 330 }]);
+  });
+  await settle(SWIPE_SLIDE_MS + 60);
+});
+
+test.skipIf(!hasDom)('the code viewer draws the line under the finger again mid-gesture: a swipe whose first target left the page still steps', async () => {
+  stubViews();
+  reducedMotion(true);
+  const opened = await render(notes);
+  sized(area());
+  // A line the viewer replaces once the finger is down: its later touch events fire at the detached node and bubble nowhere.
+  const line = document.createElement('div');
+  line.textContent = 'export function retry() {}';
+  area().appendChild(line);
+  await act(async () => {
+    touchEvent(line, 'touchstart', [{ x: 200, y: 300 }]);
+  });
+  line.remove();
+  const reached: string[] = [];
+  const spy = (event: Event) => reached.push(event.type);
+  area().addEventListener('touchmove', spy);
+  let moved: Event | null = null;
+  await act(async () => {
+    touchEvent(line, 'touchmove', [{ x: 180, y: 301 }]);
+    moved = touchEvent(line, 'touchmove', [{ x: 20, y: 304 }]);
+    touchEvent(line, 'touchend', [{ x: 20, y: 304 }]);
+  });
+  area().removeEventListener('touchmove', spy);
+  // Nothing reached the file itself: the swipe heard it on the line it started on.
+  expect(reached).toEqual([]);
+  expect(moved!.defaultPrevented).toBe(true);
+  await settle(20);
+  expect(opened).toEqual([plan.id]);
+});
+
+test.skipIf(!hasDom)('the file carries no inline transition once a spring-back or a slide-in has run', async () => {
+  stubViews();
+  reducedMotion(false);
+  const opened = await render(notes);
+  sized(area());
+  await drag(area(), -30, 0);
+  expect(area().style.transition).toContain('transform');
+  await settle(320);
+  expect(area().style.transition).toBe('');
+  expect(area().style.transform).toBe('');
+  sized(area());
+  await drag(area(), -200, 0);
+  await settle(SWIPE_SLIDE_MS + 60);
+  expect(opened).toEqual([plan.id]);
+  await settle(SWIPE_SLIDE_MS + 200);
+  expect(area().style.transition).toBe('');
+  expect(area().style.transform).toBe('');
+  expect(area().style.opacity).toBe('');
 });

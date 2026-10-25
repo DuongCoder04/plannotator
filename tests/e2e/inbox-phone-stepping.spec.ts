@@ -114,6 +114,8 @@ async function world() {
   writeFileSync(join(dir, 'pay.html'), PAGE);
   writeFileSync(join(dir, 'retry.ts'), CODE);
   writeFileSync(join(dir, 'receipt.pdf'), PDF);
+  // For the 320 px check: more files, so the pill reads two digits.
+  for (let i = 1; i <= 8; i++) writeFileSync(join(dir, `note-${i}.txt`), `Note ${i} on the checkout.\n`);
   const agent = await SimAgent.connect({ binary, env, name: 'Claude', host: 'claude-code' });
   const sent = await agent.send({
     project_path: project,
@@ -122,7 +124,7 @@ async function world() {
     body: 'The new checkout, its copy, the pay page, the retry policy and the receipt.',
   });
   const ids = Object.fromEntries((sent.attachments as { id: string; name: string }[]).map((a) => [a.name, a.id])) as Record<string, string>;
-  return { root, url, agent, thread: sent.thread_id as string, ids };
+  return { root, url, agent, project, thread: sent.thread_id as string, ids };
 }
 
 const pane = (page: Page) => page.locator('[data-attachment-pane]');
@@ -211,7 +213,7 @@ for (const phone of [
 ])
   for (const scheme of phone.schemes)
   test(`on a phone, ${phone.name}, ${scheme}: the pill opens every file in one tap, and a swipe steps where it can`, async () => {
-    const { root, url, agent, thread, ids } = await world();
+    const { root, url, agent, project, thread, ids } = await world();
     const { defaultBrowserType: _ignored, ...device } = phone.device;
     // (WebKit launches without the config's Chromium flags, which Linux WebKit exits on.)
     const browser: Browser = phone.browserName === 'webkit' ? await webkit.launch({ args: [] }) : await chromium.launch();
@@ -227,7 +229,7 @@ for (const phone of [
       await expect(pane(page)).toHaveAttribute('data-full-view', '');
 
       // The pill: after the count, named for a screen reader, a 44 px target, the whole toolbar on screen.
-      await expect(pill(page)).toHaveAttribute('aria-label', 'File 1 of 5, show every file');
+      await expect(pill(page)).toHaveAttribute('aria-label', '1/5: file 1 of 5, checkout.png. Show every file');
       await expect(pill(page)).toHaveText('1/5');
       const viewport = page.viewportSize()!;
       const box = (await pill(page).boundingBox())!;
@@ -248,7 +250,7 @@ for (const phone of [
       await expect(sheet).toBeHidden();
       await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['checkout-copy.md']!);
       await expect(pane(page).getByText('What every step of the new checkout says')).toBeVisible();
-      await expect(pill(page)).toHaveAttribute('aria-label', 'File 2 of 5, show every file');
+      await expect(pill(page)).toHaveAttribute('aria-label', '2/5: file 2 of 5, checkout-copy.md. Show every file');
 
       const touch = await finger(page, phone.browserName);
       const area = (await pane(page).locator('.ib-docarea').boundingBox())!;
@@ -275,7 +277,7 @@ for (const phone of [
       await shot(page, `${tag}-mid-swipe-markdown`, scheme);
       await touch.up();
       await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['pay.html']!);
-      await expect(pill(page)).toHaveAttribute('aria-label', 'File 3 of 5, show every file');
+      await expect(pill(page)).toHaveAttribute('aria-label', '3/5: file 3 of 5, pay.html. Show every file');
       await expect(page.locator('[data-step-live]')).toContainText('3 of 5, pay.html');
 
       // An HTML page takes its own touches: a swipe on it stays on it.
@@ -340,12 +342,32 @@ for (const phone of [
       expect(errors).toEqual([]);
       await context.close();
 
-      // At 320 px the toolbar (the HTML page's, with the pen: the widest) still fits.
-      const small = await browser.newContext({ ...device, viewport: { width: 320, height: 640 } });
+      // At 320 px the toolbar (the HTML page's, with the pen: the widest) still fits, with two-digit counts in both
+      // the comment count and the pill: the page again in a second message after eight notes ("14/14"), 12 comments on it.
+      const more = await agent.send({
+        project_path: project,
+        subject: 'Checkout: notes',
+        attachments: [...Array.from({ length: 8 }, (_, i) => `checkout/note-${i + 1}.txt`), 'checkout/pay.html'],
+        body: 'Eight notes and the pay page again.',
+      });
+      expect(more.thread_id).toBe(thread);
+      const page14 = (more.attachments as { id: string; name: string }[]).find((a) => a.name === 'pay.html')!.id;
+      for (let i = 1; i <= 12; i++) {
+        const saved = await fetch(`${url.replace(/\/$/, '')}/api/inbox/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ attachment_id: page14, version: 'current', annotation: { id: `ann-pay-${i}`, type: 'COMMENT', text: `Note ${i}.`, originalText: 'Pay $48.00', blockId: 'block-1', startOffset: 0, endOffset: 0, createdA: i } }),
+        });
+        expect(saved.status).toBe(200);
+      }
+      const small = await browser.newContext({ ...device, colorScheme: scheme, viewport: { width: 320, height: 640 } });
       const narrowPage = await small.newPage();
-      await narrowPage.goto(`${url}#thread=${thread}&file=${ids['pay.html']}`);
-      await expect(pane(narrowPage)).toHaveAttribute('data-attachment-pane', ids['pay.html']!);
+      await narrowPage.goto(`${url}#thread=${thread}&file=${page14}`);
+      await expect(pane(narrowPage)).toHaveAttribute('data-attachment-pane', page14);
       await expect(bar(narrowPage).locator('[data-full-view-pen]')).toBeVisible();
+      await expect(pill(narrowPage)).toHaveText('14/14');
+      await expect(bar(narrowPage).locator('[data-full-view-comments]')).toHaveText('12');
+      await expect(pill(narrowPage)).toHaveAttribute('aria-label', '14/14: file 14 of 14, pay.html. Show every file');
       expect(await narrowPage.evaluate(() => window.innerWidth)).toBe(320);
       const narrow = (await bar(narrowPage).boundingBox())!;
       expect(narrow.x).toBeGreaterThanOrEqual(0);

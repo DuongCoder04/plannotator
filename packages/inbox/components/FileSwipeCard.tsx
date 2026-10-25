@@ -27,7 +27,7 @@ export function FileSwipeCard({ swipe, steps, index }: { swipe: FileSwipe; steps
       data-file-swipe-card={next ? 'next' : 'previous'}
     >
       {!next && <Icon name="chevL" size={16} />}
-      <span className="ib-swipecard-th">
+      <span className={`ib-swipecard-th${readInboxAttachmentKind(attachment.kind) === 'image' ? '' : ' ib-swipecard-th-tile'}`}>
         {readInboxAttachmentKind(attachment.kind) === 'image' ? (
           <img src={attachmentImageUrl(attachment, readableVersion(attachment))} alt="" width={28} height={28} draggable={false} />
         ) : (
