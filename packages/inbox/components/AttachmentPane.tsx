@@ -501,6 +501,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const phonePosRef = useRef<HTMLButtonElement>(null);
   /** What opened a phone's peek sheet (the toolbar's pill, or the position in the comments sheet's foot): focus goes back there. */
   const peekOpener = useRef<'pill' | 'foot'>('pill');
+  /** Focus back on what opened a phone's peek sheet (the toolbar's pill, or the position in the comments sheet), else the toolbar's handle. */
+  const focusPeekOpener = () => {
+    const pill = sectionRef.current?.querySelector<HTMLElement>('[data-full-view-bar] [data-full-view-position]');
+    const usable = (el: HTMLElement | null | undefined) => !!el && el.isConnected && !el.closest('[inert]');
+    const opener = peekOpener.current === 'foot' && usable(phonePosRef.current) ? phonePosRef.current : usable(pill) ? pill : sectionRef.current?.querySelector<HTMLElement>('[data-full-view-handle]');
+    opener?.focus({ preventScroll: true });
+  };
+  /** A step was taken from the sheet's Previous / Next: once the next file is in, focus goes back to the sheet's opener. */
+  const steppedFromSheet = useRef(false);
   const phonePeekHost = phone && menuOpen ? peekSheetHost(sectionRef.current) : null;
   /** The person moved in or out of full screen with a button: focus follows once the frame is drawn. */
   const toggledFull = useRef(false);
@@ -575,6 +584,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     if (fullRef.current) showChipRef.current(null);
     // A key pressed in the document (or the HTML page) leaves focus on the pane; a bar button keeps it.
     if (source === 'key') sectionRef.current?.focus({ preventScroll: true });
+    // The sheet's Previous / Next closed the sheet with the step: focus back on what opened it.
+    if (steppedFromSheet.current) {
+      steppedFromSheet.current = false;
+      requestAnimationFrame(focusPeekOpener);
+    }
   }, [attachment.id, announce]);
 
   // `]` `[` `→` `←` (stepping.ts has the rules for when they stand down).
@@ -590,9 +604,9 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     onStep: (dir) => stepRef.current(dir, 'key'),
     wouldAsk: () => !props.readOnly && unsavedComposer(sectionRef.current, savedTextRef.current) !== null,
   });
-  // TODO(owner, pending): the swipe fallback. A file a swipe cannot step (`swipeMode === 'none'`: HTML pages, diagrams,
-  // videos; and code that scrolls sideways, which useFileSwipe's `onRefuse` reports) steps on a phone only through the
-  // toolbar's pill and the sheet. A visible step for them waits on the owner's answer (not floating side tabs): add it here.
+  // A file a swipe cannot step (`swipeMode === 'none'`: HTML pages, diagrams, videos; and code that scrolls sideways)
+  // steps through the sheet the pill opens: its ‹ Previous and Next › (the owner's answer; no floating tabs), shown for
+  // every file so the sheet is the same everywhere (the phone's FilePeek below, `onStep`).
 
   const stepWhen = (dir: 1 | -1) => (event: KeyboardEvent) => {
     if (!multi) return false;
@@ -614,6 +628,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     }
   };
   const keepWriting = () => {
+    steppedFromSheet.current = false;
     setGuard(null);
     focusComposer();
   };
@@ -1893,14 +1908,20 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 onClose={() => {
                   setMenuOpen(false);
                   // The sheet's backdrop covered everything: focus back on what opened it (the toolbar's pill, or the position in the comments sheet).
-                  requestAnimationFrame(() => {
-                    const pill = sectionRef.current?.querySelector<HTMLElement>('[data-full-view-bar] [data-full-view-position]');
-                    const usable = (el: HTMLElement | null | undefined) => !!el && el.isConnected && !el.closest('[inert]');
-                    const opener = peekOpener.current === 'foot' && usable(phonePosRef.current) ? phonePosRef.current : usable(pill) ? pill : sectionRef.current?.querySelector<HTMLElement>('[data-full-view-handle]');
-                    opener?.focus({ preventScroll: true });
-                  });
+                  requestAnimationFrame(focusPeekOpener);
                 }}
                 onGo={(target) => goTo(target, 'menu')}
+                // The step for every file, swipeable or not (the owner's answer for HTML pages and code that scrolls
+                // sideways): one tap steps and closes the sheet, so the new file is what you see; at an end only the note.
+                onStep={(dir) => {
+                  const target = index + dir;
+                  if (target < 0 || target >= steps.length) {
+                    step(dir, 'button');
+                    return;
+                  }
+                  steppedFromSheet.current = true;
+                  goTo(target, 'button');
+                }}
               />
             </div>,
             phonePeekHost,

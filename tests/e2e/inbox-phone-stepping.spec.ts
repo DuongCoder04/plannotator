@@ -293,9 +293,23 @@ for (const phone of [
         await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['pay.html']!);
       }
 
-      // Code whose lines run off the screen: a swipe toward more code keeps the touch, the way it has nothing more steps.
+      // The page takes no swipe: the sheet the pill opens leads with ‹ Previous and Next ›, one tap steps and closes it.
       await pill(page).tap();
-      await sheet.getByRole('gridcell', { name: /^retry\.ts/ }).click();
+      await expect(sheet).toBeVisible();
+      const prevStep = sheet.locator('[data-peek-step-prev]');
+      const nextStep = sheet.locator('[data-peek-step-next]');
+      await expect(prevStep).toHaveAttribute('aria-label', 'Previous file: checkout-copy.md');
+      await expect(nextStep).toHaveAttribute('aria-label', 'Next file: retry.ts');
+      for (const button of [prevStep, nextStep]) {
+        const b = (await button.boundingBox())!;
+        expect(b.width).toBeGreaterThanOrEqual(44);
+        expect(b.height).toBeGreaterThanOrEqual(44);
+      }
+      await shot(page, `${tag}-sheet-previous-next-html`, scheme);
+      await nextStep.tap();
+      await expect(sheet).toBeHidden();
+
+      // Code whose lines run off the screen: a swipe toward more code keeps the touch, the way it has nothing more steps.
       await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['retry.ts']!);
       await expect(pane(page).locator('[data-code-view]')).toBeVisible();
       await page.waitForTimeout(500);
@@ -332,6 +346,16 @@ for (const phone of [
       await touch.up();
       await expect(page.locator('[data-full-view-chip]')).toContainText('Last file in this thread');
       await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['receipt.pdf']!);
+      // In the sheet, Next is aria-disabled at the last file: a tap steps nowhere and the sheet stays.
+      await pill(page).tap();
+      await expect(nextStep).toHaveAttribute('aria-disabled', 'true');
+      // (force: Playwright waits for an aria-disabled button to become enabled; a finger does not.)
+      await nextStep.tap({ force: true });
+      await expect(sheet).toBeVisible();
+      await expect(pane(page)).toHaveAttribute('data-attachment-pane', ids['receipt.pdf']!);
+      await expect(page.locator('[data-step-live]')).toContainText('Last file in this thread');
+      await page.locator('[data-peek-backdrop]').click({ position: { x: 20, y: 20 } });
+      await expect(sheet).toBeHidden();
 
       // The toolbar still tucks into its handle, and the handle brings it back.
       await bar(page).locator('[data-full-view-hide]').tap();

@@ -23,12 +23,10 @@
  * `SWIPE_DECIDE_PX`, and only when it moves `SWIPE_RATIO` times more sideways
  * than up or down, so scrolling a document is never taken.
  *
- * TODO(owner, pending): a visible step for the files a swipe cannot step
- * (HTML pages, and code that scrolls sideways) is waiting on the owner's
- * answer; do not add floating side tabs. It goes in one place: the TODO
- * beside `useFileSwipe` in AttachmentPane.tsx, which already knows when a
- * file has no swipe (`fileSwipeMode(...) === 'none'`, or a touch refused
- * because the block under it scrolls sideways: `useFileSwipe`'s `onRefuse`).
+ * The files a swipe cannot step (HTML pages, and code that scrolls sideways)
+ * step through the sheet the toolbar's pill opens: its ‹ Previous and Next ›
+ * (the owner's answer; no floating tabs), shown for every file
+ * (AttachmentStepper.tsx `FilePeek`'s `onStep`).
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react';
@@ -170,8 +168,6 @@ export interface FileSwipeOptions {
   onStep: (dir: SwipeDir) => void;
   /** Leaving now would raise the question row (a typed comment): the file springs back and the step asks first. */
   wouldAsk: () => boolean;
-  /** A touch refused because the block under it scrolls sideways (see the TODO above). */
-  onRefuse?: (reason: 'owner' | 'sideways') => void;
 }
 
 /**
@@ -251,10 +247,8 @@ export function useFileSwipe(area: RefObject<HTMLElement | null>, options: FileS
           mode = 'native';
           return;
         }
-        const refused = sidewaysOwner(start.path, swipeDirOf(mx));
-        if (refused) {
+        if (sidewaysOwner(start.path, swipeDirOf(mx))) {
           mode = 'native';
-          optionsRef.current.onRefuse?.(refused);
           return;
         }
         mode = 'swipe';

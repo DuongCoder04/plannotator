@@ -441,6 +441,94 @@ test.skipIf(!hasDom)('a typed comment: the swipe springs back and the question r
   expect(host!.querySelector('[data-guard-discard]')!.textContent).toContain('plan.txt');
 });
 
+/** The phone's file sheet, opened from the toolbar's pill. */
+async function openSheet() {
+  await act(async () => pill()!.click());
+  await settle();
+  return document.querySelector<HTMLElement>('[data-image-peek-sheet]')!;
+}
+const prevButton = () => document.querySelector<HTMLButtonElement>('[data-peek-step-prev]');
+const nextButton = () => document.querySelector<HTMLButtonElement>('[data-peek-step-next]');
+
+test.skipIf(!hasDom)('the sheet the pill opens leads with ‹ Previous and Next ›, named with the file they go to; one tap steps and closes the sheet, focus back on the pill', async () => {
+  stubViews();
+  const opened = await render(plan);
+  const sheet = await openSheet();
+  const header = sheet.querySelector('[data-peek-sheet-header]')!;
+  expect(header).not.toBeNull();
+  // Above the grid and outside it (a grid holds only rows).
+  expect(header.compareDocumentPosition(sheet.querySelector('[role="grid"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(sheet.querySelector('[role="grid"] [data-peek-step]')).toBeNull();
+  expect(prevButton()!.getAttribute('aria-label')).toBe('Previous file: notes.md');
+  expect(nextButton()!.getAttribute('aria-label')).toBe('Next file: shot.png');
+  expect(prevButton()!.textContent).toBe('Previous');
+  expect(nextButton()!.textContent).toBe('Next');
+  expect(prevButton()!.hasAttribute('aria-disabled')).toBe(false);
+  expect(header.querySelector('.ib-peekstep-n')!.textContent).toBe('2 of 5');
+  await act(async () => nextButton()!.click());
+  await settle(80);
+  expect(opened).toEqual([shot.id]);
+  // The sheet closes with the step: the new file is what you see.
+  expect(document.querySelector('[data-image-peek-sheet]')).toBeNull();
+  expect(document.activeElement).toBe(pill());
+  expect(live()).toContain('3 of 5, shot.png');
+});
+
+test.skipIf(!hasDom)('Previous and Next show on every file, an HTML page included; at an end the button is aria-disabled, keeps focus and the sheet, and says the end', async () => {
+  stubViews();
+  const opened = await render(page);
+  await openSheet();
+  expect(prevButton()!.getAttribute('aria-label')).toBe('Previous file: shot.png');
+  expect(nextButton()!.getAttribute('aria-label')).toBe('Next file: spec.pdf');
+  await act(async () => prevButton()!.click());
+  await settle(80);
+  expect(opened).toEqual([shot.id]);
+  act(() => root?.unmount());
+  host?.remove();
+
+  const fromLast = await render(spec);
+  await openSheet();
+  const next = nextButton()!;
+  expect(next.getAttribute('aria-disabled')).toBe('true');
+  expect(next.getAttribute('aria-label')).toBe('Next file: this is the last');
+  next.focus();
+  await act(async () => next.click());
+  await settle(80);
+  expect(fromLast).toEqual([]);
+  expect(document.querySelector('[data-image-peek-sheet]')).not.toBeNull();
+  expect(document.activeElement).toBe(next);
+  expect(live()).toBe('Last file in this thread');
+  // Escape in the header closes the sheet, focus back on the pill.
+  await act(async () => next.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  await settle(80);
+  expect(document.querySelector('[data-image-peek-sheet]')).toBeNull();
+  expect(document.activeElement).toBe(pill());
+});
+
+test.skipIf(!hasDom)('ImagePeek without a header is the sheet it was: no header, and Shift+Tab from the grid still closes it', async () => {
+  const { ImagePeek } = await import('@plannotator/ui/components/ImagePeek');
+  const closed: string[] = [];
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  const rows = [{ key: 'm1', label: '9:41 AM', items: [{ key: 'a', name: 'a.md', thumb: null, tile: 'MD' }] }];
+  await act(async () => {
+    root = createRoot(host!);
+    root.render(<ImagePeek rows={rows} current="a" label="Files" variant="sheet" onClose={(r) => closed.push(r)} onPick={() => {}} />);
+  });
+  expect(document.querySelector('[data-peek-sheet-header]')).toBeNull();
+  const grid = document.querySelector<HTMLElement>('[role="grid"]')!;
+  expect(grid.className).toContain('rounded-t-[12px]');
+  await act(async () => grid.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+  expect(closed).toEqual(['key']);
+  // With a header, Shift+Tab moves up into it instead of closing.
+  closed.length = 0;
+  await act(async () => {
+    root!.render(<ImagePeek rows={rows} current="a" label="Files" variant="sheet" onClose={(r) => closed.push(r)} onPick={() => {}} sheetHeader={<button type="button">Prev</button>} />);
+  });
+  await act(async () => document.querySelector<HTMLElement>('[role="grid"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+  expect(closed).toEqual([]);
+});
+
 test.skipIf(!hasDom)('a decided swipe cancels its moves (no scroll under it); the moves before the decision and a vertical scroll are left to the browser', async () => {
   stubViews();
   reducedMotion(false);
