@@ -121,7 +121,7 @@ import { createCommitAvatarResolver } from "../generated/commit-avatars.ts";
 import { detectGeneratedFiles, detectGeneratedFilesByName } from "../generated/generated-files.ts";
 
 import { createEditorAnnotationHandler } from "./annotations.ts";
-import { createAgentJobHandler, whichCmd as commandExists } from "./agent-jobs.ts";
+import { createAgentJobHandler, whichCmd as commandExists, whichPath } from "./agent-jobs.ts";
 import { type AgentJobInfo, REVIEW_OUTPUT_FAILED, getAgentJobAnnotationContext, markJobReviewFailed } from "../generated/agent-jobs.ts";
 import { createExternalAnnotationHandler } from "./external-annotations.ts";
 import {
@@ -187,6 +187,7 @@ import {
 import { GUIDE_VIEWER_MANIFEST } from "../generated/guide-viewer-manifest.ts";
 import {
 	MARKER_ENGINES,
+	resolveMarkerBinary,
 	composeMarkerReviewPrompt,
 	buildMarkerCommand,
 	parseMarkerStreamOutput,
@@ -1526,15 +1527,16 @@ export async function startReviewServer(options: {
 					// claude repair would itself become the newest failed job and
 					// hijack the recovery panel next render, a doom loop. Marker
 					// engines' binary name can differ from the engine id (Cursor's
-					// CLI binary is `agent`, not `cursor`), so resolve via
-					// MARKER_ENGINES[...].binary before falling back to the engine
-					// id itself for claude/codex.
+					// CLI is `cursor-agent`, or Cursor's own `agent`), so resolve
+					// via resolveMarkerBinary before falling back to the engine id
+					// itself for claude/codex.
 					const failedEngine = typeof config?.engine === "string" && config.engine ? config.engine : undefined;
-					const failedEngineBinary = failedEngine
-						? MARKER_ENGINES[failedEngine as MarkerEngineId]?.binary ?? failedEngine
-						: undefined;
+					const failedMarker = failedEngine ? MARKER_ENGINES[failedEngine as MarkerEngineId] : undefined;
+					const failedEngineInstalled = failedMarker
+						? !!(await resolveMarkerBinary(failedMarker, whichPath))
+						: !!failedEngine && commandExists(failedEngine);
 					const repairEngine =
-						failedEngine && commandExists(failedEngineBinary!)
+						failedEngine && failedEngineInstalled
 							? failedEngine
 							: commandExists("claude")
 								? "claude"
