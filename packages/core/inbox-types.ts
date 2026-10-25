@@ -17,6 +17,7 @@
 import type { QuestionAnswer, QuestionKind } from "./question-block";
 import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, InboxInlineImage } from "./inbox-attachments";
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
+import type { InboxRowRun } from "./inbox-acp";
 import { INBOX_CARD_ACTION_ON, type InboxCard } from "./inbox-cards";
 
 // The attachment shapes and file rules (step 2) live in their own module and
@@ -55,7 +56,7 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /** `upl`: a file the person uploaded for a message; `drf`: a draft of one (compose); `crd`: a Board card. */
-export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd";
+export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "run";
 
 export function inboxId(prefix: InboxIdPrefix, now?: number): string {
   return `${prefix}_${ulid(now)}`;
@@ -72,6 +73,8 @@ const ID_RE: Record<InboxIdPrefix, RegExp> = {
   drf: /^drf_[0-9A-HJKMNP-TV-Z]{26}$/,
   /** A Board card (approval "inbox-board"). */
   crd: /^crd_[0-9A-HJKMNP-TV-Z]{26}$/,
+  /** A session the Inbox runs itself over ACP (packages/server/inbox-acp-runner.ts): its agent session id. */
+  run: /^run_[0-9A-HJKMNP-TV-Z]{26}$/,
 };
 
 export function isInboxId(prefix: InboxIdPrefix, value: unknown): value is string {
@@ -259,6 +262,7 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
   opencode: "OpenCode",
   codex: "Codex",
   cursor: "Cursor",
+  grok: "Grok Build",
 };
 
 /** How the person sees an agent: the name it gave, else its host's name, else "An agent". */
@@ -1110,6 +1114,13 @@ export interface InboxListRow extends InboxThreadSummary {
    * reads. Additive: absent from an older Inbox.
    */
   pinned_at?: string | null;
+  /**
+   * A session the Inbox runs over ACP works in this thread, or waits on a
+   * permission (packages/server/inbox-acp-runner.ts). Only on the list model
+   * the window and the phone read, never on anything an agent reads.
+   * Additive: absent from an older Inbox.
+   */
+  run?: InboxRowRun | null;
 
   /**
    * Agent messages after the person's last look (a reply of theirs counts as
