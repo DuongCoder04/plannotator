@@ -55,6 +55,10 @@ describe("package-directory bunfig.toml", () => {
     expect(rootPreload).toContain(resolve(repoRoot, "tests/setup/feedback-archive-off.ts"));
   });
 
+  test("root preload puts the tripwire gh on PATH first, before anything can spawn", () => {
+    expect(rootPreload[0]).toBe(resolve(repoRoot, "tests/setup/gh-tripwire.ts"));
+  });
+
   for (const dir of packageDirs) {
     const label = relative(repoRoot, dir);
     test(`${label} mirrors the root test preloads`, () => {
