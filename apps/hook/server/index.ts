@@ -200,6 +200,7 @@ import {
   resolveCodexStopPlan,
 } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionByAncestorPids, findCopilotSessionForCwd, getRecentCopilotMessages } from "./copilot-session";
+import { findDshSessionLog, getRecentDshMessages, resolveDshHome } from "./dsh-session";
 import { resolveLatestVibePlan } from "./vibe-plan";
 import { resolveClaudePlan } from "./claude-plan";
 import { takeModPlanApproval } from "./mod-plan-approval";
@@ -1777,6 +1778,7 @@ if (args[0] === "sessions") {
   const isDroid = detectedOrigin === "droid";
   const isCopilot = detectedOrigin === "copilot-cli";
   const isVibe = detectedOrigin === "mistral-vibe";
+  const isDsh = detectedOrigin === "dsh";
 
   // Collect up to N recent assistant messages so the user can pick the right
   // one — defaults to the same selection as the legacy "last message"
@@ -1793,7 +1795,7 @@ if (args[0] === "sessions") {
   // earlier branch claims the invocation.
   let copilotLockSessionDir: string | null = null;
   let copilotSessionDir: string | null = null;
-  if (!stdinFlag && !isCodex && !isDroid && !isVibe) {
+  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isDsh) {
     copilotLockSessionDir = findCopilotSessionByAncestorPids();
     copilotSessionDir = copilotLockSessionDir ??
       (isCopilot ? findCopilotSessionForCwd(projectRoot) : null);
@@ -1816,6 +1818,25 @@ if (args[0] === "sessions") {
     const text = (await Bun.stdin.text()).trim();
     if (text) {
       lastMessage = { messageId: "stdin", text, lineNumbers: [] };
+    }
+  } else if (isDsh) {
+    // DeepSeek Harness path: DSH_SESSION_ID names the calling agent's session;
+    // its log lives under $DSH_HOME/sessions/<project>/<session>/. Checked
+    // before Codex so PLANNOTATOR_ORIGIN=dsh wins over an inherited
+    // CODEX_THREAD_ID.
+    const dshSessionId = process.env.DSH_SESSION_ID;
+    const dshLog = dshSessionId ? findDshSessionLog(dshSessionId) : null;
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] DSH detected, session ID: ${dshSessionId ?? "(none)"}`);
+      console.error(`[DEBUG] DSH selected log: ${dshLog ?? "(none)"}`);
+    }
+    if (dshLog) {
+      recentMessages = getRecentDshMessages(dshLog, RECENT_MESSAGES_LIMIT);
+      lastMessage = recentMessages[0] ?? null;
+    } else {
+      console.error(dshSessionId
+        ? `No DeepSeek Harness session log for DSH_SESSION_ID=${dshSessionId} under ${path.join(resolveDshHome(), "sessions")}.`
+        : "DSH_SESSION_ID is not set: run plannotator last from a DeepSeek Harness agent shell, or pass the message with --stdin.");
     }
   } else if (codexThreadId) {
     // Codex path: find rollout by thread ID
