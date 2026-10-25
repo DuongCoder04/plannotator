@@ -308,7 +308,7 @@ async function settled(page: Page, messageId: string): Promise<void> {
 /** What a refused body must look like: no broken <img>, the alt text in chips, text rows on the card. */
 async function expectQuiet(page: Page, messageId: string): Promise<void> {
   const body = page.locator(bodyOf(messageId));
-  const broken = await body.locator('img').evaluateAll((imgs) => imgs.filter((img) => (img as HTMLImageElement).naturalWidth === 0).map((img) => (img as HTMLImageElement).alt || img.getAttribute('src')));
+  const broken = await body.locator('img').evaluateAll((imgs) => imgs.filter((img) => img.getClientRects().length > 0 && (img as HTMLImageElement).naturalWidth === 0).map((img) => (img as HTMLImageElement).alt || img.getAttribute('src')));
   expect(broken).toEqual([]);
   for (const text of ['Hidden screenshot', 'Missing screenshot', 'Raw HTML screenshot']) await expect(body.locator('[data-image-unavailable]', { hasText: text })).toBeVisible();
   const card = body.locator('fieldset.question-block');

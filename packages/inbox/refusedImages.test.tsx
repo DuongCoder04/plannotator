@@ -125,7 +125,7 @@ afterEach(() => {
 async function settleImages(el: HTMLElement): Promise<Map<string, number>> {
   const statuses = new Map<string, number>();
   for (let round = 0; round < 5; round += 1) {
-    const pending = [...el.querySelectorAll<HTMLImageElement>('img')].filter((img) => !statuses.has(img.getAttribute('src')!) || statuses.get(img.getAttribute('src')!) !== 200);
+    const pending = [...el.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.hidden).filter((img) => !statuses.has(img.getAttribute('src')!) || statuses.get(img.getAttribute('src')!) !== 200);
     if (pending.length === 0) break;
     for (const img of pending) {
       const src = img.getAttribute('src')!;
@@ -200,10 +200,14 @@ test.skipIf(!hasDom)('images the Inbox refuses show as their alt text; the card 
   expect(statuses.get(okUrl)).toBe(200);
   expect([...statuses.values()].filter((status) => status === 403 || status === 404)).toHaveLength(statuses.size - 1);
 
-  // No <img> stays broken: the only one left is the image that loaded.
-  expect([...host.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual([okUrl]);
+  // No <img> stays broken: the only one drawn is the image that loaded (ui keeps a failed
+  // markdown <img> in place, hidden and unnamed, so React never inserts before moved text).
+  expect([...host.querySelectorAll('img')].filter((img) => !img.hidden).map((img) => img.getAttribute('src'))).toEqual([okUrl]);
+  expect([...host.querySelectorAll('img')].filter((img) => img.hidden).every((img) => img.alt === '' && img.getAttribute('aria-hidden') === 'true')).toBe(true);
   const chips = [...host.querySelectorAll('[data-image-unavailable]')].map((chip) => chip.textContent);
   expect(chips).toEqual(expect.arrayContaining(['Hidden shot', 'Gone shot', 'Raw hidden']));
+  // A text comment never quotes a chip's alt text.
+  expect([...host.querySelectorAll('[data-image-unavailable]')].every((chip) => chip.classList.contains('annotation-exclude'))).toBe(true);
   // The card: Shows is its label, and the choices are text rows with their plain labels.
   const shows = host.querySelector<HTMLElement>('[data-question-shows]')!;
   expect(shows.querySelector('img')).toBeNull();

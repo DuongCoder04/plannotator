@@ -344,10 +344,12 @@ export function MessageBody({
   // default would (the window's resolver, `inboxImageSrcResolver`), only so ui
   // draws an image the Inbox refuses (403 image_hidden, 404) as its alt text in
   // a quiet chip instead of a broken-image icon: markdown images, `<img>` in
-  // raw-HTML blocks and question cards' pictures alike.
+  // raw-HTML blocks and question cards' pictures alike. Remote, `data:` and
+  // `blob:` sources keep their URL (HtmlBlock's default test: `https:host/a.png`
+  // is remote too).
   const imageBaseDir = imageBase ?? inboxMessageImageBase(message.id);
   const resolveImage = useCallback<ImageResolver>(
-    (src) => ({ kind: 'src', src: /^(https?:\/\/|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
     [imageBaseDir],
   );
   // A tall screenshot in the body shows its top, cropped like the gallery's
