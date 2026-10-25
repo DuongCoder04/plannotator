@@ -12,11 +12,14 @@
  * 1. Watcher construction is deferred off the request path, so the SSE ready
  *    event and concurrent API requests are served before any scan starts.
  * 2. Teardown gets a reconnect grace window. A reload or transient disconnect
- *    reuses the warm watcher instead of rebuilding it from scratch.
+ *    reuses the warm watcher instead of rebuilding it from scratch. An entry
+ *    whose watching failed is never reused: the next subscription rebuilds it.
  * 3. On macOS and Windows the content watcher is the platform's native
- *    recursive fs.watch. Linux uses one fs.watch per directory, not per file,
- *    and stops with a logged refresh if the bounded directory-watch budget is
- *    exceeded. Chokidar remains the fallback on other platforms.
+ *    recursive fs.watch. Linux uses one fs.watch per directory, not per file
+ *    (#1439), under a registry-wide budget sized from the system's inotify
+ *    allowance. Past the budget the folders nearest the root keep their
+ *    watches and deeper ones are skipped (said once in the log); unreadable
+ *    folders are skipped. Chokidar remains the fallback on other platforms.
  *
  * The registry is transport-generic: the Bun runtime subscribes
  * ReadableStream controllers, the Pi runtime subscribes node:http responses.
@@ -24,9 +27,9 @@
  */
 
 import chokidar, { type FSWatcher as ChokidarWatcher } from "chokidar";
-import { lstatSync, watch as nodeFsWatch, statSync, type FSWatcher as NodeWatcher } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { readFileSync, watch as nodeFsWatch, statSync, type FSWatcher as NodeWatcher } from "node:fs";
+import { lstat, readdir, stat } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 export interface FileBrowserChangeEvent {
 	type: "ready" | "changed";
@@ -43,6 +46,21 @@ export interface FileBrowserWatchTarget {
 	ignored?: (path: string) => boolean;
 }
 
+/**
+ * The filesystem reads the per-directory watcher makes. Tests replace them to
+ * drive unreadable folders and large trees without real permissions or
+ * thousands of real directories.
+ */
+export interface DirectoryWatchFs {
+	/**
+	 * `followSymlinks` is true only for the watched root. Every folder below it
+	 * is read without following symlinks, so a link to an ancestor can never
+	 * send the scan round in a loop.
+	 */
+	stat(path: string, followSymlinks: boolean): Promise<{ isDirectory(): boolean; dev: number | bigint; ino: number | bigint }>;
+	readdir(path: string): Promise<Array<{ name: string; isDirectory(): boolean }>>;
+}
+
 export interface FileBrowserWatchRegistryOptions<S> {
 	/** Deliver one serialized event to one subscriber; false drops the subscriber. */
 	send: (subscriber: S, event: FileBrowserChangeEvent) => boolean;
@@ -51,10 +69,19 @@ export interface FileBrowserWatchRegistryOptions<S> {
 	teardownGraceMs?: number;
 	debounceMs?: number;
 	/** Tests force the platform fallback (named "chokidar" for compatibility),
-	 * or force the native branch and its fallback paths on Linux CI. */
-	contentWatchBackend?: "auto" | "chokidar" | "native";
+	 * force the native branch and its fallback paths on Linux CI, or force the
+	 * per-directory watcher on any platform ("directories"). */
+	contentWatchBackend?: "auto" | "chokidar" | "native" | "directories";
 	/** Test seam for fs.watch failure modes in native and directory backends. */
 	nativeWatch?: typeof nodeFsWatch;
+	/** Test seam for the per-directory watcher's stat/readdir. */
+	directoryFs?: DirectoryWatchFs;
+	/** Registry-wide budget of per-directory watches. Default: from the system. */
+	maxDirectoryWatches?: number;
+	/** How long after a watch is freed a capped tree is scanned again. */
+	capRetryMs?: number;
+	/** Where the watcher says what it skipped. Default console.error. */
+	log?: (message: string, error?: unknown) => void;
 }
 
 export interface WatchEntryHandle {
@@ -64,13 +91,43 @@ export interface WatchEntryHandle {
 interface DirectoryWatch {
 	watcher: NodeWatcher;
 	identity: string;
+	depth: number;
+}
+
+type ScanDepth = "deep" | "shallow";
+
+/** One subscription's per-directory watches (Linux). */
+interface DirectoryTree {
+	root: string;
+	watches: Map<string, DirectoryWatch>;
+	/** Watched directory -> its watched child directories. */
+	children: Map<string, Set<string>>;
+	/** depthCounts[d] = watches at depth d (root is 0). */
+	depthCounts: number[];
+	/**
+	 * Folders waiting to be scanned; one scan runs at a time. "deep" scans
+	 * the folder and everything below it, "shallow" reconciles its own
+	 * children only (a rename in it: Bun on Linux names just one side).
+	 */
+	pending: Map<string, ScanDepth>;
+	scanning: boolean;
+	/** The budget kept some folders unwatched since the last full scan. */
+	capped: boolean;
+	cappedLogged: boolean;
+	systemLimitLogged: boolean;
+	unreadable: Set<string>;
+	unreadableLogged: boolean;
+	/** Directories whose watch errored at runtime; never re-watched. */
+	broken: Set<string>;
+	brokenLogged: boolean;
 }
 
 interface WatchEntry<S> extends WatchEntryHandle {
 	key: string;
+	target: FileBrowserWatchTarget;
 	subscribers: Map<S, string>;
 	contentWatcher: ChokidarWatcher | NodeWatcher | null;
-	directoryWatchers?: Map<string, DirectoryWatch>;
+	directoryTree?: DirectoryTree;
 	gitWatcher: ChokidarWatcher | null;
 	debounceTimer: ReturnType<typeof setTimeout> | null;
 	/** Deferred off-request construction (#1313). */
@@ -78,6 +135,12 @@ interface WatchEntry<S> extends WatchEntryHandle {
 	/** Pending reconnect-grace teardown (#1313). */
 	teardownTimer: ReturnType<typeof setTimeout> | null;
 	closed: boolean;
+	/**
+	 * Watching could not start, or stopped in a way a fresh build may fix
+	 * (the root could not be watched, the system's watch allowance ran out).
+	 * ensure() rebuilds a failed entry instead of reusing it.
+	 */
+	failed: boolean;
 }
 
 export interface FileBrowserWatchRegistry<S> {
@@ -90,17 +153,90 @@ export interface FileBrowserWatchRegistry<S> {
 	 * Tests only: entry count and how many content watchers were ever
 	 * constructed. The grace-period test pins that a reconnect does not
 	 * rebuild (starts stays flat), which is exactly the #1313 regression.
+	 * `directoryWatches` counts live per-directory watches across entries,
+	 * `watchedDirectories` lists them, and `scanning` says whether any
+	 * directory scan is in flight or queued.
 	 */
-	diagnostics(): { entries: number; contentWatcherStarts: number };
+	diagnostics(): {
+		entries: number;
+		contentWatcherStarts: number;
+		directoryWatches: number;
+		watchedDirectories: string[];
+		scanning: boolean;
+		failedEntries: number;
+	};
 	/** Tests only: override timing/backend without module-scope mutation. */
-	configureForTests(overrides: Partial<Pick<FileBrowserWatchRegistryOptions<S>, "teardownGraceMs" | "debounceMs" | "contentWatchBackend" | "nativeWatch">>): void;
+	configureForTests(overrides: Partial<Pick<
+		FileBrowserWatchRegistryOptions<S>,
+		"teardownGraceMs" | "debounceMs" | "contentWatchBackend" | "nativeWatch" | "directoryFs" | "maxDirectoryWatches" | "capRetryMs" | "log"
+	>>): void;
 }
 
 const DEFAULT_TEARDOWN_GRACE_MS = 30_000;
 const DEFAULT_DEBOUNCE_MS = 180;
-// The 228-directory workspace measured for #1313 fits; this registry cap
-// bounds directory-watch growth on much larger trees.
-const MAX_DIRECTORY_WATCHES = 512;
+const DEFAULT_CAP_RETRY_MS = 2_000;
+/**
+ * The per-directory watch budget. A quarter of the user's inotify allowance,
+ * so Plannotator never takes most of what editors and dev servers need
+ * (#1439), kept between 1,024 (twice this repository's ~280 tracked folders,
+ * enough for a typical working copy's ~750) and 8,192.
+ */
+const MIN_DIRECTORY_WATCHES = 1_024;
+const MAX_DIRECTORY_WATCHES = 8_192;
+const FALLBACK_DIRECTORY_WATCHES = 4_096;
+
+let systemDirectoryWatchLimit: number | null = null;
+
+/** Exported for tests: the budget a given inotify allowance yields. */
+export function directoryWatchLimitFor(maxUserWatches: number | null): number {
+	if (maxUserWatches === null || !Number.isFinite(maxUserWatches) || maxUserWatches <= 0) {
+		return FALLBACK_DIRECTORY_WATCHES;
+	}
+	return Math.min(MAX_DIRECTORY_WATCHES, Math.max(MIN_DIRECTORY_WATCHES, Math.floor(maxUserWatches / 4)));
+}
+
+function defaultDirectoryWatchLimit(): number {
+	if (systemDirectoryWatchLimit !== null) return systemDirectoryWatchLimit;
+	let allowance: number | null = null;
+	if (process.platform === "linux") {
+		try {
+			allowance = Number.parseInt(readFileSync("/proc/sys/fs/inotify/max_user_watches", "utf8").trim(), 10);
+		} catch {
+			allowance = null;
+		}
+	}
+	systemDirectoryWatchLimit = directoryWatchLimitFor(allowance);
+	return systemDirectoryWatchLimit;
+}
+
+const defaultDirectoryFs: DirectoryWatchFs = {
+	stat: (path, followSymlinks) => (followSymlinks ? stat(path, { bigint: true }) : lstat(path, { bigint: true })),
+	readdir: (path) => readdir(path, { withFileTypes: true }),
+};
+
+function errorCode(error: unknown): string | undefined {
+	if (typeof error === "object" && error !== null && "code" in error) {
+		const code = (error as { code: unknown }).code;
+		return typeof code === "string" ? code : undefined;
+	}
+	return undefined;
+}
+
+function isGone(error: unknown): boolean {
+	const code = errorCode(error);
+	return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function isUnreadable(error: unknown): boolean {
+	const code = errorCode(error);
+	return code === "EACCES" || code === "EPERM";
+}
+
+/** The system ran out of watches or descriptors, not this folder's fault. */
+function isSystemLimit(error: unknown): boolean {
+	const code = errorCode(error);
+	return code === "ENOSPC" || code === "EMFILE" || code === "ENFILE";
+}
 
 function getFileSignature(filePath: string): string {
 	try {
@@ -140,6 +276,10 @@ function nativeRecursiveSupported(): boolean {
 	return process.platform === "darwin" || process.platform === "win32";
 }
 
+function isWithin(path: string, ancestor: string): boolean {
+	return path === ancestor || path.startsWith(ancestor.endsWith(sep) ? ancestor : `${ancestor}${sep}`);
+}
+
 export function createFileBrowserWatchRegistry<S>(
 	initialOptions: FileBrowserWatchRegistryOptions<S>,
 ): FileBrowserWatchRegistry<S> {
@@ -147,9 +287,20 @@ export function createFileBrowserWatchRegistry<S>(
 	const watchers = new Map<string, WatchEntry<S>>();
 	let contentWatcherStarts = 0;
 	let directoryWatcherCount = 0;
+	let capRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const teardownGraceMs = () => options.teardownGraceMs ?? DEFAULT_TEARDOWN_GRACE_MS;
 	const debounceMs = () => options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+	const maxDirectoryWatches = () => options.maxDirectoryWatches ?? defaultDirectoryWatchLimit();
+	const directoryFs = () => options.directoryFs ?? defaultDirectoryFs;
+	const log = (message: string, error?: unknown) => {
+		try {
+			if (options.log) options.log(message, error);
+			else console.error(`[plannotator] ${message}`, error ?? "");
+		} catch {
+			// Logging must never take down the server.
+		}
+	};
 
 	function broadcast(entry: WatchEntry<S>, reason: "files" | "git"): void {
 		const hadSubscribers = entry.subscribers.size > 0;
@@ -187,18 +338,6 @@ export function createFileBrowserWatchRegistry<S>(
 		return !entry.closed && watchers.get(entry.key) === entry;
 	}
 
-	function closeDirectoryWatchers(directoryWatchers: Map<string, DirectoryWatch>): void {
-		for (const { watcher } of directoryWatchers.values()) {
-			try {
-				watcher.close();
-			} catch {
-				// Continue releasing the remaining directory watches.
-			}
-		}
-		directoryWatcherCount -= directoryWatchers.size;
-		directoryWatchers.clear();
-	}
-
 	function startChokidarContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): ChokidarWatcher {
 		const watcher = chokidar.watch(target.watchPath, {
 			ignoreInitial: true,
@@ -214,132 +353,382 @@ export function createFileBrowserWatchRegistry<S>(
 		return watcher;
 	}
 
-	async function startDirectoryContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): Promise<void> {
-		const directoryWatchers = new Map<string, DirectoryWatch>();
-		let failed = false;
-		entry.directoryWatchers = directoryWatchers;
+	// --- Per-directory watcher (Linux, #1439) ---------------------------------
 
-		const closeAll = () => closeDirectoryWatchers(directoryWatchers);
+	function depthOf(tree: DirectoryTree, path: string): number {
+		const rel = relative(tree.root, path);
+		return rel ? rel.split(sep).length : 0;
+	}
 
-		const fail = (reason: string, error?: unknown) => {
-			if (failed) return;
-			failed = true;
-			closeAll();
-			console.error(`[plannotator] Directory file watching stopped for ${target.watchPath}: ${reason}`, error ?? "");
-			scheduleBroadcast(entry, "files");
-		};
+	function deepestDepth(tree: DirectoryTree): number {
+		for (let depth = tree.depthCounts.length - 1; depth >= 0; depth -= 1) {
+			if ((tree.depthCounts[depth] ?? 0) > 0) return depth;
+		}
+		return -1;
+	}
 
-		const removeDirectoryTree = (directory: string): void => {
-			const prefix = `${directory}${sep}`;
-			const removed = new Map<string, DirectoryWatch>();
-			for (const [path, owned] of directoryWatchers) {
-				if (path !== directory && !path.startsWith(prefix)) continue;
-				removed.set(path, owned);
-				directoryWatchers.delete(path);
+	/** Close one directory's watch (not its subtree). */
+	function closeWatch(tree: DirectoryTree, path: string): boolean {
+		const owned = tree.watches.get(path);
+		if (!owned) return false;
+		try {
+			owned.watcher.close();
+		} catch {
+			// Continue releasing.
+		}
+		tree.watches.delete(path);
+		tree.depthCounts[owned.depth] = (tree.depthCounts[owned.depth] ?? 1) - 1;
+		directoryWatcherCount -= 1;
+		tree.children.get(dirname(path))?.delete(path);
+		return true;
+	}
+
+	/** Close the watches of a directory and everything below it. */
+	function removeTree(tree: DirectoryTree, path: string, { freed = true } = {}): void {
+		const stack = [path];
+		let released = 0;
+		while (stack.length > 0) {
+			const current = stack.pop()!;
+			const kids = tree.children.get(current);
+			if (kids) {
+				stack.push(...kids);
+				tree.children.delete(current);
 			}
-			closeDirectoryWatchers(removed);
-		};
+			if (closeWatch(tree, current)) released += 1;
+		}
+		if (released > 0 && freed) scheduleCapRetry();
+	}
 
-		const watchChildren = async (directory: string): Promise<void> => {
-			let children;
-			try {
-				children = await readdir(directory, { withFileTypes: true });
-			} catch (error) {
-				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
-				fail("directory scan failed", error);
-				return;
+	function closeDirectoryTree(tree: DirectoryTree): void {
+		tree.pending.clear();
+		for (const path of [...tree.watches.keys()]) closeWatch(tree, path);
+		tree.children.clear();
+	}
+
+	function cappedTrees(): Array<{ entry: WatchEntry<S>; tree: DirectoryTree }> {
+		const out: Array<{ entry: WatchEntry<S>; tree: DirectoryTree }> = [];
+		for (const entry of watchers.values()) {
+			if (!entry.closed && entry.directoryTree?.capped) out.push({ entry, tree: entry.directoryTree });
+		}
+		return out;
+	}
+
+	/**
+	 * A watch was freed. Trees the budget left partly unwatched get one more
+	 * full scan, so a deleted folder or a closed subscription lets the
+	 * skipped folders back in.
+	 */
+	function scheduleCapRetry(): void {
+		if (capRetryTimer) return;
+		if (cappedTrees().length === 0) return;
+		const timer = setTimeout(() => {
+			capRetryTimer = null;
+			if (directoryWatcherCount >= maxDirectoryWatches()) return;
+			for (const { entry, tree } of cappedTrees()) requestScan(entry, tree, tree.root, "deep");
+		}, options.capRetryMs ?? DEFAULT_CAP_RETRY_MS);
+		(timer as { unref?: () => void }).unref?.();
+		capRetryTimer = timer;
+	}
+
+	function noteCapped(tree: DirectoryTree): void {
+		tree.capped = true;
+		if (tree.cappedLogged) return;
+		tree.cappedLogged = true;
+		log(
+			`Live refresh for ${tree.root}: the folder-watch limit (${maxDirectoryWatches()}) was reached. ` +
+				"Folders nearest the top keep refreshing; deeper folders are not watched.",
+		);
+	}
+
+	function noteSystemLimit(entry: WatchEntry<S>, tree: DirectoryTree, error: unknown): void {
+		tree.capped = true;
+		// A rebuild may succeed once the system has watches to spare.
+		entry.failed = true;
+		if (tree.systemLimitLogged) return;
+		tree.systemLimitLogged = true;
+		log(
+			`Live refresh for ${tree.root}: the system ran out of file watches; folders already watched keep refreshing. ` +
+				"Raising fs.inotify.max_user_watches lets more folders refresh.",
+			error,
+		);
+	}
+
+	function reportSkipped(tree: DirectoryTree): void {
+		if (tree.unreadable.size > 0 && !tree.unreadableLogged) {
+			tree.unreadableLogged = true;
+			const [first] = tree.unreadable;
+			const count = tree.unreadable.size;
+			log(`Live refresh for ${tree.root}: skipped ${count} folder${count === 1 ? "" : "s"} it cannot read (for example ${first}).`);
+		}
+	}
+
+	type WatchResult = "watched" | "capped" | "skipped" | "gone";
+
+	function ensureWatch(entry: WatchEntry<S>, tree: DirectoryTree, path: string, identity: string): WatchResult {
+		const existing = tree.watches.get(path);
+		if (existing?.identity === identity) return "watched";
+		// Same path, new directory (recreated or moved in): only this watch is
+		// replaced; the scan reconciles the children below it.
+		if (existing) closeWatch(tree, path);
+		if (tree.broken.has(path)) return "skipped";
+
+		const depth = depthOf(tree, path);
+		if (directoryWatcherCount >= maxDirectoryWatches()) {
+			// Prefer folders nearest the root: a shallower folder takes the slot
+			// of this tree's deepest watch.
+			const deepest = deepestDepth(tree);
+			if (deepest <= depth) {
+				noteCapped(tree);
+				return "capped";
 			}
+			for (const [candidate, owned] of tree.watches) {
+				if (owned.depth !== deepest || tree.children.get(candidate)?.size) continue;
+				closeWatch(tree, candidate);
+				break;
+			}
+			noteCapped(tree);
+			if (directoryWatcherCount >= maxDirectoryWatches()) return "capped";
+		}
 
-			const childDirectories = new Set(children.filter((child) => child.isDirectory()).map((child) => join(directory, child.name)));
-			const prefix = `${directory}${sep}`;
-			for (const path of directoryWatchers.keys()) {
-				if (!path.startsWith(prefix)) continue;
-				const remainder = path.slice(prefix.length);
-				if (!remainder.includes(sep) && !childDirectories.has(path)) {
-					removeDirectoryTree(path);
+		let watcher: NodeWatcher;
+		try {
+			watcher = (options.nativeWatch ?? nodeFsWatch)(path, { persistent: true }, (event, filename) => {
+				if (tree.watches.get(path)?.watcher !== watcher) return;
+				onDirectoryEvent(entry, tree, path, event, filename);
+			});
+		} catch (error) {
+			if (isGone(error)) return "gone";
+			if (isUnreadable(error)) {
+				tree.unreadable.add(path);
+				return "skipped";
+			}
+			if (isSystemLimit(error)) {
+				noteSystemLimit(entry, tree, error);
+				return "capped";
+			}
+			tree.broken.add(path);
+			if (!tree.brokenLogged) {
+				tree.brokenLogged = true;
+				log(`Live refresh for ${tree.root}: could not watch ${path}; skipping it.`, error);
+			}
+			return "skipped";
+		}
+		tree.watches.set(path, { watcher, identity, depth });
+		tree.depthCounts[depth] = (tree.depthCounts[depth] ?? 0) + 1;
+		directoryWatcherCount += 1;
+		if (path !== tree.root) {
+			const parent = dirname(path);
+			let kids = tree.children.get(parent);
+			if (!kids) {
+				kids = new Set();
+				tree.children.set(parent, kids);
+			}
+			kids.add(path);
+		}
+		watcher.on("error", (error) => {
+			if (tree.watches.get(path)?.watcher !== watcher || !isCurrent(entry)) return;
+			if (isGone(error)) {
+				removeTree(tree, path);
+			} else {
+				// One folder's watch broke: drop that watch only, keep the rest.
+				closeWatch(tree, path);
+				tree.broken.add(path);
+				if (path === tree.root) entry.failed = true;
+				if (!tree.brokenLogged) {
+					tree.brokenLogged = true;
+					log(`Live refresh for ${tree.root}: the watch on ${path} failed; skipping it.`, error);
 				}
 			}
-			for (const childPath of childDirectories) {
-				if (!target.ignored?.(childPath)) await watchTree(childPath);
-				if (failed || !isCurrent(entry)) return;
-			}
-		};
+			scheduleBroadcast(entry, "files");
+		});
+		return "watched";
+	}
 
-		const watchTree = async (directory: string): Promise<void> => {
-			if (failed || !isCurrent(entry) || target.ignored?.(directory)) return;
+	function onDirectoryEvent(
+		entry: WatchEntry<S>,
+		tree: DirectoryTree,
+		directory: string,
+		event: string,
+		filename: string | Buffer | null | undefined,
+	): void {
+		try {
+			if (filename == null) {
+				// No name: something in this folder (or the folder itself) changed.
+				scheduleBroadcast(entry, "files");
+				requestScan(entry, tree, directory, "shallow");
+				return;
+			}
+			const changedPath = join(directory, filename.toString());
+			// Creating, renaming, or touching an ignored path (dist/,
+			// node_modules/, .git/) never changes the file list.
+			if (entry.target.ignored?.(changedPath)) return;
+			scheduleBroadcast(entry, "files");
+			// A name appeared or went away: if it is (or was) a folder, its
+			// watches follow. Bun on Linux reports a move inside the tree under
+			// one name only, so the folder's own children are reconciled too
+			// (one listing, not a subtree scan). "change" is a content edit and
+			// needs no scan.
+			if (event === "rename") {
+				requestScan(entry, tree, changedPath, "deep");
+				requestScan(entry, tree, directory, "shallow");
+			}
+		} catch {
+			// A watcher event must never take down the server.
+		}
+	}
+
+	/**
+	 * Queue a scan. Scans never overlap: one drain loop runs them in order,
+	 * and a queued deep scan absorbs anything queued below it.
+	 */
+	function requestScan(entry: WatchEntry<S>, tree: DirectoryTree, path: string, depth: ScanDepth): void {
+		if (!isCurrent(entry) || !isWithin(path, tree.root)) return;
+		for (const [queued, queuedDepth] of tree.pending) {
+			if (queuedDepth === "deep" && isWithin(path, queued)) return;
+			if (queued === path && depth === "shallow") return;
+		}
+		if (depth === "deep") {
+			for (const queued of [...tree.pending.keys()]) {
+				if (isWithin(queued, path)) tree.pending.delete(queued);
+			}
+		}
+		tree.pending.set(path, depth);
+		if (!tree.scanning) void drainScans(entry, tree);
+	}
+
+	async function drainScans(entry: WatchEntry<S>, tree: DirectoryTree): Promise<void> {
+		tree.scanning = true;
+		try {
+			while (tree.pending.size > 0 && isCurrent(entry)) {
+				const [[next, depth]] = tree.pending;
+				tree.pending.delete(next);
+				await scanSubtree(entry, tree, next, depth);
+			}
+		} catch (error) {
+			log(`Live refresh for ${tree.root}: a folder scan failed.`, error);
+		} finally {
+			tree.scanning = false;
+		}
+		if (isCurrent(entry)) reportSkipped(tree);
+	}
+
+	/**
+	 * Breadth-first, so when the budget runs out the folders kept are the ones
+	 * nearest the start. Unreadable and vanished folders are skipped; nothing
+	 * here stops watching the rest of the tree.
+	 */
+	async function scanSubtree(entry: WatchEntry<S>, tree: DirectoryTree, start: string, depth: ScanDepth): Promise<void> {
+		const fs = directoryFs();
+		const fullScan = start === tree.root && depth === "deep";
+		let cappedHere = false;
+		const queue = [start];
+		for (let next = 0; next < queue.length; next += 1) {
+			if (!isCurrent(entry)) return;
+			const directory = queue[next]!;
+			if (directory !== tree.root && entry.target.ignored?.(directory)) {
+				removeTree(tree, directory);
+				continue;
+			}
+
 			let identity: string;
 			try {
-				const stats = statSync(directory, { bigint: true });
-				if (!stats.isDirectory()) return;
+				const stats = await fs.stat(directory, directory === tree.root);
+				if (!isCurrent(entry)) return;
+				if (!stats.isDirectory()) {
+					removeTree(tree, directory);
+					continue;
+				}
 				identity = `${stats.dev}:${stats.ino}`;
 			} catch (error) {
-				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-					removeDirectoryTree(directory);
-					return;
+				if (!isCurrent(entry)) return;
+				removeTree(tree, directory);
+				if (isUnreadable(error)) tree.unreadable.add(directory);
+				else if (!isGone(error)) log(`Live refresh for ${tree.root}: could not inspect ${directory}; skipping it.`, error);
+				if (directory === tree.root) {
+					entry.failed = true;
+					scheduleBroadcast(entry, "files");
 				}
-				fail("directory inspection failed", error);
-				return;
+				continue;
 			}
 
-			const existing = directoryWatchers.get(directory);
-			if (existing?.identity === identity) return;
-			if (existing) removeDirectoryTree(directory);
-			if (directoryWatcherCount >= MAX_DIRECTORY_WATCHES) {
-				fail(`registry directory watch limit (${MAX_DIRECTORY_WATCHES}) reached`);
-				return;
+			const result = ensureWatch(entry, tree, directory, identity);
+			if (result === "gone") {
+				removeTree(tree, directory);
+				continue;
+			}
+			if (result !== "watched") {
+				// Its subtree stays unwatched; drop anything left from before.
+				removeTree(tree, directory, { freed: false });
+				if (result === "capped") cappedHere = true;
+				if (directory === tree.root) {
+					entry.failed = true;
+					scheduleBroadcast(entry, "files");
+				}
+				continue;
 			}
 
-			let watcher: NodeWatcher;
+			let children: Array<{ name: string; isDirectory(): boolean }>;
 			try {
-				watcher = (options.nativeWatch ?? nodeFsWatch)(directory, { persistent: true }, (event, filename) => {
-					if (directoryWatchers.get(directory)?.watcher !== watcher) return;
-					scheduleBroadcast(entry, "files");
-					if (event === "rename" || filename == null) void watchChildren(directory);
-					if (filename == null) return;
-					const changedPath = join(directory, filename.toString());
-					try {
-						if (lstatSync(changedPath).isDirectory()) {
-							if (!target.ignored?.(changedPath)) void watchTree(changedPath);
-						} else if (event === "rename") {
-							removeDirectoryTree(changedPath);
-						}
-					} catch (error) {
-						if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-							removeDirectoryTree(changedPath);
-						} else {
-							fail("directory inspection failed", error);
-						}
-					}
-				});
+				children = await fs.readdir(directory);
 			} catch (error) {
-				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-					scheduleBroadcast(entry, "files");
-					return;
+				if (!isCurrent(entry)) return;
+				if (isGone(error)) {
+					removeTree(tree, directory);
+				} else if (isUnreadable(error)) {
+					tree.unreadable.add(directory);
+				} else {
+					log(`Live refresh for ${tree.root}: could not list ${directory}; skipping its folders.`, error);
 				}
-				fail("watch creation failed", error);
-				return;
+				continue;
 			}
-			directoryWatchers.set(directory, { watcher, identity });
-			directoryWatcherCount += 1;
-			watcher.on("error", (error) => {
-				if (directoryWatchers.get(directory)?.watcher !== watcher) return;
-				if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-					removeDirectoryTree(directory);
-					scheduleBroadcast(entry, "files");
-					return;
-				}
-				fail("watcher error", error);
-			});
-			await watchChildren(directory);
-		};
+			if (!isCurrent(entry)) return;
 
-		await watchTree(target.watchPath);
-		if (failed || !isCurrent(entry)) closeAll();
+			const childDirectories = new Set<string>();
+			for (const child of children) {
+				if (!child.isDirectory()) continue;
+				const childPath = join(directory, child.name);
+				if (entry.target.ignored?.(childPath)) continue;
+				childDirectories.add(childPath);
+			}
+			// Folders that went away (or became ignored) since the last scan.
+			for (const watched of [...(tree.children.get(directory) ?? [])]) {
+				if (!childDirectories.has(watched)) removeTree(tree, watched);
+			}
+			if (depth === "deep") {
+				queue.push(...childDirectories);
+			} else {
+				// Shallow: only folders not watched yet get scanned (deep).
+				for (const childPath of childDirectories) {
+					if (!tree.watches.has(childPath)) requestScan(entry, tree, childPath, "deep");
+				}
+			}
+		}
+		if (fullScan && !cappedHere) tree.capped = false;
+	}
+
+	function startDirectoryContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): void {
+		const tree: DirectoryTree = {
+			root: target.watchPath,
+			watches: new Map(),
+			children: new Map(),
+			depthCounts: [],
+			pending: new Map(),
+			scanning: false,
+			capped: false,
+			cappedLogged: false,
+			systemLimitLogged: false,
+			unreadable: new Set(),
+			unreadableLogged: false,
+			broken: new Set(),
+			brokenLogged: false,
+		};
+		entry.directoryTree = tree;
+		requestScan(entry, tree, tree.root, "deep");
 	}
 
 	function startFallbackContentWatcher(entry: WatchEntry<S>, target: FileBrowserWatchTarget): void {
 		if (process.platform === "linux") {
-			void startDirectoryContentWatcher(entry, target);
+			startDirectoryContentWatcher(entry, target);
 			return;
 		}
 		entry.contentWatcher = startChokidarContentWatcher(entry, target);
@@ -360,6 +749,10 @@ export function createFileBrowserWatchRegistry<S>(
 		}
 
 		const backend = options.contentWatchBackend ?? "auto";
+		if (backend === "directories") {
+			startDirectoryContentWatcher(entry, target);
+			return;
+		}
 		if (backend === "native" || (backend === "auto" && nativeRecursiveSupported())) {
 			try {
 				const nativeWatch = options.nativeWatch ?? nodeFsWatch;
@@ -383,10 +776,8 @@ export function createFileBrowserWatchRegistry<S>(
 						// Already closed.
 					}
 					if (isCurrent(entry) && entry.contentWatcher === watcher) {
-						console.error(
-							`[plannotator] Native file watching failed for ${target.watchPath}; switching to the fallback watcher:`,
-							error,
-						);
+						log(`Native file watching failed for ${target.watchPath}; switching to the fallback watcher:`, error);
+						entry.contentWatcher = null;
 						contentWatcherStarts += 1;
 						startFallbackContentWatcher(entry, target);
 						scheduleBroadcast(entry, "files");
@@ -395,11 +786,8 @@ export function createFileBrowserWatchRegistry<S>(
 				entry.contentWatcher = watcher;
 				return;
 			} catch (error) {
-				// Native creation failed. Fall through to chokidar.
-				console.error(
-					`[plannotator] Native file watching unavailable for ${target.watchPath}; using the fallback watcher:`,
-					error,
-				);
+				// Native creation failed. Fall through to the platform fallback.
+				log(`Native file watching unavailable for ${target.watchPath}; using the fallback watcher:`, error);
 			}
 		}
 		startFallbackContentWatcher(entry, target);
@@ -411,8 +799,10 @@ export function createFileBrowserWatchRegistry<S>(
 			startContentWatcher(entry, target);
 		} catch (error) {
 			// A watcher that cannot start must not take down the stream, but the
-			// subscriber is now living without live refreshes; say so.
-			console.error(`[plannotator] File watcher failed to start for ${target.watchPath}:`, error);
+			// subscriber is now living without live refreshes; say so. The next
+			// subscription rebuilds instead of reusing this entry.
+			entry.failed = true;
+			log(`File watcher failed to start for ${target.watchPath}:`, error);
 		}
 		try {
 			const gitWatchPaths = target.watchGit
@@ -435,7 +825,7 @@ export function createFileBrowserWatchRegistry<S>(
 			}
 		} catch (error) {
 			// Same containment for the git metadata watcher.
-			console.error(`[plannotator] Git metadata watcher failed to start for ${target.watchPath}:`, error);
+			log(`Git metadata watcher failed to start for ${target.watchPath}:`, error);
 		}
 	}
 
@@ -447,7 +837,8 @@ export function createFileBrowserWatchRegistry<S>(
 		entry.debounceTimer = null;
 		entry.warmupTimer = null;
 		entry.teardownTimer = null;
-		if (entry.directoryWatchers) closeDirectoryWatchers(entry.directoryWatchers);
+		const hadDirectoryWatches = (entry.directoryTree?.watches.size ?? 0) > 0;
+		if (entry.directoryTree) closeDirectoryTree(entry.directoryTree);
 		try {
 			void entry.contentWatcher?.close();
 		} catch {
@@ -461,6 +852,7 @@ export function createFileBrowserWatchRegistry<S>(
 		if (watchers.get(entry.key) === entry) {
 			watchers.delete(entry.key);
 		}
+		if (hadDirectoryWatches) scheduleCapRetry();
 	}
 
 	function scheduleTeardown(entry: WatchEntry<S>): void {
@@ -476,10 +868,34 @@ export function createFileBrowserWatchRegistry<S>(
 		entry.teardownTimer = timer;
 	}
 
+	function createEntry(target: FileBrowserWatchTarget): WatchEntry<S> {
+		const entry: WatchEntry<S> = {
+			key: target.key,
+			target,
+			subscribers: new Map(),
+			contentWatcher: null,
+			gitWatcher: null,
+			debounceTimer: null,
+			warmupTimer: null,
+			teardownTimer: null,
+			closed: false,
+			failed: false,
+		};
+		// Construction is deferred off the request path: the caller's SSE
+		// ready event and concurrent API requests are served before any
+		// directory scan begins (#1313).
+		entry.warmupTimer = setTimeout(() => {
+			entry.warmupTimer = null;
+			buildWatchers(entry, target);
+		}, 0);
+		watchers.set(target.key, entry);
+		return entry;
+	}
+
 	return {
 		ensure(target) {
 			const existing = watchers.get(target.key);
-			if (existing) {
+			if (existing && !existing.failed) {
 				// A resubscription inside the grace window reuses the warm entry.
 				if (existing.teardownTimer) {
 					clearTimeout(existing.teardownTimer);
@@ -487,24 +903,16 @@ export function createFileBrowserWatchRegistry<S>(
 				}
 				return existing;
 			}
-			const entry: WatchEntry<S> = {
-				key: target.key,
-				subscribers: new Map(),
-				contentWatcher: null,
-				gitWatcher: null,
-				debounceTimer: null,
-				warmupTimer: null,
-				teardownTimer: null,
-				closed: false,
-			};
-			// Construction is deferred off the request path: the caller's SSE
-			// ready event and concurrent API requests are served before any
-			// directory scan begins (#1313).
-			entry.warmupTimer = setTimeout(() => {
-				entry.warmupTimer = null;
-				buildWatchers(entry, target);
-			}, 0);
-			watchers.set(target.key, entry);
+			const entry = createEntry(target);
+			if (existing) {
+				// A failed entry is rebuilt, never reused. Its live subscribers move
+				// to the new entry so every open tab gets the recovered watching.
+				for (const [subscriber, clientDirPath] of existing.subscribers) {
+					entry.subscribers.set(subscriber, clientDirPath);
+				}
+				existing.subscribers.clear();
+				closeEntry(existing);
+			}
 			return entry;
 		},
 		attach(handle, subscriber, clientDirPath) {
@@ -520,9 +928,28 @@ export function createFileBrowserWatchRegistry<S>(
 		},
 		closeAll() {
 			for (const entry of [...watchers.values()]) closeEntry(entry);
+			if (capRetryTimer) clearTimeout(capRetryTimer);
+			capRetryTimer = null;
 		},
 		diagnostics() {
-			return { entries: watchers.size, contentWatcherStarts };
+			const watchedDirectories: string[] = [];
+			let scanning = false;
+			let failedEntries = 0;
+			for (const entry of watchers.values()) {
+				if (entry.failed) failedEntries += 1;
+				const tree = entry.directoryTree;
+				if (!tree) continue;
+				watchedDirectories.push(...tree.watches.keys());
+				if (tree.scanning || tree.pending.size > 0) scanning = true;
+			}
+			return {
+				entries: watchers.size,
+				contentWatcherStarts,
+				directoryWatches: directoryWatcherCount,
+				watchedDirectories: watchedDirectories.sort(),
+				scanning,
+				failedEntries,
+			};
 		},
 		configureForTests(overrides) {
 			Object.assign(options, overrides);
