@@ -302,7 +302,8 @@ export function TourCoach({
     measure();
     const target = tourTargetElement(coach.target);
     if (target && coach.target !== 'file') {
-      if (phone) fitAroundSheet(target, ref.current, reduced);
+      // The picture choices: their question's prompt comes into view with them.
+      if (phone) fitAroundSheet(coach.target === 'choices' ? (target.closest<HTMLElement>('.question-block') ?? target) : target, ref.current, reduced);
       else target.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
     }
     const again = () => measure();

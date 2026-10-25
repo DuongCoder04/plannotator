@@ -150,8 +150,25 @@ async function shootThemes(page: Page, name: string, themes: readonly ('light' |
   for (const scheme of themes) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.waitForFunction((dark) => document.documentElement.classList.contains('light') !== dark, scheme === 'dark', { timeout: 3000 });
-    // Past the theme's 150 ms crossfade and any entrance.
+    // Past the theme's 150 ms crossfade and any entrance (WebKit headless can leave a colour transition mid-way).
     await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      for (const a of document.getAnimations()) {
+        try {
+          a.finish();
+        } catch {
+          // An endless animation (the Tater sprite, a spinner) has no end to finish at.
+        }
+      }
+      // WebKit can keep an inherited colour from before an emulated scheme change: restyle the page once.
+      const root = document.getElementById('root') ?? document.body;
+      const scrolled = [...document.querySelectorAll<HTMLElement>('*')].filter((el) => el.scrollTop > 0).map((el) => [el, el.scrollTop] as const);
+      root.style.display = 'none';
+      void root.offsetHeight;
+      root.style.display = '';
+      for (const [el, top] of scrolled) el.scrollTop = top;
+    });
+    await page.waitForTimeout(100);
     await page.screenshot({ path: join(shots, `${name}-${scheme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
