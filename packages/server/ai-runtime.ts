@@ -16,6 +16,7 @@ import {
 } from "@plannotator/ai";
 import { resolveWindowsCommandShim } from "@plannotator/ai/providers/command-path";
 import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
+import { cameThroughTailscale } from "@plannotator/shared/tailnet-audience";
 import { isRemoteSession } from "./remote";
 import type { SessionTailnetGate } from "./session-tailnet";
 
@@ -242,19 +243,25 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
   if (bridgeProvider) registry.register(bridgeProvider, SESSION_BRIDGE_PROVIDER_NAME);
   await registerSdkProviders(catalogRegistry ?? registry);
 
-  const localBridgeRequest = (req: Request) => isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.());
+  // This machine only. A request that came through Tailscale never counts,
+  // even in a session that was never published: a `--bg` serve mapping a
+  // crashed `--tailscale` session left behind can point at a later local
+  // session on the same port.
+  const localBridgeRequest = (req: Request) =>
+    isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.()) && !cameThroughTailscale(req.headers);
   // A tailnet-published session with a bridge: who may ask the agent session
   // is decided per request. Without one (or without a bridge) the guard is
   // exactly the local one.
   const tailnet = bridgeProvider ? options.tailnet : undefined;
-  const servedPullBridge =
-    pullBridge && tailnet
-      ? {
-          // The host's own channel: this machine only, whatever Host is claimed.
-          handle: (req: Request) =>
-            tailnet.audience(req) === "local" ? pullBridge.handle(req) : Promise.resolve(Response.json({ error: "Not found" }, { status: 404 })),
-        }
-      : pullBridge;
+  const servedPullBridge = pullBridge
+    ? {
+        // The host's own channel: this machine only, whatever Host is claimed.
+        handle: (req: Request) =>
+          (tailnet ? tailnet.audience(req) === "local" : !cameThroughTailscale(req.headers))
+            ? pullBridge.handle(req)
+            : Promise.resolve(Response.json({ error: "Not found" }, { status: 404 })),
+      }
+    : null;
 
   const endpoints = createAIEndpoints({
     registry,

@@ -189,6 +189,11 @@ describe("--tailscale with a host's bridge: Ask this session for this machine an
       const refused = await throughServe(port, "/api/ai/session", { method: "POST", login, headers: ownerPage(port), body: SESSION_BODY });
       expect(refused.status).toBe(503);
     }
+    // The owner's login with a forwarded address that is not (only) Tailscale's: a forged header behind a local proxy.
+    for (const forwarded of ["192.168.1.5", "100.64.0.9, 192.168.1.5"]) {
+      const ids = await providerIds(await throughServe(port, "/api/ai/capabilities", { headers: { "X-Forwarded-For": forwarded } }));
+      expect([forwarded, ids.includes("session-bridge")]).toEqual([forwarded, false]);
+    }
     // Funnel is never the owner, whatever login it carries.
     expect(await providerIds(await throughServe(port, "/api/ai/capabilities", { headers: { "Tailscale-Funnel-Request": "?1" } }))).not.toContain("session-bridge");
 
@@ -288,21 +293,37 @@ describe("--tailscale with a host's bridge: Ask this session for this machine an
 });
 
 describe("nothing changes without --tailscale or without a bridge", () => {
-  unix("a local session with a bridge: no tailnet field, no tailscale call, and serve-shaped headers change nothing", async () => {
+  unix("a local session with a bridge: no tailnet field, no tailscale call; a LAN proxy's headers change nothing", async () => {
     rmSync(join(root, "calls.txt"), { force: true });
     const { port, ready } = await start([]);
     expect(ready.tailnet).toBeUndefined();
     expect(ready.url).toBe(`http://localhost:${port}`);
     expect(existsSync(join(root, "calls.txt"))).toBe(false);
+    const lan = { "X-Forwarded-For": "192.168.1.5" };
     const plain = await providerIds(await local(port, "/api/ai/capabilities"));
-    const headered = await providerIds(
-      await local(port, "/api/ai/capabilities", { headers: { "Tailscale-User-Login": "guest@example.com", "X-Forwarded-For": "100.64.0.9" } }),
-    );
     expect(plain).toEqual(["session-bridge"]);
-    expect(headered).toEqual(plain);
-    // Host control and the bridge answer as before, headers or not.
-    const bearer = { Authorization: `Bearer ${TOKEN}` };
-    expect((await local(port, "/api/host/status", { headers: { ...bearer, "X-Forwarded-For": "100.64.0.9" } })).status).toBe(200);
+    expect(await providerIds(await local(port, "/api/ai/capabilities", { headers: lan }))).toEqual(plain);
+    const bearer = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };
+    expect((await local(port, "/api/host/status", { headers: bearer })).status).toBe(200);
+    expect((await local(port, "/api/host/status", { headers: { ...bearer, ...lan } })).status).toBe(200);
+    expect((await local(port, "/api/ai/session", { method: "POST", headers: { ...bearer, ...lan }, body: SESSION_BODY })).status).toBe(200);
+  });
+
+  // A `--bg` mapping a crashed --tailscale session left behind can point at a
+  // later local session on the same port: Tailscale's marks never reach the
+  // host's channels or the agent session there, gate or no gate.
+  unix("a local session refuses the bridge and host control to anything that came through Tailscale", async () => {
+    const { port } = await start([]);
+    const bearer = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };
+    for (const marks of [{ "Tailscale-User-Login": OWNER, "X-Forwarded-For": "100.64.0.9" }, { "X-Forwarded-For": "100.101.102.103" }, { "Tailscale-Headers-Info": "x" }]) {
+      const status = await local(port, "/api/host/status", { headers: { ...bearer, ...marks } });
+      expect([marks, status.status, ((await status.json()) as Json).code]).toEqual([marks, 404, "host_control_disabled"]);
+      const poll = await local(port, "/api/ai/bridge/poll", { method: "POST", headers: { ...bearer, ...marks }, body: JSON.stringify({ waitMs: 0 }) });
+      // Refused before the token is read (the Host guard's 403).
+      expect([marks, poll.status]).toEqual([marks, 403]);
+      const ask = await local(port, "/api/ai/session", { method: "POST", headers: { "Content-Type": "application/json", ...marks }, body: SESSION_BODY });
+      expect([marks, ask.status]).toEqual([marks, 403]);
+    }
   });
 
   unix("--tailscale with no bridge (a person at a shell): Tailscale is asked nothing more, the ready line says ask: false", async () => {

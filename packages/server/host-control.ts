@@ -9,6 +9,7 @@ import {
   type HostControl,
 } from "@plannotator/shared/host-control";
 import { takeEnvPullSessionBridgeConfig } from "./ai-runtime";
+import { cameThroughTailscale } from "@plannotator/shared/tailnet-audience";
 import { isRemoteSession } from "./remote";
 
 export type { HostControl, HostSessionStatus, HostCloseOutcome } from "@plannotator/shared/host-control";
@@ -41,7 +42,11 @@ export function handleHostControl(
     fromThisMachine?: (req: Request) => boolean;
   },
 ): Response | null {
-  if (route.fromThisMachine && !route.fromThisMachine(req)) route = { ...route, token: undefined };
+  // A request through Tailscale is never this machine's, in any session (a
+  // serve mapping left behind by a crashed `--tailscale` session can point at
+  // a later session on the same port).
+  const fromThisMachine = route.fromThisMachine ? route.fromThisMachine(req) : !cameThroughTailscale(req.headers);
+  if (!fromThisMachine) route = { ...route, token: undefined };
   const answer = handleHostControlRequest(
     {
       method: req.method,

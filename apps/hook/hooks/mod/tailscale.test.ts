@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { PlannotatorMod, STORE_LAUNCHES } from './controller'
 import { parseReadyFile } from './launch'
 import { shellTakeOver } from './take-over'
-import { PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT } from './tool'
+import { isOlderCliTailscaleRefusal, PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT } from './tool'
 import { fakeHost, type FakeHost, type RunCall } from './testing/fake-host'
 
 // #2166: the tool's `tailscale` option opens the review with the CLI's
@@ -90,6 +90,41 @@ describe('the plannotator tool: tailscale', () => {
     }
     const mod = new PlannotatorMod(host, SESSION)
     expect(await mod.runTool({ action: 'annotate', target: 'notes.md', tailscale: true })).toEqual({ deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT })
+  })
+
+  test('a current CLI\'s publish failure (Tailscale off, signed out, port routed) is shown as it is', async () => {
+    const host = fakeHost()
+    const reason = '--tailscale: Tailscale is not running. Start it, then try again.'
+    host.onRun = (call) => {
+      if (!isLaunch(call)) return
+      host.files.set(`${launchDirOf(call)}/stderr`, `[plannotator] Ask this session: on here, and over your tailnet for o@example.com only.\n${reason}`)
+      host.files.set(`${launchDirOf(call)}/exit`, '1')
+    }
+    const mod = new PlannotatorMod(host, SESSION)
+    const answer = await mod.runTool({ action: 'review', tailscale: true })
+    expect('deny' in answer && answer.deny).toContain(reason)
+    expect('deny' in answer && answer.deny).not.toBe(PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT)
+  })
+
+  test('an older CLI\'s refusals of the flag read as "update"; nothing else does', () => {
+    expect(isOlderCliTailscaleRefusal('Plannotator could not open notes.md (exit 1):\nFile not found: --tailscale')).toBe(true)
+    expect(isOlderCliTailscaleRefusal('--tailscale is only supported with: plannotator review, annotate, annotate-last (last)')).toBe(true)
+    expect(isOlderCliTailscaleRefusal('error: unknown option --tailscale')).toBe(true)
+    expect(isOlderCliTailscaleRefusal('--tailscale: could not start tailscale serve. Log in to Tailscale first')).toBe(false)
+    expect(isOlderCliTailscaleRefusal('--tailscale: tailscale serve already routes port 6060')).toBe(false)
+    expect(isOlderCliTailscaleRefusal('File not found: notes.md')).toBe(false)
+  })
+
+  test('a launch that answered "starting" and came up later without the tailnet field: the session is told', async () => {
+    const host = fakeHost()
+    const mod = new PlannotatorMod(host, SESSION)
+    // No ready line within the wait: the tool answers "starting".
+    const answer = await mod.runTool({ action: 'annotate', target: 'notes.md', tailscale: true })
+    expect('text' in answer && answer.text).toContain('Plannotator is starting')
+    const dir = launchDirOf(launches(host)[0]!)
+    host.files.set(`${dir}/ready`, `${JSON.stringify({ url: 'http://localhost:6060', isRemote: false, port: 6060 })}\n`)
+    await host.tick()
+    expect(host.logs.some((line) => line.includes('too old to keep "Ask this session" over the tailnet'))).toBe(true)
   })
 
   test('without tailscale nothing changes: no flag, no ready check, the same result text', async () => {

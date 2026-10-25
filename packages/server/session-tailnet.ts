@@ -66,6 +66,16 @@ export function setSessionTailnetServedUrl(url: string): void {
   }
 }
 
+/**
+ * The Host an owner's tab sends: the served name with the HTTPS port, or the
+ * name alone when that port is 443 (a browser omits the default port).
+ */
+function isServedHost(hostHeader: string | null, hostname: string, httpsPort: number): boolean {
+  if (isServedTailnetHost(hostHeader, hostname, httpsPort)) return true;
+  if (httpsPort !== 443 || !hostHeader) return false;
+  return hostHeader.trim().toLowerCase().replace(/\.$/, "") === hostname.toLowerCase();
+}
+
 /** Who sent a request to this process's tailnet-published session. */
 export function sessionTailnetAudience(req: Request): TailnetAudience {
   return tailnetAudience(req.headers, state.owner);
@@ -81,7 +91,7 @@ export function sessionTailnetAskAllowed(req: Request, localAllowed: (req: Reque
     case "local":
       return localAllowed(req);
     case "owner":
-      return state.hostname !== null && state.httpsPort !== null && isServedTailnetHost(req.headers.get("host"), state.hostname, state.httpsPort);
+      return state.hostname !== null && state.httpsPort !== null && isServedHost(req.headers.get("host"), state.hostname, state.httpsPort);
     case "peer":
       return false;
   }

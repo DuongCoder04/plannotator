@@ -62,6 +62,7 @@ import {
 } from './plan'
 import {
   isOlderCliBundleRefusal,
+  isOlderCliTailscaleRefusal,
   parsePlannotatorToolInput,
   plannotatorDecisionSubject,
   plannotatorDistinctSubjects,
@@ -125,7 +126,13 @@ export interface LaunchRecord {
   closedByAgent?: boolean
   /** The ready file's `tailnet` (a `--tailscale` session of a CLI that keeps Ask this session there, #2166). */
   tailnet?: { ask: boolean }
+  /** Opened by the tool with `tailscale: true`: a ready line without `tailnet` means a CLI too old for it. */
+  tailscaleAsked?: boolean
 }
+
+/** What the mod says when a tool `tailscale` launch came up late from a CLI too old for it. */
+export const TAILSCALE_LATE_OLDER_CLI_TEXT = (subject: string): string =>
+  `${subject} opened, but the installed Plannotator is too old to keep "Ask this session" over the tailnet. Update Plannotator (\`plannotator update\`).`
 
 /** The `pn-` session id of a launch: the six hex digits that end its launch id. */
 export function sessionIdOf(launch: { id: string }): string {
@@ -762,6 +769,12 @@ export class PlannotatorMod {
     launch.url = ready.url
     launch.port = ready.port
     if (ready.tailnet) launch.tailnet = ready.tailnet
+    else if (launch.tailscaleAsked && !launch.starting) {
+      // The tool answered "starting" and the CLI came up later: the tool can
+      // no longer refuse, so say it here (the review stays open).
+      this.host.log(TAILSCALE_LATE_OLDER_CLI_TEXT(launch.subject))
+      this.host.toast(TAILSCALE_LATE_OLDER_CLI_TEXT(launch.subject))
+    }
     if (ready.target !== undefined) {
       // The server's own answer: it may have found a bare name elsewhere in the project.
       if (launch.target !== undefined && !plannotatorSameTarget(launch.target, ready.target)) {
@@ -858,13 +871,18 @@ export class PlannotatorMod {
     const bundle = Array.isArray(call.target)
     const subject = bundle ? plannotatorBundleSubject(targets) : subjectFor(action, targets)
     const tailscale = call.tailscale === true
-    const opened = await this.open(action, plannotatorToolArgs(call), subject, gate ? { deliverApproval: true } : {})
+    const opened = await this.open(action, plannotatorToolArgs(call), subject, {
+      ...(gate ? { deliverApproval: true } : {}),
+      ...(tailscale ? { tailscaleAsked: true } : {}),
+    })
     switch (opened.state) {
       case 'error':
         // An older CLI answers several paths with its ambiguity error.
         if (bundle && isOlderCliBundleRefusal(opened.text)) return { deny: PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT }
-        // A CLI from before `--tailscale` refuses the word (an unknown flag or file).
-        if (tailscale && opened.text.includes('--tailscale')) return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
+        // A CLI from before `--tailscale` refuses the word (an unknown flag or
+        // file). A current CLI's publish failure (`--tailscale: Tailscale is
+        // not running`, signed out, port routed) is shown as it is.
+        if (tailscale && isOlderCliTailscaleRefusal(opened.text)) return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
         return { deny: opened.text }
       case 'starting':
         return { text: plannotatorToolOpenedText(opened.subject, undefined, gate, opened.sessionId, opened.target) }

@@ -179,6 +179,22 @@ export interface PlannotatorToolParseOptions {
 export const PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT =
   'Plannotator did not open: the installed Plannotator is too old to open a review over the tailnet from this tool. Ask the user to update Plannotator (`plannotator update`), or open it without `tailscale` for now.'
 
+/**
+ * Whether a CLI's startup error for a `tailscale` call is an OLDER CLI's
+ * refusal of the flag itself (it read `--tailscale` as a file, an unknown
+ * option, or a flag for another subcommand), never a current CLI's publish
+ * failure: those all start with `--tailscale:` (Tailscale not running, signed
+ * out, the port already routed) and are the reason to show as it is.
+ */
+export function isOlderCliTailscaleRefusal(errorText: string): boolean {
+  if (errorText.includes('--tailscale:')) return false
+  return (
+    /File not found: [^\n]*--tailscale/.test(errorText) ||
+    errorText.includes('--tailscale is only supported with') ||
+    /(?:unknown|unrecognized|unexpected) (?:option|flag|argument)[^\n]*--tailscale/i.test(errorText)
+  )
+}
+
 /** Longest target or base accepted; a real path or URL is far shorter. */
 export const PLANNOTATOR_TOOL_MAX_TEXT = 4096
 
