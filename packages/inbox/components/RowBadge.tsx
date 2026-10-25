@@ -51,7 +51,7 @@ export function tidyWaitText(text: string): string {
 }
 
 export interface WaitItem {
-  /** "Q1", "A2": only when the card's items come from more than one question. */
+  /** "Q1", "A2", "Q1, Q2" (a name two questions hold up): only when the card's items come from more than one question. */
   label: string | null;
   text: string;
 }
@@ -82,25 +82,48 @@ function labelsOf(waits: readonly InboxRowWait[]): string[] {
   return waits.map((w) => (w.key.startsWith('a-') ? `A${++a}` : `Q${++q}`));
 }
 
+/** One line of the card while it is being built: the questions it comes from (indexes into `waits`). */
+interface Gathered {
+  raw: string;
+  text: string;
+  from: number[];
+}
+
+/**
+ * Adds an entry, or the question to an entry already there with the same
+ * words: the badge counts names once across questions (`summarizeInboxQuestions`
+ * de-duplicates `holds_up` by its exact text), so the card lists each name once
+ * too, with every question it comes from ("Q1, Q2").
+ */
+function gather(into: Gathered[], raw: string, from: number): void {
+  const same = into.find((g) => g.raw === raw);
+  if (same) {
+    if (from >= 0 && !same.from.includes(from)) same.from.push(from);
+    return;
+  }
+  into.push({ raw, text: tidyWaitText(raw), from: from >= 0 ? [from] : [] });
+}
+
 /** What the card lists, decided once for the card and its words for a screen reader. */
 export function waitCardModel(row: InboxListRow): WaitCardModel | null {
   if (!rowHasBadge(row)) return null;
   const waits = row.waits ?? [];
   const labels = labelsOf(waits);
-  const stops: (WaitItem & { from: number })[] = [];
-  const holds: (WaitItem & { from: number })[] = [];
+  const stops: Gathered[] = [];
+  const holds: Gathered[] = [];
   waits.forEach((w, i) => {
-    if (w.stopped) stops.push({ label: labels[i]!, text: tidyWaitText(w.stopped), from: i });
-    for (const h of w.holds_up) holds.push({ label: labels[i]!, text: tidyWaitText(h), from: i });
+    if (w.stopped) gather(stops, w.stopped, i);
+    for (const h of w.holds_up) gather(holds, h, i);
   });
   // An older Inbox (no `waits`): the row's merged hold-ups, from no question in particular.
-  if (waits.length === 0) for (const h of row.questions.holds_up) holds.push({ label: null, text: tidyWaitText(h), from: -1 });
+  if (waits.length === 0) for (const h of row.questions.holds_up) gather(holds, h, -1);
   const stopped = row.section === 'stopped';
   const lead = stopped ? stops : holds;
   const also = stopped ? holds : [];
-  // Name the question only when the items come from more than one.
-  const named = new Set([...lead, ...also].map((i) => i.from)).size > 1;
-  const strip = (items: (WaitItem & { from: number })[]): WaitItem[] => items.map((i) => ({ label: named ? i.label : null, text: i.text }));
+  // Name the questions only when the items come from more than one.
+  const named = new Set([...lead, ...also].flatMap((i) => i.from)).size > 1;
+  const strip = (items: Gathered[]): WaitItem[] =>
+    items.map((i) => ({ label: named && i.from.length > 0 ? i.from.map((f) => labels[f]!).join(', ') : null, text: i.text }));
   const leadShown = strip(lead.slice(0, WAIT_CARD_LINES));
   const alsoShown = strip(also.slice(0, Math.max(0, WAIT_CARD_LINES - leadShown.length)));
   return {

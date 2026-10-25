@@ -1,4 +1,4 @@
-import { memo, useCallback, useId, useLayoutEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react';
+import { memo, useCallback, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
 import { agentName, formatCount, shortTime, waitCount } from '../format';
@@ -103,12 +103,23 @@ function RowMark({ row }: { row: InboxListRow }) {
 /**
  * The row has keyboard focus (`:focus-visible`): its badge's card shows, as it
  * does on hover (approval "inbox-row-badges"). A click's focus does not count.
+ * Escape closes the card and keeps focus on the row; that Escape is used up
+ * (default prevented), so the window's Escape does not also close the thread.
+ * The card comes back the next time the row takes keyboard focus.
  */
-function useKeyboardFocus(enabled: boolean): [boolean, { onFocus: (e: FocusEvent<HTMLElement>) => void; onBlur: () => void }] {
+function useKeyboardFocus(enabled: boolean): [
+  boolean,
+  { onFocus: (e: FocusEvent<HTMLElement>) => void; onBlur: () => void; onKeyDown: (e: KeyboardEvent<HTMLElement>) => void },
+] {
   const [on, setOn] = useState(false);
   return [
     on,
     {
+      onKeyDown: (e) => {
+        if (!on || e.key !== 'Escape' || e.target !== e.currentTarget || e.defaultPrevented) return;
+        e.preventDefault();
+        setOn(false);
+      },
       onFocus: (e) => {
         if (!enabled || e.target !== e.currentTarget) return;
         let visible = false;

@@ -4551,7 +4551,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-wc-chip { margin-left: auto; font-size: var(--ib-fs-11-5, 11.5px); padding: 1px 7px; border-radius: 999px; background: color-mix(in oklab, var(--foreground) 7%, transparent); color: var(--muted-foreground); max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-wc-row { position: relative; display: flex; gap: 10px; align-items: baseline; padding: 7px 12px; }
 .ib-wc-row::before, .ib-wc-sub::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: 1px; background: var(--ib-wc-hair); }
-.ib-wc-q { flex: none; min-width: 20px; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.ib-wc-q { flex: none; min-width: 20px; white-space: nowrap; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .ib-wc-t { min-width: 0; }
 .ib-wc-more { color: var(--muted-foreground); }
 .ib-wc-sub { position: relative; padding: 9px 12px 3px; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; color: var(--muted-foreground); }

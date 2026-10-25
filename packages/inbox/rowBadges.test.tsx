@@ -104,6 +104,36 @@ describe('the card model', () => {
     expect(waitCardModel(actions)!.lead.map((i) => i.label)).toEqual(['A1', 'Q1']);
   });
 
+  test('a name two questions hold up is one row, naming both, so the card agrees with the badge count', () => {
+    // The server's summary counts names once across questions (summarizeInboxQuestions).
+    const shared = row('msg_shared', 'holding', {
+      questions: { open: 2, picked: 0, stopped: false, holds_up: ['deploy', 'docs'], prompt: null },
+      waits: [wait('q-1', 0, null, ['deploy']), wait('q-2', 1, null, ['deploy', 'docs'])],
+    });
+    const m = waitCardModel(shared)!;
+    expect(m.title).toBe('Holds up 2');
+    expect(m.lead).toEqual([
+      { label: 'Q1, Q2', text: 'Deploy' },
+      { label: 'Q2', text: 'Docs' },
+    ]);
+    expect(m.lead).toHaveLength(shared.questions.holds_up.length);
+    expect(badgeDescription(shared)).toBe('Holds up: Deploy; Docs.');
+    // One question holding up "deploy" twice (the summary drops the repeat too): one row, no label.
+    const twice = row('msg_twice', 'holding', {
+      questions: { open: 1, picked: 0, stopped: false, holds_up: ['deploy'], prompt: null },
+      waits: [wait('q-1', 0, null, ['deploy', 'deploy'])],
+    });
+    expect(waitCardModel(twice)!.lead).toEqual([{ label: null, text: 'Deploy' }]);
+    // A Stopped card's "Also holds up N" counts what the badge's summary counts.
+    const stop = row('msg_stop2', 'stopped', {
+      questions: { open: 2, picked: 0, stopped: true, holds_up: ['deploy'], prompt: null },
+      waits: [wait('q-1', 0, 'the deploy', ['deploy']), wait('q-2', 1, null, ['deploy'])],
+    });
+    const sm = waitCardModel(stop)!;
+    expect(sm.alsoTotal).toBe(stop.questions.holds_up.length);
+    expect(sm.also).toEqual([{ label: 'Q1, Q2', text: 'Deploy' }]);
+  });
+
   test('five lines, then +N more; an older Inbox (no waits) lists the merged hold-ups', () => {
     const many = { ...HOLD, waits: [wait('q-1', 0, null, ['a', 'b', 'c', 'd', 'e', 'f', 'g'])] };
     const m = waitCardModel(many)!;
@@ -235,6 +265,39 @@ describe.if(hasDom)('the badges in the list', () => {
     act(() => el.querySelector<HTMLElement>('[data-thread-id="msg_wait"]')!.focus());
     await settle(50);
     expect(card() === null).toBe(true);
+  });
+
+  test('Escape closes the card and keeps focus on the row, without reaching the window; the next Escape does', async () => {
+    const el = mount();
+    const r = el.querySelector<HTMLElement>('[data-thread-id="msg_stop"]')!;
+    act(() => r.focus());
+    await settle(50);
+    expect(card()!.dataset.waitCard).toBe('stop');
+    const seen: boolean[] = [];
+    const onWindow = (e: KeyboardEvent) => seen.push(e.defaultPrevented);
+    window.addEventListener('keydown', onWindow);
+    try {
+      act(() => {
+        r.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      await settle();
+      expect(card() === null).toBe(true);
+      expect(document.activeElement).toBe(r);
+      // The window's Escape (closing a thread) skips an Escape that is already used.
+      expect(seen).toEqual([true]);
+      // With the card closed, Escape is the window's again.
+      act(() => {
+        r.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(seen).toEqual([true, false]);
+    } finally {
+      window.removeEventListener('keydown', onWindow);
+    }
+    // The card comes back with the next keyboard focus.
+    act(() => r.blur());
+    act(() => r.focus());
+    await settle(50);
+    expect(card()!.dataset.waitCard).toBe('stop');
   });
 
   test('beside a thread too: the card on keyboard focus; the mark before the time on line 1', async () => {

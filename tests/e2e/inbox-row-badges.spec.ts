@@ -219,6 +219,15 @@ test('beside an open thread: the mark before the time on line 1, and the card on
     await narrow.focus();
     await expect(card(page)).toBeVisible();
   });
+  // Escape closes the card, keeps focus on the row and leaves the thread open; the next Escape closes the thread.
+  await page.keyboard.press('Escape');
+  await expect(card(page)).toHaveCount(0);
+  await expect(narrow).toBeFocused();
+  await page.waitForTimeout(300);
+  expect(page.url()).toContain(`#thread=${world.stopped}`);
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page).not.toHaveURL(new RegExp(`thread=${world.stopped}`));
 });
 
 test('an iPhone (WebKit): icons only, no card, the mark by the time', async () => {
