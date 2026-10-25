@@ -363,8 +363,9 @@ export class TurnTracker {
     const ask = this.ask
     if (!ask || ask.askId !== askId || ask.finished) return null
     ask.cancelled = true
-    if (ask.takenOver || ask.pending > 0) {
-      // The turn carries someone else's prompt now (or is about to): close the question, never the turn.
+    if (ask.takenOver || ask.pending > 0 || (ask.turnId !== null && this.otherPluginTurns.has(ask.turnId))) {
+      // The turn carries someone else's prompt now (or is about to), or another plugin's prompt joined it
+      // (that plugin may be waiting on the turn's answer): close the question, never the turn.
       ask.finished = true
       ask.held = []
       ask.sink.error('aborted')

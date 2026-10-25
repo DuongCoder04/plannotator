@@ -341,3 +341,29 @@ describe("TurnTracker knows another plugin's turns", () => {
     expect(turns.isOtherPluginTurn('ask')).toBe(false)
   })
 })
+
+// The failure this guards: the reviewer cancelled our Ask question after another plugin's prompt was
+// folded into its turn, and the cancel aborted the turn, cutting off that plugin's answer.
+describe("cancelling our question never aborts a turn another plugin's prompt joined", () => {
+  test('alone, a cancel aborts the question\'s own turn (as before)', () => {
+    const turns = new TurnTracker()
+    const s = sink()
+    turns.beginAsk('a1', 'why?', s)
+    turns.onTurnStart('ask', 'The plannotator plugin sent a message:\nwhy?')
+    expect(turns.cancelAsk('a1')).toBe('ask')
+  })
+
+  test("joined by another plugin's prompt, a cancel closes the question and returns no turn to abort", () => {
+    const turns = new TurnTracker()
+    const s = sink()
+    turns.beginAsk('a1', 'why?', s)
+    turns.onTurnStart('ask', 'The plannotator plugin sent a message:\nwhy?')
+    turns.onPromptEntered({ text: 'Review PR 12.', fromUs: false, originKind: 'plugin', turnId: 'ask' })
+    expect(turns.cancelAsk('a1')).toBeNull()
+    expect(s.errors).toEqual(['aborted'])
+    expect(turns.isActiveAsk('a1')).toBe(false)
+    // Nothing more streams to Plannotator from that turn.
+    turns.onText('ask', 'the other plugin\'s answer')
+    expect(s.deltas).toEqual([])
+  })
+})

@@ -140,6 +140,38 @@ describe('Ask this session over the pull bridge', () => {
     await running
   })
 
+  // The failure this guards: another plugin's prompt was folded into our Ask question's turn, and the
+  // reviewer's Stop then aborted that turn, cutting off the answer the other plugin waits for.
+  test("a Stop on a question whose turn another plugin's prompt joined closes the question and aborts nothing", async () => {
+    live = true
+    server = createPullSessionBridge({ token: TOKEN, host: 'claude-code', modes: { turn: true, transient: false } })
+    const host = fakeHost()
+    wire(host, server)
+    const turns = new TurnTracker()
+    const client = createBridge({ host, baseUrl: 'http://127.0.0.1:4321', token: TOKEN, turns, isLive: () => live })
+    const running = client.run()
+
+    await until(() => server!.bridge.status() === 'ready')
+    const { seen, sink } = collector()
+    const controller = new AbortController()
+    server.bridge.ask({ askId: 'ask-joined', text: '[Plannotator Ask AI] Why step 2?', mode: 'turn' }, sink, controller.signal)
+    await until(() => host.submits.length === 1)
+    turns.onTurnStart('ask-turn', 'The plannotator plugin sent a message:\n[Plannotator Ask AI] Why step 2?')
+    expect(turns.ownsTurn('ask-turn')).toBe(true)
+    turns.onPromptEntered({ text: 'Review PR 12.', fromUs: false, originKind: 'plugin', turnId: 'ask-turn' })
+    controller.abort()
+
+    await until(() => seen.error !== null)
+    expect(seen.error).toBe('aborted')
+    await Bun.sleep(50)
+    expect(host.aborted).toEqual([])
+    expect(turns.isActiveAsk('ask-joined')).toBe(false)
+
+    live = false
+    server.dispose()
+    await running
+  })
+
   test('a cancelled question that is still queued is confirmed and its turn aborted when it starts', async () => {
     live = true
     server = createPullSessionBridge({ token: TOKEN, host: 'claude-code', modes: { turn: true, transient: false } })
