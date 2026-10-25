@@ -245,6 +245,18 @@ export class ClaudeSession {
     if (!this.running) await this.startTurn(text)
   }
 
+  /**
+   * Another plugin's `$.prompt.submit` (a connector delivering its own message), at idle: our
+   * prompt.submit hook sees it bare with origin `plugin`, then its turn starts under that plugin's frame.
+   */
+  async otherPluginPrompt(name: string, text: string): Promise<string> {
+    if (this.running) throw new Error('another plugin prompts at idle')
+    const ref = { fromUs: false, originKind: 'plugin' }
+    this.mod.onPromptSubmitting(ref)
+    this.mod.onPromptEntered({ ...ref, text })
+    return this.startTurn(`The ${name} plugin sent a message: ${text}`)
+  }
+
   /** `$.prompt.submit`: waits for idle, then its turn starts under the plugin's frame. */
   private async pluginTurn(text: string): Promise<void> {
     while (this.running) await new Promise<void>((resolve) => this.idleWaiters.push(resolve))

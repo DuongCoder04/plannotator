@@ -967,6 +967,41 @@ describe('Claude Code ↔ Plannotator Inbox (real Inbox, real processes)', () =>
     expect(session.host.submits).toHaveLength(1)
   }, 120_000)
 
+  // The failure this catches: another plugin (a connector that delivers its own messages as turns) had its
+  // turn running when the person pressed Send now (or the Inbox's 5-minute auto-send fired); the reply went
+  // into that turn as a row, and the plugin read the agent's answer to our reply as the answer to its message.
+  test("another plugin's turn running: Send now is not offered and a press is refused; the reply waits and goes in once, as a turn, when the session is idle", async () => {
+    const w = world('16a-send-now-another-plugins-turn')
+    startInbox(w)
+    const session = await open(w, 'session-other-plugin')
+    const asked = await send(session, w, QUESTION)
+    await session.otherPluginPrompt('workspaces', 'Review the checkout PR and report back.')
+    const replyId = await personSends(w, asked.message_id, 'Retry with the same key.')
+    await waitFor('the busy connection without Send now', async () => {
+      const model = (await (await fetch(`http://127.0.0.1:${registry(w).port}/api/inbox/threads/${asked.thread_id}/sessions?asker=session-other-plugin`)).json()) as {
+        asker: { connection: { busy: boolean | null; send_now: boolean } | null }
+      }
+      return model.asker.connection?.busy === true && model.asker.connection.send_now === false
+    })
+    const health = (await (await fetch(`http://127.0.0.1:${registry(w).port}/api/inbox/health`)).json()) as { serverSession: string }
+    const refused = await fetch(`http://127.0.0.1:${registry(w).port}/api/inbox/messages/${replyId}/send-now`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${registry(w).port}` },
+      body: JSON.stringify({ serverSession: health.serverSession }),
+    })
+    expect(refused.status).toBe(409)
+    await Bun.sleep(3_000)
+    expect(session.host.appended).toEqual([])
+    expect(session.host.submits).toEqual([])
+    w.proof("another plugin's turn runs: send_now false, Send now refused, 0 rows, 0 submits")
+    session.endTurn('Reviewed.')
+    await waitFor('the wake turn', () => session.turns.find((t) => t.text.includes(replyId)))
+    await Bun.sleep(1_500)
+    expect(session.host.appended).toEqual([])
+    expect(session.host.submits).toHaveLength(1)
+    expect(session.host.aborted).toEqual([])
+  }, 120_000)
+
   // The failure this catches: a claim held while the reply waits (here, the session's own Ask question took
   // the turn after the claim) whose `alive` goes stale, so another process reports a reply this one still holds.
   test("Send now claimed, then this session's own Ask question holds the turn: the claim is given back while it waits, and the reply goes in once, as a turn", async () => {
