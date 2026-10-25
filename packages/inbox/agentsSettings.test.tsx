@@ -56,7 +56,10 @@ function model(over: Partial<InboxAgentsModel> = {}): InboxAgentsModel {
       tool('opencode', 'OpenCode', {
         note: note('opencode', { path: '~/.config/opencode/AGENTS.md', state: 'unavailable', reason: 'Creating this file would stop OpenCode 1 from reading your ~/.claude/CLAUDE.md.' }),
       }),
-      mcp('cursor', 'Cursor', '~/.cursor/mcp.json', { reach: { kind: 'mcp', on: false, state: 'removed', path: '~/.cursor/mcp.json', locked: false, reason: null } }),
+      mcp('cursor', 'Cursor', '~/.cursor/mcp.json', {
+        reach: { kind: 'mcp', on: false, state: 'removed', path: '~/.cursor/mcp.json', locked: false, reason: null },
+        note: note('cursor', { state: 'manual', reason: 'Cursor User Rules are managed in Settings → Rules; Plannotator cannot install, update or remove a copied rule.' }),
+      }),
       { ...mcp('amp', 'Amp', '~/.config/amp/settings.json'), detected: false },
     ],
     last_report: null,
@@ -124,7 +127,7 @@ test.skipIf(!hasDom)('one group per agent found, with its switches and the state
   expect(group(el, 'cursor').querySelector('.ib-agstate')?.textContent).toBe('Removed outside Plannotator');
   expect(rows(group(el, 'cursor'))).toEqual([
     { k: 'Reaches the Inbox', v: "plannotator-inbox is no longer in ~/.cursor/mcp.json. Plannotator won't add it back on its own; turn this on to add it.", sw: 'false', sub: null },
-    { k: 'Note in its instructions', v: 'Cursor keeps its rules in its own settings, so there is no file to add a note to.', sw: null, sub: null },
+    { k: 'Note in its instructions', v: 'Cursor User Rules · copy into Settings → RulesShow note', sw: null, sub: 'Cursor User Rules are managed in Settings → Rules; Plannotator cannot install, update or remove a copied rule.' }
   ]);
 });
 

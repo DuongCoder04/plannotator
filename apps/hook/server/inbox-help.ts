@@ -251,6 +251,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
   const noteLines = INBOX_NOTE_AGENT_IDS.map((id) => {
     const target = noteTarget(id, agents);
     const shown = displayPath(target.path, agents);
+    if (id === "cursor") return `- ${INBOX_AGENT_LABELS[id]} (\`${id}\`): manual copy to Cursor Settings → Rules. \`plannotator inbox --notes cursor\` prints the note; Plannotator cannot detect, update or remove a copied rule.`;
     if (target.reason) return `- ${INBOX_AGENT_LABELS[id]} (\`${id}\`): none. ${target.reason}`;
     return `- ${INBOX_AGENT_LABELS[id]} (\`${id}\`): ${code(shown ?? "")}, ${target.create ? "creates the file" : "adds a marked section"}.`;
   });
@@ -386,7 +387,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "## A note in each agent's instructions",
     "",
-    "Plannotator can add a short, marked note about the Inbox to an agent's own instructions file, so it sends decisions and finished work here while the person is away. Only with the person's yes: show them this list, then run `plannotator inbox --notes <ids>` with only the agents they agreed to (comma-separated). It never overwrites a note the person edited; the Inbox's Settings and `plannotator uninstall` remove it. On this computer:",
+    "Plannotator can add a short note about the Inbox to an agent's instructions, so it sends decisions and finished work here while the person is away. Only with the person's yes: show them this list, then run `plannotator inbox --notes <ids>` with only the agents they agreed to (comma-separated). Managed notes never overwrite a note the person edited and can be removed in Settings or with `plannotator uninstall`; Cursor instead requires manual copy/paste and Plannotator cannot track or remove it. On this computer:",
     "",
     ...noteLines,
     "",

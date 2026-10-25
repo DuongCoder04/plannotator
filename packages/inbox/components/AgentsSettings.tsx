@@ -187,7 +187,6 @@ function stateOf(row: InboxAgentRow): { text: string; tone: 'on' | 'off' | 'bad'
 
 /** Agents whose instructions live in their own settings, not a file. */
 const NO_NOTE_FILE: Partial<Record<InboxAgentId, string>> = {
-  cursor: 'Cursor keeps its rules in its own settings, so there is no file to add a note to.',
   kiro: 'Kiro CLI has no global instructions file, so there is no file to add a note to.',
 };
 
@@ -280,7 +279,9 @@ function AgentGroup({
         ? note.create
           ? 'would create'
           : 'no note yet'
-        : note.state === 'unavailable'
+        : note.state === 'manual'
+          ? 'copy into Settings → Rules'
+          : note.state === 'unavailable'
           ? 'no file yet'
           : ''
     : '';
@@ -289,7 +290,7 @@ function AgentGroup({
       ? note.reason
       : note?.state === 'edited'
       ? "You edited this note, so Plannotator won't update it. Turning it off removes it as you left it."
-      : note?.state === 'unavailable' || note?.state === 'damaged' || note?.state === 'refused'
+      : note?.state === 'manual' || note?.state === 'unavailable' || note?.state === 'damaged' || note?.state === 'refused'
         ? note.reason
         : note?.shared_with && note.shared_with.length > 0
           ? `This file is shared with ${note.shared_with.map((id) => INBOX_AGENT_LABELS[id]).join(' and ')}: one section, kept while either has it on.`
@@ -363,10 +364,10 @@ function AgentGroup({
             k="Note in its instructions"
             v={
               <>
-                <code>{note.path}</code>
+                {note.path ? <code>{note.path}</code> : row.id === 'cursor' ? 'Cursor User Rules' : null}
                 {noteState && <> · {noteState}</>}
                 <button type="button" className="ib-lnk" aria-expanded={show} aria-controls={`${id}-note`} onClick={() => setShow((open) => !open)}>
-                  {show ? 'Hide' : 'Show'}
+                  {show ? 'Hide' : row.id === 'cursor' ? 'Show note' : 'Show'}
                 </button>
               </>
             }
@@ -379,13 +380,14 @@ function AgentGroup({
               ) : null
             }
             sub={noteSub}
-            warn={(note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
+            warn={(note.state === 'manual' || note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
           />
           {show && (
             <div className="ib-agrow ib-agnote" id={`${id}-note`}>
               <span />
               <div className="ib-cbox">
-                <pre>{noteText}</pre>
+                {row.id === 'cursor' && <p>Copy this text into Cursor Settings → Rules. Plannotator cannot detect, update or remove a copied rule.</p>}
+                <pre>{row.id === 'cursor' ? noteText.split('\n').filter((line) => !line.startsWith('<!-- plannotator-inbox:')).join('\n') : noteText}</pre>
               </div>
             </div>
           )}

@@ -1087,7 +1087,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       }
     }
     if (typeof body.note === "boolean") {
-      if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no instructions file.", { field: "note" });
+      if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no Inbox note workflow.", { field: "note" });
+      if (agent === "cursor") throw new InboxError("validation_error", "Cursor rules must be copied manually from Settings → Agents.", { field: "note" });
       if (inboxNotesDisabled(agentEnvironment.env) && body.note) throw new InboxError("notes_disabled", "PLANNOTATOR_INBOX_NOTES=0 is set: notes are off.");
       // Adding one needs the agent here, as the note dialog and --notes ask; switching one off never does.
       if (body.note && !agentSpec(agent).detect(agentEnvironment)) {
@@ -1125,10 +1126,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // Read before adding: an agent whose note is added is no longer a candidate.
     const shown = (body.asked as InboxNoteAgentId[] | undefined) ?? (await noteCandidateIds(options));
     const results = adding.map((agent) =>
-      // Never a file for an agent that is not on this computer.
-      agentSpec(agent).detect(agentEnvironment)
-        ? addInboxNote(agent, dataDir, agentEnvironment)
-        : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
+      agent === "cursor"
+        ? ({ ok: true, agent, action: "manual", path: null } as const)
+        // Never a file for an agent that is not on this computer.
+        : agentSpec(agent).detect(agentEnvironment)
+          ? addInboxNote(agent, dataDir, agentEnvironment)
+          : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
     );
     const failed = new Set(results.filter((result) => !result.ok).map((result) => result.agent));
     await markNotesAsked([...new Set([...shown, ...adding])].filter((id) => !failed.has(id)), options);
