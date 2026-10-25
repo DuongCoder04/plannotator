@@ -8,6 +8,7 @@
  * Server-agnostic: takes a mode, server URL getter, and cwd getter.
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
 import { resolve as resolvePath } from "node:path";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "./claude-review";
 import {
@@ -179,6 +180,7 @@ export interface AgentJobHandlerOptions {
 async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
   try {
     const proc = Bun.spawn([program, ...engine.modelsArgv], {
+      env: childEnv(),
       stdout: "pipe",
       stderr: "ignore",
       timeout: 5000,
