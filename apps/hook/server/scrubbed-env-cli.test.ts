@@ -17,7 +17,8 @@
  * the `bun test` process, and `bun run` loads no `[test]` preload. The CLI
  * runs in a scratch git repository, with a
  * scratch HOME and data dir and a PATH that starts with logging stubs: `git`
- * logs and then runs the real git; `gh` and every agent CLI only log. No real
+ * logs and then runs the real git; `gh` and every agent CLI only log and exit
+ * 0 (`--version` prints a version). No real
  * agent CLI or gh ever runs. tests/child-env-guard.test.ts is the matching
  * source scan.
  */
@@ -197,7 +198,7 @@ describe("scrubbed variables never reach a child process", () => {
       expect(diff.status).toBe(200);
       expect(((await diff.json()) as { rawPatch: string }).rawPatch).toContain("+export const a = 2;");
 
-      // Runs `agent models`, `opencode models`, `pi --list-models`, `copilot help config`.
+      // Runs `cursor-agent models`, `opencode models`, `pi --list-models`, `copilot help config`.
       const capabilities = await fetch(`${base}/api/agents/capabilities`);
       expect(capabilities.status).toBe(200);
       await capabilities.json();
@@ -216,14 +217,17 @@ describe("scrubbed variables never reach a child process", () => {
     const names = new Set(children.map((child) => child.argv.split(" ")[0]));
     // The review ran git, and the capabilities request reached every marker engine.
     expect(children.filter((child) => child.argv.startsWith("git ")).length, stderr).toBeGreaterThan(5);
-    for (const name of ["agent", "opencode", "pi", "copilot"]) expect(names.has(name), `${name} was not run`).toBe(true);
+    // Cursor's CLI is `cursor-agent` (found first) or its own `agent`.
+    expect(names.has("cursor-agent") || names.has("agent"), "Cursor's CLI was not run").toBe(true);
+    for (const name of ["opencode", "pi", "copilot"]) expect(names.has(name), `${name} was not run`).toBe(true);
     expectNoLeaks(children);
   }, 60_000);
 
   test("plannotator review <PR URL>: gh sees none of them", async () => {
     const world = makeWorld();
-    // The PR provider checks `gh auth status` first; the stub exits 1, so the
-    // CLI says it is not signed in and stops. That call is what this checks.
+    // The PR provider asks gh first (`gh auth status`, then the PR). The stub
+    // exits 0 with no output, so the CLI cannot read the PR and stops; the gh
+    // calls it made are what this checks.
     const proc = Bun.spawn([process.execPath, "run", entry, "review", "https://github.com/acme/widgets/pull/1"], {
       cwd: world.repo,
       env: world.env,

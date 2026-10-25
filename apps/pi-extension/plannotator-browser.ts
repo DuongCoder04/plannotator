@@ -654,7 +654,7 @@ async function createCodeReviewBrowserSession(
 					const [cloneCmd, ...cloneArgs] = cloneCommand.argv;
 
 					setCodeReviewProgress(ctx, `Cloning ${prRepo}...`);
-					const cloneResult = spawnSync(cloneCmd, cloneArgs, { encoding: "utf-8", env: cloneEnv });
+					const cloneResult = spawnSync(cloneCmd, cloneArgs, { encoding: "utf-8", env: cloneEnv ?? process.env });
 					if ((cloneResult.status ?? 1) !== 0) {
 						throw new Error(`${cloneCmd === "git" ? "git clone" : `${cloneCmd} repo clone`} failed: ${(cloneResult.stderr ?? "").trim()}`);
 					}

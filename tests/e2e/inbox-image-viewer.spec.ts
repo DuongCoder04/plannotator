@@ -389,8 +389,8 @@ test('on an iPhone (WebKit) an image in a message opens full screen and the tool
     await expect(page.locator('[data-attachment-pane]')).toHaveAttribute('data-attachment-pane', world.ids['checkout-b-steps.png']!);
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shotsDir, '08-phone-inline-image-light.png') });
-    await page.locator('[data-full-view-more]').click();
-    await page.locator('[data-full-view-menu-position]').click();
+    // One tap on the toolbar's pill.
+    await page.locator('[data-full-view-bar] [data-full-view-position]').click();
     const sheet = page.locator('[data-image-peek-sheet]');
     await expect(sheet).toBeVisible();
     // Three across.

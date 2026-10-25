@@ -9,8 +9,8 @@
  * still reach git, gh and agent CLIs. `Bun.which` without `{ PATH }` searches
  * the startup PATH. This scan fails on either in the production trees; the
  * fix is `env: childEnv()` (packages/shared/child-env.ts) or `{ PATH:
- * childPath() }`. tests/child-env-process.test.ts proves the behavior end to
- * end on the real CLI.
+ * childPath() }`. apps/hook/server/scrubbed-env-cli.test.ts proves the
+ * behavior end to end on the real CLI.
  */
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -100,11 +100,18 @@ describe("the scan", () => {
   test("flags options it cannot read", () => {
     expect(flagged(`Bun.spawn(["git"], options);`)).toBe(1);
     expect(flagged(`Bun.spawn(["git"], { ...options, stdout: "pipe" });`)).toBe(1);
+    // A spread after env may replace it; one before it cannot.
+    expect(flagged(`Bun.spawn(["git"], { env: childEnv(), ...options });`)).toBe(1);
+    expect(flagged(`Bun.spawn(["git"], { ...options, env: childEnv() });`)).toBe(0);
   });
 
-  test("flags a one-argument Bun.which", () => {
+  test("flags a Bun.which whose options name no PATH", () => {
     expect(flagged(`const p = Bun.which("node");`)).toBe(1);
     expect(flagged(`const p = Bun.which("node", { PATH: childPath() });`)).toBe(0);
+    // The options must name PATH: a cwd alone, a variable, or a spread after PATH do not.
+    expect(flagged(`const p = Bun.which("node", { cwd });`)).toBe(1);
+    expect(flagged(`const p = Bun.which("node", options);`)).toBe(1);
+    expect(flagged(`const p = Bun.which("node", { PATH: childPath(), ...options });`)).toBe(1);
   });
 
   test("ignores comments and honors the exemption mark", () => {

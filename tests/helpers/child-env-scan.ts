@@ -76,26 +76,42 @@ type EnvVerdict = "ok" | "missing" | "unreadable" | "undefined";
 
 /** What an options object literal says about `env`. */
 function envOf(literal: string): EnvVerdict {
+  // Properties apply in order, so the LAST `env` decides, and a spread after
+  // it may replace it (`{ env: childEnv(), ...options }`): unreadable.
+  let verdict: EnvVerdict | null = null;
   let spread = false;
   for (const prop of objectProperties(literal)) {
     if (prop.startsWith("...")) {
       spread = true;
+      if (verdict !== null) verdict = "unreadable";
       continue;
     }
     const m = prop.match(/^(?:env|"env"|'env')\s*(?::\s*([\s\S]*))?$/);
     if (!m) continue;
     const value = (m[1] ?? "env").trim();
-    if (value === "undefined") return "undefined";
+    if (value === "undefined") verdict = "undefined";
     // `command.env` / `opts?.env`: an optional field, undefined when unset.
-    if (value !== "process.env" && /^[\w$]+(?:\??\.[\w$]+)*\??\.env$/.test(value)) return "undefined";
-    return "ok";
+    else if (value !== "process.env" && /^[\w$]+(?:\??\.[\w$]+)*\??\.env$/.test(value)) verdict = "undefined";
+    else verdict = "ok";
   }
-  return spread ? "unreadable" : "missing";
+  return verdict ?? (spread ? "unreadable" : "missing");
+}
+
+/** Whether `Bun.which`'s options literal names a `PATH` (a spread after it: no). */
+function namesPath(literal: string | undefined): boolean {
+  if (!literal?.startsWith("{")) return false;
+  let named = false;
+  for (const prop of objectProperties(literal)) {
+    if (prop.startsWith("...")) named = false;
+    else if (/^(?:PATH|"PATH"|'PATH')\s*(?::|$)/.test(prop)) named = true;
+  }
+  return named;
 }
 
 /**
  * Findings for one file: a Bun or synchronous child_process spawn with no
- * `env` (or one that may be undefined), and a one-argument `Bun.which`.
+ * `env` (or one that may be undefined), and a `Bun.which` whose options name
+ * no `PATH`.
  */
 export function childEnvFindings(source: string): string[] {
   const text = stripComments(source);
@@ -128,7 +144,7 @@ export function childEnvFindings(source: string): string[] {
     const args = callArgs(text, call.open);
 
     if (call.kind === "Bun.which") {
-      if (args.length < 2) findings.push(`${line}: Bun.which without { PATH } searches the startup PATH`);
+      if (!namesPath(args[1])) findings.push(`${line}: Bun.which without { PATH } searches the startup PATH`);
       continue;
     }
 

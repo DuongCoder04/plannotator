@@ -14,6 +14,8 @@ import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked,
 import {
   MARKER_ENGINES,
   formatMarkerLogEvent,
+  resolveMarkerBinary,
+  withMarkerBinary,
   type MarkerEngine,
   type MarkerEngineId,
   type MarkerModel,
@@ -175,9 +177,9 @@ export interface AgentJobHandlerOptions {
  * the CLI is unauthenticated / has no providers configured — the UI falls back to
  * the engine's default picker. Account/config-specific, so never hardcoded.
  */
-async function discoverMarkerModels(engine: MarkerEngine): Promise<MarkerModel[]> {
+async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
   try {
-    const proc = Bun.spawn([engine.binary, ...engine.modelsArgv], {
+    const proc = Bun.spawn([program, ...engine.modelsArgv], {
       env: childEnv(),
       stdout: "pipe",
       stderr: "ignore",
@@ -212,6 +214,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   // spawn inherits, so detection and execution agree. (`Bun.which` without the
   // option consults the PATH captured at process start.)
   const onPath = (binary: string): boolean => !!Bun.which(binary, { PATH: process.env.PATH });
+  // A marker engine's CLI by its own name, or another name it is installed
+  // under only when that is the same CLI (Cursor's `agent`, never another
+  // program named `agent`, such as Grok Build's).
+  // The check of a second name may run its `--version` (asynchronously, 2 s at
+  // most, once per file), so marker availability settles a moment after
+  // construction: every reader awaits `capabilitiesReady`.
+  const markerBinary = (engine: MarkerEngine) => resolveMarkerBinary(engine, (name) => Bun.which(name, { PATH: process.env.PATH }) ?? null);
   const capabilities: AgentCapability[] = [
     { id: "claude", name: "Claude Code", available: onPath("claude") },
     { id: "codex", name: "Codex CLI", available: onPath("codex") },
@@ -221,31 +230,34 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       name: "Guided Review",
       // Guided Review also runs on the marker engines (Cursor, OpenCode, Pi) —
       // same review-mode + binary-on-PATH gating as their own capability
-      // entries below (NOTE: cursor's binary is `agent`).
-      available:
-        onPath("claude") ||
-        onPath("codex") ||
-        (mode === "review" && Object.values(MARKER_ENGINES).some((engine) => onPath(engine.binary))),
+      // entries below (Cursor: `cursor-agent`, or Cursor's own `agent`).
+      available: onPath("claude") || onPath("codex"),
     },
   ];
   // Marker engines (Cursor, OpenCode, Pi) — same shape, one loop. Available only
-  // in review mode when the binary is on PATH (NOTE: cursor's binary is `agent`).
+  // in review mode when the binary is on PATH (Cursor: `cursor-agent`, or
+  // Cursor's own `agent`).
   for (const engine of Object.values(MARKER_ENGINES)) {
-    capabilities.push({
-      id: engine.id,
-      name: engine.name,
-      available: mode === "review" && onPath(engine.binary),
-    });
+    capabilities.push({ id: engine.id, name: engine.name, available: false });
   }
+  const capabilitiesReady: Promise<void> = mode !== "review"
+    ? Promise.resolve()
+    : Promise.all(Object.values(MARKER_ENGINES).map(async (engine) => {
+        const found = await markerBinary(engine).catch(() => null);
+        if (!found) return;
+        for (const c of capabilities) if (c.id === engine.id || c.id === "guide") c.available = true;
+      })).then(() => undefined);
 
   const markerModelsCache = new Map<string, MarkerModel[]>();
   async function buildCapabilitiesResponse(): Promise<AgentCapabilities> {
+    await capabilitiesReady;
     const providers = await Promise.all(capabilities.map(async (c) => {
       const engine = MARKER_ENGINES[c.id as MarkerEngineId];
       if (!engine || !c.available) return c;
       let models = markerModelsCache.get(engine.id);
       if (!models) {
-        models = await discoverMarkerModels(engine);
+        const program = await markerBinary(engine);
+        models = program ? await discoverMarkerModels(engine, program.name) : [];
         markerModelsCache.set(engine.id, models);
       }
       return { ...c, models };
@@ -704,6 +716,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           let outputPath: string | undefined;
 
           // Validate provider is a known, available capability
+          await capabilitiesReady;
           const cap = capabilities.find((c) => c.id === provider);
           if (!cap || !cap.available) {
             return Response.json(
@@ -798,6 +811,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
               { status: 400 },
             );
           }
+
+          // A marker engine starts by the name its CLI was found under
+          // (Cursor's `agent` only when it is Cursor's), never another
+          // program of that name. Guide jobs carry the engine on jobEngine.
+          const spawnEngine = MARKER_ENGINES[provider as MarkerEngineId]
+            ?? (jobEngine ? MARKER_ENGINES[jobEngine as MarkerEngineId] : undefined);
+          if (spawnEngine) command = withMarkerBinary(command, spawnEngine, await markerBinary(spawnEngine));
 
           const job = spawnJob(jobId, provider, command, label, outputPath, {
             captureStdout,

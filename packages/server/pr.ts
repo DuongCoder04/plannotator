@@ -52,11 +52,10 @@ export type { GithubPRMetadata } from "@plannotator/shared/pr-types";
 const bunCommandRuntime: PRRuntime = {
   async runCommand(cmd, args, options) {
     const proc = Bun.spawn([cmd, ...args], {
-      env: childEnv(),
+      // The live env, plus (never replacing it) another gh account's token (#2157).
+      env: childEnv(options?.env),
       stdout: "pipe",
       stderr: "pipe",
-      // Added to (never replacing) the environment: another gh account's token (#2157).
-      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
     });
 
     const [stdout, stderr, exitCode] = await Promise.all([
@@ -70,11 +69,10 @@ const bunCommandRuntime: PRRuntime = {
 
   async runCommandWithInput(cmd, args, input, options) {
     const proc = Bun.spawn([cmd, ...args], {
-      env: childEnv(),
+      env: childEnv(options?.env),
       stdout: "pipe",
       stderr: "pipe",
       stdin: "pipe",
-      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
     });
 
     proc.stdin.write(input);
