@@ -25,6 +25,7 @@
  *   origin.
  */
 
+import { createLiveProxyPortAttempts, getLiveProxyPortSelection, listenErrorCode } from "@plannotator/shared/live-proxy-port";
 import {
   HOP_BY_HOP_HEADERS,
   LIVE_PROXY_BRIDGE_PATH,
@@ -88,6 +89,22 @@ function toWebSocketPayload(data: unknown): string | ArrayBuffer {
 }
 
 /**
+ * Bun.serve reports every failed listen as EADDRINUSE ("Is port N in use?",
+ * errno 0), a port it may not bind (EACCES) included. Bun.listen reports the
+ * real code, so ask it once on the same address to learn which it was.
+ */
+function actualListenError(port: number, error: unknown): unknown {
+  if (port === 0 || listenErrorCode(error) !== "EADDRINUSE") return error;
+  if ((error as { errno?: unknown }).errno !== 0) return error;
+  try {
+    Bun.listen({ hostname: LOOPBACK_HOST, port, socket: { data() {} } }).stop(true);
+  } catch (probeError) {
+    if (listenErrorCode(probeError) !== null) return probeError;
+  }
+  return error;
+}
+
+/**
  * Start the loopback reverse proxy for one live annotate session.
  * The caller owns its lifecycle: stop() closes tracked WS upstreams and the
  * listener.
@@ -103,10 +120,10 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
   const wsUpstreams = new Set<WebSocket>();
   let warnedEncodedHtml = false;
 
-  const server = Bun.serve<LiveProxySocketData>({
+  const startServer = (port: number) => Bun.serve<LiveProxySocketData>({
     // The literal loopback address is the security contract (see header).
     hostname: LOOPBACK_HOST,
-    port: 0,
+    port,
     idleTimeout: 0,
 
     async fetch(req, srv) {
@@ -345,6 +362,19 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
       },
     },
   });
+
+  const selection = getLiveProxyPortSelection();
+  const attempts = createLiveProxyPortAttempts(selection);
+  const server = (() => {
+    for (const port of selection.ports) {
+      try {
+        return startServer(port);
+      } catch (error) {
+        attempts.failed(port, actualListenError(port, error));
+      }
+    }
+    throw attempts.exhausted();
+  })();
 
   const port = server.port!;
   return {

@@ -496,6 +496,8 @@ function Inbox() {
    */
   const [agentNote, setAgentNote] = useState<'none' | 'shown' | { rows: InboxAgentRow[]; report: InboxConnectReport | null }>('none');
   const agentNoteDecided = useRef(false);
+  /** The note dialog was decided on this load (shown or not): state, so the notification lines re-render when it is. */
+  const [agentNoteSettled, setAgentNoteSettled] = useState(false);
   /** The sound dialog's claim has answered on this load (or it was never due). */
   const [soundClaimed, setSoundClaimed] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -1211,6 +1213,7 @@ function Inbox() {
       const model = agentsRef.current;
       const rows = model ? noteQuestionRows(model) : [];
       if (rows.length > 0 && model) setAgentNote({ rows, report: cardReport(model) });
+      setAgentNoteSettled(true);
       return true;
     };
     if (decide()) return;
@@ -1223,6 +1226,17 @@ function Inbox() {
     };
   }, [agentNoteReady]);
   const agentNoteOpen = typeof agentNote === 'object';
+  // The notification lines (the ask, "tab slept") wait until this load's
+  // one-time dialogs are decided (the sound claim settled, the note dialog
+  // shown or not), so a dialog never opens over a line the person may be
+  // pressing (Turn on would stack the browser's prompt on the dialog), and
+  // stand down while one is open. After the agent-note dialog closes they come
+  // back on the same load: the first question usually lands on the load that
+  // showed the note dialog, and waiting for a reload meant it could never
+  // notify. A load that showed the sound dialog keeps them for the next load:
+  // that dialog already said what notifications need (and the note dialog is
+  // never decided on that load).
+  const askLinesFree = soundSettled && agentNoteSettled && soundDialog === 'none' && !agentNoteOpen;
 
 
   // The list on screen catches up as the route changes (the layout effect above), not here.
@@ -2507,6 +2521,20 @@ function Inbox() {
         sessions={firstRunSessions}
         onAgents={setAgents}
         onMessage={(session, opener) => openCompose({ session }, opener)}
+        ask={
+          // Not over the tailnet: that page is another device, and the first run is set up on this computer.
+          notifications.firstRunAsk && askLinesFree && !overTailnet ? (
+            <NotificationAsk
+              kind={notifications.firstRunAsk}
+              firstRun
+              soundOn={sound.settings.enabled}
+              movedFrom={settings?.notifications.allowed_origin ?? null}
+              onTurnOn={() => void notifications.turnOn()}
+              onNotNow={notifications.notNow}
+              onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'general' })}
+            />
+          ) : null
+        }
       />
     );
   } else {
@@ -2525,7 +2553,7 @@ function Inbox() {
           lit={lit}
           notice={notice}
           ask={
-            notifications.ask && soundDialog === 'none' && agentNote === 'none' ? (
+            notifications.ask && askLinesFree ? (
               <NotificationAsk
                 kind={notifications.ask}
                 soundOn={sound.settings.enabled}
@@ -2534,7 +2562,7 @@ function Inbox() {
                 onNotNow={notifications.notNow}
                 onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'general' })}
               />
-            ) : notifications.slept && notifications.permission === 'granted' && soundDialog === 'none' && agentNote === 'none' ? (
+            ) : notifications.slept && notifications.permission === 'granted' && askLinesFree ? (
               <TabSleptLine slept={notifications.slept} onDismiss={notifications.dismissSlept} />
             ) : null
           }

@@ -265,7 +265,9 @@ test('locked: PLANNOTATOR_INBOX_TOOL=0 keeps Claude Code\'s and Pi\'s tools off;
   await expect(hero(page).locator('h3')).toHaveText("Connect OpenCode with Plannotator's plugin");
   await expect(hero(page).locator('.ib-cn-eb')).toHaveText('Next step · last one');
   await expect(listItems(page, 'Left to do')).toHaveText(['OpenCode now', 'Claude Code locked by PLANNOTATOR_INBOX_TOOL=0', 'Pi locked by PLANNOTATOR_INBOX_TOOL=0']);
-  await expect(page.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
+  // No step turns a locked tool on (the notifications ask under Try it has its own Turn on).
+  await expect(hero(page).getByRole('button', { name: 'Turn on' })).toHaveCount(0);
+  await expect(page.locator('[data-connect-lists] button')).toHaveCount(0);
   await shoot(page, 'locked');
   await page.context().close();
   expect(errors).toEqual([]);

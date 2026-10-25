@@ -154,7 +154,6 @@ export async function resolveAnnotateTarget(options: {
     if (loopback && parsedUrl?.protocol === "http:" && !forceStatic) {
       const probe = await probeLiveAppTarget(filePath, parsedUrl);
       if (probe.liveEligible) {
-        log(`Live app: ${filePath}`);
         return {
           ok: true,
           markdown: "",

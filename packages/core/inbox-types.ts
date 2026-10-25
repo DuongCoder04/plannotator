@@ -743,10 +743,34 @@ export interface InboxQuestionChoice {
   description: string | null;
   recommended: boolean;
   settled: boolean;
+  /**
+   * A picture choice (`- [ ] Label — ![alt](path)`): the image, its src as
+   * the body writes it (the message image route and the captured
+   * `inline_images` take that same src). Present only on a picture choice;
+   * absent from records written before picture choices.
+   */
+  image?: { alt: string; src: string };
+}
+
+/**
+ * The optional contract lines of a question block (approval
+ * "inbox-decision-mode", agent contract lines): read at send time, kept on
+ * the record and served with the question. Each is present only when the
+ * block carries it; absent from older records.
+ */
+export interface InboxQuestionContract {
+  /** `Stakes:` — what the choice affects. */
+  stakes?: string;
+  /** `Shows:` — the one picture (`image`) or file (`link`) the decision is about, its src as written. */
+  shows?: { kind: "image" | "link"; label: string; src: string };
+  /** `Why:` — why the recommendation. */
+  why?: string;
+  /** `Reversible: no — <why>`: the answer cannot be taken back. Absent means reversible. */
+  reversible?: { value: false; why: string | null };
 }
 
 /** The parsed facts of a question block, kept on its record. */
-export interface InboxQuestionFacts {
+export interface InboxQuestionFacts extends InboxQuestionContract {
   context: string | null;
   choices: InboxQuestionChoice[];
   /** Plannotator's older names per choice (core `aliases`), in choice order; never served. */
@@ -899,7 +923,7 @@ export type InboxQuestionState = "open" | "picked" | "sent" | "closed" | "supers
  * exactly (`asked_by_checked_at` omitted, as Workspaces omits it outside its
  * two comment lists), plus the Inbox's `message_id`.
  */
-export interface InboxQuestion {
+export interface InboxQuestion extends InboxQuestionContract {
   key: string;
   position: number;
   /** `"action"` for an action item; read it with `readInboxQuestionKind` (fail-closed). */
@@ -1609,15 +1633,20 @@ export type InboxToolCostHost = "pi" | "opencode";
  * card action and 9,364 (2,268) with it, estimated, not re-measured on Pi.
  * Renaming "to-do" to "action item" (owner, #2059) moved the entry by 5 bytes
  * (8,228; 1,962 tokens), and "Action items you asked for" by 5 more (8,233;
- * 1,963 tokens): the stated cost stands.
+ * 1,963 tokens): the stated cost stands. The question contract lines
+ * (approval "inbox-decision-mode": `Stakes:`, `Shows:`, `Why:`,
+ * `Reversible:`, picture choices) added one paragraph to `body`, measured on
+ * Pi with the cost test (INBOX_TOOL_COST_DUMP): 8,248 → 8,701 bytes, 1,964 →
+ * 2,086 tokens with o200k_base (+453 bytes, +122 tokens). So 8,701 bytes
+ * without the card action and 9,817 with it (9,364 + 453, estimated).
  */
-const INBOX_TOOL_COST_NOW = INBOX_CARD_ACTION_ON ? { bytes: 9364, tokens: 2700 } : { bytes: 8189, tokens: 2300 };
+const INBOX_TOOL_COST_NOW = INBOX_CARD_ACTION_ON ? { bytes: 9817, tokens: 2800 } : { bytes: 8701, tokens: 2500 };
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
 };
 
-/** "about 8 KB, roughly 2,300 tokens" for a host's measured cost. */
+/** "about 9 KB, roughly 2,500 tokens" for a host's measured cost. */
 export function inboxToolCostText(host: InboxToolCostHost): string {
   const cost = INBOX_TOOL_COST[host];
   return `about ${Math.round(cost.bytes / 1000)} KB, roughly ${cost.tokens.toLocaleString("en-US")} tokens`;

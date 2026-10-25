@@ -1288,7 +1288,6 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 					}
 					liveTargetUrl = filePath;
 					mode = "annotate-app";
-					ctx.ui.notify(`Live app: ${filePath}`, "info");
 				} else if (appFlag) {
 					return { ok: false, error: buildForceAppFailureMessage(filePath, probe) };
 				} else if (probe.probeError !== null) {

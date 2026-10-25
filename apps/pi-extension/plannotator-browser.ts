@@ -955,6 +955,10 @@ export async function startMarkdownAnnotationSession(
 		project: detectProjectName(),
 	}));
 
+	if (liveTargetUrl && server.liveProxyPort !== undefined) {
+		ctx.ui.notify(`Live app: ${liveTargetUrl} (proxy port ${server.liveProxyPort})`, "info");
+	}
+
 	return startBrowserDecisionSession(server, ctx, server.waitForDecision, undefined, { announcedInTurn });
 }
 

@@ -18,9 +18,10 @@ import {
 } from "@plannotator/core/question-block";
 
 /** A question block rendered outside a Viewer's document index (plan diff,
- *  other markdown surfaces): parsed alone, unnumbered. */
-const standaloneQuestion = (block: Block): IndexedQuestion | undefined => {
-  const [indexed] = indexQuestionBlocks([block]);
+ *  other markdown surfaces): parsed alone, unnumbered. Its contract lines
+ *  show as context unless the host asks for them (`questionContractLines`). */
+const standaloneQuestion = (block: Block, contractLines: boolean): IndexedQuestion | undefined => {
+  const [indexed] = indexQuestionBlocks([block], { contractLines });
   return indexed ? { ...indexed, number: 0 } : undefined;
 };
 
@@ -66,7 +67,12 @@ export const BlockRenderer: React.FC<{
   questionStatusLabel?: QuestionBlockProps['statusLabel'];
   /** Host content under a question's prompt (see `QuestionBlock`). */
   renderQuestionBelowPrompt?: QuestionBlockProps['renderBelowPrompt'];
-}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, repoHost, headingAnchorId, onNavigateAnchor, question, questionTotal, questionAnswer, onAnswerQuestion, onSaveQuestionAnswer, saveQuestionAnswerLabel, renderQuestionFooter, questionDecisionRecording, questionDecisionScope, onToggleQuestionDecisionRecording, onOpenQuestionDecision, questionStatusTag, questionStatusLabel, renderQuestionBelowPrompt }) => {
+  /** Read a standalone question's contract lines into the card (default
+   *  false: context). A `question` the host passes was parsed by the host. */
+  questionContractLines?: boolean;
+  /** Picture choices as tiles (see `QuestionBlock` `pictureChoices`). */
+  questionPictureChoices?: QuestionBlockProps['pictureChoices'];
+}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, repoHost, headingAnchorId, onNavigateAnchor, question, questionTotal, questionAnswer, onAnswerQuestion, onSaveQuestionAnswer, saveQuestionAnswerLabel, renderQuestionFooter, questionDecisionRecording, questionDecisionScope, onToggleQuestionDecisionRecording, onOpenQuestionDecision, questionStatusTag, questionStatusLabel, renderQuestionBelowPrompt, questionContractLines = false, questionPictureChoices }) => {
   switch (block.type) {
     case 'heading': {
       const Tag = `h${block.level || 1}` as React.ElementType;
@@ -180,7 +186,7 @@ export const BlockRenderer: React.FC<{
       const kind = block.directiveKind || 'note';
       if (isQuestionDirectiveKind(kind)) {
         // An unparseable question (no prompt) falls through to the callout.
-        const indexed = question ?? standaloneQuestion(block);
+        const indexed = question ?? standaloneQuestion(block, questionContractLines);
         if (indexed) {
           return (
             <QuestionBlock
@@ -199,6 +205,7 @@ export const BlockRenderer: React.FC<{
               statusTag={questionStatusTag}
               statusLabel={questionStatusLabel}
               renderBelowPrompt={renderQuestionBelowPrompt}
+              pictureChoices={questionPictureChoices}
               onOpenLinkedDoc={onOpenLinkedDoc}
               onOpenCodeFile={onOpenCodeFile}
               imageBaseDir={imageBaseDir}

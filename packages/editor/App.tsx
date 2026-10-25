@@ -7766,6 +7766,9 @@ const App: React.FC = () => {
                     imageLightboxStepping
                     // Comments on part of an image (#2100, approval "image-region-comments").
                     imageRegionComments
+                    // Plan review and annotate show a question's Stakes / Shows / Why / Reversible lines as
+                    // plain text (approval "inbox-decision-mode"); picture choices still draw as tiles.
+                    questionContractLines={false}
                     onDeleteAnnotation={handleDeleteAnnotation}
                     onEditAnnotation={handleEditAnnotation}
                     onRestoreReport={handleRestoreReport}
