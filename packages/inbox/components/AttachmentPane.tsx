@@ -54,6 +54,8 @@ import { useNarrowerThan } from '../narrower';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
 import { FilePeek, peekSheetHost } from './AttachmentStepper';
 import { FullScreenMore } from './OpenIn';
+import { fileSwipeMode, useFileSwipe } from '../fileSwipe';
+import { FileSwipeCard } from './FileSwipeCard';
 import { createPortal } from 'react-dom';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
@@ -184,8 +186,10 @@ export interface AttachmentPaneProps {
   onStep?: (attachmentId: string, version: 'current' | 'sent') => void;
   /**
    * A phone (phone.ts): always full screen; the toolbar sits bottom right
-   * with 44 px targets and leads with Back to the thread, a swipe on a fitted
-   * image steps, and the comments open as a bottom sheet instead of a drawer.
+   * with 44 px targets and leads with Back to the thread, its `4/9 ⌄` pill
+   * opens every file of the thread, a sideways swipe on the file steps
+   * (fileSwipe.ts; a fitted image keeps its own), and the comments open as a
+   * bottom sheet instead of a drawer.
    */
   phone?: boolean;
   /**
@@ -495,6 +499,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const fullViewPeekId = `ib-fvpeek-${useId().replace(/:/g, '')}`;
   /** A phone's position in the Comments sheet's foot: its peek is the bottom sheet, drawn in the Inbox's root. */
   const phonePosRef = useRef<HTMLButtonElement>(null);
+  /** What opened a phone's peek sheet (the toolbar's pill, or the position in the comments sheet's foot): focus goes back there. */
+  const peekOpener = useRef<'pill' | 'foot'>('pill');
   const phonePeekHost = phone && menuOpen ? peekSheetHost(sectionRef.current) : null;
   /** The person moved in or out of full screen with a button: focus follows once the frame is drawn. */
   const toggledFull = useRef(false);
@@ -575,6 +581,19 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const blocked = guard !== null || menuOpen || moreOpen;
   const blockedRef = useRef(blocked);
   blockedRef.current = blocked;
+  // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs and the download card follow the finger; an image keeps its own at Fit.
+  const docAreaRef = useRef<HTMLDivElement>(null);
+  const swipeMode = fileSwipeMode(kind, tooLarge);
+  const swipe = useFileSwipe(docAreaRef, {
+    enabled: full && phone && multi && swipeMode === 'follow' && !blocked && !sheet,
+    canStep: (dir) => index + dir >= 0 && index + dir < steps.length,
+    onStep: (dir) => stepRef.current(dir, 'key'),
+    wouldAsk: () => !props.readOnly && unsavedComposer(sectionRef.current, savedTextRef.current) !== null,
+  });
+  // TODO(owner, pending): the swipe fallback. A file a swipe cannot step (`swipeMode === 'none'`: HTML pages, diagrams,
+  // videos; and code that scrolls sideways, which useFileSwipe's `onRefuse` reports) steps on a phone only through the
+  // toolbar's pill and the sheet. A visible step for them waits on the owner's answer (not floating side tabs): add it here.
+
   const stepWhen = (dir: 1 | -1) => (event: KeyboardEvent) => {
     if (!multi) return false;
     const pane = sectionRef.current;
@@ -1282,7 +1301,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           handleCount={annotations.length}
           changed={changedSinceSent}
           position={
-            multi && !phone
+            multi
               ? {
                   index,
                   total: steps.length,
@@ -1290,10 +1309,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   open: menuOpen,
                   peekId: fullViewPeekId,
                   onOpenChange: (open) => {
-                    if (open) setSheet(false);
+                    if (open) {
+                      setSheet(false);
+                      setMoreOpen(false);
+                      peekOpener.current = 'pill';
+                    }
                     setMenuOpen(open);
                   },
-                  renderPeek: (closePeek) => (
+                  // A phone's pill opens the bottom sheet the pane draws (below), in one tap.
+                  renderPeek: phone ? undefined : (closePeek) => (
                     <FilePeek
                       id={fullViewPeekId}
                       steps={steps}
@@ -1319,17 +1343,6 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 setMoreOpen(open);
               }}
               versionAction={versionAction}
-              position={
-                phone && multi
-                  ? {
-                      label: `${index + 1} of ${steps.length} · Every file in this thread`,
-                      onOpen: () => {
-                        setSheet(false);
-                        setMenuOpen(true);
-                      },
-                    }
-                  : null
-              }
             />
           }
           moreOpen={moreOpen}
@@ -1436,7 +1449,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         <div />
       )}
       <div className="ib-vbody">
-        <div className={`ib-docarea${isHtml ? ' ib-html' : ''}`}>
+        <div ref={docAreaRef} className={`ib-docarea${isHtml ? ' ib-html' : ''}`} data-file-swipe={full && phone && multi ? swipeMode : undefined}>
           {error && (
             <div className="ib-error ib-view-error" role="alert">
               {error}
@@ -1769,7 +1782,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   aria-expanded={menuOpen}
                   aria-controls={menuOpen ? fullViewPeekId : undefined}
                   aria-label={`${index + 1} of ${steps.length}, ${attachment.name}. Show every file in this thread`}
-                  onClick={() => setMenuOpen((v) => !v)}
+                  onClick={() => {
+                    peekOpener.current = 'foot';
+                    setMenuOpen((v) => !v);
+                  }}
                   data-full-view-position=""
                   data-peek-opener=""
                 >
@@ -1864,6 +1880,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
         </div>
       )}
+      {full && phone && multi && <FileSwipeCard swipe={swipe} steps={steps} index={index} />}
       {full && phone && menuOpen && phonePeekHost
         ? createPortal(
             <div className="pn-inbox-peek">
@@ -1875,9 +1892,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 annotationCounts={annotationCounts}
                 onClose={() => {
                   setMenuOpen(false);
-                  // The sheet's backdrop covered everything: focus back on what opened it (the position in the comments sheet, else ⋯).
+                  // The sheet's backdrop covered everything: focus back on what opened it (the toolbar's pill, or the position in the comments sheet).
                   requestAnimationFrame(() => {
-                    const opener = phonePosRef.current?.isConnected ? phonePosRef.current : sectionRef.current?.querySelector<HTMLElement>('[data-full-view-more]');
+                    const pill = sectionRef.current?.querySelector<HTMLElement>('[data-full-view-bar] [data-full-view-position]');
+                    const usable = (el: HTMLElement | null | undefined) => !!el && el.isConnected && !el.closest('[inert]');
+                    const opener = peekOpener.current === 'foot' && usable(phonePosRef.current) ? phonePosRef.current : usable(pill) ? pill : sectionRef.current?.querySelector<HTMLElement>('[data-full-view-handle]');
                     opener?.focus({ preventScroll: true });
                   });
                 }}

@@ -1525,6 +1525,27 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .pn-inbox .ib-fvdock-phone .ib-fvhandle { top: auto; bottom: calc(14px + max(var(--ib-fvfoot, 0px), env(safe-area-inset-bottom))); height: 52px; min-width: 44px; padding: 0 10px 0 12px; border-radius: 14px 0 0 14px; }
 .ib-view.ib-fullview.ib-phone.ib-panel-open .ib-fvdock { visibility: hidden; }
 .ib-view.ib-fullview.ib-phone .ib-fvchip { bottom: calc(80px + max(var(--ib-fvfoot, 0px), env(safe-area-inset-bottom))); }
+/* A phone's position: the `4/9 ⌄` pill opens every file of the thread in one tap (fileSwipe.ts steps by a swipe). */
+.pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvpill { min-width: 52px; padding: 0 6px 0 9px; gap: 0; background: color-mix(in oklch, var(--muted) 70%, transparent); color: var(--foreground); font-weight: 600; }
+.pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvpill[aria-expanded="true"] { background: var(--muted); }
+.ib-fvpill small { margin-right: 3px; }
+/* The narrowest phones (320 px): the HTML page's toolbar (Back, pen, count, pill, ⋯, Hide) fits with room for a two-digit count. */
+@media (max-width: 359px) {
+  .ib-fvdock-phone .ib-fvbar { right: calc(8px + env(safe-area-inset-right)); gap: 1px; }
+  .ib-fvdock-phone .ib-fvdv { display: none; }
+}
+/* The file a swipe brings in: "Next · name" at the edge it comes from (the file itself follows the finger by transform). */
+.ib-swipecard { position: absolute; z-index: 9; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 8px; max-width: min(64%, 280px); padding: 8px 12px; border-radius: 14px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3); pointer-events: none; }
+:root.light .ib-swipecard { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14); }
+.ib-swipecard-r { right: calc(12px + env(safe-area-inset-right)); }
+.ib-swipecard-l { left: calc(12px + env(safe-area-inset-left)); }
+.ib-swipecard > svg { flex: none; color: var(--muted-foreground); }
+.ib-swipecard-th { width: 28px; height: 28px; flex: none; border-radius: 6px; overflow: hidden; display: inline-grid; place-items: center; background: var(--muted); }
+.ib-swipecard-th img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ib-swipecard-tile { font: 700 9.5px/1 var(--font-sans, system-ui); letter-spacing: 0.02em; color: var(--muted-foreground); }
+.ib-swipecard-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.ib-swipecard-dir { font-size: var(--ib-fs-11-5, 11.5px); color: var(--muted-foreground); }
+.ib-swipecard-nm { font-size: var(--ib-fs-14, 14px); font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; }
 /* the image's size bar moves out from under the toolbar */
 .ib-view.ib-fullview:not(.ib-phone) .ib-imgbar { right: auto; left: 14px; }
 /* and the "Your marked-up copy" chip sits under it */
