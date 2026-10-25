@@ -922,6 +922,7 @@ function sleep(ms: number): Promise<void> {
 function detectPlannotatorVersion(command: string[]): string | null {
   try {
     const result = Bun.spawnSync([...command, "--version"], {
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });

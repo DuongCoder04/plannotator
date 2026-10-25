@@ -9,6 +9,7 @@
  *   PLANNOTATOR_PORT   - Fixed port or inclusive range (default: random locally, 19432 for remote)
  */
 
+import { childPath } from "@plannotator/shared/child-env";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
 import {
@@ -1530,11 +1531,11 @@ export async function startReviewServer(
             ? MARKER_ENGINES[failedEngine as MarkerEngineId]?.binary ?? failedEngine
             : undefined;
           const repairEngine =
-            failedEngine && Bun.which(failedEngineBinary!)
+            failedEngine && Bun.which(failedEngineBinary!, { PATH: childPath() })
               ? failedEngine
-              : Bun.which("claude")
+              : Bun.which("claude", { PATH: childPath() })
                 ? "claude"
-                : Bun.which("codex")
+                : Bun.which("codex", { PATH: childPath() })
                   ? "codex"
                   : (failedEngine ?? "claude");
           repair = { payload };

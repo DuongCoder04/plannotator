@@ -4,6 +4,7 @@
   "private": true,
   "exports": {
     "./agents": "./agents.ts",
+    "./child-env": "./child-env.ts",
     "./annotatable": "./annotatable.ts",
     "./annotate-bundle": "./annotate-bundle.ts",
     "./diff-files": "./diff-files.ts",

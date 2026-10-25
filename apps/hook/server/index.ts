@@ -76,6 +76,7 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
 import {
   startPlannotatorServer as startPlannotatorServerUnguarded,
   handleServerReady,
@@ -1202,7 +1203,7 @@ if (args[0] === "sessions") {
         ): Promise<{ exitCode: number; stderr: string }> => {
           const proc = Bun.spawn(cmd, {
             cwd: opts.cwd,
-            env: opts.env,
+            env: opts.env ?? childEnv(),
             stdout: "ignore",
             stderr: "pipe",
           });
@@ -1301,14 +1302,14 @@ if (args[0] === "sessions") {
           if (isSameRepo) {
             try {
               for (const entry of worktreePool?.entries() ?? []) {
-                Bun.spawnSync(["git", "worktree", "remove", "--force", entry.path], { cwd: repoDir });
+                Bun.spawnSync(["git", "worktree", "remove", "--force", entry.path], { cwd: repoDir, env: childEnv() });
               }
             } catch {}
             // Clear any registration left by a worktree add that completed
             // after the kill (or by a not-ready entry the loop can't see).
-            try { Bun.spawnSync(["git", "worktree", "prune"], { cwd: repoDir }); } catch {}
+            try { Bun.spawnSync(["git", "worktree", "prune"], { cwd: repoDir, env: childEnv() }); } catch {}
           }
-          try { Bun.spawnSync(["rm", "-rf", warmupSessionDir]); } catch {}
+          try { Bun.spawnSync(["rm", "-rf", warmupSessionDir], { env: childEnv() }); } catch {}
         });
 
         console.error(isSameRepo

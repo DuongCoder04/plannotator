@@ -5,6 +5,7 @@
  * Pre-binds a Bun-based runtime so consumers get a clean API.
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
 import type {
   PRRef,
   PRMetadata,
@@ -50,6 +51,7 @@ export type { GithubPRMetadata } from "@plannotator/shared/pr-types";
 const runtime: PRRuntime = {
   async runCommand(cmd, args) {
     const proc = Bun.spawn([cmd, ...args], {
+      env: childEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -65,6 +67,7 @@ const runtime: PRRuntime = {
 
   async runCommandWithInput(cmd, args, input) {
     const proc = Bun.spawn([cmd, ...args], {
+      env: childEnv(),
       stdout: "pipe",
       stderr: "pipe",
       stdin: "pipe",

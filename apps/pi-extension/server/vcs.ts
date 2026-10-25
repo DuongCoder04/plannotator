@@ -134,7 +134,7 @@ function runCommandBytes(
 					const killed = spawnSync(
 						"taskkill.exe",
 						["/pid", String(proc.pid), "/t", "/f"],
-						{ stdio: "ignore", windowsHide: true },
+						{ env: process.env, stdio: "ignore", windowsHide: true },
 					);
 					if (killed.status === 0) return;
 				}

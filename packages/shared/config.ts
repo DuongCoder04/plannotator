@@ -5,6 +5,7 @@
  * Runtime-agnostic: uses only node:fs, node:os, node:child_process.
  */
 
+import { childEnv } from "./child-env";
 import { join } from "path";
 import { getPlannotatorDataDir } from "./data-dir";
 import {
@@ -781,7 +782,7 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
  */
 export function detectGitUser(cwd?: string): string | null {
   try {
-    const name = execSync("git config user.name", { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    const name = execSync("git config user.name", { cwd, env: childEnv(), encoding: "utf-8", timeout: 3000 }).trim();
     return name || null;
   } catch {
     return null;

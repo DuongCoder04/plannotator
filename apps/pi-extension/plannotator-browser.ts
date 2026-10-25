@@ -622,7 +622,7 @@ async function createCodeReviewBrowserSession(
 					exitHandler = () => {
 						try {
 							for (const entry of worktreePool?.entries() ?? []) {
-								spawnSync("git", ["worktree", "remove", "--force", entry.path], { cwd: wtRepoDir });
+								spawnSync("git", ["worktree", "remove", "--force", entry.path], { cwd: wtRepoDir, env: process.env });
 							}
 						} catch {}
 						if (sessionDir) try { rmSync(sessionDir, { recursive: true, force: true }); } catch {}

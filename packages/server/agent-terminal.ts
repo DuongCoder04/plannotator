@@ -1,3 +1,4 @@
+import { childPath } from "@plannotator/shared/child-env";
 import { randomBytes } from "node:crypto";
 import {
   buildAgentTerminalWsPath,
@@ -351,7 +352,7 @@ function listAgents(core: WebTuiCore): AgentTerminalAgent[] {
     return {
       id,
       name: formatAgentName(id),
-      available: !!Bun.which(config.detectCommand),
+      available: !!Bun.which(config.detectCommand, { PATH: childPath() }),
     };
   });
 }
