@@ -10,6 +10,7 @@
     "./spawn-plan": "./spawn-plan.ts",
     "./ensure-launch": "./ensure-launch.ts",
     "./permission-policy": "./permission-policy.ts",
+    "./same-program": "./same-program.ts",
     "./which": "./which.ts"
   },
   "files": [

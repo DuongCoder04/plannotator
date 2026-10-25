@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CLAUDE_CODE,
   CODEX,
@@ -19,6 +22,7 @@ import {
   resolveAgentLaunch,
   type AgentDescriptor,
 } from "@plannotator/acp-client/agents";
+import { forgetSameProgramAnswers, isSameProgram, readVersionLine } from "@plannotator/acp-client/same-program";
 import { planSpawn, shimEntry } from "@plannotator/acp-client/spawn-plan";
 
 /** What `npm install -g` writes on Windows for a package bin. */
@@ -132,21 +136,24 @@ describe("the agent registry", () => {
 
 describe("starting an agent", () => {
   it("tries the program's other names", () => {
-    const cursorAnswers = () => "2026.07.08-0c04a8a";
-    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", cursorAnswers)).toEqual({ ok: true, command: "/bin/agent", args: ["acp"], source: "path" });
+    const cursor = () => true;
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), () => null, "darwin", cursor)).toEqual({ ok: true, command: "/bin/agent", args: ["acp"], source: "path" });
     expect(resolveAgentLaunch(KILO, {}, FOUND(["kilocode"]))).toEqual({ ok: true, command: "/bin/kilocode", args: ["acp"], source: "path" });
   });
 
-  it("skips an other name another agent owns: Grok Build's `agent` is not Cursor", () => {
-    // ~/.grok/bin/agent → grok: it answers `--version` as Grok, so Cursor is "not installed".
-    const grokAnswers = () => "grok 1.0.70 (f50904eaee6c) [stable]";
-    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", grokAnswers)).toMatchObject({ ok: false, reason: "agent" });
-    // A program that does not answer at all is not taken either.
-    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), undefined, "darwin", () => null)).toMatchObject({ ok: false, reason: "agent" });
-    // Its own name is trusted without asking.
-    let asked = 0;
-    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["cursor-agent", "agent"]), undefined, "darwin", () => (asked++, null))).toMatchObject({ ok: true, command: "/bin/cursor-agent" });
-    expect(asked).toBe(0);
+  it("checks an `agent` only when `cursor-agent` is missing, and takes Cursor as not installed when it is another program", () => {
+    const asked: string[] = [];
+    const notCursor = (path: string) => (asked.push(path), false);
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["cursor-agent", "agent"]), () => null, "darwin", notCursor)).toEqual({ ok: true, command: "/bin/cursor-agent", args: ["acp"], source: "path" });
+    expect(asked).toEqual([]);
+    expect(resolveAgentLaunch(CURSOR, {}, FOUND(["agent"]), () => null, "darwin", notCursor)).toEqual({
+      ok: false,
+      reason: "agent",
+      message: "Cursor is not installed: `cursor-agent` is not on PATH (the `agent` there is another program). Install it with `curl https://cursor.com/install -fsS | bash`, then try again.",
+    });
+    expect(asked).toEqual(["/bin/agent"]);
+    const statuses = detectAgents(() => ({}), null, FOUND(["agent"]), () => null, false, notCursor);
+    expect(statuses.find((s) => s.agent.id === "cursor")?.launch.ok).toBe(false);
   });
 
   it("says how to install a missing agent", () => {
@@ -216,5 +223,81 @@ describe("installing an agent on Windows", () => {
     expect(installCommandFor(CURSOR.installCommand, CURSOR.installCommandWindows, "darwin")).toBe(CURSOR.installCommand);
     const kiro = resolveAgentLaunch(KIRO, {}, () => null, () => null, "win32");
     expect(!kiro.ok && kiro.message).toBe("Kiro CLI is not installed: `kiro-cli` is not on PATH. Install it as its docs say (https://kiro.dev/docs/cli/acp/), then try again.");
+  });
+});
+
+describe("an `agent` on PATH that may not be Cursor's", () => {
+  // Fake programs in a scratch folder: the real CLIs are never run.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "guides-same-program-")));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const log = join(root, "ran.log");
+  const script = (path: string, body: string) => {
+    writeFileSync(path, `#!/bin/sh\necho "$0 $*" >> '${log}'\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const ran = () => {
+    try {
+      return readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const at = (paths: Record<string, string>) => (name: string) => paths[name] ?? null;
+  const posix = process.platform !== "win32";
+
+  beforeEach(() => {
+    forgetSameProgramAnswers();
+    rmSync(log, { force: true });
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it.if(posix)("refuses Grok Build's `agent`, which prints its own version line", () => {
+    const grok = script(join(bin, "agent-grok"), 'echo "grok 1.0.70 (f50904eaee6c) [stable]"');
+    const r = resolveAgentLaunch(CURSOR, {}, at({ agent: grok }));
+    expect(r).toMatchObject({ ok: false, reason: "agent" });
+    expect(!r.ok && r.message).toContain("the `agent` there is another program");
+    expect(ran()).toEqual([`${grok} --version`]);
+    // Asked once per file: a second look reads the cached answer.
+    resolveAgentLaunch(CURSOR, {}, at({ agent: grok }));
+    expect(ran()).toHaveLength(1);
+    // Never started with `acp`.
+    expect(ran().some((l) => l.endsWith(" acp"))).toBe(false);
+  });
+
+  it.if(posix)("takes an `agent` that prints Cursor's dated build as Cursor", () => {
+    const cursor = script(join(bin, "agent-cursor"), 'echo "2026.07.08-0c04a8a"');
+    expect(resolveAgentLaunch(CURSOR, {}, at({ agent: cursor }))).toEqual({ ok: true, command: cursor, args: ["acp"], source: "path" });
+    expect(ran()).toEqual([`${cursor} --version`]);
+  });
+
+  it.if(posix)("takes an `agent` linked to Cursor's install without running it", () => {
+    const versions = join(root, "share", "cursor-agent", "versions", "2026.07.08-0c04a8a");
+    mkdirSync(versions, { recursive: true });
+    const real = script(join(versions, "cursor-agent"), "exit 1");
+    const link = join(bin, "agent-linked");
+    symlinkSync(real, link);
+    expect(resolveAgentLaunch(CURSOR, {}, at({ agent: link }))).toEqual({ ok: true, command: link, args: ["acp"], source: "path" });
+    expect(ran()).toEqual([]);
+  });
+
+  it.if(posix)("refuses an `agent` whose version line only looks dated, or that fails", () => {
+    const sig = CURSOR.altCommandsSignature!;
+    for (const [name, body] of [
+      ["agent-semver", 'echo "1.2.3"'],
+      ["agent-two-lines", 'echo "agent 2026.07.08-0c04a8a"'],
+      ["agent-fails", 'echo "2026.07.08-0c04a8a"; exit 2'],
+      ["agent-silent", "true"],
+    ] as const) {
+      expect(isSameProgram(script(join(bin, name), body), sig)).toBe(false);
+    }
+  });
+
+  it.if(posix)("never waits on a program that does not answer", () => {
+    const hang = script(join(bin, "agent-hang"), "exec sleep 30");
+    const started = Date.now();
+    expect(readVersionLine(hang, 300)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });

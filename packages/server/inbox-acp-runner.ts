@@ -279,7 +279,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     if (cached && Date.now() - cached.at < 60_000) return cached.answer;
     const label = agent.descriptor.label;
     let answer: { ok: true; launch: Omit<AgentLaunch, "cwd"> } | { ok: false; reason: string };
-    const resolved = resolveAgentLaunch(agent.descriptor, {}, (name) => environment.which(name), undefined, environment.platform, () => null);
+    const resolved = resolveAgentLaunch(agent.descriptor, {}, (name) => environment.which(name), undefined, environment.platform);
     if (!resolved.ok) {
       answer = { ok: false, reason: `${label} is not installed: \`${agent.descriptor.command}\` is not on PATH. Install it with \`${agent.descriptor.installCommand}\`.` };
     } else {

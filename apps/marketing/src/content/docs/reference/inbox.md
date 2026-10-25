@@ -212,7 +212,7 @@ Once you have run the Inbox on this computer, a session that has the tool also g
 
 Where it goes:
 
-- **Claude Code:** once, in the context of the conversation's first message. It names the tool by its full name (`mcp__…__plannotator_inbox`), so Claude can find it.
+- **Claude Code:** once, in the context of the conversation's first message. It names the tool by its full name (`mcp__…__plannotator_inbox`), so Claude can find it. After a compaction, the plugin adds the same line again. On Team and Enterprise accounts, Claude Code's built-in security plugin keeps plugins out of that first-message context, so there the line goes with your first prompt instead. Claude Code still shows a note that the plugin's `prompt.context` hook was skipped; the reminder reaches Claude anyway.
 - **Pi:** once, as a hidden message with the session's first prompt.
 - **OpenCode:** a line in the system prompt of every request. On OpenCode 1, and on an OpenCode 2 that cannot bring a reply back by itself, the sentence about the reply says to call `wait_for_reply` instead.
 
