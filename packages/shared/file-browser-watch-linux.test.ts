@@ -143,6 +143,42 @@ describe.skipIf(!onLinux)("per-directory watcher on real Linux inotify", () => {
 		}
 	});
 
+	test("a burst of new files keeps the event loop responsive", async () => {
+		const world = setup();
+		try {
+			mkdirSync(join(world.root, "notes"));
+			world.subscribe();
+			await world.settled();
+			// Another process writes the files, so the lag measured here is the
+			// watcher's own work. Before the fix every file queued a scan and each
+			// queueing walked the whole queue: quadratic, about a 2 s stall at 20k
+			// files and a minute at 100k.
+			let maxLagMs = 0;
+			let last = performance.now();
+			const ticker = setInterval(() => {
+				const now = performance.now();
+				maxLagMs = Math.max(maxLagMs, now - last - 10);
+				last = now;
+			}, 10);
+			try {
+				const writer = Bun.spawn(
+					[process.execPath, "-e", `const fs=require("fs");for(let i=0;i<20000;i++)fs.writeFileSync(process.env.BURST_DIR+"/f"+i+".md","x")`],
+					{ stdout: "ignore", stderr: "inherit", env: { ...process.env, BURST_DIR: join(world.root, "notes") } },
+				);
+				expect(await writer.exited).toBe(0);
+				await waitFor(() => world.events.length > 0);
+				await world.settled();
+				await Bun.sleep(100);
+			} finally {
+				clearInterval(ticker);
+			}
+			expect(maxLagMs).toBeLessThan(1_000);
+			expect(world.registry.diagnostics().watchedDirectories).toEqual([world.root, join(world.root, "notes")]);
+		} finally {
+			world.cleanup();
+		}
+	}, 30_000);
+
 	test("creating an ignored folder does not refresh", async () => {
 		const world = setup();
 		try {

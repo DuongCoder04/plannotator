@@ -349,7 +349,7 @@ describe("per-directory watcher (Linux backend)", () => {
 		}
 	});
 
-	test("running out of system watches keeps the ones it has, says so once, and rebuilds on the next subscription", async () => {
+	test("running out of system watches on a deep folder keeps the rest and does not mark the entry failed", async () => {
 		const world = new FakeWorld();
 		world.folders(ROOT, "f", 6);
 		world.systemWatchLimit = 3;
@@ -359,16 +359,103 @@ describe("per-directory watcher (Linux backend)", () => {
 			await settled();
 			expect(world.liveWatches()).toHaveLength(3);
 			expect(logs.filter((line) => line.includes("ran out of file watches"))).toHaveLength(1);
-			expect(registry.diagnostics().failedEntries).toBe(1);
-
-			// The system frees watches; a reload rebuilds instead of reusing.
-			world.systemWatchLimit = Infinity;
-			const starts = registry.diagnostics().contentWatcherStarts;
+			// Not failed: a reload reuses the entry instead of rebuilding every
+			// watch while the system is still at its limit.
+			expect(registry.diagnostics().failedEntries).toBe(0);
 			subscribe("second");
-			await waitFor(() => registry.diagnostics().contentWatcherStarts === starts + 1);
 			await settled();
-			expect(world.liveWatches()).toHaveLength(7);
-			expect(registry.diagnostics()).toMatchObject({ entries: 1, failedEntries: 0, directoryWatches: 7 });
+			expect(registry.diagnostics()).toMatchObject({ entries: 1, contentWatcherStarts: 1, directoryWatches: 3 });
+
+			// A freed watch lets the skipped folders back in.
+			world.systemWatchLimit = Infinity;
+			const watched = world.liveWatches().find((path) => path !== ROOT)!;
+			world.remove(watched);
+			world.emit(ROOT, "rename", watched.slice(ROOT.length + 1));
+			// Every skipped folder comes back: root + the 5 folders left.
+			await waitFor(() => world.liveWatches().length === 6 && !world.liveWatches().includes(watched));
+		} finally {
+			registry.closeAll();
+		}
+	});
+
+	test("no watch left for the root marks the entry failed, and a reload rebuilds it", async () => {
+		const world = new FakeWorld();
+		world.folders(ROOT, "f", 2);
+		world.systemWatchLimit = 0;
+		const { registry, logs, subscribe, settled } = setup(world);
+		try {
+			subscribe("first");
+			await settled();
+			expect(world.liveWatches()).toEqual([]);
+			expect(registry.diagnostics().failedEntries).toBe(1);
+			expect(logs.some((line) => line.includes(`Live refresh for ${ROOT} is off`))).toBe(true);
+			world.systemWatchLimit = Infinity;
+			subscribe("second");
+			await waitFor(() => world.liveWatches().length === 3);
+			expect(registry.diagnostics()).toMatchObject({ entries: 1, failedEntries: 0, contentWatcherStarts: 2 });
+		} finally {
+			registry.closeAll();
+		}
+	});
+
+	test("an unreadable root is reported as the root being off, not as one skipped folder", async () => {
+		const world = new FakeWorld();
+		world.unreadable.add(ROOT);
+		const { registry, logs, subscribe, settled } = setup(world);
+		try {
+			subscribe();
+			await settled();
+			expect(registry.diagnostics().failedEntries).toBe(1);
+			expect(logs).toEqual([`Live refresh for ${ROOT} is off: it cannot be read. Reloading the page tries again.`]);
+		} finally {
+			registry.closeAll();
+		}
+	});
+
+	test("a freed watch in a capped tree scans only skipped folders, never the whole tree again", async () => {
+		const world = new FakeWorld();
+		for (const top of world.folders(ROOT, "t", 4)) world.folders(top, "m", 4);
+		const { registry, subscribe, settled } = setup(world, { maxDirectoryWatches: 8 });
+		try {
+			subscribe();
+			await settled();
+			expect(world.liveWatches()).toHaveLength(8);
+			// Delete one watched depth-2 folder, five times over.
+			for (let round = 0; round < 5; round += 1) {
+				const victim = world.liveWatches().find((path) => path.split("/").length === 4)!;
+				const rootListingsBefore = world.readdirCalls;
+				world.remove(victim);
+				world.emit(dirname(victim), "rename", victim.slice(dirname(victim).length + 1));
+				await waitFor(() => world.liveWatches().length === 8 && !world.liveWatches().includes(victim));
+				await settled();
+				// The parent's re-list plus the one skipped folder's scan: a few
+				// listings, not the 1 + 4 + 16 a full rescan would take.
+				expect(world.readdirCalls - rootListingsBefore).toBeLessThanOrEqual(3);
+			}
+		} finally {
+			registry.closeAll();
+		}
+	});
+
+	test("a burst of new files queues one re-list, not a scan per file", async () => {
+		const world = new FakeWorld();
+		world.mkdir("/repo/docs");
+		world.readdirDelayMs = 2;
+		const { registry, subscribe, settled } = setup(world);
+		try {
+			subscribe();
+			await settled();
+			const before = world.readdirCalls;
+			const started = performance.now();
+			for (let i = 0; i < 20_000; i += 1) {
+				world.file(`/repo/docs/f${i}.md`);
+				world.emit("/repo/docs", "rename", `f${i}.md`);
+			}
+			const emitMs = performance.now() - started;
+			await settled();
+			// Constant work per event: 20k events take far less than a second.
+			expect(emitMs).toBeLessThan(1_000);
+			expect(world.readdirCalls - before).toBeLessThanOrEqual(2);
 		} finally {
 			registry.closeAll();
 		}
