@@ -48,7 +48,8 @@ export type PromptRuntime =
   | "codex"
   | "gemini-cli"
   | "oh-my-pi"
-  | "mistral-vibe";
+  | "mistral-vibe"
+  | "dsh";
 
 interface PromptSectionConfig {
   [key: string]: string | Partial<Record<PromptRuntime, PromptSectionOverrides>> | undefined;
