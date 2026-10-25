@@ -42,6 +42,11 @@ let savedEventSource: unknown;
 let savedMatchMedia: typeof window.matchMedia;
 let pushRecord: ((data: unknown) => void) | null = null;
 let tailnetPage = false;
+let savedNotification: unknown;
+let savedHasFocus: typeof document.hasFocus;
+/** The browser's answer for this origin, and every notification raised (its title). */
+let permission: NotificationPermission = 'default';
+const notices: string[] = [];
 const posts: { path: string; body: Record<string, unknown> }[] = [];
 
 function loopback(path: string, method = 'GET', body?: string): Promise<{ status: number; text: string; type: string }> {
@@ -111,6 +116,25 @@ beforeEach(async () => {
     if (!query.includes('prefers-reduced-motion')) return real;
     return { ...real, matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {} } as MediaQueryList;
   }) as typeof window.matchMedia;
+  savedNotification = (window as unknown as Record<string, unknown>).Notification;
+  permission = 'default';
+  notices.length = 0;
+  (window as unknown as Record<string, unknown>).Notification = class {
+    static get permission() {
+      return permission;
+    }
+    static async requestPermission() {
+      return permission;
+    }
+    onclick: unknown = null;
+    constructor(title: string) {
+      notices.push(title);
+    }
+    close() {}
+  };
+  // The page is in front (visible, focused) unless a test says otherwise.
+  savedHasFocus = document.hasFocus.bind(document);
+  document.hasFocus = () => true;
   window.location.hash = '';
 });
 
@@ -124,6 +148,8 @@ afterEach(async () => {
   globalThis.fetch = savedFetch;
   (globalThis as Record<string, unknown>).EventSource = savedEventSource;
   window.matchMedia = savedMatchMedia;
+  (window as unknown as Record<string, unknown>).Notification = savedNotification;
+  document.hasFocus = savedHasFocus;
   window.location.hash = '';
   childOut?.releaseLock();
   child?.kill();
@@ -168,6 +194,18 @@ const coachKey = (el: ParentNode) => $(el, '[data-tour-coach]')?.getAttribute('d
 const config = () => JSON.parse(readFileSync(join(dir!, 'data', 'config.json'), 'utf8')) as Record<string, any>;
 /** What the tour may write: the `tour` setting, and nothing else (no picks, reply, annotation or MCP route). */
 const writes = () => posts.filter((p) => !(p.path === '/api/inbox/settings' && Object.keys(p.body).every((k) => k === 'tour')) && p.path !== '/api/inbox/window');
+
+/** An agent's first message, written to the real store: its folder becomes the Inbox's first project. */
+async function firstMessage(body: string, subject: string): Promise<string> {
+  (child!.stdin as import('bun').FileSink).write(`${JSON.stringify({ first: { root: join(dir!, 'projects', 'billing'), session: 'ses_first', body, subject } })}\n`);
+  (child!.stdin as import('bun').FileSink).flush();
+  return (JSON.parse(await readLine()) as { sent: string }).sent;
+}
+
+/** What the event stream would say about that message's first line. */
+function recordOf(id: string) {
+  return { seq: 1, kind: 'message', id, first: true, message: { id, thread_id: id, project_id: 'p', reply_to: null, subject: null, body: '', created_at: new Date().toISOString(), resolved_at: null, idempotency_key: null, author: { kind: 'agent', host: 'claude-code', session: 'ses_first', name: null } } };
+}
 
 async function openOnEntry(): Promise<HTMLElement> {
   const el = await renderApp();
@@ -308,4 +346,90 @@ test.skipIf(!hasDom)('returning users: Settings → General → Take the tour; o
   });
   await until(() => $(el, '.ib-empty h2')?.textContent === 'Now, let’s connect your agents', 'step 6');
   await until(() => (el.textContent ?? '').includes('Open the Inbox on the computer to connect agents with one click.'), 'the tailnet line');
+}, 90_000);
+
+test.skipIf(!hasDom)('notifications: quiet over the replay in front (the chip says it), as always on step 6 and in the background', async () => {
+  permission = 'granted';
+  const el = await openOnEntry();
+  // Steps 1 to 5 in front: the chip, no notification.
+  await walkTo(el, 2);
+  const first = await firstMessage('A first real question.', 'Real one');
+  await act(async () => pushRecord!(recordOf(first)));
+  await until(() => $(el, '[data-tour-arrivals]') !== null, 'the chip');
+  await wait(600);
+  expect(notices).toEqual([]);
+  // The tab in the background: what arrives notifies as always, even over the replay.
+  document.hasFocus = () => false;
+  const second = await firstMessage('Another real one.', 'Background one');
+  await act(async () => pushRecord!(recordOf(second)));
+  await until(() => notices.length === 1, 'the background notification');
+  document.hasFocus = () => true;
+  // Step 6 (where the person gets their first question): notifications as always, in front too.
+  await act(async () => {
+    window.location.hash = '#tour=6';
+  });
+  await until(() => $(el, '.ib-empty h2')?.textContent === 'Now, let’s connect your agents', 'step 6');
+  const third = await firstMessage('The question you asked for.', 'Step six one');
+  await act(async () => pushRecord!(recordOf(third)));
+  await until(() => notices.length === 2, 'the step 6 notification');
+  // Step 6 carries the brief's prompt: one real question, with pictures.
+  expect($(el, '.ib-try-quote')!.textContent).toContain('Send me one real question in my Plannotator Inbox');
+}, 90_000);
+
+test.skipIf(!hasDom)('the first real thread asks once more, inline, in a real thread’s words; never when off or dismissed', async () => {
+  const threadId = await firstMessage(':::question\nWhich retry policy?\n- [ ] Exponential\n- [ ] Fixed\n:::', 'Export job retries');
+  const notifyAgain = () => loopback('/api/inbox/settings', 'POST', JSON.stringify({ tour: { notify_again: true } }));
+  await notifyAgain();
+  const el = await renderApp();
+  await until(() => $(el, `[data-thread-id="${threadId}"]`) !== null, 'the list');
+  await act(async () => {
+    window.location.hash = `#thread=${threadId}`;
+  });
+  await until(() => $(el, '[data-tour-notify-again]') !== null, 'the inline ask');
+  const ask = $(el, '[data-tour-notify-again]')!;
+  expect(ask.textContent).toContain('Get a desktop notice when an agent needs you.');
+  expect(ask.textContent).not.toContain('first question');
+  // One ask on screen: the list's line stands down while it shows.
+  expect(el.querySelectorAll('[data-notification-ask]')).toHaveLength(1);
+  // Shown once: leaving the thread ends it.
+  await act(async () => {
+    window.location.hash = '';
+  });
+  await until(() => config().inboxTour?.notify_again === false, 'notify_again cleared');
+  await act(async () => {
+    window.location.hash = `#thread=${threadId}`;
+  });
+  await wait(600);
+  expect($(el, '[data-tour-notify-again]')).toBeNull();
+  // Off, or dismissed: never, as for the ask above the list.
+  for (const change of [{ enabled: false }, { enabled: true, dismissed: true }]) {
+    await loopback('/api/inbox/settings', 'POST', JSON.stringify({ notifications: change }));
+    await notifyAgain();
+    act(() => root?.unmount());
+    host?.remove();
+    const again = await renderApp();
+    await act(async () => {
+      window.location.hash = `#thread=${threadId}`;
+    });
+    await until(() => $(again, 'section.ib-pane h2.ib-subject') !== null, 'the thread');
+    await wait(600);
+    expect($(again, '[data-tour-notify-again]'), JSON.stringify(change)).toBeNull();
+  }
+}, 90_000);
+
+test.skipIf(!hasDom)('⌘K does not open search over the replay (it shows the person’s own threads); on step 6 it does', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 2);
+  const { isMac } = await import('@plannotator/ui/utils/platform');
+  const chord = () => act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', metaKey: isMac, ctrlKey: !isMac, bubbles: true, cancelable: true })));
+  await chord();
+  await wait(500);
+  expect(document.querySelector('[data-search-palette]')).toBeNull();
+  expect(window.location.hash).toBe('#tour=2');
+  await act(async () => {
+    window.location.hash = '#tour=6';
+  });
+  await until(() => $(el, '.ib-empty h2')?.textContent === 'Now, let’s connect your agents', 'step 6');
+  await chord();
+  await until(() => document.querySelector('[data-search-palette]') !== null, 'search');
 }, 90_000);

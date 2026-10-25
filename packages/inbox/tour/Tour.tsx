@@ -683,6 +683,8 @@ function TourThreadPane({
   const wires = useMemo(() => views.map((v) => v.wire), [views]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const realAnswer = thread.real_answer ?? '';
+  // Every picture is labelled as what it is ("Mockup · VS Code", on a phone "Mockup"), so none reads as the Inbox itself.
+  const pictureLabel = (phone ? thread.picture_label_short : null) ?? thread.picture_label ?? null;
 
   // Step 4: follow the thread's end as the replay arrives, the way the Inbox follows an arrival at the bottom.
   useEffect(() => {
@@ -825,6 +827,7 @@ function TourThreadPane({
                     sentAnswers={sentAnswers}
                     imageBase={TOUR_IMAGE_BASE}
                     onImage={onImage}
+                    pictureBadge={pictureLabel ? () => pictureLabel : undefined}
                   />
                   {fx?.attachments && fx.attachments.length > 0 && (
                     <>

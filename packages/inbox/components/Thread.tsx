@@ -260,6 +260,7 @@ export function MessageBody({
   onJumpQuestion,
   imageBase,
   onImage,
+  pictureBadge,
 }: {
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
@@ -323,6 +324,8 @@ export function MessageBody({
   imageBase?: string;
   /** An image the body shows (a picture choice's zoom included) was opened: the host shows it. Absent: the thread's viewer. */
   onImage?: (src: string, alt: string) => void;
+  /** A label over each picture choice's picture (ui QuestionBlock `pictureBadge`); absent: none. */
+  pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -635,6 +638,7 @@ export function MessageBody({
         questionContractLines
         questionReadOnly={answerLocked}
         questionStatusLabel={statusLabel}
+        questionPictureBadge={pictureBadge}
         renderQuestionCard={renderReplacedCard ? questionCard : undefined}
         renderQuestionBelowPrompt={renderReplacesLine ? belowPrompt : undefined}
         renderDirectiveBlock={renderActions ? directiveBlock : undefined}

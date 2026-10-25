@@ -292,6 +292,9 @@ export interface ViewerProps {
    *  tiles (default true; see `QuestionBlock` `pictureChoices`). False: text
    *  rows. */
   questionPictureChoices?: boolean;
+  /** A small label over each picture tile's picture (see `QuestionBlock`
+   *  `pictureBadge`); absent: none. */
+  questionPictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
   /** Makes a question's "Records a decision" tag a toggle button
    *  (`aria-pressed`); a click calls this with the question's key and the
    *  next state, which the host stores and returns from
@@ -786,6 +789,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   questionDecisionLines = true,
   questionContractLines = false,
   questionPictureChoices = true,
+  questionPictureBadge,
   onToggleQuestionDecisionRecording,
   onOpenQuestionDecision,
   questionDecisionLocked,
@@ -1909,6 +1913,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                   renderQuestionBelowPrompt={renderQuestionBelowPrompt}
                   questionContractLines={questionContractLines}
                   questionPictureChoices={questionPictureChoices}
+                  questionPictureBadge={questionPictureBadge}
                 />
               );
               // `textComments`: a question card's words are not commented on

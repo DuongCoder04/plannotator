@@ -12,6 +12,8 @@
       "thread_name": "vscode guided reviews",
       "slice": "This thread has 140 messages over two days. The tour shows the six around one decision.",
       "real_answer": "A · Our guide reader in one tab",
+      "picture_label": "Mockup · VS Code",
+      "picture_label_short": "Mockup",
       "messages": [
         {
           "id": "tour-vscode-1",
@@ -63,6 +65,8 @@
       "id": "tour-graphite",
       "subject": "Plannotator Graphite: three dark palettes for daylight",
       "thread_name": "graphite",
+      "picture_label": "Screenshot · Inbox",
+      "picture_label_short": "Screenshot",
       "messages": [
         {
           "id": "tour-graphite-1",

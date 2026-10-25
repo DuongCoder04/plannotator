@@ -15,6 +15,14 @@ import { INBOX_SECTIONS } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 
 export const TOUR_STEPS = 6;
+
+/**
+ * Step 6's prompt to copy (BRIEF §2, "Get your first question"): one real
+ * question about the work at hand, with pictures when the choice is visual.
+ * The first-run screen outside the tour keeps its own test message.
+ */
+export const TOUR_FIRST_QUESTION_PROMPT =
+  'Send me one real question in my Plannotator Inbox about what we’re working on now. If the choice is visual, show the options as pictures: screenshots you already have, or a small HTML mock you attach. Then end your turn, and act on my answer when it comes back.';
 export const TOUR_THREAD = 'tour-vscode';
 export const TOUR_SIDE_THREAD = 'tour-graphite';
 export const TOUR_PROJECT_ID = 'tour-project';
@@ -64,6 +72,9 @@ export interface TourFixtureThread {
   thread_name: string | null;
   slice?: string;
   real_answer?: string;
+  /** The label over each of its picture choices (the brief's guard: a picture is plainly a picture), and a phone's shorter one. */
+  picture_label?: string;
+  picture_label_short?: string;
   messages: TourFixtureMessage[];
 }
 

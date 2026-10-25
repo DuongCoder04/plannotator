@@ -55,7 +55,7 @@ const loads: ImageResolver = (src) => ({ kind: 'src', src: `data:image/gif;name=
 let latest: Annotation[] = [];
 const zoomed: Array<[string, string]> = [];
 
-function Harness({ markdown, resolver = loads, readOnly = false }: { markdown: string; resolver?: ImageResolver; readOnly?: boolean }) {
+function Harness({ markdown, resolver = loads, readOnly = false, badge }: { markdown: string; resolver?: ImageResolver; readOnly?: boolean; badge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null }) {
   const blocks = parseMarkdownToBlocks(markdown);
   const index = indexQuestionBlocks(blocks);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -74,6 +74,7 @@ function Harness({ markdown, resolver = loads, readOnly = false }: { markdown: s
             questionAnswer={question ? answers.get(question.question.key) : undefined}
             onAnswerQuestion={readOnly ? undefined : (blockId, answer, key) => setAnnotations((current) => upsertQuestionAnswerAnnotation(current, blockId, answer, key))}
             onImageClick={(src, alt) => zoomed.push([src, alt])}
+            questionPictureBadge={badge}
           />
         );
       })}
@@ -112,6 +113,20 @@ async function click(el: Element) {
 }
 
 describe('picture choices', () => {
+  test.skipIf(!hasDom)('a host may label each picture (pictureBadge); without one no tile has a label, and the label never picks or answers', async () => {
+    const plain = await mount(<Harness markdown={SINGLE} />);
+    expect(plain.querySelectorAll('[data-question-picture-badge]')).toHaveLength(0);
+    await act(async () => root!.unmount());
+    host?.remove();
+    const el = await mount(<Harness markdown={SINGLE} badge={(choice) => (choice.image.src === 'c.png' ? null : 'Mockup · VS Code')} />);
+    const badges = [...el.querySelectorAll<HTMLElement>('[data-question-picture-badge]')];
+    expect(badges.map((b) => b.textContent)).toEqual(['Mockup · VS Code', 'Mockup · VS Code']);
+    // Over the picture, inside its tile.
+    expect(badges[0]!.closest('[data-question-tile]') === tiles(el)[0]).toBe(true);
+    await click(tiles(el)[0]!.querySelector('img[data-question-picture]')!);
+    expect(answer()?.selected).toEqual(['A · Total on top']);
+  });
+
   test.skipIf(!hasDom)('draw as tiles; the picture picks, and the answer is the plain label', async () => {
     const el = await mount(<Harness markdown={SINGLE} />);
     const all = tiles(el);

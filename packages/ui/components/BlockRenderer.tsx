@@ -72,7 +72,9 @@ export const BlockRenderer: React.FC<{
   questionContractLines?: boolean;
   /** Picture choices as tiles (see `QuestionBlock` `pictureChoices`). */
   questionPictureChoices?: QuestionBlockProps['pictureChoices'];
-}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, repoHost, headingAnchorId, onNavigateAnchor, question, questionTotal, questionAnswer, onAnswerQuestion, onSaveQuestionAnswer, saveQuestionAnswerLabel, renderQuestionFooter, questionDecisionRecording, questionDecisionScope, onToggleQuestionDecisionRecording, onOpenQuestionDecision, questionStatusTag, questionStatusLabel, renderQuestionBelowPrompt, questionContractLines = false, questionPictureChoices }) => {
+  /** A label over each picture tile (see `QuestionBlock` `pictureBadge`). */
+  questionPictureBadge?: QuestionBlockProps['pictureBadge'];
+}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, repoHost, headingAnchorId, onNavigateAnchor, question, questionTotal, questionAnswer, onAnswerQuestion, onSaveQuestionAnswer, saveQuestionAnswerLabel, renderQuestionFooter, questionDecisionRecording, questionDecisionScope, onToggleQuestionDecisionRecording, onOpenQuestionDecision, questionStatusTag, questionStatusLabel, renderQuestionBelowPrompt, questionContractLines = false, questionPictureChoices, questionPictureBadge }) => {
   switch (block.type) {
     case 'heading': {
       const Tag = `h${block.level || 1}` as React.ElementType;
@@ -206,6 +208,7 @@ export const BlockRenderer: React.FC<{
               statusLabel={questionStatusLabel}
               renderBelowPrompt={renderQuestionBelowPrompt}
               pictureChoices={questionPictureChoices}
+              pictureBadge={questionPictureBadge}
               onOpenLinkedDoc={onOpenLinkedDoc}
               onOpenCodeFile={onOpenCodeFile}
               imageBaseDir={imageBaseDir}

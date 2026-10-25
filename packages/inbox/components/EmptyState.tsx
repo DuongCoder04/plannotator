@@ -206,6 +206,8 @@ export interface EmptyStateProps {
    * the entry screen no longer opens and this quiet link stays. Absent: none.
    */
   onTakeTour?: () => void;
+  /** Try it's prompt to copy in place of the test message (the tour's step 6: one real question, with pictures). */
+  tryPrompt?: string;
 }
 
 /**
@@ -219,7 +221,7 @@ export interface EmptyStateProps {
  * plugin is a command to copy, and the screen moves on by itself once the
  * agents are read again (App re-reads them while this screen shows).
  */
-export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage, ask, heading, lead, onTakeTour }: EmptyStateProps) {
+export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessions, onAgents, onMessage, ask, heading, lead, onTakeTour, tryPrompt }: EmptyStateProps) {
   const [skipped, setSkipped] = useState<string[]>([]);
   const [busy, setBusy] = useState<InboxAgentId | null>(null);
   const [error, setError] = useState<{ id: InboxAgentId; text: string } | null>(null);
@@ -515,8 +517,8 @@ export function EmptyState({ context, agents, agentsUnavailable, onRetry, sessio
               <p>{who}</p>
             )}
             <div className="ib-try-quote">
-              <span>{TRY_PROMPT}</span>
-              <CopyButton text={TRY_PROMPT} />
+              <span>{tryPrompt ?? TRY_PROMPT}</span>
+              <CopyButton text={tryPrompt ?? TRY_PROMPT} />
             </div>
             {ask && <div data-first-run-ask="">{ask}</div>}
           </div>

@@ -235,6 +235,11 @@ export interface QuestionBlockProps {
   /** Draw picture choices (`choice.image`) as picture tiles (default true).
    *  False: every choice is a text row, as on a host that shows no images. */
   pictureChoices?: boolean;
+  /** A small label over a picture tile's picture, top left ("Mockup · VS
+   *  Code"), from the host; null or absent: none. Display only: never the
+   *  answer, never read by the parser. Default absent, so every card draws as
+   *  before (the Plannotator Inbox's onboarding tour labels its pictures). */
+  pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
 }
 
 /** A host's status tag (`statusLabel`): its words, and the tone of one of the card's own tags (default `open`). */
@@ -267,6 +272,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   repoHost,
   onNavigateAnchor,
   pictureChoices = true,
+  pictureBadge,
 }) => {
   const { question, number } = indexed;
   const resolveImage = useImageResolver();
@@ -840,9 +846,20 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                       >
                         {choice.image && (
                           <span
-                            className="annotation-exclude select-none block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
+                            className="annotation-exclude select-none relative block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
                             data-pinpoint-ignore=""
                           >
+                            {(() => {
+                              const badge = pictureBadge?.({ label: choice.label, image: choice.image });
+                              return badge ? (
+                                <span
+                                  className="pointer-events-none absolute left-1.5 top-1.5 z-[1] rounded bg-black/60 px-1.5 text-[10.5px] font-semibold leading-[18px] tracking-[0.02em] text-white"
+                                  data-question-picture-badge=""
+                                >
+                                  {badge}
+                                </span>
+                              ) : null;
+                            })()}
                             {shown ? (
                               <img
                                 src={shown}

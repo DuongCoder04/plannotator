@@ -24,9 +24,9 @@
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * Shots and the video go to PLANNOTATOR_TOUR_SHOTS (default .local/proof/tour).
  */
-import { chromium, devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { NO_BROWSER } from '../helpers/no-browser';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
@@ -147,6 +147,12 @@ async function shoot(page: Page, name: string, themes: readonly ('light' | 'dark
 
 async function shootThemes(page: Page, name: string, themes: readonly ('light' | 'dark')[]): Promise<void> {
   mkdirSync(shots, { recursive: true });
+  // Never a coach card caught in its fade-in, or before it is placed.
+  await page.waitForFunction(() => {
+    const coach = document.querySelector<HTMLElement>('[data-tour-coach]');
+    return !coach || (coach.style.visibility !== 'hidden' && coach.getAnimations().every((a) => a.playState !== 'running'));
+  });
+  await page.waitForTimeout(250);
   for (const scheme of themes) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.waitForFunction((dark) => document.documentElement.classList.contains('light') !== dark, scheme === 'dark', { timeout: 3000 });
@@ -167,6 +173,14 @@ async function shootThemes(page: Page, name: string, themes: readonly ('light' |
       void root.offsetHeight;
       root.style.display = '';
       for (const [el, top] of scrolled) el.scrollTop = top;
+      // The restyle restarts CSS animations (the coach card's entrance): finish them again.
+      for (const a of document.getAnimations()) {
+        try {
+          a.finish();
+        } catch {
+          // Endless.
+        }
+      }
     });
     await page.waitForTimeout(100);
     await page.screenshot({ path: join(shots, `${name}-${scheme}.png`) });
@@ -226,6 +240,8 @@ test('the paced newcomer walk: Two paths, the six steps, the aha under 2 minutes
   mark('open');
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
   await expect(page.locator('[data-tour-message="ask"] [data-question-tile]')).toHaveCount(4);
+  // Every picture says what it is: a mockup of VS Code, never the Inbox itself.
+  await expect(page.locator('[data-tour-message="ask"] [data-question-picture-badge]')).toHaveText(['Mockup · VS Code', 'Mockup · VS Code', 'Mockup · VS Code']);
   await shoot(page, '02-step2-pictures');
   await read(page, true);
   // The closer look: the magnifier opens the viewer, which offers the pick; Escape closes it, focus back on the magnifier.
@@ -420,6 +436,7 @@ test('an iPhone in WebKit: taps, 44 px targets, the sheet never over what it ask
     await page.locator('[data-thread-id="tour-vscode"]').first().tap();
     await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
     await clear('[data-tour-message="ask"] [data-question-tiles]');
+    await expect(page.locator('[data-tour-message="ask"] [data-question-picture-badge]').first()).toHaveText('Mockup');
     await big('[data-tour-message="ask"] [data-question-zoom]');
     await shoot(page, 'phone-02-step2');
     await page.locator('[data-tour-message="ask"] [data-question-tile] label').nth(1).tap();
@@ -510,11 +527,28 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await walkTo(n);
     await page.locator('[data-tour-exit="exit"]').click();
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
-    await expect(page.locator(`[data-thread-id="${threadId}"]`).first()).toBeVisible();
+    // Started in Settings: Exit returns to Settings, as the browser's Back (no new entry).
+    await expect(page).toHaveURL(/#settings\/general$/);
+    await expect(page.locator('[data-settings-take-tour]')).toBeVisible();
     await focusKept(page);
     expect(await ownList(w), `after Exit at step ${n}`).toBe(before);
   }
-  expect(config(w).inboxTour.skipped_at).toBeTruthy();
+  const skipped = config(w).inboxTour.skipped_at;
+  expect(skipped).toBeTruthy();
+  // Back after Exit goes to the screen before Settings, never into the tour again, and records no second skip.
+  await page.goBack();
+  await expect(page).not.toHaveURL(/#tour/);
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(config(w).inboxTour.skipped_at).toBe(skipped);
+  await page.goto(w.url);
+  await expect(page.locator(`[data-thread-id="${threadId}"]`).first()).toBeVisible();
+  // The side thread's pictures are screenshots of the Inbox, and say so.
+  await enter();
+  await page.locator('[data-thread-id="tour-graphite"]').first().click();
+  await expect(page.locator('[data-tour-thread] [data-question-picture-badge]').first()).toHaveText('Screenshot · Inbox');
+  await page.locator('[data-tour-exit="exit"]').click();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
 
   // A real message lands mid-tour: a chip in the bar, the tour goes on, no notification and no sound.
   await enter();
@@ -553,8 +587,11 @@ test('the fixture routes: read only, embedded in the binary, the mock sandboxed,
   // The window carries no tour content of its own: inbox.html holds no picture of it.
   const html = await (await fetch(w.url)).text();
   expect(html).not.toContain('Honestly I’m just struggling with this UX');
-  // The binary is the one the assets are embedded in (no source tree beside it).
-  expect(realpathSync(binary)).toBeTruthy();
-  void chromium;
-  void readdirSync;
+  // What the binary serves is the shipped content, byte for byte: the fixture, every picture and the mock.
+  const content = join(repo, 'packages/inbox/tour/content');
+  for (const name of readdirSync(content)) {
+    const path = name === 'fixture.json' ? 'api/inbox/tour/fixture.json' : `api/inbox/tour/assets/${name}`;
+    const served = Buffer.from(await (await fetch(new URL(path, w.url))).arrayBuffer());
+    expect(served.equals(readFileSync(join(content, name))), name).toBe(true);
+  }
 });
