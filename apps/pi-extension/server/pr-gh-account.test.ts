@@ -5,7 +5,7 @@
  * with a scratch HOME and gh config dir: the real gh is never reachable.
  */
 import { afterEach, expect, test } from "bun:test";
-import { probeGhAccountRuntime, type FakeGh } from "../../../tests/helpers/fake-gh";
+import { probeGhAccountRuntime, type FakeGh } from "../../../tests/helpers/fake-gh.ts";
 
 let fake: FakeGh | undefined;
 
