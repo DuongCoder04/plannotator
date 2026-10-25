@@ -230,6 +230,7 @@ jobs:
           packages/ui/components/HumanOnlySkillNotice.test.tsx
           packages/ui/components/MenuVersionSection.test.tsx
           packages/ui/components/blocks/QuestionBlock.test.tsx
+          packages/ui/components/blocks/QuestionBlock.pictures.test.tsx
           packages/ui/components/blocks/QuestionContext.lines.test.tsx
           packages/ui/components/blocks/QuestionBlock.host.test.tsx
           packages/ui/components/blocks/QuestionBlock.decisionToggle.test.tsx
@@ -390,6 +391,7 @@ jobs:
           packages/ui/components/Viewer.driftedRestore.test.tsx
           packages/ui/components/Viewer.crossBlockRestore.test.tsx
           packages/ui/components/Viewer.restoreMovedAnchors.test.tsx
+          packages/ui/components/Viewer.questionContract.test.tsx
           packages/ui/components/Viewer.alertDraftRestore.test.tsx
           packages/ui/components/Viewer.belowTitle.test.tsx
           packages/ui/utils/belowTitleSlot.test.ts

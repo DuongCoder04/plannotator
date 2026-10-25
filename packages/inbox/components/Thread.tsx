@@ -373,6 +373,8 @@ export function MessageBody({
     const body = bodyRef.current;
     if (!body) return;
     for (const img of body.querySelectorAll<HTMLImageElement>('img')) {
+      // A question card's picture (a picture choice, `Shows:`): the card makes it pick, or opens it with its own button.
+      if (img.hasAttribute('data-question-picture')) continue;
       const src = img.getAttribute('src');
       const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
       if (ref === null || img.hasAttribute('data-ib-broken')) continue;
@@ -392,14 +394,14 @@ export function MessageBody({
     // Markdown images reach openImage through Viewer's onImageClick; an image in a raw-HTML block has no handler of its own.
     const onClick = (event: MouseEvent) => {
       const img = event.target instanceof HTMLImageElement ? event.target : null;
-      if (!img || img.classList.contains('cursor-zoom-in')) return;
+      if (!img || img.classList.contains('cursor-zoom-in') || img.hasAttribute('data-question-picture')) return;
       if (openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
       const img = event.target instanceof HTMLImageElement ? event.target : null;
-      if (img && openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
+      if (img && !img.hasAttribute('data-question-picture') && openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
     };
     body.addEventListener('click', onClick);
     body.addEventListener('keydown', onKey);
@@ -617,6 +619,8 @@ export function MessageBody({
         renderQuestionFooter={renderFooter}
         // The Inbox records no decisions: a `Decision:` line an older agent wrote is context.
         questionDecisionLines={false}
+        // The Inbox draws the contract lines (Stakes, Shows, Why, Can't be undone), approval "inbox-decision-mode".
+        questionContractLines
         questionReadOnly={answerLocked}
         questionStatusLabel={statusLabel}
         renderQuestionCard={renderReplacedCard ? questionCard : undefined}
