@@ -277,6 +277,13 @@ export interface InboxNotifications {
   permission: NotificationPermission | 'unsupported';
   /** The line to draw above the list, or null. */
   ask: AskKind | null;
+  /**
+   * The line to draw on the first-run screen ("No agent has written yet"),
+   * or null. The moment before the first question arrives, so it does not
+   * wait for a thread as `ask` does; every other rule (dismissed, off,
+   * per-origin, moved, blocked) is the same.
+   */
+  firstRunAsk: AskKind | null;
   /** Whether any open Inbox tab can show a notification (the server's report; null until known). */
   reach: InboxNotifyReach | null;
   setReach: (reach: InboxNotifyReach) => void;
@@ -639,6 +646,7 @@ export function useInboxNotifications(options: {
   );
 
   const ask = options.settings && permission !== 'unsupported' ? askKind(options.settings, permission, window.location.origin, hasThreads) : null;
+  const firstRunAsk = options.settings && permission !== 'unsupported' ? askKind(options.settings, permission, window.location.origin, true) : null;
 
-  return { permission, ask, reach, setReach, windowReport, reportWindow, slept, dismissSlept, sendTest, observe, flush, turnOn, notNow, setEnabled };
+  return { permission, ask, firstRunAsk, reach, setReach, windowReport, reportWindow, slept, dismissSlept, sendTest, observe, flush, turnOn, notNow, setEnabled };
 }
