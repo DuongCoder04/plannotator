@@ -121,7 +121,7 @@ import { annotateBundleRoot } from "@plannotator/shared/annotate-bundle";
 import { stripAtPrefix } from "@plannotator/shared/at-reference";
 import { plannotatorBundleSubject } from "@plannotator/shared/plannotator-tool";
 import { createWorktreePool, type WorktreePool, type PoolEntry } from "@plannotator/shared/worktree-pool";
-import { parsePRUrl, checkPRAuth, fetchPR, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
+import { parsePRUrl, checkPRAuth, fetchPR, type PRAuthResult, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { announceTailscaleSession, enableTailscaleServe } from "@plannotator/server/tailscale-serve";
 import { discardEnvPullSessionBridgeConfig, takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
@@ -603,6 +603,20 @@ if (helpSubcommand) {
 exitOnUnknownSubcommand(args);
 
 // Read a caller-supplied unified diff for static patch mode (`--patch-file`).
+/**
+ * The active gh account could not see the PR and another signed-in account
+ * can (#2157): say which one on stderr and answer that account's token env,
+ * which this PR's own checkout steps (clone, git fetches) add to their env.
+ * It is never put in process.env: the review's gh calls get it per repo from
+ * the provider, and agent jobs from their launch PR (agent-jobs.ts), so the
+ * browser opener, the update wrapper, Ask AI providers and gh calls for
+ * another repo never see it. gh's own setting is never changed.
+ */
+function noteGhAccountForThisRun(access: PRAuthResult): Record<string, string> | undefined {
+  if (access.notice) console.error(access.notice);
+  return access.childEnv;
+}
+
 // "-" means stdin; file paths resolve against the given cwd. A read failure
 // is a startup failure: exit 1 like every other review startup failure.
 async function readStaticPatch(patchFile: string, cwd: string): Promise<{ rawPatch: string; gitRef: string }> {
@@ -1107,8 +1121,10 @@ if (args[0] === "sessions") {
     const cliName = getCliName(prRef);
     const cliUrl = getCliInstallUrl(prRef);
 
+    // The token of the gh account chosen for this PR, for its checkout steps below (#2157).
+    let ghAccountEnv: Record<string, string> | undefined;
     try {
-      await checkPRAuth(prRef);
+      ghAccountEnv = noteGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // REST-only platforms (Bitbucket) have no CLI to be missing; their auth
@@ -1202,7 +1218,9 @@ if (args[0] === "sessions") {
         ): Promise<{ exitCode: number; stderr: string }> => {
           const proc = Bun.spawn(cmd, {
             cwd: opts.cwd,
-            env: opts.env,
+            // The chosen gh account's token goes last, so a GH_TOKEN the
+            // person exported can't override it for this PR's checkout.
+            env: ghAccountEnv ? { ...process.env, ...opts.env, ...ghAccountEnv } as Record<string, string> : opts.env,
             stdout: "ignore",
             stderr: "pipe",
           });
@@ -2247,7 +2265,7 @@ if (args[0] === "sessions") {
     console.error(`Fetching ${getMRLabel(prRef)} ${getMRNumberLabel(prRef)} from ${getDisplayRepo(prRef)}...`);
 
     try {
-      await checkPRAuth(prRef);
+      noteGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const cliName = getCliName(prRef);
       console.error(err instanceof Error ? err.message : `${cliName} auth check failed`);

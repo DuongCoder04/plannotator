@@ -34,9 +34,13 @@ import {
 } from "../generated/pr-provider.ts";
 
 const nodeCommandRuntime: PRRuntime = {
-	async runCommand(cmd, args) {
+	async runCommand(cmd, args, options) {
 		return new Promise((resolve, reject) => {
-			const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+			// options.env is added to (never replacing) the environment: another gh account's token (#2157).
+			const proc = spawn(cmd, args, {
+				stdio: ["ignore", "pipe", "pipe"],
+				...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+			});
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (chunk: Buffer) => {
@@ -51,9 +55,12 @@ const nodeCommandRuntime: PRRuntime = {
 			});
 		});
 	},
-	async runCommandWithInput(cmd, args, input) {
+	async runCommandWithInput(cmd, args, input, options) {
 		return new Promise((resolve, reject) => {
-			const proc = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+			const proc = spawn(cmd, args, {
+				stdio: ["pipe", "pipe", "pipe"],
+				...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+			});
 			let stdout = "";
 			let stderr = "";
 			proc.stdout?.on("data", (chunk: Buffer) => {
@@ -78,11 +85,11 @@ const nodeCommandRuntime: PRRuntime = {
 let testRuntime: PRRuntime | null = null;
 
 const prRuntime: PRRuntime = {
-	runCommand: (cmd, args) => (testRuntime ?? nodeCommandRuntime).runCommand(cmd, args),
-	runCommandWithInput: (cmd, args, input) => {
+	runCommand: (cmd, args, options) => (testRuntime ?? nodeCommandRuntime).runCommand(cmd, args, options),
+	runCommandWithInput: (cmd, args, input, options) => {
 		const active = testRuntime ?? nodeCommandRuntime;
 		if (!active.runCommandWithInput) return Promise.reject(new Error(`${cmd}: this runtime takes no input`));
-		return active.runCommandWithInput(cmd, args, input);
+		return active.runCommandWithInput(cmd, args, input, options);
 	},
 };
 
