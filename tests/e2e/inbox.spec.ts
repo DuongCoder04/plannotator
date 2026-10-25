@@ -211,12 +211,14 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   await page.mouse.move(0, 0);
   await shot('1.2-first-run-first-step');
 
-  // One rhythm: the same gap between the heading, the step, Try it and the fold.
+  // One rhythm: the same gap between the heading, the step, Try it, the fold and the tour's quiet line
+  // (the tour was decided before this Inbox started: "Take the 2-minute tour" ends the screen).
+  await expect(empty.locator('[data-tour-again]')).toBeVisible();
   const boxes = await empty.evaluate((el) =>
     [...el.children].filter((child) => !child.classList.contains('ib-sr')).map((child) => child.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })),
   );
   const gaps = boxes.slice(1).map((box, i) => Math.round(box.top - boxes[i]!.bottom));
-  expect(gaps.length).toBe(3);
+  expect(gaps.length).toBe(4);
   expect(new Set(gaps).size).toBe(1);
 
   // Every other agent or editor, folded at the end: the picker without Plannotator's three hosts.
