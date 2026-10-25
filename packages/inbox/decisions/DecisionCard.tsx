@@ -4,42 +4,66 @@
  * the context, the pictures, the answers, then the secondary actions, in
  * that order (brief §7, the screen reader order).
  *
- * Only today's question grammar is drawn. The agent contract lines the brief
- * proposes (Stakes, Shows, Why, Reversible, picture choices) are not approved
- * yet: `cardFacts` is where they will be read, and the card already has a
- * place for each (the stakes line under the prompt, the hero picture, the
- * "Why" line under the answers, a confirm step for an irreversible answer).
+ * The agent contract lines (approval "inbox-decision-mode", "Agent contract
+ * lines", 2026-10-24; drawn as contract-compare.html has them), read from the
+ * question by `cardFacts`: the Stakes line under the prompt, the Shows picture
+ * leading on the left (a Shows file is one of the card's references), the Why
+ * line under the answers, and for `Reversible: no` a "One-way" badge, no
+ * swipe, and a confirm step before any answer but a Skip counts (the grammar
+ * does not say which choice is the one-way one, so the recommendation asks
+ * too). Picture choices are the
+ * thread card's own tiles (ui's `QuestionPictureTiles`): the picture picks and
+ * the zoom button opens the viewer, never both.
  */
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Viewer } from '@plannotator/ui/components/Viewer';
 import { InlineMarkdown } from '@plannotator/ui/components/InlineMarkdown';
+import { QuestionPictureTiles } from '@plannotator/ui/components/blocks/QuestionBlock';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxDecision, InboxQuestion } from '@plannotator/core/inbox-types';
 import { readInboxQuestionKind } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { agentName, formatCount, shortTime } from '../format';
 import { HostMark, Icon } from '../icons';
-import { inboxMessageImageBase } from '../images';
+import { inboxMessageImageBase, inboxMessageImageUrl } from '../images';
 import { Tip } from '../components/Tip';
-import { answerWords, choiceAnswer, otherAnswer, skipAnswer, swipeChoices, textAnswer } from './model';
+import { answerNeedsConfirm, answerWords, choiceAnswer, confirmLabel, otherAnswer, skipAnswer, swipeChoices, textAnswer } from './model';
 
 /**
- * The facts a card shows beyond today's grammar. Today every field is null:
- * the contract lines are not approved (question msg_01M5QP72AV0GBSQX7X8GH5KTJT
- * in the owner's Inbox). When they are, read them from the question here and
- * the card draws them where its comments say.
+ * The contract lines a card shows (the question's additive `stakes`, `why`,
+ * `reversible` and `shows`; absent on older records, which draw as before).
  */
 export interface CardFacts {
   /** `Stakes:` — the bold line under the prompt. */
   stakes: string | null;
   /** `Why:` — under the answers. */
   why: string | null;
-  /** `Reversible: no — <why>` — a confirm step, and never a swipe. */
-  irreversible: string | null;
+  /** `Reversible: no — <why>`: the One-way badge, a confirm step, and never a swipe. `why` may be null. */
+  irreversible: { why: string | null } | null;
+  /** `Shows:` — the one picture (the hero) or file (a reference) the decision is about. */
+  shows: { kind: 'image' | 'link'; label: string; src: string } | null;
 }
 
-export function cardFacts(_decision: InboxDecision): CardFacts {
-  return { stakes: null, why: null, irreversible: null };
+/**
+ * A line the card draws as a sentence, as contract-compare.html draws them: its first letter capitalised,
+ * but only when its first word is plain lower-case letters (a-z, then a space, or a punctuation mark and a
+ * space), so a URL, a path, `code` or a name such as iOS stays as written.
+ */
+export function sentence(text: string | null | undefined): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+  return /^[a-z]+[,;:.!?]?(?:\s|$)/.test(trimmed) ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1) : trimmed;
+}
+
+export function cardFacts(decision: InboxDecision): CardFacts {
+  const q = decision.question;
+  return {
+    stakes: sentence(q.stakes),
+    why: sentence(q.why),
+    // The reason follows "Can't be undone:", so it stays as the agent wrote it.
+    irreversible: q.reversible ? { why: q.reversible.why?.trim() || null } : null,
+    shows: q.shows ?? null,
+  };
 }
 
 /** A picture the card shows: a captured image of the message, or an image file it attached. */
@@ -51,18 +75,54 @@ export interface CardPicture {
   src: string;
 }
 
+/**
+ * The pictures on the card's left: the `Shows:` picture first, then the
+ * message's other images and image files. A picture choice's picture is its
+ * tile, never here.
+ */
 export function cardPictures(decision: InboxDecision): CardPicture[] {
-  const out: CardPicture[] = decision.pictures.inline.map((image) => ({
-    attachmentId: image.attachment_id,
-    name: image.name,
-    ref: image.ref,
-    src: `/api/inbox/attachments/${encodeURIComponent(image.attachment_id)}/image`,
-  }));
+  const q = decision.question;
+  const choiceRefs = new Set(q.choices.map((choice) => choice.image?.src).filter((src): src is string => !!src));
+  const out: CardPicture[] = decision.pictures.inline
+    .filter((image) => !choiceRefs.has(image.ref))
+    .map((image) => ({
+      attachmentId: image.attachment_id,
+      name: image.name,
+      ref: image.ref,
+      src: `/api/inbox/attachments/${encodeURIComponent(image.attachment_id)}/image`,
+    }));
   for (const file of decision.pictures.attachments) {
     if (file.kind !== 'image') continue;
     out.push({ attachmentId: file.attachment_id, name: file.name, ref: null, src: `/api/inbox/attachments/${encodeURIComponent(file.attachment_id)}/image` });
   }
+  if (q.shows?.kind === 'image') {
+    const src = q.shows.src;
+    const at = out.findIndex((picture) => picture.ref === src);
+    const shown = at >= 0 ? out.splice(at, 1)[0]! : { attachmentId: '', name: '', ref: src, src: inboxMessageImageUrl(decision.message.id, src) };
+    out.unshift({ ...shown, name: q.shows.label || shown.name || 'Picture' });
+  }
   return out;
+}
+
+/** Where a picture choice's picture loads from: its captured file, else the message's image route. */
+export function choicePictureUrl(decision: InboxDecision, src: string): string {
+  const image = decision.pictures.inline.find((candidate) => candidate.ref === src);
+  return image ? `/api/inbox/attachments/${encodeURIComponent(image.attachment_id)}/image` : inboxMessageImageUrl(decision.message.id, src);
+}
+
+/**
+ * The attached file a `Shows:` link names, if the message carries it: by its path when the link has a
+ * folder (the file's real path, or the path it was named by, ends with it), else by its file name.
+ */
+export function showsFile(decision: InboxDecision, src: string): InboxDecision['pictures']['attachments'][number] | null {
+  const path = (src.split(/[?#]/)[0] ?? '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  const name = path.split('/').pop() ?? '';
+  const files = decision.pictures.attachments;
+  if (path.includes('/')) {
+    const byPath = files.find((file) => (file.paths ?? []).some((p) => { const at = p.replace(/\\/g, '/'); return at === path || at.endsWith(`/${path}`); }));
+    if (byPath) return byPath;
+  }
+  return files.find((file) => file.name === name) ?? null;
 }
 
 /**
@@ -167,6 +227,7 @@ export function DecisionCard(props: DecisionCardProps) {
   const facts = cardFacts(decision);
   const pictures = cardPictures(decision);
   const promptId = useId();
+  const stakesId = `${promptId}-stakes`;
   const promptRef = useRef<HTMLHeadingElement>(null);
   const saved = q.state === 'picked' ? q.answer : null;
   const [selected, setSelected] = useState<string[]>(() => initialSelection(q));
@@ -184,7 +245,21 @@ export function DecisionCard(props: DecisionCardProps) {
   const [fling, setFling] = useState<number | null>(null);
   const articleRef = useRef<HTMLElement>(null);
   const locked = props.sent === true || props.sending === true;
-  const choices2 = facts.irreversible || locked ? null : swipeChoices(q);
+  // Never a swipe for a one-way question or a picture choice (swipeChoices), nor while locked.
+  const choices2 = locked ? null : swipeChoices(q);
+  /** A pick on a `Reversible: no` question waiting for its confirm (contract-compare.html, pair 2). */
+  const [confirming, setConfirming] = useState<{ answer: QuestionAnswer; words: string } | null>(null);
+  const confirmCancelRef = useRef<HTMLButtonElement>(null);
+  /** The choices as the card draws them: each description a sentence (the labels are the answers, as written). */
+  const shownChoices = q.choices.map((choice) => (choice.description ? { ...choice, description: sentence(choice.description) } : choice));
+  // Picture choices: each choice's picture URL, and the pictures that failed to load (a tile then shows its alt text).
+  const [failedPictures, setFailedPictures] = useState<ReadonlySet<string>>(() => new Set());
+  const tileUrls = q.choices.map((choice) => {
+    if (!choice.image) return null;
+    const url = choicePictureUrl(decision, choice.image.src);
+    return failedPictures.has(url) ? null : url;
+  });
+  const showTiles = (kind === 'single' || kind === 'multi') && tileUrls.some((url) => url !== null);
 
   /** The words in a box the card shows, by box (empty when the box is closed). */
   const boxWords = (box: 'other' | 'note' | 'cant' | 'text'): string =>
@@ -195,6 +270,11 @@ export function DecisionCard(props: DecisionCardProps) {
   // words stay, focus goes to the prompt), and the dialog then asks before it closes over them.
   // An empty box the card opened closes.
   props.fieldOpenRef.current = () => {
+    // The confirm step is a layer of its own: Escape cancels it, nothing is answered.
+    if (confirming) {
+      cancelConfirm();
+      return true;
+    }
     const active = typeof document === 'undefined' ? null : document.activeElement;
     const inBox = active instanceof HTMLTextAreaElement && articleRef.current?.contains(active) === true;
     if (inBox && active.value.trim()) {
@@ -244,9 +324,33 @@ export function DecisionCard(props: DecisionCardProps) {
     promptRef.current?.focus({ preventScroll: true });
   }, [decision.id]);
 
+  // The confirm step takes focus on its safe button: Enter there cancels, never answers.
+  useEffect(() => {
+    if (!confirming) return;
+    // On a phone the step can open below the fold: it comes into view with the focus.
+    confirmCancelRef.current?.focus();
+    confirmCancelRef.current?.closest('[data-decision-confirm-pick]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [confirming]);
+
+  /** An answer counts at once, unless it cannot be undone: then it asks once more first. */
+  const request = (answer: QuestionAnswer) => {
+    if (answerNeedsConfirm(q, answer)) setConfirming({ answer, words: answerWords(answer) });
+    else props.onAnswer(answer);
+  };
+  const cancelConfirm = () => {
+    const was = confirming;
+    setConfirming(null);
+    // A pick-one goes back to what it showed before (the saved pick, or nothing); focus to the choice the person
+    // was on, else the prompt.
+    if (kind === 'single') setSelected(initialSelection(q));
+    const label = was?.answer.selected[0];
+    const radio = label ? [...(articleRef.current?.querySelectorAll<HTMLInputElement>('.ib-dm-answers input') ?? [])].find((input) => input.value === label) : undefined;
+    (radio ?? promptRef.current)?.focus({ preventScroll: true });
+  };
+
   const commitChoice = (labels: readonly string[]) => {
     if (labels.length === 0) return;
-    props.onAnswer(choiceAnswer(q, labels, note));
+    request(choiceAnswer(q, labels, note));
   };
 
   const author = decision.message.author;
@@ -254,7 +358,14 @@ export function DecisionCard(props: DecisionCardProps) {
   const badge = q.stopped !== null ? <span className="ib-badge ib-b-stop">Stopped</span> : q.holds_up.length > 0 ? <span className="ib-badge ib-b-hold">Holds up {formatCount(q.holds_up.length)}</span> : null;
   const heroRefs = pictures.map((p) => p.ref).filter((r): r is string => r !== null);
   const context = contextWithout(q.context ?? '', heroRefs);
-  const files = decision.pictures.attachments.filter((f) => f.kind !== 'image');
+  // A `Shows:` file leads the references: the attached file it names, else a web link, else the thread.
+  const shownFile = facts.shows?.kind === 'link' ? showsFile(decision, facts.shows.src) : null;
+  const files = decision.pictures.attachments.filter((f) => f.kind !== 'image' && f.attachment_id !== shownFile?.attachment_id);
+  const recommendedLabels = q.choices.filter((c) => c.recommended).map((c) => c.label);
+  /** The tile pictures, for the viewer's stepping (a zoom opens on its own tile). */
+  const tilePictures: CardPicture[] = q.choices.flatMap((choice, index) =>
+    choice.image && tileUrls[index] ? [{ attachmentId: '', name: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
+  );
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!choices2 || event.pointerType !== 'touch' || props.stamp) return;
@@ -289,7 +400,9 @@ export function DecisionCard(props: DecisionCardProps) {
     <article
       className="ib-dm-card"
       aria-labelledby={promptId}
+      aria-describedby={facts.stakes ? stakesId : undefined}
       data-decision-card={decision.id}
+      data-one-way={facts.irreversible ? '' : undefined}
       data-kind={kind}
       data-has-picture={pictures.length > 0 ? '' : undefined}
       ref={articleRef}
@@ -350,15 +463,25 @@ export function DecisionCard(props: DecisionCardProps) {
           )}
           <span>· {shortTime(decision.message.created_at)}</span>
           {badge}
+          {facts.irreversible && (
+            <Tip content={facts.irreversible.why ? `Can't be undone: ${facts.irreversible.why}` : "Can't be undone"}>
+              <span className="ib-badge ib-b-oneway" data-decision-one-way="">
+                One-way
+                <span className="ib-sr">: can&rsquo;t be undone{facts.irreversible.why ? `, ${facts.irreversible.why}` : ''}</span>
+              </span>
+            </Tip>
+          )}
         </div>
         <h2 id={promptId} ref={promptRef} tabIndex={-1} className="ib-dm-prompt" data-decision-prompt="">
           <InlineMarkdown text={q.prompt} />
         </h2>
-        {/* The stakes line (`Stakes:`) goes here once the contract lines are approved. */}
+        {/* The stakes line (`Stakes:`): what the choice affects, in one sentence. */}
         {facts.stakes && (
-          <p className="ib-dm-stakes">
+          <p id={stakesId} className="ib-dm-stakes" data-decision-stakes="">
             <Icon name="warn" size={16} />
-            {facts.stakes}
+            <span>
+              <InlineMarkdown text={facts.stakes} />
+            </span>
           </p>
         )}
         {q.stopped !== null && (
@@ -376,6 +499,23 @@ export function DecisionCard(props: DecisionCardProps) {
         {decision.message.excerpt && <p className="ib-dm-excerpt">{decision.message.excerpt}</p>}
         <Context markdown={context} messageId={decision.message.id} onImage={(src, alt) => props.onImage([{ attachmentId: '', name: alt || 'image', ref: null, src }], 0)} />
         <div className="ib-dm-refs">
+          {facts.shows?.kind === 'link' &&
+            (shownFile ? (
+              <button type="button" className="ib-dm-file" data-decision-shows="" onClick={() => props.onOpenThread(shownFile.attachment_id)}>
+                <Icon name="doc" size={15} />
+                <span>{facts.shows.label || shownFile.name}</span>
+              </button>
+            ) : /^https?:\/\//i.test(facts.shows.src) ? (
+              <a className="ib-dm-file" data-decision-shows="" href={facts.shows.src} target="_blank" rel="noopener noreferrer">
+                <Icon name="external" size={15} />
+                <span>{facts.shows.label || facts.shows.src}</span>
+              </a>
+            ) : (
+              <button type="button" className="ib-dm-file" data-decision-shows="" onClick={() => props.onOpenThread()}>
+                <Icon name="doc" size={15} />
+                <span>{facts.shows.label || facts.shows.src}</span>
+              </button>
+            ))}
           {files.map((file) => (
             <button key={file.attachment_id} type="button" className="ib-dm-file" onClick={() => props.onOpenThread(file.attachment_id)}>
               <Icon name="doc" size={15} />
@@ -399,9 +539,53 @@ export function DecisionCard(props: DecisionCardProps) {
         {/* The answers. */}
         {!locked && (
         <div className="ib-dm-answers" onPointerDownCapture={() => (pointer.current = true)} onKeyDownCapture={() => (pointer.current = false)}>
-          {kind === 'single' && (
+          {showTiles && (
+            <div className="ib-dm-tiles" role={kind === 'multi' ? 'group' : 'radiogroup'} aria-labelledby={promptId} data-decision-tiles="">
+              <QuestionPictureTiles
+                choices={shownChoices}
+                urls={tileUrls}
+                selected={selected}
+                inputType={kind === 'multi' ? 'checkbox' : 'radio'}
+                name={`ib-dm-${decision.id}`}
+                onPick={(label, checked) =>
+                  kind === 'multi'
+                    ? setSelected((current) => (checked ? [...current.filter((l) => l !== label), label] : current.filter((l) => l !== label)))
+                    : checked && setSelected([label])
+                }
+                // The picture picks (it is in the tile's label); the zoom button opens the viewer and never picks.
+                onZoom={(url) => props.onImage(tilePictures, Math.max(0, tilePictures.findIndex((p) => p.src === url)))}
+                onPictureError={(url) => setFailedPictures((prev) => (prev.has(url) ? prev : new Set([...prev, url])))}
+                renderText={(text) => <InlineMarkdown text={text} />}
+                inputProps={(label) => ({
+                  value: label,
+                  onClick:
+                    kind === 'single'
+                      ? () => {
+                          // A click (or a tap) on the picture or the words answers at once; the arrow keys only move.
+                          if (pointer.current) commitChoice([label]);
+                        }
+                      : undefined,
+                  onKeyDown:
+                    kind === 'single'
+                      ? (event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            commitChoice([label]);
+                          }
+                        }
+                      : undefined,
+                })}
+                renderBadges={(choice) => (
+                  <>
+                    {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
+                  </>
+                )}
+              />
+            </div>
+          )}
+          {kind === 'single' && !showTiles && (
             <fieldset className={`ib-dm-choices${q.choices.length === 2 ? ' ib-dm-two' : ''}`} aria-labelledby={promptId}>
-              {q.choices.map((choice) => {
+              {shownChoices.map((choice) => {
                 const on = selected.includes(choice.label);
                 const isSaved = saved?.selected.includes(choice.label) === true;
                 return (
@@ -433,16 +617,16 @@ export function DecisionCard(props: DecisionCardProps) {
                           <InlineMarkdown text={choice.description} />
                         </span>
                       )}
-                    </span>
+                      </span>
                     {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
                   </label>
                 );
               })}
             </fieldset>
           )}
-          {kind === 'multi' && (
+          {kind === 'multi' && !showTiles && (
             <fieldset className="ib-dm-choices" aria-labelledby={promptId}>
-              {q.choices.map((choice) => {
+              {shownChoices.map((choice) => {
                 const on = selected.includes(choice.label);
                 return (
                   <label key={choice.label} className="ib-dm-choice ib-dm-check" data-on={on ? '' : undefined} data-recommended={choice.recommended ? '' : undefined}>
@@ -461,19 +645,19 @@ export function DecisionCard(props: DecisionCardProps) {
                           <InlineMarkdown text={choice.description} />
                         </span>
                       )}
-                    </span>
+                      </span>
                     {choice.recommended && <span className="ib-dm-rec">Recommended</span>}
                   </label>
                 );
               })}
             </fieldset>
           )}
-          {kind === 'multi' && (
+          {kind === 'multi' && !confirming && (
             <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" disabled={selected.length === 0} onClick={() => commitChoice(selected)}>
               Answer with {formatCount(selected.length)}
             </button>
           )}
-          {kind === 'single' && selected.length > 0 && !(saved && sameSet(saved.selected, selected) && !saved.other) && (
+          {kind === 'single' && !confirming && selected.length > 0 && !(saved && sameSet(saved.selected, selected) && !saved.other) && (
             <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" onClick={() => commitChoice(selected)}>
               Answer
             </button>
@@ -491,7 +675,7 @@ export function DecisionCard(props: DecisionCardProps) {
                 </div>
               )}
               <textarea className="ib-dm-ta" aria-labelledby={promptId} value={text} rows={3} onChange={(event) => setText(event.target.value)} />
-              <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" disabled={!text.trim()} onClick={() => props.onAnswer(textAnswer(q, text, note))}>
+              <button type="button" className="ib-btn ib-pri ib-dm-go" data-decision-answer="" disabled={!text.trim()} onClick={() => request(textAnswer(q, text, note))}>
                 Answer
               </button>
             </div>
@@ -533,9 +717,33 @@ export function DecisionCard(props: DecisionCardProps) {
               )}
             </div>
           )}
+          {confirming && (
+            <div className="ib-dm-confirm1" role="alertdialog" aria-labelledby={`${promptId}-confirm`} aria-describedby={`${promptId}-confirm-d`} data-decision-confirm-pick="">
+              <span>
+                <b id={`${promptId}-confirm`}>{confirming.words}?</b>{' '}
+                <span id={`${promptId}-confirm-d`}>{facts.irreversible?.why ? `Can't be undone: ${facts.irreversible.why}` : "Can't be undone."}</span>
+              </span>
+              <button type="button" className="ib-btn" ref={confirmCancelRef} data-decision-confirm-cancel="" onClick={cancelConfirm}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="ib-btn ib-dm-danger"
+                data-decision-confirm-yes=""
+                aria-label={confirming.words}
+                onClick={() => {
+                  const answer = confirming.answer;
+                  setConfirming(null);
+                  props.onAnswer(answer);
+                }}
+              >
+                {confirmLabel(confirming.words)}
+              </button>
+            </div>
+          )}
           {facts.why && (
-            <p className="ib-dm-why">
-              <b>Why {name} recommends it:</b> {facts.why}
+            <p className="ib-dm-why" data-decision-why="">
+              <b>{recommendedLabels.length > 0 || q.suggested_text ? `Why ${name} recommends it:` : 'Why:'}</b> <InlineMarkdown text={facts.why} />
             </p>
           )}
           {/* Swipe is touch only, for a two-way choice, and always has its buttons (the choices above). */}
@@ -556,7 +764,7 @@ export function DecisionCard(props: DecisionCardProps) {
                   Your own answer
                 </label>
                 <textarea id={`${promptId}-other`} className="ib-dm-ta" rows={2} value={other} onChange={(event) => setOther(event.target.value)} autoFocus />
-                <button type="button" className="ib-btn ib-pri ib-sm" data-decision-other-answer="" disabled={!other.trim()} onClick={() => props.onAnswer(otherAnswer(q, other, note))}>
+                <button type="button" className="ib-btn ib-pri ib-sm" data-decision-other-answer="" disabled={!other.trim()} onClick={() => request(otherAnswer(q, other, note))}>
                   Answer
                 </button>
               </div>

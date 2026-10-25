@@ -433,10 +433,32 @@ export function answerWords(answer: QuestionAnswer | null): string {
   return words.length > 120 ? `${words.slice(0, 119)}…` : words;
 }
 
-/** The two-way choice a swipe answers: a single question with exactly two choices (brief §3: touch only, two-way only). */
+/**
+ * The two-way choice a swipe answers: a single question with exactly two choices (brief §3: touch only,
+ * two-way only), never a picture choice and never one marked `Reversible: no` (brief §11 question 4).
+ */
 export function swipeChoices(question: InboxQuestion): [string, string] | null {
   if (readInboxQuestionKind(question.kind) !== 'single' || question.choices.length !== 2) return null;
+  if (question.reversible || question.choices.some((choice) => choice.image)) return null;
   return [question.choices[0]!.label, question.choices[1]!.label];
+}
+
+/**
+ * Whether an answer to a `Reversible: no` question asks once more before it counts (approval
+ * "inbox-decision-mode", agent contract lines; contract-compare.html, pair 2): every answer that chooses
+ * something (a pick, Other, text), the recommended one included, since the grammar does not say which
+ * choice is the one that cannot be undone and an agent may recommend it. Never a Skip (nothing is chosen),
+ * nor a note alone. False on a reversible question.
+ */
+export function answerNeedsConfirm(question: InboxQuestion, answer: QuestionAnswer): boolean {
+  if (!question.reversible || answer.skipped) return false;
+  return answer.selected.length > 0 || !!answer.other?.trim() || !!answer.text?.trim();
+}
+
+/** The confirm button's words: the answer, cut at about 40 characters (its accessible name keeps it whole). */
+export const CONFIRM_LABEL_CHARS = 40;
+export function confirmLabel(words: string): string {
+  return words.length > CONFIRM_LABEL_CHARS ? `${words.slice(0, CONFIRM_LABEL_CHARS - 1).trimEnd()}…` : words;
 }
 
 /** The head's line: "5 of 16 · 6 agents waiting". */
