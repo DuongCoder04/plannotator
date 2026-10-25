@@ -11,7 +11,7 @@ import { execFileSync, spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "no
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { GH_TRIPWIRE_BIN, GH_TRIPWIRE_CONFIG_DIR, takeGhTripwireCalls } from "./setup/gh-tripwire";
+import { GH_FAKE_TOKEN, GH_TRIPWIRE_BIN, GH_TRIPWIRE_CONFIG_DIR, takeGhTripwireCalls } from "./setup/gh-tripwire";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const posix = process.platform !== "win32";
@@ -76,13 +76,16 @@ describe("gh's config and tokens", () => {
     expect(readdirSync(GH_TRIPWIRE_CONFIG_DIR)).toEqual([]);
   });
 
-  test("no token variable reaches this process or a child spawned without env", () => {
-    for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) {
-      expect(process.env[name]).toBeUndefined();
-    }
+  test("only the fake token reaches this process or a child spawned without env", () => {
+    // GH_TOKEN / GH_ENTERPRISE_TOKEN hold a fake, so gh never falls back to the
+    // keyring; GITHUB_TOKEN / GITHUB_ENTERPRISE_TOKEN are unset.
+    expect(process.env.GH_TOKEN).toBe(GH_FAKE_TOKEN);
+    expect(process.env.GH_ENTERPRISE_TOKEN).toBe(GH_FAKE_TOKEN);
+    expect(process.env.GITHUB_TOKEN).toBeUndefined();
+    expect(process.env.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
     if (!posix) return;
-    const out = Bun.spawnSync(["sh", "-c", 'echo "${GH_TOKEN-unset} ${GITHUB_TOKEN-unset} ${GH_ENTERPRISE_TOKEN-unset} ${GITHUB_ENTERPRISE_TOKEN-unset} $GH_CONFIG_DIR"']);
-    expect(out.stdout.toString().trim()).toBe(`unset unset unset unset ${GH_TRIPWIRE_CONFIG_DIR}`);
+    const out = Bun.spawnSync(["sh", "-c", 'echo "${GH_TOKEN-unset} ${GH_ENTERPRISE_TOKEN-unset} ${GITHUB_TOKEN-unset} ${GITHUB_ENTERPRISE_TOKEN-unset} $GH_CONFIG_DIR"']);
+    expect(out.stdout.toString().trim()).toBe(`${GH_FAKE_TOKEN} ${GH_FAKE_TOKEN} unset unset ${GH_TRIPWIRE_CONFIG_DIR}`);
   });
 });
 
