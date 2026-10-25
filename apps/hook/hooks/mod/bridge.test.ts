@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createPullSessionBridge, type PullSessionBridge } from '../../../../packages/ai/session-bridge-pull.ts'
-import { createBridge, TAKEN_OVER_INTERRUPT_TEXT, takenOverFallback } from './bridge'
+import { createBridge, OTHER_PLUGIN_INTERRUPT_TEXT, TAKEN_OVER_INTERRUPT_TEXT, takenOverFallback } from './bridge'
 import { fakeHost, type FakeHost } from './testing/fake-host'
 import { TAKEN_OVER_BY_PERSON_TEXT, TurnTracker } from './turns'
 
@@ -112,6 +112,28 @@ describe('Ask this session over the pull bridge', () => {
     await until(() => server!.bridge.status() === 'busy')
     await server.bridge.interrupt?.()
     expect(host.aborted).toEqual(['user-turn'])
+
+    live = false
+    server.dispose()
+    await running
+  })
+
+  // The failure this guards: "Interrupt and ask now" aborted a turn another
+  // plugin's prompt started, cutting off the answer that plugin waits for.
+  test("an interrupt never aborts a turn another plugin's prompt started", async () => {
+    live = true
+    server = createPullSessionBridge({ token: TOKEN, host: 'claude-code', modes: { turn: true, transient: false } })
+    const host = fakeHost()
+    wire(host, server)
+    const turns = new TurnTracker()
+    turns.onPromptEntered({ text: 'Review PR 12.', fromUs: false, originKind: 'plugin' })
+    turns.onTurnStart('plugin-turn', 'The workspaces plugin sent a message: Review PR 12.')
+    const client = createBridge({ host, baseUrl: 'http://127.0.0.1:4321', token: TOKEN, turns, isLive: () => live })
+    const running = client.run()
+
+    await until(() => server!.bridge.status() === 'busy')
+    await expect(server.bridge.interrupt!()).rejects.toThrow(OTHER_PLUGIN_INTERRUPT_TEXT)
+    expect(host.aborted).toEqual([])
 
     live = false
     server.dispose()
