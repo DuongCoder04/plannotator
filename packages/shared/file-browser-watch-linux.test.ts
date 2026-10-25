@@ -212,6 +212,27 @@ describe.skipIf(!onLinux)("per-directory watcher on real Linux inotify", () => {
 		}
 	});
 
+	test("folders the cap skipped that are later deleted never hold back a real folder", async () => {
+		const world = setup({ maxDirectoryWatches: 3 });
+		try {
+			mkdirSync(join(world.root, "a", "x"), { recursive: true });
+			mkdirSync(join(world.root, "b", "y"), { recursive: true });
+			mkdirSync(join(world.root, "c"));
+			world.subscribe();
+			await world.settled();
+			expect(world.registry.diagnostics().watchedDirectories).toEqual([world.root, join(world.root, "a"), join(world.root, "b")]);
+			// c was skipped by the cap; it goes away, then b frees a watch.
+			rmSync(join(world.root, "c"), { recursive: true });
+			await world.settled();
+			rmSync(join(world.root, "b"), { recursive: true });
+			await waitFor(() => world.registry.diagnostics().watchedDirectories.includes(join(world.root, "a", "x")));
+			await world.settled();
+			expect(world.registry.diagnostics().watchedDirectories).toEqual([world.root, join(world.root, "a"), join(world.root, "a", "x")]);
+		} finally {
+			world.cleanup();
+		}
+	});
+
 	test.skipIf(isRoot)("an unreadable folder is skipped and the rest keeps refreshing", async () => {
 		const world = setup();
 		const locked = join(world.root, "volume");

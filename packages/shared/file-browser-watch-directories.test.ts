@@ -437,6 +437,58 @@ describe("per-directory watcher (Linux backend)", () => {
 		}
 	});
 
+	test("skipped folders that are deleted or moved away are forgotten, so freed slots go to real folders", async () => {
+		const world = new FakeWorld();
+		world.mkdir("/repo/a");
+		world.mkdir("/repo/a/x");
+		world.mkdir("/repo/b");
+		world.mkdir("/repo/b/y");
+		world.mkdir("/repo/c");
+		world.mkdir("/repo/d");
+		const { registry, subscribe, settled } = setup(world, { maxDirectoryWatches: 3 });
+		try {
+			subscribe();
+			await settled();
+			expect(world.liveWatches()).toEqual([ROOT, "/repo/a", "/repo/b"]);
+			// c and d were skipped; c is deleted, d moved out of the tree.
+			world.remove("/repo/c");
+			world.emit(ROOT, "rename", "c");
+			world.remove("/repo/d");
+			world.emit(ROOT, "rename", "d");
+			await settled();
+			// Removing b frees one watch and forgets b/y with it.
+			world.remove("/repo/b");
+			world.emit(ROOT, "rename", "b");
+			await waitFor(() => world.liveWatches().includes("/repo/a/x"));
+			await settled();
+			expect(world.liveWatches()).toEqual([ROOT, "/repo/a", "/repo/a/x"]);
+		} finally {
+			registry.closeAll();
+		}
+	});
+
+	test("a root that can be watched but not listed says so once", async () => {
+		const world = new FakeWorld();
+		const readdir = world.fs.readdir;
+		world.fs.readdir = async (path) => {
+			if (path === ROOT) throw codeError("EACCES");
+			return readdir(path);
+		};
+		const { registry, logs, subscribe, settled } = setup(world);
+		try {
+			subscribe();
+			await settled();
+			for (let i = 0; i < 3; i += 1) {
+				world.emit(ROOT, "rename", `f${i}.md`);
+				await settled();
+			}
+			expect(logs.filter((line) => line.includes("cannot list it"))).toHaveLength(1);
+			expect(registry.diagnostics().failedEntries).toBe(0);
+		} finally {
+			registry.closeAll();
+		}
+	});
+
 	test("a burst of new files queues one re-list, not a scan per file", async () => {
 		const world = new FakeWorld();
 		world.mkdir("/repo/docs");

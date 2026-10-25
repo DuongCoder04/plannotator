@@ -122,6 +122,7 @@ interface DirectoryTree {
 	unreadable: Set<string>;
 	unreadableLogged: boolean;
 	rootLogged: boolean;
+	rootListLogged: boolean;
 	/** Directories whose watch errored at runtime; never re-watched. */
 	broken: Set<string>;
 	brokenLogged: boolean;
@@ -406,7 +407,16 @@ export function createFileBrowserWatchRegistry<S>(
 			}
 			if (closeWatch(tree, current)) released += 1;
 		}
+		// Skipped folders at or below a removed folder are gone with it.
+		dropCapSkipped(tree, (skipped) => isWithin(skipped, path));
 		if (released > 0 && freed) scheduleCapRetry();
+	}
+
+	function dropCapSkipped(tree: DirectoryTree, matches: (path: string) => boolean): void {
+		if (tree.capSkipped.size === 0) return;
+		for (const skipped of [...tree.capSkipped]) {
+			if (matches(skipped)) tree.capSkipped.delete(skipped);
+		}
 	}
 
 	function closeDirectoryTree(tree: DirectoryTree): void {
@@ -634,7 +644,18 @@ export function createFileBrowserWatchRegistry<S>(
 		} finally {
 			tree.scanning = false;
 		}
-		if (isCurrent(entry)) reportSkipped(tree);
+		if (!isCurrent(entry)) return;
+		reportSkipped(tree);
+		// Slots are still free and folders are still waiting (a retry spent a
+		// slot on a folder that was gone): try again. Never while the system
+		// itself refuses watches, which would only loop.
+		if (
+			tree.capSkipped.size > 0 &&
+			!tree.systemLimitLogged &&
+			directoryWatcherCount < maxDirectoryWatches()
+		) {
+			scheduleCapRetry();
+		}
 	}
 
 	/**
@@ -707,7 +728,10 @@ export function createFileBrowserWatchRegistry<S>(
 				if (isGone(error)) {
 					removeTree(tree, directory);
 				} else if (isRoot) {
-					log(`Live refresh for ${tree.root}: cannot list it, so only its own entries refresh.`, error);
+					if (!tree.rootListLogged) {
+						tree.rootListLogged = true;
+						log(`Live refresh for ${tree.root}: cannot list it, so only its own entries refresh.`, error);
+					}
 				} else if (isUnreadable(error)) {
 					tree.unreadable.add(directory);
 				} else {
@@ -724,6 +748,8 @@ export function createFileBrowserWatchRegistry<S>(
 				if (entry.target.ignored?.(childPath)) continue;
 				childDirectories.add(childPath);
 			}
+			// Skipped folders that are no longer here (deleted or moved away).
+			dropCapSkipped(tree, (skipped) => dirname(skipped) === directory && !childDirectories.has(skipped));
 			// Folders that went away (or became ignored) since the last scan.
 			for (const watched of [...(tree.children.get(directory) ?? [])]) {
 				if (!childDirectories.has(watched)) removeTree(tree, watched);
@@ -760,6 +786,7 @@ export function createFileBrowserWatchRegistry<S>(
 			unreadable: new Set(),
 			unreadableLogged: false,
 			rootLogged: false,
+			rootListLogged: false,
 			broken: new Set(),
 			brokenLogged: false,
 		};
