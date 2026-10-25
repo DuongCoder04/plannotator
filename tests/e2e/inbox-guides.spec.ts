@@ -638,5 +638,9 @@ test('Split | Unified sits in a tab on the first section card only, switches eve
 });
 
 test('no page errors and no CSP refusals along the way', async () => {
-  expect(world.errors).toEqual([]);
+  // FIXTURE_PATCH_TS_JSON's first hunk declares 4/6 lines and carries 3/5.
+  // It shipped that way and fixtures are never edited; @pierre/diffs 1.5
+  // repairs such a hunk and says so with console.error, which is expected here.
+  const miscountedFixtureHunk = 'parsePatchContent: hunk line count mismatch: "@@ -1,4 +1,6 @@", declared old/new 4/6, parsed old/new 3/5';
+  expect(world.errors.filter((e) => e !== miscountedFixtureHunk)).toEqual([]);
 });
