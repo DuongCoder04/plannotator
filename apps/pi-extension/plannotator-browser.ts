@@ -533,8 +533,15 @@ async function createCodeReviewBrowserSession(
 		const cliName = getCliName(prRef);
 		const cliUrl = getCliInstallUrl(prRef);
 
+		// For a GitHub PR the active gh account can't see, another signed-in
+		// account that can is used for this review only (#2157): its gh calls
+		// go through the provider's per-repo override, and the checkout's
+		// clone and fork fetch below get its token as well.
+		let ghAccountEnv: Record<string, string> | undefined;
 		try {
-			await checkPRAuth(prRef);
+			const access = await checkPRAuth(prRef);
+			if (access.notice) ctx.ui.notify(access.notice, "info");
+			ghAccountEnv = access.childEnv;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			// REST-only platforms (Bitbucket) have no CLI to be missing; their auth
@@ -574,7 +581,7 @@ async function createCodeReviewBrowserSession(
 				// A fork URL fetch must never stop to prompt for credentials.
 				const fetchHead = async (args: string[], cwd: string) => {
 					if (!headFetch.remote) return reviewRuntime.runGit(args, { cwd });
-					const r = spawnSync("git", args, { cwd, encoding: "utf-8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+					const r = spawnSync("git", args, { cwd, encoding: "utf-8", env: { ...process.env, ...ghAccountEnv, GIT_TERMINAL_PROMPT: "0" } });
 					return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.status ?? 1 };
 				};
 
@@ -640,7 +647,7 @@ async function createCodeReviewBrowserSession(
 					// gh/glab repo clone doesn't accept --hostname, so the clone
 					// command carries GH_HOST/GITLAB_HOST env overrides instead.
 					const cloneCommand = getPRCloneCommand(prMetadata, localPath);
-					const cloneEnv = cloneCommand.env ? { ...process.env, ...cloneCommand.env } : undefined;
+					const cloneEnv = cloneCommand.env || ghAccountEnv ? { ...process.env, ...ghAccountEnv, ...cloneCommand.env } : undefined;
 					const [cloneCmd, ...cloneArgs] = cloneCommand.argv;
 
 					setCodeReviewProgress(ctx, `Cloning ${prRepo}...`);

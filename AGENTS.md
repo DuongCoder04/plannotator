@@ -1577,6 +1577,32 @@ guide format names only github/gitlab, so a Bitbucket guide omits `source.pr.pla
 (anonymized) API responses and a fake API server live in `tests/test-fixtures/bitbucket/`;
 `scripts/bitbucket-live-smoke.sh` runs the real flow against a throwaway repo.
 
+**Which gh account a GitHub PR review runs as (#2157).** `gh` can hold several accounts per host and
+uses the active one. GitHub's `checkAuth` (`ensureGhPRAccess`, `packages/shared/pr-github-account.ts`,
+vendored to Pi) checks, before the review opens, that the active account can read the PR
+(`gh api repos/O/R/pulls/N`; when that is refused but the repository is readable, the number is
+wrong and the fetch reports it as before; network and rate-limit failures give no verdict). Refused:
+every other account `gh auth status` lists for the host (`--json hosts`, else the text) is tried with
+its token (`gh auth token --hostname H --user L`) as GH_TOKEN (GH_ENTERPRISE_TOKEN off github.com and
+`*.ghe.com`); the first that can read it is used for THIS review only. `gh auth switch` is never run
+and gh's settings never change. None can: the review does not open (the CLI exits 1, like other
+startup failures) and the error names the active account, the others it tried, and
+`gh auth switch -u <user>` (plus a note when GH_TOKEN is the active source). The choice is an
+in-memory override keyed by host/owner/repo: the dispatch functions in `pr-provider.ts` run that
+repo's `gh` calls through `ghScopedRuntime`, which passes the token as `CommandOptions.env` (a new
+optional argument both runtimes add to the process env for that one child), and PR artifact
+downloads send it. `checkAuth` answers `PRAuthResult { notice, childEnv }`: the Bun CLI prints the
+notice on stderr ("Using gh account X for this review: …") and puts `childEnv` in its own
+`process.env` (one review per process), so `gh repo clone`, git through gh's credential helper and
+agent jobs use it too; Pi notifies it and gives it to its clone and fork fetch only (its other git
+fetches, and agent jobs in Pi and OpenCode's embedded review, keep the person's own environment);
+OpenCode logs it. A token is never printed, logged or put in an error. Tests: `pr-github-account.test.ts`,
+`packages/server/pr-gh-account.test.ts`, `apps/pi-extension/server/pr-gh-account.test.ts` and
+`apps/hook/server/review-gh-account-cli.test.ts`, against a fake `gh` (`tests/helpers/fake-gh.ts`) that
+the runtime under test finds first on the PATH it STARTED with (`Bun.spawn` looks a command up
+through the PATH the process started with, not a later `process.env.PATH`, so a runtime test runs in
+a child process, `tests/helpers/gh-account-runtime-probe.ts`).
+
 Interaction-model changes worth knowing (F8 and siblings): the agent-mode `Approve` primary
 follows the `FeedbackButton` responsive pattern and is **icon-only below the `lg` breakpoint**,
 where the old `ApproveButton` showed a compact `OK` label — the `title` carries the accessible

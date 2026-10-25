@@ -121,7 +121,7 @@ import { annotateBundleRoot } from "@plannotator/shared/annotate-bundle";
 import { stripAtPrefix } from "@plannotator/shared/at-reference";
 import { plannotatorBundleSubject } from "@plannotator/shared/plannotator-tool";
 import { createWorktreePool, type WorktreePool, type PoolEntry } from "@plannotator/shared/worktree-pool";
-import { parsePRUrl, checkPRAuth, fetchPR, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
+import { parsePRUrl, checkPRAuth, fetchPR, type PRAuthResult, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { announceTailscaleSession, enableTailscaleServe } from "@plannotator/server/tailscale-serve";
 import { discardEnvPullSessionBridgeConfig, takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
@@ -603,6 +603,17 @@ if (helpSubcommand) {
 exitOnUnknownSubcommand(args);
 
 // Read a caller-supplied unified diff for static patch mode (`--patch-file`).
+/**
+ * The active gh account could not see the PR and another signed-in account
+ * can (#2157): say which one on stderr, and give this run's children (gh,
+ * `gh repo clone`, git through gh's credential helper, agent jobs) its token.
+ * This process only; gh's own setting is never changed.
+ */
+function useGhAccountForThisRun(access: PRAuthResult): void {
+  if (access.notice) console.error(access.notice);
+  if (access.childEnv) Object.assign(process.env, access.childEnv);
+}
+
 // "-" means stdin; file paths resolve against the given cwd. A read failure
 // is a startup failure: exit 1 like every other review startup failure.
 async function readStaticPatch(patchFile: string, cwd: string): Promise<{ rawPatch: string; gitRef: string }> {
@@ -1108,7 +1119,7 @@ if (args[0] === "sessions") {
     const cliUrl = getCliInstallUrl(prRef);
 
     try {
-      await checkPRAuth(prRef);
+      useGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // REST-only platforms (Bitbucket) have no CLI to be missing; their auth
@@ -2247,7 +2258,7 @@ if (args[0] === "sessions") {
     console.error(`Fetching ${getMRLabel(prRef)} ${getMRNumberLabel(prRef)} from ${getDisplayRepo(prRef)}...`);
 
     try {
-      await checkPRAuth(prRef);
+      useGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const cliName = getCliName(prRef);
       console.error(err instanceof Error ? err.message : `${cliName} auth check failed`);
