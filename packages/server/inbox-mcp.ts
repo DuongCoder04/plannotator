@@ -225,6 +225,14 @@ export interface InboxMcpContext {
    * project for a path.
    */
   findProjects?: (path: string) => Promise<{ projects: InboxProject[]; unresolved: boolean }>;
+  /**
+   * Whether the Inbox itself knows the sender's session is woken by the
+   * person's reply, whatever its own connection said: a Claude Code, Pi or
+   * OpenCode session whose bridge polls now (the stdio shim run inside it
+   * sends as that session, and the connection delivers the reply).
+   * Absent: only a caller's own connection wakes it (`callerWakes`).
+   */
+  sessionWakes?: (host: unknown, session: unknown) => Promise<boolean>;
 }
 
 
@@ -239,9 +247,24 @@ export function callerWakes(ctx: unknown): boolean {
   return meta?.[INBOX_WAKES_META_KEY] === true;
 }
 
+/**
+ * Whether a sender's session is woken by the person's reply: its own
+ * connection says so (`callerWakes`), or the Inbox knows that session is
+ * woken (`sessionWakes`: its bridge polls now).
+ */
+export async function senderWakes(context: Pick<InboxMcpContext, "sessionWakes">, ctx: unknown, input: { agent_host?: string; agent_session?: string }): Promise<boolean> {
+  if (callerWakes(ctx)) return true;
+  if (!context.sessionWakes) return false;
+  return context.sessionWakes(input.agent_host?.trim(), input.agent_session?.trim()).catch(() => false);
+}
+
 /** The send tools' last sentence for a caller whose reply arrives by itself. */
 export const INBOX_REPLY_ARRIVES_TEXT =
   "The person's reply arrives in this session by itself, as a new message once the session is idle: end your turn, or go on with other work; do not call wait_for_reply.";
+
+/** The same place for a sender nothing wakes (an MCP client, OpenCode 1, an older connection, a session whose bridge does not poll): it has to ask. */
+export const INBOX_REPLY_WAITS_TEXT =
+  "The person's reply won't arrive in this session by itself: call wait_for_reply with this thread_id for the answer, or go on and read_thread later.";
 
 
 function threadUrl(base: string, threadId: string): string {
@@ -907,7 +930,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     async (input, ctx) =>
       guarded(async () => {
         const project = await sendProject(context, input);
-        const sent = await sendAgentMessage(context, project, input, undefined, callerWakes(ctx));
+        const wakes = await senderWakes(context, ctx, input);
+        const sent = await sendAgentMessage(context, project, input, undefined, wakes);
         const asked =
           (sent.questions > 0 ? ` asking ${sent.questions} question${sent.questions === 1 ? "" : "s"}` : "") +
           (sent.attachments > 0 ? ` with ${sent.attachments} attachment${sent.attachments === 1 ? "" : "s"}` : "") +
@@ -915,7 +939,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           supersededWords(sent.structured.superseded as string[]) +
           (sent.done > 0 ? `, marking ${sent.done} action item${sent.done === 1 ? "" : "s"} done` : "");
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${callerWakes(ctx) ? INBOX_REPLY_ARRIVES_TEXT : "Call wait_for_reply with this thread_id for the answer, or go on and read_thread later."}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}`,
+          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}`,
           sent.structured,
         );
       }),

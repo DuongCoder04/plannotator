@@ -2,6 +2,7 @@
  * Cross-platform browser opening utility
  */
 
+import { childPath } from "@plannotator/shared/child-env";
 import { $ } from "bun";
 import { spawn } from "node:child_process";
 import os from "node:os";
@@ -168,7 +169,7 @@ function buildGlimpseHtml(url: string): string {
 }
 
 async function openGlimpse(url: string): Promise<boolean> {
-  const glimpseCli = Bun.which("glimpseui");
+  const glimpseCli = Bun.which("glimpseui", { PATH: childPath() });
   if (!glimpseCli) return false;
 
   const args = [
@@ -188,7 +189,7 @@ async function openGlimpse(url: string): Promise<boolean> {
   let command = glimpseCli;
   let spawnArgs = args;
   if (process.platform === "win32" && !/\.exe$/i.test(glimpseCli)) {
-    const node = Bun.which("node");
+    const node = Bun.which("node", { PATH: childPath() });
     const entry = path.join(
       path.dirname(glimpseCli),
       "node_modules",

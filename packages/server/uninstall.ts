@@ -6,6 +6,7 @@
  * data. Purge removes the known Plannotator data inventory while preserving
  * unknown top-level entries rather than guessing that custom files are ours.
  */
+import { childPath } from "@plannotator/shared/child-env";
 import {
   existsSync,
   lstatSync,
@@ -338,7 +339,7 @@ export function createDefaultUninstallEnvironment(): UninstallEnvironment {
     dataDir: getPlannotatorDataDir(),
     execPath: process.execPath,
     env,
-    which: (command) => Bun.which(command),
+    which: (command) => Bun.which(command, { PATH: childPath() }),
     runCommand: defaultRunCommand,
     scheduleWindowsSelfDelete: defaultScheduleWindowsSelfDelete,
   };
@@ -2478,7 +2479,7 @@ async function defaultScheduleWindowsSelfDelete(
   target: string,
   parent: string | null,
 ): Promise<boolean> {
-  const powershell = Bun.which("powershell.exe") || Bun.which("pwsh.exe");
+  const powershell = Bun.which("powershell.exe", { PATH: childPath() }) || Bun.which("pwsh.exe", { PATH: childPath() });
   if (!powershell) return false;
 
   try {

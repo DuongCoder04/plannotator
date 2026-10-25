@@ -1,3 +1,4 @@
+import { childPath } from "@plannotator/shared/child-env";
 import {
   createAIEndpoints,
   createPullSessionBridge,
@@ -149,7 +150,7 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
   const registerSdkProviders = async (registry: ProviderRegistry): Promise<void> => {
     try {
       await import("@plannotator/ai/providers/claude-agent-sdk");
-      const claudePath = Bun.which("claude");
+      const claudePath = Bun.which("claude", { PATH: childPath() });
       const provider = await createProvider({
         type: "claude-agent-sdk",
         cwd,
@@ -165,7 +166,7 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
 
     try {
       await import("@plannotator/ai/providers/codex-app-server");
-      const codexPath = Bun.which("codex");
+      const codexPath = Bun.which("codex", { PATH: childPath() });
       if (codexPath) {
         const provider = await createProvider({
           type: "codex-sdk",
@@ -181,7 +182,7 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
 
     try {
       await import("@plannotator/ai/providers/pi-sdk");
-      const rawPiPath = Bun.which("pi");
+      const rawPiPath = Bun.which("pi", { PATH: childPath() });
       if (rawPiPath) {
         const piPath = resolveWindowsCommandShim(rawPiPath);
         const provider = await createProvider({
@@ -203,7 +204,7 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
 
     try {
       await import("@plannotator/ai/providers/opencode-sdk");
-      const opencodePath = Bun.which("opencode");
+      const opencodePath = Bun.which("opencode", { PATH: childPath() });
       if (opencodePath) {
         const provider = await createProvider({
           type: "opencode-sdk",
