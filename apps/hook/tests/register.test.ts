@@ -142,6 +142,59 @@ describe('register', () => {
     expect([...w.files.keys()].filter((path) => path.includes('/plan-approvals/'))).toEqual([])
   })
 
+  // #2159: the mod's classic.PermissionRequest hook is matched on
+  // ExitPlanMode, so the approved call still gets its allow from the mod...
+  test('approved: the permission prompt of the approved ExitPlanMode is answered by the mod', async ($: any, on: any) => {
+    const w = world(on)
+    const plan = '# Plan\n\n1. Ship.\n'
+    let bottomRan = false
+    on('classic.PermissionRequest', () => {
+      bottomRan = true
+      return {}
+    })
+    let permission: any
+    // The permission prompt Claude Code raises once the call reaches it,
+    // raised through the test's engine (the outer `$`).
+    on('tool.call', async (_: any, e: any) => {
+      permission = await $.classic.PermissionRequest({ tool_name: 'ExitPlanMode', tool_use_id: e.tool_use_id, tool_input: { plan } })
+      return { result: 'ExitPlanMode ran' }
+    })
+    await $.session.start(SESSION)
+    await $.tool.call({ tool: 'ExitPlanMode', plan })
+    const dir = w.runs.find((argv) => argv[3] === 'plannotator-launch')?.[4]
+    w.files.set(
+      `${dir}/result.json`,
+      JSON.stringify({ v: 1, surface: 'plan', decision: 'approved', message: 'Plan approved.', noop: false, approvedPlan: plan, permissionMode: 'acceptEdits' }),
+    )
+    await w.clock.advance(1_000)
+
+    const answer = await $.tool.call({ tool: 'ExitPlanMode', plan })
+
+    expect(answer.result).toBe('ExitPlanMode ran')
+    expect(bottomRan).toBe(false)
+    expect(permission?.decision?.behavior).toBe('allow')
+    expect(permission?.decision?.updatedInput?.plan).toBe(plan)
+    expect(permission?.decision?.updatedPermissions).toEqual([{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }])
+  })
+
+  // ...while another tool's permission prompt is left to the hooks beneath.
+  test("another tool's permission prompt goes past the mod untouched", async ($: any, on: any) => {
+    world(on)
+    const seen: any[] = []
+    on('classic.PermissionRequest', ($: any, e: any) => {
+      seen.push(e)
+      return { decision: { behavior: 'deny', message: 'beneath' } }
+    })
+    await $.session.start(SESSION)
+
+    const answer = await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'ls' } })
+
+    expect(answer.decision).toEqual({ behavior: 'deny', message: 'beneath' })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].tool_name).toBe('Bash')
+    expect(seen[0].tool_input).toEqual({ command: 'ls' })
+  })
+
   test('the decision arrives later as a plugin turn', async ($: any, on: any) => {
     const w = world(on)
     await $.session.start(SESSION)
@@ -477,7 +530,7 @@ describe('register', () => {
     expect(w.tools.map((t) => t.name)).toEqual(['plannotator_inbox', 'plannotator'])
     const registered = w.tools.find((t) => t.name === 'plannotator_inbox')
     // Every action a real Inbox offers, in the contract's order (INBOX_TOOL_ACTIONS).
-    expect(registered?.inputSchema.properties.action.enum).toEqual(['send_message', 'read_thread', 'wait_for_reply', 'resolve_message', 'submit_guide', 'get_guide_brief'])
+    expect(registered?.inputSchema.properties.action.enum).toEqual(['send_message', 'read_thread', 'search', 'wait_for_reply', 'resolve_message', 'submit_guide', 'get_guide_brief'])
     expect(calls).toEqual([])
     expect([...w.files.keys()].filter((path) => path.includes('/inbox'))).toEqual([])
     expect(w.runs.filter((argv) => argv.includes('inbox'))).toEqual([])
