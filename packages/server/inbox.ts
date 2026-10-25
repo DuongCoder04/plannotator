@@ -173,6 +173,9 @@ import {
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
 
+/** The hosts whose own connection polls the bridge and wakes its session with the reply. */
+const BRIDGE_WAKING_HOSTS: ReadonlySet<string> = new Set(["claude-code", "pi", "opencode"]);
+
 /** Where a request came in: the window's loopback port, or the tailnet-only listener `tailscale serve` points at. */
 type RequestVia = "local" | "tailnet";
 
@@ -765,6 +768,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
+        // A Claude Code, Pi or OpenCode session whose bridge polls now is woken by the reply, whoever sent for it
+        // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID).
+        sessionWakes: async (host, session) =>
+          typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
