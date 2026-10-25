@@ -16,6 +16,7 @@ import type {
   PRReviewSubmissionResult,
   PRStackTree,
   PRListItem,
+  PRAuthResult,
 } from "@plannotator/shared/pr-types";
 import {
   parsePRUrl as parsePRUrlCore,
@@ -43,15 +44,17 @@ import {
   fetchPRList as fetchPRListCore,
 } from "@plannotator/shared/pr-provider";
 
-export type { PRRef, PRMetadata, PRContext, PRReviewFileComment, PRReviewFileLevelComment, PRReviewSubmissionResult, PRStackTree, PRListItem } from "@plannotator/shared/pr-types";
+export type { PRAuthResult, PRRef, PRMetadata, PRContext, PRReviewFileComment, PRReviewFileLevelComment, PRReviewSubmissionResult, PRStackTree, PRListItem } from "@plannotator/shared/pr-types";
 export { prRefFromMetadata, isSameProject, getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo, getCliName, getCliInstallUrl, getPRNumber, getPRPlatformCapabilities, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/shared/pr-types";
 export type { GithubPRMetadata } from "@plannotator/shared/pr-types";
 
 const runtime: PRRuntime = {
-  async runCommand(cmd, args) {
+  async runCommand(cmd, args, options) {
     const proc = Bun.spawn([cmd, ...args], {
       stdout: "pipe",
       stderr: "pipe",
+      // Added to (never replacing) the environment: another gh account's token (#2157).
+      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
     });
 
     const [stdout, stderr, exitCode] = await Promise.all([
@@ -63,11 +66,12 @@ const runtime: PRRuntime = {
     return { stdout, stderr, exitCode };
   },
 
-  async runCommandWithInput(cmd, args, input) {
+  async runCommandWithInput(cmd, args, input, options) {
     const proc = Bun.spawn([cmd, ...args], {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "pipe",
+      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
     });
 
     proc.stdin.write(input);
@@ -90,7 +94,12 @@ export const parsePRUrl = parsePRUrlCore;
 export const parseFileLevelComments = parseFileLevelCommentsCore;
 export const parsePRReviewAction = parsePRReviewActionCore;
 
-export function checkPRAuth(ref: PRRef): Promise<void> {
+/**
+ * Fails when the review cannot start. For a GitHub PR the active gh account
+ * cannot see, answers the other signed-in account it will use (`notice`) and
+ * that account's token for this run's children (`childEnv`, never print it).
+ */
+export function checkPRAuth(ref: PRRef): Promise<PRAuthResult> {
   return checkAuthCore(runtime, ref);
 }
 
