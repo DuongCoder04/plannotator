@@ -154,6 +154,39 @@ describe("ensureGhPRAccess", () => {
     expect(error?.message).toContain("GH_TOKEN is set, and gh uses it before any signed-in account");
   });
 
+  test("an invalid GH_TOKEN: the notice says GitHub rejected it and names the account used instead", async () => {
+    for (const jsonStatus of [true, false]) {
+      const runtime = fakeRuntime({ ...twoAccounts(["tobey-work"]), rejectEnvToken: true, jsonStatus });
+      const withBadToken: PRRuntime = {
+        runCommand: (cmd, args, options) =>
+          runtime.runCommand(cmd, args, { ...options, env: { GH_TOKEN: "ghp_rejected0000", ...options?.env } }),
+      };
+      const access = await ensureGhPRAccess(withBadToken, REF);
+      expect(access.login).toBe("tobey-work");
+      expect(access.notice).toBe(
+        "GitHub rejected the token in GH_TOKEN (invalid or expired), so this review uses your signed-in gh account tobey-work instead. " +
+          "Fix or unset GH_TOKEN to stop seeing this. Your gh setting is unchanged.",
+      );
+      expect(access.notice).not.toContain("can't see");
+      expect(access.notice).not.toContain(PERSONAL.token);
+      fake!.cleanup();
+      clearGhAccountOverrides();
+    }
+  });
+
+  test("an invalid GH_TOKEN and no account sees it: the error leads with the rejected token", async () => {
+    const runtime = fakeRuntime({ ...twoAccounts([]), rejectEnvToken: true });
+    const withBadToken: PRRuntime = {
+      runCommand: (cmd, args, options) =>
+        runtime.runCommand(cmd, args, { ...options, env: { GH_TOKEN: "ghp_rejected0000", ...options?.env } }),
+    };
+    const error = await ensureGhPRAccess(withBadToken, REF).then(() => null, (e: Error) => e);
+    expect(error?.message.split("\n")[0]).toBe(
+      "GitHub rejected the token in GH_TOKEN (invalid or expired), so it can't see acme/widgets (pull request #7).",
+    );
+    expect(error?.message).toContain("GH_TOKEN is set, and gh uses it before any signed-in account");
+  });
+
   test("the active account sees it again later: the earlier choice is forgotten", async () => {
     const runtime = fakeRuntime(twoAccounts(["tobey-work"]));
     await ensureGhPRAccess(runtime, REF);
@@ -279,6 +312,35 @@ describe("gh auth status parsing", () => {
     ]);
     expect(parseGhAuthStatusText("github.com\n  ✓ Logged in to github.com as old (oauth_token)\n", "github.com")).toEqual([
       { login: "old", active: true, state: "success", tokenSource: "oauth_token" },
+    ]);
+  });
+
+  test("a rejected env token has no login and is kept, in JSON and text", () => {
+    const json = JSON.stringify({
+      hosts: {
+        "github.com": [
+          { state: "error", active: true, host: "github.com", login: "", tokenSource: "GH_TOKEN" },
+          { state: "success", active: false, host: "github.com", login: "a", tokenSource: "keyring" },
+          { state: "error", active: false, host: "github.com", login: "", tokenSource: "keyring" },
+        ],
+      },
+    });
+    expect(parseGhAuthStatusJson(json, "github.com")).toEqual([
+      { login: "", active: true, state: "error", tokenSource: "GH_TOKEN" },
+      { login: "a", active: false, state: "success", tokenSource: "keyring" },
+    ]);
+    const text = [
+      "github.com",
+      "  X Failed to log in to github.com using token (GH_TOKEN)",
+      "  - Active account: true",
+      "  - The token in GH_TOKEN is invalid.",
+      "",
+      "  ✓ Logged in to github.com account a (keyring)",
+      "  - Active account: false",
+    ].join("\n");
+    expect(parseGhAuthStatusText(text, "github.com")).toEqual([
+      { login: "", active: true, state: "error", tokenSource: "GH_TOKEN" },
+      { login: "a", active: false, state: "success", tokenSource: "keyring" },
     ]);
   });
 

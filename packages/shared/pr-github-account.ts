@@ -128,6 +128,8 @@ function hostnameArgs(host: string, args: string[]): string[] {
 // CSI and OSC escape sequences (colors, hyperlinks).
 const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 
+const ENV_TOKEN_SOURCES = new Set(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]);
+
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
@@ -152,7 +154,9 @@ export function parseGhAuthStatusJson(stdout: string, host: string): GhAccount[]
       state: str(a.state) || "success",
       tokenSource: str(a.tokenSource),
     }))
-    .filter((a) => a.login !== "");
+    // A token from the environment that GitHub refused has no login, and it is
+    // still the source gh uses: keep it, so the notice can name it.
+    .filter((a) => a.login !== "" || ENV_TOKEN_SOURCES.has(a.tokenSource));
 }
 
 /**
@@ -164,7 +168,9 @@ export function parseGhAuthStatusJson(stdout: string, host: string): GhAccount[]
  *     X Failed to log in to github.com account work (keyring)
  *
  * and the single-account form before multi-account gh (v2.40.0): `Logged in to github.com as
- * octocat (oauth_token)`. Color codes, should gh print any, are stripped first.
+ * octocat (oauth_token)`. A token from the environment that GitHub refused has no account:
+ * `X Failed to log in to github.com using token (GH_TOKEN)`, read as an entry with no login.
+ * Color codes, should gh print any, are stripped first.
  */
 export function parseGhAuthStatusText(text: string, host: string): GhAccount[] {
   text = text.replace(ANSI_PATTERN, "");
@@ -174,6 +180,14 @@ export function parseGhAuthStatusText(text: string, host: string): GhAccount[] {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     const m = /^(\S+)\s+(Logged in to|Failed to log in to)\s+(\S+)\s+(account|as)\s+(\S+)(?:\s+\(([^)]*)\))?/.exec(line);
+    const refused = m ? null : /^\S+\s+Failed to log in to\s+(\S+)\s+using token\s+\(([^)]*)\)/.exec(line);
+    if (refused) {
+      current = null;
+      if (refused[1].toLowerCase() !== h) continue;
+      current = { login: "", active: false, state: "error", tokenSource: refused[2] };
+      accounts.push(current);
+      continue;
+    }
     if (m) {
       current = null;
       if (m[3].toLowerCase() !== h) continue;
@@ -263,8 +277,6 @@ async function ghTokenOf(runtime: PRRuntime, host: string, login: string): Promi
   }
 }
 
-const ENV_TOKEN_SOURCES = new Set(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]);
-
 /**
  * Check that the gh account in use can see the PR; when it cannot, pick
  * another signed-in account that can for this review, or throw a clear error.
@@ -307,6 +319,20 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
     const verdict = await ghCanSeePR(runtime, ref, env);
     if (verdict === "yes") {
       overrides.set(key, { login: account.login, envVar, token });
+      if (active && ENV_TOKEN_SOURCES.has(active.tokenSource)) {
+        // gh uses a token from the environment before any signed-in account,
+        // so name that token plainly: it is what the person has to fix.
+        const why = active.state !== "success"
+          ? `GitHub rejected the token in ${active.tokenSource} (invalid or expired)`
+          : `the token in ${active.tokenSource}${active.login ? ` (account ${active.login})` : ""} can't see ${repo}`;
+        return {
+          login: account.login,
+          childEnv: env,
+          notice:
+            `${why}, so this review uses your signed-in gh account ${account.login} instead. ` +
+            `Fix or unset ${active.tokenSource} to stop seeing this. Your gh setting is unchanged.`,
+        };
+      }
       const was = !active
         ? `the account in use can't see ${repo}`
         : active.state === "success"
@@ -326,6 +352,10 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
   const lines: string[] = [];
   if (!active) {
     lines.push(`The gh account in use can't see ${repo} (pull request #${ref.number}).`);
+  } else if (ENV_TOKEN_SOURCES.has(active.tokenSource) && active.state !== "success") {
+    lines.push(
+      `GitHub rejected the token in ${active.tokenSource} (invalid or expired), so it can't see ${repo} (pull request #${ref.number}).`,
+    );
   } else if (active.state !== "success") {
     lines.push(
       `Your active gh account ${active.login} isn't signed in properly (run \`gh auth status\`) and can't see ${repo} (pull request #${ref.number}).`,
