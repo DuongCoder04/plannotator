@@ -116,9 +116,16 @@ function recordNotifications(): void {
   window.Notification = Recorded as typeof Notification;
 }
 
-async function open(browser: Browser, w: World, errors: string[], options: Parameters<Browser['newContext']>[0] = {}): Promise<{ context: BrowserContext; page: Page }> {
+async function open(
+  browser: Browser,
+  w: World,
+  errors: string[],
+  options: Parameters<Browser['newContext']>[0] = {},
+  init?: () => void,
+): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: DESKTOP, colorScheme: 'light', ...options });
   await context.addInitScript(recordNotifications);
+  if (init) await context.addInitScript(init);
   const page = await context.newPage();
   // PLANNOTATOR_E2E_CPU_THROTTLE=6: a slow CI runner on a fast laptop (Chromium only).
   const throttle = Number(process.env.PLANNOTATOR_E2E_CPU_THROTTLE ?? '');
@@ -632,11 +639,9 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
   const first = await agentWrites(w, 'A first real message.', 'First one');
   const errors: string[] = [];
   // The browser blocked notifications for this address: step 6 offers How to allow.
-  const { context, page } = await open(browser, w, errors);
-  await context.addInitScript(() => {
+  const { context, page } = await open(browser, w, errors, {}, () => {
     if (window.Notification) Object.defineProperty(window.Notification, 'permission', { get: () => 'denied' });
   });
-  await page.reload();
   const fromSettings = async () => {
     await page.goto(`${w.url}#settings/general`);
     await page.locator('[data-settings-take-tour]').click();
@@ -658,6 +663,13 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await expect(page).not.toHaveURL(/#tour/);
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   };
+  // The page's own way back (Settings' ← Inbox, What's new's ‹ Inbox) never leads into the tour either.
+  const inAppBack = async (selector: string) => {
+    await page.locator(selector).click();
+    await page.waitForTimeout(400);
+    await expect(page).not.toHaveURL(/#tour/);
+    await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  };
   const finishedAt = () => config(w).inboxTour?.finished_at ?? null;
 
   // How to allow: Settings → General, recorded as finished; Back never reopens the tour.
@@ -669,6 +681,7 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
   await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await expect.poll(finishedAt).not.toBe(before);
   await focusKept(page);
+  await inAppBack('[data-settings-back]');
   await neverTheTour();
 
   // Step 6's real sidebar: its Inbox row and its Settings row end the tour (finished) in the tour's own entry.
@@ -680,8 +693,26 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
     await expect(page).not.toHaveURL(/#tour/);
     await expect.poll(finishedAt).not.toBe(was);
+    if (row.includes('setrow')) {
+      await expect(page).toHaveURL(/#settings/);
+      await inAppBack('[data-settings-back]');
+    }
     await neverTheTour();
   }
+
+  // What's new opened from step 6 (here by its address; the sidebar's link shows only after an update):
+  // its ‹ Inbox goes to the screen before the tour, never back to step 6.
+  await fromSettings();
+  await toStep6();
+  await page.evaluate(() => {
+    location.hash = '#whats-new=0.0.1';
+  });
+  await expect(page.locator('[data-whats-new-back]')).toBeVisible();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await inAppBack('[data-whats-new-back]');
+  // That release has no notes on this computer: its notes request answers 404, which is expected here.
+  const notesMissing = 'Failed to load resource: the server responded with a status of 404 (Not Found)';
+  if (errors.at(-1) === notesMissing) errors.pop();
 
   // A reload forgets where the tour started: Exit goes to the Inbox, in the tour's own entry.
   await fromSettings();

@@ -1159,12 +1159,14 @@ function Inbox() {
 
   // "← Inbox" returns to where the person was before Settings: the last hash that was not a Settings page,
   // so moving between sections never changes where Back goes (Workspaces' BackLink).
+  // The tour is never a place to come back to (every way out of it replaces its entry), so a tour step
+  // is never recorded here or in whatsNewReturn: both keep the screen from before the tour.
   const settingsReturn = useRef('');
-  if (route.page !== 'settings') settingsReturn.current = hashOf(route);
+  if (route.page !== 'settings' && route.page !== 'tour') settingsReturn.current = hashOf(route);
   // What's new's "‹ Inbox" returns to the last Inbox screen (not Settings, not another What's new page):
   // the browser's Back when the page was opened from there (history.ts), a new entry otherwise.
   const whatsNewReturn = useRef('');
-  if (route.page !== 'settings' && route.page !== 'whats-new') whatsNewReturn.current = hashOf(route);
+  if (route.page !== 'settings' && route.page !== 'whats-new' && route.page !== 'tour') whatsNewReturn.current = hashOf(route);
 
   // Settings is a focused page (design of record inbox-settings-tabs): the sidebar slides away while it
   // is open and comes back on leaving, without writing the person's stored choice. ⌘B there opens it
