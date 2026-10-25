@@ -17,7 +17,11 @@ export const name = "plannotator";
 export function apply(ctx: DshContext, config?: unknown): void {
   const resolved = resolveConfig(config);
   if (!resolved.planReview) return;
+  // Unloading the plugin closes a review that is still open: Cordis removes
+  // the listener but does not abort a waterfall that is already running.
+  const unload = new AbortController();
+  ctx.effect?.(() => () => unload.abort(new Error("@plannotator/dsh was unloaded")));
   // Prepended: DSH's own Web answerer registers per client stream, and
   // listeners run in registration order.
-  ctx.on("user-questions/request", createPlanReviewListener(ctx, resolved), { prepend: true });
+  ctx.on("user-questions/request", createPlanReviewListener(ctx, resolved, { unloadSignal: unload.signal }), { prepend: true });
 }

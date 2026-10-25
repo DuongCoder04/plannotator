@@ -54,6 +54,7 @@ function fakeContext(workingDirectory?: string) {
   const warnings: string[] = [];
   let listener: ((request: DshQuestionRequest, next: () => Promise<DshAnswer>) => Promise<DshAnswer>) | undefined;
   let prepended = false;
+  const disposers: (() => void)[] = [];
   const ctx: DshContext = {
     on: (_event, fn, options) => {
       listener = fn;
@@ -61,6 +62,7 @@ function fakeContext(workingDirectory?: string) {
       return () => true;
     },
     get: (name) => (name === "workingDirectory" && workingDirectory ? { get: () => workingDirectory } : undefined),
+    effect: (execute) => void disposers.push(execute()),
     logger: { warn: (format) => void warnings.push(format), info: () => {} },
   };
   return {
@@ -68,6 +70,10 @@ function fakeContext(workingDirectory?: string) {
     warnings,
     get prepended() {
       return prepended;
+    },
+    /** What Cordis does when the plugin unloads: run the effect disposers. */
+    unload() {
+      for (const dispose of disposers.splice(0).reverse()) dispose();
     },
     listen(request: DshQuestionRequest, next: () => Promise<DshAnswer> = async () => NATIVE) {
       if (!listener) throw new Error("apply() registered no listener");
@@ -199,6 +205,27 @@ describe("plan-review listener", () => {
     await expect(pending).rejects.toBe(reason);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
     expect(nextCalled).toBe(false);
+  });
+
+  // Catches: disabling the plugin mid-review leaving the CLI and its server
+  // running with nobody to answer, and the plan stuck without a review.
+  posixOnly("unloading the plugin stops an open review and hands it back to DSH", async () => {
+    const { binary, dir } = stubCli('echo $$ > "$(dirname "$0")/pid"; exec sleep 30');
+    const fake = fakeContext();
+    apply(fake.ctx, { binary });
+    const pending = fake.listen(planReviewRequest().request);
+
+    const pidFile = join(dir, "pid");
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(pidFile) || !readFileSync(pidFile, "utf8").trim()) {
+      if (Date.now() > deadline) throw new Error("stub CLI never started");
+      await Bun.sleep(20);
+    }
+    const startedAt = Date.now();
+    fake.unload();
+
+    expect(await pending).toBe(NATIVE);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
   test("planReview: false registers nothing", () => {

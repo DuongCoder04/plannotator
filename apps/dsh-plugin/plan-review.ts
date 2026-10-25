@@ -64,6 +64,8 @@ export interface DshContext {
     options?: { prepend?: boolean },
   ): unknown;
   get?(name: string): unknown;
+  /** Runs `execute` now; the disposer it returns runs when the plugin unloads. */
+  effect?(execute: () => () => void): unknown;
   logger?: DshLogger;
 }
 
@@ -75,6 +77,13 @@ export interface ResolvedConfig {
 export interface PlanReviewDeps {
   resolveBinary?: (configured?: string) => string | undefined;
   run?: typeof runDshPlan;
+  /** Aborted when the plugin unloads; an open review then goes back to DSH. */
+  unloadSignal?: AbortSignal;
+}
+
+function anySignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  return present.length > 1 ? AbortSignal.any(present) : present[0];
 }
 
 /** The single plan-review question of a request, or undefined for anything else. */
@@ -146,7 +155,7 @@ export function createPlanReviewListener(ctx: DshContext, config: ResolvedConfig
         binary,
         plan: question.detail,
         cwd: sessionCwd(ctx, request.agent),
-        signal: request.signal,
+        signal: anySignal(request.signal, deps.unloadSignal),
         // Remote sessions open no browser: the URL the CLI prints is the way in.
         onStderr: (chunk) => {
           for (const line of chunk.split(/\r?\n/)) {
