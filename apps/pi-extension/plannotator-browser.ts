@@ -30,6 +30,7 @@ import type { AnnotateBundleFile } from "./generated/annotate-bundle.ts";
 import { openBrowser, isRemoteSession } from "./server/network.ts";
 import { detectProjectName } from "./server/project.ts";
 import { parsePRUrl, checkPRAuth, fetchPR } from "./server/pr.ts";
+import { reviewRuntimeWithEnv } from "./server/vcs.ts";
 import {
 	getMRLabel,
 	getMRNumberLabel,
@@ -568,6 +569,8 @@ async function createCodeReviewBrowserSession(
 			let sessionDir: string | undefined;
 			try {
 				const repoDir = options.cwd ?? ctx.cwd;
+				// This PR's checkout fetches run as the gh account chosen for it (#2157).
+				const checkoutRuntime = ghAccountEnv ? reviewRuntimeWithEnv(ghAccountEnv) : reviewRuntime;
 				const identifier = `${getDisplayRepo(prMetadata).replace(/\//g, "-")}-${getPRNumber(prMetadata)}`;
 				const suffix = Math.random().toString(36).slice(2, 8);
 				const prNumber = getPRNumber(prMetadata);
@@ -580,7 +583,7 @@ async function createCodeReviewBrowserSession(
 				const headRemote = headFetch.remote ?? "origin";
 				// A fork URL fetch must never stop to prompt for credentials.
 				const fetchHead = async (args: string[], cwd: string) => {
-					if (!headFetch.remote) return reviewRuntime.runGit(args, { cwd });
+					if (!headFetch.remote) return checkoutRuntime.runGit(args, { cwd });
 					const r = spawnSync("git", args, { cwd, encoding: "utf-8", env: { ...process.env, ...ghAccountEnv, GIT_TERMINAL_PROMPT: "0" } });
 					return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.status ?? 1 };
 				};
@@ -592,7 +595,7 @@ async function createCodeReviewBrowserSession(
 				// Detect same-repo vs cross-repo (must match both owner/repo AND host)
 				let isSameRepo = false;
 				try {
-					const remoteResult = await reviewRuntime.runGit(["remote", "get-url", "origin"], { cwd: repoDir });
+					const remoteResult = await checkoutRuntime.runGit(["remote", "get-url", "origin"], { cwd: repoDir });
 					if (remoteResult.exitCode === 0) {
 						const remoteUrl = remoteResult.stdout.trim();
 						const currentRepo = parseRemoteUrl(remoteUrl);
@@ -609,16 +612,16 @@ async function createCodeReviewBrowserSession(
 				if (isSameRepo) {
 					// ── Same-repo: fast worktree path ──
 					setCodeReviewProgress(ctx, `Preparing local ${getMRLabel(prRef)} checkout...`);
-					await fetchRef(reviewRuntime, prMetadata.baseBranch, { cwd: repoDir });
-					await ensureObjectAvailable(reviewRuntime, prMetadata.baseSha, { cwd: repoDir });
+					await fetchRef(checkoutRuntime, prMetadata.baseBranch, { cwd: repoDir });
+					await ensureObjectAvailable(checkoutRuntime, prMetadata.baseSha, { cwd: repoDir });
 					if (headFetch.remote) {
 						const res = await fetchHead(["fetch", headRemote, "--", fetchRefStr], repoDir);
 						if (res.exitCode !== 0) throw new Error(`git fetch ${headRemote} ${fetchRefStr} failed: ${res.stderr.trim()}`);
 					} else {
-						await fetchRef(reviewRuntime, fetchRefStr, { cwd: repoDir });
+						await fetchRef(checkoutRuntime, fetchRefStr, { cwd: repoDir });
 					}
 
-					await createWorktree(reviewRuntime, {
+					await createWorktree(checkoutRuntime, {
 						ref: "FETCH_HEAD",
 						path: localPath,
 						detach: true,
@@ -660,18 +663,18 @@ async function createCodeReviewBrowserSession(
 					const fetchResult = await fetchHead(["fetch", "--depth=200", headRemote, fetchRefStr], localPath);
 					if (fetchResult.exitCode !== 0) throw new Error(`Failed to fetch PR head ref: ${fetchResult.stderr.trim()}`);
 
-					const checkoutResult = await reviewRuntime.runGit(["checkout", "FETCH_HEAD"], { cwd: localPath });
+					const checkoutResult = await checkoutRuntime.runGit(["checkout", "FETCH_HEAD"], { cwd: localPath });
 					if (checkoutResult.exitCode !== 0) {
 						throw new Error(`git checkout FETCH_HEAD failed: ${checkoutResult.stderr.trim()}`);
 					}
 
 					// Best-effort: create base refs so agent diffs work
-					const baseFetch = await reviewRuntime.runGit(["fetch", "--depth=200", "origin", prMetadata.baseSha], { cwd: localPath });
+					const baseFetch = await checkoutRuntime.runGit(["fetch", "--depth=200", "origin", prMetadata.baseSha], { cwd: localPath });
 					if (baseFetch.exitCode !== 0) {
 						ctx.ui.notify("Failed to fetch the PR base commit; agent diffs may be inaccurate.", "warning");
 					}
-					await reviewRuntime.runGit(["branch", "--", prMetadata.baseBranch, prMetadata.baseSha], { cwd: localPath });
-					await reviewRuntime.runGit(["update-ref", `refs/remotes/origin/${prMetadata.baseBranch}`, prMetadata.baseSha], { cwd: localPath });
+					await checkoutRuntime.runGit(["branch", "--", prMetadata.baseBranch, prMetadata.baseSha], { cwd: localPath });
+					await checkoutRuntime.runGit(["update-ref", `refs/remotes/origin/${prMetadata.baseBranch}`, prMetadata.baseSha], { cwd: localPath });
 
 					exitHandler = () => {
 						if (sessionDir) try { rmSync(sessionDir, { recursive: true, force: true }); } catch {}

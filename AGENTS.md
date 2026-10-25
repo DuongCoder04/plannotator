@@ -1578,30 +1578,40 @@ guide format names only github/gitlab, so a Bitbucket guide omits `source.pr.pla
 `scripts/bitbucket-live-smoke.sh` runs the real flow against a throwaway repo.
 
 **Which gh account a GitHub PR review runs as (#2157).** `gh` can hold several accounts per host and
-uses the active one. GitHub's `checkAuth` (`ensureGhPRAccess`, `packages/shared/pr-github-account.ts`,
+uses the active one. GitHub's `checkAuth` first asks only that gh is signed in (`checkGhAuth`:
+`gh auth status --active --hostname H`; when that fails, an older gh or a broken active login, it
+goes on as long as some account on the host is usable, because plain `gh auth status` exits 1 when
+ANY account on the host is broken). Then `ensureGhPRAccess` (`packages/shared/pr-github-account.ts`,
 vendored to Pi) checks, before the review opens, that the active account can read the PR
 (`gh api repos/O/R/pulls/N`; when that is refused but the repository is readable, the number is
 wrong and the fetch reports it as before; network and rate-limit failures give no verdict). Refused:
-every other account `gh auth status` lists for the host (`--json hosts`, else the text) is tried with
-its token (`gh auth token --hostname H --user L`) as GH_TOKEN (GH_ENTERPRISE_TOKEN off github.com and
-`*.ghe.com`); the first that can read it is used for THIS review only. `gh auth switch` is never run
-and gh's settings never change. None can: the review does not open (the CLI exits 1, like other
-startup failures) and the error names the active account, the others it tried, and
-`gh auth switch -u <user>` (plus a note when GH_TOKEN is the active source). The choice is an
-in-memory override keyed by host/owner/repo: the dispatch functions in `pr-provider.ts` run that
-repo's `gh` calls through `ghScopedRuntime`, which passes the token as `CommandOptions.env` (a new
-optional argument both runtimes add to the process env for that one child), and PR artifact
-downloads send it. `checkAuth` answers `PRAuthResult { notice, childEnv }`: the Bun CLI prints the
-notice on stderr ("Using gh account X for this review: …") and puts `childEnv` in its own
-`process.env` (one review per process), so `gh repo clone`, git through gh's credential helper and
-agent jobs use it too; Pi notifies it and gives it to its clone and fork fetch only (its other git
-fetches, and agent jobs in Pi and OpenCode's embedded review, keep the person's own environment);
-OpenCode logs it. A token is never printed, logged or put in an error. Tests: `pr-github-account.test.ts`,
+every other account `gh auth status` lists for the host (`--json hosts` from gh v2.81.0, else the
+text with NO_COLOR=1 and ANSI stripped) is tried with its token (`gh auth token --hostname H --user L`,
+gh v2.40.0+) as GH_TOKEN (GH_ENTERPRISE_TOKEN off github.com and `*.ghe.com`); the first that can read
+it is used for THIS review only. `gh auth switch` is never run and gh's settings never change. None
+can: the review does not open (the CLI exits 1, like other startup failures) and the error names the
+active account, the accounts that can't see it, an account that reads the repo but not the PR ("the
+PR number may be wrong"), the accounts with no verdict (broken login, no token, offline, rate limit:
+"Couldn't check", with `gh auth switch -u <that one>`), else `gh auth login` / `gh auth switch -u
+<user>`, plus a note when GH_TOKEN is the active source. The choice is an in-memory override keyed
+by host/owner/repo, and the token goes ONLY where that PR needs it: the dispatch functions in
+`pr-provider.ts` run that repo's `gh` calls through `ghScopedRuntime`, which passes it as
+`CommandOptions.env` (an optional argument both runtimes add to the process env for that one child),
+so a `/api/pr-switch` to another repo runs as the active account; PR artifact downloads send it;
+agent jobs get it from their launch PR (`ghAccountEnvForPRUrl` in both runtimes' `agent-jobs.ts`).
+`checkAuth` answers `PRAuthResult { notice, childEnv }`: the Bun CLI prints the notice on stderr
+("Using gh account X for this review: …") and adds `childEnv` to this PR's checkout steps only (the
+clone, git fetches and worktree add of `--local`); it never goes in `process.env`, so the browser
+opener, the update wrapper, Ask AI providers and other children never see it. Pi notifies it and runs
+its checkout (clone, fork fetch, and every git step through `reviewRuntimeWithEnv`) with it; OpenCode
+logs it. A token is never printed, logged or put in an error. Tests: `pr-github-account.test.ts`,
 `packages/server/pr-gh-account.test.ts`, `apps/pi-extension/server/pr-gh-account.test.ts` and
-`apps/hook/server/review-gh-account-cli.test.ts`, against a fake `gh` (`tests/helpers/fake-gh.ts`) that
-the runtime under test finds first on the PATH it STARTED with (`Bun.spawn` looks a command up
-through the PATH the process started with, not a later `process.env.PATH`, so a runtime test runs in
-a child process, `tests/helpers/gh-account-runtime-probe.ts`).
+`apps/hook/server/review-gh-account-cli.test.ts` (including `--local`, through a git wrapper that logs
+which account's token each git call got), against a fake `gh` (`tests/helpers/fake-gh.ts`, which
+asserts `Bun.which("gh", { PATH })` finds it) first on the PATH the code under test STARTED with:
+`Bun.spawn` without an explicit env looks a command up through the PATH the process started with, not
+a later `process.env.PATH`, so a runtime test runs in a child process
+(`tests/helpers/gh-account-runtime-probe.ts`).
 
 Interaction-model changes worth knowing (F8 and siblings): the agent-mode `Approve` primary
 follows the `FeedbackButton` responsive pattern and is **icon-only below the `lg` breakpoint**,

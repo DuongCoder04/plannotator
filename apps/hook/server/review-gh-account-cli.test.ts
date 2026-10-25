@@ -5,7 +5,7 @@
  * its config and the network are never reached.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAKE_PATCH, makeFakeGh, type FakeGh } from "../../../tests/helpers/fake-gh";
@@ -35,13 +35,33 @@ afterEach(async () => {
   workDir = undefined;
 });
 
-function startReview(readers: string[]): { readyFile: string; stderr: () => string } {
+/** A local repository holding refs/pull/7/head, for the fake `gh repo clone`. Real git, no user config. */
+function makeCloneSource(dir: string): string {
+  const git = Bun.which("git");
+  if (!git) throw new Error("git is needed for the --local test");
+  const env = { PATH: "/usr/bin:/bin", HOME: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const run = (...args: string[]) => {
+    const r = Bun.spawnSync([git, "-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: src, env });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  };
+  const src = join(dir, "source");
+  mkdirSync(src);
+  run("init", "-q", "-b", "main");
+  writeFileSync(join(src, "app.ts"), "new\n");
+  run("add", "app.ts");
+  run("commit", "-q", "-m", "pr head");
+  run("update-ref", "refs/pull/7/head", "HEAD");
+  return src;
+}
+
+function startReview(readers: string[], local = false): { readyFile: string; stderr: () => string } {
   stubs = stubHookDistHtml();
+  workDir = mkdtempSync(join(tmpdir(), "plannotator-gh-account-cli-"));
   fake = makeFakeGh({
     accounts: [{ login: "tobey", token: "gho_personalTOKENcli0001", active: true }, { login: "tobey-work", token: WORK_TOKEN }],
     repos: { "acme/widgets": { readers, prs: [7] } },
+    ...(local ? { wrapGit: true, cloneSource: makeCloneSource(workDir) } : {}),
   });
-  workDir = mkdtempSync(join(tmpdir(), "plannotator-gh-account-cli-"));
   const readyFile = join(workDir, "ready.json");
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -55,7 +75,7 @@ function startReview(readers: string[]): { readyFile: string; stderr: () => stri
     PLANNOTATOR_AI: "disabled",
   };
   for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"]) delete env[k];
-  proc = Bun.spawn([process.execPath, cliEntry, "review", URL, "--no-local"], {
+  proc = Bun.spawn([process.execPath, cliEntry, "review", URL, ...(local ? [] : ["--no-local"])], {
     cwd: workDir,
     env,
     stdout: "pipe",
@@ -114,4 +134,25 @@ describe("plannotator review <GitHub PR> with two gh accounts", () => {
     try { await fetch(`${base}/api/exit`, { method: "POST" }); } catch { /* already gone */ }
     await Promise.race([proc!.exited, Bun.sleep(5_000)]);
   }, 40_000);
+
+  test("--local: the clone and this PR's git fetches run as the work account, other git calls don't", async () => {
+    const run = startReview(["tobey-work"], true);
+    const base = await waitForReady(run.readyFile, run.stderr);
+    for (let i = 0; i < 300 && !/Local checkout (ready|failed)|Warning: local checkout/i.test(run.stderr()); i++) await Bun.sleep(100);
+    expect(run.stderr()).toContain("Local checkout ready at");
+    expect(run.stderr()).not.toContain(WORK_TOKEN);
+
+    const calls = fake!.calls();
+    const clone = calls.filter((c) => !c.git && c.args[0] === "repo" && c.args[1] === "clone");
+    expect(clone).toHaveLength(1);
+    expect(clone[0].as).toBe("tobey-work");
+    const fetches = calls.filter((c) => c.git && c.args.includes("fetch"));
+    expect(fetches.length).toBeGreaterThan(0);
+    expect(fetches.every((c) => c.as === "tobey-work")).toBe(true);
+    // The token is not in the CLI's own environment: its other git calls run without it.
+    expect(calls.some((c) => c.git && !c.args.includes("fetch") && c.as === null)).toBe(true);
+
+    try { await fetch(`${base}/api/exit`, { method: "POST" }); } catch { /* already gone */ }
+    await Promise.race([proc!.exited, Bun.sleep(5_000)]);
+  }, 60_000);
 });

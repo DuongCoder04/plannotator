@@ -10,6 +10,7 @@ import {
   clearGhAccountOverrides,
   ensureGhPRAccess,
   ghAccountEnvFor,
+  ghAccountEnvForPRUrl,
   ghTokenEnvVar,
   parseGhAuthStatusJson,
   parseGhAuthStatusText,
@@ -163,6 +164,26 @@ describe("ensureGhPRAccess", () => {
     expect(ghAccountEnvFor(REF)).toBeUndefined();
   });
 
+  test("an account with no verdict (offline for it) is listed under Couldn't check, not can't see", async () => {
+    const third = { login: "tobey-oss", token: "gho_ossTOKEN0003" };
+    const runtime = fakeRuntime({
+      accounts: [{ ...PERSONAL, active: true }, WORK, third],
+      repos: { "acme/widgets": { readers: [], prs: [7] } },
+      offlineFor: ["tobey-oss"],
+    });
+    const error = await ensureGhPRAccess(runtime, REF).then(() => null, (e: Error) => e);
+    expect(error?.message).toContain("Your other signed-in github.com accounts can't see it either: tobey-work.");
+    expect(error?.message).toContain("Couldn't check: tobey-oss. Switch with `gh auth switch -u tobey-oss` and run the review again.");
+    expect(error?.message).not.toContain("either: tobey-work, tobey-oss");
+  });
+
+  test("another account sees the repo but not the PR: the PR number may be wrong", async () => {
+    const runtime = fakeRuntime(twoAccounts(["tobey-work"]));
+    const error = await ensureGhPRAccess(runtime, { ...REF, number: 999 }).then(() => null, (e: Error) => e);
+    expect(error?.message).toContain("tobey-work can see acme/widgets but not pull request #999: the PR number may be wrong.");
+    expect(error?.message).not.toContain("can't see it either");
+  });
+
   test("a GitHub Enterprise Server host uses GH_ENTERPRISE_TOKEN", async () => {
     const ref = { ...REF, host: "git.corp.example" };
     const runtime = fakeRuntime({ ...twoAccounts(["tobey-work"]), host: "git.corp.example" });
@@ -172,7 +193,58 @@ describe("ensureGhPRAccess", () => {
   });
 });
 
+describe("the startup check depends on the active account only", () => {
+  const broken = { ...WORK, state: "error" };
+
+  test("a broken second account doesn't block a review the active account can do", async () => {
+    const runtime = fakeRuntime({ accounts: [{ ...PERSONAL, active: true }, broken], repos: { "acme/widgets": { readers: ["tobey"], prs: [7] } } });
+    expect(await checkAuth(runtime, REF)).toEqual({});
+    expect(calls()[0].args).toEqual(["auth", "status", "--active", "--hostname", "github.com"]);
+  });
+
+  test("the same on a gh without --active (the account list decides)", async () => {
+    const runtime = fakeRuntime({
+      accounts: [{ ...PERSONAL, active: true }, broken],
+      repos: { "acme/widgets": { readers: ["tobey"], prs: [7] } },
+      noActiveFlag: true,
+      jsonStatus: false,
+    });
+    expect(await checkAuth(runtime, REF)).toEqual({});
+  });
+
+  test("a broken active account, a working one that sees the PR: that one is used", async () => {
+    const runtime = fakeRuntime({ accounts: [{ ...PERSONAL, active: true, state: "error" }, WORK], repos: { "acme/widgets": { readers: ["tobey-work"], prs: [7] } } });
+    const access = await checkAuth(runtime, REF);
+    expect(access.notice).toBe(
+      "Using gh account tobey-work for this review: your active account tobey isn't signed in properly. Your gh setting is unchanged.",
+    );
+  });
+
+  test("no usable account at all: still the not-authenticated error", async () => {
+    const runtime = fakeRuntime({ accounts: [{ ...PERSONAL, active: true, state: "error" }], repos: {} });
+    await expect(checkAuth(runtime, REF)).rejects.toThrow("GitHub CLI not authenticated. Run `gh auth login` first.");
+  });
+});
+
+describe("agent jobs get the chosen token only for their own PR", () => {
+  test("ghAccountEnvForPRUrl", async () => {
+    const runtime = fakeRuntime(twoAccounts(["tobey-work"]));
+    await ensureGhPRAccess(runtime, REF);
+    expect(ghAccountEnvForPRUrl("https://github.com/acme/widgets/pull/12")).toEqual({ GH_TOKEN: WORK.token });
+    expect(ghAccountEnvForPRUrl("https://github.com/acme/other/pull/7")).toEqual({});
+    expect(ghAccountEnvForPRUrl("https://gitlab.com/acme/widgets/-/merge_requests/7")).toEqual({});
+    expect(ghAccountEnvForPRUrl(undefined)).toEqual({});
+  });
+});
+
 describe("gh auth status parsing", () => {
+  test("color codes in the text are stripped", () => {
+    const text = "github.com\n  \u001b[32m✓\u001b[0m Logged in to github.com account \u001b[1ma\u001b[0m (keyring)\n  - Active account: \u001b[1mtrue\u001b[0m\n";
+    expect(parseGhAuthStatusText(text, "github.com")).toEqual([
+      { login: "a", active: true, state: "success", tokenSource: "keyring" },
+    ]);
+  });
+
   test("JSON: every account of the host", () => {
     const json = JSON.stringify({
       hosts: {

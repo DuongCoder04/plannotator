@@ -20,6 +20,7 @@
  */
 
 import type { CommandOptions, CommandResult, PRRuntime } from "./pr-types";
+import { parsePRUrl } from "./pr-types";
 
 /** The parts of a GitHub ref this module reads (a PRRef or PR metadata). */
 export interface GhRepoRef {
@@ -76,6 +77,17 @@ export function ghAccountEnvFor(ref: GhRepoRef): Record<string, string> | undefi
   return o ? { [o.envVar]: o.token } : undefined;
 }
 
+/**
+ * The env an agent job launched for this PR runs with (`prUrl` is the job's
+ * launch PR): the chosen account's token for a GitHub PR whose repo has one,
+ * else nothing. A job for another repo's PR never gets it.
+ */
+export function ghAccountEnvForPRUrl(prUrl: string | undefined): Record<string, string> {
+  if (!prUrl) return {};
+  const ref = parsePRUrl(prUrl);
+  return ref?.platform === "github" ? ghAccountEnvFor(ref) ?? {} : {};
+}
+
 /** The token chosen for this repo (artifact downloads send it as a header), else undefined. */
 export function ghAccountTokenFor(ref: GhRepoRef): string | undefined {
   return overrides.get(repoKey(ref))?.token;
@@ -113,11 +125,14 @@ function hostnameArgs(host: string, args: string[]): string[] {
 
 // --- gh auth status ---
 
+// CSI and OSC escape sequences (colors, hyperlinks).
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
-/** `gh auth status --json hosts` (gh 2.70+). Null when the output is not that JSON. */
+/** `gh auth status --json hosts` (gh v2.81.0+). Null when the output is not that JSON. */
 export function parseGhAuthStatusJson(stdout: string, host: string): GhAccount[] | null {
   let parsed: unknown;
   try {
@@ -148,9 +163,11 @@ export function parseGhAuthStatusJson(stdout: string, host: string): GhAccount[]
  *     - Active account: true
  *     X Failed to log in to github.com account work (keyring)
  *
- * and the single-account form before gh 2.40 (`Logged in to github.com as octocat (oauth_token)`).
+ * and the single-account form before multi-account gh (v2.40.0): `Logged in to github.com as
+ * octocat (oauth_token)`. Color codes, should gh print any, are stripped first.
  */
 export function parseGhAuthStatusText(text: string, host: string): GhAccount[] {
+  text = text.replace(ANSI_PATTERN, "");
   const accounts: GhAccount[] = [];
   const h = host.toLowerCase();
   let current: GhAccount | null = null;
@@ -184,8 +201,9 @@ export async function listGhAccounts(runtime: PRRuntime, host: string): Promise<
       const accounts = parseGhAuthStatusJson(json.stdout, host);
       if (accounts) return accounts;
     }
-    // An older gh refuses --json; read the text, which goes to stdout or stderr by version.
-    const text = await runtime.runCommand("gh", ["auth", "status", "--hostname", host]);
+    // A gh before v2.81.0 refuses --json; read the text (stdout or stderr by
+    // version) with color off.
+    const text = await runtime.runCommand("gh", ["auth", "status", "--hostname", host], { env: { NO_COLOR: "1" } });
     return parseGhAuthStatusText(`${text.stdout}\n${text.stderr}`, host);
   } catch {
     return [];
@@ -221,11 +239,12 @@ export async function ghCanSeePR(
   }
 }
 
-async function ghCanSeeRepo(runtime: PRRuntime, ref: GhRepoRef): Promise<GhSeesPR> {
+async function ghCanSeeRepo(runtime: PRRuntime, ref: GhRepoRef, env?: Record<string, string>): Promise<GhSeesPR> {
   try {
     const result = await runtime.runCommand(
       "gh",
       hostnameArgs(ref.host, ["api", `repos/${ref.owner}/${ref.repo}`, "--jq", ".full_name"]),
+      env ? { env } : undefined,
     );
     return result.exitCode === 0 ? "yes" : refusal(result);
   } catch {
@@ -268,6 +287,11 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
   const repo = `${ref.owner}/${ref.repo}`;
   const envVar = ghTokenEnvVar(ref.host);
 
+  // What each other account answered: it can't read the repo, it reads the
+  // repo but not the PR, or there was no verdict (a broken login, no token
+  // from gh, the network, a rate limit).
+  const cantSee: string[] = [];
+  const repoOnly: string[] = [];
   const unchecked: string[] = [];
   for (const account of others) {
     if (account.state !== "success") {
@@ -279,32 +303,48 @@ export async function ensureGhPRAccess(runtime: PRRuntime, ref: GhPRAccessRef): 
       unchecked.push(account.login);
       continue;
     }
-    if ((await ghCanSeePR(runtime, ref, { [envVar]: token })) === "yes") {
+    const env = { [envVar]: token };
+    const verdict = await ghCanSeePR(runtime, ref, env);
+    if (verdict === "yes") {
       overrides.set(key, { login: account.login, envVar, token });
-      const was = active ? `your active account ${active.login}` : "your active account";
+      const was = !active
+        ? `the account in use can't see ${repo}`
+        : active.state === "success"
+          ? `your active account ${active.login} can't see ${repo}`
+          : `your active account ${active.login} isn't signed in properly`;
       return {
         login: account.login,
-        childEnv: { [envVar]: token },
-        notice:
-          `Using gh account ${account.login} for this review: ${was} can't see ${repo}. ` +
-          `Your gh setting is unchanged.`,
+        childEnv: env,
+        notice: `Using gh account ${account.login} for this review: ${was}. Your gh setting is unchanged.`,
       };
     }
+    if (verdict === "unknown") unchecked.push(account.login);
+    else if ((await ghCanSeeRepo(runtime, ref, env)) === "yes") repoOnly.push(account.login);
+    else cantSee.push(account.login);
   }
 
   const lines: string[] = [];
-  lines.push(
-    active
-      ? `Your active gh account ${active.login} can't see ${repo} (pull request #${ref.number}).`
-      : `The gh account in use can't see ${repo} (pull request #${ref.number}).`,
-  );
-  const checked = others.map((a) => a.login).filter((l) => !unchecked.includes(l));
-  if (checked.length > 0) {
-    lines.push(`Your other signed-in ${ref.host} accounts can't see it either: ${checked.join(", ")}.`);
+  if (!active) {
+    lines.push(`The gh account in use can't see ${repo} (pull request #${ref.number}).`);
+  } else if (active.state !== "success") {
+    lines.push(
+      `Your active gh account ${active.login} isn't signed in properly (run \`gh auth status\`) and can't see ${repo} (pull request #${ref.number}).`,
+    );
+  } else {
+    lines.push(`Your active gh account ${active.login} can't see ${repo} (pull request #${ref.number}).`);
+  }
+  if (cantSee.length > 0) {
+    lines.push(`Your other signed-in ${ref.host} accounts can't see it either: ${cantSee.join(", ")}.`);
+  }
+  if (repoOnly.length > 0) {
+    lines.push(`${repoOnly.join(", ")} can see ${repo} but not pull request #${ref.number}: the PR number may be wrong.`);
   }
   if (unchecked.length > 0) {
-    lines.push(`Couldn't check: ${unchecked.join(", ")}. Switch with \`gh auth switch -u ${unchecked[0]}\` and run the review again.`);
-  } else {
+    lines.push(
+      `Couldn't check: ${unchecked.join(", ")}. ` +
+        `Switch with \`gh auth switch -u ${unchecked[0]}\` and run the review again.`,
+    );
+  } else if (repoOnly.length === 0) {
     const hostFlag = ref.host !== "github.com" ? ` --hostname ${ref.host}` : "";
     lines.push(
       `Sign in with an account that can see it (\`gh auth login${hostFlag}\`), ` +

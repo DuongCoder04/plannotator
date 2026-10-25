@@ -31,6 +31,16 @@ test("checkPRAuth picks the work account, and the runtime's later gh calls run a
   expect(calls.some((c) => c.args.slice(0, 2).join(" ") === "auth switch")).toBe(false);
 });
 
+test("the PR checkout's git runtime carries the chosen account's env to git, and only it", async () => {
+  const { reviewRuntime, reviewRuntimeWithEnv } = await import("./vcs.ts");
+  const withEnv = await reviewRuntimeWithEnv({ GIT_AUTHOR_NAME: "Chosen Account", GIT_AUTHOR_EMAIL: "chosen@example.invalid" })
+    .runGit(["var", "GIT_AUTHOR_IDENT"]);
+  expect(withEnv.exitCode).toBe(0);
+  expect(withEnv.stdout).toContain("Chosen Account <chosen@example.invalid>");
+  const plain = await reviewRuntime.runGit(["var", "GIT_AUTHOR_IDENT"]);
+  expect(plain.stdout).not.toContain("Chosen Account");
+});
+
 test("no account sees it: checkPRAuth refuses before any fetch", async () => {
   const run = await probeGhAccountRuntime("pi", []);
   fake = run.fake;

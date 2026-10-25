@@ -9,6 +9,7 @@
  * answers only what that account may read. Every call is logged (args and
  * the account it acted as, never a token) to `log`.
  */
+import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,17 +28,30 @@ export interface FakeGhScenario {
   accounts: FakeGhAccount[];
   /** `owner/repo` → the logins that can read it, and its PR numbers. */
   repos: Record<string, { readers: string[]; prs: number[] }>;
-  /** false: answer `--json` like a gh older than 2.70 (unknown flag). Default true. */
+  /** false: answer `--json` like a gh before v2.81.0 (unknown flag). Default true. */
   jsonStatus?: boolean;
   /** true: `gh auth token --user` is refused (an old gh without --user). */
   noTokenUser?: boolean;
   /** true: every `gh api` call fails as if offline. */
   offline?: boolean;
+  /** Logins whose `gh api` calls fail as if offline (no verdict). */
+  offlineFor?: string[];
+  /** true: refuse `gh auth status --active` (an older gh). */
+  noActiveFlag?: boolean;
+  /** A local git repository `gh repo clone` clones (it holds refs/pull/N/head). */
+  cloneSource?: string;
+  /** true: also put a `git` first on PATH that logs which account's token it got, then runs the real git. */
+  wrapGit?: boolean;
+  /** Set by makeFakeGh: the real git, for `repo clone` and the git wrapper. */
+  realGit?: string;
 }
 
 export interface FakeGhCall {
   args: string[];
+  /** gh: the account it acted as. git: the account whose token was in its env, or null. */
   as: string | null;
+  /** Present on a call to the git wrapper. */
+  git?: true;
 }
 
 export interface FakeGh {
@@ -58,15 +72,27 @@ export function makeFakeGh(scenario: FakeGhScenario): FakeGh {
   mkdirSync(home);
   const scenarioFile = join(root, "scenario.json");
   const log = join(root, "calls.jsonl");
-  writeFileSync(scenarioFile, JSON.stringify(scenario));
+  const realGit = Bun.which("git");
+  writeFileSync(scenarioFile, JSON.stringify({ ...scenario, ...(realGit ? { realGit } : {}) }));
   writeFileSync(log, "");
   const gh = join(binDir, "gh");
   writeFileSync(gh, `#!/bin/sh\nexec '${process.execPath}' '${import.meta.path}' "$@"\n`);
   chmodSync(gh, 0o755);
+  if (scenario.wrapGit) {
+    const git = join(binDir, "git");
+    writeFileSync(git, `#!/bin/sh\nexec '${process.execPath}' '${import.meta.path}' --fake-git "$@"\n`);
+    chmodSync(git, 0o755);
+  }
+  const PATH = `${binDir}:/usr/bin:/bin`;
+  // The command the code under test runs as `gh` must be this fake, never the real gh.
+  if (Bun.which("gh", { PATH }) !== gh) {
+    rmSync(root, { recursive: true, force: true });
+    throw new Error(`fake gh: ${gh} is not what PATH finds as gh`);
+  }
   return {
     binDir,
     env: {
-      PATH: `${binDir}:/usr/bin:/bin`,
+      PATH,
       HOME: home,
       GH_CONFIG_DIR: join(home, "gh-config"),
       XDG_CONFIG_HOME: join(home, "config"),
@@ -134,9 +160,12 @@ function runFake(args: string[]): number {
 
   const [cmd, sub] = args;
   if (cmd === "auth" && sub === "status") {
+    const onlyActive = args.includes("--active");
+    if (onlyActive && scenario.noActiveFlag) return err("unknown flag: --active\n\nUsage:  gh auth status [flags]");
+    const listed = onlyActive ? scenario.accounts.filter((a) => a.active) : scenario.accounts;
     if (args.includes("--json")) {
       if (scenario.jsonStatus === false) return err('unknown flag: --json\n\nUsage:  gh auth status [flags]');
-      const entries = scenario.accounts.map((a) => ({
+      const entries = listed.map((a) => ({
         state: a.state ?? "success",
         active: !!a.active,
         host,
@@ -150,7 +179,7 @@ function runFake(args: string[]): number {
       return 0;
     }
     const lines = [host];
-    for (const a of scenario.accounts) {
+    for (const a of listed) {
       const ok = (a.state ?? "success") === "success";
       lines.push(
         ok
@@ -162,6 +191,8 @@ function runFake(args: string[]): number {
         "",
       );
     }
+    // Like gh: any broken account listed makes the text form exit 1, on stderr.
+    if (listed.some((a) => (a.state ?? "success") !== "success")) return err(lines.join("\n"));
     out(lines.join("\n"));
     return 0;
   }
@@ -174,10 +205,11 @@ function runFake(args: string[]): number {
     return 0;
   }
   if (cmd === "auth") return err(`fake gh: unexpected auth ${sub}`);
+  if (me && (me.state ?? "success") !== "success") return err("gh: Bad credentials (HTTP 401)");
 
   const readable = (repo: string) => !!me && (scenario.repos[repo]?.readers.includes(me.login) ?? false);
   if (cmd === "api") {
-    if (scenario.offline) return err("error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com");
+    if (scenario.offline || (me && scenario.offlineFor?.includes(me.login))) return err("error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com");
     const endpoint = sub ?? "";
     if (endpoint === "user") {
       out(me?.login ?? "");
@@ -201,6 +233,15 @@ function runFake(args: string[]): number {
       return 0;
     }
     return err("gh: Not Found (HTTP 404)");
+  }
+  if (cmd === "repo" && sub === "clone") {
+    // gh repo clone OWNER/REPO DEST -- <git clone flags>
+    const [, , target, dest, , ...gitFlags] = args;
+    if (!readable(target)) return err(`GraphQL: Could not resolve to a Repository with the name '${target}'. (repository)`);
+    if (!scenario.cloneSource || !scenario.realGit) return err("fake gh: no cloneSource");
+    const r = spawnSync(scenario.realGit, ["clone", ...gitFlags.filter((f) => f !== "--depth=1"), scenario.cloneSource, dest], { encoding: "utf-8" });
+    if (r.stderr) process.stderr.write(r.stderr);
+    return r.status ?? 1;
   }
   const repo = flag(args, "--repo") ?? (cmd === "repo" ? sub : undefined);
   if (repo && !readable(repo)) return err(`GraphQL: Could not resolve to a Repository with the name '${repo}'. (repository)`);
@@ -230,4 +271,18 @@ function runFake(args: string[]): number {
   return err(`fake gh: unsupported ${args.join(" ")}`);
 }
 
-if (import.meta.main) process.exit(runFake(process.argv.slice(2)));
+/** The git wrapper: log which account's token git got (never the token), then run the real git. */
+function runFakeGit(args: string[]): number {
+  const scenario = JSON.parse(readFileSync(process.env.FAKE_GH_SCENARIO!, "utf-8")) as FakeGhScenario;
+  const host = scenario.host ?? "github.com";
+  const envToken = process.env[host === "github.com" || host.endsWith(".ghe.com") ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN"];
+  const as = envToken ? scenario.accounts.find((a) => a.token === envToken)?.login ?? "unknown token" : null;
+  appendFileSync(process.env.FAKE_GH_LOG!, `${JSON.stringify({ args, as, git: true })}\n`);
+  const r = spawnSync(scenario.realGit!, args, { stdio: "inherit" });
+  return r.status ?? 1;
+}
+
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  process.exit(argv[0] === "--fake-git" ? runFakeGit(argv.slice(1)) : runFake(argv));
+}
