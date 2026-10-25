@@ -124,6 +124,7 @@ import { createAgentEnvironmentFor } from "../../packages/server/inbox-agents";
 import { isScratchDataDir, refuseRealDataDir } from "./real-data-dir";
 import { seedTagWorld, TAG_SESSIONS } from "./inbox-tag-world";
 import { seedLeakedSubjects } from "./inbox-leaked-subject";
+import { markTourDecided } from "./tour-decided";
 
 const [dataDir, projectsDir, countArg, extra] = process.argv.slice(2);
 const withNews = extra === "news";
@@ -369,7 +370,10 @@ const SENT_MULTI = [
   ":::",
 ].join("\n");
 const worlds: World[] = [];
-const firstRunMode = extra === "first-run";
+// `first-run-tour`: a first run whose window opens on the tour's entry screen (packages/inbox/tour.test.tsx).
+const firstRunMode = extra === "first-run" || extra === "first-run-tour";
+// Every other first run opens on the connect screen, as before the tour: the tour is marked skipped.
+if (extra === "first-run") markTourDecided(dataDir);
 for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
   const root = join(projectsDir, `billing-${i}`);
   mkdirSync(root, { recursive: true });

@@ -24,6 +24,7 @@
  * desktop 1280x800 and 375x820, dark and light, at 2x. Build the binary first
  * (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  */
+import { markTourDecided } from '../helpers/tour-decided';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -101,6 +102,8 @@ test('plannotator inbox connects the agents found; the note is asked once per ag
   // The sound dialog is due (as after an update): it shows first, and the note dialog waits for another load.
   mkdirSync(join(root, 'data'), { recursive: true });
   writeFileSync(join(root, 'data', 'config.json'), JSON.stringify({ inboxSound: { dialogDueFor: '0.0.0-dev' } }));
+  // The first-run connect screen, not the tour's entry screen (inbox-tour.spec.ts proves that one).
+  markTourDecided(join(root, 'data'));
   const env = envFor(fake, root);
   const run = (args: string[]) => spawnSync(binary, ['inbox', ...args], { env, cwd: root, encoding: 'utf8', timeout: 90_000 });
   const adds = () => fake.calls().filter((c) => c.args[1] === 'add').map((c) => c.name);

@@ -21,6 +21,7 @@
  * PNGs of the proved states land in .local/proof/notifications/.
  */
 
+import { markTourDecided } from '../helpers/tour-decided';
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -207,6 +208,8 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const dataDir = join(root, 'data');
   const home = join(root, 'home');
   mkdirSync(home);
+  // The first-run screen's notifications ask, not the tour's entry screen (inbox-tour.spec.ts proves that one).
+  markTourDecided(dataDir);
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
   await context.addInitScript(recordNotifications);
   const page = await context.newPage();

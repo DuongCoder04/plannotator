@@ -17,6 +17,8 @@ import type {
   InboxQuestion,
   InboxSoundSettings,
   InboxTextSize,
+  InboxTourChange,
+  InboxTourState,
   InboxThread,
   InboxComposeProject,
   InboxDraft,
@@ -226,6 +228,8 @@ export interface SettingsModel {
   diff_style?: InboxDiffStyle | null;
   /** Experimental features, each off unless switched on (`env`: PLANNOTATOR_EXPERIMENTAL decides). Absent from an older Inbox. */
   experimental?: InboxExperimentalSettings;
+  /** The onboarding tour (config.json `inboxTour`): started, finished, skipped. Absent from an Inbox that predates it. */
+  tour?: InboxTourState;
   store: {
     dir: string;
     bytes: number;
@@ -726,6 +730,10 @@ export const inboxApi = {
   claimSoundDialog: () => post<{ show: boolean; sound: InboxSoundSettings }>('/api/inbox/sound/dialog', {}),
   /** Plannotator's appearance, written to config.json `theme` (shared with plan review). */
   saveTheme: (theme: InboxThemeConfig) => post<{ theme: InboxThemeConfig | null }>('/api/inbox/settings', { theme }),
+  /** The onboarding tour: each `true` stamps now (started, finished, skipped); `notify_again` sets the first thread's ask. */
+  saveTour: (change: InboxTourChange) => post<{ tour: InboxTourState }>('/api/inbox/settings', { tour: change }),
+  /** The tour's curated fixture (packages/inbox/tour/content/fixture.json), served from the binary on demand. */
+  tourFixture: () => get<unknown>('/api/inbox/tour/fixture.json'),
   /** The window's text size, written to config.json `inboxTextSize`. */
   saveTextSize: (textSize: InboxTextSize) => post<{ text_size: InboxTextSize }>('/api/inbox/settings', { text_size: textSize }),
   /** The diff layout, written to config.json `diffOptions.diffStyle` (shared with code review). */
