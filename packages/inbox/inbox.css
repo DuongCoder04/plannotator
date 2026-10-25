@@ -4484,12 +4484,11 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The picture (tour/Fit.tsx): sessions, arrows in, the Inbox card, and the reply arrow back. */
 .tp { display: grid; grid-template-columns: minmax(0, 1fr) 62px minmax(0, 1.05fr); align-items: center; }
 .tp-sess { display: grid; gap: 8px; }
-.tp-win { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: center; padding: 7px 9px; border-radius: 8px; background: var(--card); box-shadow: 0 0 0 1px var(--border); font: var(--ib-fs-11-5, 11.5px)/1.35 var(--font-mono, ui-monospace, monospace); color: var(--muted-foreground); min-width: 0; }
-.tp-win .ib-mk { grid-row: 1 / span 2; width: var(--ib-mark-24); height: var(--ib-mark-24); border-radius: var(--ib-mark-24-r); }
+.tp-win { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 9px 10px; border-radius: 8px; background: var(--card); box-shadow: 0 0 0 1px var(--border); font: var(--ib-fs-12-5, 12.5px)/1.35 var(--font-mono, ui-monospace, monospace); color: var(--foreground); min-width: 0; }
+.tp-win .ib-mk { width: var(--ib-mark-24); height: var(--ib-mark-24); border-radius: var(--ib-mark-24-r); }
 .tp-win .ib-mk > svg, .tp-win .ib-mk > img { width: var(--ib-mark-24-g); height: var(--ib-mark-24-g); }
-.tp-win b { color: var(--foreground); font-weight: 600; font-family: var(--font-sans, inherit); font-size: var(--ib-fs-12, 12px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tp-win .tp-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tp-win .tp-back { color: var(--primary); font-weight: 600; }
+.tp-win .tp-prompt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tp-win .tp-tilde { color: var(--muted-foreground); }
 .tp-arrows { width: 62px; height: 100%; }
 .tp-arrows-v { display: none; }
 .tp-arrows path { fill: none; stroke: var(--muted-foreground); stroke-width: 1.5; }
@@ -4568,8 +4567,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .tp-arrows-h { display: none; }
   .tp-arrows-v { display: block; width: 100%; height: 56px; }
   .tp-sess { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-  .tp-win { grid-template-columns: minmax(0, 1fr); padding: 7px 8px; }
-  .tp-win .ib-mk { grid-row: auto; justify-self: start; }
+  .tp-win { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px; }
+  .tp-win .ib-mk { justify-self: start; }
   .ib-te-fit .ib-te-fit-pic { padding: 14px 14px 10px; }
   /* The tour's first card: a sheet under the tour bar, Show me full width and 44 px. */
   .ib-tour-intro-scrim { padding: 0; place-items: stretch; }

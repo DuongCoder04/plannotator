@@ -3,8 +3,9 @@
  * tour v2 brief, step 0, exactly): the top tile of the first-run "Two paths"
  * bento, and the short first card when the tour starts ("a fresh reminder").
  *
- * The picture: three agent sessions with their real marks, arrows into an
- * Inbox card, and a primary "your reply" arrow back into the Claude Code
+ * The picture: your own agents, three terminal sessions with their real
+ * marks and nothing but their prompt (`~ claude`, `~ pi`, `~ opencode`),
+ * arrows into an Inbox card, and a primary "your reply" arrow back into the Claude Code
  * session. Drawn in HTML and one inline SVG (two, the phone's runs
  * downward; CSS shows one), no asset but the tile's thumbnail. The reply
  * arrow draws once, 600 ms, not under reduced motion.
@@ -14,18 +15,20 @@ import { tourAssetUrl } from './assets';
 
 export const TOUR_FIT_TITLE = 'The Inbox works beside your agents';
 export const TOUR_FIT_LINES = [
-  'It doesn’t replace them: keep running Claude Code, Codex, Pi or OpenCode in your terminal or editor, as you do now.',
+  'It doesn’t replace them: keep running Claude Code, Pi or OpenCode in your terminal or editor, as you do now.',
   'When they need you, they send their questions, finished work and files here.',
   'Your reply goes back into the same session, and it keeps working.',
 ] as const;
 const PICTURE_ALT = 'Your agents keep running in your terminal and editor. They send questions, work and files to the Inbox; your reply goes back to the same session.';
 
-function Session({ host, title, line, back }: { host: string; title: string; line: string; back?: boolean }) {
+/** One of your agents, as you run it now: its mark and its prompt, nothing else. */
+function Session({ host, command }: { host: string; command: string }) {
   return (
     <div className="tp-win">
       <HostMark host={host} />
-      <b>{title}</b>
-      <span className={`tp-line${back ? ' tp-back' : ''}`}>{line}</span>
+      <span className="tp-prompt">
+        <span className="tp-tilde">~</span> {command}
+      </span>
     </div>
   );
 }
@@ -35,9 +38,9 @@ export function TourFitPicture() {
     <div className="tp-wrap">
       <div className="tp" role="img" aria-label={PICTURE_ALT}>
         <div className="tp-sess">
-          <Session host="claude-code" title="claude · api" line="↳ continues with A" back />
-          <Session host="codex" title="codex · web" line="▌ working…" />
-          <Session host="pi" title="pi · docs" line="▌ working…" />
+          <Session host="claude-code" command="claude" />
+          <Session host="pi" command="pi" />
+          <Session host="opencode" command="opencode" />
         </div>
         <svg className="tp-arrows tp-arrows-h" viewBox="0 0 70 170" aria-hidden="true">
           <path d="M2 26 C 34 26, 36 70, 66 78" />
@@ -71,14 +74,14 @@ export function TourFitPicture() {
             <img className="tp-th" src={tourAssetUrl('vs-a-thumb.webp')} alt="" onError={(event) => (event.currentTarget.style.display = 'none')} />
           </div>
           <div className="tp-row">
-            <HostMark host="codex" />
+            <HostMark host="pi" />
             <b>Checkout page is done</b>
             <span className="tp-c">2 files</span>
           </div>
         </div>
       </div>
       <div className="tp-cap" aria-hidden="true">
-        <span>Your terminal and editor, as now</span>
+        <span>Your agents, run as you do now</span>
         <span>The Inbox</span>
       </div>
     </div>
