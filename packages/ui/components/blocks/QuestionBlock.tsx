@@ -810,97 +810,23 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
             aria-labelledby={promptId}
           >
             {showTiles ? (
-              <div
-                className="mb-1 grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2"
-                data-question-tiles=""
-              >
-                {question.choices.map((choice, index) => {
-                  const checked = selected.includes(choice.label);
+              <QuestionPictureTiles
+                choices={question.choices}
+                urls={question.choices.map((_c, index) => {
                   const url = pictures[index];
-                  const shown = url !== null && !failedPictures.has(url) ? url : null;
-                  // The alt text names the picture; one that only repeats the label is decorative.
-                  const alt = choice.image ? (choice.image.alt || choice.label) : '';
-                  const decorative = !!choice.image && alt.trim() === choice.label.trim();
-                  return (
-                    <div
-                      key={choice.label}
-                      className={cx(
-                        'relative flex min-w-0 flex-col overflow-hidden rounded-[9px] border transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary',
-                        checked ? 'border-primary/70 bg-primary/10' : 'border-border/80 bg-background/40',
-                        !readOnly && !checked && 'hover:border-foreground/30',
-                      )}
-                      data-question-tile=""
-                      data-question-tile-checked={checked ? '' : undefined}
-                    >
-                      <label
-                        className={cx('flex min-w-0 flex-1 flex-col', readOnly ? 'cursor-default' : 'cursor-pointer')}
-                        data-question-option=""
-                        onPointerDown={onRowPointerDown}
-                        onClickCapture={(event) => onRowClick(event, choice.label)}
-                      >
-                        {choice.image && (
-                          <span
-                            className="annotation-exclude select-none block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
-                            data-pinpoint-ignore=""
-                          >
-                            {shown ? (
-                              <img
-                                src={shown}
-                                alt={decorative ? '' : alt}
-                                draggable={false}
-                                loading="lazy"
-                                className="h-full w-full object-contain"
-                                data-question-picture=""
-                                data-zoomable=""
-                                data-image-src={choice.image.src}
-                                onError={() => markPictureFailed(shown)}
-                              />
-                            ) : (
-                              <span
-                                className="grid h-full place-items-center px-2 text-center text-xs text-muted-foreground"
-                                title={pictureHeldTitle(choice.image.src) ?? undefined}
-                                data-image-unavailable=""
-                              >
-                                {alt}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                        <span className="flex w-full min-w-0 items-start gap-2 px-2.5 py-2">
-                          <input
-                            type={inputType}
-                            name={groupName}
-                            checked={checked}
-                            onChange={(e) => pick(choice.label, e.target.checked)}
-                            className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
-                            data-question-control=""
-                            disabled={readOnly}
-                          />
-                          <span className="min-w-0 flex-1 select-text text-[13px] leading-[1.4] text-foreground" data-question-part="choice">
-                            <span className="font-[550]">{inline(choice.label)}</span>
-                            {choice.description && (
-                              <span className="block text-muted-foreground">{inline(choice.description)}</span>
-                            )}
-                            {choice.recommended && <span className="mt-1 block"><Tag tone="rec">Recommended</Tag></span>}
-                          </span>
-                        </span>
-                      </label>
-                      {shown && onImageClick && (
-                        <button
-                          type="button"
-                          onClick={() => onImageClick(shown, alt)}
-                          aria-label={`Zoom: ${alt}`}
-                          className="annotation-exclude absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-md bg-background/85 text-foreground shadow-sm ring-1 ring-border/70 before:absolute before:-inset-2 before:content-[''] hover:bg-background focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
-                          data-pinpoint-ignore=""
-                          data-question-zoom=""
-                        >
-                          <ZoomGlyph />
-                        </button>
-                      )}
-                    </div>
-                  );
+                  return url !== null && url !== undefined && !failedPictures.has(url) ? url : null;
                 })}
-              </div>
+                selected={selected}
+                inputType={inputType}
+                name={groupName}
+                readOnly={readOnly}
+                onPick={pick}
+                onZoom={onImageClick}
+                onPictureError={markPictureFailed}
+                heldTitle={pictureHeldTitle}
+                renderText={inline}
+                labelProps={(label) => ({ onPointerDown: onRowPointerDown, onClickCapture: (event) => onRowClick(event, label) })}
+              />
             ) : (
               question.choices.map((choice) => {
                 const checked = selected.includes(choice.label);
@@ -1113,3 +1039,159 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     </fieldset>
   );
 };
+
+/** One choice a picture tile draws (a parsed question's choice, or the Inbox wire's). */
+export interface QuestionPictureTileChoice {
+  label: string;
+  description?: string | null;
+  recommended?: boolean;
+  image?: { alt: string; src: string } | null;
+}
+
+export interface QuestionPictureTilesProps {
+  choices: readonly QuestionPictureTileChoice[];
+  /** The URL each choice's picture loads from, in choice order; null (no picture shown) draws its alt text. */
+  urls: readonly (string | null)[];
+  selected: readonly string[];
+  inputType: 'radio' | 'checkbox';
+  /** The radio group's name. */
+  name: string;
+  readOnly?: boolean;
+  /** The tile's radio or checkbox changed (the picture and the label pick through it). */
+  onPick: (label: string, checked: boolean) => void;
+  /** The separate zoom button (absent: no zoom button). Never picks. */
+  onZoom?: (url: string, alt: string) => void;
+  onPictureError?: (url: string) => void;
+  /** The host's reason a picture is held (its image resolver's `unavailable` title). */
+  heldTitle?: (src: string) => string | null;
+  /** How a label or description is drawn (the card's inline markdown). */
+  renderText: (text: string) => React.ReactNode;
+  /** A host's own props on each tile's label (the card's drag guard). */
+  labelProps?: (label: string) => React.LabelHTMLAttributes<HTMLLabelElement>;
+  /** A host's own props on each tile's input (decision mode answers on a click, or Enter). */
+  inputProps?: (label: string) => React.InputHTMLAttributes<HTMLInputElement>;
+  /** What sits under a choice's words (default: its Recommended tag). */
+  renderBadges?: (choice: QuestionPictureTileChoice, index: number) => React.ReactNode;
+}
+
+/**
+ * Picture choices as tiles (approval "inbox-decision-mode", agent contract
+ * lines): each tile is a native `<label>` holding the picture and a real radio
+ * or checkbox, so the picture, the label and the keyboard pick; a separate
+ * zoom button, outside the label, opens the picture and never picks. The
+ * question card draws these, and so does the Inbox's decision mode (its own
+ * size through `[data-question-tile*]` hooks), so the two never drift.
+ */
+export const QuestionPictureTiles: React.FC<QuestionPictureTilesProps> = ({
+  choices,
+  urls,
+  selected,
+  inputType,
+  name,
+  readOnly = false,
+  onPick,
+  onZoom,
+  onPictureError,
+  heldTitle,
+  renderText,
+  labelProps,
+  inputProps,
+  renderBadges,
+}) => (
+  <div
+    className="mb-1 grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2"
+    data-question-tiles=""
+  >
+    {choices.map((choice, index) => {
+      const checked = selected.includes(choice.label);
+      const shown = urls[index] ?? null;
+      // The alt text names the picture; one that only repeats the label is decorative.
+      const alt = choice.image ? (choice.image.alt || choice.label) : '';
+      const decorative = !!choice.image && alt.trim() === choice.label.trim();
+      const host = labelProps?.(choice.label);
+      const input = inputProps?.(choice.label);
+      return (
+        <div
+          key={choice.label}
+          className={cx(
+            'relative flex min-w-0 flex-col overflow-hidden rounded-[9px] border transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-primary',
+            checked ? 'border-primary/70 bg-primary/10' : 'border-border/80 bg-background/40',
+            !readOnly && !checked && 'hover:border-foreground/30',
+          )}
+          data-question-tile=""
+          data-question-tile-checked={checked ? '' : undefined}
+          data-question-tile-recommended={choice.recommended ? '' : undefined}
+        >
+          <label
+            {...host}
+            className={cx('flex min-w-0 flex-1 flex-col', readOnly ? 'cursor-default' : 'cursor-pointer')}
+            data-question-option=""
+          >
+            {choice.image && (
+              <span
+                className="annotation-exclude select-none block aspect-[4/3] w-full overflow-hidden border-b border-border/60 bg-muted/35"
+                data-pinpoint-ignore=""
+                data-question-tile-picture=""
+              >
+                {shown ? (
+                  <img
+                    src={shown}
+                    alt={decorative ? '' : alt}
+                    draggable={false}
+                    loading="lazy"
+                    className="h-full w-full object-contain"
+                    data-question-picture=""
+                    data-zoomable=""
+                    data-image-src={choice.image.src}
+                    onError={() => onPictureError?.(shown)}
+                  />
+                ) : (
+                  <span
+                    className="grid h-full place-items-center px-2 text-center text-xs text-muted-foreground"
+                    title={heldTitle?.(choice.image.src) ?? undefined}
+                    data-image-unavailable=""
+                  >
+                    {alt}
+                  </span>
+                )}
+              </span>
+            )}
+            <span className="flex w-full min-w-0 items-start gap-2 px-2.5 py-2" data-question-tile-caption="">
+              <input
+                {...input}
+                type={inputType}
+                name={name}
+                checked={checked}
+                onChange={(e) => onPick(choice.label, e.target.checked)}
+                className="mt-[3px] h-[15px] w-[15px] shrink-0 cursor-pointer accent-primary disabled:cursor-default"
+                data-question-control=""
+                disabled={readOnly}
+              />
+              <span className="min-w-0 flex-1 select-text text-[13px] leading-[1.4] text-foreground" data-question-part="choice">
+                <span className="font-[550]" data-question-tile-label="">{renderText(choice.label)}</span>
+                {choice.description && (
+                  <span className="block text-muted-foreground" data-question-tile-description="">{renderText(choice.description)}</span>
+                )}
+                {renderBadges
+                  ? renderBadges(choice, index)
+                  : choice.recommended && <span className="mt-1 block"><Tag tone="rec">Recommended</Tag></span>}
+              </span>
+            </span>
+          </label>
+          {shown && onZoom && (
+            <button
+              type="button"
+              onClick={() => onZoom(shown, alt)}
+              aria-label={`Zoom: ${alt}`}
+              className="annotation-exclude absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-md bg-background/85 text-foreground shadow-sm ring-1 ring-border/70 before:absolute before:-inset-2 before:content-[''] hover:bg-background focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+              data-pinpoint-ignore=""
+              data-question-zoom=""
+            >
+              <ZoomGlyph />
+            </button>
+          )}
+        </div>
+      );
+    })}
+  </div>
+);

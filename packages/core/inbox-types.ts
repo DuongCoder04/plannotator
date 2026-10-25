@@ -984,7 +984,8 @@ export interface InboxDecision {
    */
   pictures: {
     inline: { attachment_id: string; ref: string; name: string; media_type: string | null; width: number | null; height: number | null }[];
-    attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null }[];
+    /** `paths` (additive): the file's real path, and the path it was named by when that was a link; a `Shows:` file is matched by them. */
+    attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null; paths?: string[] }[];
   };
   thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string }; section: InboxSectionId };
   /**

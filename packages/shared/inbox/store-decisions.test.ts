@@ -94,7 +94,8 @@ describe("openDecisions", () => {
   test("a Re-ask note leaves out what it lists, per session and only while that session is there", () => {
     const { store, project } = open();
     const [a, b] = AGENTS;
-    const m1 = store.sendMessage({ project_id: project.id, author: a!, body: block("A asks?") }).message;
+    // A asks through a connection that wakes its session (the only kind that can be told ended).
+    const m1 = store.sendMessage({ project_id: project.id, author: a!, body: block("A asks?"), wakes: true }).message;
     const m2 = store.sendMessage({ project_id: project.id, author: b!, reply_to: m1.id, body: block("B asks?") }).message;
     expect(store.openDecisions().map((d) => d.question.prompt)).toEqual(["A asks?", "B asks?"]);
     // The person asks A to ask again: A's question is about to be asked again, B's still waits here.
@@ -108,6 +109,21 @@ describe("openDecisions", () => {
     // A writes again: its note no longer waits, and what it still has open comes back.
     store.sendMessage({ project_id: project.id, author: a!, reply_to: m2.id, body: "Looking at it." });
     expect(store.openDecisions().map((d) => d.question.prompt).sort()).toEqual(["A asks?", "B asks?"]);
+  });
+
+  test("an MCP-only agent's Re-ask note waits until it writes again, whatever presence says (it may be in wait_for_reply)", () => {
+    const { store, project } = open();
+    const [a] = AGENTS;
+    // No `wakes`: an agent that reads the Inbox through MCP. Its session is never told ended.
+    const m1 = store.sendMessage({ project_id: project.id, author: a!, body: block("A asks?") }).message;
+    store.sendReask(m1.id, { idempotency_key: "k1" });
+    expect(store.openDecisions()).toEqual([]);
+    store.setDeliveryPresence({ connection: () => null, askerLive: () => false });
+    expect(store.openDecisions()).toEqual([]);
+    store.setDeliveryPresence(null);
+    // It writes again: the note no longer waits.
+    store.sendMessage({ project_id: project.id, author: a!, reply_to: m1.id, body: "Back on it." });
+    expect(store.openDecisions().map((d) => d.question.prompt)).toEqual(["A asks?"]);
   });
 
   test("with unsentOnly (decision mode), a pick that raced a Send (same revision, read before it) never reopens the sent question", () => {

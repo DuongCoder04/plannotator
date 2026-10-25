@@ -30,6 +30,8 @@ import {
   putOff,
   skipAnswer,
   swipeChoices,
+  answerNeedsConfirm,
+  confirmLabel,
 } from './decisions/model';
 
 function question(key: string, extra: Partial<InboxQuestion> = {}): InboxQuestion {
@@ -229,5 +231,58 @@ describe('answers', () => {
     expect(skipAnswer(A1.question, 'later').note).toBe('later');
     expect(swipeChoices(A1.question)).toEqual(['Yes', 'No']);
     expect(swipeChoices({ ...A1.question, kind: 'multi' })).toBeNull();
+  });
+});
+
+describe('the contract lines (approval "inbox-decision-mode", agent contract lines)', () => {
+  const oneWay = (extra: Partial<InboxQuestion> = {}) =>
+    question('q-del', {
+      prompt: 'Delete the 3 duplicate invoices now?',
+      choices: [
+        { label: 'Delete now', description: 'The report is right today', recommended: false, settled: false },
+        { label: 'Wait for month-end close', description: null, recommended: true, settled: false },
+      ],
+      recommendation: 'Wait for month-end close',
+      reversible: { value: false, why: 'Deleted invoices cannot be restored.' },
+      ...extra,
+    });
+
+  test('a one-way question never swipes, nor does a picture choice; a plain two-way one still does', () => {
+    expect(swipeChoices(question('q-1'))).toEqual(['Yes', 'No']);
+    expect(swipeChoices(oneWay())).toBeNull();
+    const pictures = question('q-2', {
+      choices: [
+        { label: 'A', description: null, recommended: false, settled: false, image: { alt: 'A', src: 'a.png' } },
+        { label: 'B', description: null, recommended: false, settled: false, image: { alt: 'B', src: 'b.png' } },
+      ],
+    });
+    expect(swipeChoices(pictures)).toBeNull();
+  });
+
+  test('on a one-way question every answer asks once more, whichever choice the agent recommends; a Skip never does', () => {
+    // The safe choice recommended: both choices confirm.
+    const safe = oneWay();
+    expect(answerNeedsConfirm(safe, choiceAnswer(safe, ['Delete now'], ''))).toBe(true);
+    expect(answerNeedsConfirm(safe, choiceAnswer(safe, ['Wait for month-end close'], ''))).toBe(true);
+    // The destructive choice recommended (the grammar does not say which one is one-way): it still confirms.
+    const risky = oneWay({ choices: safe.choices.map((c) => ({ ...c, recommended: c.label === 'Delete now' })), recommendation: 'Delete now' });
+    expect(answerNeedsConfirm(risky, choiceAnswer(risky, ['Delete now'], ''))).toBe(true);
+    expect(answerNeedsConfirm(risky, choiceAnswer(risky, ['Wait for month-end close'], ''))).toBe(true);
+    // Other and text confirm; a Skip and a note alone do not; a reversible question never does.
+    expect(answerNeedsConfirm(safe, { ...choiceAnswer(safe, [], ''), other: 'Delete only the oldest one' })).toBe(true);
+    const text = oneWay({ kind: 'text', choices: [], recommendation: null, suggested_text: 'Drop the table' });
+    expect(answerNeedsConfirm(text, { ...choiceAnswer(text, [], ''), kind: 'text', text: 'Drop the table' })).toBe(true);
+    expect(answerNeedsConfirm(safe, skipAnswer(safe, ''))).toBe(false);
+    expect(answerNeedsConfirm(safe, { ...choiceAnswer(safe, [], ''), note: 'Ask finance' })).toBe(false);
+    const plain = question('q-1');
+    expect(answerNeedsConfirm(plain, choiceAnswer(plain, ['Yes'], ''))).toBe(false);
+  });
+
+  test("the confirm button's words are the answer, cut at about 40 characters", () => {
+    expect(confirmLabel('Delete now')).toBe('Delete now');
+    const long = 'Delete every duplicate invoice in the legacy billing system today';
+    expect(confirmLabel(long).length).toBeLessThanOrEqual(40);
+    expect(confirmLabel(long).endsWith('…')).toBe(true);
+    expect(long.startsWith(confirmLabel(long).slice(0, -1))).toBe(true);
   });
 });

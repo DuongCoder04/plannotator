@@ -2504,6 +2504,10 @@ Approval "inbox-decision-mode", agent contract lines (2026-10-24). All optional 
 - **`collectDocumentImages`** (the lightbox's stepping) also counts `img[data-zoomable]`.
 - New Tailwind classes in the card change the shared stylesheet (the guides.show viewer's pinned CSS was re-synced).
 
+## `QuestionPictureTiles` (next ui release; additive, the card unchanged)
+
+- **`QuestionPictureTiles`** (exported from `components/blocks/QuestionBlock`): the question card's picture-choice tile grid as a component of its own, so a host that draws its own decision surface draws the same tile (the Plannotator Inbox's decision mode does). Props: `choices` (`QuestionPictureTileChoice`: `label`, `description?`, `recommended?`, `image?`), `urls` (each choice's resolved picture URL, null for none), `selected`, `inputType` (`radio` / `checkbox`), `name`, `readOnly?`, `onPick(label, checked)` (the tile's input changed: the picture and the label pick through it), `onZoom?(url, alt)` (the separate zoom button; absent, no button; it never picks), `onPictureError?`, `heldTitle?`, `renderText(text)`, and host seams `labelProps?(label)`, `inputProps?(label)` (the card passes its drag guard; decision mode answers on a click or Enter) and `renderBadges?(choice, index)` (default: the Recommended tag). New hooks for host CSS: `[data-question-tile-recommended]`, `[data-question-tile-picture]`, `[data-question-tile-caption]`, `[data-question-tile-label]`, `[data-question-tile-description]`. The card draws exactly what it drew before (same classes and attributes, plus those hooks).
+
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 
 These are enforced socially and, where possible, by CI. They exist because a prior from-scratch reimplementation of this UI broke the app and was reverted.
