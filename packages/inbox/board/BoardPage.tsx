@@ -686,7 +686,7 @@ function BoardCard({
               {sent ? (
                 <span className="ib-bc-sent">
                   {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
-                  Sent to {sent}
+                  <span className="ib-bc-sentt">Sent to {sent}</span>
                 </span>
               ) : line ? (
                 line.you ? (

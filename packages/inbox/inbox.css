@@ -4804,8 +4804,10 @@ a.ib-bc-main { cursor: pointer; }
 .ib-bmain > .ib-blanes { padding-right: 0; }
 .ib-bpage .ib-bc-main { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .ib-bcard[data-open] { box-shadow: 0 0 0 2px var(--primary); }
-.ib-bc-sent { display: inline; }
-.ib-bc-sent svg, .ib-bc-sent .ib-dots { display: inline-block; vertical-align: -0.2em; margin-right: 5px; }
+.ib-bc-sent { display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%; }
+/* The text sets the line's baseline (beside the age); the tick or clock sits centred on it. */
+.ib-bc-sent > :not(.ib-bc-sentt) { flex: none; align-self: center; display: inline-flex; }
+.ib-bc-sentt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-lane-dot.ib-bc-yourdot { width: 13px; height: 13px; box-shadow: none; border: 0; border-radius: 0; background: var(--muted-foreground); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Ccircle cx='6.5' cy='6.5' r='5.4' fill='none' stroke='black' stroke-width='1.4' stroke-dasharray='2.1 2.14'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Ccircle cx='6.5' cy='6.5' r='5.4' fill='none' stroke='black' stroke-width='1.4' stroke-dasharray='2.1 2.14'/%3E%3C/svg%3E") center / contain no-repeat; }
 .ib-babout { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 7px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
 .ib-babout:hover { color: var(--foreground); background: var(--ib-hover); }
@@ -4995,6 +4997,8 @@ dialog.ib-dlg.ib-bi { width: min(560px, calc(100vw - 32px)); }
   .ib-babout { width: 44px; height: 44px; }
   .ib-bback { height: 44px; padding: 0 12px 0 6px; }
   .ib-crdp-x { width: 44px; height: 44px; }
+}
+
 /* ── Tour v2: the opener's picture, the closing card's list, the phrase it points at, replies' lines ── */
 .ib-tour-coach.ib-tc-wide { width: 380px; }
 .ib-tour-orient { display: grid; grid-template-columns: 92px minmax(0, 1fr); grid-template-rows: auto auto; gap: 6px; margin-top: 10px; padding: 8px; border-radius: 10px; background: var(--muted); font-size: var(--ib-fs-11-5, 11.5px); line-height: 1.3; }
