@@ -3962,6 +3962,28 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   Cancel
                 </button>
                 <span className="ib-sp" />
+                {/* A phone has no way to paste a picture into the reply (iOS offers no Paste for an image in a plain
+                    text field), so it gets an attach button: the photo library or Files, into the same tiles,
+                    upload path and names as a paste. A desktop stays paste-only (the owner's choice). */}
+                {phone && (
+                  <Tip content="Attach files">
+                    <label className="ib-rattach" aria-label="Attach files">
+                      <Icon name="clip" size={19} />
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*,*/*"
+                        className="ib-sr"
+                        data-reply-attach=""
+                        onChange={(event) => {
+                          if (event.target.files) replyFiles.attach(event.target.files);
+                          event.target.value = '';
+                          setError(null);
+                        }}
+                      />
+                    </label>
+                  </Tip>
+                )}
                 {/* The in-thread New message button is off (approval "inbox-acknowledge"); its route and code stay. */}
                 {SHOW_NEW_MESSAGE_BUTTON && !archived && <NewMessageButton live={live} mode={newMessage} onClick={() => void pressNewMessage()} />}
               </div>

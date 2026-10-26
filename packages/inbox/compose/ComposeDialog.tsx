@@ -672,8 +672,11 @@ export function ComposeDialog(props: ComposeDialogProps) {
                   multiple
                   className="ib-sr"
                   data-compose-attach=""
+                  // A phone's picker offers the photo library and Files (iOS gives no Paste for a picture in a text
+                  // field); what it hands over is named as a paste is (`image.jpg` -> `pasted-image-<stamp>.jpg`).
+                  accept={phone ? 'image/*,*/*' : undefined}
                   onChange={(event) => {
-                    if (event.target.files) files.add(event.target.files);
+                    if (event.target.files) (phone ? files.attach : files.add)(event.target.files);
                     event.target.value = '';
                   }}
                 />

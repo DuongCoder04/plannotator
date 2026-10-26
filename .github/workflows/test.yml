@@ -192,6 +192,7 @@ jobs:
           packages/inbox/restartWarning.test.tsx
           packages/inbox/reloadHosts.test.tsx
           packages/inbox/pasteFiles.test.tsx
+          packages/inbox/questionCardPhone.test.tsx
           packages/inbox/markRead.test.tsx
           packages/inbox/ack.test.tsx
           packages/inbox/actionChecklist.test.tsx
