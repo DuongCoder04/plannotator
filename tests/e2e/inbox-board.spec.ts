@@ -24,7 +24,7 @@
 
 import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { NO_BROWSER } from '../helpers/no-browser';
@@ -79,6 +79,7 @@ interface World {
   page: Page;
   errors: string[];
   ids: Record<string, string>;
+  dataDir: string;
 }
 
 let world: World;
@@ -151,7 +152,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  world = { url: started.stdout.trim(), forge, agents: [claude, codex, pi], claude, codex, pi, projects, context, page, errors, ids: { ticksThread: ticks.thread_id as string } };
+  world = { url: started.stdout.trim(), forge, agents: [claude, codex, pi], claude, codex, pi, projects, context, page, errors, ids: { ticksThread: ticks.thread_id as string }, dataDir: env.PLANNOTATOR_DATA_DIR };
 });
 
 test.afterAll(async () => {
@@ -166,6 +167,12 @@ test.afterAll(async () => {
 
 test('off by default: no Board row, a #board link says it is off, an agent is refused; Settings turns it on', async () => {
   const { page, claude, projects } = world;
+  // While it is off the window reads no cards: not at load, not on a #board link.
+  const cardReads: string[] = [];
+  const watch = (request: import('@playwright/test').Request) => {
+    if (new URL(request.url()).pathname.startsWith('/api/inbox/cards')) cardReads.push(request.url());
+  };
+  page.on('request', watch);
   await page.emulateMedia({ colorScheme: 'light' });
   await page.goto(world.url);
   await expect(page.locator('[data-settings-nav], .ib-setrow').first()).toBeVisible();
@@ -180,6 +187,8 @@ test('off by default: no Board row, a #board link says it is off, an agent is re
   await expect(page.locator('[data-dialog="board-intro"]')).toHaveCount(0);
   await blur(page);
   await both(page, 'board-off-1440');
+  expect(cardReads).toEqual([]);
+  page.off('request', watch);
   // Settings → General: the switch, saying agents get it from their next session.
   await page.goto(`${world.url}#settings/general`);
   const group = page.locator('[data-settings-board]');
@@ -355,6 +364,43 @@ test('the opened card: the panel beside the lanes, its links read once it opens,
   await expect(panel.locator('section[aria-label="History"]')).toContainText('Your review');
   await panel.locator('[data-card-close]').click();
   await expect(panel).toHaveCount(0);
+});
+
+test("Start: an agent's Backlog card goes to its live session, once; the lane card says Sent to", async () => {
+  const { page, ids, dataDir } = world;
+  await page.keyboard.press('Escape');
+  // The card's session connects (its connection polls the bridge, as the Claude Code mod does): it is live.
+  const registry = JSON.parse(readFileSync(join(dataDir, 'inbox', 'inbox.json'), 'utf8')) as { port: number; token: string };
+  const base = `http://127.0.0.1:${registry.port}`;
+  const { card: auto } = (await (await fetch(`${base}/api/inbox/cards/${ids.auto}`)).json()) as { card: { agent: { host: string; session: string } } };
+  const poll = async () =>
+    (await (
+      await fetch(`${base}/api/inbox/bridge/poll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${registry.token}` },
+        body: JSON.stringify({ session: auto.agent.session, host: auto.agent.host, waitMs: 0 }),
+      })
+    ).json()) as { commands: { body?: string; text?: string }[] };
+  await poll();
+  await card(page, ids.auto).locator('[data-card-open]').click();
+  const panel = page.locator(`[data-card-panel="${ids.auto}"]`);
+  const start = panel.locator('[data-card-start]');
+  await expect(start).toBeEnabled();
+  await blur(page);
+  await both(page, 'open-start-1440');
+  await start.click();
+  // The lane card says who it went to; nothing moved.
+  await expect(card(page, ids.auto)).toHaveAttribute('data-sent', '');
+  await expect(card(page, ids.auto).locator('.ib-bc-sent')).toContainText('Sent to Claude Code');
+  await expect(lane(page, 'backlog').locator(`[data-card-id="${ids.auto}"]`)).toBeVisible();
+  await both(page, 'open-sent-1440');
+  await panel.locator('[data-card-close]').click();
+  await expect(panel).toHaveCount(0);
+  await blur(page);
+  await both(page, 'board-sent-1440');
+  // The session got one message naming the card.
+  const { commands } = await poll();
+  expect(commands.filter((c) => JSON.stringify(c).includes(ids.auto))).toHaveLength(1);
 });
 
 test('dragging a card to another lane moves it', async () => {

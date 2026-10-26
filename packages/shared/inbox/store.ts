@@ -559,8 +559,6 @@ export class InboxStore {
   private readonly pinListeners = new Set<() => void>();
   /** The Board's cards, by id (approval "inbox-board"). Read by nothing that routes or lists threads. */
   private readonly cards = new Map<string, InboxCard>();
-  /** Every snapshot of each card, oldest first: its history (the opened card, step 2). */
-  private readonly cardLines = new Map<string, InboxCard[]>();
   /** The seq of the line that last wrote to each card (a drop's seen mark is not a write): the Board's unread rule. */
   private readonly cardHeardSeq = new Map<string, number>();
   /** A guided review's files by its snapshot's sha256 (a blob never changes). */
@@ -718,9 +716,6 @@ export class InboxStore {
           const prev = this.cards.get(card.id);
           if (!prev || !isInboxCardSeenOnlyChange(prev, card)) this.cardHeardSeq.set(card.id, line.seq);
           this.cards.set(card.id, card);
-          const lines = this.cardLines.get(card.id);
-          if (lines) lines.push(card);
-          else this.cardLines.set(card.id, [card]);
         }
         break;
     }
@@ -4065,7 +4060,6 @@ export class InboxStore {
     this.annotations.clear();
     this.unsentAnnotations.clear();
     this.cards.clear();
-    this.cardLines.clear();
     this.cardHeardSeq.clear();
     this.tornFiles.clear();
     this.load();
@@ -4991,9 +4985,28 @@ export class InboxStore {
     return result.notes;
   }
 
-  /** What happened to a card, newest first (the opened card's History). */
+  /**
+   * What happened to a card, newest first (the opened card's History). Read
+   * from its project's cards.jsonl when asked (one card opened), so memory
+   * holds only each card's latest snapshot, never every line of every card.
+   */
   cardHistory(id: string): InboxCardHistoryEntry[] {
-    return inboxCardHistory(this.cardLines.get(id) ?? []);
+    const card = this.cards.get(id);
+    if (!card) return [];
+    const project = this.projectsById.get(card.project_id);
+    let text = "";
+    try {
+      if (project) text = readFileSync(join(this.projectFolder(project), CARDS_FILE), "utf8");
+    } catch {
+      // No file to read (removed under us): the card as it stands is all there is.
+    }
+    const lines: { seq: number; card: InboxCard }[] = [];
+    for (const raw of text.split("\n")) {
+      const line = parseInboxLine(raw);
+      if (line?.kind === "card" && line.record.id === id) lines.push({ seq: line.seq, card: readInboxCard(line.record) });
+    }
+    lines.sort((a, b) => a.seq - b.seq);
+    return inboxCardHistory(lines.length > 0 ? lines.map((line) => line.card) : [card]);
   }
 
   /**

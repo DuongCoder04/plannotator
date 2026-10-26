@@ -952,14 +952,18 @@ function Inbox() {
     void refreshDrafts();
   }, [refreshDrafts]);
   /**
-   * The Board's cards (approval "inbox-board", step 2): read at load (the
-   * sidebar's Board row counts what is on the person) and again when a card
-   * line arrives on the event stream, so the Board updates in place.
+   * The Board's cards (approval "inbox-board", step 2): read only while the
+   * person has the Board on, once it is known to be on and again when a card
+   * line arrives on the event stream, so the Board updates in place. With the
+   * Board off nothing reads them (a card line on the stream is skipped too).
    */
   const [cards, setCards] = useState<CardsModel | null>(null);
   const [cardsError, setCardsError] = useState<string | null>(null);
   const cardsSeq = useRef(0);
+  /** Whether the Board is on (`boardEnabled` below), for the reads that run outside a render. */
+  const boardOnRef = useRef(false);
   const refreshCards = useCallback(async (): Promise<CardsModel | null> => {
+    if (!boardOnRef.current) return null;
     const mine = ++cardsSeq.current;
     try {
       const next = await inboxApi.cards();
@@ -974,9 +978,6 @@ function Inbox() {
       return null;
     }
   }, []);
-  useEffect(() => {
-    void refreshCards();
-  }, [refreshCards]);
   /**
    * A visit to the Board: the person's look as it stood when the visit began
    * (cards an agent wrote to after it are bold for the whole visit, as a
@@ -991,6 +992,16 @@ function Inbox() {
    * Inbox that predates the switch always has it.
    */
   const boardEnabled = settings ? (settings.board ? settings.board.on : true) : null;
+  boardOnRef.current = boardEnabled === true;
+  useEffect(() => {
+    if (boardEnabled !== true) {
+      // Off (or not known yet): no card is read, and none kept from before it was turned off.
+      cardsSeq.current++;
+      setCards(null);
+      return;
+    }
+    void refreshCards();
+  }, [boardEnabled, refreshCards]);
   const onBoard = route.page === 'board' && boardEnabled === true;
   useEffect(() => {
     if (!onBoard) {

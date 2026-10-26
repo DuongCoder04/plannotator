@@ -142,7 +142,12 @@ export function isInteractiveNoArgInvocation(
   return args.length === 0 && stdinIsTTY === true;
 }
 
-export function formatTopLevelHelp(): string {
+/**
+ * `plannotator --help`. `board`: the person turned the Inbox's Board on
+ * (config.json `inboxBoard`, read by the caller); off (the default), the
+ * `card` line is left out, so a person without the Board sees nothing of it.
+ */
+export function formatTopLevelHelp(options: { board?: boolean } = {}): string {
   return [
     "Usage:",
     "  plannotator --help",
@@ -162,7 +167,7 @@ export function formatTopLevelHelp(): string {
     "  plannotator sessions",
     "  plannotator inbox [--background | --no-open] [--tailscale]",
     "  plannotator inbox mcp",
-    "  plannotator card <create|move|say|link|ship|drop|list> ...",
+    ...(options.board === true ? ["  plannotator card <create|move|say|link|ship|drop|list> ..."] : []),
     "  plannotator update [--check]",
     "  plannotator uninstall [--purge] [--yes] [--dry-run]",
     "  plannotator improve-context",
@@ -242,7 +247,8 @@ export const CARD_COMMAND_USAGE = [
   `Columns: ${INBOX_CARD_COLUMNS.join(", ")} (icebox is the person's only).`,
   "",
   "Keeps a card on the person's Board in the Plannotator Inbox for work that outlasts a reply.",
-  "Run 'plannotator inbox --help' for the full guide (its card tool section).",
+  "Works only while the person has the Board on (Inbox Settings → General); off, it exits 1 with board_off.",
+  "Run 'plannotator inbox --help' for the full guide (its card section, shown while the Board is on).",
 ].join("\n");
 
 /**

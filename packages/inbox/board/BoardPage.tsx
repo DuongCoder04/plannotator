@@ -141,26 +141,105 @@ export function BoardPage(props: BoardPageProps) {
     setSaid(moveSaid(card, moved));
   };
 
-  // One key per dialog, kept across its retries: a retry after a lost answer replays each step (the
-  // card, the thread, the send) instead of making a second card or sending a second message.
+  // A New card dialog makes one card, whatever its retries. Each try that makes it has its own key and
+  // its own content; when a try's answer is lost, the next try first replays that try exactly (its key,
+  // its words), which answers the card it made (or makes it now), and then brings the card to what the
+  // dialog says now (title, notes, added links, Backlog or Icebox). So editing the title after a lost
+  // answer never reuses a key with other words (`idempotency_key_reused`) and never makes a second card.
   const dialogKey = useRef('');
-  /** The card a New card dialog already made (a retry sends that one, never a second). */
+  /** The card a New card dialog already made (a retry reconciles and sends that one, never a second). */
   const dialogCard = useRef<InboxCardWire | null>(null);
-  const openCreate = (mode: 'backlog' | 'send') => {
+  /** The try that makes the card, while its answer is not known: replayed as it was. */
+  const madeTry = useRef<{ input: NewCardInput; target: string; run: () => Promise<InboxCardWire> } | null>(null);
+  /** The inputs the card was last brought to (what the made card already holds). */
+  const madeFrom = useRef<{ input: NewCardInput; target: string } | null>(null);
+  /** The message that sends the dialog's card, as first tried: a retry sends the same words, so never twice. */
+  const sendTry = useRef<{ session: string; body: string } | null>(null);
+  const resetDialog = () => {
     dialogKey.current = crypto.randomUUID();
     dialogCard.current = null;
+    madeTry.current = null;
+    madeFrom.current = null;
+    sendTry.current = null;
+  };
+  const openCreate = (mode: 'backlog' | 'send') => {
+    resetDialog();
     setCreating(mode);
   };
   const openSend = (card: InboxCardWire) => {
-    dialogKey.current = crypto.randomUUID();
+    resetDialog();
     setSendingCard(card);
   };
 
   /** Give a card to an agent: a new thread to it (the notes the message, naming the card), then the card is sent. */
   const sendCardTo = async (card: InboxCardWire, to: NonNullable<NewCardInput["to"]>, key: string): Promise<InboxCardWire> => {
-    const body = cardMessageBody(card.title, card.notes, card.id);
+    if (!sendTry.current || sendTry.current.session !== to.session) sendTry.current = { session: to.session, body: cardMessageBody(card.title, card.notes, card.id) };
+    const body = sendTry.current.body;
     const started = await inboxApi.startThread({ to: { host: to.host, session: to.session }, body, idempotency_key: messageKey(key, to.session, body) });
     return (await inboxApi.editCard(card.id, { op: 'send', thread_id: started.thread_id })).card;
+  };
+
+  /** Where a dialog's card lives: its project, or (a folder with no project yet) the session the thread makes it in. */
+  const targetOf = (input: NewCardInput): string =>
+    input.mode === 'send' && input.to ? (input.to.project.id ? `project:${input.to.project.id}` : `session:${input.to.session}`) : `project:${input.project ?? ''}`;
+
+  /** One try at making the dialog's card, with its own key and these words; replayable as it is. */
+  const makeTry = (input: NewCardInput): (() => Promise<InboxCardWire>) => {
+    const key = crypto.randomUUID();
+    const column: 'backlog' | 'icebox' = input.mode === 'icebox' ? 'icebox' : 'backlog';
+    if (input.mode === 'send' && input.to && !input.to.project.id) {
+      // A folder the Inbox has not seen has no project yet: the thread makes it, and the card is
+      // made and sent in one step with it (checked by the server before anything is written).
+      const to = input.to;
+      const body = cardMessageBody(input.title, input.notes, null);
+      return async () => {
+        const started = await inboxApi.startThread({ to: { host: to.host, session: to.session }, body, idempotency_key: messageKey(key, to.session, body) });
+        return (await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key })).card;
+      };
+    }
+    const project = input.mode === 'send' && input.to ? input.to.project.id : input.project;
+    return async () => (await inboxApi.createCard({ project, title: input.title, notes: input.notes, refs: input.refs, column, idempotency_key: key })).card;
+  };
+
+  /** The dialog's card, made once and brought to what the dialog says now. */
+  const dialogCardFor = async (input: NewCardInput): Promise<InboxCardWire> => {
+    const target = targetOf(input);
+    let card = dialogCard.current;
+    if (!card && madeTry.current) {
+      // The last try's answer was lost: replay it as it was.
+      const before = madeTry.current;
+      card = await before.run();
+      dialogCard.current = card;
+      madeFrom.current = { input: before.input, target: before.target };
+      madeTry.current = null;
+    }
+    if (card && madeFrom.current && madeFrom.current.target !== target) {
+      // Made in another project (or for another session's new folder): the person moved it, so that
+      // card goes (their own drop, kept in Dropped) and this try makes it where they chose now.
+      await inboxApi.moveCard(card.id, { op: 'drop', reason: 'Made again in another project' }).catch(() => {});
+      card = null;
+      dialogCard.current = null;
+      madeFrom.current = null;
+    }
+    if (!card) {
+      const run = makeTry(input);
+      madeTry.current = { input, target, run };
+      card = await run();
+      dialogCard.current = card;
+      madeFrom.current = { input, target };
+      madeTry.current = null;
+      return card;
+    }
+    const was = madeFrom.current?.input;
+    if (card.title !== input.title || (card.notes ?? null) !== (input.notes ?? null)) {
+      card = (await inboxApi.editCard(card.id, { op: 'edit', title: input.title, notes: input.notes })).card;
+    }
+    for (const ref of input.refs) if (!was || !was.refs.includes(ref)) card = (await inboxApi.editCard(card.id, { op: 'link', ref })).card;
+    const column = input.mode === 'icebox' ? 'icebox' : 'backlog';
+    if (card.column !== column) card = (await inboxApi.moveCard(card.id, column === 'icebox' ? { op: 'icebox' } : { op: 'move', column: 'backlog' })).card;
+    dialogCard.current = card;
+    madeFrom.current = { input, target };
+    return card;
   };
 
   /**
@@ -173,33 +252,17 @@ export function BoardPage(props: BoardPageProps) {
     const key = dialogKey.current || crypto.randomUUID();
     dialogKey.current = key;
     try {
+      const card = await dialogCardFor(input);
       if (input.mode === 'send' && input.to) {
-        const project = input.to.project.id;
-        let card = dialogCard.current;
-        if (!card) {
-          if (project) card = (await inboxApi.createCard({ project, title: input.title, notes: input.notes, refs: input.refs, column: 'backlog', idempotency_key: key })).card;
-          else {
-            // A folder the Inbox has not seen has no project yet: the thread makes it, and the card is
-            // made and sent in one step with it (checked by the server before anything is written).
-            const body = cardMessageBody(input.title, input.notes, null);
-            const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body, idempotency_key: messageKey(key, input.to.session, body) });
-            card = (await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key })).card;
-          }
-          dialogCard.current = card;
-        } else if (card.title !== input.title || (card.notes ?? null) !== (input.notes ?? null)) {
-          card = (await inboxApi.editCard(card.id, { op: 'edit', title: input.title, notes: input.notes })).card;
-          dialogCard.current = card;
-        }
         const sent = card.sent ? card : await sendCardTo(card, input.to, key);
         props.onChanged(sent);
         setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}.`);
       } else {
-        const { card } = await inboxApi.createCard({ project: input.project, title: input.title, notes: input.notes, refs: input.refs, column: input.mode === 'icebox' ? 'icebox' : 'backlog', idempotency_key: key });
         props.onChanged(card);
         setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}.`);
       }
       setCreating(null);
-      dialogCard.current = null;
+      resetDialog();
       return null;
     } catch (cause) {
       if (dialogCard.current) props.onChanged(dialogCard.current);
@@ -575,6 +638,14 @@ function BoardCard({
   const age = cardAge(card.heard_at, now);
   const mark = markOf(card);
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
+  // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
+  // on): one line, the age beside the title, never an empty second line.
+  const oneLine = !sent && !line && !mark;
+  const ageTip = (
+    <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
+      <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
+    </Tip>
+  );
   return (
     <li
       className="ib-bcard"
@@ -607,29 +678,30 @@ function BoardCard({
               {card.title}
             </span>
           </Tip>
+          {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
         </span>
-        <span className="ib-bc-bot">
-          <span className="ib-bc-line" dir="auto">
-            {sent ? (
-              <span className="ib-bc-sent">
-                {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
-                Sent to {sent}
-              </span>
-            ) : line ? (
-              line.you ? (
-                <>
-                  <b className="ib-bc-youw">You:</b> {line.text}
-                </>
-              ) : (
-                line.text
-              )
-            ) : null}
+        {!oneLine && (
+          <span className="ib-bc-bot">
+            <span className="ib-bc-line" dir="auto">
+              {sent ? (
+                <span className="ib-bc-sent">
+                  {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
+                  Sent to {sent}
+                </span>
+              ) : line ? (
+                line.you ? (
+                  <>
+                    <b className="ib-bc-youw">You:</b> {line.text}
+                  </>
+                ) : (
+                  line.text
+                )
+              ) : null}
+            </span>
+            {mark && <RefMark mark={mark} />}
+            {ageTip}
           </span>
-          {mark && <RefMark mark={mark} />}
-          <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
-            <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
-          </Tip>
-        </span>
+        )}
       </button>
     </li>
   );

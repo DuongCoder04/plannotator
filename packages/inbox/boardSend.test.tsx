@@ -88,7 +88,7 @@ beforeAll(async () => {
   // The Board is off by default: this person turned it on (config.json `inboxBoard`), so agents get the card action.
   mkdirSync(join(dir, 'data'), { recursive: true });
   writeFileSync(join(dir, 'data', 'config.json'), JSON.stringify({ inboxBoard: true }));
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '2'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '3'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), HOME: dir },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -242,4 +242,33 @@ test.if(hasDom)('New card, Send to an agent: the card first and named in the mes
   const mine = commands.filter((c) => c.body.includes(`card ${cards[0]!.id}`));
   expect(mine).toHaveLength(1);
   expect(mine[0]!.thread_id).toBe(cards[0]!.sent!.thread_id);
+});
+
+// What regresses: the answer to the create is lost, the person fixes the title, and every retry is
+// refused `idempotency_key_reused` (the same key with other words), or a retry makes a second card.
+test.if(hasDom)('New card into Backlog: the answer lost, the title edited, then Add again makes one card, with the new title', async () => {
+  await drawBoard(null);
+  act(() => document.querySelector<HTMLButtonElement>('[data-board-new]')!.click());
+  await until(() => !!document.querySelector('[data-new-card-title]'), 'New card');
+  const type = async (value: string) => {
+    const title = document.querySelector<HTMLInputElement>('[data-new-card-title]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(title, value);
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  await type('Retry me, first words');
+  loseAnswerOf = { method: 'POST', path: /^\/api\/inbox\/cards$/ };
+  const add = () => [...document.querySelectorAll<HTMLButtonElement>('[data-new-card-add]')].at(-1)!;
+  await act(async () => add().click());
+  await until(() => !!document.querySelector('[data-new-card-error]'), 'the error');
+  // The server made it; the window never heard.
+  expect(await cardsTitled('Retry me, first words')).toHaveLength(1);
+  await type('Retry me, better words');
+  await act(async () => add().click());
+  await until(() => !document.querySelector('[data-new-card-title]'), 'the dialog closed');
+  expect(await cardsTitled('Retry me, first words')).toHaveLength(0);
+  const cards = await cardsTitled('Retry me, better words');
+  expect(cards).toHaveLength(1);
+  expect(cards[0]!.column).toBe('backlog');
 });

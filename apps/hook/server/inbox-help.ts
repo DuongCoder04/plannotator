@@ -27,7 +27,7 @@ import { INBOX_SET_ASIDE_HEADING } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_ACTIONS_HEADING } from "@plannotator/core/inbox-actions";
 import { HARNESSES, harnessPanel, shellLine, type ConnectContext, type Harness } from "@plannotator/inbox/harnesses";
 import { join } from "node:path";
-import { INBOX_CONTRACT_EXAMPLE, INBOX_MCP_TOOLS, INBOX_SERVED_TOOLS, INBOX_WAIT_DEFAULT_MS, INBOX_WAIT_MAX_SECONDS } from "@plannotator/server/inbox-mcp";
+import { INBOX_CONTRACT_EXAMPLE, INBOX_DEFAULT_SERVED_TOOLS, INBOX_MCP_TOOLS, INBOX_SERVED_TOOLS, INBOX_WAIT_DEFAULT_MS, INBOX_WAIT_MAX_SECONDS } from "@plannotator/server/inbox-mcp";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
@@ -228,6 +228,12 @@ export interface InboxHelpOptions {
   platform?: ConnectContext["platform"];
   /** Where the agents' instructions files are (for the note section). Default: this process's home and environment. */
   agentEnvironment?: AgentEnvironment;
+  /**
+   * The person turned the Board on (config.json `inboxBoard`, read by the
+   * caller). Off (the default), the guide says nothing about cards: no `card`
+   * section and no Board bullet, as the Inbox serves no `card` action then.
+   */
+  board?: boolean;
 }
 
 export function inboxHelpPlatform(platform: NodeJS.Platform = process.platform): ConnectContext["platform"] {
@@ -241,6 +247,7 @@ function toolBlock(name: InboxMcpToolName): string[] {
 }
 
 export function formatInboxHelp(options: InboxHelpOptions): string {
+  const board = INBOX_CARD_ACTION_ON && options.board === true;
   const mcpCommand = [...options.command, "inbox", "mcp"];
   const mcp = shellLine(mcpCommand);
   const self = shellLine(options.command);
@@ -280,7 +287,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "- Long work you finished while the person was away: one short summary, with the files to look at in `attachments`.",
     "- A plan, document, HTML prototype or diagram the person should read and annotate (`attachments`).",
     "- A guided review of a finished code change (get_guide_brief, then submit_guide).",
-    ...(INBOX_CARD_ACTION_ON ? ["- Work that outlasts your reply (a lane, a PR, something you promised to send): a card on the person's Board (card), kept current as it moves. Only while the person has the Board on."] : []),
+    ...(board ? ["- Work that outlasts your reply (a lane, a PR, something you promised to send): a card on the person's Board (card), kept current as it moves. Only while the person has the Board on."] : []),
     "",
     "Do not use it for:",
     "",
@@ -315,8 +322,8 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "Agents ask, the person decides: no tool answers a question, approves or sends anything for the person. A refusal comes back as an error whose text starts with a code, `<code>: <message>`.",
     "",
-    // Every tool this Inbox serves (`card` only while INBOX_CARD_ACTION_ON lets it ship).
-    ...INBOX_SERVED_TOOLS.flatMap(toolBlock),
+    // Every tool this Inbox serves (`card` only while the Board is on and INBOX_CARD_ACTION_ON lets it ship).
+    ...(board ? INBOX_SERVED_TOOLS : INBOX_DEFAULT_SERVED_TOOLS).flatMap(toolBlock),
     "## Threads",
     "",
     "Where send_message (and submit_guide) puts a message; the first rule that applies wins:",

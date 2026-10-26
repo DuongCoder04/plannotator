@@ -7,7 +7,7 @@
  * answering while the Board is off, another site or a stale tab.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxCardRef } from "@plannotator/core/inbox-types";
@@ -15,6 +15,7 @@ import { inboxCardMarkRef } from "@plannotator/core/inbox-types";
 import { CARD_MARK_FAILURE_MS, CARD_MARK_FRESH_MS, CARD_MARK_REFRESH_MS, createCardMarks, githubMarksQuery } from "./inbox-card-marks";
 import { startInboxServer, type InboxServer } from "./inbox";
 import type { RefCards, RefCli, RefCommandResult, RefRunner } from "./ref-cards";
+import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 
 type Node = Record<string, unknown>;
 const pr = (state: string, title: string, isDraft = false): Node => ({ __typename: "PullRequest", state, isDraft, title });
@@ -165,11 +166,36 @@ describe("the marks reader", () => {
 const roots: string[] = [];
 const servers: InboxServer[] = [];
 const savedDataDir = process.env.PLANNOTATOR_DATA_DIR;
+const savedTailscale = process.env.PLANNOTATOR_INBOX_TAILSCALE;
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   process.env.PLANNOTATOR_DATA_DIR = savedDataDir;
+  if (savedTailscale === undefined) delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
+  else process.env.PLANNOTATOR_INBOX_TAILSCALE = savedTailscale;
 });
+
+/** A scripted tailscale that publishes the Inbox (as inbox-pins.test.ts): no real tailscale runs. */
+function scriptedTailscale(magic: string, owner: string): TailscaleRunner {
+  const serve = new Map<number, string>();
+  return (args) => {
+    const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+    if (args[0] === "status") return ok(JSON.stringify({ Self: { DNSName: `${magic}.`, UserID: 42 }, User: { "42": { ID: 42, LoginName: owner } } }));
+    if (args[1] === "status") {
+      if (serve.size === 0) return ok("{}");
+      return ok(
+        JSON.stringify({
+          TCP: Object.fromEntries([...serve.keys()].map((p) => [String(p), { HTTPS: true }])),
+          Web: Object.fromEntries([...serve].map(([p, proxy]) => [`${magic}:${p}`, { Handlers: { "/": { Proxy: proxy } } }])),
+        }),
+      );
+    }
+    const httpsPort = Number(/--https=(\d+)/.exec(args.join(" "))![1]);
+    if (args.includes("off")) serve.delete(httpsPort);
+    else serve.set(httpsPort, args.at(-1)!);
+    return ok(`https://${magic}:${httpsPort}/\n`);
+  };
+}
 
 async function world(board: boolean) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-card-marks-")));
@@ -224,5 +250,35 @@ describe("POST /api/inbox/cards/marks", () => {
     expect((await on.post({ cards: Array.from({ length: 201 }, () => c.id) })).status).toBe(422);
     expect(off.forge.calls).toEqual([]);
     expect(on.forge.graphql()).toHaveLength(0);
+  });
+
+  // What regresses: a page opened over the tailnet (another device) makes this computer run gh.
+  test("over the tailnet, even the owner is refused 403 local only, and nothing runs", async () => {
+    const MAGIC = "macbook-pro.tail0000.ts.net";
+    const OWNER = "ramos@example.com";
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-card-marks-tailnet-")));
+    roots.push(root);
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir, { recursive: true });
+    process.env.PLANNOTATOR_DATA_DIR = dataDir;
+    delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxTailscale: true, inboxBoard: true }));
+    const forge = scriptedGh({ "acme/widgets": { 12: pr("MERGED", "vite 8") } });
+    const server = await startInboxServer({ dataDir, binaryPath: null, refRunner: forge.run, phones: false, board: true, tailscale: scriptedTailscale(MAGIC, OWNER) });
+    servers.push(server);
+    const project = server.store.ensureProject({ name: "web", root: join(root, "web") });
+    const card = server.store.createCard({ project_id: project.id, by: { kind: "agent", host: "codex", session: "s", name: "Codex" }, title: "vite 8", prs: ["acme/widgets#12"], refs: [] }).card;
+    const listener = server.tailscale.listenerPort();
+    expect(listener).not.toBeNull();
+    const body = JSON.stringify({ serverSession: server.serverSession, cards: [card.id] });
+    const owner = { Host: `${MAGIC}:${server.port}`, "Tailscale-User-Login": OWNER, Origin: `https://${MAGIC}:${server.port}`, "Content-Type": "application/json" };
+    const over = await fetch(`http://127.0.0.1:${listener}/api/inbox/cards/marks`, { method: "POST", headers: owner, body });
+    expect(over.status).toBe(403);
+    expect(((await over.json()) as { code: string }).code).toBe("local_only");
+    expect(forge.calls).toEqual([]);
+    // The same request from this computer's window answers.
+    const local = await fetch(`http://127.0.0.1:${server.port}/api/inbox/cards/marks`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    expect(local.status).toBe(200);
+    expect(forge.graphql()).toHaveLength(1);
   });
 });
