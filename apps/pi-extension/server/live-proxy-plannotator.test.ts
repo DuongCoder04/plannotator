@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startInboxServer, type InboxServer } from "../../../packages/server/inbox";
+import { startInboxServer, type InboxServer } from "../../../packages/server/inbox.ts";
 import { buildForceAppFailureMessage, probeLiveAppTarget } from "../generated/live-probe.ts";
 import { LIVE_PROXY_PLANNOTATOR_UPSTREAM_MESSAGE, type LiveAppProxy } from "../generated/live-proxy-core.ts";
 import { startLiveAppProxyNode } from "../generated/live-proxy-node.ts";
