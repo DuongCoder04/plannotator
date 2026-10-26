@@ -1135,7 +1135,6 @@ jobs:
             plannotator-paste-win32-x64.exe
             plannotator-paste-win32-arm64.exe
             npm-packages/plannotator-opencode.tgz
-            npm-packages/plannotator-dsh.tgz
             npm-packages/plannotator-pi-extension.tgz
           sbom-path: release-sbom/${{ needs.release-security.outputs.sbom-name }}
 
@@ -1217,7 +1216,6 @@ jobs:
           bun run build:review
           bun run build:hook
           bun run build:opencode
-          bun run build:dsh
           bun run build:pi
 
       - name: Create package artifact directory
@@ -1226,10 +1224,6 @@ jobs:
       - name: Pack @plannotator/opencode
         working-directory: apps/opencode-plugin
         run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-opencode.tgz"
-
-      - name: Pack @plannotator/dsh
-        working-directory: apps/dsh-plugin
-        run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-dsh.tgz"
 
       - name: Pack @plannotator/pi-extension
         working-directory: apps/pi-extension
@@ -1240,6 +1234,28 @@ jobs:
         with:
           name: npm-packages
           path: npm-packages/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+      # @plannotator/dsh is new and kept out of the gated release path: it is
+      # built and packed here, after the gated packages are uploaded, into its
+      # own artifact, and none of the security gate, the SBOM attestation or
+      # the other publishes depend on it. Its steps may fail without failing
+      # the release; npm-publish publishes it last and tolerates its absence.
+      - name: Build and pack @plannotator/dsh
+        continue-on-error: true
+        run: |
+          bun run build:dsh
+          mkdir -p npm-packages-dsh
+          cd apps/dsh-plugin
+          bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages-dsh/plannotator-dsh.tgz"
+
+      - name: Upload @plannotator/dsh package artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package-dsh
+          path: npm-packages-dsh/plannotator-dsh.tgz
           if-no-files-found: error
           retention-days: 7
 
@@ -1355,9 +1371,18 @@ jobs:
 
       # Last on purpose, and allowed to fail: @plannotator/dsh is new, and
       # until its first version is published by hand and npm trusted
-      # publishing is set up for it, this step cannot succeed. A failure here
-      # must never hold back the two packages above. Remove
+      # publishing is set up for it, this step cannot succeed. Its package may
+      # also be missing (npm-package builds it in a step allowed to fail). A
+      # failure here must never hold back the two packages above. Remove
       # continue-on-error once the package publishes from this workflow.
+      - name: Download @plannotator/dsh package artifact
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package-dsh
+          path: npm-package-dsh
+          digest-mismatch: error
+
       - name: Publish @plannotator/dsh
         continue-on-error: true
-        run: npm publish ./npm-packages/plannotator-dsh.tgz --ignore-scripts --provenance --access public
+        run: npm publish ./npm-package-dsh/plannotator-dsh.tgz --ignore-scripts --provenance --access public
