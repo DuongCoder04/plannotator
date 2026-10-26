@@ -125,6 +125,16 @@ describe.if(hasDom)('parseHtmlElementAnchor (validated DTO)', () => {
 describe.if(hasDom)('parseBridgeMessage selection additions', () => {
   const rect = { top: 10, left: 10, width: 100, height: 20 };
 
+  test('pin visibility accepts booleans only', () => {
+    for (const visible of [true, false]) {
+      const message = { type: 'plannotator-bridge-pin-visibility', visible };
+      expect(hookModule!.parseBridgeMessage(message)).toEqual({ type: 'plannotator-bridge-pin-visibility', visible });
+    }
+    for (const visible of [undefined, null, 0, 'false', {}]) {
+      expect(hookModule!.parseBridgeMessage({ type: 'plannotator-bridge-pin-visibility', visible })).toBeNull();
+    }
+  });
+
   test('carries a validated anchor and the pinpoint flag', () => {
     const parsed = hookModule!.parseBridgeMessage({
       type: 'plannotator-bridge-selection',
@@ -268,6 +278,23 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     await postSelection({ ...selectionMessage, pinpoint: true });
     expect(document.querySelector('[data-comment-popover]')).not.toBeNull();
     expect(document.querySelector('.annotation-toolbar')).toBeNull();
+  });
+
+  test('a hidden slide hides its composer without losing the draft or its anchor', async () => {
+    const added: Annotation[] = [];
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: (ann) => added.push(ann) });
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    await typeComment('Keep this slide comment');
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: false });
+    expect(document.querySelector('[data-comment-popover]')).toBeNull();
+    expect(added).toHaveLength(0);
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: true });
+    expect(document.querySelector<HTMLTextAreaElement>('[data-comment-popover] textarea')?.value)
+      .toBe('Keep this slide comment');
+    await saveComment();
+    expect(added).toHaveLength(1);
+    expect(added[0]!.text).toBe('Keep this slide comment');
+    expect(added[0]!.htmlAnchor).toEqual(selectionMessage.anchor);
   });
 
   test('a plain drag selection still opens the markup toolbar', async () => {

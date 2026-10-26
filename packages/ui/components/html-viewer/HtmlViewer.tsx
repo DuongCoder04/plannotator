@@ -1341,8 +1341,8 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
             document.body,
           )}
 
-        {/* Comment popover portal */}
-        {!readOnly && hook.commentPopover &&
+        {/* CommentPopover's draft store preserves text/images while its slide is hidden. */}
+        {!readOnly && hook.pinVisible && hook.commentPopover &&
           createPortal(
             <CommentPopover
               anchorEl={hook.commentPopover.anchorEl}

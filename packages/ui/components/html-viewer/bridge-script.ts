@@ -1362,6 +1362,10 @@ export const BRIDGE_SCRIPT = `(function() {
     return pinpointBoxEl;
   }
   function positionPinpointBox(el) {
+    if (pendingPinHidden(el)) {
+      if (pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+      return;
+    }
     var r = el.getBoundingClientRect();
     var box = getPinpointBoxEl();
     box.style.display = 'block';
@@ -1516,6 +1520,7 @@ export const BRIDGE_SCRIPT = `(function() {
         setHoverHighlight(committedHighlightIdAtCached(lastPointer.x, lastPointer.y));
       }
       positionMultiTargetBoxes();
+      reconcilePendingPinVisibility();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
         return;
@@ -3507,7 +3512,30 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   }
 
+  // CSS-hidden slides are not scroll-out: hide the composer without cancelling
+  // its draft. Offscreen targets stay visible to support roaming multi-select.
+  var pendingPinVisible = true;
+  function pendingPinHidden(el) {
+    if (!el || !el.isConnected) return true;
+    if (targetStyleHidden(el)) return true;
+    var rect = el.getBoundingClientRect();
+    return layoutActive() && !rect.width && !rect.height;
+  }
+
+  function reconcilePendingPinVisibility() {
+    if (!pendingPinEl) return;
+    var visible = !pendingPinHidden(pendingPinEl);
+    for (var i = 0; !visible && i < pendingMultiTargets.length; i++) {
+      visible = !pendingPinHidden(pendingMultiTargets[i].el);
+    }
+    if (visible === pendingPinVisible) return;
+    pendingPinVisible = visible;
+    postToParent({ type: PREFIX + 'pin-visibility', visible: visible });
+    if (!visible && pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+  }
+
   function clearPendingPin() {
+    pendingPinVisible = true;
     pendingPinEl = null;
     pendingPinContext = null;
     pendingPinAnchor = null;
@@ -3563,6 +3591,7 @@ export const BRIDGE_SCRIPT = `(function() {
   }
 
   function positionBoxToEl(box, el) {
+    if (pendingPinHidden(el)) { box.style.display = 'none'; return; }
     var r = el.getBoundingClientRect();
     box.style.display = 'block';
     box.style.left = r.left + 'px';
@@ -3694,6 +3723,7 @@ export const BRIDGE_SCRIPT = `(function() {
    */
   function removeMultiTargetByKey(key, echo) {
     if (!key) return;
+    schedulePinpointReconcile();
     if (key === pendingPinKey) {
       if (!pendingMultiTargets.length) {
         // Last target gone — the draft is cancelled.
@@ -3777,6 +3807,7 @@ export const BRIDGE_SCRIPT = `(function() {
     var key = makeTargetKey();
     var box = createMultiTargetBox(el);
     pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, point: point, context: context, box: box });
+    schedulePinpointReconcile();
     postToParent({
       type: PREFIX + 'multi-target-added',
       key: key,
@@ -3911,6 +3942,7 @@ export const BRIDGE_SCRIPT = `(function() {
     multiSelectArmed = false;
     multiSelectMax = MAX_MULTI_TARGETS;
     pendingPinEl = el;
+    pendingPinVisible = true;
     pendingPinAnchor = buildElementAnchor(el);
     pendingPinKey = makeTargetKey();
     pendingPinLabel = pinpointHoverLabel(el);

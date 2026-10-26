@@ -3120,6 +3120,80 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     document.body.replaceChildren();
   });
 
+  test("pending pins hide with their slide, restore on return, and survive ordinary scrolling", async () => {
+    document.body.innerHTML = '<div id="draft-slide"><div id="draft-pin" aria-label="Diagram"></div></div>';
+    const slide = document.querySelector<HTMLElement>('#draft-slide')!;
+    const pin = document.querySelector<HTMLElement>('#draft-pin')!;
+    const visibility: boolean[] = [];
+    const listener = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data?.type === 'plannotator-bridge-pin-visibility') visibility.push(data.visible as boolean);
+    };
+    window.addEventListener('message', listener);
+    try {
+      await withLayout(async () => {
+        let top = 100;
+        pin.getBoundingClientRect = () => slide.style.display === 'none'
+          ? rectOf(0, 0, 0, 0) : rectOf(100, top, 200, 100);
+        postBridge({ type: 'plannotator-bridge-set-input-method', method: 'pinpoint' });
+        const selected = await collectMessages(['plannotator-bridge-selection'], () => clickAt(pin, 110, 110, false));
+        const reconcile = async () => {
+          window.dispatchEvent(new Event('resize'));
+          await flushOverlay();
+          await flushOverlay();
+        };
+        slide.style.display = 'none';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(false);
+        expect(document.querySelector<HTMLElement>('[data-plannotator-pinpoint-box]')?.style.display).toBe('none');
+        slide.style.display = '';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(true);
+        pin.style.visibility = 'hidden';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(false);
+        pin.style.visibility = '';
+        top = -1000;
+        await reconcile();
+        expect(visibility.at(-1)).toBe(true);
+        pin.remove();
+        await reconcile();
+        expect(visibility.at(-1)).toBe(false);
+        slide.appendChild(pin);
+        await reconcile();
+        expect(visibility.at(-1)).toBe(true);
+        // A draft spanning slides stays available while any target is shown.
+        const other = document.createElement('div');
+        other.setAttribute('aria-label', 'Other diagram');
+        slide.appendChild(other);
+        other.getBoundingClientRect = () => rectOf(400, 100, 100, 100);
+        postBridge({ type: 'plannotator-bridge-arm-multi-select', key: selected[0]!.targetKey, max: 16 });
+        pin.style.visibility = 'hidden';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(false);
+        clickAt(other, 410, 110, true);
+        await flushOverlay();
+        await flushOverlay();
+        expect(visibility.at(-1)).toBe(true);
+        other.style.visibility = 'hidden';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(false);
+        other.style.visibility = '';
+        await reconcile();
+        expect(visibility.at(-1)).toBe(true);
+        clickAt(other, 410, 110, true);
+        await flushOverlay();
+        await flushOverlay();
+        expect(visibility.at(-1)).toBe(false);
+      });
+    } finally {
+      window.removeEventListener('message', listener);
+      postBridge({ type: 'plannotator-bridge-cancel-selection' });
+      postBridge({ type: 'plannotator-bridge-set-input-method', method: 'drag' });
+      document.body.replaceChildren();
+    }
+  });
+
   test("style-hidden targets are unresolved-for-display (M2 visibility gate)", async () => {
     document.body.innerHTML = '<div id="slide">Slide content</div>';
     const slide = document.querySelector<HTMLElement>("#slide")!;

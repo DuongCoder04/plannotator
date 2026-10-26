@@ -123,6 +123,7 @@ type BridgeMessage =
   | { type: `${typeof PREFIX}multi-target-removed`; key: string }
   | { type: `${typeof PREFIX}pointer`; x: number; y: number; shift: boolean }
   | { type: `${typeof PREFIX}selection-clear` }
+  | { type: `${typeof PREFIX}pin-visibility`; visible: boolean }
   | { type: `${typeof PREFIX}selection-rect`; rect: BridgeRect }
   | { type: `${typeof PREFIX}keytype`; key: string }
   | { type: `${typeof PREFIX}mark-click`; id: string }
@@ -395,6 +396,8 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         : null;
     case `${PREFIX}selection-clear`:
       return { type: value.type };
+    case `${PREFIX}pin-visibility`:
+      return typeof value.visible === 'boolean' ? { type: value.type, visible: value.visible } : null;
     case `${PREFIX}selection-rect`: {
       const rect = parseBridgeRect(value.rect);
       return rect ? { type: value.type, rect } : null;
@@ -474,6 +477,8 @@ export function useHtmlAnnotation({
   UseAnnotationHighlighterReturn,
   "highlighterRef" | "highlightRange" | "highlightMathElement"
 > & {
+  /** Whether any pinned draft target is still displayed by the page. */
+  pinVisible: boolean;
   /** In-flight multi-select targets (index 0 = primary); empty outside pinpoint drafts. */
   draftTargets: HtmlDraftTarget[];
   /** Remove one draft target (chip X). Removing the last cancels the draft. */
@@ -495,6 +500,7 @@ export function useHtmlAnnotation({
   const [quickLabelPicker, setQuickLabelPicker] = useState<QuickLabelPickerState | null>(null);
   const [draftTargets, setDraftTargets] = useState<HtmlDraftTarget[]>([]);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const [pinVisible, setPinVisible] = useState(true);
 
   const pendingTextRef = useRef<string>("");
   // Element anchor for the pending pinpoint selection — committed onto the
@@ -665,7 +671,12 @@ export function useHtmlAnnotation({
         return;
       }
 
+      if (type === `${PREFIX}pin-visibility`) {
+        setPinVisible(message.visible);
+      }
+
       if (type === `${PREFIX}selection`) {
+        setPinVisible(true);
         pendingTextRef.current = message.text;
         pendingAnchorRef.current = message.anchor ?? null;
         pendingContextRef.current = message.context ?? null;
@@ -1157,6 +1168,7 @@ export function useHtmlAnnotation({
 
   return {
     toolbarState,
+    pinVisible,
     commentPopover,
     quickLabelPicker,
     handleAnnotate,
