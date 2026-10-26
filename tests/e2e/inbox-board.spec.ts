@@ -251,6 +251,7 @@ test("an agent's cards appear live as it makes and moves them, bold until opened
   ids.design = await make(codex, projects.workspaces, 'A design system like Linear’s', { column: 'your_look', you: 'Answer 11 questions in the thread' });
   ids.pricing = await make(claude, projects.plannotator, 'Pricing page', { say: 'Copy drafted' });
   ids.herdr = await make(claude, projects.plannotator, 'Herdr: PR triage, diffs', { column: 'building', say: 'Triage the open PRs first' });
+  await claude.card({ op: 'link', card_id: ids.herdr, ref: 'https://github.com/acme/widgets/issues/11', project_path: projects.plannotator });
   ids.vite = await make(codex, projects.workspaces, 'vite 8 and electron-forge', { column: 'building', say: 'vite 8 merged; forge next', pr: 'acme/widgets#12' });
   await codex.card({ op: 'link', card_id: ids.vite, ref: 'acme/widgets#11', project_path: projects.workspaces });
   ids.session = await make(pi, projects.machine, 'machine: session list', { column: 'building', say: 'Writing the store' });
@@ -270,12 +271,33 @@ test("an agent's cards appear live as it makes and moves them, bold until opened
   await expect(page.locator('[data-board-link="shipped"]')).toHaveText('Shipped 1');
   // No "on you" pill on a lane, no counts on a card.
   await expect(page.locator('.ib-onyou')).toHaveCount(0);
-  // Nothing fetched for links until a card is opened.
-  expect(world.forge.calls()).toEqual([]);
+  // Each lane card with a link carries its state as a mark, read for the cards on screen in
+  // batched GitHub queries (one per repository, never the hover card's one-by-one read), each
+  // link asked once (cached), nothing else fetched until a card is opened.
+  await expect(card(page, ids.vite).locator('[data-card-mark]')).toHaveAttribute('data-card-mark', 'merged');
+  await expect(card(page, ids.vite).locator('[data-card-mark]')).toHaveAttribute('data-card-mark-kind', 'pr');
+  await expect(card(page, ids.ticks).locator('[data-card-mark]')).toHaveAttribute('data-card-mark', 'open');
+  await expect(card(page, ids.herdr).locator('[data-card-mark]')).toHaveAttribute('data-card-mark', 'open');
+  await expect(card(page, ids.herdr).locator('[data-card-mark]')).toHaveAttribute('data-card-mark-kind', 'issue');
+  await expect(card(page, ids.auto).locator('[data-card-mark]')).toHaveCount(0);
+  // The state is in the card's accessible name.
+  await expect(card(page, ids.vite).locator('[data-card-open]')).toHaveAttribute('aria-label', /Pull request #12, merged$/);
+  await expect(card(page, ids.ticks).locator('[data-card-open]')).toHaveAttribute('aria-label', /Pull request #14, open$/);
+  await expect(card(page, ids.herdr).locator('[data-card-open]')).toHaveAttribute('aria-label', /Issue #11, open$/);
+  const markCalls = world.forge.calls();
+  expect(markCalls.every((line) => line.startsWith('gh marks ')), markCalls.join('\n')).toBe(true);
+  expect(markCalls.flatMap((line) => line.slice('gh marks '.length).split(',')).sort()).toEqual(['11', '12', '14']);
+  // A mark never moves a card: the merged PR's card stays in Building.
+  await expect(lane(page, 'building').locator(`[data-card-id="${ids.vite}"]`)).toBeVisible();
   // The five lanes fit the window: nothing scrolls sideways.
   expect(await page.locator('.ib-blanes').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await blur(page);
   await both(page, 'board-1440');
+  // The mark's component tooltip: the link, its title and its state.
+  await card(page, ids.vite).locator('[data-card-mark]').hover();
+  await expect(page.locator('[data-side].bg-popover')).toHaveText('#12 vite 8 for the review app · Merged', { timeout: 2000 });
+  await both(page, 'board-mark-tip-1440');
+  await blur(page);
 });
 
 test("an agent's drop shows above the lanes until the person looks", async () => {
@@ -310,7 +332,7 @@ test('the opened card: the panel beside the lanes, its links read once it opens,
   await expect(panel.locator('[data-card-ref="acme/widgets#12"]')).toHaveAttribute('data-ref-state', 'merged');
   await expect(panel.locator('[data-card-ref="acme/widgets#12"]')).toContainText('vite 8 for the review app');
   await expect(panel.locator('[data-card-ref="acme/widgets#11"]')).toContainText('Electron forge drops the icon');
-  expect([...world.forge.calls()].sort()).toEqual(['gh number=11', 'gh number=12']);
+  expect(world.forge.calls().filter((line) => line.startsWith('gh number=')).sort()).toEqual(['gh number=11', 'gh number=12']);
   await expect(panel).toContainText('Codex');
   // History reads the mock's short ref.
   await expect(panel.locator('section[aria-label="History"]')).toContainText('Linked #11');

@@ -4833,9 +4833,6 @@ a.ib-bc-main { cursor: pointer; }
 .ib-crdp-wait { color: var(--ib-onyou-fg); font-weight: 600; }
 .ib-crdp-tat { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .ib-crdp-ref { display: flex; align-items: center; gap: 10px; min-height: 34px; font-size: var(--ib-fs-14, 14px); min-width: 0; }
-.ib-crdp-ref > svg { flex: none; color: var(--muted-foreground); }
-.ib-crdp-ref[data-ref-state="open"] > svg { color: var(--success, oklch(0.6 0.15 150)); }
-.ib-crdp-ref[data-ref-state="merged"] > svg { color: var(--primary); }
 .ib-crdp-rn { font-family: var(--font-mono); font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); text-decoration: none; flex: none; }
 .ib-crdp-rn:hover { color: var(--foreground); text-decoration: underline; }
 .ib-crdp-rt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
