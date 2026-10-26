@@ -75,6 +75,9 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.79.1"
   },
+  "engines": {
+    "node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1"
+  },
   "devDependencies": {
     "glimpseui": "^0.8.0",
     "@earendil-works/pi-coding-agent": ">=0.79.1",
