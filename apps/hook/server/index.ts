@@ -162,7 +162,7 @@ import {
 } from "@plannotator/shared/prompts";
 import { buildReviewOutput, supportsReviewApprovalNotes } from "./review-output";
 import { registerSession, unregisterSession, listSessions, type SessionInfo } from "@plannotator/server/sessions";
-import { enableAutoUpdateNotice, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
+import { enableAutoUpdateNotice, isManagedBinary, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
 import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
@@ -789,6 +789,7 @@ process.on("exit", () => {
       current: getCliVersion(),
       enabled: resolveUpdateCheck(loadConfig()),
       now: Date.now(),
+      managed: isManagedBinary(process.execPath),
     });
     if (line) process.stderr.write(`${line}\n`);
   } catch {}
