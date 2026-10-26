@@ -237,11 +237,11 @@ You can replace the line with your own, in **Settings → Prompts** or in `~/.pl
 
 - `prompts.inbox.reminder` is for every agent. `prompts.inbox.runtimes.<agent>.reminder` (`claude-code`, `pi` or `opencode`) is for one agent and wins over the shared text.
 - Your text replaces the whole line, on every host, OpenCode 1 included. Each `plannotator_inbox` in it becomes the tool's name in that agent (on Claude Code, its full `mcp__…` name).
-- Empty or blank text counts as unset. At most 4,128 characters; longer text is refused when you save it and ignored if written by hand.
+- Empty or blank text counts as unset. At most 4,128 characters; longer text is refused when you save it, and ignored if written by hand (Settings → Prompts says so, with Reset to default).
 - With no `prompts.inbox` set, every agent gets the line above, exactly as before.
 - Like the switch, it is read when a session starts: a change applies to each agent's next session.
-- After a compaction on Claude Code, the plugin adds the line again with `echo`; a text holding a backslash or starting with `-` is not added again there.
-- **Settings → Prompts** shows the line in effect, marked Default or Custom, with **Edit**, **Reset to default** and each agent's own text (**Use shared** deletes it). It also lists the plan, review and annotate prompts (see [custom feedback](/docs/guides/custom-feedback/)), read-only. Changes are made on this computer only; through your tailnet the page is read-only.
+- After a compaction on Claude Code, the plugin adds your line again, exactly as you wrote it.
+- **Settings → Prompts** shows the line in effect, marked Default or Custom (on OpenCode 1, whose replies do not come back by themselves, its row shows the `wait_for_reply` wording it gets), with **Edit**, **Reset to default** and each agent's own text (**Use shared** deletes it). It also lists the plan, review and annotate prompts (see [custom feedback](/docs/guides/custom-feedback/)), read-only. Changes are made on this computer only; through your tailnet the page is read-only.
 
 ## Other agents
 

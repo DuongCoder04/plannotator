@@ -13,6 +13,7 @@ import type { InboxPromptsSettings } from "@plannotator/core/inbox-types";
 import { INBOX_REMINDER_MAX_CHARS, INBOX_REMINDER_TEXT, INBOX_REMINDER_TEXT_NO_WAKE } from "@plannotator/shared/inbox/connection";
 import { DEFAULT_PLAN_APPROVED_PROMPT, DEFAULT_REVIEW_DENIED_SUFFIX } from "@plannotator/shared/prompts";
 import { startInboxServer, type InboxServer } from "./inbox";
+import { createAgentEnvironmentFor } from "./inbox-agents";
 
 const roots: string[] = [];
 const servers: InboxServer[] = [];
@@ -62,6 +63,8 @@ describe("Settings → Prompts", () => {
       max: INBOX_REMINDER_MAX_CHARS,
       on: prompts.reminder.on,
       editable: true,
+      wakes: { "claude-code": true, pi: true, opencode: true },
+      over: { shared: null, runtimes: { "claude-code": null, pi: null, opencode: null } },
     });
     expect(prompts.others.map((item) => item.key)).toEqual([
       "prompts.plan.approved",
@@ -140,6 +143,39 @@ describe("Settings → Prompts", () => {
     // Text over the cap put in config.json by hand is ignored on read: the page shows the default.
     writeFileSync(join(dataDir, "config.json"), JSON.stringify({ prompts: { inbox: { reminder: `${atCap}y` } } }));
     expect((await read(server)).reminder.shared).toBeNull();
+  });
+
+  test("text over the cap written into config.json by hand: reported as `over` (its length), so the page can say it is ignored", async () => {
+    const long = "y".repeat(INBOX_REMINDER_MAX_CHARS + 72);
+    const { server } = await world({ prompts: { inbox: { reminder: long, runtimes: { pi: { reminder: long }, opencode: { reminder: "OC." } } } } });
+    const reminder = (await read(server)).reminder;
+    expect([reminder.shared, reminder.runtimes.pi, reminder.runtimes.opencode]).toEqual([null, null, "OC."]);
+    expect(reminder.over).toEqual({ shared: INBOX_REMINDER_MAX_CHARS + 72, runtimes: { "claude-code": null, pi: INBOX_REMINDER_MAX_CHARS + 72, opencode: null } });
+    // Reset to default deletes it like any other text.
+    const reset = await post(server, { serverSession: server.serverSession, prompts: { inbox: { reminder: null, runtimes: { pi: { reminder: null } } } } });
+    expect(((await reset.json()) as { prompts: InboxPromptsSettings }).prompts.reminder.over).toEqual({ shared: null, runtimes: { "claude-code": null, pi: null, opencode: null } });
+  });
+
+  test("OpenCode 1 (its config's `plugin` list): `wakes.opencode` is false, so the page shows it the no-wake default", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-prompts-oc1-")));
+    roots.push(root);
+    const home = join(root, "home");
+    const opencodeDir = join(root, "opencode");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(opencodeDir, { recursive: true });
+    writeFileSync(join(opencodeDir, "opencode.json"), JSON.stringify({ plugin: [] }));
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir, { recursive: true });
+    previousDataDir = process.env.PLANNOTATOR_DATA_DIR;
+    process.env.PLANNOTATOR_DATA_DIR = dataDir;
+    const server = await startInboxServer({
+      dataDir,
+      agentEnvironment: createAgentEnvironmentFor({ platform: "linux", homeDir: home, env: { HOME: home, PATH: "", OPENCODE_CONFIG_DIR: opencodeDir } }),
+    });
+    servers.push(server);
+    expect((await read(server)).reminder.wakes).toEqual({ "claude-code": true, pi: true, opencode: false });
+    writeFileSync(join(opencodeDir, "opencode.json"), JSON.stringify({ plugins: [] }));
+    expect((await read(server)).reminder.wakes).toEqual({ "claude-code": true, pi: true, opencode: true });
   });
 
   test("a malformed change is refused before anything is written", async () => {

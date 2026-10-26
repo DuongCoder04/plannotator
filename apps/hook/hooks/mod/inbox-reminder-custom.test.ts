@@ -75,7 +75,7 @@ describe('the mod and packages/shared resolve prompts.inbox the same way', () =>
       { name: 'other', text: 'x' },
       { name: INBOX_REMINDER_BLOCK, text: `Ask upstream, then ${TOOL}.` },
     ])
-    // echo would read a backslash as an escape: such a text is not published for the compact hook.
-    expect(inboxReminderEnvValue(true, TOOL, 'a\\nb')).toBeUndefined()
+    // The compact hook prints it with printf, so any text is published as it is.
+    expect(inboxReminderEnvValue(true, TOOL, 'a\\nb')).toBe('a\\nb')
   })
 })

@@ -70,7 +70,19 @@ export function PromptsSection({
 
   const defaultText = reminder.defaults.wake;
   const sharedText = reminder.shared ?? defaultText;
-  const currentOf = (slot: Slot) => (slot === 'shared' ? sharedText : (reminder.runtimes[slot] ?? sharedText));
+  /** An agent's default: the no-wake line where its reply does not come back by itself (OpenCode 1). */
+  const wakes = (host: InboxPromptHost) => reminder.wakes?.[host] !== false;
+  const agentDefault = (host: InboxPromptHost) => (wakes(host) ? defaultText : reminder.defaults.no_wake);
+  /** What an agent gets now: its own text, else the shared text, else its own default. */
+  const effectiveOf = (host: InboxPromptHost) => reminder.runtimes[host] ?? reminder.shared ?? agentDefault(host);
+  const currentOf = (slot: Slot) => (slot === 'shared' ? sharedText : effectiveOf(slot));
+  const overShared = reminder.over?.shared ?? null;
+  /** A calm line for text config.json holds over the limit (ignored, so the next text in line goes). */
+  const overNote = (length: number, slot: Slot) => (
+    <p className="pm-over" data-prompt-over={slot}>
+      The text in config.json is {length.toLocaleString('en-US')} characters, over the {reminder.max.toLocaleString('en-US')} limit, so it is ignored.
+    </p>
+  );
 
   // A field that opens takes focus with the caret at its end, sized to its text.
   useLayoutEffect(() => {
@@ -181,7 +193,7 @@ export function PromptsSection({
         <span className="pm-sp" />
         {reminder.editable && !sharedEditing && (
           <>
-            {sharedCustom && (
+            {(sharedCustom || overShared !== null) && (
               <Tip content="Delete prompts.inbox.reminder: every agent gets Plannotator's text again">
                 <button
                   type="button"
@@ -210,6 +222,7 @@ export function PromptsSection({
           <p className="pm-text" data-prompt-text="shared">
             {sharedText}
           </p>
+          {!sharedCustom && overShared !== null && overNote(overShared, 'shared')}
           {sharedCustom && (
             <>
               <button type="button" className="pm-disc" aria-expanded={showDefault} aria-controls={defaultId} onClick={() => setShowDefault((open) => !open)} data-prompt-show-default="">
@@ -233,6 +246,10 @@ export function PromptsSection({
     const own = reminder.runtimes[host];
     const isEditing = editing === host;
     const name = AGENT_NAME[host];
+    const over = own === null ? (reminder.over?.runtimes[host] ?? null) : null;
+    // OpenCode 1 with nothing custom: its own default (the no-wake line), shown, since it differs from the one above.
+    const ownDefault = own === null && reminder.shared === null && !wakes(host);
+    const status = own !== null ? 'Own text' : ownDefault ? 'Uses the default for OpenCode 1' : 'Uses the shared text';
     return (
       <div className="pm-ag" data-agent={host} data-prompt-slot={host} key={host}>
         <div className="ib-prow">
@@ -240,7 +257,7 @@ export function PromptsSection({
           <span className="ib-txt">
             <span className="ib-l">{name}</span>
             <span className="ib-desc" data-prompt-status={host}>
-              {own !== null ? 'Own text' : 'Uses the shared text'}
+              {status}
               {!reminder.on[host] && (
                 <>
                   {' · Reminder off in '}
@@ -254,7 +271,7 @@ export function PromptsSection({
           <span className="ib-ctl">
             {reminder.editable && !isEditing && (
               <>
-                {own !== null && (
+                {(own !== null || over !== null) && (
                   <Tip content={`Delete ${name}'s own text: it gets the shared text again`}>
                     <button
                       type="button"
@@ -282,15 +299,19 @@ export function PromptsSection({
         </div>
         {isEditing ? (
           <div className="pm-ag-body">{editor(host)}</div>
-        ) : own !== null ? (
+        ) : own !== null || ownDefault ? (
           <div className="pm-ag-body">
-            <p className="pm-text" data-prompt-text={host}>
-              {own}
+            <p className={`pm-text${ownDefault ? ' pm-faint' : ''}`} data-prompt-text={host}>
+              {own ?? agentDefault(host)}
             </p>
+            {over !== null && overNote(over, host)}
             {errorLine(host)}
           </div>
-        ) : error?.slot === host ? (
-          <div className="pm-ag-body">{errorLine(host)}</div>
+        ) : over !== null || error?.slot === host ? (
+          <div className="pm-ag-body">
+            {over !== null && overNote(over, host)}
+            {errorLine(host)}
+          </div>
         ) : null}
       </div>
     );

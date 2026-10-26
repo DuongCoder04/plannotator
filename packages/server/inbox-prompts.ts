@@ -70,8 +70,24 @@ function reminderSlot(config: PlannotatorConfig, host: InboxPromptHost | null): 
   return inboxReminderCustomText({ prompts: { inbox: { runtimes: { [host]: { reminder: own } } } } }, host);
 }
 
-/** What Settings → Prompts reads. `on`: whether each agent gets a reminder at all; `editable`: this page may change it. */
-export function inboxPromptsModel(config: PlannotatorConfig, on: Record<InboxPromptHost, boolean>, editable: boolean): InboxPromptsSettings {
+/** The length of text config.json holds in a reminder slot that is over the cap (and so ignored), else null. */
+function overCap(value: unknown): number | null {
+  return typeof value === "string" && value.trim() !== "" && value.length > INBOX_REMINDER_MAX_CHARS ? value.length : null;
+}
+
+/**
+ * What Settings → Prompts reads. `on`: whether each agent gets a reminder at
+ * all; `editable`: this page may change it; `wakes`: false for an agent whose
+ * reply does not come back by itself (OpenCode 1), whose default is the
+ * no-wake line.
+ */
+export function inboxPromptsModel(
+  config: PlannotatorConfig,
+  on: Record<InboxPromptHost, boolean>,
+  editable: boolean,
+  wakes: Record<InboxPromptHost, boolean> = { "claude-code": true, pi: true, opencode: true },
+): InboxPromptsSettings {
+  const inbox = record(record(config.prompts)?.inbox);
   const prompts = record(config.prompts);
   const others: InboxPromptItem[] = INBOX_OTHER_PROMPTS.map((item) => {
     const section = record(prompts?.[item.group]);
@@ -100,6 +116,13 @@ export function inboxPromptsModel(config: PlannotatorConfig, on: Record<InboxPro
       max: INBOX_REMINDER_MAX_CHARS,
       on,
       editable,
+      wakes,
+      over: {
+        shared: overCap(inbox?.reminder),
+        runtimes: Object.fromEntries(
+          INBOX_PROMPT_HOSTS.map((host) => [host, overCap(record(record(inbox?.runtimes)?.[host])?.reminder)]),
+        ) as Record<InboxPromptHost, number | null>,
+      },
     },
     others,
   };

@@ -206,14 +206,13 @@ export function reminderSessionResumed(startedAt: unknown, processStartedAt: num
  * The value of `PLANNOTATOR_INBOX_REMINDER`: the reminder naming the tool by
  * its registered full name while the reminder is on, else undefined (unset,
  * which also clears a value inherited from a parent Claude Code). The hook
- * prints it with `echo`, so a value with a backslash (dash's `echo` reads
- * escapes) or a leading `-` is never published; neither occurs in the fixed
- * text or an engine-made tool name.
+ * prints it with `printf "%s\n"` (hooks.json), so every byte comes out as it
+ * is, a custom text's backslashes, leading `-`, `%`, quotes and `$(...)`
+ * included, and nothing in it runs.
  */
 export function inboxReminderEnvValue(on: boolean, toolName: string | null, custom: string | null = null): string | undefined {
   if (!on || !toolName) return undefined
-  const text = inboxReminderFor(custom, toolName)
-  return text.includes('\\') || text.startsWith('-') ? undefined : text
+  return inboxReminderFor(custom, toolName)
 }
 
 /** `$.store` key: the Inbox tool list last read live, used when the Inbox is stopped at session start. */

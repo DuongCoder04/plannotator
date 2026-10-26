@@ -1916,6 +1916,16 @@ export interface InboxPromptsSettings {
     max: number;
     /** Whether each agent gets a reminder at all (`inboxReminder`, with the Inbox tool). */
     on: Record<InboxPromptHost, boolean>;
+    /**
+     * Whether each agent's reply comes back by itself, so its default is `defaults.wake`;
+     * false: the no-wake default (OpenCode 1). Absent from an older Inbox: all true.
+     */
+    wakes?: Record<InboxPromptHost, boolean>;
+    /**
+     * Text config.json holds that is over `max` and so is ignored (the agent gets the
+     * next text in line): its length, else null. Absent from an older Inbox.
+     */
+    over?: { shared: number | null; runtimes: Record<InboxPromptHost, number | null> };
     /** Whether this page may change it: false through the tailnet (it reaches every agent on this computer). */
     editable: boolean;
   };

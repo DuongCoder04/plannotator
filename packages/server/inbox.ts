@@ -1501,7 +1501,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const on = Object.fromEntries(
       INBOX_TOOL_HOSTS.map((host) => [host, !(host === "claude-code" && modOff) && resolveInboxReminder(config, env, host)]),
     ) as Record<InboxToolHost, boolean>;
-    return inboxPromptsModel(config, on, via === "local");
+    // OpenCode 1 cannot bring a reply back as a turn: its default is the no-wake line.
+    const wakes = { "claude-code": true, pi: true, opencode: inboxPluginStatus("opencode", agentEnvironment)?.generation !== "1" };
+    return inboxPromptsModel(config, on, via === "local", wakes);
   };
 
   /** What Settings and the connect snippets read. */

@@ -236,6 +236,50 @@ test.skipIf(!hasDom)('the plan, review and annotate prompts: one folded row, ope
   expect(el.querySelectorAll('[data-prompts-list] textarea, [data-prompts-list] button')).toHaveLength(0);
 });
 
+test.skipIf(!hasDom)('text over the limit in config.json: the default stays marked, a calm line says it is ignored, and Reset to default / Use shared delete it', async () => {
+  const start = model({
+    over: { shared: 4200, runtimes: { 'claude-code': null, pi: 5000, opencode: null } },
+  });
+  const sent = server(start);
+  const el = mount(start);
+  expect(q(el, '[data-prompt-slot="shared"] .ib-chip')?.textContent).toBe('Default');
+  expect(q(el, '[data-prompt-text="shared"]')?.textContent).toBe(WAKE);
+  expect(q(el, '[data-prompt-over="shared"]')?.textContent).toBe('The text in config.json is 4,200 characters, over the 4,128 limit, so it is ignored.');
+  expect(q(el, '[data-prompt-over="pi"]')?.textContent).toBe('The text in config.json is 5,000 characters, over the 4,128 limit, so it is ignored.');
+  expect(q(el, '[data-prompt-status="pi"]')?.textContent).toBe('Uses the shared text');
+  // Calm: not an alert, not the error line.
+  expect(el.querySelectorAll('[role="alert"]')).toHaveLength(0);
+  await click(q(el, '[data-prompt-reset]'));
+  expect(sent.at(-1)).toEqual({ inbox: { reminder: null } });
+  await click(q(el, '[data-prompt-use-shared="pi"]'));
+  expect(sent.at(-1)).toEqual({ inbox: { runtimes: { pi: { reminder: null } } } });
+});
+
+test.skipIf(!hasDom)("OpenCode 1: its row shows the default it really gets (the no-wake line), and Edit starts from it; a shared text replaces it", async () => {
+  const NO_WAKE = 'Plannotator Inbox is on: … Call wait_for_reply when you need their answer.';
+  const start: InboxPromptsSettings = {
+    ...model({ wakes: { 'claude-code': true, pi: true, opencode: false } }),
+  };
+  start.reminder.defaults.no_wake = NO_WAKE;
+  server(start);
+  const el = mount(start);
+  const opencode = q(el, '[data-agent="opencode"]')!;
+  expect(q(opencode, '[data-prompt-status="opencode"]')?.textContent).toBe('Uses the default for OpenCode 1 · Reminder off in Agents');
+  expect(q(opencode, '[data-prompt-text="opencode"]')?.textContent).toBe(NO_WAKE);
+  expect(q(el, '[data-prompt-text="pi"]')).toBeNull();
+  await click(q(opencode, '[data-prompt-edit="opencode"]'));
+  expect(q<HTMLTextAreaElement>(el, '[data-prompt-field="opencode"]')!.value).toBe(NO_WAKE);
+  await click(q(el, '[data-prompt-cancel="opencode"]'));
+  act(() => root!.unmount());
+  const shared = model({ shared: 'Shared.', wakes: { 'claude-code': true, pi: true, opencode: false } });
+  act(() => {
+    root = createRoot(host!);
+    root.render(<PromptsSection prompts={shared} />);
+  });
+  expect(q(host!, '[data-prompt-status="opencode"]')?.textContent).toBe('Uses the shared text · Reminder off in Agents');
+  expect(q(host!, '[data-prompt-text="opencode"]')).toBeNull();
+});
+
 test.skipIf(!hasDom)('through the tailnet: read-only, no Edit anywhere', () => {
   const el = mount(model({ editable: false, shared: 'Mine.', runtimes: { 'claude-code': null, pi: 'Pi.', opencode: null } }));
   expect(el.querySelectorAll('[data-prompt-edit], [data-prompt-reset], [data-prompt-use-shared]')).toHaveLength(0);
