@@ -2193,7 +2193,7 @@ function Inbox() {
       const result = await inboxApi.checkForUpdate();
       setUpdateDetails(result);
       setUpdate(result.update);
-      if (!result.checked.ok) setSettingsError(`Could not reach GitHub: ${result.checked.error ?? 'the check failed'}.`);
+      if (!result.checked.ok) setSettingsError(`Couldn't check for updates: ${result.checked.error ?? 'the check failed'}.`);
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : 'The check failed.');
     } finally {

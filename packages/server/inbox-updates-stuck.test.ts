@@ -175,7 +175,7 @@ describe("checking that fails for hours is shown, never silent", () => {
     while (clock - T0 < RELEASE_CHECK_FAILING_AFTER_MS) await advance(RELEASE_CHECK_RETRY_MS);
     const failing = (await waitFor(() => list(server), (l) => !!l.update_check_failing)).update_check_failing!;
     expect(failing.since).toBe(new Date(T0).toISOString());
-    expect(failing.error).toContain("page: HTTP 200");
+    expect(failing.error).toBe("release page didn't answer as expected");
     const about = await details(server);
     expect(about.check.failing?.since).toBe(failing.since);
     expect(about.command).toContain("plannotator.ai/install.");
@@ -201,7 +201,7 @@ describe("checking that fails for hours is shown, never silent", () => {
     await waitFor(async () => pageRequests, (n) => n >= 1);
     while (clock - T0 < RELEASE_CHECK_FAILING_AFTER_MS) await advance(RELEASE_CHECK_RETRY_MS);
     const failing = (await waitFor(() => list(server), (l) => !!l.update_check_failing)).update_check_failing!;
-    expect(failing.error).toContain("page: HTTP 200");
+    expect(failing.error).toBe("release page didn't answer as expected");
   });
 
   test("a failing run from before the machine slept is not shown before the next check runs", async () => {

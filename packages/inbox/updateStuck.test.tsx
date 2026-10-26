@@ -44,7 +44,7 @@ const update = (state: InboxUpdate['state']): InboxUpdate => ({
   action: 'script',
   releaseUrl: 'https://github.com/backnotprop/plannotator/releases/tag/v0.28.32',
 });
-const failing: UpdateCheckFailing = { since: new Date(Date.now() - 4 * 3600_000).toISOString(), error: 'page: HTTP 200; api: HTTP 403, rate limited' };
+const failing: UpdateCheckFailing = { since: new Date(Date.now() - 4 * 3600_000).toISOString(), error: "release page didn't answer as expected; GitHub API rate-limited" };
 const details = (over: Partial<UpdateDetails['check']> = {}, latest: UpdateDetails['latest'] = { version: '0.28.31', fetched_at: new Date().toISOString(), published_at: null }): UpdateDetails => ({
   update: null,
   current: '0.28.31',
@@ -130,7 +130,10 @@ test.skipIf(!hasDom)('General: ready restarts onto it; failed opens the failure 
 test.skipIf(!hasDom)('General: checking failing for hours says since when and why, with the install command', () => {
   const el = row({ failing, details: details({ failing }) });
   expect(el.querySelector('[data-settings-update]')?.getAttribute('data-update-state')).toBe('check-failing');
-  expect(el.querySelector('[data-general-update-status]')?.textContent).toMatch(/^Can't check for updates since .* \(page: HTTP 200; api: HTTP 403, rate limited\)$/);
+  // The same line as About: since when, why in plain words, when it last tried.
+  expect(el.querySelector('[data-general-update-status]')?.textContent).toMatch(
+    /^Can't check for updates since .* \(release page didn't answer as expected; GitHub API rate-limited\) · last tried today/,
+  );
   expect(el.querySelector('[data-update-check-failing] code')?.textContent).toBe(COMMAND);
   // An available update wins: the failing line is for when nothing else can be offered.
   act(() => root!.render(<GeneralUpdateRow version="0.28.31" details={details({ failing })} update={update('available')} restarting={false} checking={false} failing={failing} onCheckNow={() => {}} onUpdate={() => {}} onWhatsNew={() => {}} />));
@@ -141,7 +144,7 @@ test.skipIf(!hasDom)('About: the failing check replaces "the last check failed" 
   const el = render(
     <AboutBlock
       version="0.28.31"
-      details={details({ error: 'page: HTTP 200', failing })}
+      details={details({ error: "release page didn't answer as expected", failing })}
       switches={{ update_check: { on: true, env: null }, auto_update: { on: false, env: null } }}
       checking={false}
       error={null}
@@ -150,7 +153,7 @@ test.skipIf(!hasDom)('About: the failing check replaces "the last check failed" 
     />,
   );
   // Never "Checked … · can't check …": it says when it last tried.
-  expect(el.querySelector('[data-update-status]')?.textContent).toMatch(/^Can't check for updates since .*rate limited\) · last tried today/);
+  expect(el.querySelector('[data-update-status]')?.textContent).toMatch(/^Can't check for updates since .*rate-limited\) · last tried today/);
   expect(el.querySelector('[data-update-check-failing] code')?.textContent).toBe(COMMAND);
 });
 
@@ -159,7 +162,7 @@ test.skipIf(!hasDom)('the sidebar row: a real button named by its words, saying 
   const el = render(<CheckFailingRow failing={failing} onOpen={() => opened++} />);
   const b = el.querySelector<HTMLButtonElement>('[data-update-check-failing-row]')!;
   expect(b.textContent).toContain("Can't check for updates");
-  expect(b.textContent).toContain('rate limited');
+  expect(b.textContent).toContain('GitHub API rate-limited');
   act(() => b.click());
   expect(opened).toBe(1);
 });

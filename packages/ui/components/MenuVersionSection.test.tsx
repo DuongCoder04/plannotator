@@ -69,12 +69,12 @@ test.skipIf(!hasDom)('checking for updates failing for hours: a quiet line with 
     info({
       updateAvailable: false,
       latestVersion: '0.28.10',
-      checkFailing: { since: '2026-10-26T09:14:00Z', error: 'page: HTTP 200' },
+      checkFailing: { since: '2026-10-26T09:14:00Z', error: "release page didn't answer as expected" },
       command: 'curl -fsSL https://plannotator.ai/install.sh | bash',
     }),
   );
   expect(el.querySelector('[data-menu-update-check-failing]')?.textContent).toContain("Can't check for updates since");
-  expect(el.querySelector('[data-menu-update-check-failing]')?.textContent).toContain('page: HTTP 200');
+  expect(el.querySelector('[data-menu-update-check-failing]')?.textContent).toContain("release page didn't answer as expected");
   expect(el.querySelector('[data-menu-update-command] code')?.textContent).toBe('curl -fsSL https://plannotator.ai/install.sh | bash');
   expect(buttonNamed(el, 'Update now')).toBeUndefined();
   expect(el.textContent).not.toContain('is available');

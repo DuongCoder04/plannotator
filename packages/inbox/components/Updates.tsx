@@ -664,7 +664,7 @@ function SkippedReleases({ since, skipped }: { since: string; skipped: WhatsNewM
 
 // ──────────────────────── Checking for updates is failing ────────────────────────
 
-/** "can't check for updates since 9:14 AM (HTTP 403)", from the server's failing record. */
+/** "can't check for updates since 9:14 AM (GitHub API rate-limited)", from the server's failing record. */
 export function checkFailingWords(failing: UpdateCheckFailing): string {
   const day = dayWords(failing.since);
   const when = day === 'today' ? clockTime(failing.since) : day === 'yesterday' ? `yesterday ${clockTime(failing.since)}` : day;
@@ -705,6 +705,15 @@ function whenWords(iso: string): string {
   return day === 'today' || day === 'yesterday' ? `${day} ${clockTime(iso)}` : day;
 }
 
+/**
+ * "Can't check for updates since 9:14 AM (…) · last tried 2:50 PM": the
+ * failing line as Settings → General and About both show it.
+ */
+function checkFailingStatus(failing: UpdateCheckFailing, details: UpdateDetails | null): string {
+  const tried = details?.check.last_attempt_at ? ` · last tried ${whenWords(details.check.last_attempt_at)}` : '';
+  return `${checkFailingWords(failing).replace(/^./, (c) => c.toUpperCase())}${tried}`;
+}
+
 /** A successful check this recent backs "Up to date". */
 export const UP_TO_DATE_FRESH_MS = 24 * 60 * 60 * 1000;
 
@@ -719,10 +728,7 @@ export function checkStatusWords(details: UpdateDetails | null, news: boolean, n
   if (!details) return '';
   const check = details.check;
   if (!check.on) return 'Update checks are off';
-  if (check.failing) {
-    const tried = check.last_attempt_at ? ` · last tried ${whenWords(check.last_attempt_at)}` : '';
-    return `${checkFailingWords(check.failing).replace(/^./, (c) => c.toUpperCase())}${tried}`;
-  }
+  if (check.failing) return checkFailingStatus(check.failing, details);
   if (check.last_failed_at) return `Last check failed ${whenWords(check.last_failed_at)}${check.error ? ` (${check.error})` : ''}`;
   const ok = details.latest?.fetched_at ?? null;
   const okAt = ok ? Date.parse(ok) : NaN;
@@ -780,7 +786,7 @@ export function GeneralUpdateRow({
         </button>
       </>
     );
-  else if (failing) status = checkFailingWords(failing).replace(/^./, (c) => c.toUpperCase());
+  else if (failing) status = checkFailingStatus(failing, details);
   // A newer release known but not offered (checks off, or Remind me tomorrow): never "Up to date".
   else status = [checkStatusWords(details, !!known), known && `${known} is available`].filter(Boolean).join(' · ');
   const label = restarting

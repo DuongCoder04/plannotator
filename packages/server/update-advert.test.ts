@@ -235,7 +235,7 @@ describe("updateCheckFailing on the payloads (checking has failed for hours)", (
     const annotate = await startAnnotateServer({ markdown: "# T", filePath: join(dataDir, "t.md"), htmlContent: MINIMAL_HTML, origin: "claude-code" });
     const review = await startReviewServer({ rawPatch: PATCH, gitRef: "HEAD", htmlContent: MINIMAL_HTML, origin: "claude-code" });
     try {
-      const expected = { since: new Date(since).toISOString(), error: "page: HTTP 200", command: expect.stringContaining("plannotator.ai/install.") };
+      const expected = { since: new Date(since).toISOString(), error: "release page didn't answer as expected", command: expect.stringContaining("plannotator.ai/install.") };
       for (const url of [plan.url, annotate.url]) {
         const payload = await planPayload(url);
         expect(payload.updateCheckFailing).toMatchObject(expected);

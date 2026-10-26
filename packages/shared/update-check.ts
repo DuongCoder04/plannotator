@@ -26,7 +26,7 @@
  * Node-only (node:fs + global fetch), vendored to Pi.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPlannotatorDataDir } from "./data-dir";
 
@@ -60,13 +60,17 @@ export const RELEASE_PAGE_RATE_LIMITED_RETRY_MS = 60 * 60 * 1000;
  */
 export const RELEASE_CHECK_FAILING_AFTER_MS = 3 * 60 * 60 * 1000;
 /**
- * The failure that keeps the run going must be this recent: a check retries
- * 10 minutes after a failure (at most an hour after the page's rate limit), so
- * an older one means nothing has checked since (the machine slept, checks were off).
+ * "Can't check" shows only while the latest failure is this recent: a check
+ * retries 10 minutes after a failure (at most an hour after the page's rate
+ * limit), so an older one means nothing has checked since (the machine
+ * slept, checks were off). The run itself (`failingSince`) is kept across
+ * such gaps until a check succeeds, each gap counting as at most this much
+ * (`failingFor`): a machine that checks only every couple of hours (a review
+ * window now and then, a laptop that sleeps a lot) still reaches
+ * RELEASE_CHECK_FAILING_AFTER_MS within three failed checks, and one failure
+ * right after a week asleep does not.
  */
 export const RELEASE_CHECK_FAILURE_RECENT_MS = 90 * 60 * 1000;
-/** An attempt claimed after the last failure counts as that run while it may still be in flight (two requests of 8 s). */
-const RELEASE_CHECK_IN_FLIGHT_MS = 60 * 1000;
 /** update.log is moved to update.log.1 (one generation kept) once it passes this. */
 export const UPDATE_LOG_MAX_BYTES = 1024 * 1024;
 /** Each request gives up after this. */
@@ -179,6 +183,13 @@ export interface UpdateState {
      * across the claim of the next attempt): what "can't check since" names.
      */
     failingSince?: number;
+    /**
+     * How long the run has been failing as of its latest failure (`failedAt`),
+     * each gap between two failures counted as at most
+     * RELEASE_CHECK_FAILURE_RECENT_MS: checks hours apart still add up to
+     * RELEASE_CHECK_FAILING_AFTER_MS, a sleep counts as no more than that.
+     */
+    failingFor?: number;
     /** Failed checks in a row; update.log gets a line only when the error changes. */
     failures?: number;
     /** The errors the last logged failure named, whichever source: what "changes" compares. */
@@ -227,49 +238,79 @@ export function updateCheckPaths(dataDir: string = getPlannotatorDataDir()) {
 }
 
 /**
- * update-state.json as this process last wrote it, while writing it fails (a
- * read-only data dir, a root-owned file, a folder in its place): the throttle,
- * the cache and the run of failures then live in memory, so the machine still
- * checks (every 10 minutes at most per process) and still shows what it
- * learns, instead of failing before it asks. Cleared by the next write that lands.
+ * This process's own changes that update-state.json could not take (a
+ * read-only data dir, a root-owned file, a folder in its place): `base` is the
+ * file as it read when the write failed, `mine` the state this process meant
+ * to write. Only the fields that differ between them are this process's, so
+ * the throttle, the cache and the run of failures live in memory (the machine
+ * still checks, every 10 minutes at most per process, and still shows what it
+ * learns) while every other field is read from the file as other processes
+ * keep it. Every later write tries the file again; the first that lands
+ * clears this.
  */
-const unwrittenStates = new Map<string, UpdateState>();
+const unwrittenStates = new Map<string, { base: UpdateState; mine: UpdateState }>();
+/** The paths whose failed write update.log already named (once per run of failures). */
+const unwrittenLogged = new Set<string>();
 
-export function readUpdateState(dataDir?: string): UpdateState {
-  const unwritten = unwrittenStates.get(updateCheckPaths(dataDir).state);
-  if (unwritten) return structuredClone(unwritten);
+function readUpdateStateFile(path: string): UpdateState {
   try {
-    const raw = JSON.parse(readFileSync(updateCheckPaths(dataDir).state, "utf-8"));
+    const raw = JSON.parse(readFileSync(path, "utf-8"));
     return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as UpdateState) : {};
   } catch {
     return {};
   }
 }
 
+export function readUpdateState(dataDir?: string): UpdateState {
+  const path = updateCheckPaths(dataDir).state;
+  const disk = readUpdateStateFile(path);
+  const unwritten = unwrittenStates.get(path);
+  if (!unwritten) return disk;
+  // The file as it is now, with this process's unwritten changes over it.
+  const merged: Record<string, unknown> = { ...disk };
+  const base = unwritten.base as Record<string, unknown>;
+  const mine = unwritten.mine as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(base), ...Object.keys(mine)])) {
+    if (JSON.stringify(base[key]) === JSON.stringify(mine[key])) continue;
+    if (mine[key] === undefined) delete merged[key];
+    else merged[key] = structuredClone(mine[key]);
+  }
+  return merged as UpdateState;
+}
+
 /**
  * Atomic write (temp + rename). Never throws: when the file cannot be written
- * the state is kept in memory for this process (see unwrittenStates), and
- * update.log says so once.
+ * this process's changes are kept in memory (see unwrittenStates) and
+ * update.log says so once; the next write tries the file again. A caller
+ * writes what it read with readUpdateState (patchUpdateState), so a write
+ * that lands carries the file's other fields as they are now.
  */
 export function writeUpdateState(state: UpdateState, dataDir?: string): void {
   const { state: path } = updateCheckPaths(dataDir);
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
     mkdirSync(join(path, ".."), { recursive: true });
-    const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", "utf-8");
     renameSync(tmp, path);
     unwrittenStates.delete(path);
+    unwrittenLogged.delete(path);
   } catch (err) {
-    if (!unwrittenStates.has(path)) {
-      updateLog(`could not write update-state.json (${err instanceof Error ? err.message : String(err)}); keeping it in memory for this process`, dataDir);
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    if (!unwrittenLogged.has(path)) {
+      unwrittenLogged.add(path);
+      updateLog(`could not write update-state.json (${err instanceof Error ? err.message : String(err)}); keeping this process's changes in memory and trying again on the next write`, dataDir);
     }
-    unwrittenStates.set(path, structuredClone(state));
+    unwrittenStates.set(path, { base: readUpdateStateFile(path), mine: structuredClone(state) });
   }
 }
 
 /** Tests only: forget what an unwritable state file kept in memory. */
 export function forgetUnwrittenUpdateStateForTests(dataDir?: string): void {
-  unwrittenStates.delete(updateCheckPaths(dataDir).state);
+  const path = updateCheckPaths(dataDir).state;
+  unwrittenStates.delete(path);
+  unwrittenLogged.delete(path);
 }
 
 /** Read, change, write: the change sees the file as it is now, not as a caller read it earlier. */
@@ -343,21 +384,57 @@ export function releaseCheckFailing(state: UpdateState, now: number): ReleaseChe
   const check = state.releaseCheck;
   const since = check?.failingSince;
   if (typeof since !== "number" || !Number.isFinite(since) || since > now) return null;
-  if (now - since < RELEASE_CHECK_FAILING_AFTER_MS) return null;
   // Only a run that is still going: the latest attempt failed (or is in
   // flight right after a failure), recently. A laptop that slept since its
   // last failure, or checks turned back on after weeks, has not failed yet:
   // the next check decides, never an old run.
+  // An attempt claimed since (in flight, or its process gone mid-request)
+  // changes nothing until it answers: a success clears `failingSince`.
   const failedAt = check?.failedAt;
   if (typeof failedAt !== "number" || !Number.isFinite(failedAt) || failedAt > now) return null;
   if (now - failedAt > RELEASE_CHECK_FAILURE_RECENT_MS) return null;
-  const attemptedAt = check?.attemptedAt;
-  const inFlight = typeof attemptedAt === "number" && attemptedAt > failedAt && now - attemptedAt < RELEASE_CHECK_IN_FLIGHT_MS;
-  if (typeof attemptedAt === "number" && attemptedAt > failedAt && !inFlight) return null;
+  // How long it has failed: up to its latest failure (gaps capped), then the
+  // time since (under RELEASE_CHECK_FAILURE_RECENT_MS here). A state without
+  // `failingFor` counts from `failingSince`.
+  const upToFailure =
+    typeof check?.failingFor === "number" && Number.isFinite(check.failingFor) && check.failingFor >= 0
+      ? check.failingFor
+      : Math.max(0, failedAt - since);
+  if (upToFailure + (now - failedAt) < RELEASE_CHECK_FAILING_AFTER_MS) return null;
   // Another process (one that predates failingSince) may have succeeded since.
   const fetchedAt = state.latestRelease?.fetchedAt;
   if (typeof fetchedAt === "number" && fetchedAt >= since && fetchedAt <= now) return null;
-  return { since, error: typeof check?.error === "string" && check.error ? check.error : "the check failed" };
+  return { since, error: plainCheckError(typeof check?.error === "string" && check.error ? check.error : "the check failed") };
+}
+
+/**
+ * The stored reason a check failed (update.log's words: "page: HTTP 200; api:
+ * HTTP 403, rate limited"), in words a person reads: "release page didn't
+ * answer as expected; GitHub API rate-limited". Any reason it does not know
+ * (an older version's) still reads as a reason, never as a status code.
+ */
+export function plainCheckError(raw: string): string {
+  const words = raw
+    .split(/;\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const tagged = /^(page|api):\s*([\s\S]*)$/.exec(part);
+      const source = tagged?.[1];
+      let error = tagged ? tagged[2] : part;
+      const limited = /,\s*rate limited$/.test(error);
+      error = error.replace(/,\s*rate limited$/, "");
+      const who = source === "api" ? "GitHub API" : source === "page" ? "release page" : "GitHub";
+      if (error === "no release page source") return "";
+      if (error === "the check failed") return error;
+      if (limited || error === "HTTP 429") return `${who} rate-limited`;
+      if (/^not a stable version|not a stable release/.test(error)) return `${who} named no stable release`;
+      if (/^HTTP \d+$|^redirect to|^no tag_name/.test(error)) return `${who} didn't answer as expected`;
+      if (/tim(?:ed|e)\s*out|timeout|aborted/i.test(error)) return `${who} took too long to answer`;
+      return `couldn't reach ${source ? `the ${who}` : who}`;
+    })
+    .filter(Boolean);
+  return [...new Set(words)].join("; ") || "the check failed";
 }
 
 /**
@@ -780,7 +857,15 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
       // is not taken for a check that went quiet.
       if (typeof previous?.failingSince === "number") {
         patchUpdateState(
-          (s) => ({ ...s, releaseCheck: { ...(s.releaseCheck ?? { attemptedAt: now }), failedAt: now, ...(previous.error && { error: previous.error }) } }),
+          (s) => ({
+            ...s,
+            releaseCheck: {
+              ...(s.releaseCheck ?? { attemptedAt: now }),
+              ...failingRunOf(s, previous, true, now),
+              failedAt: now,
+              ...(previous.error && { error: previous.error }),
+            },
+          }),
           dataDir,
         );
       }
@@ -834,7 +919,7 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
             failedAt: now,
             error: summary,
             // The run of failures began at the first one (kept across claims; a success clears it).
-            failingSince: failingSinceOf(s, previous, failedBefore, now),
+            ...failingRunOf(s, previous, failedBefore, now),
             failures,
             logged,
             ...(rateLimited && { apiRetryAt: now + apiWait }),
@@ -880,11 +965,12 @@ export async function runReleaseCheck(deps: ReleaseCheckDeps): Promise<ReleaseCh
 }
 
 /** The current run of failures (and its error), carried across the claim of the next attempt. */
-function failingStreak(state: UpdateState): Pick<NonNullable<UpdateState["releaseCheck"]>, "failingSince" | "error" | "failedAt"> {
+function failingStreak(state: UpdateState): Pick<NonNullable<UpdateState["releaseCheck"]>, "failingSince" | "failingFor" | "error" | "failedAt"> {
   const check = state.releaseCheck;
   if (typeof check?.failingSince !== "number") return {};
   return {
     failingSince: check.failingSince,
+    ...(typeof check.failingFor === "number" && { failingFor: check.failingFor }),
     ...(typeof check.error === "string" && { error: check.error }),
     // When the run's last failure was (earlier than the new attempt, so the
     // back-off rules read the attempt as in flight, not failed).
@@ -893,18 +979,31 @@ function failingStreak(state: UpdateState): Pick<NonNullable<UpdateState["releas
 }
 
 /**
- * When the run of failures that this one continues began. A state written by
- * a version without `failingSince` (or another process's claim in between)
+ * The run of failures that this one continues: when it began (kept across
+ * any gap between checks, hours apart or a sleep, until a check succeeds,
+ * which clears it) and how long it has failed as of now, each gap since the
+ * previous failure counted as at most RELEASE_CHECK_FAILURE_RECENT_MS.
+ * Whether it shows is releaseCheckFailing's call. A state written by a
+ * version without `failingSince` (or another process's claim in between)
  * counts from the earlier failure it records.
  */
-function failingSinceOf(state: UpdateState, previous: UpdateState["releaseCheck"], failedBefore: boolean, now: number): number {
-  // A run whose last failure is old (the machine slept, checks were off) is over: a new one starts now.
-  const lastFailure = state.releaseCheck?.failedAt ?? previous?.failedAt;
-  if (typeof lastFailure !== "number" || lastFailure > now || now - lastFailure > RELEASE_CHECK_FAILURE_RECENT_MS) return now;
-  const since = state.releaseCheck?.failingSince ?? previous?.failingSince;
-  if (typeof since === "number" && Number.isFinite(since) && since <= now) return since;
-  if (failedBefore && typeof previous?.failedAt === "number" && previous.failedAt <= now) return previous.failedAt;
-  return now;
+function failingRunOf(
+  state: UpdateState,
+  previous: UpdateState["releaseCheck"],
+  failedBefore: boolean,
+  now: number,
+): { failingSince: number; failingFor: number } {
+  const check = state.releaseCheck;
+  const recorded = check?.failingSince ?? previous?.failingSince;
+  let since: number | null = null;
+  if (typeof recorded === "number" && Number.isFinite(recorded) && recorded <= now) since = recorded;
+  else if (failedBefore && typeof previous?.failedAt === "number" && previous.failedAt <= now) since = previous.failedAt;
+  if (since === null) return { failingSince: now, failingFor: 0 };
+  const lastFailure = check?.failedAt ?? previous?.failedAt;
+  const last = typeof lastFailure === "number" && Number.isFinite(lastFailure) && lastFailure >= since && lastFailure <= now ? lastFailure : since;
+  const before = check?.failingFor ?? previous?.failingFor;
+  const upToLast = typeof before === "number" && Number.isFinite(before) && before >= 0 ? before : last - since;
+  return { failingSince: since, failingFor: upToLast + Math.min(now - last, RELEASE_CHECK_FAILURE_RECENT_MS) };
 }
 
 /** The API fallback's own back-off, carried across every write of `releaseCheck`. */

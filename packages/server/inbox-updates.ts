@@ -39,6 +39,7 @@ import {
   knownLatestRelease,
   normalizeStableVersion,
   patchUpdateState,
+  plainCheckError,
   readInstallFlags,
   readReleaseNotes,
   readUpdateState,
@@ -524,7 +525,7 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         on: resolveUpdateCheck(config),
         env: parseUpdateCheckEnv() ?? null,
         last_attempt_at: state.releaseCheck?.attemptedAt ? new Date(state.releaseCheck.attemptedAt).toISOString() : null,
-        error: state.releaseCheck?.failedAt ? state.releaseCheck.error ?? "the check failed" : null,
+        error: state.releaseCheck?.failedAt ? plainCheckError(state.releaseCheck.error ?? "the check failed") : null,
         failing: failingNow ? { since: new Date(failingNow.since).toISOString(), error: failingNow.error } : null,
         // The latest attempt failed (its time), for "Last check failed <time>". Additive.
         last_failed_at:
@@ -609,7 +610,9 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         ...sources,
       });
       refresh();
-      return outcome.outcome === "failed" ? { ok: false, error: outcome.error } : { ok: true };
+      // In plain words, from both sources' answers as stored ("release page didn't answer as expected; GitHub API rate-limited").
+      if (outcome.outcome !== "failed") return { ok: true };
+      return { ok: false, error: plainCheckError(readUpdateState(options.dataDir).releaseCheck?.error ?? outcome.error) };
     },
     /**
      * The What's new page's notes. Notes that are missing, or saved without a
