@@ -1,10 +1,12 @@
 /**
  * #2197: a plan's version history is keyed `history/{project}/{slug}`. The
- * Claude Code hosts name the project from the session's root (the mod's
+ * Claude Code hosts also hand the CLI the session's root (the mod's
  * `$.session.root()` as `projectRoot` on `claude-mod-plan`'s stdin, the
- * classic hook's CLAUDE_PROJECT_DIR), not from the CLI's cwd, which a shell
- * cd moves. So a resubmit made after the session changed directory into a
- * nested clone still diffs against the earlier version.
+ * classic hook's CLAUDE_PROJECT_DIR), which a shell cd does not move. A chain
+ * the root's project holds is continued when the cwd's project has none, so a
+ * resubmit made after the session changed directory into a nested clone still
+ * diffs against the earlier version. A new chain still starts under the cwd's
+ * project, exactly as before.
  *
  * Runs the real CLI as a process against a scratch data dir and a workspace
  * folder holding a separate git clone.
@@ -51,8 +53,10 @@ function world() {
   const workspace = join(root, "workspace");
   const serviceA = join(workspace, "service-a");
   gitInit(workspace);
+  const serviceB = join(workspace, "service-b");
   gitInit(serviceA);
-  return { root, workspace, serviceA, data: join(root, "data") };
+  gitInit(serviceB);
+  return { root, workspace, serviceA, serviceB, data: join(root, "data") };
 }
 
 /** The test env: no agent markers, no inherited CLAUDE_PROJECT_DIR, never a browser. */
@@ -155,15 +159,25 @@ describe("plan history follows the session root, not the shell's cwd (#2197)", (
     expect(second.previousPlan).toBe(V1);
   }, 60_000);
 
-  test("a chain started under the cwd's project (before this fix) is continued, not restarted", async () => {
+  test("a brand-new plan from a nested clone starts under the clone's project, as before", async () => {
     const w = world();
-    // An older mod sent no projectRoot: the first version landed under the cwd's repository.
-    const first = await submit(w, { kind: "mod", cwd: w.serviceA, plan: V1 });
-    expect(first.versionInfo).toMatchObject({ version: 1, project: "service-a" });
+    const view = await submit(w, { kind: "mod", cwd: w.serviceA, plan: V1, projectRoot: w.workspace });
+    expect(view.versionInfo).toMatchObject({ version: 1, project: "service-a" });
+    expect(view.previousPlan).toBeNull();
+    expect(existsSync(join(w.data, "history", "workspace"))).toBe(false);
 
-    const second = await submit(w, { kind: "mod", cwd: w.serviceA, plan: V2, projectRoot: w.workspace });
-    expect(second.versionInfo).toMatchObject({ version: 2, project: "service-a" });
-    expect(second.previousPlan).toBe(V1);
+    const classic = await submit(w, { kind: "classic", cwd: w.serviceB, plan: "# Other plan\n\n1. One.\n", env: { CLAUDE_PROJECT_DIR: w.workspace } });
+    expect(classic.versionInfo).toMatchObject({ version: 1, project: "service-b" });
+    expect(existsSync(join(w.data, "history", "workspace"))).toBe(false);
+  }, 60_000);
+
+  test("same-heading plans from two clones under one root stay separate chains", async () => {
+    const w = world();
+    const a = await submit(w, { kind: "mod", cwd: w.serviceA, plan: V1, projectRoot: w.workspace });
+    const b = await submit(w, { kind: "mod", cwd: w.serviceB, plan: V2, projectRoot: w.workspace });
+    expect(a.versionInfo).toMatchObject({ version: 1, project: "service-a" });
+    expect(b.versionInfo).toMatchObject({ version: 1, totalVersions: 1, project: "service-b" });
+    expect(b.previousPlan).toBeNull();
   }, 60_000);
 
   test("no root given: history lands under the cwd's repository, exactly as before", async () => {

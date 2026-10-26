@@ -407,9 +407,9 @@ describe("resolveHistorySlug", () => {
 
 describe("resolveHistoryChain", () => {
   /**
-   * #2197: the Claude Code hosts name the session root's project first and
-   * the current folder's second, so a plan keeps one chain when the session
-   * changes directory into another repository between submits.
+   * #2197: the Claude Code hosts pass the current folder's project first and
+   * the session root's second. An existing chain is looked for in that order;
+   * a new chain always starts under the first, exactly as before.
    */
   function withDataDir<T>(fn: (dataDir: string) => T): T {
     const saved = process.env.PLANNOTATOR_DATA_DIR;
@@ -428,33 +428,34 @@ describe("resolveHistoryChain", () => {
     writeFileSync(join(dir, "001.md"), "# V1", "utf-8");
   }
 
-  test("the first project's chain wins when both hold one", () => {
+  test("the first project's existing chain wins when both hold one", () => {
     withDataDir((dataDir) => {
-      seed(dataDir, "workspace", "ship-it-2026-10-04");
       seed(dataDir, "service-a", "ship-it-2026-10-04");
-      expect(resolveHistoryChain(["workspace", "service-a"], "ship-it-2026-10-04")).toEqual({
-        project: "workspace",
+      seed(dataDir, "workspace", "ship-it-2026-10-04");
+      expect(resolveHistoryChain(["service-a", "workspace"], "ship-it-2026-10-04")).toEqual({
+        project: "service-a",
         slug: "ship-it-2026-10-04",
       });
     });
   });
 
-  test("a chain only the current folder's project holds is continued", () => {
+  test("a chain only the second project (the session root's) holds is continued", () => {
     withDataDir((dataDir) => {
-      seed(dataDir, "service-a", "ship-it-2026-10-03");
-      expect(resolveHistoryChain(["workspace", "service-a"], "ship-it-2026-10-04")).toEqual({
-        project: "service-a",
+      seed(dataDir, "workspace", "ship-it-2026-10-03");
+      expect(resolveHistoryChain(["service-a", "workspace"], "ship-it-2026-10-04")).toEqual({
+        project: "workspace",
         slug: "ship-it-2026-10-03",
       });
     });
   });
 
-  test("no chain anywhere starts one in the first project", () => {
+  test("no chain anywhere starts one under the first project (the current folder's)", () => {
     withDataDir(() => {
-      expect(resolveHistoryChain(["workspace", "service-a"], "ship-it-2026-10-04")).toEqual({
-        project: "workspace",
+      expect(resolveHistoryChain(["service-a", "workspace"], "ship-it-2026-10-04")).toEqual({
+        project: "service-a",
         slug: "ship-it-2026-10-04",
       });
     });
   });
 });
+

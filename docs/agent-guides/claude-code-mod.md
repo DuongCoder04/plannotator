@@ -531,7 +531,7 @@ the plan (the plan file when it is an absolute `.md` regular file within the
 1. no review open: starts `plannotator claude-mod-plan` (internal subcommand,
    `apps/hook/server/claude-mod-plan.ts`; stdin `{ plan, planFilePath,
    revisionFile, projectRoot? }`, `projectRoot` the session's `$.session.root()`
-   read once per session, which names the plan's history project (#2197, see
+   read once per session, under whose project an existing plan history chain is also looked for (#2197, see
    "Plan Version History"); the plan server with `planRevisions: true`) and answers
    `{ deny }` with the waiting text (`waitingDenyText`). ExitPlanMode never runs,
    so plan mode stays on.

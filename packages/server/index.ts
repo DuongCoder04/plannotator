@@ -120,10 +120,12 @@ export interface ServerOptions {
   /** Custom plan save path — used by archive mode to find saved plans */
   customPlanPath?: string | null;
   /**
-   * The folder that names this plan's history project (`history/{project}/`)
-   * in place of the process's current folder: the agent session's root, which
-   * a shell `cd` does not move (#2197). Set by the Claude Code hosts only (the
-   * mod's `$.session.root()`, the classic hook's CLAUDE_PROJECT_DIR). Only
+   * A second folder whose history project (`history/{project}/`) this plan
+   * may continue: the agent session's root, which a shell `cd` does not move
+   * (#2197).Set by the Claude Code hosts only (the
+   * mod's `$.session.root()`, the classic hook's CLAUDE_PROJECT_DIR). A plan
+   * continues a chain the root's project holds when the current folder's has
+   * none; a new chain still starts under the current folder's project. Only
    * the history project key (and the feedback archive, which names the same
    * history version) follows it; plan file trust, linked docs, `/api/doc`
    * and `projectRoot` keep the process's cwd. Ignored unless it is an
@@ -199,10 +201,11 @@ export interface ServerResult {
 // --- Server Implementation ---
 
 /**
- * The history projects a plan may belong to, best first: the session root's
- * project, then the current folder's (resolveHistoryChain continues a chain
- * the current folder's project already holds when the root's has none). No
- * usable root: the current folder alone, exactly as before #2197.
+ * The history projects a plan may belong to, in resolveHistoryChain's order:
+ * the current folder's project (where an existing chain is looked for first,
+ * and where a new chain starts, exactly as before #2197), then the session
+ * root's (a chain started there is continued after a shell cd). No usable
+ * root: the current folder alone.
  */
 async function historyProjects(historyRoot: string | undefined): Promise<string[]> {
   const cwdProject = (await detectProjectName()) ?? "_unknown";
@@ -212,7 +215,7 @@ async function historyProjects(historyRoot: string | undefined): Promise<string[
   } catch {
     return [cwdProject];
   }
-  return [(await detectProjectName(historyRoot)) ?? "_unknown", cwdProject];
+  return [cwdProject, (await detectProjectName(historyRoot)) ?? "_unknown"];
 }
 
 /**

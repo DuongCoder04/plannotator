@@ -1242,9 +1242,9 @@ export class PlannotatorMod {
 
   /**
    * The session's root (`$.session.root()`), read once per session: the CLI
-   * names the plan's history project from it instead of its cwd, which a
-   * shell `cd` moves, so a resubmit from another repository keeps its version
-   * chain (#2197). Null when the engine cannot say: the CLI's cwd decides.
+   * also looks for the plan's history chain under its project, besides its
+   * cwd's (which a shell `cd` moves), so a resubmit from another repository
+   * keeps its version chain (#2197). Null when the engine cannot say.
    */
   private planHistoryRoot(): Promise<string | null> {
     this.historyRoot ??= (async () => {
