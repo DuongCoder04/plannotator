@@ -75,7 +75,7 @@ export function CardPanel(props: CardPanelProps) {
   const notSent = card.column === 'backlog' && !agent && !card.sent;
   return (
     <aside
-      className={`ib-cpanel${phone ? ' ib-cpanel-phone' : ''}`}
+      className={`ib-crdp${phone ? ' ib-crdp-phone' : ''}`}
       aria-labelledby={headingId}
       data-card-panel={card.id}
       onKeyDown={(event) => {
@@ -85,7 +85,7 @@ export function CardPanel(props: CardPanelProps) {
         }
       }}
     >
-      <div className="ib-cpanel-top">
+      <div className="ib-crdp-top">
         {phone && (
           <button type="button" className="ib-bback" onClick={props.onClose} data-card-back="">
             <Icon name="chevL" size={16} />
@@ -95,17 +95,17 @@ export function CardPanel(props: CardPanelProps) {
         <ColumnMenu card={card} sent={sent !== null} onColumn={props.onColumn} onRestore={props.onRestore} />
         {!phone && (
           <Tip content="Close">
-            <button type="button" className="ib-cpanel-x" aria-label="Close the card" onClick={props.onClose} data-card-close="">
+            <button type="button" className="ib-crdp-x" aria-label="Close the card" onClick={props.onClose} data-card-close="">
               <Icon name="x" size={16} />
             </button>
           </Tip>
         )}
       </div>
-      <div className="ib-cpanel-body">
-        <h2 id={headingId} ref={heading} tabIndex={-1} dir="auto" className="ib-cpanel-h">
+      <div className="ib-crdp-body">
+        <h2 id={headingId} ref={heading} tabIndex={-1} dir="auto" className="ib-crdp-h">
           {card.title}
         </h2>
-        <div className="ib-cpanel-who">
+        <div className="ib-crdp-who">
           {agent ? (
             <>
               <AuthorMark author={agent} />
@@ -115,8 +115,8 @@ export function CardPanel(props: CardPanelProps) {
               {props.state && (
                 <>
                   <span className="ib-tdot" aria-hidden="true" />
-                  <span className="ib-cpanel-state" data-agent-state={props.state}>
-                    <span className="ib-cpanel-sdot" aria-hidden="true" />
+                  <span className="ib-crdp-state" data-agent-state={props.state}>
+                    <span className="ib-crdp-sdot" aria-hidden="true" />
                     {props.state}
                   </span>
                 </>
@@ -145,35 +145,35 @@ export function CardPanel(props: CardPanelProps) {
           )}
         </div>
         {isInboxCardPersonColumn(card.column) && card.you && (
-          <p className="ib-cpanel-you" data-card-you="">
+          <p className="ib-crdp-you" data-card-you="">
             <b>You:</b> {card.you}
           </p>
         )}
         {card.column === 'dropped' && card.dropped && (
-          <p className="ib-cpanel-dropped">
+          <p className="ib-crdp-dropped">
             Dropped {whenTime(card.dropped.at)} by {card.dropped.by.kind === 'person' ? 'you' : inboxAgentName(card.dropped.by)}
             {card.dropped.reason ? `: ${card.dropped.reason}` : ''}
           </p>
         )}
         <Notes card={card} onSave={props.onNotes} />
         {card.threads.length > 0 && (
-          <section className="ib-cpanel-sec" aria-label="Threads">
+          <section className="ib-crdp-sec" aria-label="Threads">
             <h3>
               Threads <span className="ib-lane-n">{card.threads.length}</span>
             </h3>
-            <ul className="ib-cpanel-threads">
+            <ul className="ib-crdp-threads">
               {card.threads.map((threadId) => (
                 <ThreadRow key={threadId} threadId={threadId} row={props.rowOf(threadId)} sent={card.sent?.thread_id === threadId} now={props.now} onOpen={() => props.onOpenThread(threadId)} />
               ))}
             </ul>
           </section>
         )}
-        <section className="ib-cpanel-sec" aria-label="Links">
+        <section className="ib-crdp-sec" aria-label="Links">
           <h3>
             Links {refs.length > 0 && <span className="ib-lane-n">{refs.length}</span>}
           </h3>
           {refs.length > 0 && (
-            <ul className="ib-cpanel-refs">
+            <ul className="ib-crdp-refs">
               {refs.map((ref) => (
                 <RefRow key={ref.url} refItem={ref} resolved={props.refs?.find((r) => r.ref.url === ref.url)?.result ?? null} loading={props.refs === null} />
               ))}
@@ -181,29 +181,29 @@ export function CardPanel(props: CardPanelProps) {
           )}
           <LinkField onLink={props.onLink} />
         </section>
-        <section className="ib-cpanel-sec" aria-label="History">
+        <section className="ib-crdp-sec" aria-label="History">
           <h3>History</h3>
           {props.history === null ? (
             <p className="ib-lane-empty">Reading…</p>
           ) : (
-            <ol className="ib-cpanel-hist">
+            <ol className="ib-crdp-hist">
               {props.history.map((entry, index) => {
                 const words = historyWords(entry);
                 return (
                   <li key={`${entry.at}-${index}`}>
-                    <span className="ib-cpanel-hdot" aria-hidden="true" />
-                    <span className="ib-cpanel-ht">
+                    <span className="ib-crdp-hdot" aria-hidden="true" />
+                    <span className="ib-crdp-ht">
                       {words.before}
                       {words.bold && <b dir="auto">{words.bold}</b>}
                       {words.after}
                       {words.quote && (
-                        <span className="ib-cpanel-hq" dir="auto">
+                        <span className="ib-crdp-hq" dir="auto">
                           {words.quote}
                         </span>
                       )}
                     </span>
                     <Tip content={fullTime(entry.at)}>
-                      <span className="ib-cpanel-hat">{cardAge(entry.at, props.now).short.replace(' ago', '')}</span>
+                      <span className="ib-crdp-hat">{cardAge(entry.at, props.now).short.replace(' ago', '')}</span>
                     </Tip>
                   </li>
                 );
@@ -214,7 +214,7 @@ export function CardPanel(props: CardPanelProps) {
       </div>
       {dropping ? (
         <form
-          className="ib-cpanel-foot ib-cpanel-drop"
+          className="ib-crdp-foot ib-crdp-drop"
           onSubmit={(event) => {
             event.preventDefault();
             setDropping(false);
@@ -242,7 +242,7 @@ export function CardPanel(props: CardPanelProps) {
             }}
             data-drop-reason=""
           />
-          <div className="ib-cpanel-dropacts">
+          <div className="ib-crdp-dropacts">
             <button type="button" className="ib-btn ib-ghost" onClick={() => setDropping(false)}>
               Cancel
             </button>
@@ -253,7 +253,7 @@ export function CardPanel(props: CardPanelProps) {
           </div>
         </form>
       ) : (
-        <div className="ib-cpanel-foot">
+        <div className="ib-crdp-foot">
           {foot.primary === 'send' && (
             <button type="button" className="ib-btn ib-pri" onClick={props.onSend} data-card-send="">
               <Icon name="send" size={15} />
@@ -313,10 +313,10 @@ function ColumnMenu({ card, sent, onColumn, onRestore }: { card: InboxCardWire; 
   const aside = card.column === 'icebox' || card.column === 'dropped';
   return (
     <Menu.Root open={open} onOpenChange={setOpen} modal={false}>
-      <Menu.Trigger ref={trigger} className="ib-cpanel-col" aria-label={`Column: ${INBOX_CARD_COLUMN_LABELS[card.column]}${sent ? ', sent' : ''}. Move`} data-card-column={card.column}>
+      <Menu.Trigger ref={trigger} className="ib-crdp-col" aria-label={`Column: ${INBOX_CARD_COLUMN_LABELS[card.column]}${sent ? ', sent' : ''}. Move`} data-card-column={card.column}>
         <span className="ib-lane-dot" data-col={card.column} aria-hidden="true" />
         <b>{INBOX_CARD_COLUMN_LABELS[card.column]}</b>
-        {sent && <span className="ib-cpanel-colsent">· sent</span>}
+        {sent && <span className="ib-crdp-colsent">· sent</span>}
         <Icon name="chevD" size={14} />
       </Menu.Trigger>
       <Menu.Portal container={portal ?? undefined}>
@@ -379,7 +379,7 @@ function AskButton({ disabled, onAsk }: { disabled: boolean; onAsk: () => Promis
   const button = (
     <button
       type="button"
-      className="ib-cpanel-ask"
+      className="ib-crdp-ask"
       disabled={disabled || busy}
       data-card-ask=""
       onClick={async () => {
@@ -410,7 +410,7 @@ function Notes({ card, onSave }: { card: InboxCardWire; onSave: (notes: string |
   if (editing) {
     return (
       <form
-        className="ib-cpanel-notesform"
+        className="ib-crdp-notesform"
         onSubmit={async (event) => {
           event.preventDefault();
           const ok = await onSave(text.trim() || null);
@@ -445,7 +445,7 @@ function Notes({ card, onSave }: { card: InboxCardWire; onSave: (notes: string |
             The notes were not saved. Try again.
           </p>
         )}
-        <div className="ib-cpanel-notesacts">
+        <div className="ib-crdp-notesacts">
           <button type="button" className="ib-btn ib-ghost ib-sm" onClick={() => setEditing(false)}>
             Cancel
           </button>
@@ -457,7 +457,7 @@ function Notes({ card, onSave }: { card: InboxCardWire; onSave: (notes: string |
     );
   }
   return (
-    <div className="ib-cpanel-notes" data-card-notes="">
+    <div className="ib-crdp-notes" data-card-notes="">
       {card.notes ? (
         card.notes.split(/\n{2,}/).map((para, index) => (
           <p key={index} dir="auto">
@@ -465,7 +465,7 @@ function Notes({ card, onSave }: { card: InboxCardWire; onSave: (notes: string |
           </p>
         ))
       ) : (
-        <p className="ib-cpanel-nonotes">No notes.</p>
+        <p className="ib-crdp-nonotes">No notes.</p>
       )}
       <button ref={edit} type="button" className="ib-lnk" onClick={() => setEditing(true)} data-card-notes-edit="">
         {card.notes ? 'Edit notes' : 'Add notes'}
@@ -480,16 +480,16 @@ function ThreadRow({ threadId, row, sent, now, onOpen }: { threadId: string; row
   const waiting = row ? row.section === 'stopped' || row.section === 'holding' || row.section === 'waiting' : false;
   return (
     <li>
-      <button type="button" className="ib-cpanel-thread" onClick={onOpen} data-card-thread={threadId} aria-label={`Open the thread “${subject}”${section ? `, ${section}` : ''}`}>
-        <span className="ib-cpanel-tt" dir="auto">
+      <button type="button" className="ib-crdp-thread" onClick={onOpen} data-card-thread={threadId} aria-label={`Open the thread “${subject}”${section ? `, ${section}` : ''}`}>
+        <span className="ib-crdp-tt" dir="auto">
           {subject}
         </span>
-        <span className="ib-cpanel-tm">
+        <span className="ib-crdp-tm">
           {row?.thread_name && <span className="ib-key">{row.thread_name}</span>}
-          {sent && !waiting ? <span>Sent</span> : section && <span className={waiting ? 'ib-cpanel-wait' : undefined}>{section === 'Quiet' ? 'Read' : section}</span>}
+          {sent && !waiting ? <span>Sent</span> : section && <span className={waiting ? 'ib-crdp-wait' : undefined}>{section === 'Quiet' ? 'Read' : section}</span>}
           {row && <span>· {row.message_count === 1 ? '1 message' : `${row.message_count} messages`}</span>}
         </span>
-        {row && <span className="ib-cpanel-tat">{cardAge(row.last_at, now).short.replace(' ago', '')}</span>}
+        {row && <span className="ib-crdp-tat">{cardAge(row.last_at, now).short.replace(' ago', '')}</span>}
       </button>
     </li>
   );
@@ -502,16 +502,16 @@ function RefRow({ refItem, resolved, loading }: { refItem: InboxCardRef; resolve
   const kind = refItem.kind === 'pr' ? 'Pull request' : refItem.kind === 'issue' ? 'Issue' : refItem.kind;
   const number = refItem.ref.replace(/^.*?(?=[#!]\d+$)/, '');
   return (
-    <li className="ib-cpanel-ref" data-card-ref={refItem.ref} data-ref-state={state?.tone ?? (loading ? 'loading' : 'quiet')}>
+    <li className="ib-crdp-ref" data-card-ref={refItem.ref} data-ref-state={state?.tone ?? (loading ? 'loading' : 'quiet')}>
       <Icon name={refItem.kind === 'issue' ? 'question' : 'chip'} size={15} />
-      <a href={refItem.url} target="_blank" rel="noreferrer noopener" className="ib-cpanel-rn" aria-label={`${kind} ${refItem.ref}${data ? `: ${data.title}` : ''}`}>
+      <a href={refItem.url} target="_blank" rel="noreferrer noopener" className="ib-crdp-rn" aria-label={`${kind} ${refItem.ref}${data ? `: ${data.title}` : ''}`}>
         {number}
       </a>
-      <span className="ib-cpanel-rt" dir="auto">
-        {data ? data.title : <span className="ib-cpanel-rref">{refItem.ref}</span>}
+      <span className="ib-crdp-rt" dir="auto">
+        {data ? data.title : <span className="ib-crdp-rref">{refItem.ref}</span>}
       </span>
       {state && (
-        <span className="ib-cpanel-rs" data-tone={state.tone}>
+        <span className="ib-crdp-rs" data-tone={state.tone}>
           {state.label}
           {data?.pull?.checks && state.tone === 'open' && <> · {checksText(data.pull.checks, data.platform)}</>}
         </span>
@@ -526,7 +526,7 @@ function LinkField({ onLink }: { onLink: (ref: string) => Promise<string | null>
   const [error, setError] = useState<string | null>(null);
   return (
     <form
-      className="ib-cpanel-link"
+      className="ib-crdp-link"
       onSubmit={async (event) => {
         event.preventDefault();
         if (!text.trim()) return;

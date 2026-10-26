@@ -338,3 +338,69 @@ describe("parseInboxCardPr", () => {
     for (const bad of ["#12", "PR 12", "https://github.com/o/r/issues/1", "", 12, null]) expect(parseInboxCardPr(bad)).toBeNull();
   });
 });
+
+describe("cards: the Board page's fields (step 2)", () => {
+  test("notes: the person's, line breaks kept, capped; cleared with an empty value", () => {
+    const { store, project } = world();
+    const { card } = store.createCard({ project_id: project.id, by: PERSON, title: "Roadmap page", notes: "  One page.\n\nWhat is next.  " });
+    expect(card.notes).toBe("One page.\n\nWhat is next.");
+    expect(store.updateCard(card.id, { by: PERSON, notes: "" }).notes).toBeNull();
+    expect(refusal(() => store.updateCard(card.id, { by: PERSON, notes: "x".repeat(4001) }))).toBe("validation_error");
+  });
+
+  test("links: an issue and a PR as refs, the PRs still written as prs for an older Inbox; a stored prs-only card reads its refs", () => {
+    const { dir, store, project } = world();
+    const { card } = store.createCard({ project_id: project.id, by: AGENT, title: "Forge", prs: ["acme/widgets#12"], refs: ["acme/widgets#11", "https://github.com/acme/widgets/pull/12"] });
+    expect(card.refs.map((ref) => [ref.kind, ref.ref])).toEqual([
+      ["pr", "acme/widgets#12"],
+      ["issue", "acme/widgets#11"],
+    ]);
+    expect(card.prs).toEqual([{ ref: "acme/widgets#12", url: "https://github.com/acme/widgets/pull/12" }]);
+    expect(refusal(() => store.updateCard(card.id, { by: AGENT, refs: ["https://evil.example/o/r/issues/1"] }))).toBe("validation_error");
+    // A record from step 1 (prs, no refs) reads its PRs as refs.
+    const file = join(dir, "inbox", "projects", project.key, "cards.jsonl");
+    const lines = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    delete lines.at(-1).record.refs;
+    writeFileSync(file, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    expect(InboxStore.open(dir).card(card.id)!.refs).toEqual([{ kind: "pr", source: "github", ref: "acme/widgets#12", url: "https://github.com/acme/widgets/pull/12" }]);
+  });
+
+  test("history: every write the card saw, newest first, with who wrote it", () => {
+    const { store, project, advance } = world();
+    const { card } = store.createCard({ project_id: project.id, by: AGENT, title: "Ticks", column: "building" });
+    advance(1000);
+    store.updateCard(card.id, { by: AGENT, column: "your_review", you: "Merge #14" });
+    advance(1000);
+    store.updateCard(card.id, { by: PERSON, column: "shipped" });
+    const history = store.cardHistory(card.id);
+    expect(history[0]).toMatchObject({ kind: "moved", by: PERSON });
+    expect(history.at(-1)!.kind).toBe("created");
+    expect(store.cardHistory("crd_nope")).toEqual([]);
+    // Two writes in one millisecond are two entries; the person seeing a drop is none.
+    const quick = store.createCard({ project_id: project.id, by: AGENT, title: "Quick" }).card;
+    store.updateCard(quick.id, { by: AGENT, column: "designing" });
+    store.updateCard(quick.id, { by: AGENT, column: "dropped", reason: "superseded" });
+    expect(store.cardHistory(quick.id).map((entry) => entry.kind)).toEqual(["dropped", "moved", "created"]);
+    store.markCardDropsSeen();
+    expect(store.cardHistory(quick.id).map((entry) => entry.kind)).toEqual(["dropped", "moved", "created"]);
+  });
+
+  test("sent: the person's card goes to an agent through a thread they started; it is that agent's, and says so until it moves", () => {
+    const { store, project, advance } = world();
+    const to = { host: "codex", session: "ses_x" };
+    const { card } = store.createCard({ project_id: project.id, by: PERSON, title: "Retry budget" });
+    const { message } = store.startPersonThread({ project_id: project.id, body: "Retry budget", to, idempotency_key: "k1" });
+    advance(1000);
+    const sent = store.sendCard(card.id, { thread_id: message.id });
+    expect(sent.agent).toMatchObject({ kind: "agent", host: "codex", session: "ses_x", name: "Codex" });
+    expect(sent.sent).toMatchObject({ to: { host: "codex", session: "ses_x" }, thread_id: message.thread_id });
+    expect(sent.threads).toEqual([message.thread_id]);
+    expect(sent.heard_by).toEqual(PERSON);
+    expect(sent.column).toBe("backlog");
+    // Only through the person's addressed message, and only a Backlog card.
+    const agents = store.sendMessage({ project_id: project.id, author: AGENT, body: "hi" });
+    expect(refusal(() => store.sendCard(card.id, { thread_id: agents.message.id }))).toBe("validation_error");
+    store.updateCard(card.id, { by: OTHER, column: "building" });
+    expect(refusal(() => store.sendCard(card.id, { thread_id: message.id }))).toBe("validation_error");
+  });
+});

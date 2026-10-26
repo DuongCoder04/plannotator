@@ -88,7 +88,11 @@ export function unseenDrops(cards: readonly InboxCardWire[]): InboxCardWire[] {
 /** The card's second line: "You: …" in the person's columns, the agent's last word otherwise (or nothing). */
 export function cardLine(card: InboxCardWire): { you: boolean; text: string } | null {
   const line = inboxCardLine(card);
-  if (!line) return null;
+  if (!line) {
+    // A card the person wrote with no word from an agent yet: its notes' first line.
+    const notes = card.notes?.split('\n').find((part) => part.trim())?.trim();
+    return notes ? { you: false, text: notes } : null;
+  }
   if (isInboxCardPersonColumn(card.column) && card.you) return { you: true, text: card.you };
   return { you: false, text: line };
 }

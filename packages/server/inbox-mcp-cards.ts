@@ -99,7 +99,7 @@ function cardInScope(store: InboxStore, id: string | undefined, projectIds: Read
 }
 
 /** Fields each op takes; any other is refused by name (a column on a say would otherwise be dropped silently). */
-const OP_FIELDS: Record<InboxCardOp, readonly (keyof CardCallInput)[]> = {
+export const INBOX_CARD_OP_FIELDS: Record<InboxCardOp, readonly (keyof CardCallInput)[]> = {
   create: ["title", "column", "say", "you", "thread_id", "pr", "ref", "idempotency_key"],
   move: ["card_id", "column", "say", "you", "thread_id", "pr", "ref", "reason"],
   say: ["card_id", "say", "you", "title"],
@@ -127,8 +127,8 @@ export async function runCardCall(context: InboxMcpContext, input: CardCallInput
   for (const [field, value] of Object.entries(input) as [keyof CardCallInput, unknown][]) {
     // `false` is a default (include_resolved: false), not a field the agent meant to set: tolerated, as the plannotator tool contract does.
     if (value === undefined || value === false || OP_COMMON.has(field)) continue;
-    if (!OP_FIELDS[input.op].includes(field)) {
-      throw new InboxError("validation_error", `${field}: op ${input.op} does not take it (it takes ${OP_FIELDS[input.op].join(", ")}).`, { field });
+    if (!INBOX_CARD_OP_FIELDS[input.op].includes(field)) {
+      throw new InboxError("validation_error", `${field}: op ${input.op} does not take it (it takes ${INBOX_CARD_OP_FIELDS[input.op].join(", ")}).`, { field });
     }
   }
   if (!input.project_path) throw new InboxError("validation_error", "project_path: required (the connection fills it).", { field: "project_path" });

@@ -6,7 +6,7 @@
  * which fills the Board with the work in flight it knows about.
  *
  * Every op and argument it names is the `card` action's as built
- * (packages/server/inbox-mcp-cards.ts); boardPrompt.test.ts checks that.
+ * (packages/server/inbox-mcp-cards.ts); packages/server/inbox-board-prompt.test.ts checks that.
  */
 
 import { connectCommand } from '../connectPrompt';

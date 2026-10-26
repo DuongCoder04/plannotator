@@ -293,10 +293,8 @@ export function inboxCardHistory(snapshots: readonly InboxCard[]): InboxCardHist
       before = card;
       continue;
     }
-    if (card.heard_at === before.heard_at) {
-      before = card;
-      continue;
-    }
+    // A line that changed nothing shown (the person seeing a drop) adds nothing: every entry
+    // below is a difference. Two writes in one millisecond are still two entries.
     if (card.sent && (!before.sent || before.sent.at !== card.sent.at)) {
       out.push({ at, by, kind: "sent", to: card.sent.to, thread_id: card.sent.thread_id });
     } else {
