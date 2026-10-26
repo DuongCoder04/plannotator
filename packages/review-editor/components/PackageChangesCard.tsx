@@ -35,6 +35,8 @@ export interface PackageChangesCardProps {
 
 type SortKey = 'change' | 'name' | 'downloads' | 'released';
 const ROW_CAP = 8;
+/** Indirect rows shown per step: a big lockfile changes thousands. */
+const INDIRECT_STEP = 100;
 /** Weekly downloads: a popularity signal, kept quiet and last. One switch drops the column everywhere. */
 const SHOW_DOWNLOADS = true;
 const NARROW_PX = 600;
@@ -69,7 +71,7 @@ const KIND: Record<PackageChange['kind'], { glyph: string; label: string; tone: 
   added: { glyph: '+', label: 'Added', tone: 'text-success' },
   removed: { glyph: '−', label: 'Removed', tone: 'text-destructive' },
   upgraded: { glyph: '↑', label: 'Upgraded', tone: 'text-foreground/70' },
-  downgraded: { glyph: '↓', label: 'Downgraded', tone: 'text-warning' },
+  downgraded: { glyph: '↓', label: 'Downgraded', tone: 'text-foreground/70' },
   changed: { glyph: '~', label: 'Changed', tone: 'text-muted-foreground' },
   moved: { glyph: '⇄', label: 'Moved', tone: 'text-muted-foreground' },
 };
@@ -151,18 +153,21 @@ const NameTags: React.FC<{ change: PackageChange; meta?: PackageMetadata; withhe
   </>
 );
 
-const VersionText: React.FC<{ version: string | null; spec: string | null; muted?: boolean }> = ({ version, spec, muted }) => {
+/** A version; `major` tints it for a step semver calls breaking. */
+const VersionText: React.FC<{ version: string | null; spec: string | null; muted?: boolean; major?: boolean }> = ({ version, spec, muted, major }) => {
   const text = shown(version, spec);
-  const cls = `font-mono text-[12px] tabular-nums ${muted ? 'text-muted-foreground' : ''}`;
+  const cls = `font-mono text-[12px] tabular-nums ${major ? 'text-warning' : muted ? 'text-muted-foreground' : ''}`;
   // The spec only when it says more than the version.
-  if (spec && version && spec !== version) {
-    return (
-      <Tooltip content={<span className="font-mono">{spec}</span>}>
-        <span className={cls}>{text}</span>
-      </Tooltip>
-    );
-  }
-  return <span className={cls}>{text}</span>;
+  const specHint = spec && version && spec !== version ? spec : null;
+  if (!specHint && !major) return <span className={cls}>{text}</span>;
+  return (
+    <Tooltip content={<span>{major && 'Breaking under semver'}{major && specHint && ' · '}{specHint && <span className="font-mono">{specHint}</span>}</span>}>
+      <span className={cls}>
+        {text}
+        {major && <span className="sr-only"> (major)</span>}
+      </span>
+    </Tooltip>
+  );
 };
 
 const Released: React.FC<{ iso: string | null | undefined }> = ({ iso }) => {
@@ -185,7 +190,8 @@ export const PackageChangesCard: React.FC<PackageChangesCardProps> = ({
   const setting = usePackageChangesSetting();
   const enabled = setting?.card === true;
   const scope = useMemo(() => ({ snapshot: reviewSnapshotId, base: reviewBase }), [reviewSnapshotId, reviewBase]);
-  const card = usePackageCard(filePath, scope, enabled);
+  const data = usePackageCard(filePath, scope, enabled);
+  const card = data?.card;
   const folded = usePackageChangesFolded();
   const [retry, setRetry] = useState(0);
   const [asking, setAsking] = useState(false);
@@ -200,8 +206,9 @@ export const PackageChangesCard: React.FC<PackageChangesCardProps> = ({
       folded={folded}
       lookup={lookup}
       lookupOn={lookupOn}
-      consent={setting?.lookup !== true && setting?.lookupEnv !== false && names > 0 ? {
-        names,
+      // One click allows the lookup for every card: the count is every name the review would send.
+      consent={setting?.lookup !== true && setting?.lookupEnv !== false && names > 0 && data.sendTotal > 0 ? {
+        names: data.sendTotal,
         asking,
         onAllow: () => {
           setAsking(true);
@@ -220,6 +227,7 @@ interface CardBodyProps {
   folded: boolean;
   lookup: PackageLookupState;
   lookupOn: boolean;
+  /** `names`: how many names the click sends, across the whole review. */
   consent: { names: number; asking: boolean; onAllow: () => void } | null;
   onRetry: () => void;
   onHeightChange?: () => void;
@@ -231,14 +239,16 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
   const [sort, setSort] = useState<SortKey>('change');
   const [showAll, setShowAll] = useState(false);
   const [showIndirect, setShowIndirect] = useState(false);
+  const [indirectShown, setIndirectShown] = useState(INDIRECT_STEP);
   const [narrow, setNarrow] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const bodyId = useId();
   const withheld = useMemo(() => new Set(card.lookup.withheld), [card.lookup.withheld]);
   const sendable = useMemo(() => new Set(card.lookup.names), [card.lookup.names]);
-  const showMeta = lookupOn;
+  const failure = lookupOn && lookup.state === 'ready' ? lookup.failure : undefined;
+  // A failed lookup shows its status and Retry, never a table of blanks.
+  const showMeta = lookupOn && !failure;
   const loading = showMeta && lookup.state === 'loading';
-  const failure = showMeta && lookup.state === 'ready' ? lookup.failure : undefined;
 
   const sorted = useMemo(() => {
     if (sort === 'change' || sort === 'name') return sortPackageChanges(card.changes, sort);
@@ -282,22 +292,17 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
   const indirect = card.indirect;
 
   const headerRight = consent ? (
-    <span className="ml-auto flex flex-none items-center gap-2">
-      <span className="text-[11px] text-muted-foreground">
-        sends {consent.names} package {consent.names === 1 ? 'name' : 'names'}
-      </span>
-      <button
-        type="button"
-        data-package-lookup-allow=""
-        data-pn-touch-target={touch}
-        disabled={consent.asking}
-        onClick={consent.onAllow}
-        aria-label={`Look up on npm: sends ${consent.names} package ${consent.names === 1 ? 'name' : 'names'} to registry.npmjs.org`}
-        className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-      >
-        Look up on npm
-      </button>
-    </span>
+    <button
+      type="button"
+      data-package-lookup-allow=""
+      data-pn-touch-target={touch}
+      disabled={consent.asking}
+      onClick={consent.onAllow}
+      aria-label={`Look up ${consent.names} package ${consent.names === 1 ? 'name' : 'names'} on npm: sends them to registry.npmjs.org`}
+      className="ml-auto flex-none rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+    >
+      Look up {consent.names} on npm
+    </button>
   ) : failure ? (
     <span className="ml-auto flex flex-none items-center gap-1 text-[11px] text-muted-foreground" role="status" data-package-lookup-state="failed">
       <span>{failure === 'offline' || failure === 'timed out' ? 'npm unreachable' : failure === 'rate limited' ? 'npm rate limited' : 'npm lookup failed'}</span>
@@ -323,13 +328,15 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
     );
   };
 
+  const downloadsCls = 'px-2 py-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70';
   const metaCells = (c: PackageChange) => {
     const dash = <span className="text-muted-foreground">—</span>;
+    // npm was not asked about this row: one blank span, not a row of dashes.
     if (!c.registryName || !sendable.has(c.registryName)) {
-      return <><td className="px-2 py-1.5">{dash}</td><td className="px-2 py-1.5">{dash}</td>{SHOW_DOWNLOADS && <td className="px-2 py-1.5 text-right">{dash}</td>}</>;
+      return <td colSpan={SHOW_DOWNLOADS ? 3 : 2} className="px-2 py-1.5" />;
     }
     if (loading) {
-      return <><td className="px-2 py-1.5"><Skeleton w="w-8" /></td><td className="px-2 py-1.5"><Skeleton w="w-8" /></td>{SHOW_DOWNLOADS && <td className="px-2 py-1.5 text-right"><Skeleton /></td>}</>;
+      return <><td className="px-2 py-1.5"><Skeleton w="w-8" /></td><td className="px-2 py-1.5"><Skeleton w="w-8" /></td>{SHOW_DOWNLOADS && <td className={downloadsCls}><Skeleton /></td>}</>;
     }
     const m = metaFor(lookup, c);
     const ok = m?.status === 'ok';
@@ -338,17 +345,14 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
         <td className="px-2 py-1.5">{ok && m.license ? m.license : dash}</td>
         <td className="px-2 py-1.5">{ok ? <Released iso={m.publishedAt} /> : dash}</td>
         {SHOW_DOWNLOADS && (
-          <td data-col="downloads" className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{ok && m.weeklyDownloads != null ? compact.format(m.weeklyDownloads) : '—'}</td>
+          <td data-col="downloads" className={downloadsCls}>{ok && m.weeklyDownloads != null ? compact.format(m.weeklyDownloads) : '—'}</td>
         )}
       </>
     );
   };
 
-  const majorPill = (c: PackageChange) => c.major ? (
-    <Tooltip content="Breaking under semver">
-      <span><Pill tone="warning">major</Pill></span>
-    </Tooltip>
-  ) : null;
+  /** The old version shows only when the version itself changed (not for an addition or a section move). */
+  const hasPrevious = (c: PackageChange) => c.kind !== 'added' && c.kind !== 'moved';
 
   const indirectToggle = indirect.length > 0 ? (
     <button
@@ -420,10 +424,9 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
                     <NameTags change={c} meta={m} withheld={!!c.registryName && withheld.has(c.registryName)} />
                   </div>
                   <div className="mt-0.5 flex items-center gap-1.5 pl-[18px]">
-                    {c.kind !== 'added' && <VersionText version={c.beforeVersion} spec={c.before} muted />}
-                    {c.kind !== 'added' && c.kind !== 'removed' && <span className="text-muted-foreground" aria-hidden="true">→</span>}
-                    {c.kind !== 'removed' && <VersionText version={c.afterVersion} spec={c.after} />}
-                    {majorPill(c)}
+                    {hasPrevious(c) && <VersionText version={c.beforeVersion} spec={c.before} muted />}
+                    {hasPrevious(c) && c.kind !== 'removed' && <span className="text-muted-foreground" aria-hidden="true">→</span>}
+                    {c.kind !== 'removed' && <VersionText version={c.afterVersion} spec={c.after} major={c.major} />}
                   </div>
                   {showMeta && c.registryName && sendable.has(c.registryName) && (
                     <div className="mt-0.5 flex items-center gap-2 pl-[18px] text-[11px] text-muted-foreground">
@@ -431,7 +434,7 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
                         <>
                           {m.license && <span>{m.license}</span>}
                           {m.publishedAt && <Released iso={m.publishedAt} />}
-                          {SHOW_DOWNLOADS && m.weeklyDownloads != null && <span className="tabular-nums">{compact.format(m.weeklyDownloads)}/wk</span>}
+                          {SHOW_DOWNLOADS && m.weeklyDownloads != null && <span className="tabular-nums text-muted-foreground/70">{compact.format(m.weeklyDownloads)}/wk</span>}
                         </>
                       ) : null}
                     </div>
@@ -447,8 +450,8 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
               <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
                 <tr>
                   {sortHeader('name', 'Package')}
-                  <th scope="col" className="px-2 py-1 font-medium">Version</th>
                   <th scope="col" className="px-2 py-1 font-medium">Previous</th>
+                  <th scope="col" className="px-2 py-1 font-medium">Version</th>
                   {showMeta && <th scope="col" className="px-2 py-1 font-medium">License</th>}
                   {showMeta && sortHeader('released', 'Released')}
                   {showMeta && SHOW_DOWNLOADS && sortHeader('downloads', 'Downloads', 'right', 'Last 7 days')}
@@ -465,13 +468,10 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
                       </span>
                     </th>
                     <td className="px-2 py-1.5">
-                      <span className="inline-flex items-center gap-1.5">
-                        {c.kind === 'removed' ? <span className="text-muted-foreground">—</span> : <VersionText version={c.afterVersion} spec={c.after} />}
-                        {majorPill(c)}
-                      </span>
+                      {hasPrevious(c) ? <VersionText version={c.beforeVersion} spec={c.before} muted /> : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="px-2 py-1.5">
-                      {c.kind === 'added' ? <span className="text-muted-foreground">—</span> : <VersionText version={c.beforeVersion} spec={c.before} muted />}
+                      {c.kind === 'removed' ? <span className="text-muted-foreground">—</span> : <VersionText version={c.afterVersion} spec={c.after} major={c.major} />}
                     </td>
                     {showMeta && metaCells(c)}
                   </tr>
@@ -485,7 +485,7 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
           <div className="mt-1 flex flex-wrap items-center gap-2">
             {sorted.length > ROW_CAP && (
               <button type="button" data-pn-touch-target={touch} onClick={() => setShowAll((v) => !v)} className={quietButton}>
-                {showAll ? 'Fewer' : `All ${sorted.length}`}
+                {showAll ? 'Fewer' : `${sorted.length - ROW_CAP} more`}
               </button>
             )}
             {indirectToggle}
@@ -493,7 +493,7 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
         )}
         {showIndirect && indirect.length > 0 && (
           <ul className="mt-1 max-h-64 overflow-y-auto rounded border border-border/60 bg-background/40 py-1" aria-label={`Indirect package changes in ${card.lockfile ?? card.path}`}>
-            {indirect.map((i) => (
+            {indirect.slice(0, indirectShown).map((i) => (
               <li key={i.name} className="flex min-w-0 items-center gap-2 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">
                 <span className="truncate text-foreground/80">{i.name}</span>
                 <span className="ml-auto flex-none tabular-nums">
@@ -501,6 +501,13 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
                 </span>
               </li>
             ))}
+            {indirect.length > indirectShown && (
+              <li className="px-1.5 pt-0.5">
+                <button type="button" data-pn-touch-target={touch} onClick={() => setIndirectShown((n) => n + INDIRECT_STEP)} className={quietButton}>
+                  {indirect.length - indirectShown} more
+                </button>
+              </li>
+            )}
           </ul>
         )}
       </div>

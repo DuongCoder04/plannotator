@@ -473,7 +473,7 @@ function ReviewAnalysisTab({ packageChangesSetting }: { packageChangesSetting?: 
               checked={packageChangesSetting.card}
               onChange={(on) => packageChangesSetting.setCard(on)}
               label="Package changes"
-              description="Added, removed and changed dependencies above package.json and lockfile diffs. Off: only the plain diff."
+              description="Added, removed and changed dependencies above package.json and lockfile diffs."
             />
             <div className="border-t border-border" />
             <AnalysisLayerToggle

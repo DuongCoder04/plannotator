@@ -1,5 +1,5 @@
 import { piUpdateAdvert } from "./update-advert.ts";
-import { createPackageChangesService } from "../generated/package-changes-service.ts";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES } from "../generated/package-changes-service.ts";
 import { parseDiffToFiles } from "../generated/diff-files.ts";
 import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
@@ -13,7 +13,7 @@ import {
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
-import { basename, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
 
 import { SingleFlight } from "../generated/single-flight.ts";
 import { contentHash } from "../generated/draft.ts";
@@ -203,6 +203,7 @@ import {
 	WorkspaceReviewSession,
 	type WorkspaceDiffType,
 } from "../generated/review-workspace.ts";
+import { resolveWorkspaceFilePath } from "../generated/review-workspace-node.ts";
 import {
 	type CodeNavRequest,
 	type CodeNavRuntime,
@@ -1919,6 +1920,7 @@ export async function startReviewServer(options: {
 		oldPath: string | undefined,
 		maxBytes: number,
 		signal?: AbortSignal,
+		requestedBase?: string,
 	): Promise<FileBytesRead> => {
 		if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
 		const prCwd = (options.worktreePool && prMeta) ? options.worktreePool.resolve(prMeta.url) : options.agentCwd;
@@ -1930,7 +1932,7 @@ export async function startReviewServer(options: {
 		if (hasLocalAccess && !isPRMode) {
 			return getVcsFileBytesForDiff(
 				currentDiffType as DiffType,
-				currentBase,
+				requestedBase !== undefined ? resolveReviewBase(requestedBase) : currentBase,
 				filePath,
 				oldPath,
 				side,
@@ -2117,21 +2119,61 @@ export async function startReviewServer(options: {
 	};
 
 	// Package changes under package.json and lockfile diffs (mirrors packages/server/review.ts).
+	let packageRepoRoot: { cwd: string | undefined; root: Promise<string | null> } | null = null;
 	const packageChanges = createPackageChangesService({
 		snapshotId: () => currentSnapshotId(),
-		diffPaths: () => parseDiffToFiles(currentPatch).map((f) => f.path),
-		readFile: async (path, base) => {
+		diffFiles: () => parseDiffToFiles(currentPatch),
+		readSide: async (side, path, oldPath, base) => {
 			try {
 				validateFilePath(path);
+				if (oldPath) validateFilePath(oldPath);
 			} catch {
-				return null;
+				return { kind: "unreadable", reason: "invalid path" };
 			}
-			const result = await readDiffFileContents(path, undefined, base);
-			return "error" in result ? null : result;
+			const read = await readReviewSide(side, path, oldPath, MAX_PACKAGE_FILE_BYTES, undefined, base);
+			if (read.kind === "ok") return { kind: "ok", text: new TextDecoder().decode(read.bytes) };
+			if (read.kind === "missing") return { kind: "missing" };
+			if (read.kind === "too-large") return { kind: "unreadable", reason: "too large" };
+			const text = await readDiffFileContents(path, oldPath, base);
+			const value = "error" in text ? null : side === "old" ? text.oldContent : text.newContent;
+			return value == null ? { kind: "unreadable", reason: "could not be read" } : { kind: "ok", text: value };
 		},
-		readHomeNpmrc: () => {
+		settings: () => {
+			if (workspace) {
+				const session = workspace;
+				return {
+					kind: "local",
+					dirOf: async (path) => {
+						const target = resolveWorkspaceFilePath(session.repos, path);
+						return target ? dirnamePath(joinPath(target.repo.cwd, target.repoRelativePath)) : null;
+					},
+				};
+			}
+			if (isPRMode) return { kind: "remote" };
+			if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
+			return {
+				kind: "local",
+				dirOf: async (path) => {
+					const cwd = resolveVcsCwd(currentDiffType as DiffType, options.gitContext?.cwd) ?? options.gitContext?.cwd;
+					if (!packageRepoRoot || packageRepoRoot.cwd !== cwd) {
+						const known = cwd === options.gitContext?.cwd ? options.gitContext?.root : undefined;
+						packageRepoRoot = {
+							cwd,
+							root: known
+								? Promise.resolve(known)
+								: reviewRuntime.runGit(["rev-parse", "--show-toplevel"], { cwd })
+									.then((r) => (r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : null))
+									.catch(() => null),
+						};
+					}
+					const root = await packageRepoRoot.root;
+					return root ? dirnamePath(joinPath(root, path)) : null;
+				},
+			};
+		},
+		homeDir: () => {
 			try {
-				return readFileSync(joinPath(os.homedir(), ".npmrc"), "utf-8");
+				return os.homedir();
 			} catch {
 				return null;
 			}

@@ -12,13 +12,22 @@ import { storage } from '@plannotator/ui/utils/storage';
 
 export type PackageCard = PackageChangeCard & { lookup: { names: string[]; withheld: string[] } };
 
+/** What the page knows about one path: its card, and how many names one lookup click sends in this review. */
+export interface PackageCardData {
+  card: PackageCard;
+  /** Every name any card would send: the consent button's count. */
+  sendTotal: number;
+}
+
+interface PackageChangesData { cards: PackageCard[]; sendTotal: number }
+
 interface Scope { snapshot: string | undefined; base: string | undefined }
 
 const scopeKey = ({ snapshot, base }: Scope) => `${snapshot ?? ''}\u0000${base ?? ''}`;
 
-const cardsCache = new Map<string, Promise<PackageCard[] | null>>();
+const cardsCache = new Map<string, Promise<PackageChangesData | null>>();
 
-function loadCards(scope: Scope): Promise<PackageCard[] | null> {
+function loadCards(scope: Scope): Promise<PackageChangesData | null> {
   const key = scopeKey(scope);
   let hit = cardsCache.get(key);
   if (!hit) {
@@ -27,9 +36,13 @@ function loadCards(scope: Scope): Promise<PackageCard[] | null> {
     if (scope.base) params.set('base', scope.base);
     hit = fetch(`/api/package-changes?${params}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((body: { cards?: PackageCard[] } | null) => (Array.isArray(body?.cards) ? body!.cards : null))
+      .then((body: { cards?: PackageCard[]; lookup?: { total?: number } } | null): PackageChangesData | null => (
+        Array.isArray(body?.cards)
+          ? { cards: body!.cards, sendTotal: typeof body!.lookup?.total === 'number' ? body!.lookup.total : 0 }
+          : null
+      ))
       .catch(() => null);
-    hit.then((cards) => { if (cards === null) cardsCache.delete(key); });
+    hit.then((data) => { if (data === null) cardsCache.delete(key); });
     cardsCache.set(key, hit);
     while (cardsCache.size > 8) cardsCache.delete(cardsCache.keys().next().value!);
   }
@@ -37,14 +50,15 @@ function loadCards(scope: Scope): Promise<PackageCard[] | null> {
 }
 
 /** This path's card: undefined while loading, null when it has none. */
-export function usePackageCard(path: string, scope: Scope, enabled: boolean): PackageCard | null | undefined {
+export function usePackageCard(path: string, scope: Scope, enabled: boolean): PackageCardData | null | undefined {
   const key = scopeKey(scope);
-  const [result, setResult] = useState<{ key: string; card: PackageCard | null } | undefined>();
+  const [result, setResult] = useState<{ key: string; card: PackageCardData | null } | undefined>();
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    void loadCards(scope).then((cards) => {
-      if (live) setResult({ key: `${key}\u0000${path}`, card: cards?.find((c) => c.path === path) ?? null });
+    void loadCards(scope).then((data) => {
+      const card = data?.cards.find((c) => c.path === path);
+      if (live) setResult({ key: `${key}\u0000${path}`, card: card && data ? { card, sendTotal: data.sendTotal } : null });
     });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

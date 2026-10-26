@@ -55,6 +55,9 @@ export interface PackageLockIndex {
   /** Formats that do not list importers (yarn.lock, package-lock v1) resolve a
    *  manifest entry here instead. */
   resolve?: (name: string, spec: string) => string | null;
+  /** Packages the lockfile fetches from anywhere but npm's registry (another
+   *  host, a git or file URL): a lookup never names them. */
+  privateNames?: Set<string>;
 }
 
 /** The seam an ecosystem implements. Everything is pure text in, data out. */
@@ -102,6 +105,8 @@ export interface PackageChange {
   source: PackageSpecSource;
   /** A workspace package other than the card's own (its directory). */
   workspace?: string;
+  /** The lockfile resolves it from a host other than npm's registry. */
+  privateSource?: true;
 }
 
 /** A package the lockfile changed that no manifest names. */
@@ -124,11 +129,22 @@ export interface PackageChangeCard {
   error?: { side: "old" | "new"; reason: string };
 }
 
+/** A side the server could not read (too large, a failed platform call): never taken for an absent file. */
+export interface PackageUnreadable {
+  unreadable: string;
+}
+
+/** One side of a file: its text, null when the file does not exist on that side, or unreadable. */
+export type PackageFileSide = string | null | PackageUnreadable;
+
+export function isUnreadable(side: PackageFileSide | undefined): side is PackageUnreadable {
+  return typeof side === "object" && side !== null;
+}
+
 export interface PackageSourceFile {
   path: string;
-  /** null: missing on that side (added, deleted, or not readable). */
-  old: string | null;
-  new: string | null;
+  old: PackageFileSide;
+  new: PackageFileSide;
   /** False for a file read only to resolve another (a lockfile's own manifest). */
   inDiff: boolean;
 }
@@ -295,8 +311,9 @@ export function sortPackageChanges(changes: readonly PackageChange[], by: Packag
 interface ParsedSides<T> { old: T | string | null; new: T | string | null }
 
 function readSides<T>(file: PackageSourceFile, read: (text: string) => T | string): ParsedSides<T> {
-  const one = (text: string | null): T | string | null => {
+  const one = (text: PackageFileSide): T | string | null => {
     if (text == null) return null;
+    if (isUnreadable(text)) return text.unreadable;
     if (text.length > MAX_FILE_CHARS) return "larger than 32 MB";
     if (text.trim() === "") return null;
     return read(text);
@@ -336,11 +353,20 @@ function withVersions(table: PackageDepTable, lock: PackageLockIndex | null, imp
   return out;
 }
 
-/** A row the lockfile shows is a workspace or path package: never a registry lookup. */
+/**
+ * A row the lockfile shows is a workspace or path package: never a registry
+ * lookup. A row it fetches from another host keeps its name but is marked,
+ * so the lookup withholds it.
+ */
 function markLocal(changes: PackageChange[], lock: LockState): PackageChange[] {
   const local = new Set([...(lock.old.localNames ?? []), ...(lock.new.localNames ?? [])]);
-  if (local.size === 0) return changes;
-  return changes.map((c) => (local.has(c.name) ? { ...c, registryName: null, source: "workspace" as const } : c));
+  const hosted = new Set([...(lock.old.privateNames ?? []), ...(lock.new.privateNames ?? [])]);
+  if (local.size === 0 && hosted.size === 0) return changes;
+  return changes.map((c) => {
+    if (local.has(c.name)) return { ...c, registryName: null, source: "workspace" as const };
+    if (hosted.has(c.name) || (c.registryName && hosted.has(c.registryName))) return { ...c, privateSource: true as const };
+    return c;
+  });
 }
 
 function relativeDir(from: string, to: string): string | null {
@@ -362,13 +388,22 @@ function versionsOf(lock: PackageLockIndex, name: string): string[] {
 export function analyzePackageChanges(files: readonly PackageSourceFile[]): PackageChangeCard[] {
   const byPath = new Map(files.map((f) => [f.path, f]));
   const locks: LockState[] = [];
+  const cards: PackageChangeCard[] = [];
+  const errorCard = (file: PackageSourceFile, role: PackageFileRole, eco: PackageEcosystem, side: "old" | "new", reason: string): PackageChangeCard => ({
+    path: file.path, ecosystem: eco.id, role, lockfile: role === "lockfile" ? file.path : null, changes: [], indirect: [], error: { side, reason },
+  });
   for (const file of files) {
     const kind = packageFileKind(file.path);
     if (!file.inDiff || kind?.role !== "lockfile") continue;
     const { dir, base } = splitPath(file.path);
     const sides = readSides(file, (text) => kind.ecosystem.readLockfile(base, text));
-    // A side that does not parse makes the lockfile unusable: the manifests fall back to their ranges.
-    if (typeof sides.old === "string" || typeof sides.new === "string") continue;
+    // A side that does not read or parse makes the lockfile unusable: the
+    // manifests fall back to their ranges, and the lockfile says so.
+    if (typeof sides.old === "string" || typeof sides.new === "string") {
+      const side = typeof sides.old === "string" ? "old" : "new";
+      cards.push(errorCard(file, "lockfile", kind.ecosystem, side, (side === "old" ? sides.old : sides.new) as string));
+      continue;
+    }
     locks.push({ file, eco: kind.ecosystem, dir, old: sides.old ?? EMPTY_LOCK, new: sides.new ?? EMPTY_LOCK });
   }
 
@@ -387,7 +422,6 @@ export function analyzePackageChanges(files: readonly PackageSourceFile[]): Pack
     return best;
   };
 
-  const cards: PackageChangeCard[] = [];
   const claimed = new Map<LockState, { card: PackageChangeCard; importer: string; tables: PackageDepTable[] }[]>();
   for (const file of files) {
     const kind = packageFileKind(file.path);
@@ -397,7 +431,7 @@ export function analyzePackageChanges(files: readonly PackageSourceFile[]): Pack
     const card: PackageChangeCard = { path: file.path, ecosystem: eco.id, role: "manifest", lockfile: null, changes: [], indirect: [] };
     if (typeof sides.old === "string" || typeof sides.new === "string") {
       const side = typeof sides.old === "string" ? "old" : "new";
-      cards.push({ ...card, error: { side, reason: (side === "old" ? sides.old : sides.new) as string } });
+      cards.push(errorCard(file, "manifest", eco, side, (side === "old" ? sides.old : sides.new) as string));
       continue;
     }
     const oldTable = sides.old ?? new Map();
@@ -431,14 +465,19 @@ export function analyzePackageChanges(files: readonly PackageSourceFile[]): Pack
     for (const dir of importerDirs) {
       tables.set(dir, [lock.old.importers.get(dir) ?? new Map(), lock.new.importers.get(dir) ?? new Map()]);
     }
-    if (importerDirs.size === 0) {
-      const companion = eco.manifestNames.map((n) => byPath.get(joinPath(lock.dir, n))).find(Boolean);
-      if (companion) {
-        const sides = readSides(companion, (text) => eco.readManifest(text));
-        const o = typeof sides.old === "object" && sides.old ? sides.old : new Map();
-        const n = typeof sides.new === "object" && sides.new ? sides.new : new Map();
-        tables.set("", [withVersions(o, lock.old, ""), withVersions(n, lock.new, "")]);
+    if (importerDirs.size === 0 && (lock.old.packages.size > 0 || lock.new.packages.size > 0)) {
+      // The direct dependencies come from the manifest beside the lockfile.
+      // Without it every package would read as indirect: say so instead.
+      const companion = eco.manifestNames.map((n) => byPath.get(joinPath(lock.dir, n))).find((f) => f && (f.old != null || f.new != null));
+      const sides = companion ? readSides(companion, (text) => eco.readManifest(text)) : null;
+      const bad = !sides ? "no manifest beside it" : typeof sides.old === "string" ? sides.old : typeof sides.new === "string" ? sides.new : null;
+      if (bad !== null || !sides) {
+        if (mine.length === 0) cards.push(errorCard(lock.file, "lockfile", eco, "new", bad ?? "no manifest beside it"));
+        continue;
       }
+      const o = (sides.old ?? new Map()) as PackageDepTable;
+      const n = (sides.new ?? new Map()) as PackageDepTable;
+      tables.set("", [withVersions(o, lock.old, ""), withVersions(n, lock.new, "")]);
     }
     for (const [o, n] of tables.values()) {
       for (const name of o.keys()) direct.add(name);

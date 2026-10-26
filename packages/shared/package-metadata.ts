@@ -25,7 +25,7 @@ const CACHE_MS = 60 * 60 * 1000;
 export interface PackageLookupRequest { name: string; version: string | null }
 
 export interface PackageRouting {
-  /** The default registry is not npm's: nothing may be sent. */
+  /** The default registry is not npm's, or a setting could not be read: nothing may be sent. */
   privateDefault: boolean;
   /** Scopes (`@acme`) configured for another registry, or configured at all in Yarn or Bun. */
   privateScopes: Set<string>;
@@ -33,89 +33,231 @@ export interface PackageRouting {
 
 const PUBLIC_REGISTRY_HOSTS = new Set(["registry.npmjs.org", "registry.yarnpkg.com"]);
 
+function unquote(raw: string): string {
+  return raw.trim().replace(/^["']|["']$/g, "");
+}
+
 function isPublicRegistry(url: string): boolean {
   try {
-    return PUBLIC_REGISTRY_HOSTS.has(new URL(url.trim().replace(/^["']|["']$/g, "")).hostname);
+    return PUBLIC_REGISTRY_HOSTS.has(new URL(unquote(url)).hostname);
   } catch {
     return false;
   }
 }
 
 function scopeOf(raw: string): string | null {
-  const s = raw.trim().replace(/^["']|["']$/g, "");
+  const s = unquote(raw);
   if (!s) return null;
   return s.startsWith("@") ? s : `@${s}`;
 }
 
-/** The registry settings package managers read, as text: `.npmrc`, `.yarnrc.yml`, `bunfig.toml`. */
+/** Drops a trailing ` # comment` outside quotes. */
+function stripComment(line: string): string {
+  let quote = "";
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).trimEnd();
+  }
+  return line;
+}
+
+/**
+ * The keys of a flow mapping (`{ acme: {...}, "@b": x }` in YAML, `{ acme = "..." }`
+ * in TOML), depth one only. Null when the braces never close.
+ */
+function flowKeys(text: string, separator: ":" | "="): string[] | null {
+  const open = text.indexOf("{");
+  if (open < 0) return null;
+  const keys: string[] = [];
+  let depth = 0;
+  let quote = "";
+  let key = "";
+  let readingKey = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = "";
+      if (readingKey) key += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      if (readingKey) key += ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth++;
+      if (depth === 1) { readingKey = true; key = ""; }
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return keys;
+      continue;
+    }
+    if (depth === 1 && ch === ",") { readingKey = true; key = ""; continue; }
+    if (depth === 1 && readingKey && ch === separator) {
+      if (key.trim()) keys.push(unquote(key));
+      readingKey = false;
+      continue;
+    }
+    if (readingKey) key += ch;
+  }
+  return null;
+}
+
+/** The registry settings package managers read, as text. */
 export interface PackageRoutingFiles {
   npmrc: readonly string[];
+  /** Yarn Berry, `.yarnrc.yml`. */
   yarnrc: readonly string[];
+  /** Yarn classic, `.yarnrc`. */
+  yarnrcClassic?: readonly string[];
   bunfig: readonly string[];
+  /** A settings file existed but could not be read: nothing may be sent. */
+  unreadable?: boolean;
+}
+
+function readNpmrc(text: string, routing: PackageRouting): void {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const m = /^["']?(@[^:=\s"']+:)?registry["']?\s*=\s*(.*)$/.exec(line);
+    if (!m || isPublicRegistry(m[2])) continue;
+    if (m[1]) routing.privateScopes.add(m[1].slice(0, -1));
+    else routing.privateDefault = true;
+  }
+}
+
+function readYarnrcClassic(text: string, routing: PackageRouting): void {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = stripComment(raw).trim();
+    if (!line) continue;
+    const m = /^["']?(?:--)?(@[^:"'\s]+:)?registry["']?(?:\s*=\s*|\s+)(.+)$/.exec(line);
+    if (!m || isPublicRegistry(m[2])) continue;
+    if (m[1]) routing.privateScopes.add(m[1].slice(0, -1));
+    else routing.privateDefault = true;
+  }
+}
+
+/**
+ * `.yarnrc.yml`: `npmRegistryServer` and the keys of `npmScopes`, in block or
+ * flow style at any indent. A scope Yarn configures at all counts as private;
+ * an `npmScopes` this cannot read withholds everything.
+ */
+function readYarnrcYml(text: string, routing: PackageRouting): void {
+  const lines = text.split(/\r?\n/).map(stripComment).filter((l) => l.trim() && !l.trim().startsWith("#"));
+  if (lines.length === 0) return;
+  const indentOf = (l: string) => l.length - l.trimStart().length;
+  const topIndent = indentOf(lines[0]);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (indentOf(line) !== topIndent) continue;
+    const m = /^["']?([A-Za-z][\w]*)["']?\s*:\s*(.*)$/.exec(line.trim());
+    if (!m) continue;
+    const [, key, rest] = m;
+    if (key === "npmRegistryServer") {
+      if (!isPublicRegistry(rest)) routing.privateDefault = true;
+      continue;
+    }
+    if (key !== "npmScopes") continue;
+    const children: string[] = [];
+    for (let j = i + 1; j < lines.length && indentOf(lines[j]) > topIndent; j++) children.push(lines[j]);
+    let scopes: string[] | null = null;
+    if (rest.startsWith("{") || (!rest && children[0]?.trim().startsWith("{"))) {
+      scopes = flowKeys([rest, ...children].join("\n"), ":");
+    } else if (!rest && children.length > 0) {
+      const childIndent = indentOf(children[0]);
+      const keys = children
+        .filter((c) => indentOf(c) === childIndent)
+        .map((c) => /^((?:"[^"]*"|'[^']*'|[^:\s]+))\s*:/.exec(c.trim())?.[1]);
+      scopes = keys.every((k): k is string => !!k) ? keys.map(unquote) : null;
+    }
+    if (scopes === null || (scopes.length === 0 && rest.replace(/\s/g, "") !== "{}")) {
+      routing.privateDefault = true;
+      continue;
+    }
+    for (const s of scopes) {
+      const scope = scopeOf(s);
+      if (scope) routing.privateScopes.add(scope);
+    }
+  }
+}
+
+/** `bunfig.toml`: `[install] registry`, and any scope under `install.scopes` (a table, a sub-table or an inline table). */
+function readBunfig(text: string, routing: PackageRouting): void {
+  let table = "";
+  for (const raw of text.split(/\r?\n/)) {
+    const line = stripComment(raw).trim();
+    if (!line) continue;
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) {
+      table = header[1].trim().replace(/\s+/g, "");
+      const sub = /^install\.scopes\.(.+)$/.exec(table);
+      if (sub) {
+        const scope = scopeOf(sub[1]);
+        if (scope) routing.privateScopes.add(scope);
+      }
+      continue;
+    }
+    const kv = /^("[^"]*"|'[^']*'|[^=\s]+)\s*=\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    const key = table ? `${table}.${unquote(kv[1])}` : unquote(kv[1]);
+    const value = kv[2];
+    if (key === "install.registry") {
+      const url = /url\s*=\s*["']([^"']+)["']/.exec(value)?.[1] ?? value;
+      if (!isPublicRegistry(url)) routing.privateDefault = true;
+    } else if (key === "install.scopes") {
+      const keys = flowKeys(value, "=");
+      if (!keys || keys.length === 0) routing.privateDefault = true;
+      else for (const k of keys) { const scope = scopeOf(k); if (scope) routing.privateScopes.add(scope); }
+    } else if (key.startsWith("install.scopes.")) {
+      const scope = scopeOf(key.slice("install.scopes.".length).split(".")[0]);
+      if (scope) routing.privateScopes.add(scope);
+    }
+  }
+}
+
+/**
+ * Registry settings in the environment. npm reads any `npm_config_*` key
+ * case-insensitively; Yarn and Bun have their own. A scoped key withholds its
+ * scope; a default one, or one this cannot read, withholds everything.
+ */
+function readEnv(env: Record<string, string | undefined>, routing: PackageRouting): void {
+  for (const [rawKey, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    const key = rawKey.toLowerCase();
+    const m = /^(npm_config_|yarn_|bun_config_)(.+)$/.exec(key);
+    if (!m) continue;
+    const rest = m[2];
+    if (rest === "registry" || rest === "npm_registry_server") {
+      if (!isPublicRegistry(value)) routing.privateDefault = true;
+      continue;
+    }
+    const scoped = /^(@[^:]+):registry$/.exec(rest);
+    if (scoped) {
+      if (!isPublicRegistry(value)) routing.privateScopes.add(scoped[1]);
+      continue;
+    }
+    if (rest === "npm_scopes") routing.privateDefault = true;
+  }
 }
 
 /**
  * Which names may be sent to npm. Errs toward withholding: a scope that Yarn
  * or Bun configures at all counts as private, and so does every scope when
- * the default registry is not npm's.
+ * the default registry is not npm's or a setting could not be read.
  */
 export function packageRouting(files: PackageRoutingFiles, env: Record<string, string | undefined> = {}): PackageRouting {
-  const routing: PackageRouting = { privateDefault: false, privateScopes: new Set() };
-  for (const key of ["npm_config_registry", "NPM_CONFIG_REGISTRY", "YARN_NPM_REGISTRY_SERVER", "BUN_CONFIG_REGISTRY"]) {
-    const v = env[key];
-    if (v && !isPublicRegistry(v)) routing.privateDefault = true;
-  }
-  for (const text of files.npmrc) {
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#") || line.startsWith(";")) continue;
-      const m = /^(@[^:=\s]+:)?registry\s*=\s*(.+)$/.exec(line);
-      if (!m || isPublicRegistry(m[2])) continue;
-      if (m[1]) routing.privateScopes.add(m[1].slice(0, -1));
-      else routing.privateDefault = true;
-    }
-  }
-  for (const text of files.yarnrc) {
-    let inScopes = false;
-    for (const raw of text.split(/\r?\n/)) {
-      if (!raw.trim() || raw.trim().startsWith("#")) continue;
-      const indent = raw.length - raw.trimStart().length;
-      const line = raw.trim();
-      if (indent === 0) {
-        inScopes = /^npmScopes:/.test(line);
-        const m = /^npmRegistryServer:\s*(.+)$/.exec(line);
-        if (m && !isPublicRegistry(m[1])) routing.privateDefault = true;
-        continue;
-      }
-      if (inScopes && indent === 2 && line.endsWith(":")) {
-        const scope = scopeOf(line.slice(0, -1));
-        if (scope) routing.privateScopes.add(scope);
-      }
-    }
-  }
-  for (const text of files.bunfig) {
-    let table = "";
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) continue;
-      const header = /^\[([^\]]+)\]$/.exec(line);
-      if (header) {
-        table = header[1].trim();
-        continue;
-      }
-      if (table === "install") {
-        const m = /^registry\s*=\s*(.+)$/.exec(line);
-        if (m) {
-          const url = /url\s*=\s*"([^"]+)"/.exec(m[1])?.[1] ?? m[1];
-          if (!isPublicRegistry(url)) routing.privateDefault = true;
-        }
-      } else if (table === "install.scopes") {
-        const m = /^("?[^"=\s]+"?)\s*=/.exec(line);
-        const scope = m && scopeOf(m[1]);
-        if (scope) routing.privateScopes.add(scope);
-      }
-    }
-  }
+  const routing: PackageRouting = { privateDefault: files.unreadable === true, privateScopes: new Set() };
+  readEnv(env, routing);
+  for (const text of files.npmrc) readNpmrc(text, routing);
+  for (const text of files.yarnrcClassic ?? []) readYarnrcClassic(text, routing);
+  for (const text of files.yarnrc) readYarnrcYml(text, routing);
+  for (const text of files.bunfig) readBunfig(text, routing);
   return routing;
 }
 
@@ -126,25 +268,35 @@ export function isSendable(name: string, routing: PackageRouting): boolean {
   return true;
 }
 
-/** Test and mirror knob: https, or http on loopback. */
+/** Test knob: a stand-in registry on this machine (loopback only), never another host. */
 function baseUrl(value: string | undefined, fallback: string): string {
   if (!value) return fallback;
   try {
     const u = new URL(value);
     const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]";
-    if (u.protocol === "https:" || (u.protocol === "http:" && loopback)) return value.replace(/\/+$/, "");
+    if (loopback && (u.protocol === "http:" || u.protocol === "https:")) return value.replace(/\/+$/, "");
   } catch {}
   return fallback;
 }
 
 interface PackumentSummary { license: string | null; times: Record<string, string>; latest: string | null; deprecated: Record<string, string> }
+const CACHE_ENTRIES = 2000;
 const packumentCache = new Map<string, { at: number; value: PackumentSummary | "not-found" }>();
 const downloadsCache = new Map<string, { at: number; value: number | null }>();
+/** One request per package at a time: two versions of a name share its packument. */
+const packumentInFlight = new Map<string, Promise<PackumentSummary | "not-found">>();
+
+function remember<V>(cache: Map<string, { at: number; value: V }>, key: string, value: V): void {
+  cache.delete(key);
+  cache.set(key, { at: Date.now(), value });
+  while (cache.size > CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
+}
 
 /** Test hook: forget every cached answer. */
 export function clearPackageMetadataCache(): void {
   packumentCache.clear();
   downloadsCache.clear();
+  packumentInFlight.clear();
 }
 
 class LookupError extends Error {
@@ -173,10 +325,19 @@ function licenseOf(v: unknown): string | null {
   return null;
 }
 
-async function packument(fetchImpl: typeof fetch, registry: string, name: string): Promise<PackumentSummary | "not-found"> {
+function packument(fetchImpl: typeof fetch, registry: string, name: string): Promise<PackumentSummary | "not-found"> {
   const key = `${registry} ${name}`;
   const hit = packumentCache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  if (hit && Date.now() - hit.at < CACHE_MS) return Promise.resolve(hit.value);
+  let pending = packumentInFlight.get(key);
+  if (!pending) {
+    pending = fetchPackument(fetchImpl, registry, name, key).finally(() => packumentInFlight.delete(key));
+    packumentInFlight.set(key, pending);
+  }
+  return pending;
+}
+
+async function fetchPackument(fetchImpl: typeof fetch, registry: string, name: string, key: string): Promise<PackumentSummary | "not-found"> {
   const data = await getJson(fetchImpl, `${registry}/${name.replace("/", "%2F")}`);
   let value: PackumentSummary | "not-found" = "not-found";
   if (data !== "not-found" && data && typeof data === "object") {
@@ -193,7 +354,7 @@ async function packument(fetchImpl: typeof fetch, registry: string, name: string
       deprecated,
     };
   }
-  packumentCache.set(key, { at: Date.now(), value });
+  remember(packumentCache, key, value);
   return value;
 }
 
@@ -206,7 +367,7 @@ async function weeklyDownloads(fetchImpl: typeof fetch, api: string, names: stri
   });
   const unscoped = todo.filter((n) => !n.startsWith("@"));
   const scoped = todo.filter((n) => n.startsWith("@"));
-  const record = (n: string, v: number | null) => { out.set(n, v); downloadsCache.set(`${api} ${n}`, { at: Date.now(), value: v }); };
+  const record = (n: string, v: number | null) => { out.set(n, v); remember(downloadsCache, `${api} ${n}`, v); };
   const jobs: Promise<void>[] = [];
   for (let i = 0; i < unscoped.length; i += 100) {
     const batch = unscoped.slice(i, i + 100);
@@ -267,7 +428,7 @@ export async function lookupPackages(
           license: p.license,
           latest: p.latest,
           publishedAt: v ? p.times[v] : null,
-          deprecated: v ? p.deprecated[v] ?? null : null,
+          deprecated: r.version ? p.deprecated[r.version] ?? null : null,
         });
       } catch (err) {
         r.status = "error";

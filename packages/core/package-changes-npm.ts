@@ -153,6 +153,18 @@ function addPackage(packages: Map<string, Set<string>>, name: string, version: s
   set.add(version);
 }
 
+const NPM_REGISTRY_HOSTS = new Set(["registry.npmjs.org", "registry.yarnpkg.com"]);
+
+/** Whether a lockfile's `resolved` or `tarball` URL is npm's own registry. Anything else (another host, git, a file) is private. */
+export function isNpmRegistryUrl(url: string): boolean {
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === "https:" && NPM_REGISTRY_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** A version a lockfile records for a registry package (not a link, a path or a workspace). */
 function registryVersion(v: string | null | undefined): string | null {
   if (!v) return null;
@@ -173,6 +185,7 @@ export function readPackageLock(text: string): PackageLockIndex | string {
   const packages = new Map<string, Set<string>>();
   const importers = new Map<string, PackageDepTable>();
   const localNames = new Set<string>();
+  const privateNames = new Set<string>();
   const entries = json.packages;
   if (isObject(entries)) {
     // lockfileVersion 2 and 3: a flat map of install paths.
@@ -190,6 +203,7 @@ export function readPackageLock(text: string): PackageLockIndex | string {
       const name = typeof raw.name === "string" ? raw.name : key.slice(nm + "node_modules/".length);
       const version = typeof raw.version === "string" ? raw.version : null;
       if (version) addPackage(packages, name, version);
+      if (typeof raw.resolved === "string" && !isNpmRegistryUrl(raw.resolved)) privateNames.add(name);
     }
     const at = (importer: string, dep: string): string | null => {
       const keys = importer ? [`${importer}/node_modules/${dep}`, `node_modules/${dep}`] : [`node_modules/${dep}`];
@@ -205,7 +219,7 @@ export function readPackageLock(text: string): PackageLockIndex | string {
       if (!isObject(raw) || key.includes("node_modules/")) continue;
       importers.set(key, depTableOf(raw, (dep) => at(key, dep)));
     }
-    return { importers, packages, localNames };
+    return { importers, packages, localNames, privateNames };
   }
   // lockfileVersion 1: a nested tree, no importer specs.
   const deps = json.dependencies;
@@ -215,6 +229,7 @@ export function readPackageLock(text: string): PackageLockIndex | string {
       if (!isObject(raw)) continue;
       const version = registryVersion(typeof raw.version === "string" ? raw.version : null);
       if (version) addPackage(packages, name, version);
+      if (typeof raw.resolved === "string" && !isNpmRegistryUrl(raw.resolved)) privateNames.add(name);
       if (isObject(raw.dependencies)) walk(raw.dependencies);
     }
   };
@@ -222,6 +237,7 @@ export function readPackageLock(text: string): PackageLockIndex | string {
   return {
     importers,
     packages,
+    privateNames,
     resolve: (name) => {
       const e = deps[name];
       return isObject(e) ? registryVersion(typeof e.version === "string" ? e.version : null) : null;
@@ -275,12 +291,19 @@ export function readBunLock(text: string): PackageLockIndex | string {
     return split ? registryVersion(split.version) : null;
   };
   const localNames = new Set<string>();
+  const privateNames = new Set<string>();
   for (const raw of Object.values(entries)) {
     if (!Array.isArray(raw) || typeof raw[0] !== "string") continue;
     const split = splitNameAtVersion(raw[0]);
     const version = split && registryVersion(split.version);
     if (split && version) addPackage(packages, split.name, version);
     else if (split && /^(workspace|link|file):/.test(split.version)) localNames.add(split.name);
+    // The second slot names the registry when it is not the default one; a
+    // git or tarball install writes its URL into the version.
+    if (split && version) {
+      const registry = typeof raw[1] === "string" ? raw[1] : "";
+      if ((registry && !isNpmRegistryUrl(registry)) || /^(git|github|https?|ssh):|:\/\//.test(version)) privateNames.add(split.name);
+    }
   }
   const importers = new Map<string, PackageDepTable>();
   const workspaces = isObject(json.workspaces) ? json.workspaces : {};
@@ -294,7 +317,7 @@ export function readBunLock(text: string): PackageLockIndex | string {
       return own !== undefined ? own : versionAt(dep) ?? null;
     }));
   }
-  return { importers, packages, localNames };
+  return { importers, packages, localNames, privateNames };
 }
 
 // --- pnpm-lock.yaml ---------------------------------------------------------------
@@ -324,6 +347,8 @@ export function readPnpmLock(text: string): PackageLockIndex | string {
   const packages = new Map<string, Set<string>>();
   const importers = new Map<string, PackageDepTable>();
   const localNames = new Set<string>();
+  const privateNames = new Set<string>();
+  let pkgName: string | null = null;
   let top = "";
   let importer = "";
   let section = "";
@@ -357,6 +382,13 @@ export function readPnpmLock(text: string): PackageLockIndex | string {
         const split = splitNameAtVersion(key);
         const v = split && registryVersion(split.version);
         if (split && v) addPackage(packages, split.name, v);
+        pkgName = split?.name ?? null;
+        // A git or tarball install keys the package by its URL.
+        if (split && /^(git|github|https?|ssh|file):|:\/\//.test(split.version)) privateNames.add(split.name);
+      } else if (indent > 2 && pkgName) {
+        const tarball = /(?:^|[{,\s])tarball:\s*['"]?([^'",}\s]+)/.exec(body);
+        if (tarball && !isNpmRegistryUrl(tarball[1])) privateNames.add(pkgName);
+        if (/(?:^|[{,\s])(repo|commit|directory):/.test(body)) privateNames.add(pkgName);
       }
       continue;
     }
@@ -397,7 +429,7 @@ export function readPnpmLock(text: string): PackageLockIndex | string {
     }
   }
   flush();
-  return { importers, packages, localNames };
+  return { importers, packages, localNames, privateNames };
 }
 
 // --- yarn.lock (classic and Berry) -----------------------------------------------
@@ -407,18 +439,28 @@ export function readYarnLock(text: string): PackageLockIndex | string {
   const packages = new Map<string, Set<string>>();
   const byDescriptor = new Map<string, string>();
   const localNames = new Set<string>();
+  const privateNames = new Set<string>();
   let descriptors: string[] = [];
+  let entryNames: string[] = [];
   let sawEntry = false;
   for (const line of lines) {
     if (!line.trim() || line.startsWith("#")) continue;
     if (!/^\s/.test(line)) {
       descriptors = [];
+      entryNames = [];
       if (!line.endsWith(":")) continue;
       const head = line.slice(0, -1);
       if (head === "__metadata") continue;
       descriptors = head.split(/,\s*/).map((d) => d.trim().replace(/^["']|["']$/g, ""));
+      entryNames = descriptors.map((d) => splitNameAtVersion(d)?.name).filter((n): n is string => !!n);
+      for (const d of descriptors) {
+        const split = splitNameAtVersion(d);
+        if (split && /^(git|github|https?|ssh):|:\/\//.test(split.version.replace(/^npm:/, ""))) privateNames.add(split.name);
+      }
       continue;
     }
+    const resolved = /^\s{2}resolved:?\s+"?([^"\s]+)"?\s*$/.exec(line);
+    if (resolved && !isNpmRegistryUrl(resolved[1])) for (const n of entryNames) privateNames.add(n);
     if (descriptors.length === 0) continue;
     const m = /^\s{2}version:?\s+"?([^"\s]+)"?\s*$/.exec(line);
     if (!m) continue;
@@ -443,6 +485,7 @@ export function readYarnLock(text: string): PackageLockIndex | string {
     importers: new Map(),
     packages,
     localNames,
+    privateNames,
     resolve: (name, spec) => {
       const hit = byDescriptor.get(`${name}@${spec}`) ?? byDescriptor.get(`${name}@npm:${spec}`);
       return hit ? hit : null;

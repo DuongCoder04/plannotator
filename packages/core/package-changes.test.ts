@@ -4,12 +4,13 @@ import {
   packageChangeReads,
   packageFileKind,
   type PackageChangeCard,
+  type PackageFileSide,
   type PackageSourceFile,
 } from './package-changes';
-import { classifyNpmSpec, compareSemver, rangeFloor, readPnpmLock, readYarnLock } from './package-changes-npm';
+import { classifyNpmSpec, compareSemver, rangeFloor, readBunLock, readPnpmLock, readYarnLock } from './package-changes-npm';
 
 const manifest = (o: Record<string, Record<string, string>>) => JSON.stringify({ name: 'app', version: '1.0.0', ...o }, null, 2);
-const file = (path: string, old: string | null, next: string | null, inDiff = true): PackageSourceFile => ({ path, old, new: next, inDiff });
+const file = (path: string, old: PackageFileSide, next: PackageFileSide, inDiff = true): PackageSourceFile => ({ path, old, new: next, inDiff });
 const rows = (card: PackageChangeCard | undefined) => Object.fromEntries((card?.changes ?? []).map((c) => [c.workspace ? `${c.workspace}:${c.name}` : c.name, c]));
 
 describe('manifest only (no lockfile in the diff)', () => {
@@ -151,13 +152,15 @@ describe('package.json with package-lock.json', () => {
     expect(rows(card)['@ledger/shared']).toMatchObject({ kind: 'added', registryName: null, source: 'workspace' });
   });
 
-  test('a lockfile that does not parse leaves the manifest on its ranges', () => {
-    const [card] = analyzePackageChanges([
+  test('a lockfile that does not parse leaves the manifest on its ranges and says so under itself', () => {
+    const cards = analyzePackageChanges([
       file('package.json', manifest({ dependencies: { pg: '^8.13.0' } }), manifest({ dependencies: { pg: '^8.16.3' } })),
       file('package-lock.json', '{}', '<<<<<<< HEAD'),
     ]);
+    const card = cards.find((c) => c.path === 'package.json')!;
     expect(card.lockfile).toBeNull();
     expect(rows(card).pg).toMatchObject({ afterVersion: '8.16.3' });
+    expect(cards.find((c) => c.path === 'package-lock.json')).toMatchObject({ role: 'lockfile', changes: [], error: { side: 'new' } });
   });
 });
 
@@ -290,6 +293,72 @@ ms@2.1.2:
     if (typeof idx === 'string') throw new Error(idx);
     expect(idx.resolve?.('lodash', '^4.17.21')).toBe('4.17.21');
     expect([...idx.packages.keys()]).toEqual(['lodash']);
+  });
+});
+
+describe('unreadable sides', () => {
+  const root = { dependencies: { express: '^4.21.0', pg: '^8.13.0' } };
+  const lock = packageLock(root, { 'node_modules/express': '4.21.0', 'node_modules/pg': '8.13.1' });
+
+  test('a lockfile the server could not read is an error row, never every package removed', () => {
+    const cards = analyzePackageChanges([
+      file('package-lock.json', lock, { unreadable: 'too large' }),
+      file('package.json', manifest(root), manifest(root), false),
+    ]);
+    expect(cards).toEqual([expect.objectContaining({ path: 'package-lock.json', changes: [], indirect: [], error: { side: 'new', reason: 'too large' } })]);
+  });
+
+  test('a manifest side that could not be read is an error row', () => {
+    const cards = analyzePackageChanges([file('package.json', { unreadable: 'could not be read' }, manifest(root))]);
+    expect(cards).toEqual([expect.objectContaining({ path: 'package.json', changes: [], error: { side: 'old', reason: 'could not be read' } })]);
+  });
+
+  test('a yarn.lock whose manifest cannot be read says so instead of listing every package as indirect', () => {
+    const yarn = (v: string) => `# yarn lockfile v1\n\nlodash@^4.17.0:\n  version "${v}"\n`;
+    for (const companion of [file('package.json', null, null, false), file('package.json', { unreadable: 'x' }, { unreadable: 'x' }, false)]) {
+      const cards = analyzePackageChanges([file('yarn.lock', yarn('4.17.20'), yarn('4.17.21')), companion]);
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ path: 'yarn.lock', changes: [], indirect: [] });
+      expect(cards[0].error).toBeDefined();
+    }
+  });
+});
+
+describe('lockfile hosts: a package fetched from anywhere but npm is marked private', () => {
+  const pkg = (deps: Record<string, string>) => manifest({ dependencies: deps });
+
+  test('package-lock.json `resolved`', () => {
+    const before = { dependencies: { '@acme/ui': '^1.0.0', pg: '^8.13.0' } };
+    const after = { dependencies: { '@acme/ui': '^1.1.0', pg: '^8.16.3' } };
+    const cards = analyzePackageChanges([
+      file('package.json', pkg(before.dependencies), pkg(after.dependencies)),
+      file('package-lock.json',
+        packageLock(before, {
+          'node_modules/@acme/ui': { version: '1.0.0', resolved: 'https://npm.acme.dev/@acme/ui/-/ui-1.0.0.tgz' } as never,
+          'node_modules/pg': { version: '8.13.1', resolved: 'https://registry.npmjs.org/pg/-/pg-8.13.1.tgz' } as never,
+        }),
+        packageLock(after, {
+          'node_modules/@acme/ui': { version: '1.1.0', resolved: 'https://npm.acme.dev/@acme/ui/-/ui-1.1.0.tgz' } as never,
+          'node_modules/pg': { version: '8.16.3', resolved: 'https://registry.npmjs.org/pg/-/pg-8.16.3.tgz' } as never,
+        })),
+    ]);
+    const by = rows(cards[0]);
+    expect(by['@acme/ui'].privateSource).toBe(true);
+    expect(by.pg.privateSource).toBeUndefined();
+  });
+
+  test('yarn.lock `resolved`, pnpm `tarball`, bun.lock registry slot', () => {
+    const yarn = readYarnLock(`# yarn lockfile v1\n\n"@acme/ui@^1.0.0":\n  version "1.1.0"\n  resolved "https://npm.acme.dev/@acme/ui/-/ui-1.1.0.tgz#abc"\n\nlodash@^4.17.0:\n  version "4.17.21"\n  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"\n`);
+    if (typeof yarn === 'string') throw new Error(yarn);
+    expect([...yarn.privateNames!]).toEqual(['@acme/ui']);
+
+    const pnpm = readPnpmLock(`lockfileVersion: '9.0'\n\npackages:\n\n  '@acme/ui@1.1.0':\n    resolution: {integrity: sha512-x, tarball: https://npm.acme.dev/@acme/ui/-/ui-1.1.0.tgz}\n\n  react@19.1.0:\n    resolution: {integrity: sha512-x}\n\n  internal@1.0.0:\n    resolution:\n      tarball: https://artifactory.corp/internal-1.0.0.tgz\n`);
+    if (typeof pnpm === 'string') throw new Error(pnpm);
+    expect([...pnpm.privateNames!].sort()).toEqual(['@acme/ui', 'internal']);
+
+    const bun = readBunLock(`{\n  "lockfileVersion": 1,\n  "workspaces": { "": { "name": "app", "dependencies": { "@acme/ui": "^1.0.0", "zod": "^4.0.0" } } },\n  "packages": {\n    "@acme/ui": ["@acme/ui@1.1.0", "https://npm.acme.dev/", {}, "sha512-x"],\n    "zod": ["zod@4.1.5", "", {}, "sha512-x"],\n  },\n}\n`);
+    if (typeof bun === 'string') throw new Error(bun);
+    expect([...bun.privateNames!]).toEqual(['@acme/ui']);
   });
 });
 

@@ -10,7 +10,7 @@
  */
 
 import { childPath } from "@plannotator/shared/child-env";
-import { createPackageChangesService } from "@plannotator/shared/package-changes-service";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES } from "@plannotator/shared/package-changes-service";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { homedir } from "node:os";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
@@ -27,7 +27,7 @@ import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { refuseCrossOriginWrite } from "./request-origin-guard";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, getVcsFileBytesForDiff, getVcsDiffFingerprint, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, detectRemoteDefaultCompareTarget, resolveAvailableDiffType, vcsOwnsDiffType, vcsSupportsSnapshot, materializeVcsSnapshot, gitRuntime } from "./vcs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { SingleFlight } from "@plannotator/shared/single-flight";
 import {
@@ -178,7 +178,7 @@ import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type Ses
 import { isWSL } from "./browser";
 import { getExtraMarkdownExtensions } from "@plannotator/shared/resolve-file";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
-import type { LocalWorkspaceReview, WorkspaceDiffType } from "./review-workspace";
+import { resolveWorkspaceFilePath, type LocalWorkspaceReview, type WorkspaceDiffType } from "./review-workspace";
 import { handleCodeNavResolve, handleCodeNavHover, extractChangedFiles } from "./code-nav";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "./review-skill-loader";
 import { readGuideInstructions, writeGuideInstructions } from "@plannotator/shared/guide-instructions-store";
@@ -2120,19 +2120,110 @@ export async function startReviewServer(
     return { error: "No file access available" };
   };
 
+  // Where the current mode reads one side of a repository path, as
+  // bytes: shared by /api/review-image (#1598) and the Markdown
+  // preview's /api/review-markdown-image, in the same priority order
+  // as /api/file-content below.
+  const readReviewSide = async (
+    side: DiffSide,
+    filePath: string,
+    oldPath: string | undefined,
+    maxBytes: number,
+    signal?: AbortSignal,
+    requestedBase?: string,
+  ): Promise<FileBytesRead> => {
+    if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
+    const prCwd = resolvePRLocalCwd();
+    if (isPRMode && currentPRDiffScope === "full-stack" && prCwd && prMetadata?.defaultBranch) {
+      const baseRef = await resolvePRFullStackBaseRef(gitRuntime, prMetadata.defaultBranch, prCwd);
+      if (!baseRef) return { kind: "missing" };
+      return getFileBytesForDiff(gitRuntime, "merge-base", baseRef, filePath, oldPath, side, maxBytes, prCwd);
+    }
+    if (hasLocalAccess) {
+      return getVcsFileBytesForDiff(
+        currentDiffType as DiffType,
+        requestedBase !== undefined ? resolveReviewBase(requestedBase) : currentBase,
+        filePath,
+        oldPath,
+        side,
+        maxBytes,
+        gitContext?.cwd,
+      );
+    }
+    if (isPRMode && prMetadata && prRef) {
+      const ref = prRef;
+      return readPRImageSide({
+        gitRuntime,
+        poolCwd: prCwd,
+        oldSha: prMetadata.mergeBaseSha ?? prMetadata.baseSha,
+        headSha: prMetadata.headSha,
+        side,
+        filePath,
+        oldPath,
+        maxBytes,
+        fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+        signal,
+      });
+    }
+    return { kind: "unavailable" };
+  };
+
   // Package changes under package.json and lockfile diffs. The server reads
   // the files and works out every name a lookup would send; the lookup itself
   // runs only when config.json allows it (see package-changes-service.ts).
+  let packageRepoRoot: { cwd: string | undefined; root: Promise<string | null> } | null = null;
   const packageChanges = createPackageChangesService({
     snapshotId: () => currentSnapshotId(),
-    diffPaths: () => parseDiffToFiles(currentPatch).map((f) => f.path),
-    readFile: async (path, base) => {
-      try { validateFilePath(path); } catch { return null; }
-      const result = await readDiffFileContents(path, undefined, base);
-      return "error" in result ? null : result;
+    diffFiles: () => parseDiffToFiles(currentPatch),
+    readSide: async (side, path, oldPath, base) => {
+      try { validateFilePath(path); if (oldPath) validateFilePath(oldPath); } catch { return { kind: "unreadable", reason: "invalid path" }; }
+      const read = await readReviewSide(side, path, oldPath, MAX_PACKAGE_FILE_BYTES, undefined, base);
+      if (read.kind === "ok") return { kind: "ok", text: new TextDecoder().decode(read.bytes) };
+      if (read.kind === "missing") return { kind: "missing" };
+      if (read.kind === "too-large") return { kind: "unreadable", reason: "too large" };
+      // No byte reader for this mode: the text reader, whose null cannot tell
+      // absent from unreadable, so it counts as unreadable.
+      const text = await readDiffFileContents(path, oldPath, base);
+      const value = "error" in text ? null : side === "old" ? text.oldContent : text.newContent;
+      return value == null ? { kind: "unreadable", reason: "could not be read" } : { kind: "ok", text: value };
     },
-    readHomeNpmrc: () => {
-      try { return readFileSync(join(homedir(), ".npmrc"), "utf-8"); } catch { return null; }
+    settings: () => {
+      if (workspace) {
+        const session = workspace;
+        return {
+          kind: "local",
+          dirOf: async (path) => {
+            const target = resolveWorkspaceFilePath(session.repos, path);
+            return target ? dirname(join(target.repo.cwd, target.repoRelativePath)) : null;
+          },
+        };
+      }
+      if (isPRMode) return { kind: "remote" };
+      if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
+      return {
+        kind: "local",
+        dirOf: async (path) => {
+          // Patch paths are relative to the repository top level of the
+          // directory the diff ran in (a worktree mode runs elsewhere).
+          const cwd = resolveVcsCwd(currentDiffType as DiffType, gitContext?.cwd) ?? gitContext?.cwd;
+          if (!packageRepoRoot || packageRepoRoot.cwd !== cwd) {
+            const known = cwd === gitContext?.cwd ? gitContext?.root : undefined;
+            packageRepoRoot = {
+              cwd,
+              root: known
+                ? Promise.resolve(known)
+                : gitRuntime.runGit(["rev-parse", "--show-toplevel"], { cwd })
+                  .then((r) => (r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : null))
+                  .catch(() => null),
+            };
+          }
+          const root = await packageRepoRoot.root;
+          return root ? dirname(join(root, path)) : null;
+        },
+      };
+    },
+    homeDir: () => {
+      try { return homedir(); } catch { return null; }
     },
     lookupEnabled: () => resolvePackageLookup(loadConfig()),
     env: process.env,
@@ -3500,52 +3591,6 @@ export async function startReviewServer(
             }
           }
 
-          // Where the current mode reads one side of a repository path, as
-          // bytes: shared by /api/review-image (#1598) and the Markdown
-          // preview's /api/review-markdown-image, in the same priority order
-          // as /api/file-content below.
-          const readReviewSide = async (
-            side: DiffSide,
-            filePath: string,
-            oldPath: string | undefined,
-            maxBytes: number,
-            signal?: AbortSignal,
-          ): Promise<FileBytesRead> => {
-            if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
-            const prCwd = resolvePRLocalCwd();
-            if (isPRMode && currentPRDiffScope === "full-stack" && prCwd && prMetadata?.defaultBranch) {
-              const baseRef = await resolvePRFullStackBaseRef(gitRuntime, prMetadata.defaultBranch, prCwd);
-              if (!baseRef) return { kind: "missing" };
-              return getFileBytesForDiff(gitRuntime, "merge-base", baseRef, filePath, oldPath, side, maxBytes, prCwd);
-            }
-            if (hasLocalAccess) {
-              return getVcsFileBytesForDiff(
-                currentDiffType as DiffType,
-                currentBase,
-                filePath,
-                oldPath,
-                side,
-                maxBytes,
-                gitContext?.cwd,
-              );
-            }
-            if (isPRMode && prMetadata && prRef) {
-              const ref = prRef;
-              return readPRImageSide({
-                gitRuntime,
-                poolCwd: prCwd,
-                oldSha: prMetadata.mergeBaseSha ?? prMetadata.baseSha,
-                headSha: prMetadata.headSha,
-                side,
-                filePath,
-                oldPath,
-                maxBytes,
-                fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
-                signal,
-              });
-            }
-            return { kind: "unavailable" };
-          };
 
           // API: An image a reviewed Markdown file shows, read at that side's
           // revision. Every decision is in the shared handler.

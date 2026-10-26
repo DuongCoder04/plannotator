@@ -8,7 +8,10 @@
  *  2. POST /api/package-changes/lookup answers 403 until config.json says
  *     yes, and PLANNOTATOR_PACKAGE_LOOKUP=0 keeps it 403 after.
  *  3. Once allowed, the names that reach the (stubbed) registry are exactly
- *     the card's `lookup.names`: the count the consent line shows.
+ *     the card's `lookup.names`: the count the consent button shows.
+ *  4. Registry settings come from the working tree, so a gitignored `.npmrc`
+ *     withholds its scope even when the diff is of commits (HEAD has no
+ *     `.npmrc` at all).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -21,7 +24,7 @@ import { startReviewServer as startPiReviewServer } from '../../apps/pi-extensio
 import { getVcsContext } from './vcs';
 import { clearPackageMetadataCache } from '@plannotator/shared/package-metadata';
 
-const SAVED_ENV = ['PLANNOTATOR_DATA_DIR', 'PLANNOTATOR_PORT', 'HOME', 'PLANNOTATOR_PACKAGE_LOOKUP', 'PLANNOTATOR_PACKAGE_REGISTRY_URL', 'PLANNOTATOR_PACKAGE_DOWNLOADS_URL', 'npm_config_registry', 'NPM_CONFIG_REGISTRY'] as const;
+const SAVED_ENV = ['PLANNOTATOR_DATA_DIR', 'PLANNOTATOR_PORT', 'HOME', 'PLANNOTATOR_PACKAGE_LOOKUP', 'PLANNOTATOR_PACKAGE_REGISTRY_URL', 'PLANNOTATOR_PACKAGE_DOWNLOADS_URL', 'npm_config_registry', 'NPM_CONFIG_REGISTRY', 'npm_config_globalconfig', 'npm_config_userconfig', 'XDG_CONFIG_HOME'] as const;
 const original = Object.fromEntries(SAVED_ENV.map((k) => [k, process.env[k]]));
 const tempDirs: string[] = [];
 const stops: (() => void)[] = [];
@@ -85,30 +88,41 @@ function stubRegistry(): { url: string; names: string[] } {
 
 const manifest = (deps: Record<string, string>) => JSON.stringify({ name: 'app', version: '1.0.0', dependencies: deps }, null, 2) + '\n';
 
-function makeRepo(npmrc: string): string {
+/** A repo whose working tree changes package.json; `committed` commits the change and keeps `.npmrc` gitignored and untracked. */
+function makeRepo(npmrc: string, committed = false): string {
   const repo = tempDir('plannotator-pkg-repo-');
   git(repo, ['init', '-q']);
   git(repo, ['branch', '-M', 'main']);
   git(repo, ['config', 'user.email', 'test@example.com']);
   git(repo, ['config', 'user.name', 'Test']);
   writeFileSync(join(repo, '.npmrc'), npmrc);
+  if (committed) writeFileSync(join(repo, '.gitignore'), '.npmrc\n');
   writeFileSync(join(repo, 'package.json'), manifest({ pg: '^8.13.0', '@acme/billing': '^1.0.0', '@types/node': '^22.0.0' }));
   git(repo, ['add', '.']);
   git(repo, ['commit', '-q', '-m', 'initial']);
   writeFileSync(join(repo, 'package.json'), manifest({ pg: '^8.16.3', '@acme/billing': '^2.0.0', '@types/node': '^24.3.0', kysely: '^0.28.5' }));
+  if (committed) {
+    git(repo, ['add', 'package.json']);
+    git(repo, ['commit', '-q', '-m', 'bump']);
+  }
   return repo;
 }
 
 type Card = { path: string; changes: { name: string }[]; lookup: { names: string[]; withheld: string[] } };
+type Analysis = { cards: Card[]; lookup: { total: number } };
 
 describe('package changes routes', () => {
   for (const [runtime, startServer] of [
     ['Bun', startBunReviewServer],
     ['Pi', startPiReviewServer],
   ] as const) {
-    async function start(npmrc: string) {
+    async function start(npmrc: string, committed = false) {
       process.env.PLANNOTATOR_DATA_DIR = tempDir('plannotator-pkg-data-');
       process.env.HOME = tempDir('plannotator-pkg-home-');
+      // The machine's own npm settings stay out of the test.
+      process.env.npm_config_globalconfig = join(process.env.HOME, 'no-global-npmrc');
+      process.env.XDG_CONFIG_HOME = join(process.env.HOME, '.config');
+      delete process.env.npm_config_userconfig;
       delete process.env.npm_config_registry;
       delete process.env.NPM_CONFIG_REGISTRY;
       delete process.env.PLANNOTATOR_PACKAGE_LOOKUP;
@@ -116,11 +130,11 @@ describe('package changes routes', () => {
       process.env.PLANNOTATOR_PACKAGE_REGISTRY_URL = registry.url;
       process.env.PLANNOTATOR_PACKAGE_DOWNLOADS_URL = registry.url;
       if (runtime === 'Pi') process.env.PLANNOTATOR_PORT = String(await reservePort());
-      const repo = makeRepo(npmrc);
+      const repo = makeRepo(npmrc, committed);
       const server = await startServer({
-        rawPatch: git(repo, ['diff', 'HEAD']),
-        gitRef: 'Working tree',
-        diffType: 'uncommitted',
+        rawPatch: committed ? git(repo, ['diff', 'HEAD~1', 'HEAD']) : git(repo, ['diff', 'HEAD']),
+        gitRef: committed ? 'Last commit' : 'Working tree',
+        diffType: committed ? 'last-commit' : 'uncommitted',
         gitContext: await getVcsContext(repo, 'git'),
         origin: runtime === 'Pi' ? 'pi' : 'claude-code',
         htmlContent: '<!doctype html><html><body>review</body></html>',
@@ -143,10 +157,11 @@ describe('package changes routes', () => {
       const { server, registry, lookup } = await start('@acme:registry=https://npm.acme.dev/\n');
       const res = await fetch(`${server.url}/api/package-changes`);
       expect(res.status).toBe(200);
-      const body = await res.json() as { cards: Card[] };
+      const body = await res.json() as Analysis;
       expect(body.cards).toHaveLength(1);
       expect(body.cards[0].changes.map((c) => c.name).sort()).toEqual(['@acme/billing', '@types/node', 'kysely', 'pg']);
       expect(body.cards[0].lookup).toEqual({ names: ['@types/node', 'kysely', 'pg'], withheld: ['@acme/billing'] });
+      expect(body.lookup.total).toBe(3);
 
       expect((await lookup()).status).toBe(403);
       expect(registry.names).toEqual([]);
@@ -166,6 +181,16 @@ describe('package changes routes', () => {
       const before = registry.names.length;
       expect((await lookup()).status).toBe(403);
       expect(registry.names.length).toBe(before);
+    });
+
+    test(`${runtime}: a gitignored .npmrc withholds its scope when the diff is of commits`, async () => {
+      const { server, registry, lookup, allow } = await start('@acme:registry=https://npm.acme.dev/\n', true);
+      const body = await fetch(`${server.url}/api/package-changes`).then((r) => r.json()) as Analysis;
+      expect(body.cards[0].lookup).toEqual({ names: ['@types/node', 'kysely', 'pg'], withheld: ['@acme/billing'] });
+      await allow(true);
+      expect((await lookup()).status).toBe(200);
+      expect(registry.names.length).toBeGreaterThan(0);
+      expect(registry.names.some((n) => n.includes('@acme'))).toBe(false);
     });
 
     test(`${runtime}: a private default registry sends no name at all`, async () => {
