@@ -283,7 +283,7 @@ export interface InboxServerOptions {
    */
   updates?: Pick<
     InboxUpdatesOptions,
-    "fetchRelease" | "fetchReleaseTag" | "fetchImage" | "whatsNewWaitMs" | "launchInstaller" | "isManaged" | "listSessions" | "now" | "probeVersion"
+    "fetchReleasePage" | "fetchRelease" | "fetchReleaseTag" | "fetchImage" | "whatsNewWaitMs" | "launchInstaller" | "isManaged" | "listSessions" | "now" | "probeVersion"
   >;
   /**
    * The window: the built single-file app (`apps/hook/dist/inbox.html`, which
@@ -919,6 +919,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       restart_claude_code: live.restartCount(),
       /** Every runtime's sessions a reload brings up to date (Claude Code, Pi, Oh My Pi, OpenCode 2): "Reload agents N". Additive. */
       restart_agents: live.restartAgents(),
+      /** Checking for updates has failed for hours: the sidebar's quiet "Can't check for updates". Additive. */
+      update_check_failing: updates.checkFailing(),
       notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
       projects: projectFolders(rows),
       project: projectFilter,
@@ -1746,7 +1748,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // `updated` (additive): the "What's new in X" link appears or goes once its notes are fetched or cannot be.
         // `restart_claude_code` (additive): the sidebar's "Reload Claude Code N" follows the sessions as they restart.
         const onStatus = () =>
-          send(`event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount(), restart_agents: live.restartAgents() })}\n\n`);
+          send(
+            `event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount(), restart_agents: live.restartAgents(), update_check_failing: updates.checkFailing() })}\n\n`,
+          );
         statusListeners.add(onStatus);
         // An Inbox window (not the phone's door): counted while its stream is open, with what it reported.
         const windowId = parseWindowId(url.searchParams.get("window"));

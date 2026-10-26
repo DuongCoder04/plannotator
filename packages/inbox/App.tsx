@@ -80,7 +80,7 @@ import { useInboxNotifications } from './notify';
 import { useInboxSound } from './sound';
 import { notificationLine, SoundIntroDialog } from './components/SoundIntro';
 import { GuidePane } from './components/GuidePane';
-import { AboutBlock, FailedDialog, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
+import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
 import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
@@ -109,11 +109,11 @@ import { CardChip } from './board/CardChip';
 import { boardViewOf, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
-import type { CardsModel, DraftView } from './api';
+import type { CardsModel, DraftView, UpdateCheckFailing } from './api';
 import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
 import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
-import { sidebarUpdateNotice, updateForPage } from './updateNotice';
+import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -441,7 +441,9 @@ function focusFirst(selectors: readonly string[]): void {
   for (const selector of selectors) {
     const el = [...document.querySelectorAll<HTMLElement>(selector)].find((candidate) => candidate.getClientRects().length > 0);
     if (el) {
-      el.focus();
+      // Inside a thread's messages (its subject heading): focus never moves the thread's scroll, the place the
+      // person was in (closing a file with `‹ Inbox` put the thread back at its top).
+      el.focus(el.closest('.ib-pbody') ? { preventScroll: true } : undefined);
       return;
     }
   }
@@ -592,9 +594,16 @@ function Inbox() {
   const [restarting, setRestarting] = useState(false);
   // What this page may offer: nothing over the tailnet, where the update routes are local only.
   const pageUpdate = updateForPage(update, settings);
-  // The sidebar toggle's dot while the sidebar is closed: an update the Update button offers.
+  // Checking for updates has failed for hours (packages/server/inbox-updates.ts): the sidebar's quiet row,
+  // About's dot and the General row's line. Not on a page opened over the tailnet (About is local only there).
+  const [checkFailing, setCheckFailing] = useState<UpdateCheckFailing | null>(null);
+  const pageCheckFailing = pageOffersUpdates(settings) ? checkFailing : null;
+  // The sidebar toggle's dot while the sidebar is closed: an update the Update button offers, or checking failing.
   const updateState = pageUpdate?.state ?? null;
-  const sidebarToggleNotice = useMemo(() => sidebarUpdateNotice(updateState, restarting), [updateState, restarting]);
+  const sidebarToggleNotice = useMemo(
+    () => sidebarUpdateNotice(updateState, restarting, !!pageCheckFailing),
+    [updateState, restarting, pageCheckFailing],
+  );
   /** This run started on a newer version: the sidebar's "What's new in X" link. */
   const [updated, setUpdated] = useState<string | null>(null);
   // Claude Code sessions a /reload-plugins would bring up to date: the sidebar's "Reload Claude Code N" (owner approval "restart-warning").
@@ -827,6 +836,7 @@ function Inbox() {
       setUpdate(next.update);
       setUpdated(next.updated ?? null);
       setRestartAgents(restartAgentsOf(next.restart_agents, next.restart_claude_code));
+      setCheckFailing(next.update_check_failing ?? null);
       // Held: the order waits for an action, but each row's own state (a delivery, an agent's read) follows at once.
       setShown((current) =>
         current === null || !hasRows(current)
@@ -1167,10 +1177,11 @@ function Inbox() {
           if (pinsTimer) clearTimeout(pinsTimer);
           pinsTimer = setTimeout(() => void refreshList(false), 60);
         },
-        onStatus: (next, nextUpdated, nextRestart, nextAgents) => {
+        onStatus: (next, nextUpdated, nextRestart, nextAgents, nextFailing) => {
           setUpdate(next);
           if (nextUpdated !== undefined) setUpdated(nextUpdated);
           if (nextAgents !== undefined || nextRestart !== undefined) setRestartAgents(restartAgentsOf(nextAgents, nextRestart));
+          if (nextFailing !== undefined) setCheckFailing(nextFailing);
         },
         // Whether any open Inbox tab can show a notification (Settings → General).
         onReach: setNotifyReach,
@@ -1314,6 +1325,16 @@ function Inbox() {
       void loadUpdateDetails();
     }
   }, [route.page, refreshSettings, loadUpdateDetails]);
+  // While Settings shows, General's and About's version rows follow the update control as it moves
+  // (available, installing, failed, checking failing), not only what they read when Settings opened.
+  // Only when the key changes: opening Settings already reads them (the effect above).
+  const updateKey = `${update?.state ?? ''}:${update?.version ?? ''}:${checkFailing?.since ?? ''}`;
+  const seenUpdateKey = useRef(updateKey);
+  useEffect(() => {
+    if (seenUpdateKey.current === updateKey) return;
+    seenUpdateKey.current = updateKey;
+    if (route.page === 'settings') void loadUpdateDetails();
+  }, [route.page, updateKey, loadUpdateDetails]);
 
   // Settings' Archived count in its nav: read while Settings is open, again whenever the store moves.
   const [archivedTotal, setArchivedTotal] = useState<number | null>(null);
@@ -2295,7 +2316,7 @@ function Inbox() {
       const result = await inboxApi.checkForUpdate();
       setUpdateDetails(result);
       setUpdate(result.update);
-      if (!result.checked.ok) setSettingsError(`Could not reach GitHub: ${result.checked.error ?? 'the check failed'}.`);
+      if (!result.checked.ok) setSettingsError(`Couldn't check for updates: ${result.checked.error ?? 'the check failed'}.`);
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : 'The check failed.');
     } finally {
@@ -3157,7 +3178,22 @@ function Inbox() {
         sound={settings?.sound ? sound : undefined}
         archived={<ArchivedBlock refreshKey={latest?.cursor ?? null} onUnarchive={unarchiveFromSettings} />}
         archivedTotal={archivedTotal}
-        aboutDot={!!pageUpdate}
+        aboutDot={pageUpdate ? true : pageCheckFailing ? 'check-failing' : false}
+        updateRow={
+          settings && pageOffersUpdates(settings) ? (
+            <GeneralUpdateRow
+              version={latest?.version ?? settings.version ?? 'dev'}
+              details={updateDetails}
+              update={pageUpdate}
+              restarting={restarting}
+              checking={checking}
+              failing={updateDetails?.check.failing ?? pageCheckFailing}
+              onCheckNow={() => void checkNow()}
+              onUpdate={pressUpdate}
+              onWhatsNew={openWhatsNew}
+            />
+          ) : undefined
+        }
         about={
           <AboutBlock
             version={latest?.version ?? settings?.version ?? 'dev'}
@@ -3562,6 +3598,8 @@ function Inbox() {
             onWhatsNew={(version) => (tourRealStep ? endTour('finish', { page: 'whats-new', project: null, thread: null, version }) : openWhatsNew(version))}
             // Not on a page opened over the tailnet: Settings → Agents is local only there.
             restartAgents={settings && settings.via !== 'tailnet' ? restartAgents : NO_RESTART_AGENTS}
+            checkFailing={pageCheckFailing}
+            onCheckFailing={() => leave({ page: 'settings', project: null, thread: null, section: 'about' })}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
           />

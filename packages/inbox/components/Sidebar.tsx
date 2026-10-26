@@ -16,7 +16,8 @@ import { useInboxTheme } from '../theme';
 import { TaterMark } from './TaterMark';
 import { ProjectTip } from './ProjectRow';
 import { Tip } from './Tip';
-import { UpdateButton } from './Updates';
+import { CheckFailingRow, UpdateButton } from './Updates';
+import type { UpdateCheckFailing } from '../api';
 import { openSearchAriaKeys, openSearchHint } from '../search/searchShortcut';
 
 export interface SidebarProps {
@@ -44,6 +45,13 @@ export interface SidebarProps {
   restarting: boolean;
   /** This run started on a newer version: "What's new in X" above Settings. */
   updated: string | null;
+  /**
+   * Checking for updates has failed for hours (and no Update button shows):
+   * the quiet "Can't check for updates" row, opening Settings → About.
+   * Null on a page opened over the tailnet.
+   */
+  checkFailing?: UpdateCheckFailing | null;
+  onCheckFailing?: () => void;
   /**
    * Opens search (the approved "inbox-search" design): the field-shaped entry
    * under the Tater mark. No key hint, because no key opens it. Absent: no entry.
@@ -394,6 +402,9 @@ export function Sidebar(props: SidebarProps) {
           onPress={pick(props.onUpdate)}
           onWhatsNew={(version) => pick(() => props.onWhatsNew(version))()}
         />
+        {!props.update && props.checkFailing && props.onCheckFailing && (
+          <CheckFailingRow failing={props.checkFailing} onOpen={pick(props.onCheckFailing)} />
+        )}
         {restartAgents.total > 0 && props.onRestartSessions && <RestartSessionsRow agents={restartAgents} onOpen={pick(props.onRestartSessions)} />}
         {/* Two controls side by side, never one inside the other: the row opens Settings, the icon flips light and dark. */}
         <div className="ib-setrow">
