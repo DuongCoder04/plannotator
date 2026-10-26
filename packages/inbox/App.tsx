@@ -20,7 +20,7 @@ import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
-import type { InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import type { InboxCardWire, InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
 import { DecisionMode } from './decisions/DecisionMode';
 import { DecisionPill, decideEntryShown } from './decisions/entry';
 import {
@@ -103,9 +103,13 @@ import { adoptSavedTextSize, applyRememberedTextSize } from './textSize';
 import { parseSettingsHash, settingsHash, type SettingsSection } from './settingsRoute';
 import { ComposeDialog, type ComposeRequest, type ComposeSent } from './compose/ComposeDialog';
 import { DraftsPage } from './compose/DraftsPage';
+import { BoardPage, type BoardMove } from './board/BoardPage';
+import { BoardOff } from './board/BoardOff';
+import { CardChip } from './board/CardChip';
+import { boardViewOf, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
-import type { DraftView } from './api';
+import type { CardsModel, DraftView } from './api';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { sidebarUpdateNotice, updateForPage } from './updateNotice';
 
@@ -125,6 +129,8 @@ configurePlannotatorUI({
   componentTooltips: true,
   // A digit-only #186379 in a message is a PR or issue of the project's repo, not a colour (#1932).
   digitHexIssueRefs: true,
+  // The selection toolbar's Copy copies rich text, in messages and attached files (#1972).
+  richCopy: true,
   // Hover cards for issue, PR and MR links: the server fetches with this computer's gh or glab (ref-cards.ts).
   refCardTransport: async (href, _ref, signal) => {
     const res = await fetch(`/api/inbox/ref?url=${encodeURIComponent(href)}`, { signal, headers: { accept: 'application/json' } });
@@ -157,6 +163,8 @@ const SIDEBAR_OPEN_COOKIE = 'plannotator-inbox-sidebar-open';
 const COMPOSE_LAST_COOKIE = 'plannotator-inbox-compose-last';
 /** How often the Drafts page reads its drafts again, so each chip follows its session. */
 const DRAFTS_REFRESH_MS = 10_000;
+/** No cards handled yet (the Board before its first read of a visit). */
+const EMPTY_SET: ReadonlySet<string> = new Set();
 /** How long the refresh icon shows after a click on Inbox: one turn (inbox.css `ib-refresh-turn`, 500 ms), then back to the inbox icon. */
 const REFRESH_SPIN_MS = 600;
 /** Settings → Agents re-reads the agents this often while open, so "Open sessions" follows the sessions as they restart. */
@@ -187,7 +195,11 @@ interface ThreadLoad {
 }
 
 interface Route {
-  page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour';
+  page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour' | 'board';
+  /** The Board's list (`#board`, `#board=shipped`, `#board=icebox`; approval "inbox-board", step 2). */
+  board?: BoardView;
+  /** The opened Board card (`#board&card=crd_…`), or on a thread the card it was opened from (its "‹ Board" way back). */
+  card?: string | null;
   /** The onboarding tour's step (`#tour=3`, approval "inbox-onboarding-tour"): 1 to 6. */
   step?: number;
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
@@ -231,6 +243,7 @@ function routeOf(fullHash: string): Route {
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
   if (params.has('drafts')) return { page: 'drafts', project: null, thread: null };
+  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
   const thread = params.get('thread');
   const fileId = thread ? params.get('file') : null;
   return {
@@ -241,6 +254,9 @@ function routeOf(fullHash: string): Route {
     guide: thread ? params.get('guide') : null,
     msg: thread ? params.get('msg') : null,
     artifacts: thread ? params.has('artifacts') : false,
+    card: thread ? params.get('card') : null,
+    // The Board list the card was opened from (Shipped, Icebox): the way back goes there.
+    board: thread && params.get('card') ? boardViewOf(params.get('from')) : undefined,
   };
 }
 
@@ -250,6 +266,7 @@ function hashOf(route: Route): string {
   if (route.page === 'settings') hash = settingsHash({ section: route.section ?? null, pair: route.pair });
   else if (route.page === 'whats-new') hash = new URLSearchParams({ 'whats-new': route.version ?? '' }).toString();
   else if (route.page === 'drafts') hash = 'drafts';
+  else if (route.page === 'board') hash = (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') + (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
@@ -266,6 +283,9 @@ function hashOf(route: Route): string {
       if (route.file.view) params.set('view', route.file.view);
     }
     if (route.thread && route.guide) params.set('guide', route.guide);
+    // A thread opened from a Board card: its way back is the card (`&card=crd_…`).
+    if (route.thread && route.card) params.set('card', route.card);
+    if (route.thread && route.card && route.board && route.board !== 'lanes') params.set('from', route.board);
     // `&artifacts`, a flag: written without its empty `=`.
     hash = params.toString().replace(/(^|&)artifacts=(?=&|$)/, '$1artifacts');
   }
@@ -935,6 +955,97 @@ function Inbox() {
   useEffect(() => {
     void refreshDrafts();
   }, [refreshDrafts]);
+  /**
+   * The Board's cards (approval "inbox-board", step 2): read only while the
+   * person has the Board on, once it is known to be on and again when a card
+   * line arrives on the event stream, so the Board updates in place. With the
+   * Board off nothing reads them (a card line on the stream is skipped too).
+   */
+  const [cards, setCards] = useState<CardsModel | null>(null);
+  const [cardsError, setCardsError] = useState<string | null>(null);
+  const cardsSeq = useRef(0);
+  /** Whether the Board is on (`boardEnabled` below), for the reads that run outside a render. */
+  const boardOnRef = useRef(false);
+  const refreshCards = useCallback(async (): Promise<CardsModel | null> => {
+    if (!boardOnRef.current) return null;
+    const mine = ++cardsSeq.current;
+    try {
+      const next = await inboxApi.cards();
+      // An older read never replaces a newer one that landed first.
+      if (mine === cardsSeq.current) {
+        setCards(next);
+        setCardsError(null);
+      }
+      return next;
+    } catch (cause) {
+      if (mine === cardsSeq.current) setCardsError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    }
+  }, []);
+  /**
+   * A visit to the Board: the person's look as it stood when the visit began
+   * (cards an agent wrote to after it are bold for the whole visit, as a
+   * thread keeps "New since you looked"), and the cards they opened or moved
+   * since (no longer bold). Opening the Board records a new look through the
+   * newest card it read, so the next visit is bold only for what came after.
+   */
+  const [boardVisit, setBoardVisit] = useState<{ look: number | null; handled: ReadonlySet<string> } | null>(null);
+  /**
+   * The Board is something the person turns on (config.json `inboxBoard`,
+   * approval "inbox-board" 2026-10-26): null until the settings are read; an
+   * Inbox that predates the switch always has it.
+   */
+  const boardEnabled = settings ? (settings.board ? settings.board.on : true) : null;
+  boardOnRef.current = boardEnabled === true;
+  useEffect(() => {
+    if (boardEnabled !== true) {
+      // Off (or not known yet): no card is read, and none kept from before it was turned off.
+      cardsSeq.current++;
+      setCards(null);
+      return;
+    }
+    void refreshCards();
+  }, [boardEnabled, refreshCards]);
+  const onBoard = route.page === 'board' && boardEnabled === true;
+  useEffect(() => {
+    if (!onBoard) {
+      setBoardVisit(null);
+      return;
+    }
+    let live = true;
+    void refreshCards().then((model) => {
+      if (!live || !model) return;
+      setBoardVisit({ look: model.seen_seq ?? null, handled: new Set() });
+      // The look runs through this read's cursor: every line up to it was on the page. An Inbox before
+      // step 2 has no look to record (no `seen_seq`): nothing is bold beyond this visit there.
+      if (model.seen_seq !== undefined) void inboxApi.seeBoard(model.cursor).catch(() => {});
+    });
+    return () => {
+      live = false;
+    };
+  }, [onBoard, refreshCards]);
+  const handleCard = (id: string) =>
+    setBoardVisit((visit) => (visit && !visit.handled.has(id) ? { ...visit, handled: new Set([...visit.handled, id]) } : visit));
+  const moveCard = async (card: InboxCardWire, change: BoardMove): Promise<InboxCardWire | null> => {
+    handleCard(card.id);
+    try {
+      const { card: moved } = await inboxApi.moveCard(card.id, change);
+      setCards((model) => (model ? { ...model, cards: model.cards.map((c) => (c.id === moved.id ? moved : c)) } : model));
+      void refreshCards();
+      return moved;
+    } catch {
+      void refreshCards();
+      return null;
+    }
+  };
+  const seeDrops = useCallback((ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    void inboxApi
+      .seeDrops(ids)
+      .then(() => refreshCards())
+      .catch(() => {});
+  }, [refreshCards]);
+
   // The Drafts page follows each draft's session (live, ended) while it is open.
   useEffect(() => {
     if (route.page !== 'drafts') return;
@@ -998,6 +1109,7 @@ function Inbox() {
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
+    let cardsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
     prepareInboxEvents();
@@ -1013,6 +1125,12 @@ function Inbox() {
       flushNotifications(first);
       unsubscribe = subscribeInboxEvents(first.cursor, {
         onRecord: (event) => {
+          // A Board card (approval "inbox-board"): only the Board reads it; it never changes the list or a thread.
+          if (event?.kind === 'card') {
+            if (cardsTimer) clearTimeout(cardsTimer);
+            cardsTimer = setTimeout(() => void refreshCards(), 60);
+            return;
+          }
           const now = routeRef.current;
           if (now.page === 'tour' && event?.kind === 'message' && event.first && event.message.author.kind === 'agent') {
             const threadId = event.message.thread_id;
@@ -1074,9 +1192,10 @@ function Inbox() {
       if (timer) clearTimeout(timer);
       if (deliveriesTimer) clearTimeout(deliveriesTimer);
       if (draftsTimer) clearTimeout(draftsTimer);
+      if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
     };
-  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
+  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
   // Opening a thread: read it, record the look, and update its row in place.
   // While any thread is open the list holds still (settle.ts): the look
@@ -2233,6 +2352,19 @@ function Inbox() {
   };
 
   // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
+  const toggleBoard = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current ? { ...current, board: { on: next } } : current));
+    try {
+      const saved = await inboxApi.saveBoard(next);
+      setSettings((current) => (current ? { ...current, board: saved.board } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   const toggleExperimental = async (next: boolean) => {
     setSettingsError(null);
     setSettings((current) => (current ? { ...current, experimental: { decision_mode: { on: next, env: current.experimental?.decision_mode.env ?? null } } } : current));
@@ -2768,6 +2900,10 @@ function Inbox() {
 
   // A file beside the thread takes the list's and the sidebar's room (record 2.2).
   const fileOpen = route.page === 'inbox' && !!route.thread && !!route.file;
+  // A thread opened from a Board card (`#thread=…&card=crd_…`): it takes the list's place, led by
+  // "‹ Board" and a chip naming the card; both go back to the opened card.
+  const fromCard = route.page === 'inbox' && route.thread && route.card ? route.card : null;
+  const backToCard = () => close({ page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
@@ -3006,6 +3142,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        onToggleBoard={(next) => void toggleBoard(next)}
         agents={agents}
         onAgents={setAgents}
         onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
@@ -3074,6 +3211,57 @@ function Inbox() {
         }
       />
     );
+  } else if (route.page === 'board' && boardEnabled === false) {
+    // The Board is off: a #board link says so, with the one way to turn it on (nothing else of it shows).
+    main = <BoardOff via={settings?.via ?? 'local'} onTurnOn={() => void toggleBoard(true)} error={settingsError} />;
+  } else if (route.page === 'board' && boardEnabled === null) {
+    main = <section className="ib-bpage" aria-busy="true" data-board-page="" />;
+  } else if (route.page === 'board') {
+    // The opened card's threads and a sent card's ticks read the list's rows (pins included).
+    const rowById = new Map<string, InboxListRow>();
+    for (const section of latestSections) for (const row of section.threads) rowById.set(row.thread_id, row);
+    for (const row of latest?.pins ?? []) if (!rowById.has(row.thread_id)) rowById.set(row.thread_id, row);
+    // The cards' own answer names threads the list leaves out (archived): the opened card still names them.
+    for (const [id, row] of Object.entries(cards?.threads ?? {})) if (row && !rowById.has(id)) rowById.set(id, row);
+    // A New card goes in the project of the card heard from last, else the first project.
+    const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
+    main = (
+      <BoardPage
+        view={route.board ?? 'lanes'}
+        model={cards}
+        error={cardsError}
+        visitLook={boardVisit ? boardVisit.look : (cards?.seen_seq ?? null)}
+        handled={boardVisit?.handled ?? EMPTY_SET}
+        projects={projects}
+        defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
+        home={settings?.home ?? null}
+        mcpCommand={settings?.mcp_command ?? null}
+        phone={phone}
+        openCard={route.card ?? null}
+        onOpenCard={(id) => {
+          if (id) handleCard(id);
+          const next: Route = { page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: id };
+          // Another card replaces the open one's entry; opening the first and closing are entries of their own (a phone's Back closes it).
+          if (id === null && route.card) close(next);
+          else writeRoute(next, { replace: !!route.card && id !== null });
+        }}
+        rowOf={(threadId) => rowById.get(threadId) ?? null}
+        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
+        onMove={moveCard}
+        onChanged={(card) => {
+          if (card) {
+            handleCard(card.id);
+            setCards((model) => (model ? { ...model, cards: [card, ...model.cards.filter((c) => c.id !== card.id)] } : model));
+          }
+          void refreshCards();
+          void refreshList(false);
+        }}
+        onSeeDrops={seeDrops}
+        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
+        marks={settings !== null && settings.via !== 'tailnet'}
+      />
+    );
   } else if (route.page === 'drafts') {
     main = (
       <DraftsPage
@@ -3110,7 +3298,7 @@ function Inbox() {
   } else {
     main = (
       <>
-        {!fileOpen && (
+        {!fileOpen && !fromCard && (
         <InboxList
           scope={route.project}
           title={filterProject?.name ?? 'Inbox'}
@@ -3180,7 +3368,7 @@ function Inbox() {
               focusThreadSubject.current = true;
             }}
             onRetry={() => setThreadRetry((n) => n + 1)}
-            onClose={() => close({ ...route, thread: null, file: null })}
+            onClose={fromCard ? backToCard : () => close({ ...route, thread: null, file: null })}
           />
         )}
         {route.thread && thread && thread.thread_id === route.thread && (
@@ -3216,7 +3404,7 @@ function Inbox() {
             onReplyOpened={() => setReplyFor(null)}
             onQuestions={patchQuestions}
             onChanged={afterWrite}
-            onClose={() => close({ ...route, thread: null, file: null })}
+            onClose={fromCard ? backToCard : () => close({ ...route, thread: null, file: null })}
             file={route.file ?? null}
             onOpenFile={(file, options) => {
               if (!file) return closeTo({ ...routeRef.current, file });
@@ -3268,9 +3456,10 @@ function Inbox() {
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
-            backLabel={filterProject?.name ?? 'Inbox'}
+            backLabel={fromCard ? 'Board' : (filterProject?.name ?? 'Inbox')}
+            cardChip={fromCard ? <CardChip card={cards?.cards.find((c) => c.id === fromCard) ?? null} onOpen={backToCard} /> : undefined}
             phone={phone}
-            stacked={stack.thread}
+            stacked={stack.thread || !!fromCard}
             fileStacked={stack.file}
             remote={settings ? (settings.via ?? 'local') === 'tailnet' : null}
             onToast={(t) => showToast(t)}
@@ -3338,7 +3527,7 @@ function Inbox() {
             />
           ) : (
           <Sidebar
-            page={route.page === 'tour' ? 'inbox' : route.page}
+            page={route.page === 'tour' ? 'inbox' : fromCard ? 'board' : route.page}
             projectId={route.project}
             inboxCount={waitingCount(latestSections)}
             projects={projects}
@@ -3359,6 +3548,8 @@ function Inbox() {
             onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
+            // The Board (approval "inbox-board"): a row only while the person has it on; no count (the header has it).
+            onBoard={boardEnabled ? () => leave({ page: 'board', project: null, thread: null }) : undefined}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>
