@@ -191,6 +191,7 @@ jobs:
           packages/inbox/tagAgents.test.tsx
           packages/inbox/restartWarning.test.tsx
           packages/inbox/pasteFiles.test.tsx
+          packages/inbox/questionCardPhone.test.tsx
           packages/inbox/markRead.test.tsx
           packages/inbox/ack.test.tsx
           packages/inbox/actionChecklist.test.tsx
