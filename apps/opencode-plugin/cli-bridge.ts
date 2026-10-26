@@ -10,6 +10,7 @@ import {
   SESSION_BRIDGE_TOKEN_ENV,
 } from "@plannotator/ai/session-bridge-pull";
 import { runPullSessionBridgeClient } from "@plannotator/ai/session-bridge-pull-client";
+import { inboxOpenedText, openInboxInBrowser } from "@plannotator/shared/inbox/agent-link";
 import { annotateTargetWords, parseAnnotateArgs, type ParsedAnnotateArgs } from "@plannotator/shared/annotate-args";
 import {
   annotateInputNamesExistingTarget,
@@ -1015,6 +1016,9 @@ export function annotateDecisionOutcome(outcome: CliAnnotateOutcome): string {
   return `Feedback${comments}`;
 }
 
+/** `/plannotator-inbox`: opens the Inbox; never a review, never the embedded runtime. */
+export const INBOX_COMMAND = "plannotator-inbox";
+
 export async function handleCliCommand(input: {
   command: string;
   client: OpenCodeClient;
@@ -1040,6 +1044,11 @@ export async function handleCliCommand(input: {
   annotateBundle?: readonly string[];
   /** A launch the host tracks: its observer, failure report and decision heading. */
   launch?: CliLaunch;
+  /**
+   * OpenCode 1: the command's own message runs one model turn whatever the
+   * hook does, and `client` records a prompt to the session into it.
+   */
+  commandTurn?: boolean;
 }): Promise<void> {
   const cwd = input.cwd ?? process.cwd();
   const launch = input.launch;
@@ -1078,6 +1087,28 @@ export async function handleCliCommand(input: {
   };
 
   try {
+    if (input.command === INBOX_COMMAND) {
+      // Not a review: open the person's Inbox (`plannotator inbox --open`,
+      // which starts a stopped one detached) and say where it is.
+      const opened = await openInboxInBrowser();
+      if ("error" in opened) {
+        log(input.client, "error", `[Plannotator] ${opened.error}`);
+        reportFailure(opened.error);
+        return;
+      }
+      const text = inboxOpenedText(opened.url);
+      log(input.client, "info", `[Plannotator] ${text}`);
+      // Seen by the person: OpenCode 1's toast, OpenCode 2's transcript notice
+      // (no model turn).
+      toastPlannotatorUrl(input.client, text, new Set());
+      // OpenCode 1 runs a model turn for the command's message anyway: let it
+      // carry the address (the command turn client records this prompt).
+      if (input.commandTurn) {
+        await injectSessionPrompt(input.client, input.sessionId, `${text}\n\nTell the user this address in one sentence and stop. Do not begin any work.`);
+      }
+      return;
+    }
+
     if (input.command === "plannotator-review") {
       const parsed = parseReviewArgs(input.rawArgs);
       if (parsed.errors.length) throw new Error(parsed.errors.join("\n"));

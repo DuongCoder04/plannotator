@@ -292,6 +292,7 @@ You remain in Plan mode until the user switches agents. If the user asks you to 
       "plannotator-review",
       "plannotator-annotate",
       "plannotator-last",
+      "plannotator-inbox",
     ]);
 
     // No command domain: nothing registered, and the pre-existing submit_plan
@@ -351,7 +352,7 @@ You remain in Plan mode until the user switches agents. If the user asks you to 
     });
     await serverPlugin.setup(testContext.context as never);
 
-    expect(registered).toHaveLength(3);
+    expect(registered).toHaveLength(4);
     expect(testContext.getToolDefinition()).toBeUndefined();
   });
 

@@ -25,12 +25,17 @@ This starts the Inbox and opens it in your browser. If it is already running, th
 | `plannotator inbox` | Start the Inbox and open it in the browser, or open the one already running |
 | `plannotator inbox --background` | Start it detached without opening a browser, print its URL and exit. Agents run this form |
 | `plannotator inbox --no-open` | Run it in this terminal without opening a browser |
+| `plannotator inbox --open` | Open it in the browser and print its URL, starting it in the background first if it is not running. It returns at once |
 | `plannotator inbox --tailscale` | Also publish it [over your tailnet](#over-your-tailnet) until it stops. Works with the forms above. If the Inbox is already running, it is asked to publish |
 | `plannotator inbox mcp` | The stdio MCP server for agents. It starts a stopped Inbox without opening a browser tab |
 
 Run `plannotator inbox` once before you connect an agent. That first run writes the Inbox's registry file, and the connections look for that file when a session starts.
 
 You never need to keep the Inbox running yourself. When an agent calls it and it is stopped, it starts in the background, and no tab opens.
+
+### Closed the tab?
+
+Type `/plannotator-inbox` in your agent (Claude Code, Codex, OpenCode, Pi, Gemini CLI, Kiro, Mistral Vibe, Droid; in Amp, **Plannotator: Open Inbox** in the command palette). It opens the Inbox in your browser, starting it if needed, and shows its address. You can also ask your agent where your Inbox is, or run `plannotator inbox --open` in a terminal.
 
 ### Your agents are connected for you
 

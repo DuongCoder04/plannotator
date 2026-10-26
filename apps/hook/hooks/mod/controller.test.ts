@@ -1589,3 +1589,31 @@ describe('a decision claimed but never delivered', () => {
     expect(other.submits).toEqual([])
   })
 })
+
+// The owner closed the Inbox tab and had no easy way back: /plannotator-inbox
+// opens it again (starting a stopped one detached) and says where it is.
+describe('/plannotator-inbox', () => {
+  test('runs plannotator inbox --open with the data dir and answers with the address', async () => {
+    const host = fakeHost()
+    host.onRun = (call) =>
+      call.argv[1] === 'inbox' ? { exitCode: 0, stdout: 'http://localhost:59812/\n', stderr: '' } : undefined
+    const mod = new PlannotatorMod(host, SESSION)
+    const text = await mod.openInbox()
+    const call = host.runs.find((run) => run.argv[1] === 'inbox')
+    expect(call?.argv).toEqual(['plannotator', 'inbox', '--open'])
+    expect(call?.env?.PLANNOTATOR_DATA_DIR).toBe('/data')
+    expect(text).toContain('http://localhost:59812/')
+    // Nothing is launched: no review, no decision to wait for.
+    expect(host.runs.filter(isLaunch)).toEqual([])
+  })
+
+  test('an older CLI without --open is told to update; any other failure says why', async () => {
+    const host = fakeHost()
+    host.onRun = () => ({ exitCode: 1, stdout: '', stderr: "Unknown inbox option: --open\nRun 'plannotator inbox --help' for usage.\n" })
+    expect(await new PlannotatorMod(host, SESSION).openInbox()).toContain('plannotator update')
+
+    const failing = fakeHost()
+    failing.onRun = () => ({ exitCode: 1, stdout: '', stderr: 'The Plannotator Inbox did not start; see /data/inbox/inbox.log.\n' })
+    expect(await new PlannotatorMod(failing, SESSION).openInbox()).toContain('/data/inbox/inbox.log')
+  })
+})

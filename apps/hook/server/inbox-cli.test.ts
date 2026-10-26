@@ -643,6 +643,41 @@ describe("plannotator inbox (a person)", () => {
   }, 60_000);
 });
 
+describe("plannotator inbox --open (the /plannotator-inbox commands)", () => {
+  test("starts a stopped Inbox detached, opens the browser on it, prints the URL and returns", async () => {
+    const box = sandbox();
+    const opened = await cli(box, ["inbox", "--open"]);
+    track(box);
+    expect(opened.code).toBe(0);
+    const registry = readInboxRegistry(box.dataDir)!;
+    expect(opened.stdout).toBe(`${registry.url}\n`);
+    // Detached: the command exited and the Inbox it started lives on.
+    expect(registry.pid).not.toBe(opened.pid);
+    expect(isPidAlive(registry.pid)).toBe(true);
+    expect(readFileSync(box.browserMarker, "utf8").trim()).toBe(registry.url);
+
+    // Running already: opens the same Inbox again and starts nothing.
+    rmSync(box.browserMarker);
+    const again = await cli(box, ["inbox", "--open"]);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toBe(`${registry.url}\n`);
+    expect(readFileSync(box.browserMarker, "utf8").trim()).toBe(registry.url);
+    expect(readInboxRegistry(box.dataDir)!.pid).toBe(registry.pid);
+  }, 60_000);
+
+  test("refuses --background and --no-open beside it, starting nothing", async () => {
+    const box = sandbox();
+    for (const other of ["--background", "--no-open"]) {
+      const result = await cli(box, ["inbox", "--open", other]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(other);
+    }
+    expect(readInboxRegistry(box.dataDir)).toBeNull();
+    expect(existsSync(box.browserMarker)).toBe(false);
+  }, 30_000);
+});
+
 describe("uninstall --purge and the Inbox", () => {
   test("--dry-run lists the inbox data and the running Inbox it would stop", async () => {
     const box = sandbox();

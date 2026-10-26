@@ -6,6 +6,10 @@
  *   plannotator inbox --background  start it detached (no browser), print the
  *                                   URL, exit 0; what agents and the shim run
  *   plannotator inbox --no-open     run here without opening a browser
+ *   plannotator inbox --open        open it in the browser, starting it
+ *                                   detached first when it is not running;
+ *                                   print the URL, exit 0 (never blocks: what
+ *                                   the /plannotator-inbox commands run)
  *   plannotator inbox --tailscale   also publish it over the tailnet for this
  *                                   run (with any of the above; a running
  *                                   Inbox is asked to publish), for the
@@ -392,22 +396,31 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
 
   let background = false;
   let noOpen = false;
+  let open = false;
   let tailscale = false;
   for (const arg of args) {
     if (arg === "--background") background = true;
     else if (arg === "--no-open") noOpen = true;
+    else if (arg === "--open") open = true;
     else if (arg === "--tailscale") tailscale = true;
     else if (arg === "--notes") usageError("--notes goes first and alone: plannotator inbox --notes codex,gemini");
     else usageError(`Unknown inbox option: ${arg}`);
   }
 
-  if (background) {
+  if (open && (background || noOpen)) {
+    usageError(`--open does not go with ${background ? "--background" : "--no-open"}: it starts the Inbox in the background itself and opens it.`);
+  }
+
+  if (background || open) {
     try {
       const before = await inboxStatus(dataDir);
       const entry = await ensureInboxRunning(dataDir, { tailscale });
       // Stdout stays the local URL alone (agents read it); the tailnet goes to stderr.
       if (tailscale && (before.state === "running" || before.state === "busy")) await publishRunningInbox(entry);
       else reportTailnet(readInboxRegistry(dataDir)?.tailscale ?? entry.tailscale, tailscale);
+      // --open: the person asked for the window (the /plannotator-inbox
+      // commands). Opened after the start, so it never blocks the caller.
+      if (open) await openBrowser(entry.url);
       process.stdout.write(`${entry.url}\n`);
       process.exit(0);
     } catch (error) {
