@@ -297,11 +297,12 @@ test.skipIf(!hasDom)('the sidebar: "Reload agents N" when more than one runtime 
   await until(() => !!document.querySelector('[data-reload-sessions="pi"]'), 'the Pi reload');
 }, 30_000);
 
-/** OpenCode's global config in the Inbox's scratch HOME (read at most every 2 s). */
-async function openCodeConfig(spec: string | null) {
+/** OpenCode's global config in the Inbox's scratch HOME (read at most every 2 s): OpenCode 2's `plugins`, or OpenCode 1's `plugin` pair our installer writes. */
+async function openCodeConfig(spec: string | null, key: 'plugins' | 'plugin' = 'plugins') {
   const folder = join(dir!, '.config', 'opencode');
   mkdirSync(folder, { recursive: true });
-  if (spec) writeFileSync(join(folder, 'opencode.json'), JSON.stringify({ plugins: [{ package: spec, options: { workflow: 'manual' } }] }));
+  const entry = key === 'plugins' ? { package: spec, options: { workflow: 'manual' } } : [spec, { workflow: 'manual' }];
+  if (spec) writeFileSync(join(folder, 'opencode.json'), JSON.stringify({ [key]: [entry] }));
   else rmSync(join(folder, 'opencode.json'), { force: true });
   await settle(2_200);
 }
@@ -321,14 +322,17 @@ test.skipIf(!hasDom)('OpenCode behind this Inbox: the update names its configure
     act(() => root?.unmount());
     host?.remove();
 
-    await openCodeConfig('@plannotator/opencode@0.28.23');
+    // The pin under OpenCode 1's `plugin` key, as our installer writes it.
+    await openCodeConfig('@plannotator/opencode@0.28.23', 'plugin');
     await polls(ids.hosts.opencode.session, 'opencode', { busy: true, plugin: { version: '0.28.23', on_disk: '0.28.23' } });
     await openThread(ids.hosts.opencode.thread);
     await until(() => !!note()?.querySelector('[data-reload-lead="pin"]'), 'the pin note');
     lead = note()!.querySelector<HTMLElement>('[data-reload-lead="pin"]')!;
     expect(lead.getAttribute('data-reload-command')).toBe('opencode2 reload');
     expect(codesIn(lead)).toEqual(['@plannotator/opencode@0.28.23', '@plannotator/opencode@latest', 'opencode2 reload']);
-    expect(await copyLead(lead)).toBe('opencode2 reload');
+    // One Copy, right after the value of the first step: what to write in the config.
+    expect(lead.querySelectorAll('[data-restart-copy]')).toHaveLength(1);
+    expect(await copyLead(lead)).toBe('@plannotator/opencode@latest');
     // Not a reload alone: the sidebar does not count it (as Pi's update and Claude Code's are not counted).
     const list = JSON.parse((await loopback('/api/inbox/threads')).text) as { restart_agents: { runtimes: Record<string, number> } };
     const agents = JSON.parse((await loopback('/api/inbox/agents')).text) as { sessions: { opencode: { sessions: { session: string; outdated: { fix: string } | null }[] } } };

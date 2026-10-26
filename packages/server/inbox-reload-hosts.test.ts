@@ -24,6 +24,7 @@ import {
   OPENCODE2_PLUGIN_UPDATE_COMMAND,
   OPENCODE2_RELOAD_COMMAND,
   OPENCODE2_SERVICE_RESTART_COMMAND,
+  createOpenCodeSpecReader,
   openCodePluginSpec,
   openCodeSessionOutdated,
   openCodeSpecPinned,
@@ -117,15 +118,44 @@ describe("the judgment table", () => {
   test("OpenCode 2's configured spec, as written; a pin is an exact version", () => {
     expect(openCodePluginSpec(JSON.stringify({ plugins: [{ package: "@plannotator/opencode@latest", options: {} }] }))).toBe("@plannotator/opencode@latest");
     expect(openCodePluginSpec(JSON.stringify({ plugins: ["other-plugin", "@plannotator/opencode"] }))).toBe("@plannotator/opencode");
-    expect(openCodePluginSpec(JSON.stringify({ plugin: ["@plannotator/opencode@latest"] }))).toBeNull();
+    // OpenCode 1's key, which OpenCode 2 also reads and our installer writes: a string, or a [spec, options] pair.
+    expect(openCodePluginSpec(JSON.stringify({ plugin: ["@plannotator/opencode@latest"] }))).toBe("@plannotator/opencode@latest");
+    expect(openCodePluginSpec(JSON.stringify({ plugin: [["@plannotator/opencode@0.28.20", { workflow: "manual" }]] }))).toBe("@plannotator/opencode@0.28.20");
+    expect(openCodePluginSpec(JSON.stringify({ plugin: ["other", ["another", {}]] }))).toBeNull();
     expect(openCodePluginSpec("// c\n{ \"plugins\": [\"@plannotator/opencode@0.28.20\"] }")).toBe("@plannotator/opencode@0.28.20");
     expect(openCodePluginSpec("nope")).toBeNull();
     expect(openCodeSpecPinned("@plannotator/opencode@0.28.20")).toBe(true);
     expect(openCodeSpecPinned("@plannotator/opencode@latest")).toBe(false);
     expect(openCodeSpecPinned("@plannotator/opencode@^0.28.0")).toBe(false);
     expect(opencodePluginUpdateCommand("@plannotator/opencode@latest")).toBe("opencode2 plugin update @plannotator/opencode@latest");
-    // Anything else is not passed to a shell command.
-    expect(opencodePluginUpdateCommand("@plannotator/opencode@latest; rm -rf ~")).toBe("opencode2 plugin update");
+    expect(opencodePluginUpdateCommand("@plannotator/opencode@next")).toBe("opencode2 plugin update @plannotator/opencode@next");
+    expect(opencodePluginUpdateCommand("@plannotator/opencode")).toBe("opencode2 plugin update @plannotator/opencode");
+    // Anything a shell would read as more than a word (a redirect, a pipe, a glob, a space) is never pasted unquoted.
+    for (const unsafe of [">=0.28.0", "<0.29.0", "^0.28.0", "~0.28.0", "0.28.0 || 0.29.0", "latest; rm -rf ~", "* ", "latest x"]) {
+      expect(opencodePluginUpdateCommand(`@plannotator/opencode@${unsafe}`)).toBe("opencode2 plugin update");
+      const outdated = openCodeSessionOutdated(plugin({ version: "0.28.29", on_disk: "0.28.29" }), "0.28.31", { spec: `@plannotator/opencode@${unsafe}` })!;
+      expect(outdated).toMatchObject({ update_command: "opencode2 plugin update", update_scope: "all" });
+    }
+  });
+
+  test("OpenCode 2's config: a pin under OpenCode 1's plugin key is found; OPENCODE_CONFIG (an explicit file) comes first", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-oc-spec-")));
+    try {
+      const configDir = join(home, ".config", "opencode");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "opencode.json"), JSON.stringify({ plugin: [["@plannotator/opencode@0.28.29", { workflow: "manual" }]] }));
+      const reader = createOpenCodeSpecReader(createAgentEnvironmentFor({ platform: process.platform, homeDir: home, env: { HOME: home, PATH: "" } }));
+      const spec = reader();
+      expect(spec).toBe("@plannotator/opencode@0.28.29");
+      // The pin is detected, so the line says to change it (the original bug: the line never cleared).
+      expect(openCodeSessionOutdated(plugin({ version: "0.28.29", on_disk: "0.28.29" }), "0.28.31", { spec })).toMatchObject({ pinned_spec: "@plannotator/opencode@0.28.29" });
+      const explicit = join(home, "elsewhere.json");
+      writeFileSync(explicit, JSON.stringify({ plugins: ["@plannotator/opencode@latest"] }));
+      const withExplicit = createOpenCodeSpecReader(createAgentEnvironmentFor({ platform: process.platform, homeDir: home, env: { HOME: home, PATH: "", OPENCODE_CONFIG: explicit } }));
+      expect(withExplicit()).toBe("@plannotator/opencode@latest");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("a pinned Pi source: an exact version only", () => {

@@ -121,13 +121,14 @@ const xdgOf = (w: InboxWorld) => path.join(w.root, "xdg");
 const configFileOf = (w: InboxWorld) => path.join(xdgOf(w), "config", "opencode", "opencode.json");
 
 /** OpenCode 2's global config file, as a person writes it: the plugin's spec and the scripted model. */
-function writeConfig(w: InboxWorld, m: ScriptedModel, spec: string): void {
+function writeConfig(w: InboxWorld, m: ScriptedModel, spec: string, key: "plugins" | "plugin" = "plugins"): void {
   mkdirSync(path.dirname(configFileOf(w)), { recursive: true });
   writeFileSync(
     configFileOf(w),
     `${JSON.stringify(
       {
-        plugins: [{ package: spec, options: { workflow: "manual" } }],
+        // OpenCode 2's `plugins`, or OpenCode 1's `plugin` with a [spec, options] pair (what our installer writes; OpenCode 2 reads it too).
+        [key]: [key === "plugins" ? { package: spec, options: { workflow: "manual" } } : [spec, { workflow: "manual" }]],
         providers: {
           scripted: {
             package: "@opencode/ai/providers/openai-compatible",
@@ -143,10 +144,10 @@ function writeConfig(w: InboxWorld, m: ScriptedModel, spec: string): void {
   );
 }
 
-async function startService(w: InboxWorld, m: ScriptedModel, registryUrl: string, spec = `${NAME}@latest`): Promise<Service> {
+async function startService(w: InboxWorld, m: ScriptedModel, registryUrl: string, spec = `${NAME}@latest`, key: "plugins" | "plugin" = "plugins"): Promise<Service> {
   const xdg = xdgOf(w);
   for (const dir of ["config", "data", "cache", "state"]) mkdirSync(path.join(xdg, dir), { recursive: true });
-  writeConfig(w, m, spec);
+  writeConfig(w, m, spec, key);
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...worldEnv(w),
@@ -347,8 +348,9 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2: the reload line, on the r
     });
     cleanups.push(() => m.stop());
     const pinned = `${NAME}@0.28.98`;
-    const service = await startService(w, m, registry.url, pinned);
-    w.proof(`OpenCode 2 service ${service.url}; Inbox ${INBOX_VERSION}; the config pins ${pinned}; 0.28.99 is latest`);
+    // The pin as our installer writes it: OpenCode 1's `plugin` key with a [spec, options] pair.
+    const service = await startService(w, m, registry.url, pinned, "plugin");
+    w.proof(`OpenCode 2 service ${service.url}; Inbox ${INBOX_VERSION}; the config pins ${pinned} under "plugin" as [spec, options]; 0.28.99 is latest`);
 
     const session = (await service.api<{ data: { id: string } }>("POST", "/api/session", {})).data.id;
     await service.api("POST", `/api/session/${session}/prompt`, { text: "Ask the person about the export." });
@@ -371,7 +373,7 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2: the reload line, on the r
     expect(noop.out).toMatch(/no plugin updates/i);
 
     // What it says: change the pin, then reload.
-    writeConfig(w, m, line.pin_to!);
+    writeConfig(w, m, line.pin_to!, "plugin");
     const t0 = Date.now();
     const reloaded = await service.type(["reload"], 120_000);
     w.proof(`   changed the pin to ${line.pin_to}; $ opencode2 reload  (exit ${reloaded.code}, ${reloaded.ms} ms)\n${reloaded.out.replace(/^/gm, "     ")}`);

@@ -165,7 +165,7 @@ function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
                   <span>
                     <OpenCodeWords command={command} pinnedSpec={o.pinned_spec ?? null} pinTo={o.pin_to ?? null} />
                   </span>
-                  <ReloadCopy command={command} />
+                  {!o.pinned_spec && <ReloadCopy command={command} />}
                 </p>
                 <OpenCodeQuiet command={command} updatesAll={o.update_scope === 'all'} className="ib-rl-quiet" />
               </>

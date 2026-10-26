@@ -3795,6 +3795,8 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
 .ib-rl-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 /* OpenCode's one quiet line under its command (approval "reload-hosts"). */
 .ib-rl-quiet { margin: 0; color: var(--muted-foreground); font-weight: 400; }
+/* The pinned card's Copy, right after the value it copies. */
+.ib-rl-inline-copy { display: inline-flex; vertical-align: middle; font-weight: 400; }
 /* A long OpenCode command or spec breaks rather than overflow a phone. */
 .ib-rl-line code.ib-rl-wrap, .pn-inbox .ib-undl .ib-m-why code.ib-rl-wrap { white-space: normal; overflow-wrap: anywhere; }
 .ib-rl-line code { font-family: var(--font-mono); font-size: 0.93em; font-weight: 600; padding: 1px 5px; border-radius: 5px; background: color-mix(in oklch, var(--foreground) 8%, transparent); white-space: nowrap; }

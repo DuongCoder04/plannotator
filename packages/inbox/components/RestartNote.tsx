@@ -227,12 +227,21 @@ export function OpenCodeQuiet({ command, updatesAll, className = 'ib-rw-after ib
   );
 }
 
-/** OpenCode 2's step as words: "Run <command>" or, for a pinned spec, change it first. */
+/**
+ * OpenCode 2's step as words: "Run <command>" (its Copy follows the line), or,
+ * for a pinned spec, change it first: then the Copy sits right after the value
+ * to write (`@plannotator/opencode@latest`), the first step's, and copies it.
+ */
 export function OpenCodeWords({ command, pinnedSpec, pinTo, tail = '' }: { command: string; pinnedSpec: string | null; pinTo: string | null; tail?: string }) {
   if (pinnedSpec) {
+    const to = pinTo ?? '@plannotator/opencode@latest';
     return (
       <>
-        OpenCode's config pins <code className="ib-rl-wrap">{pinnedSpec}</code>: change it to <code className="ib-rl-wrap">{pinTo ?? '@plannotator/opencode@latest'}</code>, then run <code className="ib-rl-wrap">{command}</code>
+        OpenCode's config pins <code className="ib-rl-wrap">{pinnedSpec}</code>: change it to <code className="ib-rl-wrap">{to}</code>{' '}
+        <span className="ib-rl-inline-copy">
+          <ReloadCopy command={to} />
+        </span>{' '}
+        then run <code className="ib-rl-wrap">{command}</code>
         {tail}.
       </>
     );
@@ -273,7 +282,7 @@ export function RestartLine({ note, name }: { note: RestartNote; name: string })
           <span>
             <OpenCodeWords command={command} pinnedSpec={note.pinnedSpec} pinTo={note.pinTo} tail=" to get Send now" />
           </span>
-          <ReloadCopy command={command} />
+          {!note.pinnedSpec && <ReloadCopy command={command} />}
         </p>
         <OpenCodeQuiet command={command} updatesAll={note.updatesAll} />
         <ManualPath note={note} name={name} />
@@ -323,7 +332,7 @@ export function StuckReason({ note, name }: { note: RestartNote | null; name: st
             It can't go in sooner: this session runs an older Plannotator plugin.{' '}
             <OpenCodeWords command={command} pinnedSpec={note.pinnedSpec} pinTo={note.pinTo} tail={note.pinnedSpec ? '' : ' to fix it'} />
           </span>
-          <ReloadCopy command={command} />
+          {!note.pinnedSpec && <ReloadCopy command={command} />}
         </p>
         <OpenCodeQuiet command={command} updatesAll={note.updatesAll} />
         <ManualPath note={note} name={name} />

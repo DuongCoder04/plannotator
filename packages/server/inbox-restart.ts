@@ -382,9 +382,19 @@ export const OPENCODE2_PLUGIN_UPDATE_COMMAND = "opencode2 plugin update";
 /** What a pinned OpenCode 2 config entry changes to. */
 export const OPENCODE2_LATEST_SPEC = "@plannotator/opencode@latest";
 
-/** `opencode2 plugin update <spec>`: only Plannotator. OpenCode wants the spec exactly as configured (`@plannotator/opencode@latest`; the bare name is "not configured"). */
+/**
+ * A spec safe to paste into a shell unquoted: the name, or the name with a
+ * version or tag made only of letters, digits, `_`, `.` and `-`
+ * (`@latest`, `@next`, `@0.28.31`). A range (`@>=0.28.0`, `@^0.28.0`) is not:
+ * `>` would redirect, `|` would pipe.
+ */
+export function openCodeSpecShellSafe(spec: string): boolean {
+  return /^@plannotator\/opencode(?:@[\w.-]+)?$/.test(spec);
+}
+
+/** `opencode2 plugin update <spec>`: only Plannotator. OpenCode wants the spec exactly as configured (`@plannotator/opencode@latest`; the bare name is "not configured"). A spec that is not shell-safe gives the command with no target. */
 export function opencodePluginUpdateCommand(spec: string | null): string {
-  return spec && /^@plannotator\/opencode(?:@[\w.^~<>=*|-]+)?$/.test(spec) ? `${OPENCODE2_PLUGIN_UPDATE_COMMAND} ${spec}` : OPENCODE2_PLUGIN_UPDATE_COMMAND;
+  return spec && openCodeSpecShellSafe(spec) ? `${OPENCODE2_PLUGIN_UPDATE_COMMAND} ${spec}` : OPENCODE2_PLUGIN_UPDATE_COMMAND;
 }
 /** OpenCode 2: when a reload does not take, restart the background service. */
 export const OPENCODE2_SERVICE_RESTART_COMMAND = "opencode2 service restart";
@@ -434,13 +444,14 @@ export function openCodeSessionOutdated(loaded: LoadedPlugin | null, cliVersion:
   if (spec && openCodeSpecPinned(spec)) {
     return { loaded: loaded.version, installed: cliVersion, fix: "update_extension", reload_command: OPENCODE2_RELOAD_COMMAND, pinned_spec: spec, pin_to: OPENCODE2_LATEST_SPEC, ...base };
   }
-  // The update loads the new generation itself (no reload after it); without a known spec it names no target.
+  // The update loads the new generation itself (no reload after it); without a known, shell-safe spec it names no target.
+  const command = opencodePluginUpdateCommand(spec);
   return {
     loaded: loaded.version,
     installed: cliVersion,
     fix: "update_extension",
-    update_command: opencodePluginUpdateCommand(spec),
-    ...(spec ? {} : { update_scope: "all" as const }),
+    update_command: command,
+    ...(command === OPENCODE2_PLUGIN_UPDATE_COMMAND ? { update_scope: "all" as const } : {}),
     ...base,
   };
 }
@@ -452,9 +463,11 @@ export function openCodeSpecPinned(spec: string): boolean {
 }
 
 /**
- * Plannotator's entry in an OpenCode 2 config's `plugins` (a string, or
- * `{ package }`), exactly as written: what `opencode2 plugin update` takes as
- * its target. Null when the config has none (or cannot be read).
+ * Plannotator's entry in an OpenCode config, exactly as written: what
+ * `opencode2 plugin update` takes as its target. OpenCode 2 reads `plugins`
+ * (a string or `{ package }`) and OpenCode 1's `plugin` (a string or a
+ * `[spec, options]` pair), which our installer writes. Null when the config
+ * has none (or cannot be read).
  */
 export function openCodePluginSpec(text: string): string | null {
   let parsed: unknown;
@@ -463,13 +476,31 @@ export function openCodePluginSpec(text: string): string | null {
   } catch {
     return null;
   }
-  const plugins = (parsed as { plugins?: unknown } | null)?.plugins;
-  if (!Array.isArray(plugins)) return null;
-  for (const entry of plugins) {
-    const spec = typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as { package?: unknown }).package : null;
-    if (typeof spec === "string" && /^@plannotator\/opencode(?:@|$)/.test(spec.trim())) return spec.trim();
+  if (!parsed || typeof parsed !== "object") return null;
+  const config = parsed as { plugins?: unknown; plugin?: unknown };
+  for (const list of [config.plugins, config.plugin]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const spec =
+        typeof entry === "string"
+          ? entry
+          : Array.isArray(entry)
+            ? entry[0]
+            : entry && typeof entry === "object"
+              ? (entry as { package?: unknown }).package
+              : null;
+      if (typeof spec === "string" && /^@plannotator\/opencode(?:@|$)/.test(spec.trim())) return spec.trim();
+    }
   }
   return null;
+}
+
+/** The config files to read, in order: `OPENCODE_CONFIG` (an explicit file) when set, then the global folder's. */
+function openCodeConfigFiles(environment: AgentEnvironment): string[] {
+  const explicit = environment.env.OPENCODE_CONFIG?.trim();
+  const expanded = explicit?.startsWith("~/") ? join(environment.homeDir, explicit.slice(2)) : explicit;
+  const dir = openCodeConfigDir(environment);
+  return [...(expanded && isAbsolute(expanded) ? [expanded] : []), ...["opencode.json", "opencode.jsonc", "config.json"].map((name) => join(dir, name))];
 }
 
 /** The global OpenCode config's Plannotator spec (read at most every 2 s), for the update command and the pin. */
@@ -478,8 +509,8 @@ export function createOpenCodeSpecReader(environment: AgentEnvironment, now: () 
   return (): string | null => {
     if (cached && now() - cached.at < INSTALL_FRESH_MS) return cached.value;
     let value: string | null = null;
-    for (const name of ["opencode.json", "opencode.jsonc", "config.json"]) {
-      const file = readAgentFile(join(openCodeConfigDir(environment), name));
+    for (const path of openCodeConfigFiles(environment)) {
+      const file = readAgentFile(path);
       if (file.kind !== "file") continue;
       value = openCodePluginSpec(file.text);
       if (value) break;
