@@ -24,7 +24,7 @@ import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
-import { agentName, clockTime, dayWords, fullTime, plural, whenTime } from '../format';
+import { agentName, clockTime, dayWords, formatCount, fullTime, plural, whenTime } from '../format';
 import { foldSnippet, holdingsOf, isDelivered, isPersonLook, isPersonReply, lastNonNote, lookBoundary, newSinceLook, planFolds, snippetText, type FoldSnippet, type Holding } from '../folding';
 import { highlightSearchHits } from '../search/highlight';
 import { AuthorMark, Icon } from '../icons';
@@ -77,7 +77,7 @@ import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
 import { OpenQuestionsButton } from './OpenQuestions';
-import { laidOutChildren, pillHitsButtons } from '../footFit';
+import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { selectionToolbarShowing } from '../selectionToolbar';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, type SendTarget, type SentContents } from '../sendTargets';
@@ -2854,6 +2854,40 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // While new messages are below the view: a pill that goes to them.
   // On a phone the pill sits over the middle of the foot's row; when a button lies under that middle, above the foot.
   const footRowRef = useRef<HTMLDivElement>(null);
+  /**
+   * How far the closed foot shortened so the buttons and the draft status share one line (footFit.ts
+   * `fitWholeFootRow`: the skip chip, Edit, the open questions count, the draft's words, tighter spacing).
+   * Null: no status, no layout, or even the shortest form does not fit (the status wraps above).
+   */
+  const [rowLevel, setRowLevel] = useState<number | null>(null);
+  const footStatusShown = waiting || draftKept;
+  const footRowShown = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !box.open && !(route.open && asking);
+  const rowMax: OpenQuestionsLabelForm = phone ? 'short' : 'full';
+  // What the row shows; a change re-fits it (with its width).
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone].join('|');
+  const rowFittedFor = useRef('');
+  const fitRowRef = useRef<(force?: boolean) => void>(() => {});
+  fitRowRef.current = (force = false) => {
+    const row = footRowRef.current;
+    if (!row) return;
+    const key = `${row.getBoundingClientRect().width}|${footSig}`;
+    if (!force && key === rowFittedFor.current) return;
+    rowFittedFor.current = key;
+    const level = footStatusShown ? fitWholeFootRow(row, rowMax, phone) : null;
+    setRowLevel((current) => (current === level ? current : level));
+  };
+  // Every render (after the open questions button drew itself), and whenever the row's width changes.
+  useLayoutEffect(() => fitRowRef.current());
+  useEffect(() => {
+    const row = footRowRef.current;
+    if (!row || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitRowRef.current());
+    observer.observe(row);
+    // Words measured in a fallback font fit differently once the real one loads.
+    void document.fonts?.ready.then(() => fitRowRef.current(true));
+    return () => observer.disconnect();
+    // The row comes and goes (the reply box, the route choice, the stale guard, compose).
+  }, [footRowShown]);
   const [pillAbove, setPillAbove] = useState(false);
   const pillOnRow = showNew && phone && !waiting && !draftKept;
   const placePill = useCallback(() => {
@@ -3825,7 +3859,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           {/* Buttons on the left in today's order, the draft status and the skip chip at the right end (approval
               "thread-foot-status-right", option A). Too narrow for one line, the status takes its own line ABOVE the
               buttons (wrap-reverse; one item per line aligns to the start), so it never wraps between them. */}
-          <div className="ib-acts ib-footrow" data-foot-row="" ref={footRowRef}>
+          <div className="ib-acts ib-footrow" data-foot-row="" data-fit={rowLevel ? footRowTokens(rowLevel, phone) : undefined} ref={footRowRef}>
             <div className="ib-footbtns" data-foot-buttons="">
               {(waiting || draftKept) && (
                 <button type="button" className="ib-btn ib-pri" ref={sendRef} onClick={() => void send()} disabled={sending} aria-describedby={footStatusIds}>
@@ -3842,7 +3876,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 aria-describedby={waiting || draftKept ? footStatusIds : undefined}
               >
                 <Icon name={waiting || draftKept ? 'pen' : 'reply'} size={15} />
-                {waiting || draftKept ? 'Edit draft' : 'Reply'}
+                {/* Short of room, "Edit", and on a phone the pencil alone (footFit.ts): the words stay as hidden text,
+                    so the name is "Edit draft". */}
+                {waiting || draftKept ? (
+                  <span>
+                    Edit<span className="ib-fl"> draft</span>
+                  </span>
+                ) : (
+                  'Reply'
+                )}
               </button>
               {/* The thread's open questions (approval "inbox-thread-open-questions"): a list that takes the person to each
                   card, with Re-ask at its foot (owner, 2026-10-23: the open questions again, in one message per session). */}
@@ -3860,6 +3902,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   measure={measureOpenQuestions}
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
                   onSetSkipped={setSkippedFromList}
+                  rowForm={rowLevel !== null && footStatusShown ? footRowOpenQuestionsForm(rowLevel, rowMax) : null}
                 />
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits. */}
@@ -3990,10 +4033,22 @@ function SkipChip({ count, keepOpen, onToggle, id }: { count: number; keepOpen: 
       {/* The icon and the sentence are one item, so where the chip wraps (a narrow reply box) the icon stays with its words. */}
       <span className="ib-skip-s" id={id}>
         {!keepOpen && <Icon name="forward" size={14} />}
-        {keepOpen ? `${plural(count, 'question')} ${count === 1 ? 'stays' : 'stay'} open` : `${plural(count, 'question')} will be skipped`}
+        {/* Short of room, the foot's row drops the middle words ("1 open", "Skip"; footFit.ts, inbox.css): they leave
+            only the eye, so the description and the button's name keep them, and the text reads the same. */}
+        <span>
+          {formatCount(count)}
+          <span className="ib-fl">{keepOpen ? ` question${count === 1 ? ' stays' : 's stay'}` : ` question${count === 1 ? '' : 's'} will be`}</span>
+          {keepOpen ? ' open' : ' skipped'}
+        </span>
       </span>
       <button type="button" onClick={onToggle} data-skip-toggle="">
-        {keepOpen ? `Skip ${them}` : 'Keep open'}
+        {keepOpen ? (
+          <>
+            Skip<span className="ib-fl"> {them}</span>
+          </>
+        ) : (
+          'Keep open'
+        )}
       </button>
     </span>
   );
