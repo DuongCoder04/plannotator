@@ -165,7 +165,7 @@ export function formatTopLevelHelp(options: { board?: boolean } = {}): string {
     "  plannotator guide share --id <savedGuideId> | --guide <guide.json> --patch <diff.patch> | --snapshot <snapshot.json> [--public] [--ttl <7d>] [--json]",
     "  plannotator guide unshare <id> --token <deleteToken>",
     "  plannotator sessions",
-    "  plannotator inbox [--background | --no-open] [--tailscale]",
+    "  plannotator inbox [--background | --no-open | --open] [--tailscale]",
     "  plannotator inbox mcp",
     ...(options.board === true ? ["  plannotator card <create|move|say|link|ship|drop|list> ..."] : []),
     "  plannotator update [--check]",
@@ -260,7 +260,7 @@ export const CARD_COMMAND_USAGE = [
  */
 export const INBOX_COMMAND_USAGE = [
   "Usage:",
-  "  plannotator inbox [--background | --no-open] [--tailscale]",
+  "  plannotator inbox [--background | --no-open | --open] [--tailscale]",
   "  plannotator inbox mcp",
   "  plannotator inbox --notes <ids>",
   "",
@@ -269,6 +269,10 @@ export const INBOX_COMMAND_USAGE = [
   "  plannotator inbox --background  Start it detached without opening a browser,",
   "                                  print its URL and exit",
   "  plannotator inbox --no-open     Run it here without opening a browser",
+  "  plannotator inbox --open        Open it in the browser and print its URL, starting it",
+  "                                  detached first when it is not running. Never blocks:",
+  "                                  what the /plannotator-inbox commands run, and how to",
+  "                                  find the Inbox's address for the person.",
   "  plannotator inbox --tailscale   Also publish it over the person's tailnet for this",
   "                                  run (tailscale serve, HTTPS, never funnel), for the",
   "                                  Tailscale login that owns this machine only. With",
