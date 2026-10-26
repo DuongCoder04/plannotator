@@ -191,6 +191,13 @@ export interface TailscaleSettings {
 /** Split (old beside new) or Unified (one column): the diff layout code review and guided reviews share. */
 export type InboxDiffStyle = 'split' | 'unified';
 
+/** Settings → General's cookie switch (SettingsModel.cookie_host). */
+export interface InboxCookieHost {
+  on: boolean;
+  env: string | null;
+  url_host: string | null;
+}
+
 export interface SettingsModel {
   serverSession: string;
   /** Absent from an Inbox that predates "Over your tailnet". */
@@ -228,6 +235,13 @@ export interface SettingsModel {
   diff_style?: InboxDiffStyle | null;
   /** Experimental features, each off unless switched on (`env`: PLANNOTATOR_EXPERIMENTAL decides). Absent from an older Inbox. */
   experimental?: InboxExperimentalSettings;
+  /**
+   * Settings → General: "Keep Plannotator's cookies to itself" (#2184): config.json
+   * `urlHost: "plannotator.localhost"`. `env` is PLANNOTATOR_URL_HOST and `url_host`
+   * another config.json `urlHost`; either locks it. Absent through the tailnet
+   * and from an older Inbox.
+   */
+  cookie_host?: InboxCookieHost;
   /** The onboarding tour (config.json `inboxTour`): started, finished, skipped. Absent from an Inbox that predates it. */
   tour?: InboxTourState;
   store: {
@@ -595,6 +609,7 @@ export const inboxApi = {
   settings: () => get<SettingsModel>('/api/inbox/settings'),
   /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>('/api/inbox/settings', { cookie_host: on }),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
   /**

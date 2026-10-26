@@ -2223,6 +2223,19 @@ function Inbox() {
     }
   };
 
+  // Settings → General: "Keep Plannotator's cookies to itself" (#2184), saved to config.json; applies from the next start.
+  const toggleCookieHost = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current?.cookie_host ? { ...current, cookie_host: { ...current.cookie_host, on: next } } : current));
+    try {
+      const saved = await inboxApi.saveCookieHost(next);
+      setSettings((current) => (current ? { ...current, cookie_host: saved.cookie_host } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
   const toggleExperimental = async (next: boolean) => {
     setSettingsError(null);
@@ -2933,6 +2946,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        onToggleCookieHost={(next) => void toggleCookieHost(next)}
         agents={agents}
         onAgents={setAgents}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}

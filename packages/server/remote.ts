@@ -9,7 +9,7 @@
  */
 
 import { parsePortSelection } from "@plannotator/shared/port-range";
-import { loadConfig, resolveUrlHost } from "@plannotator/shared/config";
+import { loadConfig, resolveLocalUrlHostname, resolveUrlHost } from "@plannotator/shared/config";
 import { isAutoUrlHost, resolveAutoHostCached } from "@plannotator/shared/tailscale";
 import { isLocalhostHostname } from "@plannotator/shared/loopback-host";
 
@@ -199,6 +199,16 @@ export function isUrlHostOverridden(): boolean {
   if (host === undefined) return false;
   if (isAutoUrlHost(host)) return isRemoteSession() && resolveAutoHostCached() !== undefined;
   return true;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (`urlHost:
+ * "plannotator.localhost"`, #2184), or undefined. Servers read it once at
+ * start and hand it to the loopback Host checks of the routes a page calls
+ * (Ask this session, `/api/update`), so a page at that name is "this computer".
+ */
+export function getLocalUrlHostname(): string | undefined {
+  return resolveLocalUrlHostname(loadConfig());
 }
 
 let warnedLocalUrlHost = false;

@@ -8,7 +8,7 @@ import { existsSync, statSync } from "node:fs";
 import type { Server } from "node:http";
 import os from "node:os";
 import { delimiter, join } from "node:path";
-import { loadConfig, resolveUrlHost, resolveUseGlimpse } from "../generated/config.ts";
+import { loadConfig, resolveLocalUrlHostname, resolveUrlHost, resolveUseGlimpse } from "../generated/config.ts";
 import { parsePortSelection } from "../generated/port-range.ts";
 import { isAutoUrlHost, resolveAutoHostCached } from "../generated/tailscale.ts";
 import { browserNoneReason, isNoOpBrowserSentinel, resolveBrowserIntent } from "../generated/browser-intent.ts";
@@ -161,6 +161,16 @@ export function isUrlHostOverridden(): boolean {
 	if (host === undefined) return false;
 	if (isAutoUrlHost(host)) return isRemoteSession() && resolveAutoHostCached() !== undefined;
 	return true;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (`urlHost:
+ * "plannotator.localhost"`, #2184), or undefined. Mirrors
+ * packages/server/remote.ts: read once at server start for the loopback Host
+ * check of Ask this session.
+ */
+export function getLocalUrlHostname(): string | undefined {
+	return resolveLocalUrlHostname(loadConfig());
 }
 
 let warnedLocalUrlHost = false;

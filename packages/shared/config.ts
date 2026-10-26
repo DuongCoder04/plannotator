@@ -27,6 +27,7 @@ import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig } f
 import { isFaviconStyle, type FaviconStyle } from './favicon';
 import { isAnnotateAgentTerminalSide, type AnnotateAgentTerminalSide } from './agent-terminal';
 import { parseAgentSwitchConfig, agentSwitchConfigValue, type AgentSwitchConfigValue } from './agent-switch';
+import { isLocalhostSubdomain } from './loopback-host';
 export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig, FaviconStyle };
 
 /** Single conventional comment label entry stored in config.json */
@@ -831,7 +832,12 @@ export function detectGitUser(cwd?: string): string | null {
  * Build the serverConfig payload for API responses.
  * Reads config.json fresh each call so the response reflects the latest file on disk.
  */
-export function getServerConfig(gitUser: string | null, agentToolIntegration?: string | null): {
+export function getServerConfig(
+  gitUser: string | null,
+  agentToolIntegration?: string | null,
+  /** `cookieHost`: advertise the cookie switch (local sessions only: never remote mode or `--tailscale`). */
+  options: { cookieHost?: boolean } = {},
+): {
   displayName?: string;
   diffOptions?: DiffOptions;
   theme?: ThemeConfig;
@@ -852,6 +858,7 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
   agentToolEnv?: boolean;
   agentToolHost?: AgentToolHost;
   agentToolEnabled?: boolean;
+  cookieHost?: CookieHostState;
 } {
   const cfg = loadConfig();
   const autoUpdateEnv = parseAutoUpdateEnv();
@@ -889,6 +896,8 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
     updateCheck: coerceConfigBoolean(cfg.updateCheck, true),
     ...(updateCheckEnv !== undefined && { updateCheckEnv }),
     ...agentToolAdvert(cfg, agentToolEnv, agentToolHost),
+    // Settings' "Keep Plannotator's cookies to itself" (#2184), only where the server says it is local.
+    ...(options.cookieHost === true && { cookieHost: cookieHostState(cfg) }),
   };
 }
 
@@ -1569,6 +1578,106 @@ export function resolveUrlHost(config: PlannotatorConfig): string | undefined {
     );
   }
   return undefined;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (#2184), lower-cased, or
+ * undefined when the resolved url host is unset or anything else (`localhost`,
+ * a tailnet name, an IP). The one subdomain the loopback Host checks accept
+ * besides the plain loopback names (isLoopbackHostHeader's `localName`).
+ */
+export function resolveLocalUrlHostname(config: PlannotatorConfig): string | undefined {
+  const host = resolveUrlHost(config);
+  return host !== undefined && isLocalhostSubdomain(host) ? host.toLowerCase() : undefined;
+}
+
+/** The name Settings' "Keep Plannotator's cookies to itself" switch writes as `urlHost`. */
+export const ISOLATED_COOKIE_HOST = "plannotator.localhost";
+
+/**
+ * The cookie switch as Settings shows it: `on` is the effective value
+ * (config.json, or PLANNOTATOR_URL_HOST when set). `env` is the env var's
+ * value when it is set (empty included, which hides config.json's), and
+ * locks the switch. `urlHost` is config.json's `urlHost` when it holds
+ * anything other than ISOLATED_COOKIE_HOST (a tailnet name, `auto`, an IP):
+ * the switch is locked and never writes over it.
+ */
+export interface CookieHostState {
+  on: boolean;
+  env?: string;
+  urlHost?: string;
+}
+
+function otherConfigUrlHost(config: PlannotatorConfig): string | undefined {
+  const raw = (config as Record<string, unknown>).urlHost;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") return JSON.stringify(raw);
+  const host = raw.trim();
+  if (host === "" || host.toLowerCase() === ISOLATED_COOKIE_HOST) return undefined;
+  return host;
+}
+
+export function cookieHostState(config: PlannotatorConfig = loadConfig(), env: NodeJS.ProcessEnv = process.env): CookieHostState {
+  const envValue = env.PLANNOTATOR_URL_HOST;
+  if (envValue !== undefined) return { on: envValue.trim().toLowerCase() === ISOLATED_COOKIE_HOST, env: envValue };
+  const urlHost = otherConfigUrlHost(config);
+  if (urlHost !== undefined) return { on: false, urlHost };
+  const raw = config.urlHost;
+  return { on: typeof raw === "string" && raw.trim().toLowerCase() === ISOLATED_COOKIE_HOST };
+}
+
+export type CookieHostSaveOutcome = "saved" | "env" | "url_host" | "failed";
+
+/**
+ * Turn the cookie switch on (write `urlHost: "plannotator.localhost"`) or off
+ * (remove `urlHost`). Refused while PLANNOTATOR_URL_HOST is set (`env`) and
+ * when config.json holds another `urlHost` (`url_host`), which is checked
+ * under the config lock, so a value written meanwhile is never replaced.
+ */
+export function saveCookieHost(on: boolean, env: NodeJS.ProcessEnv = process.env): { outcome: CookieHostSaveOutcome; state: CookieHostState } {
+  if (env.PLANNOTATOR_URL_HOST !== undefined) return { outcome: "env", state: cookieHostState(loadConfig(), env) };
+  let lockPath: string | null = null;
+  let locked = false;
+  let outcome: CookieHostSaveOutcome = "failed";
+  try {
+    mkdirSync(getConfigDir(), { recursive: true });
+    lockPath = getConfigLockPath();
+    locked = acquireConfigLock(lockPath);
+    const read = readConfigForSave(getConfigPath());
+    if (!read.ok) {
+      process.stderr.write(`[plannotator] Warning: not saving config.json because ${read.reason}; the settings in it are kept.\n`);
+    } else if (otherConfigUrlHost(read.config) !== undefined) {
+      outcome = "url_host";
+    } else {
+      const next: Record<string, unknown> = { ...read.config };
+      if (on) next.urlHost = ISOLATED_COOKIE_HOST;
+      else delete next.urlHost;
+      writeConfigAtomic(getConfigPath(), JSON.stringify(next, null, 2) + "\n");
+      outcome = "saved";
+    }
+  } catch (e) {
+    process.stderr.write(`[plannotator] Warning: failed to write config.json: ${e}\n`);
+  } finally {
+    if (locked && lockPath) releaseConfigLock(lockPath);
+  }
+  return { outcome, state: cookieHostState(loadConfig(), env) };
+}
+
+/**
+ * `cookieHost` on POST /api/config (plan, review and annotate servers, both
+ * runtimes): undefined when the body does not name it, else the answer.
+ * `exposed` (remote mode, a `--tailscale` session) refuses it: the switch is
+ * for the browser on this computer, and those sessions do not advertise it.
+ */
+export function cookieHostConfigWrite(value: unknown, exposed: boolean): { status: number; body: Record<string, unknown> } | undefined {
+  if (value === undefined) return undefined;
+  if (exposed) return { status: 403, body: { error: "This setting can be changed only on this computer.", code: "cookie_host_local_only" } };
+  if (typeof value !== "boolean") return { status: 400, body: { error: "cookieHost: must be a boolean." } };
+  const { outcome, state } = saveCookieHost(value);
+  if (outcome === "saved") return { status: 200, body: { ok: true, cookieHost: state } };
+  if (outcome === "env") return { status: 409, body: { error: "PLANNOTATOR_URL_HOST decides this setting.", code: "cookie_host_env_decides", cookieHost: state } };
+  if (outcome === "url_host") return { status: 409, body: { error: "config.json already sets urlHost; it is not replaced.", code: "cookie_host_url_host_in_use", cookieHost: state } };
+  return { status: 500, body: { error: "config.json could not be saved; nothing changed.", cookieHost: state } };
 }
 
 /**

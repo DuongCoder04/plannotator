@@ -27,34 +27,51 @@ See the [environment variables reference](/docs/reference/environment-variables/
 
 ## Isolate localhost preference cookies
 
-Plannotator uses host-only cookies so preferences persist across its random
-ports. By default, these cookies also accompany requests to unrelated apps on
-`localhost`. To keep them on a dedicated hostname, set this before starting your
-agent or Plannotator:
+Plannotator keeps your preferences in cookies. A browser sends a cookie set on
+`localhost` to every app on `localhost`, whatever its port, so by default your
+other local apps receive Plannotator's cookies too. To keep them to Plannotator,
+give it a dedicated address, `plannotator.localhost`:
 
-```bash
-export PLANNOTATOR_URL_HOST=plannotator.localhost
-```
+- In Settings → General, turn on **Keep Plannotator's cookies to itself** (in
+  plan review, code review, annotate, or the Inbox). This writes the setting
+  below to config.json.
+- Or add `"urlHost": "plannotator.localhost"` to `~/.plannotator/config.json`.
 
-Or add `"urlHost": "plannotator.localhost"` to `~/.plannotator/config.json`.
-Browsers that resolve `*.localhost` to loopback need no hosts-file entry. If
-yours does not, add `127.0.0.1 plannotator.localhost` to your hosts file. Local
-sessions still bind `127.0.0.1`; remote mode is not needed. Plan review, code
-review, document annotation and the Inbox use the dedicated hostname. Restart an
-already-running Inbox for the change to apply. Preferences remain shared across
-Plannotator's ports, but are separate from `localhost` and other hostnames.
+It applies from the next start: sessions and the Inbox then open at
+`http://plannotator.localhost:<port>`. Servers still listen on `127.0.0.1`, and
+remote mode is not needed. Restart an Inbox that is already running.
 
-The dedicated hostname starts with fresh preferences. Existing `plannotator-*`
-cookies on `localhost` are not migrated or deleted. To remove them, filter for
-`plannotator-` in your browser's cookie storage for `localhost` and delete only
-those entries. Do not clear all localhost cookies, which also removes other
-apps' data. Notification permission for the Inbox must be granted again on the
-new origin.
+Prefer config.json (or the switch) over the `PLANNOTATOR_URL_HOST` environment
+variable. An agent can start the Inbox in the background without your shell's
+environment; it always reads config.json, so it opens at the same address.
+
+**What carries over.** Settings saved in config.json carry over, such as the
+theme, diff options and the update switches. Preferences kept only in this
+browser start fresh once on the new address. The Inbox asks again for
+notification permission, because the browser allows it per address.
+
+**Going back.** Turn the switch off, or remove `urlHost` from config.json, and
+restart. Your preferences on `localhost` are still there: nothing is moved or
+deleted.
+
+**Removing the old cookies.** The cookies Plannotator already set on
+`localhost` stay until you remove them. In your browser's cookie storage for
+`localhost`, filter for `plannotator-` and delete only those entries. Do not
+clear all `localhost` cookies, which also removes other apps' data.
+
+The switch is locked when config.json already sets `urlHost` to another value
+(for example a tailnet name for remote mode, which it never replaces), or when
+`PLANNOTATOR_URL_HOST` is set. It is not shown in remote mode or in a
+`--tailscale` session.
+
+Browsers resolve `*.localhost` to `127.0.0.1` themselves. Tools that are not
+browsers, such as `curl`, use the system resolver: on Linux without
+`*.localhost` resolution, add `127.0.0.1 plannotator.localhost` to `/etc/hosts`.
 
 Live app annotation (`plannotator annotate http://localhost:...`) still uses
-`localhost` for both the editor and app proxy. They must stay same-site so the
-framed app retains access to its localhost cookies. The hostname override does
-not isolate cookies in that mode.
+`localhost` for both the editor and the app proxy. They must stay same-site so
+the framed app keeps access to its `localhost` cookies, so this setting does not
+isolate cookies in that mode.
 
 ## Hook configuration (Claude Code)
 

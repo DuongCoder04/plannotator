@@ -1,4 +1,5 @@
 import type { UpdateCheckSetting } from '../hooks/useUpdateCheckSetting';
+import { cookieHostDescription, type CookieHostSetting } from '../hooks/useCookieHostSetting';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { AnnotateAgentTerminalSide } from '@plannotator/core/agent-terminal';
@@ -137,6 +138,9 @@ interface SettingsProps {
    *  useUpdateCheckSetting); `env` is PLANNOTATOR_UPDATE_CHECK when it overrides the
    *  config file. Hosts that omit it get no row. */
   updateCheckSetting?: UpdateCheckSetting;
+  /** "Keep Plannotator's cookies to itself" (#2184, useCookieHostSetting): present
+   *  only when the server reports it (a local session). Hosts that omit it get no row. */
+  cookieHostSetting?: CookieHostSetting;
   /** The `plannotator` agent tool switch, as the server reports it
    *  (parseAgentToolSetting of serverConfig: present only when the session's
    *  host registers the tool). Shown only together with onAgentToolChange;
@@ -267,6 +271,13 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
       ))}
     </div>
   );
+}
+
+/** Which of the cookie switch's states the row shows (a test and screenshot hook). */
+function cookieHostSettingState(setting: CookieHostSetting): string {
+  if (setting.env !== undefined) return 'locked-env';
+  if (setting.urlHost !== undefined) return 'locked-url-host';
+  return setting.on ? 'on' : 'off';
 }
 
 function ToggleSwitch({ checked, onChange, label, description, disabled = false }: {
@@ -1135,7 +1146,7 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, cookieHostSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
   const webmcpTools = useWebMcpToolsEnabled();
   const autoUpdate = useConfigValue('autoUpdate');
   const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
@@ -1632,6 +1643,28 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                 : 'Installs new releases in the background, at most once a day, never while another review is open.'
                           }
                         />
+                      </>
+                    )}
+
+                    {/* Keep Plannotator's cookies to itself (#2184): writes or
+                        removes urlHost "plannotator.localhost" in config.json.
+                        Locked while PLANNOTATOR_URL_HOST is set or config.json
+                        holds another urlHost, which it never replaces. */}
+                    {cookieHostSetting && (
+                      <>
+                        <div className="border-t border-border" />
+                        <div data-cookie-host-setting={cookieHostSettingState(cookieHostSetting)}>
+                          <ToggleSwitch
+                            checked={cookieHostSetting.on}
+                            onChange={(v) => cookieHostSetting.onChange(v)}
+                            disabled={cookieHostSetting.env !== undefined || cookieHostSetting.urlHost !== undefined}
+                            label="Keep Plannotator's cookies to itself"
+                            description={cookieHostDescription(cookieHostSetting)}
+                          />
+                          {cookieHostSetting.error && (
+                            <div role="alert" className="mt-1 text-xs text-destructive">{cookieHostSetting.error}</div>
+                          )}
+                        </div>
                       </>
                     )}
 

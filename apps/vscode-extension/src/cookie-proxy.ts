@@ -87,9 +87,8 @@ export function createCookieProxy(
               headers: proxyHeaders,
               // Browsers resolve *.localhost themselves; Node's OS resolver may not.
               // Pin only the socket address, keeping the advertised Host and Origin.
-              ...(targetUrl.hostname === "localhost" || targetUrl.hostname.endsWith(".localhost")
-                ? { hostname: "127.0.0.1" }
-                : {}),
+              // Plain `localhost` and every other name resolve as before.
+              ...upstreamConnectOptions(targetUrl.hostname),
             },
             (proxyRes) => {
               const contentType = proxyRes.headers["content-type"] || "";
@@ -161,6 +160,18 @@ export function createCookieProxy(
 
     server.on("error", reject);
   });
+}
+
+/**
+ * How the proxy connects to its upstream. A session advertised at a
+ * localhost subdomain (`urlHost: "plannotator.localhost"`, #2184) is
+ * listening on 127.0.0.1, which a browser knows but Node's OS resolver may
+ * not (Linux without `*.localhost` in nss), so only that shape connects to
+ * the literal. `localhost` and every other name are resolved as they always
+ * were. The same rule as `isLocalhostSubdomain` in packages/shared/loopback-host.ts.
+ */
+export function upstreamConnectOptions(hostname: string): { hostname?: string } {
+  return /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+localhost$/i.test(hostname) ? { hostname: "127.0.0.1" } : {};
 }
 
 function buildSetCookieHeaders(savedCookies: string): string[] {

@@ -50,7 +50,7 @@ import {
 } from "./integrations.ts";
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
 
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -394,7 +394,7 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
-					serverConfig: getServerConfig(gitUser, currentPiHost()),
+					serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				});
 			} else {
 				json(res, {
@@ -415,7 +415,7 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
-					serverConfig: getServerConfig(gitUser, currentPiHost()),
+					serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 					...piUpdateAdvert(options.origin),
 				});
 			}
@@ -457,9 +457,13 @@ export async function startPlanReviewServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}

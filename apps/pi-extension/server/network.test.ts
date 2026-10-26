@@ -13,6 +13,7 @@ import { delimiter, join } from "node:path";
 import { closeServer, occupyConsecutivePorts } from "../../../tests/helpers/ports.ts";
 import {
 	buildAdvertisedUrl,
+	getLocalUrlHostname,
 	getServerHostname,
 	getServerPort,
 	getServerPorts,
@@ -354,6 +355,26 @@ describe("pi buildAdvertisedUrl", () => {
 		process.env.PLANNOTATOR_REMOTE = "1";
 		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
 		expect(buildAdvertisedUrl(19432)).toBe("http://my-machine.tailnet.ts.net:19432");
+	});
+
+	test("a local session honors a localhost subdomain (#2184), and only that shape", () => {
+		clearEnv();
+		process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+		expect(buildAdvertisedUrl(1234)).toBe("http://plannotator.localhost:1234");
+		expect(getLocalUrlHostname()).toBe("plannotator.localhost");
+		process.env.PLANNOTATOR_URL_HOST = "a..localhost";
+		expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
+		expect(getLocalUrlHostname()).toBeUndefined();
+		process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+		expect(getServerHostname()).toBe("127.0.0.1");
+	});
+
+	test("with nothing configured there is no local name", () => {
+		clearEnv();
+		process.env.PLANNOTATOR_URL_HOST = "";
+		expect(getLocalUrlHostname()).toBeUndefined();
+		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+		expect(getLocalUrlHostname()).toBeUndefined();
 	});
 
 	test("keeps bracketed IPv6 hosts intact", () => {

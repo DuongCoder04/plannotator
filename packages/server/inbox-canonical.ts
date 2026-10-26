@@ -21,23 +21,29 @@
  * `no-store`: never cached, since another server may hold this port later.
  */
 
-import { loadConfig, resolveUrlHost } from "@plannotator/shared/config";
-import { isLocalhostHostname, isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
+import { loadConfig, resolveLocalUrlHostname } from "@plannotator/shared/config";
+import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
 
-/** Default hostname when no local advertised-URL override is configured. */
+/** The hostname the Inbox opens when no localhost subdomain is configured. */
 export const INBOX_CANONICAL_HOSTNAME = "localhost";
 
-/** The Inbox stays local, but can share the dedicated preference hostname. */
+/**
+ * `http://localhost:<port>/`, or `http://<name>:<port>/` when `urlHost` /
+ * PLANNOTATOR_URL_HOST names a localhost subdomain (`plannotator.localhost`,
+ * #2184): the Inbox's one address on this computer. Any other url host (a
+ * tailnet name, an IP) is for remote sessions and never changes it. The
+ * Inbox reads it once at start, for its registry, links and redirect.
+ */
 export function inboxCanonicalBaseUrl(port: number): string {
-  const override = resolveUrlHost(loadConfig());
-  const hostname = override && isLocalhostHostname(override) ? override : INBOX_CANONICAL_HOSTNAME;
-  return `http://${hostname}:${port}/`;
+  return `http://${resolveLocalUrlHostname(loadConfig()) ?? INBOX_CANONICAL_HOSTNAME}:${port}/`;
 }
 
 /**
- * The redirect for a top-level navigation of `/` that reached this port by a
- * loopback literal (`127.x.y.z`, `[::1]`), or null to answer the request as it is.
- * Use the startup base URL shared by the registry and generated links, not live config.
+ * The redirect for a top-level navigation of `/` that reached this port by
+ * another loopback spelling (`127.x.y.z`, `[::1]`, and `localhost` when a
+ * subdomain is configured), or null to answer the request as it is.
+ * `canonicalBaseUrl` is the start-time address (inboxCanonicalBaseUrl), so a
+ * config change while the Inbox runs never moves its window.
  */
 export function inboxCanonicalRedirect(req: Request, url: URL, canonicalBaseUrl: string, via: "local" | "tailnet"): Response | null {
   if (via !== "local") return null;
@@ -46,9 +52,9 @@ export function inboxCanonicalRedirect(req: Request, url: URL, canonicalBaseUrl:
   const target = new URL(canonicalBaseUrl);
   const port = Number(target.port);
   const host = req.headers.get("host");
-  if (!host || !isLoopbackHostHeader(host, port)) return null;
-  // Leave named proxies alone, including localhost subdomains.
-  if (host.trim().toLowerCase().endsWith(`.localhost:${port}`)) return null;
+  // Only the plain loopback names and the configured subdomain: any other
+  // name (another *.localhost, a proxy's own) is answered where it asked.
+  if (!host || !isLoopbackHostHeader(host, port, target.hostname)) return null;
   if (target.host === host.trim().toLowerCase()) return null;
   return new Response(null, {
     status: 307,

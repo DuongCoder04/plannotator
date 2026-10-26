@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { INBOX_SOUND_MAX_VOLUME, INBOX_SOUND_MIN_VOLUME, INBOX_TEXT_SIZES } from '@plannotator/core/inbox-types';
 import type { InboxSound } from '../sound';
-import type { AgentToolHost, SettingsModel } from '../api';
+import type { AgentToolHost, InboxCookieHost, SettingsModel } from '../api';
+import { cookieHostDescription } from '@plannotator/ui/hooks/useCookieHostSetting';
 import { formatBytes, formatCount, plural, tildePath } from '../format';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon, type IconName } from '../icons';
@@ -48,6 +49,8 @@ export interface SettingsPageProps {
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
   /** Settings → General → Experimental: decision mode's switch. Absent: no Experimental group. */
   onToggleExperimental?: (next: boolean) => void;
+  /** Settings → General: "Keep Plannotator's cookies to itself" (#2184). Absent: no row. */
+  onToggleCookieHost?: (next: boolean) => void;
   /** Over your tailnet: the switch, and whether a change is in flight. */
   onToggleTailscale: (next: boolean, replaceExposed?: boolean) => void;
   tailscaleBusy: boolean;
@@ -86,6 +89,36 @@ export interface SettingsPageProps {
   /** Settings → Agents (components/AgentsSettings.tsx): the agents on this computer; null while unread. */
   agents?: InboxAgentsModel | null;
   onAgents?: (next: InboxAgentsModel) => void;
+}
+
+/**
+ * "Keep Plannotator's cookies to itself" (#2184), the switch plan review,
+ * code review and annotate show in their Settings too: config.json
+ * `urlHost: "plannotator.localhost"`. Locked (with the reason) while
+ * PLANNOTATOR_URL_HOST is set or config.json holds another `urlHost`, which it
+ * never replaces. The server leaves it out for a page that came through the tailnet.
+ */
+function CookieHostGroup({ cookieHost, onToggle }: { cookieHost: InboxCookieHost; onToggle: (next: boolean) => void }) {
+  const locked = cookieHost.env !== null || cookieHost.url_host !== null;
+  const state = cookieHost.env !== null ? 'locked-env' : cookieHost.url_host !== null ? 'locked-url-host' : cookieHost.on ? 'on' : 'off';
+  return (
+    <section className="ib-sgroup" data-settings-cookie-host={state} aria-labelledby="ib-g-browser">
+      <h2 id="ib-g-browser">This browser</h2>
+      <div className="ib-card">
+        <div className="ib-prow">
+          <span className="ib-txt">
+            <span className="ib-l" id="ib-cookie-host-label">
+              Keep Plannotator's cookies to itself
+            </span>
+            <span className="ib-desc">{cookieHostDescription({ env: cookieHost.env ?? undefined, urlHost: cookieHost.url_host ?? undefined })}</span>
+          </span>
+          <span className="ib-ctl">
+            <Switch on={cookieHost.on} labelledBy="ib-cookie-host-label" disabled={locked} onClick={() => onToggle(!cookieHost.on)} />
+          </span>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 /** A row's switch, named by its visible title. */
@@ -185,9 +218,11 @@ function GeneralSection({
   onTestNotification,
   sound,
   onToggleExperimental,
+  onToggleCookieHost,
   onTakeTour,
 }: {
   onToggleExperimental?: (next: boolean) => void;
+  onToggleCookieHost?: (next: boolean) => void;
   onTakeTour?: () => void;
   settings: SettingsModel;
   permission: NotificationPermission | 'unsupported';
@@ -357,6 +392,7 @@ function GeneralSection({
           Notifications are allowed per address, so a browser on another device asks once there.
         </div>
       </section>
+      {settings.cookie_host && onToggleCookieHost && <CookieHostGroup cookieHost={settings.cookie_host} onToggle={onToggleCookieHost} />}
       {settings.experimental && onToggleExperimental && (
         <section className="ib-sgroup" data-settings-experimental="" aria-labelledby="ib-g-experimental">
           <h2 id="ib-g-experimental">Experimental</h2>
@@ -683,6 +719,7 @@ export function SettingsPage(props: SettingsPageProps) {
             onTestNotification={onTestNotification}
             sound={sound}
             onToggleExperimental={props.onToggleExperimental}
+            onToggleCookieHost={props.onToggleCookieHost}
             onTakeTour={props.onTakeTour}
           />
         );

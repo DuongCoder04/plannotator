@@ -910,12 +910,12 @@ export function getUpdateAdvert(origin?: string | null, options: { exposed?: boo
 export function handleUpdateRoute(
   req: Request,
   url: URL,
-  ctx: { port: number | null | undefined; exposed: boolean; serverSession: string },
+  ctx: { port: number | null | undefined; exposed: boolean; serverSession: string; localHostname?: string | null },
 ): Promise<Response> | null {
   if (url.pathname !== "/api/update") return null;
   return (async () => {
     if (req.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });
-    if (!isLoopbackHostHeader(req.headers.get("host"), ctx.port)) {
+    if (!isLoopbackHostHeader(req.headers.get("host"), ctx.port, ctx.localHostname)) {
       return Response.json({ error: "Update answers only this computer.", code: "forbidden_host" }, { status: 403 });
     }
     if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
