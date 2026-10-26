@@ -297,6 +297,81 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     expect(added[0]!.htmlAnchor).toEqual(selectionMessage.anchor);
   });
 
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+
+  test('the page replacing the target brings the hidden composer back with its text', async () => {
+    const added: Annotation[] = [];
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: (ann) => added.push(ann) });
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    await typeComment('Comment on the replaced slide');
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: false });
+    expect(document.querySelector('[data-comment-popover]')).toBeNull();
+    // The bridge found the new element through the anchor: it re-anchors the
+    // composer on it, then reports the draft visible again.
+    await postSelection({ type: 'plannotator-bridge-selection-rect', rect: { top: 300, left: 40, width: 120, height: 24 } });
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: true });
+    expect(document.querySelector<HTMLTextAreaElement>('[data-comment-popover] textarea')?.value)
+      .toBe('Comment on the replaced slide');
+    await saveComment();
+    expect(added).toHaveLength(1);
+    expect(added[0]!.text).toBe('Comment on the replaced slide');
+  });
+
+  test('Escape while the composer is hidden closes the hidden draft and is used', async () => {
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    await typeComment('Draft kept for later');
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: false });
+    (document.activeElement as HTMLElement | null)?.blur();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => { document.body.dispatchEvent(escape); });
+    expect(escape.defaultPrevented).toBe(true);
+    // Closed, not just hidden: the target coming back shows nothing.
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: true });
+    expect(document.querySelector('[data-comment-popover]')).toBeNull();
+    // A second Escape is not taken by the closed draft.
+    const next = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => { document.body.dispatchEvent(next); });
+    expect(next.defaultPrevented).toBe(false);
+    // The draft text is kept: pinning the same element again restores it.
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    expect(document.querySelector<HTMLTextAreaElement>('[data-comment-popover] textarea')?.value)
+      .toBe('Draft kept for later');
+    await typeComment(''); // leave no draft for the next test
+  });
+
+  test('the bridge closing the draft while the composer is hidden closes the composer', async () => {
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: false });
+    // Escape inside the page: the bridge's ladder closes its pin.
+    await postSelection({ type: 'plannotator-bridge-selection-clear' });
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: true });
+    expect(document.querySelector('[data-comment-popover]')).toBeNull();
+  });
+
+  test('a composer shown again does not take focus from where the person is', async () => {
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
+    await postSelection({ ...selectionMessage, pinpoint: true });
+    await settle();
+    expect(document.activeElement?.tagName).toBe('TEXTAREA');
+    await typeComment('Still here');
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: false });
+    // The person works in the page meanwhile.
+    const iframe = document.querySelector<HTMLIFrameElement>('iframe')!;
+    iframe.focus();
+    expect(document.activeElement).toBe(iframe);
+    await postSelection({ type: 'plannotator-bridge-pin-visibility', visible: true });
+    await settle();
+    const textarea = document.querySelector<HTMLTextAreaElement>('[data-comment-popover] textarea');
+    expect(textarea?.value).toBe('Still here');
+    expect(document.activeElement).toBe(iframe);
+    // It takes focus when the person goes to it.
+    textarea!.focus();
+    expect(document.activeElement).toBe(textarea);
+    await typeComment(''); // leave no draft for the next test
+  });
+
   test('a plain drag selection still opens the markup toolbar', async () => {
     const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
     await postSelection({ ...selectionMessage, anchor: undefined });

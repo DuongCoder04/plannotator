@@ -477,8 +477,12 @@ export function useHtmlAnnotation({
   UseAnnotationHighlighterReturn,
   "highlighterRef" | "highlightRange" | "highlightMathElement"
 > & {
-  /** Whether any pinned draft target is still displayed by the page. */
+  /** Whether any pinned draft target is still displayed by the page. Always
+   *  true while no composer is open. */
   pinVisible: boolean;
+  /** False once this draft's composer was hidden with its target: shown
+   *  again, it must not take focus from where the person is. */
+  composerAutoFocus: boolean;
   /** In-flight multi-select targets (index 0 = primary); empty outside pinpoint drafts. */
   draftTargets: HtmlDraftTarget[];
   /** Remove one draft target (chip X). Removing the last cancels the draft. */
@@ -501,6 +505,16 @@ export function useHtmlAnnotation({
   const [draftTargets, setDraftTargets] = useState<HtmlDraftTarget[]>([]);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [pinVisible, setPinVisible] = useState(true);
+  const [composerWasHidden, setComposerWasHidden] = useState(false);
+  const pinVisibleRef = useRef(pinVisible);
+  pinVisibleRef.current = pinVisible;
+  // Visibility belongs to one draft: whatever closes the composer (save, 👍,
+  // close, Escape, a cancelled multi-select, disabling) resets it.
+  useEffect(() => {
+    if (commentPopover) return;
+    setPinVisible(true);
+    setComposerWasHidden(false);
+  }, [commentPopover]);
 
   const pendingTextRef = useRef<string>("");
   // Element anchor for the pending pinpoint selection — committed onto the
@@ -673,10 +687,12 @@ export function useHtmlAnnotation({
 
       if (type === `${PREFIX}pin-visibility`) {
         setPinVisible(message.visible);
+        if (!message.visible && commentPopoverRef.current) setComposerWasHidden(true);
       }
 
       if (type === `${PREFIX}selection`) {
         setPinVisible(true);
+        setComposerWasHidden(false);
         pendingTextRef.current = message.text;
         pendingAnchorRef.current = message.anchor ?? null;
         pendingContextRef.current = message.context ?? null;
@@ -814,6 +830,18 @@ export function useHtmlAnnotation({
           onHostDraftRef.current(null);
         }
         setToolbarState(null);
+        // The bridge closed the draft (its Escape rung) while the composer was
+        // hidden with its target: close the hidden composer too, or nothing on
+        // screen could ever close it. Its text stays in the draft store.
+        if (commentPopoverRef.current && !pinVisibleRef.current) {
+          post({ type: `${PREFIX}cancel-selection` });
+          setCommentPopover(null);
+          setDraftTargets([]);
+          pendingTextRef.current = "";
+          pendingAnchorRef.current = null;
+          pendingContextRef.current = null;
+          return;
+        }
         // Keep the captured text alive while a comment/quick-label is open: the user
         // is composing, and the selection collapsing or scrolling out of view must
         // not drop the annotation on submit. It's overwritten on the next selection.
@@ -1168,7 +1196,8 @@ export function useHtmlAnnotation({
 
   return {
     toolbarState,
-    pinVisible,
+    pinVisible: pinVisible || !commentPopover,
+    composerAutoFocus: !composerWasHidden,
     commentPopover,
     quickLabelPicker,
     handleAnnotate,
