@@ -11,6 +11,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
 import { readInboxAttachmentKind } from '@plannotator/core/inbox-types';
+import { selectionOnPhrase } from '../fileSource';
 import {
   TOUR_FILM_REPLY_ID,
   TOUR_FILM_THREAD,
@@ -290,6 +291,24 @@ describe('fast-forward', () => {
     }
     expect(tourCanForward(TOUR_START, tourCoach(TOUR_START, names))).toBe(false);
     expect(tourCanForward(tourStateAt(10, REAL, fixture), null)).toBe(false);
+  });
+});
+
+describe('suggestions', () => {
+  test('a comment box opens with its suggestion only for a selection on the phrase, never a stray word of it', () => {
+    const phrase = 'a 2-day check that hover feels instant';
+    for (const yes of [phrase, `after ${phrase}.`, 'check that hover feels instant', 'Cost: medium, after a 2-day check that hover', 'hover feels instant. And more'])
+      expect(selectionOnPhrase(phrase, yes), yes).toBe(true);
+    for (const no of ['the', 'hover', 'feels', 'a 2-day', 'Recommended: A, our own guide reader', '']) expect(selectionOnPhrase(phrase, no), no).toBe(false);
+    const line = 'It is also the cheapest direction, because the reader and its hooks already exist.';
+    expect(selectionOnPhrase(line, '**It is also** the cheapest direction, because the reader')).toBe(true);
+    expect(selectionOnPhrase(line, 'the reader')).toBe(false);
+  });
+
+  test('the warm-up is the tour’s own question: nothing about it claims a real answer, and the fixture says it was added', () => {
+    const replaying = run([{ type: 'warmPick', label: WARM }, { type: 'warmSend' }], tourStateAt(2, REAL, fixture));
+    for (const s of [replaying, { ...replaying, warmDelivered: true }]) expect(tourCoach(s, names)!.text).not.toMatch(/real thread/i);
+    expect(raw.note).toContain('added by the tour');
   });
 });
 

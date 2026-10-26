@@ -1016,7 +1016,7 @@ function Inbox() {
             const threadId = event.message.thread_id;
             setTourArrivals((current) => ({ count: current.count + 1, thread: threadId }));
           }
-          // The replay (steps 1 to 9) in front: the chip says it, nothing rings. Everywhere else, step 6
+          // The replay (steps 1 to 9) in front: the chip says it, nothing rings. Everywhere else, step 10
           // included (it sends the person to get their first question), and with the tab in the background,
           // notifications and the sound work as always, so nothing is ever passed over unseen.
           if (!(now.page === 'tour' && (now.step ?? 1) < TOUR_STEPS && tourPageInFront())) observeEvent(event);
@@ -2363,7 +2363,7 @@ function Inbox() {
   // ── The onboarding tour (approval "inbox-onboarding-tour") ──────────────
   // A replay of a real thread from building Plannotator, drawn with the
   // window's own list, thread and question card over the tour's fixture
-  // (tour/model.ts). Steps 1 to 5 never touch the person's store; step 6 is
+  // (tour/model.ts). Steps 1 to 9 never touch the person's store; step 10 is
   // their own first-run screen. The person's Inbox stays loaded underneath
   // and comes back as it was.
   const tourOn = route.page === 'tour';
@@ -2488,7 +2488,7 @@ function Inbox() {
     tourReturn.current = '';
     tourStartedHere.current = false;
     // Left by the browser's Back (or anything else not through endTour): the same as Exit there, finished on
-    // step 6 (the entry screen does not come back).
+    // step 10 (the entry screen does not come back).
     if (!tourEnding.current) {
       saveTour(tourEndRecord(tourState.step === TOUR_STEPS));
       // The browser's Back took the tour's screen with the focus in it: focus lands on the Inbox, never the page.
@@ -2516,14 +2516,14 @@ function Inbox() {
     saveTour({ seen: true });
     go({ page: 'tour', project: null, thread: null, step: 1 });
   };
-  /** What ending the tour records: finished once the person reached step 6, skipped before. */
+  /** What ending the tour records: finished once the person reached step 10, skipped before. */
   const tourEndRecord = (finished: boolean): InboxTourChange =>
     finished
       ? { finished: true, notify_again: !(notifications.permission === 'granted' && settings?.notifications.enabled === true) }
       : { skipped: true };
   /**
    * Ends the tour: `kind` is what it records, `to` where it goes. A place named (the chip's thread, Settings, a
-   * sidebar row on step 6) takes the tour's own entry. Without one it goes back to where the tour was started, as
+   * sidebar row on step 10) takes the tour's own entry. Without one it goes back to where the tour was started, as
    * the browser's Back when that is the entry under the tour's own; else (a link or a reload) to that place, again
    * in the tour's entry. Either way a later Back never reopens #tour=N.
    */
@@ -2574,7 +2574,7 @@ function Inbox() {
     requestAnimationFrame(land);
   }
   // During the tour, focus that a control took with it (a screen redrawn by a step, a hash change, Try again)
-  // lands on the tour's own place: the coach card, the loading screen, step 6's heading, else Exit. Only focus
+  // lands on the tour's own place: the coach card, the loading screen, step 10's heading, else Exit. Only focus
   // that was LOST (the last focused element left the page): a click on empty space is left alone.
   useEffect(() => {
     if (!tourOn) return;
@@ -2636,20 +2636,24 @@ function Inbox() {
     [say],
   );
   useEffect(() => () => void (tourNudgeTimer.current && clearTimeout(tourNudgeTimer.current)), []);
+  /** A Fast-forward just happened: the next card's announcement starts with it. */
+  const tourForwarded = useRef(false);
   /** Fast-forward (the owner, 2026-10-25): the end of this step, said once. */
   const forwardTour = useCallback(() => {
     if (!tourFixture) return;
     setTourNudge(null);
+    // Said with the card it lands on (the next announcement), never apart from it, which the card would cut off.
+    tourForwarded.current = true;
     dispatchTour({ type: 'forward', realAnswer: tourReal, fixture: tourFixture }, { focusCoach: true });
-    say('Fast-forwarded to the end of this step.');
-  }, [tourFixture, tourReal, dispatchTour, say]);
-  /** New message in the tour's sidebar: live on step 9; before it, the coach says when. */
+  }, [tourFixture, tourReal, dispatchTour]);
+  /** New message in the tour's sidebar: live on step 9 until its Send; before it the coach says when, after it where the thread is. */
   const openTourComposeOrNudge = useCallback(
     (opener: HTMLElement) => {
-      if (tourState.step === TOUR_STEPS - 1) openTourCompose(opener);
+      if (tourState.step === TOUR_STEPS - 1 && tourState.compose === 'sent') nudgeTour('Your thread is started; it’s in the list.');
+      else if (tourState.step === TOUR_STEPS - 1) openTourCompose(opener);
       else nudgeTour('New message comes later in the tour, at step 9.');
     },
-    [tourState.step, openTourCompose, nudgeTour],
+    [tourState.step, tourState.compose, openTourCompose, nudgeTour],
   );
   const tourCoachCard =
     tourOn && tourFixture && tourState.step < TOUR_STEPS && !tourIntroShown
@@ -2664,7 +2668,10 @@ function Inbox() {
     setTourNudge(null);
     if (!tourCoachCard) return;
     // Each change is said once. The replay's own lines say Sending and Delivered; the second arrival leads the next card.
-    if (!tourCoachCard.wait) say(tourCoachSpeech(tourCoachCard, tourState.step));
+    const forwarded = tourForwarded.current ? 'Fast-forwarded. ' : '';
+    tourForwarded.current = false;
+    if (!tourCoachCard.wait) say(`${forwarded}${tourCoachSpeech(tourCoachCard, tourState.step)}`);
+    else if (forwarded) say(forwarded.trim());
     // Focus never drops to the page: a card that changed under a control that went away takes it.
     requestAnimationFrame(() => {
       const active = document.activeElement as HTMLElement | null;
@@ -2672,25 +2679,25 @@ function Inbox() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tourCoachKey]);
-  // Step 6 is real: Back in the tour bar has no step to go to, and Finish ends it.
-  const tourStep6 = tourOn && tourState.step === TOUR_STEPS;
-  /** A sidebar row: on step 6 (the real sidebar shows there) it ends the tour, finished, in the tour's own entry. */
-  const leave = (to: Route) => (tourStep6 ? endTour('finish', to) : go(to));
-  /** Step 6's notifications line: asked on the click only; hidden for the step by Not now (the first real thread asks once more). */
+  // The last step (10) is real: Back in the tour bar has no step to go to, and Finish ends it.
+  const tourRealStep = tourOn && tourState.step === TOUR_STEPS;
+  /** A sidebar row: on step 10 (the real sidebar shows there) it ends the tour, finished, in the tour's own entry. */
+  const leave = (to: Route) => (tourRealStep ? endTour('finish', to) : go(to));
+  /** The last step’s notifications line: asked on the click only; hidden for the step by Not now (the first real thread asks once more). */
   const [tourAskHidden, setTourAskHidden] = useState(false);
-  // Step 6 is the person's own screen: its heading takes focus (the coach card is gone) and the change is said.
-  const wasStep6 = useRef(false);
+  // The last step is the person’s own screen: its heading takes focus (the coach card is gone) and the change is said.
+  const wasRealStep = useRef(false);
   useEffect(() => {
-    if (tourStep6 && !wasStep6.current) {
+    if (tourRealStep && !wasRealStep.current) {
       // The tour's own toast (Sent to Claude Code) belongs to the replay: the person's own screen starts clean.
       dismissToast();
       say(`Step ${TOUR_STEPS} of ${TOUR_STEPS}: connect your agents. This is your own Inbox; what you connect here stays connected.`);
       requestAnimationFrame(() => requestAnimationFrame(() => focusFirst(['.ib-main .ib-empty h2'])));
     }
-    if (!tourStep6) setTourAskHidden(false);
-    wasStep6.current = tourStep6;
+    if (!tourRealStep) setTourAskHidden(false);
+    wasRealStep.current = tourRealStep;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tourStep6]);
+  }, [tourRealStep]);
   // The first real thread offers notifications once more, inline, when the tour ended without them (choice 6).
   // Like the ask above the list (askKind): never when notifications are off or the ask was dismissed.
   const notifyAgain = !tourOn && settings?.tour?.notify_again === true && notifications.ask !== null;
@@ -2908,8 +2915,8 @@ function Inbox() {
     return folder ? { id: folder.id, root: folder.root, name: folder.name } : thread && route.thread ? { id: thread.project.id, root: thread.project.root, name: thread.project.name } : null;
   })();
 
-  // Step 6's notifications line (choice 6): asked on the click, in the screen's "Try it".
-  const tourAskKind = tourStep6 && !tourAskHidden && !overTailnet && notifications.permission !== 'unsupported'
+  // The last step’s notifications line (choice 6): asked on the click, in the screen's "Try it".
+  const tourAskKind = tourRealStep && !tourAskHidden && !overTailnet && notifications.permission !== 'unsupported'
     ? notifications.permission === 'denied'
       ? 'blocked'
       : notifications.permission === 'granted' && settings?.notifications.enabled
@@ -3300,8 +3307,8 @@ function Inbox() {
           step={tourFixture ? tourState.step : (route.step ?? 1)}
           phone={phone}
           arrivals={tourArrivals.count}
-          onArrivals={() => endTour(tourStep6 ? 'finish' : 'exit', { page: 'inbox', project: null, thread: tourArrivals.thread })}
-          onExit={() => endTour(tourStep6 ? 'finish' : 'exit')}
+          onArrivals={() => endTour(tourRealStep ? 'finish' : 'exit', { page: 'inbox', project: null, thread: tourArrivals.thread })}
+          onExit={() => endTour(tourRealStep ? 'finish' : 'exit')}
         />
       )}
       {/* A file beside the thread takes the sidebar's room (record 2.2): it closes on the same spring, and the person's choice stays as it was. */}
@@ -3318,7 +3325,7 @@ function Inbox() {
           changeSidebar(next);
         }}
         navigation={
-          tourOn && !tourStep6 ? (
+          tourOn && !tourRealStep ? (
             <TourNavigation
               fixture={tourFixture}
               state={tourState}
@@ -3346,7 +3353,7 @@ function Inbox() {
             onDecide={() => openDecide()}
             pins={pinRows}
             openThreadId={route.thread}
-            onOpenPin={(row) => (tourStep6 ? endTour('finish', { page: 'inbox', project: null, thread: row.thread_id }) : openPinned(row))}
+            onOpenPin={(row) => (tourRealStep ? endTour('finish', { page: 'inbox', project: null, thread: row.thread_id }) : openPinned(row))}
             onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
@@ -3359,7 +3366,7 @@ function Inbox() {
             refreshSpin={refreshSpin}
             onSettings={() => leave({ page: 'settings', project: null, thread: null })}
             onUpdate={pressUpdate}
-            onWhatsNew={(version) => (tourStep6 ? endTour('finish', { page: 'whats-new', project: null, thread: null, version }) : openWhatsNew(version))}
+            onWhatsNew={(version) => (tourRealStep ? endTour('finish', { page: 'whats-new', project: null, thread: null, version }) : openWhatsNew(version))}
             // Not on a page opened over the tailnet: Settings → Agents is local only there.
             restartClaudeCode={settings && settings.via !== 'tailnet' ? restartClaudeCode : 0}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}

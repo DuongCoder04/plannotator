@@ -26,7 +26,7 @@ import { ArtifactsView } from '../components/ArtifactsView';
 import { ReplyAnswers, draftAnswerWords, type DraftAnswer } from '../components/ReplyAnswers';
 import { AnnotationsChip } from '../components/AnnotationsChip';
 import { ComposeDialog, type ComposeTransport } from '../compose/ComposeDialog';
-import { InboxFileSourceProvider } from '../fileSource';
+import { InboxFileSourceProvider, selectionOnPhrase } from '../fileSource';
 import { TOUR_IMAGE_BASE } from '../images';
 import { annotationOf } from '../attachments';
 import { kindDefaultView } from '../fileView';
@@ -144,7 +144,9 @@ export function useTourFixture(active: boolean): { fixture: TourFixture | null; 
  * The replays after each Send: thread A (delivered, then two messages),
  * the film (delivered, the reply) and the new thread (delivered, the reply),
  * on timers. A state reached directly (a reload of `#tour=N`) has everything
- * already, so nothing is scheduled.
+ * already, so nothing is scheduled; a replay a Fast-forward finished drops
+ * its timers (each effect also follows its own "arrived" flag), so nothing
+ * stale is said or dispatched afterwards.
  */
 export function useTourReplay(state: TourState, dispatch: (action: TourAction) => void, reduced: boolean, say: (text: string) => void): void {
   useEffect(() => {
@@ -162,7 +164,7 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
     ];
     return () => timers.forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.warmSent]);
+  }, [state.warmSent, state.warmArrived]);
   const aDone = state.delivered && state.arrived >= 2;
   useEffect(() => {
     if (!state.sent || aDone) return;
@@ -183,7 +185,7 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
     ];
     return () => timers.forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.sent]);
+  }, [state.sent, aDone]);
   useEffect(() => {
     if (!state.filmSent || state.filmArrived) return;
     const t = filmTimings(reduced);
@@ -199,7 +201,7 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
     ];
     return () => timers.forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.filmSent]);
+  }, [state.filmSent, state.filmArrived]);
   const sentNew = state.compose === 'sent';
   useEffect(() => {
     if (!sentNew || state.newArrived) return;
@@ -216,7 +218,7 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
     ];
     return () => timers.forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sentNew]);
+  }, [sentNew, state.newArrived]);
 }
 
 // ─────────────────────────── The tour bar ───────────────────────────
@@ -335,6 +337,8 @@ function targetRect(target: TourTarget | null): DOMRect | null {
 type Side = 'right' | 'left' | 'below' | 'above' | 'corner';
 
 /** Targets whose controls are at the foot of a phone's screen: the sheet sits at the top for them. */
+/** Targets whose own controls sit at the top of what they point at (a question card's prompt, picture labels and magnifiers): the sheet goes to the foot, the card is scrolled above it. */
+const PHONE_SHEET_BOTTOM = new Set<TourTarget>(['choices', 'warm-choices']);
 const PHONE_SHEET_TOP = new Set<TourTarget>(['warm-send', 'film-rail', 'film-composer', 'film-send', 'image-foot', 'markup', 'reply', 'reply-box', 'composer']);
 
 /** Targets the card never scrolls to: a comment box, a drawing's row, the open file (a scroll would close or move them). */
@@ -511,7 +515,10 @@ export function TourCoach({
     if (phone) {
       if (sheetAt.current?.key !== coach.key) {
         // A file's own controls sit at its foot on a phone (the comment row, "Comment at", Send): the sheet goes up.
-        const low = (coach.target !== null && PHONE_SHEET_TOP.has(coach.target)) || (r ? r.top + Math.min(r.height, vh / 2) / 2 > vh * 0.5 : false);
+        const low =
+          coach.target !== null && PHONE_SHEET_BOTTOM.has(coach.target)
+            ? false
+            : (coach.target !== null && PHONE_SHEET_TOP.has(coach.target)) || (r ? r.top + Math.min(r.height, vh / 2) / 2 > vh * 0.5 : false);
         sheetAt.current = { key: coach.key, at: low ? 'top' : 'bottom' };
       }
       setPlace({ left: 0, top: 0, at: sheetAt.current.at });
@@ -680,7 +687,7 @@ export function TourCoach({
 // ─────────────────────────── The tour's words to point at ───────────────────────────
 
 /**
- * The phrase a coach card points at (step 3's words in the message, step 4's
+ * The phrase a coach card points at (step 4's words in the message, step 5's
  * line in EVALUATION.md): drawn with the CSS Custom Highlight API, so the
  * message's DOM never changes (the comment highlighter's own marks stay its).
  */
@@ -830,7 +837,7 @@ function tourFolder(fixture: TourFixture): ProjectFolder {
   return { id: TOUR_PROJECT_ID, key: 'tour', name: fixture.project, root: '', created_at: '', threads: 3, unread: 0, listed: 3, archived: 0 };
 }
 
-/** The tour Inbox's sidebar: the window's own, with the tour's one project; New message is live in step 8 only. */
+/** The tour Inbox's sidebar: the window's own, with the tour's one project; New message is live in step 9 only. */
 export function TourNavigation({
   fixture,
   state,
@@ -1247,7 +1254,9 @@ function TourThreadPane({
     const body = bodyRef.current;
     if (!body) return;
     // The warm-up's answer arrives as a long message (text, pictures, files): its top comes into view, as the Inbox follows an arrival's first lines.
+    // On a phone the coach's sheet places the card itself (fitAroundSheet), so the two never scroll against each other.
     if (isA && state.warmArrived && state.step === 3 && !state.picked) {
+      if (phone) return;
       requestAnimationFrame(() => {
         const arrival = body.querySelector<HTMLElement>('[data-tour-message="ask"]');
         if (!arrival) return;
@@ -1359,7 +1368,7 @@ function TourThreadPane({
     foot = (
       <div className="ib-acts ib-footrow" data-foot-row="">
         <div className="ib-footbtns" data-foot-buttons="">
-          <Tip content="Send it, in the tour: a replay of the real thread">
+          <Tip content="Send it, in the tour">
             <button
               type="button"
               className="ib-btn ib-pri"
@@ -1417,10 +1426,15 @@ function TourThreadPane({
         )}
       </div>
     );
-  const replyWhy =
-    isA && state.warmSent && !state.warmArrived
-      ? 'Your answer is on its way; Claude Code’s reply comes next'
-      : isA && !state.sent
+  // A reply on its way (a second click on Send lands here): said as it is, never "not part of the tour".
+  const onItsWay =
+    (isA && state.warmSent && !state.warmArrived) ||
+    (isA && state.sent && state.arrived < 2) ||
+    (isFilm && state.filmSent && !state.filmArrived) ||
+    (threadId === TOUR_NEW_THREAD && !state.newArrived);
+  const replyWhy = onItsWay
+    ? 'Your reply is on its way; Claude Code’s answer comes next'
+    : isA && !state.sent
         ? 'In the tour, pick an answer above first'
         : isFilm && !state.filmSent
           ? 'Comment on the film first; the comment goes with the reply'
@@ -1573,7 +1587,7 @@ function TourThreadPane({
                   <div className="ib-msg">
                     {isA && fx?.after_warmup && warmDiffers(state, tourWarmAnswer(fixture)) && (
                       <p className="ib-tour-note" data-tour-differs="warm">
-                        {tourPickWords(state.warmPicked!)}. In the real thread the answer was “{tourWarmAnswer(fixture)}”, so this is what Claude Code did.
+                        {tourPickWords(state.warmPicked!)}. The tour goes on with the mockups, so you can see the pictures.
                       </p>
                     )}
                     {isA && fx?.replay === 1 && pickDiffers(state, realAnswer) && (
@@ -1629,8 +1643,7 @@ function TourThreadPane({
                                 suggest: (selected) => {
                                   const s = fx?.suggest;
                                   if (!s?.phrase) return undefined;
-                                  const words = selected.replace(/\s+/g, ' ').trim();
-                                  return words && (s.phrase.includes(words) || words.includes(s.phrase)) ? s.comment : undefined;
+                                  return selectionOnPhrase(s.phrase, selected) ? s.comment : undefined;
                                 },
                               }
                             : undefined

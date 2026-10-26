@@ -638,6 +638,21 @@ test('an iPhone in WebKit: taps, 44 px targets, the film comment at a moment; li
       suggestions,
       shot: async (name) => {
         if (name === '02-plain') await big('[data-tour-forward]');
+        // The sheet never covers what it points at: the question's prompt, and the first row of pictures with its labels and
+        // magnifiers, stay clear of it (on a phone four pictures are two rows, taller than the screen; the second is a scroll away).
+        if (name === '02-plain' || name === '03-pictures') {
+          await page.waitForTimeout(800);
+          const sheet = (await coach(page).boundingBox())!;
+          const card = name === '02-plain' ? '[data-tour-message="warm"]' : '[data-tour-message="ask"]';
+          const parts = [`${card} [data-question-part="prompt"]`, name === '02-plain' ? `${card} input[type="radio"]` : `${card} [data-question-zoom]`];
+          for (const sel of parts) {
+            const all = await page.locator(sel).evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).filter((r) => r.height > 0).map((r) => ({ top: r.top, bottom: r.bottom })));
+            const firstRow = Math.min(...all.map((r) => r.top));
+            const boxes = all.filter((r) => Math.abs(r.top - firstRow) < 4);
+            expect(boxes.length, `${name}: ${sel}`).toBeGreaterThan(0);
+            for (const b of boxes) expect(b.bottom <= sheet.y || b.top >= sheet.y + sheet.height, `${name}: ${sel} under the sheet ${JSON.stringify({ b, sheet })}`).toBe(true);
+          }
+        }
         if (name === '02-send') await big('[data-tour-warm-send]');
         if (name === '06-reply') await big('[data-tour-reply]');
         if (name === '08-answer') await big('[data-tour-next]');
@@ -909,7 +924,7 @@ test('the fixture routes: read only, embedded in the binary, the film by range, 
   const html = await (await fetch(w.url)).text();
   expect(html).not.toContain('Honestly I’m just struggling with this UX');
   const content = join(repo, 'packages/inbox/tour/content');
-  for (const name of readdirSync(content)) {
+  for (const name of readdirSync(content).filter((n) => n !== 'README')) {
     const path = name === 'fixture.json' ? 'api/inbox/tour/fixture.json' : `api/inbox/tour/assets/${name}`;
     const served = Buffer.from(await (await fetch(new URL(path, w.url))).arrayBuffer());
     expect(served.equals(readFileSync(join(content, name))), name).toBe(true);

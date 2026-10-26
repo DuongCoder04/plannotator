@@ -27,6 +27,25 @@ export interface FileSuggestion {
   at?: number;
 }
 
+const flatWords = (s: string) => s.replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Whether a selection is on a suggestion's phrase: it holds the whole phrase, or covers at least half of it
+ * (12 characters at least), inside it or across one of its ends. A stray word in the phrase ("the", "hover")
+ * opens an empty box.
+ */
+export function selectionOnPhrase(phrase: string, selected: string): boolean {
+  const p = flatWords(phrase);
+  const s = flatWords(selected);
+  if (!p || !s) return false;
+  if (s.includes(p)) return true;
+  const need = Math.min(p.length, Math.max(12, Math.ceil(p.length / 2)));
+  if (s.length >= need && p.includes(s)) return true;
+  // Across an end: the selection's tail is the phrase's start, or its head is the phrase's end.
+  for (let k = Math.min(p.length, s.length); k >= need; k--) if (s.endsWith(p.slice(0, k)) || s.startsWith(p.slice(p.length - k))) return true;
+  return false;
+}
+
 export interface InboxFileSource {
   imageUrl(attachment: InboxAttachmentState, version: Version): string;
   videoUrl(attachment: InboxAttachmentState, version: Version): string;

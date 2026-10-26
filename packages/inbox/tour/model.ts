@@ -36,7 +36,7 @@ import { tourAssetLoaded, tourAssetUrl } from './assets';
 export const TOUR_STEPS = 10;
 
 /**
- * Step 9's prompt to copy (v1 step 6, "Get your first question"): one real
+ * Step 10's prompt to copy (v1 step 6, "Get your first question"): one real
  * question about the work at hand, with pictures when the choice is visual.
  */
 export const TOUR_FIRST_QUESTION_PROMPT =
@@ -44,10 +44,10 @@ export const TOUR_FIRST_QUESTION_PROMPT =
 export const TOUR_THREAD = 'tour-vscode';
 /** Thread B: the launch film, from the same real work. */
 export const TOUR_FILM_THREAD = 'tour-film';
-/** Thread C: the one the person starts in step 8. */
+/** Thread C: the one the person starts in step 9. */
 export const TOUR_NEW_THREAD = 'tour-new';
 export const TOUR_PROJECT_ID = 'tour-project';
-/** The one live session the tour's compose offers (step 8). */
+/** The one live session the tour's compose offers (step 9). */
 export const TOUR_SESSION = 'tour-session';
 
 // ─────────────────────────── The fixture ───────────────────────────
@@ -117,14 +117,14 @@ export interface TourFixtureThread {
   thread_name: string | null;
   slice?: string;
   real_answer?: string;
-  /** The warm-up question's real answer, and when the person's reply to it was sent. */
+  /** The warm-up question (added by the tour; the real thread asked nothing at 11:48): the answer the tour goes on with, and when the person's reply to it was sent. */
   warmup_answer?: string;
   warmup_reply_time?: string;
   picture_label?: string;
   picture_label_short?: string;
   /** When the person's replayed reply was sent. */
   reply_time?: string;
-  /** The thread the person starts (step 8): compose's suggested words, and when. */
+  /** The thread the person starts (step 9): compose's suggested words, and when. */
   person?: boolean;
   compose?: { body: string; time: string };
   messages: TourFixtureMessage[];
@@ -410,7 +410,7 @@ function suggestedMessageComment(fixture: TourFixture, thread: string, messageId
   });
 }
 
-/** The comment a file's suggestion makes (step 4's line, step 6's image, step 7's film moment). */
+/** The comment a file's suggestion makes (step 5's line, step 7's image, step 8's film moment). */
 function suggestedFileComment(fixture: TourFixture, attachmentId: string): InboxAnnotationRecord | null {
   const found = tourAttachments(fixture, TOUR_ALL_SHOWN).find((a) => a.id === attachmentId);
   const suggest = found ? tourSuggestionFor(fixture, found) : null;
@@ -437,7 +437,7 @@ function walkTargets(fixture: TourFixture) {
   };
 }
 
-/** The warm-up question's real answer (step 2): the fixture's, or none without it. */
+/** The warm-up's answer the tour goes on with (step 2): the fixture's, or none without it. Not a real answer: the tour added this question. */
 export function tourWarmAnswer(fixture?: TourFixture): string | null {
   return fixture?.threads.find((t) => t.id === TOUR_THREAD)?.warmup_answer ?? null;
 }
@@ -677,7 +677,7 @@ export function pickDiffers(state: TourState, realAnswer: string): boolean {
   return state.picked !== null && state.picked !== realAnswer;
 }
 
-/** The warm-up's pick is not the real thread's answer. */
+/** The warm-up's pick is not the one the tour goes on with (the tour says so plainly; it never claims a real answer). */
 export function warmDiffers(state: TourState, warmReal: string | null): boolean {
   return state.warmPicked !== null && warmReal !== null && state.warmPicked !== warmReal;
 }
@@ -794,7 +794,7 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
       return {
         key: state.warmDelivered ? '2-delivered' : '2-sending',
         title: state.warmDelivered ? 'Delivered. Now watch.' : 'Sending…',
-        text: `In the real thread, ${agent} went to work on your answer.`,
+        text: `${agent} takes your answer as its next turn and goes to work.`,
         wait: true,
         target: state.warmDelivered ? 'delivered' : null,
       };

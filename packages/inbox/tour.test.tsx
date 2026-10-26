@@ -492,6 +492,41 @@ test.skipIf(!hasDom)('a sent question card, Mark read, Archive and an early Send
   expect(writes()).toEqual([]);
 }, 90_000);
 
+test.skipIf(!hasDom)('Fast-forward mid-replay leaves nothing stale; a second Send and New message after its Send are answered as they are', async () => {
+  const el = await openOnEntry();
+  await walkTo(el, 6);
+  // Everything the live region says from here on.
+  const said: string[] = [];
+  const live = document.querySelector('[data-inbox-live]')!;
+  const watch = new MutationObserver(() => said.push(live.textContent ?? ''));
+  watch.observe(live, { childList: true, characterData: true, subtree: true });
+  await click($(el, '[data-tour-reply]'));
+  await click($(el, '[data-tour-send]'));
+  await until(() => coachKey(el) === '7-sending', 'the replay running');
+  // A second press on Send lands on the foot's Reply: it is answered with where the reply is, not "not part of the tour".
+  await click($(el, '[data-tour-thread] .ib-pfoot button[aria-disabled="true"]'));
+  await until(() => ($(el, '[data-tour-nudge]')?.textContent ?? '').includes('on its way'), 'the reply on its way');
+  await click($(el, '[data-tour-forward]'));
+  await until(() => coachKey(el) === '8-open', 'step 7 fast-forwarded');
+  const from = said.length;
+  // Past the replay's own timings (5.6 s): its timers said and did nothing more.
+  await wait(6200);
+  watch.disconnect();
+  expect(said.slice(from).filter((s) => /Delivered|New message from/.test(s))).toEqual([]);
+  // The Fast-forward was said with the card it landed on, in one announcement.
+  expect(said.some((s) => s.startsWith('Fast-forwarded. Step 8 of 10.'))).toBe(true);
+  expect(coachKey(el)).toBe('8-open');
+  // Step 9 after its Send: New message says where the thread is.
+  await click($(el, '[data-tour-forward]'));
+  await until(() => coachKey(el) === '9', 'step 9');
+  await click($(el, '[data-tour-forward]'));
+  await until(() => coachKey(el) === '9-loop', 'the loop');
+  await click([...el.querySelectorAll<HTMLElement>('[data-open-compose]')][0]);
+  await until(() => ($(el, '[data-tour-nudge]')?.textContent ?? '').includes('Your thread is started'), 'New message after its Send');
+  expect(document.querySelector('[data-compose]')).toBeNull();
+  expect(writes()).toEqual([]);
+}, 120_000);
+
 test.skipIf(!hasDom)('Exit at every step, 1 to 10, gives the Inbox back; a pick other than the real answer is replayed as a fact', async () => {
   const el = await openOnEntry();
   for (const step of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
@@ -512,7 +547,8 @@ test.skipIf(!hasDom)('Exit at every step, 1 to 10, gives the Inbox back; a pick 
   await click(warmRadios(el)[1]);
   await click($(el, '[data-tour-warm-send]'));
   await until(() => $(el, '[data-tour-differs="warm"]') !== null, 'the warm-up’s note', 160);
-  expect($(el, '[data-tour-differs="warm"]')!.textContent).toBe('You picked Evaluate only, no mockups yet. In the real thread the answer was “Yes, start it”, so this is what Claude Code did.');
+  // The warm-up is the tour's own question (the real thread asked nothing then): its note never claims a real answer.
+  expect($(el, '[data-tour-differs="warm"]')!.textContent).toBe('You picked Evaluate only, no mockups yet. The tour goes on with the mockups, so you can see the pictures.');
   await until(() => radios(el).length === 4, 'the choices');
   await click(radios(el)[1]);
   await until(() => coachKey(el) === '4', 'step 4');

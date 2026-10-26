@@ -21,7 +21,7 @@ import type { Annotation, EditorMode, InputMethod } from '@plannotator/ui/types'
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { groupAnnotationsByDocument, type AnnotationScope } from '@plannotator/ui/utils/annotationScope';
 import { InboxApiError, type AttachmentView, type LinkedPageView } from '../api';
-import { useInboxFileSource } from '../fileSource';
+import { selectionOnPhrase, useInboxFileSource } from '../fileSource';
 import { folderOf, resolveInboxHtmlLink } from '../htmlLinks';
 import { htmlAssetRouteFromDocument } from '@plannotator/ui/utils/htmlLinkNavigation';
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
@@ -265,14 +265,10 @@ function scrollerOf(pane: HTMLElement | null): HTMLElement | null {
 
 /**
  * A comment box's suggestion (the tour's, FileSuggestion) for words selected in a text file: offered when
- * the selection is on the line that holds its phrase (a stray selection elsewhere opens an empty box).
+ * the selection is on its phrase (selectionOnPhrase); a stray selection, a single word of it included, opens an empty box.
  */
-export function suggestionFor(text: string, suggestion: { phrase?: string; comment: string }, selected: string): string | undefined {
-  const words = selected.replace(/\s+/g, ' ').trim();
-  if (!suggestion.phrase || !words) return undefined;
-  const line = text.split('\n').find((l) => l.includes(suggestion.phrase!)) ?? '';
-  const flat = line.replace(/[*_`]/g, '').replace(/\s+/g, ' ');
-  return words.includes(suggestion.phrase) || flat.includes(words) || flat.includes(words.slice(0, 40)) ? suggestion.comment : undefined;
+export function suggestionFor(_text: string, suggestion: { phrase?: string; comment: string }, selected: string): string | undefined {
+  return suggestion.phrase && selectionOnPhrase(suggestion.phrase, selected) ? suggestion.comment : undefined;
 }
 
 /** What the pane keeps per file until it closes: the version chosen, where it was read to, and the image's size. */

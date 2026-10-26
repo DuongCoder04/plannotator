@@ -66,7 +66,11 @@ export const inboxImageSrcResolver: ImageSrcResolver = (path, base) => {
   // Inbox's data dir, shown back by its file name only.
   const markup = INBOX_MARKUP_PATH_RE.exec(path);
   if (markup) return `/api/inbox/markups/${markup[1]}`;
-  if (path.startsWith(TOUR_MARKUP_BASE)) return tourMarkupUrl(path) ?? 'data:,';
+  // A drawing the person made in the tour (kept in memory only): never for a real message's body, and only while the tour holds it.
+  if (path.startsWith(TOUR_MARKUP_BASE) && !base?.startsWith(MESSAGE_BASE_PREFIX)) {
+    const kept = tourMarkupUrl(path);
+    if (kept) return kept;
+  }
   if (base === TOUR_IMAGE_BASE) {
     // A tour picture loads from the tour's read-only asset route; anything else in a tour message loads nothing.
     return TOUR_ASSET_RE.test(path) ? tourAssetUrl(path) : `/api/inbox/tour/assets/none`;
