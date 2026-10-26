@@ -475,6 +475,12 @@ export interface InboxDeliveryPresence {
   connection(session: string): InboxDeliveryConnection | null;
   /** Whether the session that asked is still there, with the sessions route's grace (`askerLive`). */
   askerLive(session: string): boolean;
+  /**
+   * Whether an item may not have reached its session though it was handed on
+   * (a Codex `codex queue` call that ran out of time): the row says it is
+   * saved for the agent's next read. Absent: never.
+   */
+  uncertain?(session: string, itemId: string): boolean;
   /** The server's wait before an item goes into a busy session's turn by itself (`INBOX_AUTO_SEND_AFTER_MS`). Absent: never. */
   autoSendAfterMs?: number;
   /**
@@ -1378,6 +1384,7 @@ export class InboxStore {
       return connection ? { busy: connection.busy, send_now: connection.send_now } : null;
     };
     const askerLive = (session: string): boolean => (presence ? presence.askerLive(session) : true);
+    const uncertain = (session: string | null, itemId: string): boolean => !!session && presence?.uncertain?.(session, itemId) === true;
     // How long it waited on a busy session, and whether it goes in by itself (approval "inbox-busy-agent-reply"):
     // the server's clock while it waits, the item's own record once the Inbox marked it.
     const waitOf = (item: InboxMessage, session: string | null) => {
@@ -1426,7 +1433,7 @@ export class InboxStore {
           delivered: !!last.delivery,
           undelivered: !last.delivery && !askerLive(lastTo.session),
           askerEnded: false,
-          wakes: true,
+          wakes: !uncertain(lastTo.session, last.id),
           sendingNow: !!last.deliver_now_at,
           connection,
           ...waitOf(last, lastTo.session),
@@ -1456,7 +1463,7 @@ export class InboxStore {
         delivered: !!deliveredAt,
         undelivered: false,
         askerEnded,
-        wakes: wakingSession !== null || (askedSession !== null && connection != null),
+        wakes: (wakingSession !== null || (askedSession !== null && connection != null)) && !uncertain(replySession, last.id),
         sendingNow: !!last.deliver_now_at,
         connection,
         ...waitOf(last, replySession),
@@ -4110,25 +4117,53 @@ export class InboxStore {
     const out: { message: InboxMessage; seq: number }[] = [];
     for (const message of this.messages.values()) {
       if (message.author.kind !== "person") continue;
-      const owner = this.isOwner(message, session);
-      const tag = owner ? null : tagOf(message, session);
-      if (tag) {
-        if (tag.delivery || options.tags === false) continue;
-        out.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
-        continue;
-      }
-      if (message.delivery || !owner) continue;
-      // A 👍 taken back before it went is never delivered.
-      if (isAckNote(message) && !this.ackNoteLive(message)) continue;
-      const seq = this.messageSeq.get(message.id) ?? 0;
-      // A New message, or a reply the person sent to another session, is
-      // settled only by its delivery to the session it names (its own
-      // wait_for_reply records one), never by another agent's read; so is a
-      // reply that tags agents.
-      if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) continue;
-      out.push({ message, seq });
+      if (this.pendingFor(message, session, options)) out.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
     }
     return out.sort((a, b) => a.seq - b.seq).map((entry) => entry.message);
+  }
+
+  /**
+   * `pendingReplies` for many sessions in ONE pass over the messages (the
+   * Codex wake, which delivers for every Codex thread itself): each session
+   * that has something waiting, with its items oldest first. A person's item
+   * is looked at only for its owner and the sessions it tags.
+   */
+  pendingRepliesFor(sessions: ReadonlySet<string>, options: { tags?: boolean } = {}): Map<string, InboxMessage[]> {
+    const found = new Map<string, { message: InboxMessage; seq: number }[]>();
+    if (sessions.size === 0) return new Map();
+    for (const message of this.messages.values()) {
+      if (message.author.kind !== "person") continue;
+      const candidates: string[] = [];
+      if (message.to) candidates.push(message.to.session);
+      else {
+        const asked = message.reply_to ? this.messages.get(message.reply_to) : undefined;
+        if (asked?.author.kind === "agent" && asked.author.session) candidates.push(asked.author.session);
+      }
+      for (const tag of message.tags ?? []) candidates.push(tag.session);
+      for (const session of new Set(candidates)) {
+        if (!sessions.has(session) || !this.pendingFor(message, session, options)) continue;
+        const list = found.get(session) ?? found.set(session, []).get(session)!;
+        list.push({ message, seq: this.messageSeq.get(message.id) ?? 0 });
+      }
+    }
+    return new Map([...found].map(([session, list]) => [session, list.sort((a, b) => a.seq - b.seq).map((entry) => entry.message)]));
+  }
+
+  /** Whether a person's `message` waits for `session` (the rules of `pendingReplies`). */
+  private pendingFor(message: InboxMessage, session: string, options: { tags?: boolean }): boolean {
+    const owner = this.isOwner(message, session);
+    const tag = owner ? null : tagOf(message, session);
+    if (tag) return !tag.delivery && options.tags !== false;
+    if (message.delivery || !owner) return false;
+    // A 👍 taken back before it went is never delivered.
+    if (isAckNote(message) && !this.ackNoteLive(message)) return false;
+    const seq = this.messageSeq.get(message.id) ?? 0;
+    // A New message, or a reply the person sent to another session, is
+    // settled only by its delivery to the session it names (its own
+    // wait_for_reply records one), never by another agent's read; so is a
+    // reply that tags agents.
+    if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
+    return true;
   }
 
   /**
@@ -4586,6 +4621,25 @@ export class InboxStore {
       if (!known || known.seq < seq) latest.set(message.author.session, { message, seq });
     }
     return new Map([...latest].map(([session, { message }]) => [session, message]));
+  }
+
+  /**
+   * The agent sessions on `host` the person's items can wake: sessions whose
+   * messages came through a waking connection (`wakes`), sessions a person's
+   * message is addressed to (`to`), and sessions a reply tags with a wake.
+   * One pass over the messages (the Codex wake builds its index from it once).
+   */
+  wakingSessionsOfHost(host: string): Set<string> {
+    const out = new Set<string>();
+    for (const message of this.messages.values()) {
+      if (message.author.kind === "agent") {
+        if (message.wakes === true && message.author.host === host && message.author.session) out.add(message.author.session);
+        continue;
+      }
+      if (message.to?.host === host) out.add(message.to.session);
+      for (const tag of message.tags ?? []) if (tag.host === host && tag.wakes) out.add(tag.session);
+    }
+    return out;
   }
 
   /** The thread each agent session last wrote in (any project): compose's "Last: <subject>". */
