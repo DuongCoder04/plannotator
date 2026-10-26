@@ -27,7 +27,7 @@ import { INBOX_SET_ASIDE_HEADING } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_ACTIONS_HEADING } from "@plannotator/core/inbox-actions";
 import { HARNESSES, harnessPanel, shellLine, type ConnectContext, type Harness } from "@plannotator/inbox/harnesses";
 import { join } from "node:path";
-import { INBOX_CONTRACT_EXAMPLE, INBOX_MCP_TOOLS, INBOX_SERVED_TOOLS, INBOX_WAIT_DEFAULT_MS, INBOX_WAIT_MAX_SECONDS } from "@plannotator/server/inbox-mcp";
+import { INBOX_CONTRACT_EXAMPLE, INBOX_DEFAULT_SERVED_TOOLS, INBOX_MCP_TOOLS, INBOX_SERVED_TOOLS, INBOX_WAIT_DEFAULT_MS, INBOX_WAIT_MAX_SECONDS } from "@plannotator/server/inbox-mcp";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
@@ -155,17 +155,17 @@ export const TOOL_GUIDE: Record<InboxMcpToolName, InboxToolGuide> = {
     ],
   },
   card: {
-    args: ["op", "card_id", "title", "column", "say", "you", "thread_id", "pr", "reason", "idempotency_key", "asked_by", "include_resolved"],
+    args: ["op", "card_id", "title", "column", "say", "you", "thread_id", "pr", "ref", "reason", "idempotency_key", "asked_by", "include_resolved"],
     lines: [
-      "Keep a card on the person's Board for work that outlasts the reply it was asked in: a lane or background task started, a PR opened, \"I'll send you X\". Not for a quick answer. Make it when you take such an ask, then keep it current with one short call at the moments you already note: work started, a PR opened, something sent to the person, waiting on them, shipped. The person reads the Board instead of asking each terminal where things are; each card shows how long ago anyone last wrote to it. A card is its own record: it never changes a thread or the person's list.",
+      "Keep a card on the person's Board for work that outlasts the reply it was asked in: a lane or background task started, a PR opened, \"I'll send you X\". Not for a quick answer. Make it when you take such an ask, then keep it current with one short call at the moments you already note: work started, a PR opened, something sent to the person, waiting on them, shipped. The person reads the Board instead of asking each terminal where things are; each card shows how long ago anyone last wrote to it. A card is its own record: it never changes a thread or the person's list. The Board is something the person turns on (Settings → General in the Inbox); while it is off the Inbox does not list `card`, and a call answers `board_off` and writes nothing. Turned on, agents get `card` in their next session.",
       "- `op`: `create`, `move`, `say`, `link`, `ship`, `drop` or `list`. Every op but create and list takes `card_id` (`crd_…`, from create or list); an op refuses a field it does not take.",
-      "- `column`: `asked` (nobody has started), `designing` (research, a plan, mocks, a sheet, options: anything that is not code), `your_look` (a non-code thing waits on the person: a sheet, options, questions, a triage call), `building` (code, or a PR not ready for them), `your_review` (code waits on the person: screenshots before a merge, a green PR to merge, a release go), `shipped` (merged or live, staging included), `dropped`. The stage is the kind of thing the next move makes: code, a PR or a release is building, anything else designing. Waiting on the person wins over work you keep doing beside it. Work you hold back yourself stays in its column, with the reason in `say`.",
+      "- `column`: `backlog` (not started: work you were asked to do and have not begun goes here, beside the person's own ideas; a backlog card is never a signal to start, the person tells you when), `designing` (research, a plan, mocks, a sheet, options: anything that is not code), `your_look` (a non-code thing waits on the person: a sheet, options, questions, a triage call), `building` (code, or a PR not ready for them), `your_review` (code waits on the person: screenshots before a merge, a green PR to merge, a release go), `shipped` (merged or live, staging included), `dropped`. The stage is the kind of thing the next move makes: code, a PR or a release is building, anything else designing. Waiting on the person wins over work you keep doing beside it. Work you hold back yourself stays in its column, with the reason in `say`.",
       "- `you`: what the person owes, one line, shown as \"You: …\" in your_look and your_review. Moving a card into either needs it; it is dropped when the card leaves them, and refused elsewhere. `say`: your last word, one line (\"lane running, sheet in ~1 h\"), shown in the other columns.",
-      "- create: `title`, or `thread_id` (a thread or message id of this project) to link it and take its subject as the title; `column` (default asked; a live column or shipped), `say`, `you`, `pr`, `idempotency_key` (the same key answers the first card). The card is your session's: list shows it as yours.",
-      "- move: `column`, with any of `say`, `you`, `pr` and `thread_id`; to dropped it needs `reason`. say: `say` and/or `you`, or `title` to rename. link: `thread_id` and/or `pr` (`owner/repo#123`, or a GitHub, GitLab or Bitbucket PR URL). Every write counts as hearing from the card.",
-      "- ship: when it is merged or live. A merged PR never moves a card by itself: ship it. Reported broken again: move it back to asked. drop: `reason` (required from you, one line); the Board shows the person your drop and its reason until they look, and they can restore it.",
+      "- create: `title`, or `thread_id` (a thread or message id of this project) to link it and take its subject as the title; `column` (default backlog; a live column or shipped), `say`, `you`, `pr`, `idempotency_key` (the same key answers the first card). The card is your session's: list shows it as yours.",
+      "- move: `column`, with any of `say`, `you`, `pr` and `thread_id`; to dropped it needs `reason`. say: `say` and/or `you`, or `title` to rename. link: `thread_id`, `pr` (`owner/repo#123`, or a GitHub, GitLab or Bitbucket PR URL) and/or `ref` (an issue or PR: `owner/repo#123`, or its GitHub or GitLab URL; move, create and ship take it too). The person sees each link's live state when they open the card; it never moves the card. Every write counts as hearing from the card.",
+      "- ship: when it is merged or live. A merged PR never moves a card by itself: ship it. Reported broken again: move it back to backlog. drop: `reason` (required from you, one line); the Board shows the person your drop and its reason until they look, and they can restore it.",
       "- list: your cards in this project (`asked_by: \"anyone\"` for every card here) in the live columns and the icebox; `include_resolved` adds shipped and dropped. One line each: id, title, column, `You:` or said, when it was last heard, dropped reason (and whether the person has seen your drop yet), threads, PRs, the agent it belongs to. Read it after a compaction or in a new session to pick your work back up.",
-      "- The icebox is the person's pause: you cannot put a card there or move one out of it (`card_icebox_person_only`, `card_iceboxed`), and only the person restores a card they dropped (`card_dropped_by_person`); you can still `say` and `link` on such a card. Leave an iceboxed card's work alone. A card or thread of another project is refused (`card_other_project`): pass that project's `project_path`.",
+      "- The icebox is the person's pause: you cannot put a card there or move one out of it (`card_icebox_person_only`, `card_iceboxed`), and only the person restores a card they dropped (`card_dropped_by_person`); you can still `say` and `link` on such a card. Leave an iceboxed card's work alone: nothing is sent to you about it and nothing moves it. A card or thread of another project is refused (`card_other_project`): pass that project's `project_path`.",
     ],
   },
 };
@@ -228,6 +228,12 @@ export interface InboxHelpOptions {
   platform?: ConnectContext["platform"];
   /** Where the agents' instructions files are (for the note section). Default: this process's home and environment. */
   agentEnvironment?: AgentEnvironment;
+  /**
+   * The person turned the Board on (config.json `inboxBoard`, read by the
+   * caller). Off (the default), the guide says nothing about cards: no `card`
+   * section and no Board bullet, as the Inbox serves no `card` action then.
+   */
+  board?: boolean;
 }
 
 export function inboxHelpPlatform(platform: NodeJS.Platform = process.platform): ConnectContext["platform"] {
@@ -241,6 +247,7 @@ function toolBlock(name: InboxMcpToolName): string[] {
 }
 
 export function formatInboxHelp(options: InboxHelpOptions): string {
+  const board = INBOX_CARD_ACTION_ON && options.board === true;
   const mcpCommand = [...options.command, "inbox", "mcp"];
   const mcp = shellLine(mcpCommand);
   const self = shellLine(options.command);
@@ -280,7 +287,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "- Long work you finished while the person was away: one short summary, with the files to look at in `attachments`.",
     "- A plan, document, HTML prototype or diagram the person should read and annotate (`attachments`).",
     "- A guided review of a finished code change (get_guide_brief, then submit_guide).",
-    ...(INBOX_CARD_ACTION_ON ? ["- Work that outlasts your reply (a lane, a PR, something you promised to send): a card on the person's Board (card), kept current as it moves."] : []),
+    ...(board ? ["- Work that outlasts your reply (a lane, a PR, something you promised to send): a card on the person's Board (card), kept current as it moves. Only while the person has the Board on."] : []),
     "",
     "Do not use it for:",
     "",
@@ -299,6 +306,10 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "Every call starts a stopped Inbox in the background, without a browser tab, so never run `plannotator inbox` just to send. Bare `plannotator inbox` is for the person: it opens the window.",
     "",
+    "## When the person asks where their Inbox is",
+    "",
+    `When the person asks where the Inbox is, or wants it back after closing its tab, run ${code(`${self} inbox --open`)}. It opens the window in their browser (starting the Inbox in the background when it is not running), prints the address on stdout and returns at once, so it never blocks your session. Tell them the address. They can also use their agent's \`/plannotator-inbox\` command (\`$plannotator-inbox\` in Codex), which runs the same thing. In a remote session (SSH) with no browser set, it opens no browser on the remote host: it prints the address and says how to reach it (\`ssh -L\` or \`--tailscale\`). To read the address without opening a tab, run ${code(`${self} inbox --background`)}: it prints the same URL. The address can change when the Inbox restarts, so read it again instead of reusing an old one.`,
+    "",
     "## Connecting yourself",
     "",
     "Set up the connection for the host you run in:",
@@ -315,8 +326,8 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "Agents ask, the person decides: no tool answers a question, approves or sends anything for the person. A refusal comes back as an error whose text starts with a code, `<code>: <message>`.",
     "",
-    // Every tool this Inbox serves (`card` only while INBOX_CARD_ACTION_ON lets it ship).
-    ...INBOX_SERVED_TOOLS.flatMap(toolBlock),
+    // Every tool this Inbox serves (`card` only while the Board is on and INBOX_CARD_ACTION_ON lets it ship).
+    ...(board ? INBOX_SERVED_TOOLS : INBOX_DEFAULT_SERVED_TOOLS).flatMap(toolBlock),
     "## Threads",
     "",
     "Where send_message (and submit_guide) puts a message; the first rule that applies wins:",
