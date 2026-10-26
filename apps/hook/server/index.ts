@@ -80,6 +80,7 @@ import { childEnv } from "@plannotator/shared/child-env";
 import {
   startPlannotatorServer as startPlannotatorServerUnguarded,
   handleServerReady,
+  setServerReadyTailnet,
   setServerReadyTarget,
 } from "@plannotator/server";
 import {
@@ -99,7 +100,7 @@ import {
   handleGoalSetupServerReady,
 } from "@plannotator/server/goal-setup";
 import { type DiffType, detectManagedVcs, prepareLocalReviewDiff, gitRuntime } from "@plannotator/server/vcs";
-import { loadConfig, resolveDefaultDiffType, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
+import { loadConfig, resolveAIEnabled, resolveDefaultDiffType, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
 import { formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory, type ParsedReviewArgs } from "@plannotator/shared/review-args";
 import { resolveReviewOpenState, type ReviewOpenState } from "@plannotator/shared/review-open-state";
 import { listBranches, type AvailableBranches } from "@plannotator/shared/review-core";
@@ -125,7 +126,8 @@ import { createWorktreePool, type WorktreePool, type PoolEntry } from "@plannota
 import { parsePRUrl, checkPRAuth, fetchPR, type PRAuthResult, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { announceTailscaleSession, enableTailscaleServe } from "@plannotator/server/tailscale-serve";
-import { discardEnvPullSessionBridgeConfig, takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
+import { takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
+import { readTailnetOwner, setSessionTailnetOwner, setSessionTailnetServedUrl } from "@plannotator/server/session-tailnet";
 import { scrubModSessionEnv } from "./mod-session-env";
 import { resolveAnnotateTarget } from "./annotate-resolution";
 import { annotateDecisionTarget, reviewDecisionTarget, takeHostReviewId, targetText } from "./decision-target";
@@ -400,11 +402,12 @@ if (tailscaleFlag) {
   // suppresses a config-file urlHost, avoiding the misleading
   // "set PLANNOTATOR_REMOTE=1" local-session warning mid --tailscale run.
   process.env.PLANNOTATOR_URL_HOST = "";
-  // "Ask this session" stays off in a tailnet-published session, as it is in
-  // remote mode: the session is reachable from other devices. Taking the
-  // host's bridge config here discards it for the whole process (a plain
-  // take would only cache it for createAIRuntime to serve anyway).
-  discardEnvPullSessionBridgeConfig();
+  // "Ask this session" stays ON (#2166): the host's bridge config is kept
+  // (taken at the top of this file), and the servers answer it only for a tab
+  // on this machine and for the Tailscale login that owns it
+  // (packages/server/session-tailnet.ts). Everyone else on the tailnet gets
+  // the review and Ask AI through the SDKs, as before. Remote mode is
+  // unchanged: it still turns the bridge off.
 }
 
 /**
@@ -426,6 +429,21 @@ if (tailscaleFlag) {
  * annotate subcommand, so review sessions always take the exit-1 leg).
  */
 async function handleTailscaleReady(port: number): Promise<void> {
+  // A host handed this CLI an "Ask this session" bridge: say who may use it
+  // over the tailnet (the owner of this machine) before the address exists.
+  // A plain `--tailscale` run (no bridge) asks Tailscale nothing more.
+  const bridged = resolveAIEnabled() && takeEnvPullSessionBridgeConfig() !== undefined;
+  let askOverTailnet = false;
+  if (bridged) {
+    const owner = readTailnetOwner();
+    setSessionTailnetOwner(owner.login);
+    askOverTailnet = owner.login !== null;
+    process.stderr.write(
+      owner.login !== null
+        ? `[plannotator] Ask this session: on here, and over your tailnet for ${owner.login} only.\n`
+        : `[plannotator] Ask this session: on this computer only (${owner.reason}); other devices get Ask AI without it.\n`,
+    );
+  }
   let url: string;
   try {
     ({ url } = enableTailscaleServe(port));
@@ -438,6 +456,8 @@ async function handleTailscaleReady(port: number): Promise<void> {
       }),
     );
   }
+  setSessionTailnetServedUrl(url);
+  setServerReadyTailnet({ ask: askOverTailnet });
   await announceTailscaleSession(url, port);
 }
 

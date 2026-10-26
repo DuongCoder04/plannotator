@@ -68,7 +68,7 @@
  */
 
 import { PlannotatorMod } from './controller'
-import { resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderEnabled, resolveInboxToolEnabled } from './enabled'
+import { resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderCustom, resolveInboxReminderEnabled, resolveInboxToolEnabled } from './enabled'
 import type { Host, LoadedPluginInfo } from './host'
 import {
   discoverInboxTools,
@@ -83,12 +83,12 @@ import {
   STORE_INBOX_REMINDER_CONTEXT_WORKS,
   withInboxReminder,
 } from './inbox'
-import { inboxAgentTool, inboxReminderText, type InboxToolInfo } from './inbox-contract'
+import { inboxAgentTool, inboxReminderFor, type InboxToolInfo } from './inbox-contract'
 import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
 import { COMMANDS, dataDirOf, debugAppendArgv, isModCommand, waitArgv } from './launch'
 import { PLAN_TOOL } from './plan'
 import { answerShellCall, SHELL_TOOL, shellTakeOver } from './take-over'
-import { PLANNOTATOR_TOOL_DESCRIPTION, PLANNOTATOR_TOOL_INPUT_SCHEMA, PLANNOTATOR_TOOL_NAME } from './tool'
+import { PLANNOTATOR_TOOL_NAME, PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION, PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA } from './tool'
 
 // Minimal local types: the engine's declarations are written by `/plugin-types`
 // and not vendored here.
@@ -249,6 +249,8 @@ interface Allowed {
   inboxTool: boolean
   /** With the Inbox tool: the one-line reminder at the start of each conversation (`inboxReminder`, on by default). */
   inboxReminder: boolean
+  /** The person's own reminder text (config.json `prompts.inbox`), or null: the built-in line. */
+  inboxReminderCustom: string | null
 }
 
 // One plugin instance per Claude Code process.
@@ -419,6 +421,7 @@ async function resolveAllowed($: Engine, e: { isInteractive?: unknown }): Promis
     agentTool: resolveAgentToolEnabled(await $.env.get('PLANNOTATOR_AGENT_TOOL'), configText),
     inboxTool: resolveInboxToolEnabled(await $.env.get('PLANNOTATOR_INBOX_TOOL'), configText),
     inboxReminder: resolveInboxReminderEnabled(await $.env.get('PLANNOTATOR_INBOX_TOOL'), configText),
+    inboxReminderCustom: resolveInboxReminderCustom(configText),
   }
 }
 
@@ -445,9 +448,10 @@ let toolName: string | null = null
 async function registerTool($: Engine): Promise<void> {
   try {
     const registered = await $.tool.register({
+      // The tailscale variant: the mod's CLI launch can publish over the tailnet (#2166).
       name: PLANNOTATOR_TOOL_NAME,
-      description: PLANNOTATOR_TOOL_DESCRIPTION,
-      inputSchema: PLANNOTATOR_TOOL_INPUT_SCHEMA,
+      description: PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION,
+      inputSchema: PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA,
     })
     toolName = registered && typeof registered.tool === 'string' ? registered.tool : null
   } catch (error) {
@@ -501,7 +505,7 @@ export function register(on: On) {
       // holds it again whether or not prompt.context reaches this mod. Unset
       // when the reminder is off (a value inherited from a parent Claude Code
       // must not speak for this session).
-      await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName))).catch(() => undefined)
+      await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName, allowed.inboxReminderCustom))).catch(() => undefined)
     } finally {
       // Decided (or inert): prompt.context, which the engine may already be
       // running, adds the block now, without waiting for the commands and tools below.
@@ -537,7 +541,7 @@ export function register(on: On) {
     const decided = await reminderGateDecided($)
     if (decided === false) return next(e)
     const toolName = decided ? inboxToolName : null
-    const result = toolName ? await next({ ...e, blocks: withInboxReminder(Array.isArray(e.blocks) ? e.blocks : [], toolName) }) : await next(e)
+    const result = toolName ? await next({ ...e, blocks: withInboxReminder(Array.isArray(e.blocks) ? e.blocks : [], toolName, allowed?.inboxReminderCustom ?? null) }) : await next(e)
     try {
       const state = reminderConversation(String(await $.session.id()))
       state.contextRan = true
@@ -661,7 +665,7 @@ export function register(on: On) {
           command: !!e.command,
         })
         if (copy) {
-          entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), inboxReminderText(inboxToolName)] }
+          entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), inboxReminderFor(allowed?.inboxReminderCustom ?? null, inboxToolName)] }
           reminderFor = state
         }
       } catch {

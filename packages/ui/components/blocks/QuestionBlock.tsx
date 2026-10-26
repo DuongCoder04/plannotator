@@ -103,6 +103,7 @@ const Tag: React.FC<{ tone: 'rec' | 'ok' | 'skip' | 'open' | 'warn'; children: R
     )}
     style={style}
     data-pinpoint-ignore=""
+    data-question-tag={tone}
   >
     {children}
   </span>
@@ -602,7 +603,9 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
     && question.kind !== 'text'
     && pictures.some((url) => url !== null && !failedPictures.has(url));
   const recommendedLabels = question.choices.filter((c) => c.recommended).map((c) => c.label);
-  const showsSrc = question.shows?.kind === 'image' ? pictureSrc(question.shows.src) : null;
+  const showsUrl = question.shows?.kind === 'image' ? pictureSrc(question.shows.src) : null;
+  // A `Shows:` picture that failed to load is its label, as a picture tile's is.
+  const showsSrc = showsUrl !== null && !failedPictures.has(showsUrl) ? showsUrl : null;
 
   // A `Decision: when answered` question the host may switch off, or (with
   // `decisionScope: 'any'`) any other question once the host supplies a
@@ -756,6 +759,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                   data-question-picture=""
                   data-zoomable=""
                   data-image-src={question.shows.src}
+                  onError={() => markPictureFailed(showsSrc)}
                 />
                 <span className="truncate">{question.shows.label || 'Picture'}</span>
               </button>

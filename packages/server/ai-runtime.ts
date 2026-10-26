@@ -17,7 +17,9 @@ import {
 } from "@plannotator/ai";
 import { resolveWindowsCommandShim } from "@plannotator/ai/providers/command-path";
 import { isLoopbackHostHeader } from "@plannotator/shared/loopback-host";
+import { cameThroughTailscale } from "@plannotator/shared/tailnet-audience";
 import { isRemoteSession } from "./remote";
+import type { SessionTailnetGate } from "./session-tailnet";
 
 export interface AIRuntime {
   endpoints: AIEndpoints;
@@ -52,6 +54,16 @@ interface CreateAIRuntimeOptions {
    * in-process bridge, it is then the only Ask AI provider.
    */
   pullSessionBridge?: PullSessionBridgeConfig | null;
+  /**
+   * A session published with `--tailscale` (#2166): who sent each request
+   * (session-tailnet.ts). With a bridge, a tab on this machine and the
+   * owner's tab through `tailscale serve` get "Ask this session"; every other
+   * tailnet request is answered by a second set of endpoints over the SDK
+   * providers only (what a `--tailscale` session always served), with its own
+   * sessions, and the bridge's poll answers this machine only. Without a
+   * bridge it changes nothing. Absent: every request is treated as today.
+   */
+  tailnet?: SessionTailnetGate;
 }
 
 let envPullBridgeTaken = false;
@@ -116,8 +128,9 @@ export function agentToolHostForServer(
 
 /**
  * Take the pull-bridge config from the environment and throw it away, so no
- * later `createAIRuntime` in this process serves it (a `--tailscale` session
- * is reachable from other devices, like remote mode). Also scrubs the env.
+ * later `createAIRuntime` in this process serves it. Also scrubs the env.
+ * (`--tailscale` used to call it; it now keeps the bridge for this machine
+ * and the owner's Tailscale login, see session-tailnet.ts.)
  */
 export function discardEnvPullSessionBridgeConfig(): void {
   takeEnvPullSessionBridgeConfig();
@@ -231,24 +244,69 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
   if (bridgeProvider) registry.register(bridgeProvider, SESSION_BRIDGE_PROVIDER_NAME);
   await registerSdkProviders(catalogRegistry ?? registry);
 
+  // This machine only. A request that came through Tailscale never counts,
+  // even in a session that was never published: a `--bg` serve mapping a
+  // crashed `--tailscale` session left behind can point at a later local
+  // session on the same port.
+  const localBridgeRequest = (req: Request) =>
+    isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.()) && !cameThroughTailscale(req.headers);
+  // A tailnet-published session with a bridge: who may ask the agent session
+  // is decided per request. Without one (or without a bridge) the guard is
+  // exactly the local one.
+  const tailnet = bridgeProvider ? options.tailnet : undefined;
+  const servedPullBridge = pullBridge
+    ? {
+        // The host's own channel: this machine only, whatever Host is claimed.
+        handle: (req: Request) =>
+          (tailnet ? tailnet.audience(req) === "local" : !cameThroughTailscale(req.headers))
+            ? pullBridge.handle(req)
+            : Promise.resolve(Response.json({ error: "Not found" }, { status: 404 })),
+      }
+    : null;
+
   const endpoints = createAIEndpoints({
     registry,
     ...(catalogRegistry ? { catalogRegistry } : {}),
     sessionManager,
     getCwd: options.getCwd,
     beforeProviderSession: discovery.beforeProviderSession,
-    authorizeSessionBridgeRequest: (req) =>
-      isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.()),
-    ...(pullBridge ? { pullBridge } : {}),
+    authorizeSessionBridgeRequest: tailnet ? (req) => tailnet.askAllowed(req, localBridgeRequest) : localBridgeRequest,
+    ...(servedPullBridge ? { pullBridge: servedPullBridge } : {}),
   });
 
+  // Everyone else on the tailnet: the SDK providers as the Ask AI providers
+  // (what `--tailscale` served before it kept the bridge), with sessions of
+  // their own so no id of the owner's reaches them, and no bridge at all.
+  const peerSessionManager = tailnet && catalogRegistry ? new SessionManager() : null;
+  const peerEndpoints =
+    tailnet && catalogRegistry && peerSessionManager
+      ? createAIEndpoints({
+          registry: catalogRegistry,
+          sessionManager: peerSessionManager,
+          getCwd: options.getCwd,
+          beforeProviderSession: discovery.beforeProviderSession,
+          authorizeSessionBridgeRequest: () => false,
+        })
+      : null;
+
+  const served: AIEndpoints =
+    tailnet && peerEndpoints
+      ? (Object.fromEntries(
+          (Object.keys(endpoints) as (keyof AIEndpoints)[]).map((path) => [
+            path,
+            (req: Request) => (tailnet.audience(req) === "peer" ? peerEndpoints[path](req) : endpoints[path](req)),
+          ]),
+        ) as AIEndpoints)
+      : endpoints;
+
   return {
-    endpoints,
+    endpoints: served,
     dispose: () => {
       // Detach first: tearing the sessions down must not stop a turn the
       // session is already running for us (the decision goes to that session).
       bridgeProvider?.detach();
       sessionManager.disposeAll();
+      peerSessionManager?.disposeAll();
       registry.disposeAll();
       catalogRegistry?.disposeAll();
       pullBridge?.dispose();

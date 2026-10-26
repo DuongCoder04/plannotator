@@ -1362,6 +1362,10 @@ export const BRIDGE_SCRIPT = `(function() {
     return pinpointBoxEl;
   }
   function positionPinpointBox(el) {
+    if (pendingPinHidden(el)) {
+      if (pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+      return;
+    }
     var r = el.getBoundingClientRect();
     var box = getPinpointBoxEl();
     box.style.display = 'block';
@@ -1515,6 +1519,8 @@ export const BRIDGE_SCRIPT = `(function() {
       if (annotateModeActive && currentInputMethod !== 'pinpoint' && lastPointer && !pendingPinEl && !pendingSelection) {
         setHoverHighlight(committedHighlightIdAtCached(lastPointer.x, lastPointer.y));
       }
+      // Before the boxes: it may re-find a replaced target they then follow.
+      reconcilePendingPinVisibility();
       positionMultiTargetBoxes();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
@@ -3507,7 +3513,91 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   }
 
+  // A draft's composer hides with its target and keeps the draft: a slide the
+  // page hid (display:none, visibility:hidden, no box) is not a scroll-out.
+  // Offscreen targets stay visible to support roaming multi-select. A target
+  // the page REPLACED with a new element (a framework re-render, a live-app
+  // route change) is found again through its anchor, the way restore re-finds
+  // committed targets; one that cannot be found keeps the composer visible,
+  // so a draft is never left where nobody can reach it.
+  var pendingPinVisible = true;
+  var pendingPinSearchGen = 0;
+  function pendingPinHidden(el) {
+    if (!el || !el.isConnected) return false;
+    if (targetStyleHidden(el)) return true;
+    var rect = el.getBoundingClientRect();
+    return layoutActive() && !rect.width && !rect.height;
+  }
+
+  function refindPendingTarget(anchor, taken) {
+    var found = resolveAnchorElement(anchor);
+    if (!found || isViewerOverlayNode(found)) return null;
+    for (var i = 0; i < taken.length; i++) if (taken[i] === found) return null;
+    return found;
+  }
+
+  // Re-find detached draft targets, once per DOM generation each. Returns
+  // whether the primary moved to a new element.
+  function refreshPendingTargets() {
+    var taken = [pendingPinEl];
+    for (var t = 0; t < pendingMultiTargets.length; t++) taken.push(pendingMultiTargets[t].el);
+    var moved = false;
+    if (pendingPinEl && !pendingPinEl.isConnected && pendingPinAnchor && pendingPinSearchGen !== domGeneration) {
+      pendingPinSearchGen = domGeneration;
+      var found = refindPendingTarget(pendingPinAnchor, taken);
+      if (found) {
+        pendingPinEl = found;
+        // The text range belonged to the replaced element: commit as an
+        // element pin on the new one (as a promoted primary does).
+        if (pendingRange && !rangeAlive(pendingRange)) pendingRange = null;
+        if (pendingSelection && pendingSelection.startContainerPath) {
+          pendingSelection = { element: true, text: pendingSelection.text };
+        }
+        moved = true;
+      }
+    }
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      var entry = pendingMultiTargets[i];
+      if (!entry.el || entry.el.isConnected || !entry.anchor || entry.searchGen === domGeneration) continue;
+      entry.searchGen = domGeneration;
+      var next = refindPendingTarget(entry.anchor, taken);
+      if (next) { entry.el = next; taken.push(next); }
+    }
+    return moved;
+  }
+
+  // Re-anchor the parent's composer on the pin (it cannot see the page).
+  function postPendingPinRect() {
+    if (!pendingSelection || !pendingPinEl || !pendingPinEl.isConnected) return;
+    var tracked = pendingRange && rangeAlive(pendingRange) ? pendingRange : pendingPinEl;
+    var r = tracked.getBoundingClientRect();
+    postToParent({
+      type: PREFIX + 'selection-rect',
+      rect: { top: r.top, left: r.left, width: r.width, height: r.height }
+    });
+  }
+
+  function reconcilePendingPinVisibility() {
+    if (!pendingPinEl) return;
+    var moved = refreshPendingTargets();
+    var visible = !pendingPinHidden(pendingPinEl);
+    for (var i = 0; !visible && i < pendingMultiTargets.length; i++) {
+      visible = !pendingPinHidden(pendingMultiTargets[i].el);
+    }
+    // A detached primary has no geometry: never leave its outline behind.
+    if (!pendingPinEl.isConnected && pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+    var shown = visible && !pendingPinVisible;
+    if (visible !== pendingPinVisible) {
+      pendingPinVisible = visible;
+      postToParent({ type: PREFIX + 'pin-visibility', visible: visible });
+      if (!visible && pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+    }
+    if (visible && (moved || shown)) postPendingPinRect();
+  }
+
   function clearPendingPin() {
+    pendingPinVisible = true;
+    pendingPinSearchGen = 0;
     pendingPinEl = null;
     pendingPinContext = null;
     pendingPinAnchor = null;
@@ -3563,6 +3653,7 @@ export const BRIDGE_SCRIPT = `(function() {
   }
 
   function positionBoxToEl(box, el) {
+    if (pendingPinHidden(el)) { box.style.display = 'none'; return; }
     var r = el.getBoundingClientRect();
     box.style.display = 'block';
     box.style.left = r.left + 'px';
@@ -3694,6 +3785,7 @@ export const BRIDGE_SCRIPT = `(function() {
    */
   function removeMultiTargetByKey(key, echo) {
     if (!key) return;
+    schedulePinpointReconcile();
     if (key === pendingPinKey) {
       if (!pendingMultiTargets.length) {
         // Last target gone — the draft is cancelled.
@@ -3710,6 +3802,7 @@ export const BRIDGE_SCRIPT = `(function() {
       var next = pendingMultiTargets.shift();
       destroyMultiTargetBox(next.box);
       pendingPinEl = next.el;
+      pendingPinSearchGen = 0;
       pendingPinAnchor = next.anchor;
       pendingPinKey = next.key;
       pendingPinLabel = next.label;
@@ -3777,6 +3870,7 @@ export const BRIDGE_SCRIPT = `(function() {
     var key = makeTargetKey();
     var box = createMultiTargetBox(el);
     pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, point: point, context: context, box: box });
+    schedulePinpointReconcile();
     postToParent({
       type: PREFIX + 'multi-target-added',
       key: key,
@@ -3911,6 +4005,8 @@ export const BRIDGE_SCRIPT = `(function() {
     multiSelectArmed = false;
     multiSelectMax = MAX_MULTI_TARGETS;
     pendingPinEl = el;
+    pendingPinVisible = true;
+    pendingPinSearchGen = 0;
     pendingPinAnchor = buildElementAnchor(el);
     pendingPinKey = makeTargetKey();
     pendingPinLabel = pinpointHoverLabel(el);
