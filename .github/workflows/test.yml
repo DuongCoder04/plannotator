@@ -203,6 +203,7 @@ jobs:
           packages/inbox/archived.test.tsx
           packages/inbox/openStaysPut.test.tsx
           packages/inbox/clickToRefresh.test.tsx
+          packages/inbox/pullToRefresh.test.tsx
           packages/inbox/threadReadRetry.test.tsx
           packages/inbox/tabCountWindow.test.tsx
           packages/inbox/phoneList.test.tsx
