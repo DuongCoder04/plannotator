@@ -140,7 +140,7 @@ function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
   }
   return (
     <>
-      {[...groups.values()].map((group) => {
+      {[...groups.entries()].map(([key, group]) => {
         const o = group[0]!.outdated!;
         const runtime = o.runtime!;
         const name = RUNTIME_LABEL[runtime];
@@ -156,7 +156,7 @@ function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
             : `in each of these ${n} ${name} sessions`;
         const what = runtime === 'opencode' ? "Plannotator's OpenCode plugin" : "Plannotator's extension";
         return (
-          <div className="ib-rl" data-reload-sessions={runtime} key={`${runtime}-${reload.command}`}>
+          <div className="ib-rl" data-reload-sessions={runtime} key={key}>
             <ReloadLead where={where} updateCommand={o.fix === 'update_extension' ? (o.update_command ?? null) : null} reload={reload} what={what} />
             {runtime === 'opencode' && (
               <p className="ib-rl-manual" data-opencode-quit-note="">

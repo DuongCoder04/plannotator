@@ -70,6 +70,12 @@
  * stdin line `{ "poll": { session, body } }` is that session's connection
  * polling the bridge with `body`'s fields (`plugin`, `busy`, `send_now`...);
  * the server answers `{ "polled": true }`.
+ * With `reload-hosts` (owner approval "reload-hosts"): the same Inbox 0.28.25
+ * and scratch registry as `restart`, and each project also gets three threads
+ * a waking Pi (`ses_pi<i>`), Oh My Pi (`ses_omp<i>`, host `pi`) and OpenCode
+ * (`ses_oc<i>`) session asked in and the person replied to; the world adds
+ * `hosts: { pi, omp, opencode }`, each `{ thread, session }`. A `poll` line's
+ * `body.host` names the host the connection polls as.
  *
  * With `guide` (approval "inbox-guide-diff-style"), each project also gets a
  * thread whose agent sent a guided review of two sections (two files each
@@ -244,7 +250,8 @@ if (decisionsMode) {
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { decisionMode: true } }));
 }
-const restartMode = extra === "restart";
+const reloadHostsMode = extra === "reload-hosts";
+const restartMode = extra === "restart" || reloadHostsMode;
 const claudeDir = join(dataDir, "claude");
 const pluginFolder = (version: string) => join(claudeDir, "plugins", "cache", "plannotator", "plannotator", version);
 if (restartMode) {
@@ -324,6 +331,7 @@ type World = {
   openIn?: { thread: string; ids: Record<string, string> };
   htmlLinks?: { thread: string; ids: Record<string, string> };
   restart?: { thread: string; session: string; project: string; installPath: string; oldPath: string };
+  hosts?: Record<"pi" | "omp" | "opencode", { thread: string; session: string }>;
   leaked?: string;
   guide?: { thread: string; message: string };
   artifacts?: { thread: string; ids: Record<string, string>; guide: string };
@@ -560,6 +568,16 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
     store.sendReply(asked.id, { idempotency_key: `restart-${i}`, words: "Queue it. Cap retries at 5 and dead-letter after." });
     restart = { thread: asked.id, session, project: root, installPath: pluginFolder("0.28.25"), oldPath: pluginFolder("0.28.23") };
   }
+  let hosts: World["hosts"];
+  if (reloadHostsMode) {
+    const ask = (key: string, host: string, name: string) => {
+      const session = `ses_${key}${i}`;
+      const asked = store.sendMessage({ project_id: project.id, author: { kind: "agent", host, session, name }, body: `${name}: the export runs nightly now. Anything else?`, wakes: true }).message;
+      store.sendReply(asked.id, { idempotency_key: `reload-${key}-${i}`, words: "Add a dry run flag." });
+      return { thread: asked.id, session };
+    };
+    hosts = { pi: ask("pi", "pi", "Pi"), omp: ask("omp", "pi", "Oh My Pi"), opencode: ask("oc", "opencode", "OpenCode") };
+  }
   let guide: World["guide"];
   if (extra === "guide") {
     const client = new Client({ name: "inbox-dom-server", version: "1.0.0" });
@@ -621,6 +639,7 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
     ...(guide ? { guide } : {}),
     ...(htmlLinks ? { htmlLinks } : {}),
     ...(restart ? { restart } : {}),
+    ...(hosts ? { hosts } : {}),
     ...(leakedIds[i] ? { leaked: leakedIds[i] } : {}),
     ...(openIn ? { openIn } : {}),
     ...(files ? { files } : {}),

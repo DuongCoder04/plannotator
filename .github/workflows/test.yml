@@ -184,6 +184,7 @@ jobs:
           packages/inbox/undelivered.test.tsx
           packages/inbox/tagAgents.test.tsx
           packages/inbox/restartWarning.test.tsx
+          packages/inbox/reloadHosts.test.tsx
           packages/inbox/pasteFiles.test.tsx
           packages/inbox/markRead.test.tsx
           packages/inbox/ack.test.tsx
