@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { INBOX_REMINDER_TEXT, INBOX_REMINDER_TEXT_NO_WAKE } from "@plannotator/shared/inbox/connection";
 import { addInboxReminder, openCode2InboxReminder } from "./server";
+import { addInboxReminderOpenCode1, inboxReminderAlreadyAdded } from "./inbox";
 
 const agents = async () => [
   { name: "build", mode: "primary" },
@@ -63,6 +64,40 @@ describe("addInboxReminder", () => {
     await addInboxReminder(event, agents, openCode2InboxReminder(wake, custom as never));
     expect(event.system[0]!.text).toContain("Ask upstream first.");
     expect(event.system[0]!.text).not.toContain(INBOX_REMINDER_TEXT);
+  });
+
+  // A short custom text the prompt already holds elsewhere ("Be concise.") is still added, once, at the end;
+  // the built-in line keeps today's rule (found anywhere: not added again).
+  test("a short custom text the prompt already contains is added once at the end; the built-in line keeps its check", async () => {
+    const custom = "Be concise.";
+    const event = request("build", undefined, "You are OpenCode. Be concise.");
+    await addInboxReminder(event, agents, custom);
+    expect(event.system).toEqual([{ type: "text", text: "You are OpenCode. Be concise.\n\nBe concise." }]);
+    await addInboxReminder(event, agents, custom);
+    expect(event.system).toEqual([{ type: "text", text: "You are OpenCode. Be concise.\n\nBe concise." }]);
+    const next = request("build", undefined, "You are OpenCode. Be concise.");
+    await addInboxReminder(next, agents, custom);
+    expect(next.system).toEqual(event.system);
+
+    const quoted = request("build", undefined, `You are OpenCode.\n\nNotes: ${INBOX_REMINDER_TEXT}\n\nMore.`);
+    const before = JSON.stringify(quoted.system);
+    await addInboxReminder(quoted, agents);
+    expect(JSON.stringify(quoted.system)).toBe(before);
+  });
+
+  test("OpenCode 1: the same rule on the last system part", () => {
+    const parts = ["You are OpenCode. Be concise."];
+    addInboxReminderOpenCode1(parts, "Be concise.");
+    expect(parts).toEqual(["You are OpenCode. Be concise.\n\nBe concise."]);
+    addInboxReminderOpenCode1(parts, "Be concise.");
+    expect(parts).toEqual(["You are OpenCode. Be concise.\n\nBe concise."]);
+    const alone = ["A", "Be concise."];
+    addInboxReminderOpenCode1(alone, "Be concise.");
+    expect(alone).toEqual(["A", "Be concise."]);
+    const quoted = [`You are OpenCode.\n\nNotes: ${INBOX_REMINDER_TEXT_NO_WAKE}\n\nMore.`];
+    addInboxReminderOpenCode1(quoted);
+    expect(quoted).toEqual([`You are OpenCode.\n\nNotes: ${INBOX_REMINDER_TEXT_NO_WAKE}\n\nMore.`]);
+    expect(inboxReminderAlreadyAdded([], "x")).toBe(false);
   });
 
   test("no line without the tool, for a subagent, or on a title request", async () => {

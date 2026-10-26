@@ -167,8 +167,8 @@ export function resolveInboxReminderEnabled(inboxToolEnv: string | undefined, co
  * `prompts.inbox.reminder`), or null when none is usable (the built-in line
  * then goes, byte for byte as before). `inboxReminderFor(custom, toolName)`
  * makes the line. Mirrors `resolveInboxReminderText(config, 'claude-code', {
- * toolName })` in packages/shared/config.ts (enabled.test.ts keeps the two
- * equal). Read once, at the first session.start, with the switch.
+ * toolName })` in packages/shared/config.ts (inbox-reminder-custom.test.ts
+ * keeps the two equal). Read once, at the first session.start, with the switch.
  */
 export function resolveInboxReminderCustom(configText: string | null | undefined): string | null {
   if (!configText) return null

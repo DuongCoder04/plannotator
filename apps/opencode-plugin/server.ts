@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadConfig, resolveAgentTool, resolveInboxReminder, resolveInboxReminderText, resolveSharingEnabled, type PlannotatorConfig } from "@plannotator/shared/config";
-import { INBOX_REMINDER_TEXT, INBOX_TOOL_NAME } from "@plannotator/shared/inbox/connection";
+import { INBOX_REMINDER_TEXT, INBOX_REMINDER_TEXT_NO_WAKE, INBOX_TOOL_NAME } from "@plannotator/shared/inbox/connection";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
 import { composeSystemPrompt, stripConflictingPlanModeRules } from "./plan-mode";
@@ -44,7 +44,7 @@ import type { SessionBridge } from "@plannotator/ai/session-bridge";
 import { createOpenCodeSessionBridge, markPlanReviewPending } from "./opencode-session-bridge";
 import type { PlanEdit } from "./plan-edits";
 import { getPlanningPrompt } from "./planning-prompt";
-import { dropInboxDuplicates, findInboxConnection, registerInboxOpenCode2, type InboxToolDomainLike } from "./inbox";
+import { dropInboxDuplicates, findInboxConnection, inboxReminderAlreadyAdded, registerInboxOpenCode2, type InboxToolDomainLike } from "./inbox";
 
 const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600;
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -212,8 +212,9 @@ const serverPlugin = {
       // answer: OpenCode 2 applies a tool transform lazily, per request, so
       // that answer is still false here; `addInboxReminder` checks each
       // request's own tool list instead.
-      const inboxConfig = loadConfig();
-      if (inboxFound && hasSessionHooks && resolveInboxReminder(inboxConfig, process.env, "opencode")) {
+      // config.json is read only once the Inbox was found, with the hooks to carry the line.
+      const inboxConfig = inboxFound && hasSessionHooks ? loadConfig() : null;
+      if (inboxConfig && resolveInboxReminder(inboxConfig, process.env, "opencode")) {
         try {
           // A host without session.prompt registers the tool without the wake
           // (registerInboxOpenCode2): its line names wait_for_reply instead.
@@ -689,7 +690,11 @@ export async function addInboxReminder(
   if (systemText.includes("title generator") || systemText.includes("generate a title")) return;
   const agent = (await getAgents()).find((candidate) => candidate.name === event.agent);
   if (agent?.mode === "subagent") return;
-  if (systemText.includes(reminder.toLowerCase())) return;
+  // The built-in lines: found anywhere, as always. A person's own text (#2194):
+  // only as the end of the composed part, so a short one the prompt happens to
+  // contain is still added, and the part stays the same from request to request.
+  const builtIn = reminder === INBOX_REMINDER_TEXT || reminder === INBOX_REMINDER_TEXT_NO_WAKE;
+  if (builtIn ? systemText.includes(reminder.toLowerCase()) : inboxReminderAlreadyAdded(event.system.map((part) => part.text), reminder)) return;
   pushComposedSystemReminder(event.system, reminder);
 }
 
