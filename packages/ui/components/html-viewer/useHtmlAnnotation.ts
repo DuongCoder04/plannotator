@@ -9,6 +9,7 @@ import type {
   UseAnnotationHighlighterReturn,
 } from "../../hooks/useAnnotationHighlighter";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridge-script";
+import { copyRichTextToClipboard, MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml } from "../../utils/richClipboard";
 import {
   parseHtmlElementContext,
   MAX_ELEMENT_CONTEXT_BYTES,
@@ -90,6 +91,10 @@ interface BridgeSelectionMessage {
   targetLabel?: string;
   /** Agent-facing element description (pinpoint clicks) — validated, size-capped. */
   context?: HtmlElementContext;
+  /** Cloned selection markup, sanitized again by the trusted parent. */
+  html?: string;
+  /** Exact range text for clipboard use, not the capped annotation quote. */
+  clipboardText?: string;
 }
 
 /** One draft target in an in-flight multi-select comment. Index 0 is primary. */
@@ -125,6 +130,7 @@ type BridgeMessage =
   | { type: `${typeof PREFIX}selection-clear` }
   | { type: `${typeof PREFIX}selection-rect`; rect: BridgeRect }
   | { type: `${typeof PREFIX}keytype`; key: string }
+  | { type: `${typeof PREFIX}rich-copy` }
   | { type: `${typeof PREFIX}mark-click`; id: string }
   | { type: `${typeof PREFIX}unanchored`; ids: string[] }
   | { type: `${typeof PREFIX}resize`; height: number }
@@ -360,9 +366,20 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
     case `${PREFIX}selection`: {
       const rect = parseBridgeRect(value.rect);
       if (typeof value.text !== "string" || !rect) return null;
+      if ("html" in value && (
+        typeof value.html !== "string"
+        || value.html.length === 0
+        || value.html.length > MAX_RICH_CLIPBOARD_HTML_LENGTH
+      )) return null;
+      if ("clipboardText" in value && (
+        typeof value.clipboardText !== "string"
+        || value.clipboardText.length > MAX_RICH_CLIPBOARD_HTML_LENGTH
+      )) return null;
       return {
         type: value.type,
         text: capSelectionText(value.text),
+        ...(typeof value.html === "string" ? { html: value.html } : {}),
+        ...(typeof value.clipboardText === "string" ? { clipboardText: value.clipboardText } : {}),
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
         anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
@@ -393,6 +410,7 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         && typeof value.y === "number" && Number.isFinite(value.y)
         ? { type: value.type, x: value.x, y: value.y, shift: value.shift === true }
         : null;
+    case `${PREFIX}rich-copy`:
     case `${PREFIX}selection-clear`:
       return { type: value.type };
     case `${PREFIX}selection-rect`: {
@@ -756,10 +774,17 @@ export function useHtmlAnnotation({
             });
           }
         } else {
+          const richCopyHtml = message.html
+            ? sanitizeRichHtml(message.html)
+            : null;
           setToolbarState({
             element: anchor,
             source: null,
             selectionText: message.text,
+            ...(richCopyHtml ? {
+              richCopyHtml,
+              richCopyText: message.clipboardText ?? message.text,
+            } : {}),
           });
         }
       }
@@ -825,6 +850,17 @@ export function useHtmlAnnotation({
         anchor.style.top = `${iframeRect.top + r.top}px`;
         anchor.style.left = `${iframeRect.left + r.left + r.width / 2}px`;
         window.dispatchEvent(new Event("scroll"));
+      }
+
+      if (type === `${PREFIX}rich-copy`) {
+        if (document.activeElement !== iframeRef.current) return;
+        const selection = toolbarStateRef.current;
+        if (selection?.richCopyHtml) {
+          void copyRichTextToClipboard(
+            selection.richCopyHtml,
+            selection.richCopyText ?? selection.selectionText,
+          );
+        }
       }
 
       if (type === `${PREFIX}keytype`) {

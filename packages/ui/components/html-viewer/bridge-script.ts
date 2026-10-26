@@ -273,7 +273,7 @@ body[data-plannotator-vim-focus-owner]:focus {
  * generated `bridge-script.asset.js` separately (`bridgeScriptUrl`), where a
  * cached asset from a previous package version can outlive the parent code.
  */
-export const BRIDGE_PROTOCOL_VERSION = 1;
+export const BRIDGE_PROTOCOL_VERSION = 2;
 
 export const BRIDGE_SCRIPT = `(function() {
   var PREFIX = 'plannotator-bridge-';
@@ -571,7 +571,8 @@ export const BRIDGE_SCRIPT = `(function() {
     }
     skipNextClear = false; // a real text selection happened
     var range = sel.getRangeAt(0);
-    var text = capSelectionText(sel.toString().trim());
+    var clipboardText = sel.toString();
+    var text = capSelectionText(clipboardText.trim());
     if (!text) return false;
 
     // A draft now owns the surface: kill the click-to-select hover
@@ -579,6 +580,7 @@ export const BRIDGE_SCRIPT = `(function() {
     clearHoverHighlight();
 
     var rect = range.getBoundingClientRect();
+    var richHtml = extras && extras.pinpoint ? '' : htmlForRange(range);
     pendingRange = range;
     pendingSelection = {
       text: text,
@@ -588,7 +590,7 @@ export const BRIDGE_SCRIPT = `(function() {
       endOffset: range.endOffset
     };
 
-    postToParent({
+    var selectionMessage = {
       type: PREFIX + 'selection',
       text: text,
       modeOverride: modeOverride || undefined,
@@ -598,7 +600,12 @@ export const BRIDGE_SCRIPT = `(function() {
       targetLabel: (extras && extras.targetLabel) || undefined,
       context: (extras && extras.context) || undefined,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
-    });
+    };
+    if (richHtml && richHtml.length <= 262144 && clipboardText.length <= 262144) {
+      selectionMessage.html = richHtml;
+      selectionMessage.clipboardText = clipboardText;
+    }
+    postToParent(selectionMessage);
     renderAnnotationOverlay(); // draft selection highlight (overlay-projected)
     return true;
   }
@@ -5312,12 +5319,33 @@ export const BRIDGE_SCRIPT = `(function() {
     if (document.body) document.body.removeAttribute('data-plannotator-vim-focus-owner');
   }
 
-  function copyVimText(text) {
+  function htmlForRange(range) {
+    var holder = document.createElement('div');
+    var fragment = range.cloneContents();
+    // Keep enclosing formatting that cloneContents omits for text endpoints.
+    // Match the semantic ancestors retained by selectionRangeToHtml.
+    var ancestor = range.commonAncestorContainer.nodeType === 1
+      ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      if (ancestor.matches('a,b,blockquote,code,del,em,h1,h2,h3,h4,h5,h6,i,li,ol,p,pre,s,strong,sub,sup,table,tbody,td,tfoot,th,thead,tr,u,ul')) {
+        var wrapper = ancestor.cloneNode(false);
+        while (fragment.firstChild) wrapper.appendChild(fragment.firstChild);
+        fragment.appendChild(wrapper);
+      }
+      ancestor = ancestor.parentElement;
+    }
+    holder.appendChild(fragment);
+    var links = holder.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) links[i].setAttribute('href', links[i].href);
+    return holder.innerHTML;
+  }
+
+  function copyVimText(text, range) {
     if (!text) return;
-    postToParent({
-      type: PREFIX + 'vim-copy',
-      text: text
-    });
+    var html = range ? htmlForRange(range) : '';
+    var message = { type: PREFIX + 'vim-copy', text: text };
+    if (html && html.length <= 262144) message.html = html;
+    postToParent(message);
   }
 
   function vimActionMode(key) {
@@ -5486,7 +5514,9 @@ export const BRIDGE_SCRIPT = `(function() {
             updateVimUi();
           }
         } else if (key === 'y') {
-          copyVimText(vimPinpointEl && vimPinpointEl.textContent || '');
+          var targetRange = document.createRange();
+          if (vimPinpointEl) targetRange.selectNode(vimPinpointEl);
+          copyVimText(vimPinpointEl && vimPinpointEl.textContent || '', vimPinpointEl ? targetRange : null);
           handled = !!vimPinpointEl;
         } else if (key === 'Enter' || vimActionMode(key)) {
           var semanticActionMode = key === 'Enter' ? vimActiveMode : vimActionMode(key);
@@ -5539,7 +5569,7 @@ export const BRIDGE_SCRIPT = `(function() {
         else if (key === '{') handled = modifyVimSelection('backward', 'paragraph');
         else if (key === '}') handled = modifyVimSelection('forward', 'paragraph');
         else if (key === 'y' && selection && !selection.isCollapsed) {
-          copyVimText(selection.toString());
+          copyVimText(selection.toString(), selection.getRangeAt(0));
           setCollapsedSelection(selection.focusNode, selection.focusOffset);
           vimPhase = 'text';
           updateVimUi();
@@ -5574,7 +5604,7 @@ export const BRIDGE_SCRIPT = `(function() {
           if (previousBlockAnchor) vimPinpointEl = previousBlockAnchor;
           handled = true;
         } else if (key === 'y' && blockSelection && !blockSelection.isCollapsed) {
-          copyVimText(blockSelection.toString());
+          copyVimText(blockSelection.toString(), blockSelection.getRangeAt(0));
           restoreVimSemanticTarget();
           handled = true;
         } else if ((key === 'Enter' || vimActionMode(key)) && blockSelection && !blockSelection.isCollapsed) {
@@ -5624,6 +5654,17 @@ export const BRIDGE_SCRIPT = `(function() {
     hidePinpointLabel();
     updateVimUi();
   }, true);
+
+  // The parent owns sanitized clipboard data; iframe key events do not bubble.
+  document.addEventListener('keydown', function(e) {
+    if (!pendingSelection || e.defaultPrevented || e.isComposing || e.repeat) return;
+    if (isVimEditableTarget(e.target)) return;
+    var key = (e.key || '').toUpperCase();
+    var copyKey = key === 'C' || (!/^[A-Z]$/.test(key) && e.code === 'KeyC');
+    if (!(e.metaKey || e.ctrlKey) || !e.altKey || e.shiftKey || !copyKey) return;
+    e.preventDefault();
+    postToParent({ type: PREFIX + 'rich-copy' });
+  });
 
   // --- Type-to-comment ---
   // While a selection is pending, focus is inside this iframe, so the parent's

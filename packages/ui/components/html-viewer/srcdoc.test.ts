@@ -776,6 +776,7 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     expect(copyMessages).toContainEqual({
       type: "plannotator-bridge-vim-copy",
       text: "Keyboard review fixture",
+      html: '<h1 class="">Keyboard review fixture</h1>',
     });
     const reticle = document.querySelector<HTMLElement>(
       "[data-plannotator-vim-reticle]",

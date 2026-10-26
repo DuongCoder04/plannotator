@@ -18,6 +18,7 @@ import {
 import type { Annotation, EditorMode, HostDraft, ImageAttachment, InputMethod } from "../../types";
 import { AnnotationType } from "../../types";
 import { copyTextPreservingFocus } from "../../utils/clipboard";
+import { copyRichTextToClipboard, MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml } from "../../utils/richClipboard";
 import { elementIdentityForAskAI } from "../../utils/parser";
 import { getIdentity } from "../../utils/identity";
 import { THUMBS_UP_LABEL } from "../../utils/quickLabels";
@@ -179,14 +180,28 @@ export function formatBridgeUnavailableMessage(info: BridgeUnavailableInfo): str
   return `Annotation tools may not work: this viewer expects bridge protocol version ${info.expectedVersion}, but the script at ${info.url} reported ${reported}. Serve the bridge-script asset from the same @plannotator/ui version as the viewer.`;
 }
 
-function parseVimBridgeCopy(value: unknown): string | null {
-  return isRecord(value)
-    && value.type === `${PREFIX}vim-copy`
-    && typeof value.text === "string"
-    && value.text.length > 0
-    && value.text.length <= MAX_VIM_COPY_TEXT_LENGTH
-    ? value.text
-    : null;
+interface VimBridgeCopy {
+  text: string;
+  html?: string;
+}
+
+function parseVimBridgeCopy(value: unknown): VimBridgeCopy | null {
+  if (
+    !isRecord(value)
+    || value.type !== `${PREFIX}vim-copy`
+    || typeof value.text !== "string"
+    || value.text.length === 0
+    || value.text.length > MAX_VIM_COPY_TEXT_LENGTH
+    || ("html" in value && (
+      typeof value.html !== "string"
+      || value.html.length === 0
+      || value.html.length > MAX_RICH_CLIPBOARD_HTML_LENGTH
+    ))
+  ) return null;
+  return {
+    text: value.text,
+    ...(typeof value.html === "string" ? { html: value.html } : {}),
+  };
 }
 
 /** Inputs for the sandboxed raw-HTML viewer and its parent-side annotation UI. */
@@ -848,7 +863,14 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
             && iframe
             && document.activeElement === iframe
           ) {
-            copyTextPreservingFocus(vimCopy, iframe);
+            const richHtml = vimCopy.html ? sanitizeRichHtml(vimCopy.html) : null;
+            if (richHtml) {
+              void copyRichTextToClipboard(richHtml, vimCopy.text).then((copied) => {
+                if (!copied) copyTextPreservingFocus(vimCopy.text, iframe);
+              });
+            } else {
+              copyTextPreservingFocus(vimCopy.text, iframe);
+            }
           }
           return;
         }
@@ -1323,6 +1345,8 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
               positionMode="center-above"
               element={hook.toolbarState.element}
               copyText={hook.toolbarState.selectionText}
+              richCopyHtml={hook.toolbarState.richCopyHtml}
+              richCopyText={hook.toolbarState.richCopyText}
               // HTML/live surfaces are comment-only: no Delete, no label
               // picker, no Alt+digit labels (commentOnly). Exactly ONE label
               // affordance is restored: the hardcoded 👍 "Looks good". The

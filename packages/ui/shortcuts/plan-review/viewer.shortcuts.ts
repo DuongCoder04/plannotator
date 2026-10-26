@@ -6,7 +6,7 @@ export const viewerShortcuts = defineShortcutScope({
   title: 'Viewer',
   shortcuts: {
     copySelection: {
-      description: 'Copy selected text',
+      description: 'Copy selected text as plain text',
       bindings: ['Mod+C'],
       section: 'Annotations',
       displayOrder: 25,

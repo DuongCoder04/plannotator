@@ -5,6 +5,14 @@ export const annotationToolbarShortcuts = defineShortcutScope({
   id: 'annotation-toolbar',
   title: 'Annotation Toolbar',
   shortcuts: {
+    copyRichText: {
+      description: 'Copy selection as rich text',
+      bindings: ['Mod+Alt+C'],
+      section: 'Annotations',
+      hint: 'Available while a selection with rich formatting is captured. Regular Mod+C remains unchanged.',
+      preventDefault: true,
+      displayOrder: 5,
+    },
     typeToComment: {
       description: 'Start comment',
       bindings: ['A-Z'],

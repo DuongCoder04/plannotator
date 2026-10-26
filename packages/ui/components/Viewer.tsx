@@ -10,6 +10,10 @@ import { useFenceTheme } from '../hooks/useFenceTheme';
 import { computeListIndices, groupBlocks, selectionSourceLines, type Frontmatter, type FrontmatterValue } from '../utils/parser';
 import { buildHeadingSlugMap } from '../utils/slugify';
 import { copyTextToClipboard } from '../utils/clipboard';
+import {
+  copySelectionFromKeyboard,
+  writeSelectionClipboard,
+} from '../utils/richClipboard';
 import { BlockRenderer } from './BlockRenderer';
 import { BELOW_TITLE_SLOT_MARKER } from '../utils/belowTitleSlot';
 import { indexQuestionBlocks, type IndexedQuestion, type ParsedQuestion, type QuestionAnswer } from '@plannotator/core/question-block';
@@ -1322,23 +1326,27 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     return () => window.clearTimeout(timer);
   }, [blocks, locationHash, scrollToAnchor, scrollViewport]);
 
-  // Use the native copy event so clipboard writes are synchronous (Safari
-  // rejects the async navigator.clipboard API outside the user-gesture window).
-  // web-highlighter clears the DOM selection on mouseup, so the browser has
-  // nothing to copy by the time Cmd+C fires — we inject the captured text here.
+  // web-highlighter clears the DOM selection on mouseup, so native copy needs
+  // the captured payload. Keep the copy event synchronous for context-menu and
+  // Safari paths; the keydown route also covers embedded hosts that suppress
+  // iframe copy events (their text-only clipboard fallback stays honest).
   useEffect(() => {
     const handleCopy = (e: ClipboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!toolbarState?.selectionText) return;
+      writeSelectionClipboard(e, toolbarState.selectionText);
+    };
 
-      if (toolbarState?.selectionText) {
-        e.preventDefault();
-        e.clipboardData?.setData('text/plain', toolbarState.selectionText);
-      }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!toolbarState?.selectionText) return;
+      copySelectionFromKeyboard(e, toolbarState.selectionText);
     };
 
     document.addEventListener('copy', handleCopy);
-    return () => document.removeEventListener('copy', handleCopy);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('copy', handleCopy);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [toolbarState]);
 
   // Imperative handle — delegates to hook, extends removeHighlight for code blocks
@@ -1946,6 +1954,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               selectionActionsIcon={selectionActionsIcon}
               quickLabels={quickLabels}
               copyText={toolbarState.selectionText}
+              richCopyHtml={toolbarState.richCopyHtml}
               hideCopyButton={!isTouchDevice}
               closeOnScrollOut
             />

@@ -146,9 +146,10 @@ export const vimSelectionShortcuts = defineShortcutScope({
       displayOrder: 220,
     },
     copy: {
-      description: 'Copy selection or target',
+      description: 'Copy selection or target as rich text',
       bindings: ['Y'],
       section: 'Vim Annotation Actions',
+      hint: 'Uses plain text when rich clipboard access is unavailable.',
       displayOrder: 230,
     },
     cancel: {

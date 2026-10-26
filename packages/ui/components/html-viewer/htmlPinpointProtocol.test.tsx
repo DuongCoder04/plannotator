@@ -140,6 +140,20 @@ describe.if(hasDom)('parseBridgeMessage selection additions', () => {
     });
   });
 
+  test('accepts bounded rich HTML and rejects malformed or oversized HTML fields', () => {
+    const message = {
+      type: 'plannotator-bridge-selection',
+      text: 'Hello',
+      rect,
+    };
+    expect(hookModule!.parseBridgeMessage({ ...message, html: '<strong>Hello</strong>' }))
+      .toMatchObject({ html: '<strong>Hello</strong>' });
+    expect(hookModule!.parseBridgeMessage({ ...message, html: 42 })).toBeNull();
+    expect(hookModule!.parseBridgeMessage({ ...message, html: '' })).toBeNull();
+    expect(hookModule!.parseBridgeMessage({ ...message, html: 'x'.repeat(256 * 1024 + 1) }))
+      .toBeNull();
+  });
+
   test('a malformed anchor is dropped without rejecting the selection', () => {
     const parsed = hookModule!.parseBridgeMessage({
       type: 'plannotator-bridge-selection',
@@ -275,6 +289,25 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     await postSelection({ ...selectionMessage, anchor: undefined });
     expect(document.querySelector('.annotation-toolbar')).not.toBeNull();
     expect(document.querySelector('[data-comment-popover]')).toBeNull();
+  });
+
+  test('the HTML toolbar offers rich copy only for captured selection markup', async () => {
+    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
+    await postSelection({
+      ...selectionMessage,
+      anchor: undefined,
+      html: '<p style="color:red"><strong>Pinpoint target</strong></p>',
+    });
+    const titles = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button'),
+    ).map((button) => button.title);
+    expect(titles).toContain('Copy as rich text');
+
+    await postSelection({ ...selectionMessage, anchor: undefined });
+    const plainTitles = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button'),
+    ).map((button) => button.title);
+    expect(plainTitles).not.toContain('Copy as rich text');
   });
 
   test('the HTML selection toolbar is comment-only plus the restored thumbs-up: no Delete, no label picker', async () => {

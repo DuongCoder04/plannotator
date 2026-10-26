@@ -18,6 +18,7 @@ import {
 import { getIdentity } from '../utils/identity';
 import { annotationOwnsHighlight } from '../utils/annotationOwnsHighlight';
 import { transformPlainText } from '../utils/inlineTransforms';
+import { selectionRangeToHtml } from '../utils/richClipboard';
 
 // --- Exported state types ---
 
@@ -25,6 +26,9 @@ export interface ToolbarState {
   element: HTMLElement;
   source: any;
   selectionText: string;
+  richCopyHtml?: string;
+  /** Full clipboard fallback, separate from the HTML annotation quote cap. */
+  richCopyText?: string;
 }
 
 export interface CommentPopoverState {
@@ -827,6 +831,8 @@ export function useAnnotationHighlighter({
    *  captured before painting (which invalidates the range itself). The CREATE
    *  handler repairs the quote from them. */
   const pendingRangeRunsRef = useRef<RangeTextPiece[] | null>(null);
+  /** Safe HTML captured before the highlighter wraps the selected range. */
+  const pendingRichCopyHtmlRef = useRef<string | null>(null);
 
   const [toolbarState, setToolbarState] = useState<ToolbarState | null>(null);
   const [commentPopover, setCommentPopover] = useState<CommentPopoverState | null>(null);
@@ -1533,6 +1539,8 @@ export function useAnnotationHighlighter({
       }
       if (sources.length > 0) {
         const source = sources[0];
+        const richCopyHtml = pendingRichCopyHtmlRef.current;
+        pendingRichCopyHtmlRef.current = null;
         const doms = highlighter.getDoms(source.id);
         if (doms?.length > 0) {
           // Repair the quote before anything reads it: the popover preview,
@@ -1597,6 +1605,7 @@ export function useAnnotationHighlighter({
               element: doms[0] as HTMLElement,
               source,
               selectionText: source.text,
+              ...(richCopyHtml ? { richCopyHtml } : {}),
             });
           }
         }
@@ -1612,6 +1621,7 @@ export function useAnnotationHighlighter({
     // runs: registered on the capture phase of the same element, and before
     // `run()` so registration order settles the at-target case too.
     const handlePointerEndCapture = () => {
+      pendingRichCopyHtmlRef.current = null;
       const container = containerRef.current;
       const selection = window.getSelection();
       if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) {
@@ -1648,6 +1658,7 @@ export function useAnnotationHighlighter({
         selection.addRange(range);
       }
       pendingRangeRunsRef.current = rangeTextPieces(range);
+      pendingRichCopyHtmlRef.current = selectionRangeToHtml(range);
     };
 
     const container = containerRef.current;
@@ -1676,6 +1687,7 @@ export function useAnnotationHighlighter({
         mouseDownMathRef.current ||
         mathElementFromSelection(selection, containerRef.current);
       mouseDownMathRef.current = null;
+      if (mathElement) pendingRichCopyHtmlRef.current = null;
 
       if (!mathElement) return;
 
@@ -1751,6 +1763,7 @@ export function useAnnotationHighlighter({
     let selectionTimer: ReturnType<typeof setTimeout>;
     // The page's selection, painted as a pending highlight; false when there is none to take.
     const takeTouchSelection = (): boolean => {
+      pendingRichCopyHtmlRef.current = null;
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
       if (!containerRef.current?.contains(sel.anchorNode)) return false;
@@ -1761,11 +1774,13 @@ export function useAnnotationHighlighter({
       snapRangeOutOfBelowTitle(containerRef.current, range);
       snapRangeStartPastExcluded(range);
       pendingRangeRunsRef.current = rangeTextPieces(range);
+      pendingRichCopyHtmlRef.current = selectionRangeToHtml(range);
       try {
         highlighter.fromRange(range);
         return true;
       } catch (error) {
         pendingRangeRunsRef.current = null;
+        pendingRichCopyHtmlRef.current = null;
         warnHighlighterFailure('painting a touch selection', error);
         return false;
       }
@@ -1814,6 +1829,7 @@ export function useAnnotationHighlighter({
     snapRangeOutOfBelowTitle(container, painted);
     snapRangeStartPastExcluded(painted);
     pendingRangeRunsRef.current = rangeTextPieces(painted);
+    pendingRichCopyHtmlRef.current = selectionRangeToHtml(painted);
 
     const selection = window.getSelection();
     selection?.removeAllRanges();
@@ -1824,6 +1840,7 @@ export function useAnnotationHighlighter({
       highlighter.fromRange(painted);
     } catch (error) {
       pendingRangeRunsRef.current = null;
+      pendingRichCopyHtmlRef.current = null;
       warnHighlighterFailure('painting a range', error);
     } finally {
       pendingModeOverrideRef.current = null;

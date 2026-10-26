@@ -368,7 +368,9 @@ function matchesKeyToken(event: ShortcutKeyEvent, token: string): boolean {
   }
 
   if (isSingleLetter(token)) {
-    return key === token;
+    // Option can produce a symbol instead of the shortcut letter on macOS.
+    return key === token
+      || (event.altKey && !/^[A-Z]$/.test(key) && event.code === `Key${token}`);
   }
 
   if (isSingleDigit(token)) {
