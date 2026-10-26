@@ -318,11 +318,15 @@ test.if(hasDom)('a phone: one stacked list, Shipped and Icebox folded at the end
     ['shipped', 'false'],
     ['icebox', 'false'],
   ]);
-  // A folded group keeps its body (aria-controls names it), hidden.
-  expect(cardEl('crd_tab')!.closest('[hidden]')).not.toBeNull();
+  // A folded group keeps its body (aria-controls names it), hidden. Booleans, so a failure
+  // prints one word, never the React node.
+  const shown = () => {
+    const el = cardEl('crd_tab');
+    return el === null ? 'absent' : el.closest('[hidden]') ? 'hidden' : 'shown';
+  };
+  expect(shown()).toBe('hidden');
   act(() => $('[data-board-fold="shipped"]')!.click());
-  expect(cardEl('crd_tab')).not.toBeNull();
-  expect(cardEl('crd_tab')!.closest('[hidden]')).toBeNull();
+  expect(shown()).toBe('shown');
 });
 
 /** An IntersectionObserver that sees every card it is given (happy-dom never scrolls). */
