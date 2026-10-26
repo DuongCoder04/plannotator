@@ -10,6 +10,7 @@ import { useFenceTheme } from '../hooks/useFenceTheme';
 import { computeListIndices, groupBlocks, selectionSourceLines, type Frontmatter, type FrontmatterValue } from '../utils/parser';
 import { buildHeadingSlugMap } from '../utils/slugify';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { getRichCopyEnabled } from '../utils/richCopyPolicy';
 import { BlockRenderer } from './BlockRenderer';
 import { BELOW_TITLE_SLOT_MARKER } from '../utils/belowTitleSlot';
 import { indexQuestionBlocks, type IndexedQuestion, type ParsedQuestion, type QuestionAnswer } from '@plannotator/core/question-block';
@@ -1953,6 +1954,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               selectionActionsIcon={selectionActionsIcon}
               quickLabels={quickLabels}
               copyText={toolbarState.selectionText}
+              getRichCopy={getRichCopyEnabled() ? toolbarState.getRichCopy : undefined}
               hideCopyButton={!isTouchDevice}
               closeOnScrollOut
             />
