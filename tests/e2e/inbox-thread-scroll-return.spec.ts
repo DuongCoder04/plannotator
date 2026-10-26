@@ -322,7 +322,7 @@ test("the app's own scrolls are not pulled back by the place held after a file (
   await context.close();
 });
 
-test('a key pressed on another control a moment before a pointer opens a file does not take focus on the way back', async ({ browser }) => {
+test('a control pressed by keyboard a moment before a file opens some other way does not take focus on the way back', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await context.newPage();
   await loadThread(p);
@@ -330,7 +330,8 @@ test('a key pressed on another control a moment before a pointer opens a file do
   await count.focus();
   await p.keyboard.press('Enter');
   await p.keyboard.press('Enter');
-  await p.locator(openerSelector('foot', 'rollout.md')).click();
+  // The file opens by its link (an agent's deep link, a comment card), not from the control just pressed.
+  await p.evaluate(([thread, file]) => (location.hash = `thread=${thread}&file=${file}&view=side`), [world.threadId, world.ids['rollout.md']!] as const);
   await expect(pane(p)).toBeVisible();
   await pane(p).getByRole('button', { name: /^Close / }).first().click();
   await expect(pane(p)).toHaveCount(0);
