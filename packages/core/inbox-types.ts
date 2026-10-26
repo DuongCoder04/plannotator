@@ -1396,7 +1396,7 @@ export interface InboxTourChange {
 }
 
 /** The tour's content version: the fixture's `v`, recorded with each stamp. */
-export const INBOX_TOUR_VERSION = 1;
+export const INBOX_TOUR_VERSION = 2;
 
 /**
  * The Inbox window's text size (config.json `inboxTextSize`, through GET and
