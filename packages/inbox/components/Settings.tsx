@@ -65,8 +65,14 @@ export interface SettingsPageProps {
   onDeleteProject: (projectId: string) => Promise<void>;
   /** Settings → About: the version, Check now and the two update switches (components/Updates.tsx). */
   about?: ReactNode;
-  /** The About nav row's dot: a new version is available, ready or failed. */
-  aboutDot?: boolean;
+  /** The About nav row's dot: a new version is available, ready or failed, or checking has failed for hours. */
+  aboutDot?: boolean | 'check-failing';
+  /**
+   * Settings → General's first row: the version and the sidebar's update
+   * action, Check now (components/Updates.tsx GeneralUpdateRow). Absent: none
+   * (a page opened over the tailnet).
+   */
+  updateRow?: ReactNode;
   /** The question sound's row, under the notifications switch (sound.ts). */
   sound?: InboxSound;
   /** Settings → Archived: the archived threads (components/Archived.tsx). */
@@ -191,9 +197,11 @@ function GeneralSection({
   sound,
   onToggleExperimental,
   onTakeTour,
+  updateRow,
 }: {
   onToggleExperimental?: (next: boolean) => void;
   onTakeTour?: () => void;
+  updateRow?: ReactNode;
   settings: SettingsModel;
   permission: NotificationPermission | 'unsupported';
   onToggleNotifications: (next: boolean) => void;
@@ -215,6 +223,7 @@ function GeneralSection({
       : reachText({ here: notificationsOn, enabled: settings.notifications.enabled, reach, origin: typeof window !== 'undefined' ? window.location.origin : '' });
   return (
     <>
+      {updateRow}
       {onTakeTour && (
         <section className="ib-sgroup" data-settings-tour="" aria-labelledby="ib-g-start">
           <h2 id="ib-g-start">Getting started</h2>
@@ -639,7 +648,8 @@ export function SettingsPage(props: SettingsPageProps) {
 
   const badge = (id: SettingsSection): ReactNode => {
     if (id === 'archived' && archivedTotal) return <span className="ib-scount">{formatCount(archivedTotal)}</span>;
-    if (id === 'about' && aboutDot) return <span className="ib-dot" aria-label="A new version is available" role="img" />;
+    if (id === 'about' && aboutDot)
+      return <span className="ib-dot" aria-label={aboutDot === 'check-failing' ? 'Checking for updates is failing' : 'A new version is available'} role="img" />;
     if (id === 'devices' && devicesDot) return <span className="ib-dot ib-warn" aria-label="Something here is not working" role="img" />;
     if (id === 'agents' && agentsNeedRestart(props.agents)) return <span className="ib-dot ib-warn" aria-label="Sessions need a reload" role="img" data-agents-dot="" />;
     return null;
@@ -692,6 +702,7 @@ export function SettingsPage(props: SettingsPageProps) {
             sound={sound}
             onToggleExperimental={props.onToggleExperimental}
             onTakeTour={props.onTakeTour}
+            updateRow={props.updateRow}
           />
         );
         break;
