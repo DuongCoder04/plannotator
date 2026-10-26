@@ -79,6 +79,14 @@ export function capturePlace(body: HTMLElement, preferred: HTMLElement | null): 
   return { el, selector: placeSelector(el), offset: el.getBoundingClientRect().top - view.top, scrollTop: body.scrollTop };
 }
 
+/** Whether the place's element is still wholly inside the view (after a change of layout). */
+export function placeInView(body: HTMLElement, place: ThreadPlace): boolean {
+  if (place.el === body || !place.el.isConnected || !body.contains(place.el) || !laidOut(place.el)) return false;
+  const view = body.getBoundingClientRect();
+  const r = place.el.getBoundingClientRect();
+  return r.top >= view.top - 1 && r.bottom <= view.bottom + 1;
+}
+
 /** Put the place back: its element at the same distance from the top of the view. False when the thread is not laid out. */
 export function restorePlace(body: HTMLElement, place: ThreadPlace): boolean {
   if (body.clientHeight === 0 || !laidOut(body)) return false;

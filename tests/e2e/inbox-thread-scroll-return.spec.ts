@@ -206,8 +206,8 @@ async function roundTrip(p: Page, { file, opener, how, narrow = false, shot }: {
   const after = await where(p, selector);
   if (shot && shotsDir) await p.screenshot({ path: join(shotsDir, `${shot}-3-back.png`) });
   const label = `${opener} ${file}, back by ${how}`;
-  expect(Math.abs(after.top - before.top), `${label}: the opener moved from ${before.top} to ${after.top}`).toBeLessThanOrEqual(2);
-  expect(Math.abs(after.scrollTop - before.scrollTop), `${label}: scrollTop went from ${before.scrollTop} to ${after.scrollTop}`).toBeLessThanOrEqual(2);
+  expect.soft(Math.abs(after.top - before.top), `${label}: the opener moved from ${before.top} to ${after.top}`).toBeLessThanOrEqual(2);
+  expect.soft(Math.abs(after.scrollTop - before.scrollTop), `${label}: scrollTop went from ${before.scrollTop} to ${after.scrollTop}`).toBeLessThanOrEqual(2);
   return after;
 }
 

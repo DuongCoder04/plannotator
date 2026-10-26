@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { capturePlace, holdPlace, openerOf, placeSelector, restorePlace, type ThreadPlace } from '../threadPlace';
+import { capturePlace, holdPlace, openerOf, placeInView, placeSelector, restorePlace, type ThreadPlace } from '../threadPlace';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { useRefHoverCards } from '@plannotator/ui/components/RefHoverCard';
 import type { Annotation, Block } from '@plannotator/ui/types';
@@ -1856,10 +1856,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const body = bodyRef.current;
     const saved = place.current.saved;
     if (!body || !placeShown(placeKey)) return;
-    if (saved && restorePlace(body, saved)) {
-      const placed = () => {
-        place.current.placedTop = body.scrollTop;
-      };
+    const placed = () => {
+      place.current.placedTop = body.scrollTop;
+    };
+    // A file opening beside the thread moves the thread only when what was opened would leave the view: the
+    // narrower column keeps what the person sees above it (the message's head row) where it can.
+    if (saved && placeKey.split('|')[1] === 'side' && was.split('|')[1] === 'none' && placeInView(body, saved)) placed();
+    else if (saved && restorePlace(body, saved)) {
       placed();
       holdRef.current?.();
       holdRef.current = holdPlace(body, saved, placed);
