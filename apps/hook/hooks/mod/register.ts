@@ -88,7 +88,7 @@ import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
 import { COMMANDS, dataDirOf, debugAppendArgv, isModCommand, waitArgv } from './launch'
 import { PLAN_TOOL } from './plan'
 import { answerShellCall, SHELL_TOOL, shellTakeOver } from './take-over'
-import { PLANNOTATOR_TOOL_DESCRIPTION, PLANNOTATOR_TOOL_INPUT_SCHEMA, PLANNOTATOR_TOOL_NAME } from './tool'
+import { PLANNOTATOR_TOOL_NAME, PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION, PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA } from './tool'
 
 // Minimal local types: the engine's declarations are written by `/plugin-types`
 // and not vendored here.
@@ -445,9 +445,10 @@ let toolName: string | null = null
 async function registerTool($: Engine): Promise<void> {
   try {
     const registered = await $.tool.register({
+      // The tailscale variant: the mod's CLI launch can publish over the tailnet (#2166).
       name: PLANNOTATOR_TOOL_NAME,
-      description: PLANNOTATOR_TOOL_DESCRIPTION,
-      inputSchema: PLANNOTATOR_TOOL_INPUT_SCHEMA,
+      description: PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION,
+      inputSchema: PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA,
     })
     toolName = registered && typeof registered.tool === 'string' ? registered.tool : null
   } catch (error) {
