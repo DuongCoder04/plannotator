@@ -125,6 +125,8 @@ configurePlannotatorUI({
   componentTooltips: true,
   // A digit-only #186379 in a message is a PR or issue of the project's repo, not a colour (#1932).
   digitHexIssueRefs: true,
+  // The selection toolbar's Copy copies rich text, in messages and attached files (#1972).
+  richCopy: true,
   // Hover cards for issue, PR and MR links: the server fetches with this computer's gh or glab (ref-cards.ts).
   refCardTransport: async (href, _ref, signal) => {
     const res = await fetch(`/api/inbox/ref?url=${encodeURIComponent(href)}`, { signal, headers: { accept: 'application/json' } });
