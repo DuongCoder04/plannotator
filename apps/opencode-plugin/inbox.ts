@@ -506,6 +506,8 @@ class OpenCode2Wakes {
 
   /** Start the wake for a root session, once; later calls say the session is in use here. */
   watch(sessionID: string): void {
+    // A disposed generation (OpenCode unloaded this plugin) starts no wake: its polls would report the old version.
+    if (this.controller.signal.aborted) return;
     this.seen.add(sessionID);
     const known = this.wakes.get(sessionID);
     if (known) {
@@ -569,7 +571,7 @@ class OpenCode2Wakes {
 
   /** A session ran here that this process has not seen: watch its root. */
   private discover(sessionID: string): void {
-    if (this.seen.has(sessionID)) return;
+    if (this.controller.signal.aborted || this.seen.has(sessionID)) return;
     this.seen.add(sessionID);
     void this.resolveRoot(sessionID).then(
       ({ root }) => this.watch(root),

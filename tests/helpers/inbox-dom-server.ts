@@ -152,6 +152,8 @@ process.env.HOME = scratchHome;
 process.env.CLAUDE_CONFIG_DIR = join(scratchHome, ".claude");
 process.env.CODEX_HOME = join(scratchHome, ".codex");
 process.env.XDG_CONFIG_HOME = join(scratchHome, ".config");
+// OpenCode 2's config (its plugin spec): the scratch one under XDG_CONFIG_HOME, never a real OPENCODE_CONFIG_DIR.
+delete process.env.OPENCODE_CONFIG_DIR;
 
 const STOPPED = [
   "Before I build the invoice list:",

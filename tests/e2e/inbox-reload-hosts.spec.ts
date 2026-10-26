@@ -243,7 +243,9 @@ test('the sidebar: "Reload agents 3" opens Settings → Agents, each runtime lea
   await expect(pi.locator('[data-reload-sessions="oh-my-pi"] [data-reload-lead="restart"] code')).toHaveText('/restart');
   const oc = page.locator('[data-agent-sessions="opencode"]');
   await expect(oc.locator('[data-reload-sessions="opencode"] [data-reload-lead="restart"] code')).toHaveText('opencode2 reload');
-  await expect(oc).toContainText('Quitting OpenCode is not enough');
+  // One quiet line under each OpenCode command; nothing about quitting.
+  await expect(oc.locator('[data-reload-sessions="opencode"] [data-opencode-quiet]')).toHaveCount(1);
+  await expect(oc.locator('[data-opencode-quit-note]')).toHaveCount(0);
   await oc.locator('[data-reload-sessions="opencode"] [data-reload-lead="restart"]').getByRole('button', { name: 'Copy opencode2 reload' }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('opencode2 reload');
   await expect(page.locator('body')).not.toContainText('/reload-plugins');

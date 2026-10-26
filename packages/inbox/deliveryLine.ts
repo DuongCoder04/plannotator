@@ -96,6 +96,11 @@ export interface RestartNote {
   reloadCommand: string;
   reloadWhere: 'session' | 'shell';
   fallbackCommand: string | null;
+  /** OpenCode 2: the config pins this exact spec; it changes to `pinTo`, then `opencode2 reload`. */
+  pinnedSpec: string | null;
+  pinTo: string | null;
+  /** OpenCode 2's `opencode2 plugin update` with no target: it updates every outdated plugin. */
+  updatesAll: boolean;
 }
 
 /** Claude Code's reload (the mod reloads with the plugins). */
@@ -122,6 +127,9 @@ export function restartNote(connection: RecipientConnection | null | undefined):
     reloadCommand: outdated.reload_command ?? CLAUDE_RELOAD_COMMAND,
     reloadWhere: outdated.reload_where ?? 'session',
     fallbackCommand: outdated.fallback_command ?? null,
+    pinnedSpec: outdated.pinned_spec ?? null,
+    pinTo: outdated.pin_to ?? null,
+    updatesAll: outdated.update_scope === 'all',
   } as const;
   if (runtime === 'claude-code') {
     if (outdated.fix === 'update_plugin') return { fix: outdated.fix, command, updateCommand: outdated.update_command ?? null, ...reload };
@@ -130,7 +138,9 @@ export function restartNote(connection: RecipientConnection | null | undefined):
   }
   // Pi, Oh My Pi, OpenCode 2: a reload alone, or the update first.
   if (outdated.fix === 'reload') return { fix: outdated.fix, command: null, updateCommand: null, ...reload };
-  if (outdated.fix === 'update_extension' && outdated.update_command) return { fix: outdated.fix, command: null, updateCommand: outdated.update_command, ...reload };
+  if (outdated.fix === 'update_extension' && (outdated.update_command || outdated.pinned_spec)) {
+    return { fix: outdated.fix, command: null, updateCommand: outdated.update_command ?? null, ...reload };
+  }
   return null;
 }
 

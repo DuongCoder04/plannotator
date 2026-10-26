@@ -63,7 +63,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { INBOX_PLUGIN_REPORTS_LOADED_SINCE, type InboxReloadRuntime, type InboxSessionOutdated } from "@plannotator/core/inbox-types";
 import { compareStableVersions, parseStableVersion, CLAUDE_PLUGIN_UPDATE_COMMANDS } from "@plannotator/shared/update-check";
 import { readAgentFile, stripJsonComments } from "./agent-files";
-import { claudeConfigDir, piAgentDir, type AgentEnvironment } from "./inbox-agents";
+import { claudeConfigDir, openCodeConfigDir, piAgentDir, type AgentEnvironment } from "./inbox-agents";
 
 /**
  * The first Plannotator release whose Claude Code mod reports `plugin` on its
@@ -373,8 +373,19 @@ export const PI_INSTALL_LATEST_COMMAND = "pi install npm:@plannotator/pi-extensi
 export const OMP_UPGRADE_COMMAND = "omp plugin upgrade @plannotator/pi-extension";
 /** OpenCode 2: reload every location of the running service (reinstalls a plugin whose cache was deleted). */
 export const OPENCODE2_RELOAD_COMMAND = "opencode2 reload";
-/** OpenCode 2: install a newer plugin generation and load it through the running service. */
+/**
+ * OpenCode 2: install a newer plugin generation and load it through the running service.
+ * Without a target it updates EVERY outdated plugin: the Inbox names Plannotator's
+ * configured spec (`opencodePluginUpdateCommand`) whenever it can read it.
+ */
 export const OPENCODE2_PLUGIN_UPDATE_COMMAND = "opencode2 plugin update";
+/** What a pinned OpenCode 2 config entry changes to. */
+export const OPENCODE2_LATEST_SPEC = "@plannotator/opencode@latest";
+
+/** `opencode2 plugin update <spec>`: only Plannotator. OpenCode wants the spec exactly as configured (`@plannotator/opencode@latest`; the bare name is "not configured"). */
+export function opencodePluginUpdateCommand(spec: string | null): string {
+  return spec && /^@plannotator\/opencode(?:@[\w.^~<>=*|-]+)?$/.test(spec) ? `${OPENCODE2_PLUGIN_UPDATE_COMMAND} ${spec}` : OPENCODE2_PLUGIN_UPDATE_COMMAND;
+}
 /** OpenCode 2: when a reload does not take, restart the background service. */
 export const OPENCODE2_SERVICE_RESTART_COMMAND = "opencode2 service restart";
 
@@ -411,14 +422,71 @@ export function piSessionOutdated(loaded: LoadedPlugin | null, cliVersion: strin
  * generation again). Quitting OpenCode loads nothing: the service outlives
  * every TUI. A connection that sends no `on_disk` says nothing.
  */
-export function openCodeSessionOutdated(loaded: LoadedPlugin | null, cliVersion: string): InboxSessionOutdated | null {
+export function openCodeSessionOutdated(loaded: LoadedPlugin | null, cliVersion: string, options: { spec?: string | null } = {}): InboxSessionOutdated | null {
   if (!loaded?.version || loaded.onDisk === undefined) return null;
   const base = { runtime: "opencode", reload_where: "shell", fallback_command: OPENCODE2_SERVICE_RESTART_COMMAND } as const;
   if (loaded.onDisk === null || loaded.onDisk !== loaded.version) {
     return { loaded: loaded.version, installed: loaded.onDisk, fix: "reload", reload_command: OPENCODE2_RELOAD_COMMAND, ...base };
   }
   if (!older(loaded.version, cliVersion)) return null;
-  return { loaded: loaded.version, installed: cliVersion, fix: "reload", reload_command: OPENCODE2_PLUGIN_UPDATE_COMMAND, ...base };
+  const spec = options.spec ?? null;
+  // A pinned exact version: `opencode2 plugin update` reports nothing to update. The pin changes by hand, then a reload.
+  if (spec && openCodeSpecPinned(spec)) {
+    return { loaded: loaded.version, installed: cliVersion, fix: "update_extension", reload_command: OPENCODE2_RELOAD_COMMAND, pinned_spec: spec, pin_to: OPENCODE2_LATEST_SPEC, ...base };
+  }
+  // The update loads the new generation itself (no reload after it); without a known spec it names no target.
+  return {
+    loaded: loaded.version,
+    installed: cliVersion,
+    fix: "update_extension",
+    update_command: opencodePluginUpdateCommand(spec),
+    ...(spec ? {} : { update_scope: "all" as const }),
+    ...base,
+  };
+}
+
+/** `@plannotator/opencode@0.28.20`: an exact version, which `opencode2 plugin update` never moves. */
+export function openCodeSpecPinned(spec: string): boolean {
+  const match = /^@plannotator\/opencode@(.+)$/.exec(spec.trim());
+  return !!match && /^v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(match[1]!);
+}
+
+/**
+ * Plannotator's entry in an OpenCode 2 config's `plugins` (a string, or
+ * `{ package }`), exactly as written: what `opencode2 plugin update` takes as
+ * its target. Null when the config has none (or cannot be read).
+ */
+export function openCodePluginSpec(text: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(text));
+  } catch {
+    return null;
+  }
+  const plugins = (parsed as { plugins?: unknown } | null)?.plugins;
+  if (!Array.isArray(plugins)) return null;
+  for (const entry of plugins) {
+    const spec = typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as { package?: unknown }).package : null;
+    if (typeof spec === "string" && /^@plannotator\/opencode(?:@|$)/.test(spec.trim())) return spec.trim();
+  }
+  return null;
+}
+
+/** The global OpenCode config's Plannotator spec (read at most every 2 s), for the update command and the pin. */
+export function createOpenCodeSpecReader(environment: AgentEnvironment, now: () => number = Date.now) {
+  let cached: { at: number; value: string | null } | null = null;
+  return (): string | null => {
+    if (cached && now() - cached.at < INSTALL_FRESH_MS) return cached.value;
+    let value: string | null = null;
+    for (const name of ["opencode.json", "opencode.jsonc", "config.json"]) {
+      const file = readAgentFile(join(openCodeConfigDir(environment), name));
+      if (file.kind !== "file") continue;
+      value = openCodePluginSpec(file.text);
+      if (value) break;
+    }
+    cached = { at: now(), value };
+    return value;
+  };
 }
 
 /**
@@ -474,13 +542,18 @@ export function tagUpdateFix(runtime: InboxReloadRuntime | null, outdated: Inbox
   const fallback = DEFAULT_RELOAD[runtime];
   const command = outdated?.reload_command ?? fallback.command;
   const where = outdated?.reload_where ?? fallback.where;
-  const reload = where === "shell" ? `run \`${command}\`` : `type \`${command}\` in that ${name}`;
+  // Plain words: the window draws this text as it is (no Markdown).
+  const reload = where === "shell" ? `run ${command}` : `type ${command} in that ${name}`;
   const capital = (text: string) => text[0]!.toUpperCase() + text.slice(1);
   if (outdated && (outdated.fix === "reload" || outdated.fix === "restart")) return `${capital(reload)}.`;
-  const update = outdated?.update_command ?? fallback.update;
-  // OpenCode 2's plugin update loads the new generation itself: no reload after it.
-  if (runtime === "opencode") return `Run \`${update}\`.`;
-  return `Run \`${update}\`, then ${reload}.`;
+  // Claude Code's update is two long commands: Settings, Agents has them with Copy.
+  if (runtime === "claude-code") return `Update Plannotator's plugin, then ${reload}.`;
+  if (runtime === "opencode") {
+    if (outdated?.pinned_spec) return `Change ${outdated.pinned_spec} to ${outdated.pin_to ?? "@plannotator/opencode@latest"} in OpenCode's config, then run ${command}.`;
+    // OpenCode 2's plugin update loads the new generation itself: no reload after it.
+    return `Run ${outdated?.update_command ?? fallback.update}.`;
+  }
+  return `Run ${outdated?.update_command ?? fallback.update}, then ${reload}.`;
 }
 
 /** Reads Pi's settings for a pinned Plannotator source, at most once per `INSTALL_FRESH_MS`. */

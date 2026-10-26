@@ -24,7 +24,10 @@ import {
   OPENCODE2_PLUGIN_UPDATE_COMMAND,
   OPENCODE2_RELOAD_COMMAND,
   OPENCODE2_SERVICE_RESTART_COMMAND,
+  openCodePluginSpec,
   openCodeSessionOutdated,
+  openCodeSpecPinned,
+  opencodePluginUpdateCommand,
   parseLoadedPlugin,
   PI_INSTALL_LATEST_COMMAND,
   PI_RELOAD_COMMAND,
@@ -85,7 +88,7 @@ describe("the judgment table", () => {
     expect(piSessionOutdated(plugin({ version: "0.28.20" }), "0.28.25")).toEqual({ loaded: "0.28.20", installed: "0.28.25", fix: "update_extension" });
   });
 
-  test("OpenCode 2: a deleted generation → opencode2 reload; behind the Inbox with the files there → opencode2 plugin update", () => {
+  test("OpenCode 2: a deleted generation → opencode2 reload; behind the Inbox with the files there → opencode2 plugin update <the configured spec>", () => {
     const base = { runtime: "opencode", reload_where: "shell", fallback_command: OPENCODE2_SERVICE_RESTART_COMMAND };
     expect(openCodeSessionOutdated(plugin({ version: "0.28.31", on_disk: null }), "0.28.31")).toEqual({
       loaded: "0.28.31",
@@ -94,11 +97,35 @@ describe("the judgment table", () => {
       reload_command: OPENCODE2_RELOAD_COMMAND,
       ...base,
     } as InboxSessionOutdated);
-    expect(openCodeSessionOutdated(plugin({ version: "0.28.29", on_disk: "0.28.29" }), "0.28.31")).toMatchObject({ fix: "reload", reload_command: OPENCODE2_PLUGIN_UPDATE_COMMAND, ...base });
+    // Behind, the configured spec known: only Plannotator updates (OpenCode wants the spec exactly as configured).
+    const behind = plugin({ version: "0.28.29", on_disk: "0.28.29" });
+    const named = openCodeSessionOutdated(behind, "0.28.31", { spec: "@plannotator/opencode@latest" })!;
+    expect(named).toMatchObject({ fix: "update_extension", update_command: "opencode2 plugin update @plannotator/opencode@latest", ...base });
+    expect(named.update_scope).toBeUndefined();
+    // The spec unknown: no target, and the window says it updates every outdated plugin.
+    expect(openCodeSessionOutdated(behind, "0.28.31")).toMatchObject({ fix: "update_extension", update_command: OPENCODE2_PLUGIN_UPDATE_COMMAND, update_scope: "all" });
+    // Pinned to an exact version: plugin update is a no-op, so the pin changes and the service reloads.
+    const pinned = openCodeSessionOutdated(behind, "0.28.31", { spec: "@plannotator/opencode@0.28.29" })!;
+    expect(pinned).toMatchObject({ fix: "update_extension", pinned_spec: "@plannotator/opencode@0.28.29", pin_to: "@plannotator/opencode@latest", reload_command: OPENCODE2_RELOAD_COMMAND });
+    expect(pinned.update_command).toBeUndefined();
     expect(openCodeSessionOutdated(plugin({ version: "0.28.31", on_disk: "0.28.31" }), "0.28.31")).toBeNull();
     // An older OpenCode connection sends no plugin: nothing to say.
     expect(openCodeSessionOutdated(null, "0.28.31")).toBeNull();
     expect(openCodeSessionOutdated(plugin({ version: "0.28.29" }), "0.28.31")).toBeNull();
+  });
+
+  test("OpenCode 2's configured spec, as written; a pin is an exact version", () => {
+    expect(openCodePluginSpec(JSON.stringify({ plugins: [{ package: "@plannotator/opencode@latest", options: {} }] }))).toBe("@plannotator/opencode@latest");
+    expect(openCodePluginSpec(JSON.stringify({ plugins: ["other-plugin", "@plannotator/opencode"] }))).toBe("@plannotator/opencode");
+    expect(openCodePluginSpec(JSON.stringify({ plugin: ["@plannotator/opencode@latest"] }))).toBeNull();
+    expect(openCodePluginSpec("// c\n{ \"plugins\": [\"@plannotator/opencode@0.28.20\"] }")).toBe("@plannotator/opencode@0.28.20");
+    expect(openCodePluginSpec("nope")).toBeNull();
+    expect(openCodeSpecPinned("@plannotator/opencode@0.28.20")).toBe(true);
+    expect(openCodeSpecPinned("@plannotator/opencode@latest")).toBe(false);
+    expect(openCodeSpecPinned("@plannotator/opencode@^0.28.0")).toBe(false);
+    expect(opencodePluginUpdateCommand("@plannotator/opencode@latest")).toBe("opencode2 plugin update @plannotator/opencode@latest");
+    // Anything else is not passed to a shell command.
+    expect(opencodePluginUpdateCommand("@plannotator/opencode@latest; rm -rf ~")).toBe("opencode2 plugin update");
   });
 
   test("a pinned Pi source: an exact version only", () => {
@@ -111,11 +138,26 @@ describe("the judgment table", () => {
   });
 
   test("the tag refusal names the host's own command", () => {
-    expect(tagUpdateFix("pi", piSessionOutdated(plugin({ version: "0.28.30", on_disk: "0.28.31", host: "pi" }), "0.28.31"))).toBe("Type `/reload` in that Pi.");
-    expect(tagUpdateFix("oh-my-pi", null)).toBe("Run `omp plugin upgrade @plannotator/pi-extension`, then type `/restart` in that Oh My Pi.");
-    expect(tagUpdateFix("opencode", openCodeSessionOutdated(plugin({ version: "0.28.31", on_disk: null }), "0.28.31"))).toBe("Run `opencode2 reload`.");
-    expect(tagUpdateFix("opencode", null)).toBe("Run `opencode2 plugin update`.");
-    expect(tagUpdateFix("claude-code", { loaded: "0.28.24", installed: "0.28.25", fix: "restart" })).toBe("Type `/reload-plugins` in that Claude Code.");
+    // Plain text (the window draws no Markdown), each host's own command.
+    const fixes = [
+      tagUpdateFix("pi", piSessionOutdated(plugin({ version: "0.28.30", on_disk: "0.28.31", host: "pi" }), "0.28.31")),
+      tagUpdateFix("oh-my-pi", null),
+      tagUpdateFix("opencode", openCodeSessionOutdated(plugin({ version: "0.28.31", on_disk: null }), "0.28.31")),
+      tagUpdateFix("opencode", openCodeSessionOutdated(plugin({ version: "0.28.29", on_disk: "0.28.29" }), "0.28.31", { spec: "@plannotator/opencode@0.28.29" })),
+      tagUpdateFix("claude-code", { loaded: "0.28.24", installed: "0.28.25", fix: "restart" }),
+      tagUpdateFix("claude-code", { loaded: "0.28.24", installed: "0.28.25", fix: "update_plugin", update_command: "claude plugin marketplace update plannotator && claude plugin update plannotator@plannotator --scope user" }),
+    ];
+    for (const fix of fixes) expect(fix).not.toContain("`");
+    expect(fixes[0]).toContain("/reload");
+    expect(fixes[1]).toContain("omp plugin upgrade @plannotator/pi-extension");
+    expect(fixes[1]).toContain("/restart");
+    expect(fixes[2]).toContain("opencode2 reload");
+    expect(fixes[3]).toContain("@plannotator/opencode@0.28.29");
+    expect(fixes[3]).toContain("@plannotator/opencode@latest");
+    expect(fixes[4]).toContain("/reload-plugins");
+    // Claude Code's update stays short: the long commands live in Settings, Agents.
+    expect(fixes[5]).not.toContain("claude plugin");
+    expect(fixes[5]).toContain("/reload-plugins");
     expect(tagUpdateFix(null, null)).toBe("Update Plannotator there.");
   });
 
@@ -271,6 +313,7 @@ describe("over a real Inbox", () => {
     expect(response.status).toBe(409);
     const body = (await response.json()) as { code: string; error: string };
     expect(body.code).toBe("tag_needs_update");
-    expect(body.error).toContain("Type `/reload` in that Pi.");
+    expect(body.error).toContain("/reload");
+    expect(body.error).not.toContain("`");
   });
 });

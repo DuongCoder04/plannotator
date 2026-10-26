@@ -14,7 +14,8 @@ export function builtInboxHtml(): { htmlContent?: string } {
   return process.env.RELOAD_PROOF_SHOTS && existsSync(file) ? { htmlContent: readFileSync(file, "utf8") } : {};
 }
 
-export async function shootAgents(inboxPort: number, name: string): Promise<void> {
+/** `sidebar: false` for a fix the sidebar does not count (an update or a pin: only reloads are counted). */
+export async function shootAgents(inboxPort: number, name: string, options: { sidebar?: boolean } = {}): Promise<void> {
   const dir = process.env.RELOAD_PROOF_SHOTS;
   if (!dir) return;
   mkdirSync(dir, { recursive: true });
@@ -41,7 +42,7 @@ export async function shootAgents(inboxPort: number, name: string): Promise<void
         await box.scrollIntoViewIfNeeded();
         await page.waitForTimeout(800);
         await page.screenshot({ path: join(dir, `${name}-agents-${form}-${scheme}.png`) });
-        if (form === "desktop" && scheme === "light") {
+        if (form === "desktop" && scheme === "light" && options.sidebar !== false) {
           await page.goto(`http://127.0.0.1:${inboxPort}/`);
           await page.locator("[data-restart-sidebar]").waitFor({ timeout: 15_000 });
           await page.waitForTimeout(500);

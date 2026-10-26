@@ -2,8 +2,9 @@
  * Telling the person when a Claude Code session needs `/reload-plugins` after
  * an update (owner approval "restart-warning", 2026-10-19, simplified
  * 2026-10-21: the obvious path leads, alone), and the same for Pi (`/reload`),
- * Oh My Pi (`/restart`) and OpenCode 2 (`opencode2 reload`, run in a shell;
- * owner approval "reload-hosts", 2026-10-26). Pieces:
+ * Oh My Pi (`/restart`) and OpenCode 2 (`opencode2 reload`, or
+ * `opencode2 plugin update <its spec>`, run in a shell, with one quiet line on
+ * what a reload cancels; owner approval "reload-hosts", 2026-10-26). Pieces:
  *  - `ReloadLead`: one large sentence, "Type /reload-plugins in …", with a
  *    Copy that copies `/reload-plugins`. When the installed plugin is itself
  *    behind this Inbox, two steps instead: the update command with Copy, then
@@ -89,10 +90,10 @@ export function ReloadCopy({ command = RELOAD_COMMAND }: { command?: string } = 
 
 /**
  * The one thing to do, large and alone: "Type /reload-plugins {where}." with
- * Copy (Pi `/reload`, Oh My Pi `/restart`; OpenCode 2 "Run `opencode2 reload`
- * {where}."). With `updateCommand` (the plugin on disk is itself behind this
- * Inbox), two numbered steps: the update command, then the reload. OpenCode
- * 2's `opencode2 plugin update` loads the new plugin itself: one step.
+ * Copy (Pi `/reload`, Oh My Pi `/restart`). With `updateCommand` (the
+ * plugin on disk is itself behind this Inbox), two numbered steps: the update
+ * command, then the reload. OpenCode 2 has its own one line (OpenCodeWords):
+ * `opencode2 plugin update <spec>` loads the new plugin itself.
  */
 export function ReloadLead({
   where,
@@ -162,7 +163,7 @@ function wherePhrase(note: RestartNote, name: string, purpose: string): string {
 function ManualPath({ note, name }: { note: RestartNote; name: string }) {
   if (note.runtime === 'oh-my-pi') return null;
   if (note.runtime === 'opencode') {
-    if (!note.fallbackCommand) return null;
+    if (!note.fallbackCommand || openCodeCommand(note) !== 'opencode2 reload') return null;
     return (
       <Fold question="Still no Send now after reloading?">
         <div data-restart-fallback="">
@@ -205,13 +206,42 @@ function ManualPath({ note, name }: { note: RestartNote; name: string }) {
   );
 }
 
-/** OpenCode 2's plugin runs in a background server that outlives every window: say quitting is not enough. */
-function OpenCodeQuitNote({ note }: { note: RestartNote }) {
-  if (note.runtime !== 'opencode') return null;
+/** OpenCode 2's one command: `opencode2 plugin update <spec>` when the plugin itself is behind, else `opencode2 reload` (after changing a pin). */
+export function openCodeCommand(note: Pick<RestartNote, 'fix' | 'updateCommand' | 'reloadCommand' | 'pinnedSpec'>): string {
+  return note.fix === 'update_extension' && note.updateCommand && !note.pinnedSpec ? note.updateCommand : note.reloadCommand;
+}
+
+/** `opencode2 reload` reloads every location of OpenCode's service: say, quietly, what it cancels. */
+export const OPENCODE_RELOAD_WARNING = 'Cancels any permission prompt OpenCode is showing.';
+export const OPENCODE_UPDATES_ALL = 'It updates every OpenCode plugin that has a newer version.';
+
+/** The quiet lines under OpenCode's command: what a reload cancels; that an update with no target updates every plugin. */
+export function OpenCodeQuiet({ command, updatesAll, className = 'ib-rw-after ib-rl-quiet' }: { command: string; updatesAll: boolean; className?: string }) {
+  const reload = command === 'opencode2 reload';
+  const all = updatesAll && !reload;
+  if (!reload && !all) return null;
   return (
-    <p className="ib-rw-after" data-opencode-quit-note="">
-      Quitting OpenCode is not enough: its background server keeps the old plugin.
+    <p className={className} data-opencode-quiet="">
+      {reload ? OPENCODE_RELOAD_WARNING : OPENCODE_UPDATES_ALL}
     </p>
+  );
+}
+
+/** OpenCode 2's step as words: "Run <command>" or, for a pinned spec, change it first. */
+export function OpenCodeWords({ command, pinnedSpec, pinTo, tail = '' }: { command: string; pinnedSpec: string | null; pinTo: string | null; tail?: string }) {
+  if (pinnedSpec) {
+    return (
+      <>
+        OpenCode's config pins <code className="ib-rl-wrap">{pinnedSpec}</code>: change it to <code className="ib-rl-wrap">{pinTo ?? '@plannotator/opencode@latest'}</code>, then run <code className="ib-rl-wrap">{command}</code>
+        {tail}.
+      </>
+    );
+  }
+  return (
+    <>
+      Run <code className="ib-rl-wrap">{command}</code>
+      {tail}.
+    </>
   );
 }
 
@@ -235,6 +265,21 @@ export function Fold({ question, children }: { question: string; children: React
 /** Under the reply: what brings Send now back, then the manual path, folded. */
 export function RestartLine({ note, name }: { note: RestartNote; name: string }) {
   const updating = note.fix === 'update_plugin' || note.fix === 'update_extension';
+  if (note.runtime === 'opencode') {
+    const command = openCodeCommand(note);
+    return (
+      <div className="ib-rw-note" data-restart-note={note.fix} data-restart-runtime={note.runtime}>
+        <p className="ib-rl-lead ib-rl-line" data-reload-lead={note.pinnedSpec ? 'pin' : 'restart'} data-reload-command={command}>
+          <span>
+            <OpenCodeWords command={command} pinnedSpec={note.pinnedSpec} pinTo={note.pinTo} tail=" to get Send now" />
+          </span>
+          <ReloadCopy command={command} />
+        </p>
+        <OpenCodeQuiet command={command} updatesAll={note.updatesAll} />
+        <ManualPath note={note} name={name} />
+      </div>
+    );
+  }
   return (
     <div className="ib-rw-note" data-restart-note={note.fix} data-restart-runtime={note.runtime}>
       <ReloadLead
@@ -243,7 +288,6 @@ export function RestartLine({ note, name }: { note: RestartNote; name: string })
         reload={reloadOf(note)}
         what={updatedThing(note.runtime)}
       />
-      <OpenCodeQuitNote note={note} />
       <ManualPath note={note} name={name} />
     </div>
   );
@@ -269,6 +313,23 @@ export function StuckReason({ note, name }: { note: RestartNote | null; name: st
   const updating = note.fix === 'update_plugin' || note.fix === 'update_extension';
   const what = note.runtime === 'pi' || note.runtime === 'oh-my-pi' ? 'extension' : 'plugin';
   const verb = note.reloadWhere === 'shell' ? 'Run' : 'Type';
+  if (note.runtime === 'opencode') {
+    // One command (an update reloads by itself), or a pin to change first.
+    const command = openCodeCommand(note);
+    return (
+      <div className="ib-rw-note ib-m-whybox" data-restart-note={note.fix} data-restart-runtime={note.runtime}>
+        <p className="ib-m-why" data-stuck-why="" data-reload-lead={note.pinnedSpec ? 'pin' : 'restart'} data-reload-command={command}>
+          <span>
+            It can't go in sooner: this session runs an older Plannotator plugin.{' '}
+            <OpenCodeWords command={command} pinnedSpec={note.pinnedSpec} pinTo={note.pinTo} tail={note.pinnedSpec ? '' : ' to fix it'} />
+          </span>
+          <ReloadCopy command={command} />
+        </p>
+        <OpenCodeQuiet command={command} updatesAll={note.updatesAll} />
+        <ManualPath note={note} name={name} />
+      </div>
+    );
+  }
   return (
     <div className="ib-rw-note ib-m-whybox" data-restart-note={note.fix} data-restart-runtime={note.runtime}>
       {updating ? (
@@ -286,7 +347,6 @@ export function StuckReason({ note, name }: { note: RestartNote | null; name: st
           <ReloadCopy command={note.reloadCommand} />
         </p>
       )}
-      <OpenCodeQuitNote note={note} />
       <ManualPath note={note} name={name} />
     </div>
   );

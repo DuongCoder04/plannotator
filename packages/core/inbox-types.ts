@@ -1643,6 +1643,14 @@ export interface InboxSessionOutdated {
   reload_where?: "session" | "shell";
   /** When the reload does not take: `opencode2 service restart`. */
   fallback_command?: string;
+  /**
+   * OpenCode 2: the config pins this exact spec (`@plannotator/opencode@0.28.20`), so
+   * `opencode2 plugin update` does nothing: the person changes it to `pin_to`, then reloads.
+   */
+  pinned_spec?: string;
+  pin_to?: string;
+  /** OpenCode 2: `all` when the plugin's configured spec is unknown, so `opencode2 plugin update` names no target and updates every outdated plugin. */
+  update_scope?: "all";
 }
 
 /**

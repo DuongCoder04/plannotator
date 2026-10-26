@@ -146,6 +146,7 @@ import {
   claudeSessionOutdated,
   CLAUDE_PLUGIN_UPDATE_COMMAND,
   createClaudePluginInstallReader,
+  createOpenCodeSpecReader,
   createPiPinReader,
   openCodeSessionOutdated,
   piSessionOutdated,
@@ -1965,6 +1966,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const claudePluginInstall = createClaudePluginInstallReader(agentEnvironment);
   // Pi's settings pin an exact extension version: `pi update --extensions` skips it.
   const piPinned = createPiPinReader(agentEnvironment);
+  // OpenCode 2's configured spec: `opencode2 plugin update` takes it as its target (only Plannotator), and a pinned one never moves.
+  const openCodeSpec = createOpenCodeSpecReader(agentEnvironment);
   const live = createInboxLiveSessions({
     store,
     serverSession,
@@ -1981,7 +1984,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         });
       }
       if (host === "pi") return piSessionOutdated(plugin, version, { pinned: piPinned() });
-      return host === "opencode" ? openCodeSessionOutdated(plugin, version) : null;
+      return host === "opencode" ? openCodeSessionOutdated(plugin, version, { spec: openCodeSpec() }) : null;
     },
     displayFolder: (path) => displayPath(path, agentEnvironment) ?? path,
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),

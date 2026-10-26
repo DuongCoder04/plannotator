@@ -13,7 +13,7 @@ import { inboxApi } from '../api';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon } from '../icons';
 import { ConnectPicker } from './ConnectPicker';
-import { CommandLine, CopyCommand, Fold, ReloadLead, type ReloadSpec } from './RestartNote';
+import { CommandLine, CopyCommand, Fold, OpenCodeQuiet, OpenCodeWords, openCodeCommand, ReloadCopy, ReloadLead, type ReloadSpec } from './RestartNote';
 import type { InboxReloadRuntime } from '@plannotator/core/inbox-types';
 import { clockTime, dayWords, formatCount } from '../format';
 
@@ -34,7 +34,7 @@ function sessionsState(id: InboxToolHostId, sessions: InboxHostSessions | undefi
   if (!sessions || sessions.outdated === 0) return null;
   const n = sessions.outdated;
   if (id === 'pi') return n === 1 ? '1 needs a reload' : `${n} need a reload`;
-  if (sessions.sessions.some((s) => s.outdated?.fix === 'update_plugin')) return 'plugin needs an update';
+  if (sessions.sessions.some((s) => s.outdated?.fix === 'update_plugin' || (id === 'opencode' && s.outdated?.fix === 'update_extension'))) return 'plugin needs an update';
   return n === 1 ? '1 needs a reload' : `${n} need a reload`;
 }
 
@@ -62,13 +62,15 @@ function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHo
   const runningOnly = id !== 'claude-code' && stale.length === 0 && sessions.sessions[0]?.plugin ? ` · ${what} ${sessions.sessions[0].plugin}` : '';
   // Pi, Oh My Pi and OpenCode 2 sessions whose connection says which command loads the new code.
   const reloadable = stale.filter((s) => s.outdated?.runtime && s.outdated.runtime !== 'claude-code');
+  // Pi sessions on a connection older than the on-disk report: the update line, for them alone (beside any reloadable ones).
+  const legacy = id === 'pi' ? stale.filter((s) => !s.outdated?.runtime) : [];
   let sub: ReactNode = null;
-  if (id === 'pi' && stale.length > 0 && reloadable.length === 0) {
-    const first = stale[0]!;
+  if (legacy.length > 0) {
+    const first = legacy[0]!;
     sub = (
       <>
-        Run <code>pi update --extensions</code>, then <code>/reload</code> in {stale.length === 1 ? 'that session' : 'each of them'}
-        {stale.length === 1 ? ` (${first.project ?? 'Pi'}, since ${sinceText(first.started_at)})` : ''}.
+        Run <code>pi update --extensions</code>, then <code>/reload</code> in {legacy.length === 1 ? 'that session' : `each of those ${legacy.length}`}
+        {legacy.length === 1 ? ` (${first.project ?? 'Pi'}, since ${sinceText(first.started_at)})` : ''}.
       </>
     );
   }
@@ -127,15 +129,17 @@ const RUNTIME_LABEL: Record<InboxReloadRuntime, string> = { 'claude-code': 'Clau
  * Pi, Oh My Pi and OpenCode 2 sessions on older code (owner approval
  * "reload-hosts"): per runtime and command, one large line with Copy
  * ("Type /reload in each of these 2 Pi sessions.", "Type /restart in this Oh
- * My Pi session.", "Run opencode2 reload: it loads the new plugin in every
- * OpenCode session."), the update first when the package on disk is behind
- * too, then the sessions as a short list. OpenCode's fallback is folded.
+ * My Pi session.", "Run opencode2 reload."), the update first when the
+ * package on disk is behind too (OpenCode 2: `opencode2 plugin update <its
+ * spec>` alone, or the pin to change), then the sessions as a short list.
+ * OpenCode's reload carries one quiet line on what it cancels; its server
+ * restart is folded.
  */
 function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
   const groups = new Map<string, InboxOpenSession[]>();
   for (const s of sessions) {
     const o = s.outdated!;
-    const key = `${o.runtime}|${o.reload_command ?? ''}|${o.fix === 'update_extension' ? (o.update_command ?? '') : ''}`;
+    const key = `${o.runtime}|${o.reload_command ?? ''}|${o.fix === 'update_extension' ? (o.update_command ?? '') : ''}|${o.pinned_spec ?? ''}`;
     groups.set(key, [...(groups.get(key) ?? []), s]);
   }
   return (
@@ -146,22 +150,27 @@ function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
         const name = RUNTIME_LABEL[runtime];
         const reload: ReloadSpec = { command: o.reload_command ?? '/reload', where: o.reload_where ?? 'session' };
         const n = group.length;
-        const shell = reload.where === 'shell';
-        const where = shell
-          ? o.reload_command === 'opencode2 plugin update'
-            ? 'to load the newer plugin in every OpenCode session'
-            : 'to load the new plugin in every OpenCode session'
-          : n === 1
-            ? `in this ${name} session`
-            : `in each of these ${n} ${name} sessions`;
-        const what = runtime === 'opencode' ? "Plannotator's OpenCode plugin" : "Plannotator's extension";
+        const where = n === 1 ? `in this ${name} session` : `in each of these ${n} ${name} sessions`;
+        const what = "Plannotator's extension";
+        // OpenCode 2: one short line with its command and Copy (an update reloads by itself), the pin first when there is one.
+        const command =
+          runtime === 'opencode'
+            ? openCodeCommand({ fix: o.fix, updateCommand: o.update_command ?? null, reloadCommand: o.reload_command ?? 'opencode2 reload', pinnedSpec: o.pinned_spec ?? null })
+            : null;
         return (
           <div className="ib-rl" data-reload-sessions={runtime} key={key}>
-            <ReloadLead where={where} updateCommand={o.fix === 'update_extension' ? (o.update_command ?? null) : null} reload={reload} what={what} />
-            {runtime === 'opencode' && (
-              <p className="ib-rl-manual" data-opencode-quit-note="">
-                Quitting OpenCode is not enough: its background server keeps the old plugin.
-              </p>
+            {command ? (
+              <>
+                <p className="ib-rl-lead ib-rl-line" data-reload-lead={o.pinned_spec ? 'pin' : 'restart'} data-reload-command={command}>
+                  <span>
+                    <OpenCodeWords command={command} pinnedSpec={o.pinned_spec ?? null} pinTo={o.pin_to ?? null} />
+                  </span>
+                  <ReloadCopy command={command} />
+                </p>
+                <OpenCodeQuiet command={command} updatesAll={o.update_scope === 'all'} className="ib-rl-quiet" />
+              </>
+            ) : (
+              <ReloadLead where={where} updateCommand={o.fix === 'update_extension' ? (o.update_command ?? null) : null} reload={reload} what={what} />
             )}
             <ul className="ib-rw-sess" aria-label={`${name} sessions on older code`}>
               {group.map((s) => (
@@ -170,7 +179,7 @@ function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
                 </li>
               ))}
             </ul>
-            {runtime === 'opencode' && o.fallback_command && (
+            {command === 'opencode2 reload' && o.fallback_command && (
               <Fold question="Still listed after reloading?">
                 <div className="ib-rl-manual" data-restart-fallback="">
                   Restart OpenCode's background server:
