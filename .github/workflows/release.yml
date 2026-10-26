@@ -1350,8 +1350,14 @@ jobs:
       - name: Publish @plannotator/opencode
         run: npm publish ./npm-packages/plannotator-opencode.tgz --ignore-scripts --provenance --access public
 
-      - name: Publish @plannotator/dsh
-        run: npm publish ./npm-packages/plannotator-dsh.tgz --ignore-scripts --provenance --access public
-
       - name: Publish @plannotator/pi-extension
         run: npm publish ./npm-packages/plannotator-pi-extension.tgz --ignore-scripts --provenance --access public
+
+      # Last on purpose, and allowed to fail: @plannotator/dsh is new, and
+      # until its first version is published by hand and npm trusted
+      # publishing is set up for it, this step cannot succeed. A failure here
+      # must never hold back the two packages above. Remove
+      # continue-on-error once the package publishes from this workflow.
+      - name: Publish @plannotator/dsh
+        continue-on-error: true
+        run: npm publish ./npm-packages/plannotator-dsh.tgz --ignore-scripts --provenance --access public
