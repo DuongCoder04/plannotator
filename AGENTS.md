@@ -6,7 +6,7 @@ This file is a map. The full guidance lives in focused guides under [`docs/agent
 
 ## Hard rules (read before touching anything)
 
-- **Reusing the document UI?** Read [`packages/ui/README.md`](packages/ui/README.md) FIRST. Do not rebuild the UI or recreate `packages/document-ui`; add a seam to `@plannotator/ui` (`configurePlannotatorUI()`), keep Plannotator's app unchanged, and never delete working code until a human confirms parity in the browser.
+- **Reusing the document UI in the commercial Workspaces app?** Read [`packages/ui/README.md`](packages/ui/README.md) FIRST: an earlier from-scratch rebuild of this UI broke the app and was reverted. Do not rebuild the UI or recreate `packages/document-ui`; add a seam to `@plannotator/ui` (`configurePlannotatorUI()`), keep Plannotator's app unchanged, and never delete working code until a human confirms parity in the browser.
 - **Two server runtimes change together.** An endpoint change goes into both the Bun server (`packages/server/`) and the Pi server (`apps/pi-extension/server/`); shared logic lives in `packages/shared/`. Only the Inbox is Bun-only. See [Server Runtimes](docs/agent-guides/project-and-development.md#server-runtimes).
 - **Build order: review, then hook, then opencode.** `bun run --cwd apps/review build && bun run build:hook && bun run build:opencode`; building out of order copies stale HTML. See [Build](docs/agent-guides/project-and-development.md#build).
 - **Tailwind `@source`.** A new directory with `.tsx` files that use Tailwind classes needs a matching `@source` entry in the app's `index.css`.
@@ -15,17 +15,18 @@ This file is a map. The full guidance lives in focused guides under [`docs/agent
   - Tests never open a browser: set `NO_BROWSER` from `tests/helpers/no-browser.ts`, never `PLANNOTATOR_BROWSER=none` (or another sentinel).
   - Tests never run the real GitHub CLI, and never signal an Inbox except through `tests/helpers/inbox-process.ts`.
   - Every test guards a behavior that can regress: no copy snapshots of prose, no round-trip prop tests, no implementation echo.
-- **No new keyboard shortcuts without the owner's approval.** Approved ones go through the shortcut registry. See [Keyboard Shortcuts](docs/agent-guides/guides-and-shared-ui.md#keyboard-shortcuts).
-- **Git:** never rebase or force-push a shared branch; merge `main` instead.
+- **No new Inbox keyboard shortcuts without the owner's approval** (see the Inbox shortcuts note in [Keyboard Shortcuts](docs/agent-guides/guides-and-shared-ui.md#keyboard-shortcuts)). Shortcuts elsewhere go through the shortcut registry.
+- **Git:** never rebase or force-push a shared branch; merge main instead.
+- **Releases:** follow [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
 
 ## Topic guides
 
 - [`project-and-development.md`](docs/agent-guides/project-and-development.md): repository map, server runtimes, installation, development, Testing Rules, build, marketing site.
 - [`environment.md`](docs/agent-guides/environment.md): every environment variable and config-only setting.
 - [`plan-review.md`](docs/agent-guides/plan-review.md): plan review flow, Guides in VS Code, Pi plan review and the Pi `plannotator` tool.
-- [`claude-code-mod.md`](docs/agent-guides/claude-code-mod.md): the Claude Code hooks module (non-blocking flows, the `plannotator` tool, Ask this session, version skew).
+- [`claude-code-mod.md`](docs/agent-guides/claude-code-mod.md): the Claude Code hooks module (non-blocking flows, the `plannotator` tool, its Ask this session client and Inbox wake, version skew).
 - [`opencode-t3-and-codex.md`](docs/agent-guides/opencode-t3-and-codex.md): OpenCode 2 tool, T3 Code, Codex Stop hook.
-- [`code-review.md`](docs/agent-guides/code-review.md): code review flow and UI, Ask AI provider defaults.
+- [`code-review.md`](docs/agent-guides/code-review.md): code review flow and UI, Ask AI provider defaults, "Ask this session" (the session bridge and pull bridge).
 - [`annotate.md`](docs/agent-guides/annotate.md): annotate flow, bundles, drafts, strict gates, live app annotation.
 - [`inbox.md`](docs/agent-guides/inbox.md): index to the Plannotator Inbox guides (`inbox-*.md`).
 - [`server-and-storage.md`](docs/agent-guides/server-and-storage.md): archive, Server API tables and guards, plan history, feedback archive, usage counts, plan diff.
