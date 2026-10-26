@@ -123,6 +123,8 @@
     "./browser-intent": "./browser-intent.ts",
     "./host-control": "./host-control.ts",
     "./live-probe": "./live-probe.ts",
+    "./plannotator-server-marker": "./plannotator-server-marker.ts",
+    "./plannotator-ports": "./plannotator-ports.ts",
     "./live-proxy-node": "./live-proxy-node.ts",
     "./inbox/schema": "./inbox/schema.ts",
     "./inbox/store": "./inbox/store.ts",
