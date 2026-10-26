@@ -175,7 +175,10 @@ describe('fitting the foot on one line (footFit.ts)', () => {
   });
 
   test('the whole row shortens in the owner\'s order before the status wraps: skip, Edit, the count, the draft words, tight', () => {
-    expect([0, 1, 2, 3, 4, 5].map(footRowTokens)).toEqual(['', 'skip', 'skip edit', 'skip edit oq', 'skip edit oq draft', 'skip edit oq draft tight']);
+    expect([0, 1, 2, 3, 4, 5].map((level) => footRowTokens(level))).toEqual(['', 'skip', 'skip edit', 'skip edit oq', 'skip edit oq draft', 'skip edit oq draft tight']);
+    // A phone has one more step: Edit draft as its pencil. Other windows stop at tight.
+    expect(footRowTokens(6, true)).toBe('skip edit oq draft tight icon');
+    expect(footRowTokens(6)).toBe('skip edit oq draft tight');
     // The open questions button keeps its longest form until the third step, then shows its count.
     expect([0, 1, 2, 3, 5].map((level) => footRowOpenQuestionsForm(level, 'full'))).toEqual(['full', 'full', 'full', 'count', 'count']);
     expect(footRowOpenQuestionsForm(0, 'short')).toBe('short');
@@ -857,4 +860,51 @@ test.skipIf(!hasDom)('"Skip 1, unskip 1": a skipped row and an open row ticked; 
   expect(byMessage.get(M3)!.answer?.selected).toEqual([]);
   expect(byMessage.get(M2)!.answer).toBeNull();
   await until(() => !selecting() && rowOf(M3)!.hasAttribute('data-skipped') && !rowOf(M2)!.hasAttribute('data-skipped'), 'the rows follow');
+});
+
+// ── The draft status in the foot (DraftFootNote): what step 4 of the row keeps ──
+
+/** The words a screen reader gets from an element: its text without aria-hidden parts (visually hidden text included). */
+function spokenText(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((n) => n.remove());
+  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+async function renderDraftFoot(unsent: { reply: boolean; picks: number; comments: number }) {
+  const { DraftFootNote } = await import('./components/DraftLabel');
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  act(() => {
+    root = createRoot(host!);
+    root.render(<DraftFootNote id="draft-note" unsent={unsent} />);
+  });
+  return host.querySelector<HTMLElement>('[data-draft-foot]')!;
+}
+
+test.skipIf(!hasDom)('the draft status keeps its pick words and its comment count apart; the pill carries the count for step 4', async () => {
+  const foot = await renderDraftFoot({ reply: false, picks: 1, comments: 3 });
+  expect(foot.querySelector('[data-draft-words]')!.textContent).toBe('1 pick');
+  expect(foot.querySelector('[data-draft-comments]')!.textContent).toBe('3 comments');
+  // The pill's count (shown at step 4 as a glyph and the number) is hidden from screen readers.
+  const count = foot.querySelector('.ib-draft-pill [data-draft-pill-count]')!;
+  expect(count.getAttribute('aria-hidden')).toBe('true');
+  expect(count.textContent).toBe('3');
+  expect(count.querySelector('svg')).not.toBeNull();
+  // What Send and Edit draft are described by says everything, whatever step 4 hides.
+  expect(spokenText(foot)).toBe('Draft, 1 pick, 3 comments');
+});
+
+test.skipIf(!hasDom)('with no comments the pill carries no count: step 4 shows "Draft" alone', async () => {
+  const foot = await renderDraftFoot({ reply: true, picks: 2, comments: 0 });
+  expect(foot.querySelector('[data-draft-pill-count]')).toBeNull();
+  expect(foot.querySelector('[data-draft-comments]')).toBeNull();
+  expect(spokenText(foot)).toBe('Draft, Your reply, 2 picks');
+});
+
+test.skipIf(!hasDom)('comments alone: the words are the count, and the pill carries it too', async () => {
+  const foot = await renderDraftFoot({ reply: false, picks: 0, comments: 1 });
+  expect(foot.querySelector('[data-draft-words]')).toBeNull();
+  expect(foot.querySelector('[data-draft-pill-count]')!.textContent).toBe('1');
+  expect(spokenText(foot)).toBe('Draft, 1 comment');
 });

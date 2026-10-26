@@ -159,8 +159,7 @@ test('pictures: the foot at every width and state', async () => {
     await open(l);
     await world.page.locator('.ib-pfoot').screenshot({ path: join(shotsDir, `foot-${nameOf(l)}.png`) });
     await world.page.screenshot({ path: join(shotsDir, `window-${nameOf(l)}.png`) });
-    console.log(nameOf(l), JSON.stringify(await measure(world.page)));
-  }
+    console.log(nameOf(l), JSON.stringify(await measure(world.page)));  }
 });
 
 test('one row beside a file and in every wide layout; it shortens before it wraps', async () => {
@@ -192,4 +191,46 @@ test('a phone: the buttons stay on one line, the status beside them or on its ow
     return { buttonsOneLine: Math.abs(oq!.top - send!.top) < 2, statusPlaced: status!.bottom <= send!.top + 1 || Math.abs(status!.top + status!.height / 2 - (send!.top + send!.height / 2)) < 4 };
   });
   expect(phone).toEqual({ buttonsOneLine: true, statusPlaced: true });
+  // With a pick and a comment the whole row is one line: Edit draft is its pencil (still named "Edit draft"), the
+  // pill keeps the comment count ("Draft 💬1").
+  const m = await measure(page);
+  expect(m.oneRow, `${m.text} (fit ${m.fit})`).toBe(true);
+  expect(m.overflow).toBe(false);
+  await expect(page.locator('.ib-pfoot [data-draft-pill-count]')).toBeVisible();
+  await expect(page.locator('.ib-pfoot [data-draft-pill-count]')).toHaveText('1');
+  await expect(page.locator('.ib-pfoot [data-foot-buttons]').getByRole('button', { name: 'Edit draft' })).toBeVisible();
+  await expect(page.locator('.ib-pfoot [data-foot-buttons] .ib-btn.ib-pri')).toHaveAccessibleDescription(/^Draft, 1 pick, 1 comment\b/);
+});
+
+test('step 4 keeps the comment count in the Draft pill; the pick words go', async () => {
+  const { page } = world;
+  for (const l of [{ width: 1440, file: true, thread: 'checkout' }, { width: 1280, file: true, thread: 'checkout' }] as Layout[]) {
+    await open(l);
+    const m = await measure(page);
+    expect(m.fit, nameOf(l)).toContain('draft');
+    await expect(page.locator('.ib-pfoot [data-draft-pill-count]'), nameOf(l)).toBeVisible();
+    await expect(page.locator('.ib-pfoot [data-draft-pill-count]')).toHaveText('1');
+    // Visually hidden text (a 1 px clipped box), not removed.
+    expect(await page.locator('.ib-pfoot .ib-draft-foot .ib-st').evaluate((el) => el.getBoundingClientRect().width), nameOf(l)).toBeLessThanOrEqual(1);
+    // The words stay for a screen reader: Send is described by all of it.
+    await expect(page.locator('.ib-pfoot [data-foot-buttons] .ib-btn.ib-pri')).toHaveAccessibleDescription(/^Draft, 1 pick, 1 comment\b/);
+  }
+  // Wide enough for the words: no count in the pill, the words as before.
+  await open({ width: 1440, file: false, thread: 'checkout' });
+  await expect(page.locator('.ib-pfoot [data-draft-pill-count]')).toBeHidden();
+  expect(await page.locator('.ib-pfoot .ib-draft-foot .ib-st').evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThan(40);
+});
+
+test('step 4 with no comments: the pill reads "Draft" alone', async () => {
+  const { page } = world;
+  // Last test: it removes the checkout thread's comment.
+  const removed = await fetch(`${world.url.replace(/\/$/, '')}/api/inbox/annotations/ann-checkout/remove`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  expect(removed.status, await removed.clone().text()).toBe(200);
+  await open({ width: 1440, file: true, thread: 'checkout' });
+  const m = await measure(page);
+  expect(m.fit).toContain('draft');
+  await expect(page.locator('.ib-pfoot [data-draft-pill-count]')).toHaveCount(0);
+  await expect(page.locator('.ib-pfoot .ib-draft-pill')).toHaveText(/^Draft,?$/);
+  await expect(page.locator('.ib-pfoot [data-foot-buttons] .ib-btn.ib-pri')).toHaveAccessibleDescription(/^Draft, 1 pick\b/);
+  await page.locator('.ib-pfoot').screenshot({ path: join(shotsDir, 'foot-checkout-1440-file-no-comments.png') });
 });

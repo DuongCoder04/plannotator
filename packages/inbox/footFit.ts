@@ -111,19 +111,30 @@ export function fitFootRow(buttons: HTMLElement, candidates: readonly FootFit[],
 //   1. skip   the skip chip: "1 question stays open · Skip it" → "1 open · Skip"
 //   2. edit   "Edit draft" → "Edit"
 //   3. oq     "2 open questions ⌄" → the icon, "2" and the chevron
-//   4. draft  the words after the Draft pill go ("1 pick, 1 comment")
-//   5. tight  the buttons' side padding and the gaps get smaller
+//   4. draft  the pick words after the Draft pill go; the comment count stays,
+//             as a comment glyph and the number inside the pill ("Draft 💬3";
+//             with no comments, "Draft" alone)
+//   5. tight  the buttons' side padding and the gaps (the status's too) get smaller
+//   6. icon   a phone only: "Edit draft" becomes its pencil, the gaps 4 px
 // Each step keeps the ones before it. The long words stay in the page as
 // visually hidden text (inbox.css), so names and descriptions are whole.
 
 /** One step of shortening; a level is the first N of them. */
-export type FootRowStep = 'skip' | 'edit' | 'oq' | 'draft' | 'tight';
+export type FootRowStep = 'skip' | 'edit' | 'oq' | 'draft' | 'tight' | 'icon';
 
+/** The steps every window takes. */
 export const FOOT_ROW_STEPS: readonly FootRowStep[] = ['skip', 'edit', 'oq', 'draft', 'tight'];
 
+/** A phone's steps: the same, then Edit draft as its pencil. */
+export const PHONE_FOOT_ROW_STEPS: readonly FootRowStep[] = [...FOOT_ROW_STEPS, 'icon'];
+
+export function footRowSteps(phone = false): readonly FootRowStep[] {
+  return phone ? PHONE_FOOT_ROW_STEPS : FOOT_ROW_STEPS;
+}
+
 /** The row's `data-fit` at a level: the steps taken, space-separated ("" at level 0). */
-export function footRowTokens(level: number): string {
-  return FOOT_ROW_STEPS.slice(0, Math.max(0, level)).join(' ');
+export function footRowTokens(level: number, phone = false): string {
+  return footRowSteps(phone).slice(0, Math.max(0, level)).join(' ');
 }
 
 /** The open questions button's form at a level: `max` until the `oq` step, then the count. */
@@ -164,7 +175,7 @@ export function drawOpenQuestionsForm(button: HTMLElement, fit: FootFit): void {
  * above, and the button fits itself among the buttons). Null too where there
  * is no layout (a test DOM, a hidden pane).
  */
-export function fitWholeFootRow(row: HTMLElement, max: OpenQuestionsLabelForm): number | null {
+export function fitWholeFootRow(row: HTMLElement, max: OpenQuestionsLabelForm, phone = false): number | null {
   if (row.getBoundingClientRect().width <= 0) return null;
   const button = row.querySelector<HTMLElement>('[data-foot-buttons] [data-open-questions]');
   const was = {
@@ -173,8 +184,9 @@ export function fitWholeFootRow(row: HTMLElement, max: OpenQuestionsLabelForm): 
       ? { form: (button.getAttribute('data-label-form') ?? max) as OpenQuestionsLabelForm, tight: button.hasAttribute('data-fit-tight') }
       : null,
   };
-  for (let level = 0; level <= FOOT_ROW_STEPS.length; level++) {
-    const tokens = footRowTokens(level);
+  const steps = footRowSteps(phone);
+  for (let level = 0; level <= steps.length; level++) {
+    const tokens = footRowTokens(level, phone);
     if (tokens) row.setAttribute('data-fit', tokens);
     else row.removeAttribute('data-fit');
     if (button) drawOpenQuestionsForm(button, { form: footRowOpenQuestionsForm(level, max), tight: false });

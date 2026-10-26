@@ -301,17 +301,19 @@ test('the foot after a pick: the buttons on the left, the draft status at the ro
   expect(wide.status.x).toBeGreaterThan(wide.reask.x + wide.reask.width);
   expect(Math.abs(wide.status.x + wide.status.width - (wide.row.x + wide.row.width))).toBeLessThan(2);
   await shot('04d-foot-status-right');
-  // A phone: the status takes its own line above the buttons, and every button stays on one line below it.
+  // A phone: the row shortens to its last step (Edit draft as its pencil) and keeps one line: the buttons, then the status.
   await page.setViewportSize({ width: 390, height: 844 });
   // Read in one frame (the layout moves while the window settles into the phone's).
   const narrow = () =>
     page.evaluate(() => {
       const r = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
-      const [row, status, send, reask] = ['[data-foot-row]', '[data-foot-status]', '[data-foot-buttons] .ib-btn.ib-pri', '[data-foot-buttons] [data-open-questions]'].map((s) => r(`.ib-pfoot ${s}`));
-      return { above: status!.bottom <= send!.top, start: Math.abs(status!.left - row!.left) < 2, oneLine: Math.abs(reask!.top - send!.top) < 2 };
+      const [status, send, reask] = ['[data-foot-status]', '[data-foot-buttons] .ib-btn.ib-pri', '[data-foot-buttons] [data-open-questions]'].map((s) => r(`.ib-pfoot ${s}`));
+      const mid = (b: DOMRect) => b.top + b.height / 2;
+      return { besideButtons: Math.abs(mid(status!) - mid(send!)) < 4 && status!.left >= reask!.right, oneLine: Math.abs(reask!.top - send!.top) < 2 };
     });
-  await expect.poll(narrow).toEqual({ above: true, start: true, oneLine: true });
-  await shot('04e-foot-status-above');
+  await expect.poll(narrow).toEqual({ besideButtons: true, oneLine: true });
+  await expect(page.locator('.ib-pfoot [data-foot-buttons]').getByRole('button', { name: 'Edit draft' })).toBeVisible();
+  await shot('04e-foot-status-phone');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(world.url);
   await expect(pane).toHaveCount(0);

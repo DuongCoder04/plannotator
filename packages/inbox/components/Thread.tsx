@@ -2860,7 +2860,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const footRowShown = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !box.open && !(route.open && asking);
   const rowMax: OpenQuestionsLabelForm = phone ? 'short' : 'full';
   // What the row shows; a change re-fits it (with its width).
-  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax].join('|');
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone].join('|');
   const rowFittedFor = useRef('');
   const fitRowRef = useRef<(force?: boolean) => void>(() => {});
   fitRowRef.current = (force = false) => {
@@ -2869,7 +2869,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const key = `${row.getBoundingClientRect().width}|${footSig}`;
     if (!force && key === rowFittedFor.current) return;
     rowFittedFor.current = key;
-    const level = footStatusShown ? fitWholeFootRow(row, rowMax) : null;
+    const level = footStatusShown ? fitWholeFootRow(row, rowMax, phone) : null;
     setRowLevel((current) => (current === level ? current : level));
   };
   // Every render (after the open questions button drew itself), and whenever the row's width changes.
@@ -3833,7 +3833,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           {/* Buttons on the left in today's order, the draft status and the skip chip at the right end (approval
               "thread-foot-status-right", option A). Too narrow for one line, the status takes its own line ABOVE the
               buttons (wrap-reverse; one item per line aligns to the start), so it never wraps between them. */}
-          <div className="ib-acts ib-footrow" data-foot-row="" data-fit={rowLevel ? footRowTokens(rowLevel) : undefined} ref={footRowRef}>
+          <div className="ib-acts ib-footrow" data-foot-row="" data-fit={rowLevel ? footRowTokens(rowLevel, phone) : undefined} ref={footRowRef}>
             <div className="ib-footbtns" data-foot-buttons="">
               {(waiting || draftKept) && (
                 <button type="button" className="ib-btn ib-pri" ref={sendRef} onClick={() => void send()} disabled={sending} aria-describedby={footStatusIds}>
@@ -3850,7 +3850,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 aria-describedby={waiting || draftKept ? footStatusIds : undefined}
               >
                 <Icon name={waiting || draftKept ? 'pen' : 'reply'} size={15} />
-                {/* Short of room, "Edit" (footFit.ts): the rest stays as hidden text, so the name is "Edit draft". */}
+                {/* Short of room, "Edit", and on a phone the pencil alone (footFit.ts): the words stay as hidden text,
+                    so the name is "Edit draft". */}
                 {waiting || draftKept ? (
                   <span>
                     Edit<span className="ib-fl"> draft</span>
