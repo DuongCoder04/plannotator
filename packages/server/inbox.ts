@@ -119,6 +119,7 @@ import {
 import { openBrowser } from "./browser";
 import { isAddressInUseError } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { markPlannotatorResponse, withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { createInboxMcpServer } from "./inbox-mcp";
 import { inboxGuideRoute } from "./inbox-guides";
 import { createInboxRepoCache } from "./inbox-repos";
@@ -555,7 +556,7 @@ export { resolveInboxProjectRoot } from "./inbox-project-root";
 
 function startOnLoopback(fetch: Parameters<typeof Bun.serve>[0]["fetch"], preferred: number | null): { server: ReturnType<typeof Bun.serve>; portChanged: boolean } {
   const serve = (port: number) =>
-    Bun.serve({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch } as Parameters<typeof Bun.serve>[0]);
+    Bun.serve(withPlannotatorServerHeader({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch }) as Parameters<typeof Bun.serve>[0]);
   let portChanged = false;
   // Never remote mode's port, and never Phones' tailnet HTTPS port: the
   // window's tailnet mapping uses the Inbox's own port, so the two never meet.
@@ -2724,7 +2725,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     dataDir,
     port: () => port,
     registry: () => registry,
-    dispatch: (req) => handle(req, "tailnet"),
+    dispatch: async (req) => markPlannotatorResponse(await handle(req, "tailnet")),
     // Compress the page for the tailnet before the first phone asks (#2032).
     onListen: () => prewarmAppHtml(options.htmlContent ?? NOT_BUILT_PAGE, "br"),
     tailscale: options.tailscale,
