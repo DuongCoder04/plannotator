@@ -4,7 +4,8 @@ import { InboxApiError, uploadFile } from '../api';
 import { formatBytes } from '../format';
 import { Icon, type IconName } from '../icons';
 import { FileName } from '../components/FileName';
-import { chosenFiles, clipboardHasText, clipboardTextIsJustALink, pastedFiles } from './paste';
+import { isPhone } from '../phone';
+import { chosenFiles, clipboardHasText, pastedFiles, pastedImageOwnLink } from './paste';
 
 /**
  * Compose's files, and the reply box's: each one the person picked, dropped
@@ -117,10 +118,11 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
     (event: ReactClipboardEvent<HTMLElement>): boolean => {
       if (event.defaultPrevented) return false;
       const data = event.clipboardData;
-      const list = pastedFiles(data, namesRef.current);
+      const phone = isPhone();
+      const list = pastedFiles(data, namesRef.current, new Date(), { phone });
       if (list.length === 0) return false;
-      // Text the person meant (not just the picture's own link, see paste.ts) still pastes natively.
-      if (!clipboardHasText(data) || clipboardTextIsJustALink(data)) event.preventDefault();
+      // Text the person meant still pastes natively; on a phone an image's own link (paste.ts) is not inserted.
+      if (!clipboardHasText(data) || pastedImageOwnLink(data, phone)) event.preventDefault();
       namesRef.current = [...namesRef.current, ...list.map((file) => file.name)];
       add(list);
       onPasted.current?.(list.map((file) => file.name));

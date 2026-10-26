@@ -240,7 +240,7 @@ function paste(target: HTMLElement, content: { files?: File[]; text?: string; ht
     ...files.map((file) => ({ kind: 'file', type: file.type, getAsFile: () => file })),
   ];
   const event = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(event, 'clipboardData', { value: { files, items, types: items.map((i) => i.type), getData: () => content.text ?? '' } });
+  Object.defineProperty(event, 'clipboardData', { value: { files, items, types: items.map((i) => i.type), getData: (type: string) => (type === 'text/html' ? (content.html ?? '') : type === 'text/plain' ? (content.text ?? '') : '') } });
   act(() => {
     target.dispatchEvent(event);
   });
@@ -300,6 +300,12 @@ test.skipIf(!hasDom)('the reply box: two pasted images make two tiles (the secon
 
   // A desktop is paste-only: no attach button in the reply box.
   expect(el.querySelector('[data-reply-attach]')).toBeNull();
+  // A spreadsheet cell whose value is a URL (its text, an HTML table, a picture of the cell): text, as before.
+  const cellUrl = 'https://example.com/q3';
+  expect(paste(text, { text: cellUrl, html: `<table><tr><td>${cellUrl}</td></tr></table>`, files: [image()] })).toBe(false);
+  // Even an <img> of that very link: a desktop keeps today's rule (text with an unnamed picture is text).
+  expect(paste(text, { text: cellUrl, html: `<img src="${cellUrl}">`, files: [image()] })).toBe(false);
+  expect(el.querySelector('[data-reply-files]')).toBeNull();
   // Text alone (a dictation app's synthetic paste included): never prevented, nothing attached.
   expect(paste(text, { text: 'some words' })).toBe(false);
   expect(el.querySelector('[data-reply-files]')).toBeNull();
@@ -443,7 +449,7 @@ test.skipIf(!hasDom)('a Send the Inbox never got, then a file pasted and the sam
   expect(mine[0]!.attachments).toHaveLength(1);
 }, 30_000);
 
-test.skipIf(!hasDom)('a phone: the reply box has an attach button; a chosen image uploads and rides the Send, and an image pasted with only its link as text attaches', async () => {
+test.skipIf(!hasDom)('a phone: the reply box has an attach button; a chosen image uploads and rides the Send; an image copied from a page attaches, a spreadsheet cell holding a URL stays text', async () => {
   const savedMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) => ({
     matches: query === PHONE_QUERY,
@@ -475,10 +481,14 @@ test.skipIf(!hasDom)('a phone: the reply box has an attach button; a chosen imag
     expect(tiles(replyBox(el)!)[0]!.getAttribute('data-compose-file-name')).toBe('header.png');
     await until(() => el.querySelector('[data-fold-live]')?.textContent === 'Attached header.png', 'the announcement');
 
-    // An image copied from a page on a phone: the picture and its link as the plain text. The picture
-    // attaches and the link is not pasted into the words.
     const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
-    expect(paste(text, { files: [image()], text: 'https://example.com/board/header.png' })).toBe(true);
+    // A spreadsheet cell whose value is a URL: text on a phone too; nothing attaches.
+    const link = 'https://example.com/board/header.png';
+    expect(paste(text, { text: link, html: `<table><tr><td>${link}</td></tr></table>`, files: [image()] })).toBe(false);
+    expect(tiles(replyBox(el)!)).toHaveLength(1);
+    // An image copied from a page on a phone: the picture, its link as the plain text and an <img> of that link.
+    // The picture attaches and the link is not pasted into the words.
+    expect(paste(text, { files: [image()], text: link, html: `<img src="${link}">` })).toBe(true);
     await until(() => tiles(replyBox(el)!).length === 2 && tiles(replyBox(el)!).every((t) => t.getAttribute('data-compose-file') === 'done'), 'the pasted picture');
 
     type(text, 'The header on my phone.');

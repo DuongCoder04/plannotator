@@ -22,7 +22,7 @@
 
 import { chromium, devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { INBOX_BRIDGE_POLL_PATH } from '../../packages/shared/inbox/connection';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
@@ -103,7 +103,8 @@ function keepLive(dataDir: string, session: string, host: string, project: strin
 async function shot(page: Page, name: string): Promise<void> {
   for (const scheme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
-    await page.waitForTimeout(250);
+    // The theme's colour transition settles before the picture.
+    await page.waitForTimeout(1_500);
     const file = join(proofDir, `${prefix}-${name}-${scheme}.png`);
     await page.screenshot({ path: file });
     if (extraShots) copyFileSync(file, join(extraShots, `${prefix}-${name}-${scheme}.png`));
@@ -143,8 +144,8 @@ test.afterAll(async () => {
  * Each footer button's words on one line, inside the button, and the
  * footer's parts inside the card. Returns the problems found.
  */
-async function footerProblems(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
+async function footerProblems(page: Page, minTarget = 44): Promise<string[]> {
+  return page.evaluate((minTarget) => {
     const out: string[] = [];
     for (const card of document.querySelectorAll<HTMLElement>('section.ib-pane fieldset[data-question-key]')) {
       const foot = card.querySelector<HTMLElement>(':scope > div.border-t');
@@ -159,7 +160,7 @@ async function footerProblems(page: Page): Promise<string[]> {
         if (button.scrollWidth > button.clientWidth + 1) out.push(`"${name}" overflows its button`);
         const box = button.getBoundingClientRect();
         if (box.right > cardBox.right + 1 || box.left < cardBox.left - 1) out.push(`"${name}" sits outside the card`);
-        if (box.height < 43.5) out.push(`"${name}" is ${box.height}px tall, under 44`);
+        if (box.height < minTarget - 0.5) out.push(`"${name}" is ${box.height}px tall, under ${minTarget}`);
       }
       const status = foot.querySelector<HTMLElement>('.ib-qfoot-st');
       if (status) {
@@ -175,7 +176,7 @@ async function footerProblems(page: Page): Promise<string[]> {
       }
     }
     return out;
-  });
+  }, minTarget);
 }
 
 /** The radio dot's painted look: what tells picked from unpicked. */
@@ -267,7 +268,8 @@ for (const phone of PHONES) {
       for (const scheme of ['light', 'dark'] as const) {
         await page.emulateMedia({ colorScheme: scheme });
         const looks = await radioLooks(page);
-        // Drawn by the page, not the platform: the same in WebKit and Chromium.
+        // On a touch screen, drawn by the page, not the platform: the same in WebKit and Chromium.
+        check(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
         check(looks.unchecked.startsWith('none|')).toBe(true);
         check(looks.checked).not.toBe(looks.unchecked);
         // The picked radio carries the dot (its ::before at full size); the unpicked one is a hollow ring.
@@ -293,18 +295,28 @@ for (const phone of PHONES) {
       await expect(box.locator('[data-compose-file="done"]')).toHaveCount(1);
       const name = (await box.locator('[data-compose-file]').getAttribute('data-compose-file-name'))!;
       expect(name).toMatch(PASTED);
-      // An image copied from a page brings its URL as the plain text: it attaches too.
+      // A paste on the reply box: an image.png beside `text` and `html`. Returns whether the browser's own paste was prevented.
       await box.getByRole('textbox').focus();
-      const prevented = await page.evaluate((b64) => {
-        const data = new DataTransfer();
-        data.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'image.png', { type: 'image/png' }));
-        data.setData('text/plain', 'https://example.com/board/header.png');
-        data.setData('text/uri-list', 'https://example.com/board/header.png');
-        const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
-        document.activeElement!.dispatchEvent(event);
-        return event.defaultPrevented;
-      }, PNG.toString('base64'));
-      expect(prevented).toBe(true);
+      const pasteWith = (text: string, html: string) =>
+        page.evaluate(
+          ({ b64, text, html }) => {
+            const data = new DataTransfer();
+            data.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], 'image.png', { type: 'image/png' }));
+            data.setData('text/plain', text);
+            data.setData('text/html', html);
+            const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+            document.activeElement!.dispatchEvent(event);
+            return event.defaultPrevented;
+          },
+          { b64: PNG.toString('base64'), text, html },
+        );
+      const link = 'https://example.com/board/header.png';
+      // A spreadsheet cell whose value is a URL (its text, an HTML table, a picture of the cell): text, nothing attaches.
+      expect(await pasteWith(link, `<table><tr><td>${link}</td></tr></table>`)).toBe(false);
+      await page.waitForTimeout(300);
+      await expect(box.locator('[data-compose-file]')).toHaveCount(1);
+      // An image copied from a page on a phone: its link as the text and an <img> of that link. It attaches.
+      expect(await pasteWith(link, `<meta charset="utf-8"><img src="${link}">`)).toBe(true);
       await expect(box.locator('[data-compose-file="done"]')).toHaveCount(2);
       // The URL never lands in the words.
       await expect(box.getByRole('textbox')).not.toHaveValue(/example\.com/);
@@ -341,3 +353,56 @@ for (const phone of PHONES) {
     });
   });
 }
+
+test.describe('a desktop, the thread beside a file (Chromium)', () => {
+  let browser: Browser;
+  let context: BrowserContext;
+  let page: Page;
+  let threadId: string;
+
+  test.beforeAll(async () => {
+    writeFileSync(join(world.project, 'board-notes.md'), '# Board notes\n\nThe header copy, the columns.\n');
+    const sent = await world.agent.send({ project_path: world.project, subject: 'Board header copy (desktop)', body: QUESTIONS, attachments: ['board-notes.md'] });
+    threadId = sent.thread_id as string;
+    browser = await chromium.launch();
+    context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
+    page = await context.newPage();
+  });
+
+  test.afterAll(async () => {
+    await context?.close();
+    await browser?.close();
+  });
+
+  test('the card footer in a ~440 px thread: whole words in every button, the status above them; the system radios stay', async () => {
+    await page.goto(`${world.url}#thread=${threadId}`);
+    const pane = page.locator('section.ib-pane');
+    const cards = pane.locator('fieldset[data-question-key]');
+    await expect(cards).toHaveCount(2);
+    const first = cards.nth(0);
+    await first.getByRole('button', { name: 'Add note' }).click();
+    await first.locator('textarea').last().fill('For backlog items I’d like a way to tell the agent to start.');
+    await expect(first.locator('.ib-qfoot-st')).toContainText('in your draft');
+    const second = cards.nth(1);
+    await second.locator('label[data-question-option]').first().click();
+    await second.getByRole('button', { name: 'Add note' }).click();
+    await second.locator('textarea').last().fill('Shipped too, after a week.');
+    await expect(second.locator('.ib-qfoot-st')).toContainText('in your draft');
+    // Open the attached file beside the thread: the thread narrows to its column.
+    await pane.getByRole('button', { name: 'Open board-notes.md' }).first().click();
+    await expect(page.locator('.ib-pane.ib-withfile')).toBeVisible();
+    const width = (await pane.locator('fieldset[data-question-key]').first().boundingBox())!.width;
+    expect(width).toBeLessThan(470);
+    check(await footerProblems(page, 0), `the card at ${Math.round(width)} px`).toEqual([]);
+    // The status no longer fits beside the buttons, so it sits above them.
+    const status = (await first.locator('.ib-qfoot-st').boundingBox())!;
+    const accept = (await first.getByRole('button', { name: 'Accept recommended' }).boundingBox())!;
+    check(status.y + status.height).toBeLessThanOrEqual(accept.y + 1);
+    // A mouse and a trackpad keep the system's radios and checkboxes, as before.
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(false);
+    const appearance = await first.locator('input[type="radio"]').first().evaluate((el) => getComputedStyle(el).appearance);
+    expect(appearance).not.toBe('none');
+    await first.scrollIntoViewIfNeeded();
+    await shot(page, 'desktop-beside-file-card-footer');
+  });
+});

@@ -1033,45 +1033,48 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 /* The card's radios and checkboxes, drawn by the page: WebKit's native dark-scheme control is a solid near-black
    disc whether picked or not (the owner's iPhone), so picked and unpicked read alike. Unpicked: a hollow ring
    on the card; picked: the accent's ring with its dot (radio), or the accent filled with a check (checkbox).
-   The size and place stay ui's (15 px, 20 px on a phone). Forced colours keep the system's control. */
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
-  -webkit-appearance: none;
-  appearance: none;
-  display: inline-grid;
-  place-content: center;
-  box-sizing: border-box;
-  border: 1.5px solid color-mix(in oklab, var(--muted-foreground) 80%, transparent);
-  border-radius: 50%;
-  background-color: transparent;
-  color: var(--primary-foreground);
-  transition: border-color 120ms ease-out, background-color 120ms ease-out;
+   The size and place stay ui's (15 px, 20 px on a phone); a checkbox has the "Other…" box's 3 px corner. Only
+   on a touch screen (phones, iPads): a desktop keeps the system's control, as before. Forced colours keep it too. */
+@media (pointer: coarse) {
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    box-sizing: border-box;
+    border: 1.5px solid color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+    border-radius: 50%;
+    background-color: transparent;
+    color: var(--primary-foreground);
+    transition: border-color 120ms ease-out, background-color 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"] { border-radius: 3px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"])::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    transform: scale(0);
+    transition: transform 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]::before {
+    width: 10px;
+    height: 10px;
+    border-radius: 0;
+    background: currentColor;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked { border-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]:checked { background-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked::before { transform: scale(1); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
 }
-.pn-inbox .question-block input[data-question-control][type="checkbox"] { border-radius: 4px; }
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"])::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--primary);
-  transform: scale(0);
-  transition: transform 120ms ease-out;
-}
-.pn-inbox .question-block input[data-question-control][type="checkbox"]::before {
-  width: 10px;
-  height: 10px;
-  border-radius: 0;
-  background: currentColor;
-  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
-}
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked { border-color: var(--primary); }
-.pn-inbox .question-block input[data-question-control][type="checkbox"]:checked { background-color: var(--primary); }
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked::before { transform: scale(1); }
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
-@media (prefers-reduced-motion: reduce) {
+@media (pointer: coarse) and (prefers-reduced-motion: reduce) {
   .pn-inbox .question-block input[data-question-control], .pn-inbox .question-block input[data-question-control]::before { transition: none; }
 }
-@media (forced-colors: active) {
+@media (pointer: coarse) and (forced-colors: active) {
   .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) { -webkit-appearance: auto; appearance: auto; }
 }
 
