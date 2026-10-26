@@ -33,7 +33,10 @@ describe("detectOrigin", () => {
   const inheritedDsh = { DSH_SHELL: "1", DSH_SESSION_ID: "s1", DSH_HOME: "/tmp/dsh" };
   test.each([
     ["Claude Code", { CLAUDECODE: "1" }, "claude-code"],
+    ["Claude Code's Agent SDK", { CLAUDE_CODE_ENTRYPOINT: "sdk-ts" }, "claude-code"],
+    ["the Claude Code mod's detached CLI", { PLANNOTATOR_SESSION_TAG: "claude-code:0b6e1c2a-4f1d-4c3e-9a51-2f7d8e9c1a20" }, "claude-code"],
     ["Pi", { PI_SESSION_ID: "pi-1" }, "claude-code"],
+    ["Cursor's agent CLI", { CURSOR_AGENT: "1" }, "claude-code"],
     ["Codex", { CODEX_THREAD_ID: "t" }, "codex"],
     ["Copilot CLI", { COPILOT_CLI: "1" }, "copilot-cli"],
     ["OpenCode", { OPENCODE: "1" }, "opencode"],
@@ -47,9 +50,18 @@ describe("detectOrigin", () => {
     expect(detectOrigin({ ...inheritedDsh, ...marker })).toBe(origin);
   });
 
+  // Catches: any value in PLANNOTATOR_SESSION_TAG hiding a real DSH shell; only
+  // a well-formed `<host>:<id>` tag of a known host is a marker.
+  test.each(["claude-code:", "nope:abc", "claude-code:../x", "garbage"])(
+    "a malformed session tag (%s) does not hide DSH",
+    (tag) => {
+      expect(detectOrigin({ ...inheritedDsh, PLANNOTATOR_SESSION_TAG: tag })).toBe("dsh");
+    },
+  );
+
   // Catches: a blank marker (exported but empty) hiding a real DSH shell.
   test("an empty agent marker does not hide DSH", () => {
-    expect(detectOrigin({ ...inheritedDsh, CLAUDECODE: "", PI_SESSION_ID: "" })).toBe("dsh");
+    expect(detectOrigin({ ...inheritedDsh, CLAUDECODE: "", CLAUDE_CODE_ENTRYPOINT: "", PI_SESSION_ID: "", CURSOR_AGENT: "", PLANNOTATOR_SESSION_TAG: "" })).toBe("dsh");
   });
 
   // Catches: an invalid override swallowing detection instead of falling through.

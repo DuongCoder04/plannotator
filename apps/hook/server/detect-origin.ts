@@ -1,4 +1,5 @@
 import { AGENT_CONFIG, type Origin } from "@plannotator/shared/agents";
+import { inboxHostSessionFromEnv } from "./inbox-mcp-shim";
 
 /**
  * Detect the calling agent from environment variables set by agent runtimes.
@@ -20,9 +21,9 @@ import { AGENT_CONFIG, type Origin } from "@plannotator/shared/agents";
  *     credential-shaped names from its own children, so it keeps other
  *     agents' markers too). An agent started from a DSH shell or terminal
  *     must still be detected as itself, including the agents the chain does
- *     not name: Claude Code (CLAUDECODE, set for every process Claude Code
- *     starts, its hooks included) and Pi (PI_SESSION_ID, set on each bash
- *     call), which otherwise fall back to claude-code as they do outside DSH.
+ *     not name (NON_DSH_AGENT_MARKERS below: Claude Code, the Claude Code
+ *     mod's session tag, Pi, Cursor), which fall back to claude-code as they
+ *     do outside DSH.
  *     The other way round, an agent that DSH itself was started from, is
  *     ambiguous from env alone; the agent with its own marker wins.
  *
@@ -48,10 +49,19 @@ export function detectOrigin(env: Record<string, string | undefined>): Origin {
 
 /**
  * Markers that agents outside the chain above set for the processes they
- * start. Any of them means an inherited DSH_SHELL is not the caller.
+ * start. Any of them means an inherited DSH_SHELL is not the caller; such an
+ * agent falls back to claude-code, as it did before DSH was detected.
+ *   CLAUDECODE, CLAUDE_CODE_ENTRYPOINT: Claude Code, its hooks and the Agent SDK.
+ *   PI_SESSION_ID: Pi, on each bash call.
+ *   CURSOR_AGENT: Cursor's agent CLI, in the shells it runs commands in
+ *     (undocumented; confirmed by Cursor staff on forum.cursor.com, t/132427).
  */
-const NON_DSH_AGENT_MARKERS = ["CLAUDECODE", "PI_SESSION_ID"] as const;
+const NON_DSH_AGENT_MARKERS = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "PI_SESSION_ID", "CURSOR_AGENT"] as const;
 
 function hasNonDshAgentMarker(env: Record<string, string | undefined>): boolean {
+  // PLANNOTATOR_SESSION_TAG: the Claude Code mod tags every process of its
+  // session (`claude-code:<id>`), its detached CLI included. Counted only when
+  // it is a well-formed tag, by the rule the Inbox shim uses.
+  if (inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: env.PLANNOTATOR_SESSION_TAG })) return true;
   return NON_DSH_AGENT_MARKERS.some((key) => !!env[key]);
 }
