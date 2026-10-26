@@ -23,7 +23,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PHONE_QUERY } from './phone';
-import { PULL_READY_PX, dampPull } from './pullRefresh';
+import { PULL_LOST_MS, PULL_READY_PX, dampPull } from './pullRefresh';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -83,7 +83,7 @@ async function agentSends(body: string, reply_to?: string): Promise<string> {
   return (JSON.parse(await readLine()) as { sent: string }).sent;
 }
 
-const TESTS = 13;
+const TESTS = 15;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -390,9 +390,11 @@ test.skipIf(!hasDom)('a desktop window has no pull: no indicator, and a touch dr
 }, 30_000);
 
 /** The pointer event a browser sends when a touch lifts (pointer events reach the element under the finger). */
-function pointer(target: EventTarget, type: 'pointerup' | 'pointercancel') {
+function pointer(target: EventTarget, type: 'pointerdown' | 'pointerup' | 'pointercancel', pointerId = 1, isPrimary = true) {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'pointerType', { value: 'touch' });
+  Object.defineProperty(event, 'pointerId', { value: pointerId });
+  Object.defineProperty(event, 'isPrimary', { value: isPrimary });
   act(() => {
     target.dispatchEvent(event);
   });
@@ -432,6 +434,7 @@ test.skipIf(!hasDom)('the row under the finger leaves the list mid-pull: the lif
   // The pull starts on a row (touch events keep going to it, even once it is gone).
   const id = world.news[0]!;
   const row = rowOf(el, id)!;
+  pointer(row, 'pointerdown', 7);
   drag(row, { x: 180, y: 200 }, 0, PAST, false);
   expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
   await rowLeaves(el, id, row);
@@ -440,7 +443,7 @@ test.skipIf(!hasDom)('the row under the finger leaves the list mid-pull: the lif
   touch(row, 'touchend', [], [{ x: 180, y: 200 + PAST }]);
   expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
   const reads = listReads;
-  pointer(document.body, 'pointerup');
+  pointer(document.body, 'pointerup', 7);
   expect(indicator(el)!.getAttribute('data-state')).toBe('refreshing');
   await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
   expect(body.style.transform).toBe('');
@@ -453,6 +456,7 @@ test.skipIf(!hasDom)('a pull whose lift never came is let go by the next touch o
   const body = list(el);
   const id = world.news[0]!;
   const row = rowOf(el, id)!;
+  pointer(row, 'pointerdown', 7);
   drag(row, { x: 180, y: 200 }, 0, PAST, false);
   await rowLeaves(el, id, row);
   // Neither the touchend nor a pointer end arrives anywhere: the list is held down, ready.
@@ -522,4 +526,65 @@ test.skipIf(!hasDom)('a list at a fractional top (0.5 px) still pulls', async ()
   expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
   touch(body, 'touchcancel', [], [{ x: 180, y: 200 + PAST }]);
   await until(() => !indicator(el)!.hasAttribute('data-state'), 'the spring back');
+}, 30_000);
+
+test.skipIf(!hasDom)('a second finger lifting never ends the pull: only the finger that started it does', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const id = world.news[0]!;
+  const row = rowOf(el, id)!;
+  pointer(row, 'pointerdown', 7);
+  drag(row, { x: 180, y: 200 }, 0, PAST, false);
+  await rowLeaves(el, id, row);
+  const reads = listReads;
+  // Another finger (not the primary pointer, another id) lifts: the pull holds.
+  pointer(document.body, 'pointerup', 9, false);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  // A primary pointer with another id is not the finger that started it either.
+  pointer(document.body, 'pointerup', 8, true);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  // The starting finger's lift ends it.
+  pointer(document.body, 'pointerup', 7);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('refreshing');
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
+  expect(listReads - reads).toBe(1);
+}, 30_000);
+
+test.skipIf(!hasDom)('a pull whose lift was lost is let go by a touch anywhere (the header), or by itself after a while', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  const id = world.news[0]!;
+  const row = rowOf(el, id)!;
+  pointer(row, 'pointerdown', 7);
+  drag(row, { x: 180, y: 200 }, 0, PAST, false);
+  await rowLeaves(el, id, row);
+  // iOS sends the lift (touch and pointer) to the detached row: nothing hears it.
+  touch(row, 'touchend', [], [{ x: 180, y: 200 + PAST }]);
+  pointer(row, 'pointerup', 7);
+  expect(body.style.transform).toContain('translate3d(0');
+  let reads = listReads;
+  // A tap on the header, outside the list, lets it go (and refreshes nothing).
+  const header = el.querySelector<HTMLElement>('.ib-lhead')!;
+  touch(header, 'touchstart', [{ x: 120, y: 30 }]);
+  touch(header, 'touchend', [], [{ x: 120, y: 30 }]);
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
+  expect(body.style.transform).toBe('');
+  await wait(200);
+  expect(listReads).toBe(reads);
+
+  // Lost again, and no touch comes at all: it is let go by itself after PULL_LOST_MS.
+  const id2 = world.news[1]!;
+  const row2 = rowOf(el, id2)!;
+  pointer(row2, 'pointerdown', 11);
+  drag(row2, { x: 180, y: 300 }, 0, PAST, false);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  await rowLeaves(el, id2, row2);
+  touch(row2, 'touchend', [], [{ x: 180, y: 300 + PAST }]);
+  reads = listReads;
+  await wait(PULL_LOST_MS / 2);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the lost pull let go');
+  expect(body.style.transform).toBe('');
+  expect(listReads).toBe(reads);
 }, 30_000);

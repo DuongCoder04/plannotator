@@ -42,6 +42,11 @@ const PULL_LIMIT_PX = 240;
  * frame or two to reach it). Further down no scroll waits for this script.
  */
 const PULL_ARM_PX = 200;
+/**
+ * A pull whose row left the document hears nothing more of its finger (its touch events go to the detached
+ * row, and iOS may send the lift's pointerup there too): after this long with no word of it, it is let go.
+ */
+export const PULL_LOST_MS = 4000;
 
 /** The finger's travel, damped: about half at first, then less and less (Apple's rubber band). */
 export function dampPull(raw: number): number {
@@ -69,6 +74,10 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
   let travel = 0;
   /** The element the finger landed on: touch events keep going to it, even once it has left the document. */
   let startTarget: EventTarget | null = null;
+  /** The touch pointer that started the gesture (from its pointerdown), so another finger's lift never ends it. */
+  let lastTouchPointer: number | null = null;
+  let startPointer: number | null = null;
+  let lostTimer: ReturnType<typeof setTimeout> | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   const reduced = () => options.reduced?.() ?? false;
@@ -104,7 +113,8 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
    *
    * While a gesture is tracked its end is also heard on the document (capture), and the touch pointer's
    * end too: the row the finger landed on can leave the list mid-pull (it moves section, another tab
-   * archives it), and then its own touchend never reaches the list.
+   * archives it), and then its own touchend never reaches the list. Any new touch anywhere lets a
+   * leftover pull go, and PULL_LOST_MS bounds one that hears nothing at all.
    */
   let armed = false;
   let watching = false;
@@ -119,11 +129,13 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
     if (watch !== watching) {
       watching = watch;
       if (watch) {
+        doc.addEventListener('touchstart', onAnyStart, true);
         doc.addEventListener('touchend', onEnd, true);
         doc.addEventListener('touchcancel', onCancel, true);
         doc.addEventListener('pointerup', onPointerEnd, true);
         doc.addEventListener('pointercancel', onPointerCancel, true);
       } else {
+        doc.removeEventListener('touchstart', onAnyStart, true);
         doc.removeEventListener('touchend', onEnd, true);
         doc.removeEventListener('touchcancel', onCancel, true);
         doc.removeEventListener('pointerup', onPointerEnd, true);
@@ -133,7 +145,12 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
   };
   const setPhase = (next: Phase) => {
     phase = next;
-    if (!tracking()) startTarget = null;
+    if (!tracking()) {
+      startTarget = null;
+      startPointer = null;
+      if (lostTimer) clearTimeout(lostTimer);
+      lostTimer = null;
+    }
     sync();
   };
 
@@ -200,6 +217,27 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
     travel = 0;
     setPhase('maybe');
     startTarget = event.target;
+    startPointer = lastTouchPointer;
+    watchdog();
+  }
+
+  /** Any new touch anywhere (the header, the sidebar) while a gesture is tracked: a pull left over is let go. */
+  function onAnyStart(event: TouchEvent) {
+    if (phase === 'pull') settle();
+    else if (phase === 'maybe' && event.touches.length > 1) setPhase('idle');
+  }
+
+  function onPointerDown(event: PointerEvent) {
+    if (event.pointerType === 'touch' && event.isPrimary) lastTouchPointer = event.pointerId;
+  }
+
+  /** (Re)starts the wait for a pull whose row left the document; checked when it runs out. */
+  function watchdog() {
+    if (lostTimer) clearTimeout(lostTimer);
+    lostTimer = setTimeout(() => {
+      lostTimer = null;
+      if (tracking() && lostTarget()) cancel();
+    }, PULL_LOST_MS);
   }
 
   function onMove(event: TouchEvent) {
@@ -232,6 +270,7 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
       return;
     }
     if (event.cancelable) event.preventDefault();
+    watchdog();
     travel = dampPull(dy - PULL_SLOP_PX);
     paint(travel, travel >= PULL_READY_PX ? 'ready' : 'pull', false);
   }
@@ -253,15 +292,18 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
   // The element the finger landed on has left the document: its touch events reach neither the list nor the
   // document, but the touch pointer, no longer held by it, ends on whatever is under the finger.
   const lostTarget = () => startTarget instanceof Node && !startTarget.isConnected;
+  // Only the finger that started the gesture: another finger's lift never ends it.
+  const ours = (event: PointerEvent) => event.pointerType === 'touch' && event.isPrimary && (startPointer === null || event.pointerId === startPointer);
   function onPointerEnd(event: PointerEvent) {
-    if (event.pointerType === 'touch' && lostTarget()) release();
+    if (ours(event) && lostTarget()) release();
   }
   function onPointerCancel(event: PointerEvent) {
-    if (event.pointerType === 'touch' && lostTarget()) cancel();
+    if (ours(event) && lostTarget()) cancel();
   }
 
   const onScroll = () => sync();
 
+  body.addEventListener('pointerdown', onPointerDown, { passive: true });
   body.addEventListener('touchstart', onStart, { passive: true });
   body.addEventListener('touchend', onEnd, { passive: true });
   body.addEventListener('touchcancel', onCancel, { passive: true });
@@ -270,12 +312,16 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
   return () => {
     disposed = true;
     if (settleTimer) clearTimeout(settleTimer);
+    body.removeEventListener('pointerdown', onPointerDown);
     body.removeEventListener('touchstart', onStart);
     body.removeEventListener('touchend', onEnd);
     body.removeEventListener('touchcancel', onCancel);
     body.removeEventListener('scroll', onScroll);
     phase = 'idle';
     startTarget = null;
+    startPointer = null;
+    if (lostTimer) clearTimeout(lostTimer);
+    lostTimer = null;
     sync();
     paint(0, null, false);
   };
