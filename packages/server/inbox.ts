@@ -119,6 +119,7 @@ import {
 import { openBrowser } from "./browser";
 import { isAddressInUseError } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { markPlannotatorResponse, withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { createInboxMcpServer } from "./inbox-mcp";
 import { inboxGuideRoute } from "./inbox-guides";
 import { createInboxRepoCache } from "./inbox-repos";
@@ -399,6 +400,8 @@ const ERROR_STATUS: Record<string, number> = {
   // The project menu: a batch_id already answered another project or action.
   batch_id_reused: 409,
   config_not_saved: 500,
+  // pins.json from a newer Plannotator: kept as it is (packages/shared/inbox/pins.ts).
+  pins_newer: 409,
   // Attachments and annotations (step 2).
   attachment_not_found: 404,
   attachment_missing: 404,
@@ -553,7 +556,7 @@ export { resolveInboxProjectRoot } from "./inbox-project-root";
 
 function startOnLoopback(fetch: Parameters<typeof Bun.serve>[0]["fetch"], preferred: number | null): { server: ReturnType<typeof Bun.serve>; portChanged: boolean } {
   const serve = (port: number) =>
-    Bun.serve({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch } as Parameters<typeof Bun.serve>[0]);
+    Bun.serve(withPlannotatorServerHeader({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch }) as Parameters<typeof Bun.serve>[0]);
   let portChanged = false;
   // Never remote mode's port, and never Phones' tailnet HTTPS port: the
   // window's tailnet mapping uses the Inbox's own port, so the two never meet.
@@ -1200,7 +1203,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return notificationsState();
     saveConfig({ inboxNotifications: next });
     if (JSON.stringify(loadConfig().inboxNotifications) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return notificationsState();
   };
@@ -1255,7 +1258,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return soundState();
     saveConfig({ inboxSound: next });
     if (JSON.stringify(loadConfig().inboxSound) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return soundState();
   };
@@ -1303,7 +1306,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig({ theme: next });
     const saved = themeState();
     if (!saved || Object.entries(next).some(([key, value]) => saved[key as keyof ThemeConfig] !== value)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return saved;
   };
@@ -1322,7 +1325,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (!isInboxTextSize(input)) throw new InboxError("validation_error", "text_size: 12, 13, 14 or 15.", { field: "text_size" });
     if (validateOnly) return textSizeState();
     saveConfig({ inboxTextSize: input });
-    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
   };
 
@@ -1369,7 +1372,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig({ inboxTour: next });
     const saved = tourState();
     if (saved.seen_at !== next.seen_at || saved.finished_at !== next.finished_at || saved.skipped_at !== next.skipped_at || saved.notify_again !== next.notify_again) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return saved;
   };
@@ -1389,7 +1392,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return diffStyleState();
     // saveConfig merges diffOptions per field, so code review's other diff options stay.
     saveConfig({ diffOptions: { diffStyle: input } });
-    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
   };
 
@@ -1445,7 +1448,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig(toSave);
     const saved = loadConfig();
     if ((toSave.updateCheck !== undefined && saved.updateCheck !== toSave.updateCheck) || (toSave.autoUpdate !== undefined && saved.autoUpdate !== toSave.autoUpdate)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return updatesState();
   };
@@ -1479,7 +1482,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     if (validateOnly) return experimentalState();
     saveConfig({ experimental: { decisionMode: on } });
-    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return experimentalState();
   };
 
@@ -1546,7 +1549,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const saved = loadConfig();
     for (const [host, value] of Object.entries(next)) {
       if (configuredInboxTool(saved, host as InboxToolHost) !== value) {
-        throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+        throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
       }
     }
     return inboxToolState();
@@ -2722,7 +2725,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     dataDir,
     port: () => port,
     registry: () => registry,
-    dispatch: (req) => handle(req, "tailnet"),
+    dispatch: async (req) => markPlannotatorResponse(await handle(req, "tailnet")),
     // Compress the page for the tailnet before the first phone asks (#2032).
     onListen: () => prewarmAppHtml(options.htmlContent ?? NOT_BUILT_PAGE, "br"),
     tailscale: options.tailscale,

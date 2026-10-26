@@ -42,6 +42,13 @@ export interface FakeGhScenario {
   cloneSource?: string;
   /** true: also put a `git` first on PATH that logs which account's token it got, then runs the real git. */
   wrapGit?: boolean;
+  /**
+   * true: a GH_TOKEN that names no account is a token GitHub rejects, and
+   * `gh auth status` / `gh auth token --user` answer like the real gh then:
+   * the env token listed first, active, failed, with no login; the signed-in
+   * accounts after it, inactive. Every other command fails Bad credentials.
+   */
+  rejectEnvToken?: boolean;
   /** Set by makeFakeGh: the real git, for `repo clone` and the git wrapper. */
   realGit?: string;
 }
@@ -156,12 +163,34 @@ function runFake(args: string[]): number {
     process.stderr.write(`${s}\n`);
     return code;
   };
-  if (envToken && !me) return err("gh: Bad credentials (HTTP 401)");
-
   const [cmd, sub] = args;
+  const envRejected = !!envToken && !me;
+  if (envRejected && !(scenario.rejectEnvToken && cmd === "auth" && (sub === "status" || sub === "token"))) {
+    return err("gh: Bad credentials (HTTP 401)");
+  }
+
   if (cmd === "auth" && sub === "status") {
     const onlyActive = args.includes("--active");
     if (onlyActive && scenario.noActiveFlag) return err("unknown flag: --active\n\nUsage:  gh auth status [flags]");
+    if (envRejected) {
+      // The real gh: the rejected env token is the active source; the
+      // keyring accounts are still listed, none of them active.
+      const rest = onlyActive ? [] : scenario.accounts.map((a) => ({ ...a, active: false }));
+      if (args.includes("--json")) {
+        if (scenario.jsonStatus === false) return err('unknown flag: --json\n\nUsage:  gh auth status [flags]');
+        const entries = [
+          { state: "error", error: "non-200 OK status code: 401 Unauthorized", active: true, host, login: "", tokenSource: envVar, gitProtocol: "https" },
+          ...rest.map((a) => ({ state: a.state ?? "success", active: false, host, login: a.login, tokenSource: a.tokenSource ?? "keyring", gitProtocol: "https" })),
+        ];
+        out(JSON.stringify({ hosts: { [host]: entries } }));
+        return 0;
+      }
+      const lines = [host, `  X Failed to log in to ${host} using token (${envVar})`, "  - Active account: true", `  - The token in ${envVar} is invalid.`, ""];
+      for (const a of rest) {
+        lines.push(`  ✓ Logged in to ${host} account ${a.login} (${a.tokenSource ?? "keyring"})`, "  - Active account: false", "");
+      }
+      return err(lines.join("\n"));
+    }
     const listed = onlyActive ? scenario.accounts.filter((a) => a.active) : scenario.accounts;
     if (args.includes("--json")) {
       if (scenario.jsonStatus === false) return err('unknown flag: --json\n\nUsage:  gh auth status [flags]');

@@ -78,8 +78,17 @@ export async function runTelemetryCommand(args: string[], deps: TelemetryCommand
 
   if (flags.has("--off") || flags.has("--on")) {
     const on = flags.has("--on");
-    setUsageCounts(on, { feature });
+    const { saved } = setUsageCounts(on, { feature });
     const which = feature ? `for ${feature}` : "for every feature";
+    if (!saved) {
+      // config.json was not written (it cannot be read, or is not valid JSON): never report a change that did not persist.
+      err(
+        `Usage counts were not turned ${on ? "on" : "off"} ${which}: config.json could not be saved. `
+        + `A config.json that is not valid JSON is never written over: fix or remove it, then run this again.`
+        + (on ? "" : " Counts not sent yet were deleted."),
+      );
+      return 1;
+    }
     if (!on) out(`Usage counts are off ${which}. Counts not sent yet were deleted.`);
     else {
       out(`Usage counts are on ${which} while that feature is on.`);

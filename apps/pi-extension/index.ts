@@ -1262,10 +1262,12 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 				LIVE_APP_REQUIRES_HTTP_MESSAGE,
 				LIVE_APP_REQUIRES_LOOPBACK_MESSAGE,
 				buildForceAppFailureMessage,
+				buildLivePlannotatorFallbackNotice,
 				buildLiveProbeFallbackNotice,
 				classifyLiveAppCandidate,
 				probeLiveAppTarget,
 			} = await importFresh(() => import("./generated/live-probe.ts"));
+			const { listPlannotatorServerPorts } = await importFresh(() => import("./generated/plannotator-ports.ts"));
 			const { parsed: parsedUrl, loopback } = classifyLiveAppCandidate(filePath);
 
 			if (appFlag && !loopback) {
@@ -1277,7 +1279,11 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 			}
 
 			if (loopback && parsedUrl?.protocol === "http:" && !staticFlag) {
-				const probe = await probeLiveAppTarget(filePath, parsedUrl);
+				// Never a Plannotator server: the live proxy would give the
+				// proxied page same-origin writes on it (see live-proxy-core).
+				const probe = await probeLiveAppTarget(filePath, parsedUrl, fetch, {
+					plannotatorPorts: listPlannotatorServerPorts(),
+				});
 				if (probe.liveEligible) {
 					// Remote hard-off (layer 1 of 2; the server throw in
 					// serverAnnotate.ts backstops it): a live proxy relays
@@ -1290,6 +1296,8 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 					mode = "annotate-app";
 				} else if (appFlag) {
 					return { ok: false, error: buildForceAppFailureMessage(filePath, probe) };
+				} else if (probe.plannotator) {
+					ctx.ui.notify(buildLivePlannotatorFallbackNotice(filePath), "info");
 				} else if (probe.probeError !== null) {
 					// A dev server still starting up probes as unreachable;
 					// say so instead of silently downgrading to static.

@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/server",
-  "version": "0.28.30",
+  "version": "0.28.31",
   "private": true,
   "description": "Shared server implementation for Plannotator plugins",
   "main": "index.ts",
@@ -23,6 +23,7 @@
     "./share-url": "./share-url.ts",
     "./tailscale-serve": "./tailscale-serve.ts",
     "./ai-runtime": "./ai-runtime.ts",
+    "./session-tailnet": "./session-tailnet.ts",
     "./qr": "./qr.ts",
     "./sessions": "./sessions.ts",
     "./auto-update": "./auto-update.ts",

@@ -30,8 +30,11 @@ import {
   HOP_BY_HOP_HEADERS,
   LIVE_PROXY_BRIDGE_PATH,
   LIVE_PROXY_MAX_PENDING_WS_MESSAGES,
+  LIVE_PROXY_PLANNOTATOR_UPSTREAM_MESSAGE,
   LIVE_PROXY_RESERVED_PREFIX,
+  PLANNOTATOR_LIVE_PROXY_HEADER,
   applyHtmlFramingHeaders,
+  assertLiveTargetNotEditor,
   buildFrameAncestorsPolicy,
   createHtmlInjector,
   isAllowedBridgeFetchSite,
@@ -39,6 +42,7 @@ import {
   isAllowedWsUpgradeOrigin,
   isDocumentIntentRequest,
   isHtmlContentType,
+  isPlannotatorUpstreamResponse,
   rewriteLoopbackLocation,
   type LiveAppProxy,
   type LiveAppProxyOptions,
@@ -114,6 +118,8 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
   if (target.protocol !== "http:") {
     throw new Error("Live app proxy supports http upstreams only.");
   }
+  // Never front the editor's own server (see live-proxy-core).
+  assertLiveTargetNotEditor(opts.targetUrl, opts.editorOrigins);
   const targetOrigin = target.origin;
   const targetHost = target.host;
   const frameAncestors = buildFrameAncestorsPolicy(opts.editorOrigins);
@@ -194,6 +200,7 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
       upstreamHeaders.set("host", targetHost);
       upstreamHeaders.set("x-forwarded-host", req.headers.get("host") ?? "");
       upstreamHeaders.set("x-forwarded-proto", "http");
+      upstreamHeaders.set(PLANNOTATOR_LIVE_PROXY_HEADER, "1");
       if (isDocumentIntentRequest(req.headers)) {
         // HTML must arrive decodable for injection; assets keep encoding.
         // "identity" rather than a bare delete: Bun's outbound fetch would
@@ -220,6 +227,16 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
           `Live app upstream unreachable: ${err instanceof Error ? err.message : String(err)}`,
           { status: 502, headers: { "Content-Type": "text/plain" } },
         );
+      }
+
+      // A Plannotator server is never relayed, whatever answers on the
+      // target port now (see isPlannotatorUpstreamResponse in live-proxy-core).
+      if (isPlannotatorUpstreamResponse(upstreamResponse.headers)) {
+        void upstreamResponse.body?.cancel().catch(() => {});
+        return new Response(LIVE_PROXY_PLANNOTATOR_UPSTREAM_MESSAGE, {
+          status: 502,
+          headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+        });
       }
 
       const responseHeaders = new Headers(upstreamResponse.headers);
@@ -304,9 +321,14 @@ export function startLiveAppProxy(opts: LiveAppProxyOptions): LiveAppProxy {
           : undefined;
         let upstream: WebSocket;
         try {
+          // The live proxy header makes a Plannotator upstream refuse it.
+          // Bun's WebSocket takes an options object (headers, protocols);
+          // the DOM typings the server package also loads do not know it.
+          const BunWebSocket = WebSocket as unknown as new (url: string, options: Bun.WebSocketOptions) => WebSocket;
+          const headers = { [PLANNOTATOR_LIVE_PROXY_HEADER]: "1" };
           upstream = protocols && protocols.length
-            ? new WebSocket(wsUrl, protocols)
-            : new WebSocket(wsUrl);
+            ? new BunWebSocket(wsUrl, { protocols, headers })
+            : new BunWebSocket(wsUrl, { headers });
         } catch {
           ws.close();
           return;

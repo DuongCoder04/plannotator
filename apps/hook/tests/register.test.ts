@@ -295,6 +295,8 @@ describe('register', () => {
     // plannotator_inbox first: registered before the instance, from the bundled list until an Inbox ran.
     expect(w.tools.map((tool) => tool.name)).toEqual(['plannotator_inbox', 'plannotator'])
     expect(w.tools.find((tool) => tool.name === 'plannotator')?.inputSchema.required).toEqual(['action'])
+    // The mod registers the tailscale variant of the contract (#2166).
+    expect(w.tools.find((tool) => tool.name === 'plannotator')?.inputSchema.properties.tailscale?.type).toBe('boolean')
 
     const answer = await $.tool.call({ tool: TOOL, action: 'annotate', target: 'notes.md', gate: true })
 

@@ -12,7 +12,7 @@ import {
   type ResolvedAgentTerminalRuntime,
 } from "./agent-terminal-runtime";
 
-type AgentTerminalSocketData = {
+export type AgentTerminalSocketData = {
   upstream: WebSocket | null;
   pending: string[];
 };
