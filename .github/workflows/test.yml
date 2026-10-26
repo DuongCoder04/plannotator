@@ -238,6 +238,7 @@ jobs:
           packages/inbox/openIn.test.tsx
           packages/inbox/htmlLinks.test.tsx
           packages/inbox/videoAttachment.test.tsx
+          packages/inbox/markupAddsToReply.test.tsx
           packages/inbox/commentSubmitKey.test.tsx
           packages/inbox/skillReferences.test.tsx
           packages/inbox/messageComments.test.tsx
@@ -327,6 +328,7 @@ jobs:
           packages/ui/components/Viewer.consumer.test.tsx
           packages/ui/components/Viewer.documentHeader.test.tsx
           packages/ui/components/Viewer.codeBlockHighlightSwap.test.tsx
+          packages/ui/components/ImageAnnotator/ImageAnnotator.escape.test.tsx
           packages/ui/components/ImageAnnotator/ImageAnnotator.layout.test.tsx
           packages/ui/components/ImageAnnotator/ImageAnnotator.shortcuts.test.tsx
           packages/ui/utils/undoHistory.dom.test.ts
