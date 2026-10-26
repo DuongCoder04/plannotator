@@ -191,32 +191,92 @@ const REVIEW_TEXT = {
 /** Body markdown with images and links made harmless (the renderer still sanitizes HTML). An empty title: the alt text says it, and no native tooltip shows. */
 const NO_IMAGES = () => ({ kind: 'unavailable' as const, title: '' });
 
+/** A local path in an untrusted body never opens anything of the host's (a thread's file, a document). */
+const NO_LOCAL_LINKS = () => ({ kind: 'unavailable' as const, title: '' });
+
+const XLINK = 'http://www.w3.org/1999/xlink';
+/** Everything in a body that could navigate: HTML and SVG anchors, image-map areas. */
+const LINKISH = 'a, area';
+
+function linkHref(el: Element): string | null {
+  return el.getAttribute('href') ?? el.getAttributeNS(XLINK, 'href');
+}
+
+/** The link an event landed on, `href` still on it or already moved. */
+function linkAt(root: Element | null, target: EventTarget | null): Element | null {
+  const el = target instanceof Element ? target.closest(LINKISH) : null;
+  if (!el || !root?.contains(el)) return null;
+  return el.hasAttribute('data-ref-card-href') || linkHref(el) !== null ? el : null;
+}
+
 /**
- * Links in the body carry no `href` once drawn (it moves to `data-ref-card-href`), so nothing opens
- * them: not a click, a middle-click, a modified click or the context menu's "Open link". A click or
- * Enter on one only offers "Open · Cancel" with its full URL; the Open there is the one real link.
+ * Moves every link's `href` to `data-ref-card-href`, so nothing in the body can navigate: not a
+ * click, a middle-click, a modified click or the context menu's "Open link". Run after every change
+ * to the body's DOM, whoever made it: React, or `HtmlBlock`, which writes raw HTML in a passive
+ * effect after this component's layout effects ran.
+ */
+function neutralizeLinks(root: Element): void {
+  for (const a of root.querySelectorAll(LINKISH)) {
+    const href = linkHref(a);
+    if (href === null) continue;
+    a.setAttribute('data-ref-card-href', href);
+    a.removeAttribute('href');
+    a.removeAttributeNS(XLINK, 'href');
+    a.removeAttribute('target');
+    a.setAttribute('role', 'link');
+    if (a instanceof HTMLElement || a instanceof SVGElement) {
+      a.tabIndex = 0;
+      a.style.cursor = 'pointer';
+    }
+  }
+}
+
+/**
+ * Links in the body carry no `href` once drawn. A click with any button or modifier, or Enter, on
+ * one only offers "Open · Cancel" with its full URL; the Open there is the one real link. The
+ * listeners are native and in the capture phase on the body, so they run before any listener the
+ * renderer put on a link, and they catch a link whose `href` is still on it.
  */
 function SafeMarkdown({ markdown }: { markdown: string }) {
   const [confirm, setConfirm] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  // Every render: the renderer may draw new links (a confirm row opening re-renders this).
+  // Every render (React's own links), and on every later DOM change (raw HTML lands after this).
   useLayoutEffect(() => {
-    for (const a of bodyRef.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? []) {
-      a.setAttribute('data-ref-card-href', a.getAttribute('href') ?? '');
-      a.removeAttribute('href');
-      a.removeAttribute('target');
-      a.setAttribute('role', 'link');
-      a.tabIndex = 0;
-      a.style.cursor = 'pointer';
-    }
+    if (bodyRef.current) neutralizeLinks(bodyRef.current);
   });
-  const ask = (target: EventTarget | null) => {
-    const a = target instanceof Element ? target.closest('a[data-ref-card-href]') : null;
-    if (!a) return false;
-    const href = a.getAttribute('data-ref-card-href') ?? '';
-    setConfirm(/^https?:\/\//i.test(href) ? href : null);
-    return true;
-  };
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const ask = (e: Event) => {
+      const a = linkAt(body, e.target);
+      if (!a) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type === 'mousedown') return;
+      const href = a.getAttribute('data-ref-card-href') ?? linkHref(a) ?? '';
+      setConfirm(/^https?:\/\//i.test(href) ? href : null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') ask(e);
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      // The middle button's autoscroll and open-in-tab start on the press.
+      if (e.button === 1) ask(e);
+    };
+    body.addEventListener('click', ask, true);
+    body.addEventListener('auxclick', ask, true);
+    body.addEventListener('mousedown', onMouseDown, true);
+    body.addEventListener('keydown', onKey, true);
+    const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => neutralizeLinks(body));
+    observer?.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
+    return () => {
+      body.removeEventListener('click', ask, true);
+      body.removeEventListener('auxclick', ask, true);
+      body.removeEventListener('mousedown', onMouseDown, true);
+      body.removeEventListener('keydown', onKey, true);
+      observer?.disconnect();
+    };
+  }, []);
   return (
     <div
       // `!`: a host may rescale the renderer's fixed sizes in a later cascade layer (the Inbox's text size does).
@@ -224,20 +284,8 @@ function SafeMarkdown({ markdown }: { markdown: string }) {
     >
       <div
         ref={bodyRef}
-        onClickCapture={(e) => {
-          if (ask(e.target)) {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-        }}
-        onAuxClick={(e) => {
-          if ((e.target as Element).closest?.('a[data-ref-card-href]')) e.preventDefault();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && ask(e.target)) e.preventDefault();
-        }}
       >
-        <RenderedMarkdown markdown={markdown} resolveImage={NO_IMAGES} />
+        <RenderedMarkdown markdown={markdown} resolveImage={NO_IMAGES} resolveLocalLink={NO_LOCAL_LINKS} />
       </div>
       {confirm ? (
         <div className="mt-1.5 flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-[11.5px]" role="group" aria-label="Open this link?" data-ref-card-confirm="">

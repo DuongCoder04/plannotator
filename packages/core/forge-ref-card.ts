@@ -9,7 +9,7 @@
  * shape before it runs anything.
  */
 
-import { normalizeForgeHost, classifyForgeHost, type ForgePlatform } from "./forge-refs";
+import { classifyForgeHost, type ForgePlatform } from "./forge-refs";
 
 export type { ForgePlatform } from "./forge-refs";
 
@@ -46,7 +46,7 @@ export function parseForgeRefUrl(href: string): ForgeRef | null {
     return null;
   }
   if (url.protocol !== "https:" || url.username || url.password || url.port) return null;
-  const host = normalizeForgeHost(url.hostname);
+  const host = webForgeHost(url.hostname);
   if (!host) return null;
   const platform = classifyForgeHost(host);
   if (!platform) return null;
@@ -70,6 +70,19 @@ export function parseForgeRefUrl(href: string): ForgeRef | null {
   const kind = refKindOf(platform, kindPart);
   if (!kind) return null;
   return { platform, host, owner, repo, number: Number(num), kind };
+}
+
+/**
+ * A web link's host, exactly as written. Not `normalizeForgeHost`: its folding of SSH aliases
+ * (`github.com-work`, `ssh.github.com`) is for git remotes, and in a web link it would read
+ * `https://github.com-evil.example/o/r/pull/1` as github.com. A host that only starts like a
+ * public forge (`github.com-…`, `github.com.…`) is no forge at all.
+ */
+function webForgeHost(hostname: string): string | null {
+  const h = hostname.toLowerCase();
+  if (!/^[a-z0-9.-]+$/.test(h) || !h.includes(".")) return null;
+  if (/^(github|gitlab)\.com[.-]/.test(h)) return null;
+  return h;
 }
 
 function refKindOf(platform: ForgePlatform, part: string): ForgeRef["kind"] | null {

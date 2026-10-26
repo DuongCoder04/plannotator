@@ -132,18 +132,20 @@ for (const q of [GITHUB_REF_QUERY, GITLAB_ISSUE_QUERY, GITLAB_MR_QUERY]) {
 }
 
 function queryArgs(ref: ForgeRef): { cli: RefCli; args: string[] } {
-  const hostArgs = (flag: string, fallback: string) => (ref.host !== fallback ? [flag, ref.host] : []);
+  // Always named, github.com and gitlab.com too: otherwise GH_HOST, GITLAB_HOST or the working
+  // folder's git remote would pick the host the query (and the token) goes to.
+  const hostArgs = ["--hostname", ref.host];
   if (ref.platform === "github") {
     return {
       cli: "gh",
       // -f for strings: -F would turn a repo named `2048`, `true` or `null` into a number, boolean or null.
-      args: ["api", "graphql", ...hostArgs("--hostname", "github.com"), "-f", `query=${GITHUB_REF_QUERY}`, "-f", `owner=${ref.owner}`, "-f", `repo=${ref.repo}`, "-F", `number=${ref.number}`],
+      args: ["api", "graphql", ...hostArgs, "-f", `query=${GITHUB_REF_QUERY}`, "-f", `owner=${ref.owner}`, "-f", `repo=${ref.repo}`, "-F", `number=${ref.number}`],
     };
   }
   const query = ref.kind === "pull" ? GITLAB_MR_QUERY : GITLAB_ISSUE_QUERY;
   return {
     cli: "glab",
-    args: ["api", ...hostArgs("--hostname", "gitlab.com"), "graphql", "-f", `query=${query}`, "-f", `path=${ref.owner}/${ref.repo}`, "-f", `iid=${ref.number}`],
+    args: ["api", ...hostArgs, "graphql", "-f", `query=${query}`, "-f", `path=${ref.owner}/${ref.repo}`, "-f", `iid=${ref.number}`],
   };
 }
 
@@ -470,13 +472,21 @@ export function createRefCards(options: {
     return envs;
   };
 
-  /** The hosts each CLI is signed in to, read once per REF_AUTH_HOSTS_MS (a new login shows up after that). */
-  const authHosts = new Map<RefCli, { at: number; hosts: Promise<Set<string>> }>();
+  /**
+   * The hosts each CLI is signed in to, read once per REF_AUTH_HOSTS_MS (a new login shows up after
+   * that). No host at all (the CLI failed, timed out, or is signed in nowhere) is kept only for
+   * REF_FAILURE_MS, so one slow `auth status` does not hide enterprise hosts for minutes.
+   */
+  const authHosts = new Map<RefCli, { at: number; ttl: number; hosts: Promise<Set<string>> }>();
   const signedInHosts = (cli: RefCli): Promise<Set<string>> => {
     const hit = authHosts.get(cli);
-    if (hit && now() - hit.at < REF_AUTH_HOSTS_MS) return hit.hosts;
+    if (hit && now() - hit.at < hit.ttl) return hit.hosts;
     const hosts = readSignedInHosts(run, cli).catch(() => new Set<string>());
-    authHosts.set(cli, { at: now(), hosts });
+    const entry = { at: now(), ttl: REF_AUTH_HOSTS_MS, hosts };
+    authHosts.set(cli, entry);
+    void hosts.then((set) => {
+      if (set.size === 0) entry.ttl = REF_FAILURE_MS;
+    });
     return hosts;
   };
   /** github.com and gitlab.com always; any other host only when this computer's own CLI is signed in to it. */

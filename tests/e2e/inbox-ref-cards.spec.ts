@@ -81,6 +81,11 @@ const LONG_BODY = [
   '',
   '![before](https://example.com/before.png)',
   '',
+  // Raw HTML lands after the card's own pass over its links (HtmlBlock writes it in a passive effect).
+  '<p>Logs: <a href="https://evil.example/raw" target="_blank">the raw log</a></p>',
+  '',
+  '<details open><summary>Trace</summary><a href="https://evil.example/details">the trace</a></details>',
+  '',
   ...Array.from({ length: 8 }, (_, i) => `- Step ${i + 1}: keep the reader's place while the store reloads.`),
   '',
   '## Testing',
@@ -306,6 +311,30 @@ test.describe('ref hover cards', () => {
       await report.click();
       await expect(c.locator('[data-ref-card-confirm] a')).toHaveAttribute('href', 'https://evil.example/phish');
       expect(popups).toEqual([]);
+      await c.locator('[data-ref-card-confirm]').getByRole('button', { name: 'Cancel' }).click();
+      // Raw-HTML links, and one inside <details>, are held the same way.
+      for (const [name, url] of [
+        ['the raw log', 'https://evil.example/raw'],
+        ['the trace', 'https://evil.example/details'],
+      ] as const) {
+        const raw = c.getByRole('link', { name });
+        expect(await raw.getAttribute('href')).toBeNull();
+        expect(await raw.getAttribute('target')).toBeNull();
+        expect(await raw.getAttribute('data-ref-card-href')).toBe(url);
+        await raw.click({ button: 'middle' });
+        await raw.click({ modifiers: ['ControlOrMeta'] });
+        await page.waitForTimeout(300);
+        expect(popups).toEqual([]);
+        await raw.click();
+        await expect(c.locator('[data-ref-card-confirm]')).toContainText(url);
+        await c.locator('[data-ref-card-confirm]').getByRole('button', { name: 'Cancel' }).click();
+        await raw.focus();
+        await page.keyboard.press('Enter');
+        await expect(c.locator('[data-ref-card-confirm]')).toContainText(url);
+        await c.locator('[data-ref-card-confirm]').getByRole('button', { name: 'Cancel' }).click();
+        expect(popups).toEqual([]);
+      }
+      expect(await scroll.locator('a[href]').count()).toBe(0);
       // The image is drawn as its alt text, never loaded; nothing in the card shows a native tooltip.
       await expect(c.locator('[data-image-unavailable]')).toHaveText('before');
       expect(await c.locator('img[src^="https://"]').count()).toBe(0);

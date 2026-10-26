@@ -9,12 +9,14 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgeRefKey, forgeRefLabel, parseForgeRefUrl } from "@plannotator/core/forge-ref-card";
+import { forgeRefLinks } from "@plannotator/core/forge-refs";
 import {
   createRefCards,
   parseGithubRefAnswer,
   parseGitlabRefAnswer,
   readSignedInHosts,
   refErrorOf,
+  REF_AUTH_HOSTS_MS,
   REF_FAILURE_MS,
   REF_FRESH_MS,
   REF_RATE_LIMIT_MS,
@@ -139,6 +141,24 @@ describe("links", () => {
     ]) {
       expect(parseForgeRefUrl(bad)).toBeNull();
     }
+  });
+
+  test("a web link's host is taken as written: a host that only starts like github.com is no forge", async () => {
+    for (const bad of [
+      "https://github.com-evil.example/o/r/pull/1",
+      "https://github.com.evil.example/o/r/pull/1",
+      "https://gitlab.com-evil.example/o/r/-/merge_requests/1",
+      "https://ssh.github.com/o/r/pull/1",
+    ]) {
+      expect(parseForgeRefUrl(bad)).toBeNull();
+    }
+    // Nothing is fetched for it, not even an "unsupported" card.
+    const r = runner(() => ok(githubPR()));
+    const cards = createRefCards({ run: r.run, avatar: async () => null });
+    expect(await cards.get("https://github.com-evil.example/o/r/pull/1")).toBeNull();
+    expect(r.calls).toHaveLength(0);
+    // Git remotes keep their SSH aliases: a `github.com-work` remote still links refs to github.com.
+    expect(forgeRefLinks({ display: "acme/widgets", host: "github.com-work" })?.issue(3)).toBe("https://github.com/acme/widgets/issues/3");
   });
 
   test("keys and labels: a GitHub issue link to a PR is one entry; GitLab numbers issues and MRs apart", () => {
@@ -332,14 +352,14 @@ describe("fetching", () => {
   test("GitLab through glab: the MR query for an MR link, --hostname for a host glab is signed in to, signed out quietly", async () => {
     const r = runner(({ args }) => {
       if (args[0] === "auth") return { stdout: "", stderr: "gitlab.acme.dev\n  ✓ Logged in to gitlab.acme.dev as lin (/home/lin/.config/glab-cli/config.yml)\n", exitCode: 0 };
-      return args.includes("--hostname") ? err("glab: 401 Unauthorized") : ok(gitlabMR());
+      return args.includes("gitlab.acme.dev") ? err("glab: 401 Unauthorized") : ok(gitlabMR());
     });
     const cards = createRefCards({ run: r.run, avatar: async () => null });
     const mr = await cards.get("https://gitlab.com/acme/sub/tools/-/merge_requests/7");
     expect(mr).toMatchObject({ ok: true, data: { platform: "gitlab", state: "draft" } });
     const q = r.queries()[0];
     expect(q.cli).toBe("glab");
-    expect(q.args.slice(0, 2)).toEqual(["api", "graphql"]);
+    expect(q.args.slice(0, 4)).toEqual(["api", "--hostname", "gitlab.com", "graphql"]);
     expect(q.args).toContain("path=acme/sub/tools");
     expect(q.args).toContain("iid=7");
     expect(q.args.find((s) => s.startsWith("query="))).toContain("mergeRequest(iid: $iid)");
@@ -396,6 +416,44 @@ describe("fetching", () => {
     const glab: RefRunner = async () => ({ stdout: "", stderr: "gitlab.com\n  ✓ Logged in to gitlab.com as lin\ngitlab.acme.dev\n  x gitlab.acme.dev: api call failed\n", exitCode: 1 });
     expect([...(await readSignedInHosts(glab, "glab"))]).toEqual(["gitlab.com"]);
     expect([...(await readSignedInHosts(async () => err("", 127), "glab"))]).toEqual([]);
+  });
+
+  test("--hostname is always passed, github.com and gitlab.com too, so GH_HOST, GITLAB_HOST or the folder's remote never pick the host", async () => {
+    const r = runner(({ cli }) => ok(cli === "gh" ? githubPR() : gitlabMR()));
+    const cards = createRefCards({ run: r.run, avatar: async () => null });
+    await cards.get(PR_URL);
+    await cards.get("https://gitlab.com/acme/sub/tools/-/merge_requests/7");
+    const [gh, glab] = r.queries();
+    expect(gh.cli).toBe("gh");
+    expect(gh.args.slice(0, 4)).toEqual(["api", "graphql", "--hostname", "github.com"]);
+    expect(glab.cli).toBe("glab");
+    expect(glab.args.slice(0, 4)).toEqual(["api", "--hostname", "gitlab.com", "graphql"]);
+  });
+
+  test("a failed or timed-out `auth status` is kept for REF_FAILURE_MS, not REF_AUTH_HOSTS_MS", async () => {
+    let t = 1_000_000;
+    let signedIn = false;
+    const r = runner(({ cli, args }) => {
+      if (cli === "gh" && args[0] === "auth") {
+        return signedIn ? ok({ hosts: { "github.acme.dev": [{ login: "ada", active: true, state: "success" }] } }) : err("timed out", 1);
+      }
+      return ok(githubPR());
+    });
+    const cards = createRefCards({ run: r.run, now: () => t, avatar: async () => null });
+    const ghe = "https://github.acme.dev/acme/widgets/pull/12";
+    expect(await cards.get(ghe)).toMatchObject({ ok: false, error: "unsupported" });
+    signedIn = true;
+    t += REF_FAILURE_MS - 1;
+    expect(await cards.get(ghe)).toMatchObject({ ok: false, error: "unsupported" });
+    t += 2;
+    expect(await cards.get(ghe)).toMatchObject({ ok: true });
+    const authCalls = r.calls.filter((c) => c.args[0] === "auth");
+    // Failed: the JSON form, then the text form; then once more after REF_FAILURE_MS.
+    expect(authCalls).toHaveLength(3);
+    // A host set that has hosts is kept for REF_AUTH_HOSTS_MS.
+    t += REF_AUTH_HOSTS_MS - 1;
+    await cards.get("https://github.acme.dev/acme/widgets/pull/13");
+    expect(r.calls.filter((c) => c.args[0] === "auth")).toHaveLength(3);
   });
 
   test("owner and repo go as strings: a repo named 2048, true or null stays a string", async () => {
