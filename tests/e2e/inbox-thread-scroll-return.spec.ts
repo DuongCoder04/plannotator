@@ -376,6 +376,8 @@ test("a comment opened from the reply box's list right after a file closes lands
     [BODY, passage] as const,
   );
   expect(where.inView, `the passage landed at ${where.top}`).toBe(true);
+  // The comment goes, so the thread the later tests measure is as it was (a comment waiting changes the foot).
+  expect(await p.evaluate(async (comment) => (await fetch(`/api/inbox/annotations/${comment}/remove`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, id)).toBe(200);
   await context.close();
 });
 
