@@ -2625,7 +2625,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
       if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
         // One origin: notification permission is per origin (inbox-canonical.ts).
-        const canonical = inboxCanonicalRedirect(req, url, port, via);
+        const canonical = inboxCanonicalRedirect(req, url, baseUrl, via);
         if (canonical) return canonical;
         const page = options.htmlContent ?? NOT_BUILT_PAGE;
         // A page load (or a refresh) asks for a new release when the answer is

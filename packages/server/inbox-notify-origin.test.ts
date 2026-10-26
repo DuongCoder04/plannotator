@@ -99,8 +99,8 @@ test("nothing else redirects: no fetch metadata, a frame, APIs, the door, MCP, H
 
 test("the tailnet listener is never redirected", () => {
   const req = new Request("http://127.0.0.1:5555/", { headers: { Host: "127.0.0.1:5555", ...NAVIGATE } });
-  expect(inboxCanonicalRedirect(req, new URL(req.url), 5555, "tailnet")).toBeNull();
-  expect(inboxCanonicalRedirect(req, new URL(req.url), 5555, "local")?.status).toBe(307);
+  expect(inboxCanonicalRedirect(req, new URL(req.url), "http://localhost:5555/", "tailnet")).toBeNull();
+  expect(inboxCanonicalRedirect(req, new URL(req.url), "http://localhost:5555/", "local")?.status).toBe(307);
 });
 
 /** Read an event stream until `until` matches, then stop. */

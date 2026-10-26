@@ -1617,7 +1617,8 @@ export async function startAnnotateServer(
 
   const port = server.port!;
   boundPort = port;
-  const serverUrl = buildAdvertisedUrl(port);
+  // Live annotation must stay same-site with the localhost app proxy.
+  const serverUrl = liveApp ? `http://localhost:${port}` : buildAdvertisedUrl(port);
 
   // The cache warm must never gate the listening socket. Its async filesystem
   // walk yields between directories while requests remain serviceable.

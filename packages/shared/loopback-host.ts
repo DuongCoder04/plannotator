@@ -12,6 +12,12 @@
  * Pi's AI runtime can load it under Node's strip-only TypeScript too.
  */
 
+/** Browser-reserved localhost names, including dedicated cookie hosts (#2184). */
+export function isLocalhostHostname(hostname: string): boolean {
+	const host = hostname.toLowerCase();
+	return host === "localhost" || host.endsWith(".localhost");
+}
+
 /** True for hostnames that name the local loopback: localhost, the IPv6
  * loopback, or a LITERAL IPv4 address in 127.0.0.0/8. A string-prefix test
  * would also match DNS names like 127.0.0.1.evil.example that resolve
@@ -50,8 +56,9 @@ export function isLoopbackForwardedFor(headerValue: string | null | undefined): 
 }
 
 /**
- * True when `hostHeader` is `<loopback name>:<port>`: `localhost`, any
- * `127.x.y.z` literal, or `[::1]`, followed by exactly this server's port.
+ * True when `hostHeader` is `<loopback name>:<port>`: `localhost`,
+ * `*.localhost`, a `127.x.y.z` literal, or `[::1]`, followed by exactly
+ * this server's port.
  * A missing port, another port, or any other name is refused.
  */
 export function isLoopbackHostHeader(hostHeader: string | null | undefined, port: number | null | undefined): boolean {
@@ -73,5 +80,5 @@ export function isLoopbackHostHeader(hostHeader: string | null | undefined, port
 		portText = value.slice(colon + 1);
 	}
 	if (!/^\d{1,5}$/.test(portText) || Number(portText) !== port) return false;
-	return isLoopbackHostname(hostname);
+	return isLocalhostHostname(hostname) || isLoopbackHostname(hostname);
 }

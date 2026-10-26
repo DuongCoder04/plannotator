@@ -14,7 +14,7 @@ Plannotator is configured through environment variables, hook/plugin configurati
 |----------|---------|-------------|
 | `PLANNOTATOR_REMOTE` | auto-detect | Set to `1` or `true` to force remote mode, `0` or `false` to force local mode, or leave unset to auto-detect via `SSH_TTY` / `SSH_CONNECTION`. Uses a fixed port in remote mode; browser-opening behavior depends on the environment. |
 | `PLANNOTATOR_PORT` | random (local) / `19432` (remote) | Fixed server port. Useful for port forwarding in remote environments. |
-| `PLANNOTATOR_URL_HOST` | unset (`localhost`) | Display-only hostname for advertised session URLs in remote mode (e.g. a Tailscale MagicDNS name). The runtime-chosen port is always appended; binding is unaffected and local sessions ignore the override. Can also be set via `~/.plannotator/config.json` (`{ "urlHost": "host" }`). |
+| `PLANNOTATOR_URL_HOST` | unset (`localhost`) | Hostname for advertised session URLs. Local sessions accept `localhost` and `*.localhost`, e.g. `plannotator.localhost` to isolate preference cookies. Other hosts require remote mode. The runtime-chosen port is always appended; binding is unaffected. Can also be set via `~/.plannotator/config.json` (`{ "urlHost": "host" }`). |
 | `PLANNOTATOR_BROWSER` | system default | Custom browser or script to open the UI. `none` opens no browser. |
 | `PLANNOTATOR_AI` | enabled | Set to `disabled` to disable Ask AI, Review Agents, and Guided Review. External agents can still open reviews and submit annotations; the annotate agent terminal is separate. |
 | `PLANNOTATOR_SHARE` | enabled | Set to `disabled` to turn off URL sharing entirely. Can also be set via `~/.plannotator/config.json` (`{ "share": "disabled" }`). |
@@ -24,6 +24,37 @@ Plannotator is configured through environment variables, hook/plugin configurati
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Respected by the install script when placing hooks. |
 
 See the [environment variables reference](/docs/reference/environment-variables/) for full details, port resolution order, and examples.
+
+## Isolate localhost preference cookies
+
+Plannotator uses host-only cookies so preferences persist across its random
+ports. By default, these cookies also accompany requests to unrelated apps on
+`localhost`. To keep them on a dedicated hostname, set this before starting your
+agent or Plannotator:
+
+```bash
+export PLANNOTATOR_URL_HOST=plannotator.localhost
+```
+
+Or add `"urlHost": "plannotator.localhost"` to `~/.plannotator/config.json`.
+Browsers that resolve `*.localhost` to loopback need no hosts-file entry. If
+yours does not, add `127.0.0.1 plannotator.localhost` to your hosts file. Local
+sessions still bind `127.0.0.1`; remote mode is not needed. Plan review, code
+review, document annotation and the Inbox use the dedicated hostname. Restart an
+already-running Inbox for the change to apply. Preferences remain shared across
+Plannotator's ports, but are separate from `localhost` and other hostnames.
+
+The dedicated hostname starts with fresh preferences. Existing `plannotator-*`
+cookies on `localhost` are not migrated or deleted. To remove them, filter for
+`plannotator-` in your browser's cookie storage for `localhost` and delete only
+those entries. Do not clear all localhost cookies, which also removes other
+apps' data. Notification permission for the Inbox must be granted again on the
+new origin.
+
+Live app annotation (`plannotator annotate http://localhost:...`) still uses
+`localhost` for both the editor and app proxy. They must stay same-site so the
+framed app retains access to its localhost cookies. The hostname override does
+not isolate cookies in that mode.
 
 ## Hook configuration (Claude Code)
 

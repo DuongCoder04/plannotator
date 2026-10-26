@@ -479,9 +479,9 @@ export interface PlannotatorConfig {
    * remote-mode user hand out a reachable link (e.g. a Tailscale MagicDNS
    * name or tailnet IP) instead of localhost. Host only — the port is chosen
    * at runtime and always appended. Never affects which interface the server
-   * binds; that stays governed by PLANNOTATOR_REMOTE. Applied only in remote
-   * sessions: a local session binds loopback, so the override is ignored
-   * (localhost is advertised) with a once-per-process stderr warning.
+   * binds; that stays governed by PLANNOTATOR_REMOTE. Local sessions accept
+   * localhost and *.localhost names to isolate preference cookies. Other
+   * hosts are ignored locally with a once-per-process stderr warning.
    * Mirrors the PLANNOTATOR_URL_HOST env var, which takes precedence.
    */
   urlHost?: string;
@@ -1502,8 +1502,8 @@ const warnedInvalidUrlHosts = new Set<string>();
 /**
  * Resolve the display-only hostname used in advertised session URLs.
  * Returns undefined when unset (callers advertise localhost). An empty (but
- * set) env var suppresses the config key. Callers apply this only to remote
- * sessions; local sessions ignore it (see buildAdvertisedUrl).
+ * set) env var suppresses the config key. Local sessions accept localhost
+ * names only; remote sessions accept any valid host (see buildAdvertisedUrl).
  *
  * Priority (highest wins):
  *   PLANNOTATOR_URL_HOST env var  →  config.urlHost  →  undefined

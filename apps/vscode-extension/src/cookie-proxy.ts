@@ -82,7 +82,15 @@ export function createCookieProxy(
         function tryUpstreamRequest(attempt: number): void {
           const proxyReq = http.request(
             targetUrl.toString(),
-            { method: req.method, headers: proxyHeaders },
+            {
+              method: req.method,
+              headers: proxyHeaders,
+              // Browsers resolve *.localhost themselves; Node's OS resolver may not.
+              // Pin only the socket address, keeping the advertised Host and Origin.
+              ...(targetUrl.hostname === "localhost" || targetUrl.hostname.endsWith(".localhost")
+                ? { hostname: "127.0.0.1" }
+                : {}),
+            },
             (proxyRes) => {
               const contentType = proxyRes.headers["content-type"] || "";
 

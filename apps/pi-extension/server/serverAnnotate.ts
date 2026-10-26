@@ -1532,7 +1532,8 @@ export async function startAnnotateServer(options: {
 		port,
 		liveProxyPort: liveProxy?.port,
 		portSource,
-		url: buildAdvertisedUrl(port),
+		// Keep live annotation same-site with the localhost app proxy.
+		url: options.liveApp ? `http://localhost:${port}` : buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,
 		hostControl,
 		stop: () => {

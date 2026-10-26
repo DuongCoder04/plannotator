@@ -11,6 +11,7 @@
 import { parsePortSelection } from "@plannotator/shared/port-range";
 import { loadConfig, resolveUrlHost } from "@plannotator/shared/config";
 import { isAutoUrlHost, resolveAutoHostCached } from "@plannotator/shared/tailscale";
+import { isLocalhostHostname } from "@plannotator/shared/loopback-host";
 
 const DEFAULT_REMOTE_PORT = 19432;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -206,9 +207,9 @@ let warnedLocalUrlHost = false;
  * Compose the URL advertised to the user for a bound port (issue #657).
  * Display-only: the PLANNOTATOR_URL_HOST / urlHost override changes what is
  * printed and opened, never which interface the server listens on
- * (getServerHostname). Remote sessions only: a local session binds loopback,
- * so honoring the override would advertise (and auto-open) a URL nothing is
- * listening on — the override is ignored with a once-per-process warning.
+ * (getServerHostname). Local sessions also accept localhost subdomains, so
+ * preferences can live on a dedicated hostname without enabling remote mode.
+ * Other overrides need remote mode and otherwise warn once per process.
  * The "auto" sentinel resolves the host from Tailscale (resolveAutoHost).
  * Same-machine subprocesses must not use this — they get a loopback URL so a
  * tailnet-only hostname can't break local agent jobs.
@@ -216,11 +217,11 @@ let warnedLocalUrlHost = false;
 export function buildAdvertisedUrl(port: number): string {
   const host = resolveUrlHost(loadConfig());
   if (host === undefined) return `http://localhost:${port}`;
-  if (!isRemoteSession()) {
+  if (!isRemoteSession() && !isLocalhostHostname(host)) {
     if (!warnedLocalUrlHost) {
       warnedLocalUrlHost = true;
       process.stderr.write(
-        `[plannotator] Warning: advertised URL host ${JSON.stringify(host)} ignored — this is a local session, so the server binds loopback and only localhost is reachable. Set PLANNOTATOR_REMOTE=1 to use the override.\n`,
+        `[plannotator] Warning: advertised URL host ${JSON.stringify(host)} ignored — this is a local session, so the server binds loopback and only localhost or *.localhost names are supported. Set PLANNOTATOR_REMOTE=1 to use the override.\n`,
       );
     }
     return `http://localhost:${port}`;
