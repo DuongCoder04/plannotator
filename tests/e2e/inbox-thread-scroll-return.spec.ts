@@ -261,13 +261,17 @@ test('desktop 1440: opened by keyboard, focus comes back to the tile or the imag
   await context.close();
 });
 
-/** Whether `selector` sits inside the thread's view. */
+/**
+ * Whether `selector` sits inside the thread's view, and whether it covers the view's middle line (where a landing
+ * that centres it puts it: a message taller than the view is centred with its top above the view).
+ */
 function inView(p: Page, selector: string) {
   return p.evaluate(
     ([bodySel, sel]) => {
       const body = document.querySelector<HTMLElement>(bodySel)!.getBoundingClientRect();
       const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
-      return { top: r.top - body.top, inView: r.top >= body.top - 2 && r.top < body.bottom - 20 };
+      const middle = body.top + body.height / 2;
+      return { top: r.top - body.top, bottom: r.bottom - body.top, inView: r.top >= body.top - 2 && r.top < body.bottom - 20, overMiddle: r.top <= middle && r.bottom >= middle };
     },
     [BODY, selector] as const,
   );
@@ -278,7 +282,9 @@ test("the app's own scrolls are not pulled back by the place held after a file (
   const p = await context.newPage();
   const firstArticle = `[data-message-article="${world.firstId}"]`;
 
-  // A file beside the thread, then a search result in the same thread (`msg=` drops `file`): the message lands in view.
+  // A file beside the thread, then a search result in the same thread (`msg=` drops `file`): the message lands
+  // centred in the view, not back at the tile the place was held on. The first message is taller than the view,
+  // so centred means its top sits above the view: the check is that it covers the view's middle.
   await loadThread(p);
   const tile = openerSelector('foot', 'rollout.md');
   await p.locator(tile).scrollIntoViewIfNeeded();
@@ -289,7 +295,7 @@ test("the app's own scrolls are not pulled back by the place held after a file (
   await expect(pane(p)).toHaveCount(0);
   await p.waitForTimeout(1500);
   const landed = await inView(p, firstArticle);
-  expect(landed.inView, `the search result landed at ${landed.top}`).toBe(true);
+  expect(landed.overMiddle, `the search result landed at ${landed.top}..${landed.bottom}`).toBe(true);
 
   // A file closed, then (inside the hold's window) a jump from the open-questions menu: the card lands in view.
   await loadThread(p);
