@@ -165,6 +165,19 @@ describe("with counts on", () => {
     expect(JSON.parse(readFileSync(join(dataDir, "config.json"), "utf-8")).usageCounts).toEqual({ decisionMode: false });
   });
 
+  test("--off with a config.json it cannot read exits 1, says how to fix it, and leaves the file as it is", async () => {
+    const dataDir = world(ON);
+    const bytes = '{ "usageCountsNotice": { "decisionMode": 1 }, }\n';
+    writeFileSync(join(dataDir, "config.json"), bytes);
+    const off = await run(dataDir, ["--off"]);
+    expect(off.code).toBe(1);
+    expect(off.stderr).toContain("were not turned off");
+    expect(off.stderr).toContain("fix or remove it");
+    expect(off.stdout).not.toContain("Usage counts are off");
+    expect(readFileSync(join(dataDir, "config.json"), "utf-8")).toBe(bytes);
+    expect((await run(dataDir, ["--on"])).code).toBe(1);
+  });
+
   test("usage errors exit 2", async () => {
     const dataDir = world(ON);
     expect((await run(dataDir, [])).code).toBe(2);

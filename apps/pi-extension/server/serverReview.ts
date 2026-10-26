@@ -2629,7 +2629,7 @@ export async function startReviewServer(options: {
 				) {
 					return json(res, { superseded: true });
 				}
-				saveConfig({ reviewAnalysis });
+				if (!saveConfig({ reviewAnalysis })) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (!nextCallFlowEnabled) callFlowService.cancelAll();
 				json(res, { semanticDiff, callFlow });
 			} catch {
@@ -3679,7 +3679,7 @@ export async function startReviewServer(options: {
 					if (reviewAnalysis.callFlow === false) callFlowService.cancelAll();
 				}
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
-				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
 				json(res, { ok: true });
 			} catch {

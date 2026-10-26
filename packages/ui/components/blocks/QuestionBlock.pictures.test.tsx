@@ -202,6 +202,65 @@ describe('picture choices', () => {
   });
 });
 
+/**
+ * Move every text node under `el` into its own <mark>, as the annotation
+ * highlighter does for a restored comment. React no longer finds those text
+ * nodes where it put them; a placeholder that React inserts before one of
+ * them throws, and the whole tree unmounts.
+ */
+function wrapEveryText(el: HTMLElement) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) if ((node as Text).data.trim()) texts.push(node as Text);
+  for (const text of texts) {
+    const mark = document.createElement('mark');
+    text.parentNode!.insertBefore(mark, text);
+    mark.appendChild(text);
+  }
+}
+
+describe('a picture that fails to load after the highlighter moved the text beside it', () => {
+  // What regresses if this fails: an image that fails after a restored comment
+  // wrapped the words next to it makes React throw in insertBefore, and the
+  // whole document goes blank (review of #2177).
+  test.skipIf(!hasDom)('an inline image: the placeholder shows and the words stay', async () => {
+    const el = await mount(<Harness markdown={'![gone](x.png)words after it'} />);
+    const img = el.querySelector<HTMLImageElement>('img')!;
+    const words = img.nextSibling as Text;
+    expect(words.nodeType).toBe(Node.TEXT_NODE);
+    const mark = document.createElement('mark');
+    words.parentNode!.insertBefore(mark, words);
+    mark.appendChild(words);
+    await act(async () => {
+      img.dispatchEvent(new Event('error'));
+    });
+    expect(el.textContent).toContain('words after it');
+    expect(el.querySelector('mark')!.textContent).toBe('words after it');
+    const chip = el.querySelector<HTMLElement>('[data-image-unavailable]')!;
+    expect(chip.textContent).toBe('gone');
+    // Never quoted by a text comment.
+    expect(chip.classList.contains('annotation-exclude')).toBe(true);
+    // No broken image is drawn: the <img> stays in place, hidden and unnamed.
+    expect([...el.querySelectorAll('img')].every((i) => i.hidden && i.alt === '')).toBe(true);
+  });
+
+  test.skipIf(!hasDom)('a Shows picture and picture tiles: the card falls back and keeps its text', async () => {
+    const el = await mount(<Harness markdown={SINGLE} />);
+    wrapEveryText(el);
+    for (const img of [...el.querySelectorAll('img[data-question-picture]')]) {
+      await act(async () => {
+        img.dispatchEvent(new Event('error'));
+      });
+    }
+    const card = el.querySelector<HTMLElement>('fieldset')!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('Which checkout drawer should ship?');
+    expect(card.querySelector('[data-question-shows]')!.textContent).toContain('Both drawers');
+    expect(tiles(el)).toHaveLength(0);
+    expect(el.querySelectorAll('label[data-question-option]').length).toBe(3);
+  });
+});
+
 describe('contract lines on the card', () => {
   test.skipIf(!hasDom)('Stakes under the prompt, Shows as a chip that opens the picture, Why under the choices, the Can\'t be undone tag', async () => {
     const el = await mount(<Harness markdown={SINGLE} />);
@@ -221,6 +280,20 @@ describe('contract lines on the card', () => {
     expect(answer()).toBeUndefined();
     // None of the lines is context.
     expect(card.querySelector('[data-question-part="context"]')).toBeNull();
+  });
+
+  test.skipIf(!hasDom)('a Shows picture that fails to load is its label, never a broken image', async () => {
+    const el = await mount(<Harness markdown={SINGLE} />);
+    const thumb = el.querySelector<HTMLImageElement>('[data-question-shows] img')!;
+    await act(async () => {
+      thumb.dispatchEvent(new Event('error'));
+    });
+    const shows = el.querySelector<HTMLElement>('[data-question-shows]')!;
+    expect(shows.querySelector('img')).toBeNull();
+    expect(shows.querySelector('[data-question-shows-open]')).toBeNull();
+    expect(shows.textContent).toContain('Both drawers');
+    // The choices' own pictures still load as tiles.
+    expect(tiles(el)).toHaveLength(3);
   });
 
   test.skipIf(!hasDom)('Shows as a file is a link', async () => {
