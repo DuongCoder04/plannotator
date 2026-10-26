@@ -95,6 +95,7 @@ import { createInboxSearchRoutes } from "./inbox-search";
 import { inboxSkillsRoute } from "./inbox-skills";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { InboxError } from "@plannotator/shared/inbox/schema";
+import { inboxPromptsModel, parseInboxPromptsChange, saveInboxPromptsChange } from "./inbox-prompts";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxArchivedRows, inboxListSections, inboxRowArchived } from "@plannotator/shared/inbox/list";
 import { archiveProject, markProjectRead, unarchiveProject, unmarkProjectRead } from "@plannotator/shared/inbox/project-batch";
@@ -123,6 +124,7 @@ import { markPlannotatorResponse, withPlannotatorServerHeader } from "./plannota
 import { createInboxMcpServer } from "./inbox-mcp";
 import { inboxGuideRoute } from "./inbox-guides";
 import { createInboxRepoCache } from "./inbox-repos";
+import { createRefCards, type RefRunner } from "./ref-cards";
 import { createInboxProjectRoots, nearestProjectHolding, type InboxGitRunner } from "./inbox-project-root";
 import { handleFavicon } from "./shared-handlers";
 import { createInboxAttachmentRoutes } from "./inbox-attachments";
@@ -299,6 +301,8 @@ export interface InboxServerOptions {
   openInLauncher?: InboxOpenInLauncher;
   /** Tests: how a project root's `origin` is read (default `readInboxProjectRepo`, inbox-repos.ts). */
   readProjectRepo?: (root: string) => Promise<InboxProjectRepo | null>;
+  /** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+  refRunner?: RefRunner;
   /** Tests: the git that decides a path's project (default `inboxGitRunner`, inbox-project-root.ts). */
   projectRootGit?: InboxGitRunner;
   /**
@@ -697,6 +701,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // resolved for every known project once the server listens (below) and
   // when a project is first seen, never while a request waits (inbox-repos.ts).
   const repos = createInboxRepoCache(options.readProjectRepo ? { read: options.readProjectRepo } : {});
+
+  // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
+  // github.com, gitlab.com and the hosts this computer's own gh / glab is signed in to; nothing else.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
 
   // Where a path an agent named files its messages: its repository (a linked
   // worktree folds into its main repository's project) or the folder, cached
@@ -1486,6 +1494,25 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return experimentalState();
   };
 
+  /**
+   * Settings → Prompts: the Inbox reminder (config.json `prompts.inbox`) and
+   * the plan, review and annotate prompts. `on` per agent is what Settings →
+   * Agents shows: the reminder switch, with the Inbox tool (and, for Claude
+   * Code, its mod). Changing it is for this computer only: the text goes to
+   * every agent session here.
+   */
+  const promptsState = (via: RequestVia) => {
+    const config = loadConfig();
+    const env = agentEnvironment.env as NodeJS.ProcessEnv;
+    const modOff = !claudeCodeModOn(agentEnvironment);
+    const on = Object.fromEntries(
+      INBOX_TOOL_HOSTS.map((host) => [host, !(host === "claude-code" && modOff) && resolveInboxReminder(config, env, host)]),
+    ) as Record<InboxToolHost, boolean>;
+    // OpenCode 1 cannot bring a reply back as a turn: its default is the no-wake line.
+    const wakes = { "claude-code": true, pi: true, opencode: inboxPluginStatus("opencode", agentEnvironment)?.generation !== "1" };
+    return inboxPromptsModel(config, on, via === "local", wakes);
+  };
+
   /** What Settings and the connect snippets read. */
   const settingsModel = (via: RequestVia) => ({
     serverSession,
@@ -1519,6 +1546,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     experimental: experimentalState(),
     /** The onboarding tour: started, finished or skipped, and whether the first real thread offers notifications once more. */
     tour: tourState(),
+    /** Settings → Prompts: the Inbox reminder (editable on this computer) and the plan, review and annotate prompts. */
+    prompts: promptsState(via),
     store: store.diskUsage(),
     /** Whether this Inbox serves phones; the window shows the Phones block only then. */
     phones: phonesOn,
@@ -2144,6 +2173,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
+      // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
+      // read guard; the owner over the tailnet gets it too. Never on the device door (not in its
+      // allowlist), so nothing of it reaches a phone or the relay.
+      if (path === "/api/inbox/ref") {
+        if (req.method !== "GET") return json({ error: "Use GET." }, 405);
+        if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
+          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
+        }
+        const href = url.searchParams.get("url") ?? "";
+        if (href.length > 2048) throw new InboxError("validation_error", "url: at most 2048 characters.", { field: "url" });
+        const result = await refCards.get(href);
+        if (!result) throw new InboxError("validation_error", "url: an https link to an issue, pull request or merge request.", { field: "url" });
+        return json({ serverSession, ...result });
+      }
       if (path === "/api/inbox/events" && req.method === "GET") {
       // Another site's page must not hold (or time) a stream of everything the Inbox holds:
       // refused like the other read routes. The phone's door and agents send no fetch metadata.
@@ -2275,12 +2318,16 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.diff_style === undefined &&
           body.experimental === undefined &&
           body.tour === undefined &&
+          body.prompts === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, update_check or auto_update is required.");
         }
         // Updating changes this computer: never from a page that came through the tailnet.
         if (updateSwitches && via === "tailnet") return localOnly();
+        // The reminder goes to every agent session on this computer: changed only here, like Settings → Agents.
+        if (body.prompts !== undefined && via === "tailnet") return localOnly();
+        const promptsChange = body.prompts === undefined ? undefined : parseInboxPromptsChange(body.prompts);
         let tailscaleChange: { on: boolean; replaceExposed: boolean } | undefined;
         if (body.tailscale !== undefined) {
           const value = body.tailscale as { on?: unknown; replace_exposed?: unknown } | null;
@@ -2321,7 +2368,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const diffStyle = body.diff_style === undefined ? diffStyleState() : saveDiffStyle(body.diff_style);
         const experimental = body.experimental === undefined ? experimentalState() : saveExperimental(body.experimental);
         const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour });
+        if (promptsChange) saveInboxPromptsChange(promptsChange);
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, prompts: promptsState(via) });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {

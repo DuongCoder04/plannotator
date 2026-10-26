@@ -16,6 +16,7 @@ import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
 import { TIP_DELAY_MS } from './components/Tip';
 import { configurePlannotatorUI } from '@plannotator/ui/configure';
+import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
@@ -126,6 +127,12 @@ configurePlannotatorUI({
   digitHexIssueRefs: true,
   // The selection toolbar's Copy copies rich text, in messages and attached files (#1972).
   richCopy: true,
+  // Hover cards for issue, PR and MR links: the server fetches with this computer's gh or glab (ref-cards.ts).
+  refCardTransport: async (href, _ref, signal) => {
+    const res = await fetch(`/api/inbox/ref?url=${encodeURIComponent(href)}`, { signal, headers: { accept: 'application/json' } });
+    if (!res.ok) return null;
+    return (await res.json()) as ForgeRefCardResult;
+  },
   // Images in a message load from the Inbox's per-message route (#1813).
   imageSrcResolver: inboxImageSrcResolver,
   webmcp: { enabled: false, namePrefix: 'plannotator.' },
@@ -2937,6 +2944,7 @@ function Inbox() {
         onToggleExperimental={(next) => void toggleExperimental(next)}
         agents={agents}
         onAgents={setAgents}
+        onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
         tailscaleBusy={tailscaleBusy}
         permission={notifications.permission}
@@ -3067,6 +3075,8 @@ function Inbox() {
           }
           // The title refreshes the list it names, the thread beside it staying open (the list adopts, as Show does).
           onRefresh={() => void refreshInbox(route.project, false)}
+          // A phone's pull down from the list's top does the same, its ↻ spinning until the read lands (pullRefresh.ts).
+          onPullRefresh={() => refreshInbox(route.project, false)}
           refreshSpin={refreshSpin && refreshSpin.scope === route.project ? refreshSpin.key : null}
           onShowNew={() => {
             // Show's line goes away with the press: after a key, focus goes to the first row it brought in.

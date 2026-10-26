@@ -141,6 +141,7 @@ jobs:
           packages/ui/components/ImageZoomStage.wheelHint.test.tsx
           packages/ui/components/Viewer.imageRegions.test.tsx
           packages/ui/components/HostTitle.dom.test.tsx
+          packages/ui/components/RefHoverCard.dom.test.tsx
           packages/inbox/images.test.tsx
           packages/inbox/inlineImages.test.tsx
           packages/inbox/refusedImages.test.tsx
@@ -206,6 +207,7 @@ jobs:
           packages/inbox/archived.test.tsx
           packages/inbox/openStaysPut.test.tsx
           packages/inbox/clickToRefresh.test.tsx
+          packages/inbox/pullToRefresh.test.tsx
           packages/inbox/threadReadRetry.test.tsx
           packages/inbox/tabCountWindow.test.tsx
           packages/inbox/phoneList.test.tsx
@@ -224,6 +226,7 @@ jobs:
           packages/inbox/textSize.test.tsx
           packages/inbox/agentNoteDialog.test.tsx
           packages/inbox/agentsSettings.test.tsx
+          packages/inbox/promptsSettings.test.tsx
           packages/inbox/connectNextStep.test.tsx
           packages/inbox/settingsSections.test.tsx
           packages/inbox/searchPalette.test.tsx
@@ -415,6 +418,7 @@ jobs:
           packages/ui/components/CommentPopover.multiTarget.test.tsx
           packages/ui/aiProviderConfigPersistence.test.tsx
           packages/ui/components/sidebar/SidebarContainer.mobile.test.tsx
+          packages/ui/components/sidebar/FileBrowser.fileLimit.test.tsx
           packages/ui/components/ui/mobile-foundation.test.tsx
           packages/ui/components/Settings.vim.test.tsx
           packages/ui/components/Settings.annotateParity.test.tsx
