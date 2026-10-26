@@ -101,6 +101,8 @@ export interface ListModel {
   updated?: string | null;
   /** Claude Code sessions a /reload-plugins would bring up to date: the sidebar's "Reload Claude Code N". Absent from an older Inbox. */
   restart_claude_code?: number;
+  /** Checking for updates has failed for hours: the sidebar's quiet "Can't check for updates". Absent from an older Inbox. */
+  update_check_failing?: UpdateCheckFailing | null;
   notice: string | null;
   projects: ProjectFolder[];
   project: string | null;
@@ -147,13 +149,28 @@ export interface UpdateSwitches {
   auto_update: { on: boolean; env: boolean | null };
 }
 
+/** Checking for updates has failed for hours with no success (packages/shared/update-check.ts releaseCheckFailing). */
+export interface UpdateCheckFailing {
+  since: string;
+  error: string;
+}
+
 /** GET /api/inbox/update: what the update dialogs and Settings → About read (packages/server/inbox-updates.ts). */
 export interface UpdateDetails {
   update: InboxHealth['update'];
   current: string;
   updated: string | null;
   latest: { version: string; fetched_at: string; published_at: string | null } | null;
-  check: { on: boolean; env: boolean | null; last_attempt_at: string | null; error: string | null };
+  check: {
+    on: boolean;
+    env: boolean | null;
+    last_attempt_at: string | null;
+    error: string | null;
+    /** Checking has failed for hours with no success. Absent from an older Inbox. */
+    failing?: UpdateCheckFailing | null;
+    /** When the latest attempt failed (null: it did not). Absent from an older Inbox. */
+    last_failed_at?: string | null;
+  };
   auto_update: { on: boolean; env: boolean | null; supported: boolean };
   summary: string;
   flags: string[];
@@ -937,7 +954,7 @@ export interface InboxEventHandlers {
    * `updated` is undefined from an Inbox older than the field (the "What's new in X" link stays as the list said);
    * `restartClaudeCode` too (the sidebar's "Reload Claude Code N" stays as the list said).
    */
-  onStatus: (update: InboxHealth['update'], updated?: string | null, restartClaudeCode?: number) => void;
+  onStatus: (update: InboxHealth['update'], updated?: string | null, restartClaudeCode?: number, checkFailing?: UpdateCheckFailing | null) => void;
   /** Whether a notification can reach the person now (inbox-windows.ts); never called by an older Inbox. */
   onReach?: (reach: InboxNotifyReach) => void;
   /**
@@ -1039,11 +1056,17 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
     }
     case 'status':
       try {
-        const data = JSON.parse(frame.data) as { update: InboxHealth['update']; updated?: string | null; restart_claude_code?: unknown };
+        const data = JSON.parse(frame.data) as {
+          update: InboxHealth['update'];
+          updated?: string | null;
+          restart_claude_code?: unknown;
+          update_check_failing?: UpdateCheckFailing | null;
+        };
         handlers.onStatus(
           data.update,
           'updated' in data ? (data.updated ?? null) : undefined,
           typeof data.restart_claude_code === 'number' ? data.restart_claude_code : undefined,
+          'update_check_failing' in data ? (data.update_check_failing ?? null) : undefined,
         );
       } catch {
         // A malformed frame changes nothing.
