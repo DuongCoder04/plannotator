@@ -384,7 +384,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           "type": "string"
         },
         "column": {
-          "description": "backlog (not started yet) · designing (not code) · your_look (a non-code thing waits on the person; give `you`) · building (code, an open PR) · your_review (code or a release waits on the person; give `you`) · shipped (merged or live) · dropped (give `reason`). Waiting on the person wins. icebox: the person's only.",
+          "description": "backlog (not started yet) · designing (not code) · your_look (a non-code thing waits on the person; give `you`) · building (code, an open PR) · your_review (code or a release waits on the person; give `you`) · shipped (merged or live) · dropped (give `reason`). Waiting on the person wins. icebox: the person's only. asked: the old name of backlog.",
           "type": "string",
           "enum": [
             "backlog",
@@ -394,7 +394,8 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
             "your_review",
             "shipped",
             "icebox",
-            "dropped"
+            "dropped",
+            "asked"
           ]
         },
         "say": {

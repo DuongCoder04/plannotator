@@ -78,13 +78,13 @@ export interface ProjectBatchAnswer<B> {
   error?: { code: string; message: string };
 }
 
-/** `GET /api/inbox/cards`: the Board. `seen_through` is absent from an Inbox before step 2. */
+/** `GET /api/inbox/cards`: the Board. `seen_seq` (the person's last look, a store seq) is absent from an Inbox before step 2. */
 export interface CardsModel {
   serverSession: string;
   cursor: number;
   cards: InboxCardWire[];
   dropped_unseen: number;
-  seen_through?: string | null;
+  seen_seq?: number | null;
 }
 
 export interface ListModel {
@@ -815,8 +815,8 @@ export const inboxApi = {
   card: (id: string) => get<{ card: InboxCardWire; history: InboxCardHistoryEntry[] }>(`/api/inbox/cards/${encodeURIComponent(id)}`),
   /** The opened card's links, resolved now (read only). */
   cardRefs: (id: string) => get<{ refs: { ref: InboxCardRef; result: ForgeRefCardResult }[] }>(`/api/inbox/cards/${encodeURIComponent(id)}/refs`),
-  /** The person opened the Board: the look runs through the newest `heard_at` it showed. */
-  seeBoard: (through: string) => post<{ seen_through: string }>('/api/inbox/cards/seen', { through }),
+  /** The person opened the Board: the look runs through the cursor of the read it showed (the server clamps it). */
+  seeBoard: (throughSeq: number) => post<{ seen_seq: number }>('/api/inbox/cards/seen', { through_seq: throughSeq }),
   /** The Board's first-visit dialog: the first page on this computer to ask gets `show: true`, once per machine. */
   claimBoardIntro: () => post<{ show: boolean }>('/api/inbox/board/intro', {}),
   /** The person looked at Dropped: an agent's drops there are seen. */

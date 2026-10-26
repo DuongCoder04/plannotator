@@ -4617,6 +4617,9 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The lanes: five live columns, side by side, each scrolling its own cards. */
 .ib-blanes { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 0 12px 12px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
 .ib-lane { flex: 1 1 0; min-width: 188px; min-height: 0; display: flex; flex-direction: column; border-radius: var(--ib-lr-lg, 10px); background: var(--ib-lane-bg); transition: background-color 120ms ease-out, box-shadow 120ms ease-out; }
+/* A card open: the lanes are as wide as the whole lanes that fit (BoardPage measures), and stop at a lane, never a sliver of one. */
+.ib-blanes[data-fit] { scroll-snap-type: x mandatory; scroll-padding-inline: 12px 0; }
+.ib-blanes[data-fit] > .ib-lane { flex: 0 0 calc((100% - (var(--ib-lanes-fit) - 1) * 10px) / var(--ib-lanes-fit)); scroll-snap-align: start; }
 .ib-lane[data-drop] { box-shadow: inset 0 0 0 2px color-mix(in oklch, var(--primary) 45%, transparent); }
 .ib-lane[data-over] { background: color-mix(in oklab, var(--primary) 9%, var(--ib-lane-bg)); box-shadow: inset 0 0 0 2px var(--primary); }
 .ib-lane-h { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px 0 14px; margin: 0; flex: none; font-size: var(--ib-fs-14, 14px); font-weight: 600; min-width: 0; outline: none; }
@@ -4806,9 +4809,11 @@ dialog.ib-dlg.ib-ncd { width: min(760px, calc(100vw - 32px)); overflow: visible;
 .ib-ncd-err { margin: 0 22px 8px; }
 .ib-ncd-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--ib-hair); }
 .ib-ncd-modes { display: flex; gap: 4px; }
-.ib-ncd-mode { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-14, 14px); cursor: pointer; }
+.ib-ncd-mode { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-14, 14px); cursor: pointer; }
+.ib-ncd-mode input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.ib-ncd-mode:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
 .ib-ncd-mode:hover { color: var(--foreground); background: var(--ib-hover); }
-.ib-ncd-mode[aria-pressed="true"] { color: var(--foreground); font-weight: 600; background: var(--ib-lane-bg); }
+.ib-ncd-mode[data-on] { color: var(--foreground); font-weight: 600; background: var(--ib-lane-bg); }
 .ib-ncd-bar { border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-16, 16px); min-height: 44px; padding: 0 6px; cursor: pointer; }
 .ib-ncd-bar.ib-strong { color: var(--primary); font-weight: 650; }
 .ib-ncd { --ib-lane-bg: color-mix(in oklch, var(--background) 60%, var(--card)); }

@@ -136,6 +136,8 @@ import {
   inboxCardColumnIndex,
   inboxCardColumnOf,
   readInboxCard,
+  isInboxCardSeenOnlyChange,
+  isInboxCardSentWaiting,
   normalizeInboxCardNotes,
   inboxCardHistory,
   inboxCardRefsOf,
@@ -559,6 +561,8 @@ export class InboxStore {
   private readonly cards = new Map<string, InboxCard>();
   /** Every snapshot of each card, oldest first: its history (the opened card, step 2). */
   private readonly cardLines = new Map<string, InboxCard[]>();
+  /** The seq of the line that last wrote to each card (a drop's seen mark is not a write): the Board's unread rule. */
+  private readonly cardHeardSeq = new Map<string, number>();
   /** A guided review's files by its snapshot's sha256 (a blob never changes). */
   private readonly guideFileSets = new Map<string, ReadonlyMap<string, DiffFile>>();
   private readonly tornFiles = new Set<string>();
@@ -711,6 +715,8 @@ export class InboxStore {
         // A card stored before Asked became Backlog reads as Backlog (inboxCardColumnOf).
         {
           const card = readInboxCard(line.record);
+          const prev = this.cards.get(card.id);
+          if (!prev || !isInboxCardSeenOnlyChange(prev, card)) this.cardHeardSeq.set(card.id, line.seq);
           this.cards.set(card.id, card);
           const lines = this.cardLines.get(card.id);
           if (lines) lines.push(card);
@@ -4060,6 +4066,7 @@ export class InboxStore {
     this.unsentAnnotations.clear();
     this.cards.clear();
     this.cardLines.clear();
+    this.cardHeardSeq.clear();
     this.tornFiles.clear();
     this.load();
     const used = pendingInboxUploadBlobs(this.dir);
@@ -4636,10 +4643,10 @@ export class InboxStore {
     return this.cards.get(id) ?? null;
   }
 
-  /** A card as readers get it: only the linked threads that still exist. */
+  /** A card as readers get it: only the linked threads that still exist, and the seq of its last write. */
   cardWire(card: InboxCard): InboxCardWire {
     const threads = card.threads.filter((id) => this.messages.get(id)?.thread_id === id);
-    return threads.length === card.threads.length ? card : { ...card, threads };
+    return { ...card, threads, heard_seq: this.cardHeardSeq.get(card.id) ?? 0 };
   }
 
   /**
@@ -4781,11 +4788,17 @@ export class InboxStore {
     refs?: readonly unknown[];
     idempotency_key?: unknown;
     notes?: unknown;
+    /** The person's message that sends the new card to an agent: checked before the card is written, one line for both. */
+    send_thread_id?: unknown;
   }): { card: InboxCard; replayed: boolean } {
     const project = this.projectsById.get(input.project_id);
     if (!project) throw new InboxError("project_not_found", `No project ${input.project_id}.`);
     const byAgent = input.by.kind === "agent";
+    const sending = input.send_thread_id !== undefined && input.send_thread_id !== null;
+    if (sending && byAgent) throw new InboxError("validation_error", "thread_id: only the person sends a card to an agent.", { field: "thread_id" });
+    const target = sending ? this.cardSendTarget(project.id, input.send_thread_id) : null;
     const threads = this.cardThreads(input.threads ?? [], project.id);
+    if (target && !threads.includes(target.thread)) threads.push(target.thread);
     let titleValue = input.title;
     if ((titleValue === undefined || titleValue === null || titleValue === "") && threads.length > 0) {
       // The agent did not write the subject: characters a title refuses (bidi controls) are dropped, not refused.
@@ -4806,12 +4819,15 @@ export class InboxStore {
       const known = this.cardByKey(project.id, key);
       if (known) {
         if (known.title !== title) throw new InboxError("idempotency_key_reused", "This idempotency_key made another card.", { card_id: known.id });
+        // A retry that sends: the card the key made is sent now if it was not (sendCard is a no-op when it was).
+        if (target) return { card: this.sendCard(known.id, { thread_id: input.send_thread_id }), replayed: true };
         return { card: known, replayed: true };
       }
     }
     const column = input.column === undefined || input.column === null ? "backlog" : this.cardColumn(input.column);
     if (column === "dropped") throw new InboxError("validation_error", "column: a new card starts in a live column (or shipped), never dropped.", { field: "column" });
     if (column === "icebox" && byAgent) throw this.iceboxRefusal();
+    if (target && column !== "backlog") throw new InboxError("validation_error", "thread_id: a card sent to an agent starts in Backlog.", { field: "thread_id" });
     const said = input.say === undefined || input.say === null ? null : this.cardText(input.say, "say", INBOX_CARD_LINE_MAX);
     const you: string | null = input.you === undefined || input.you === null ? null : this.cardText(input.you, "you", INBOX_CARD_LINE_MAX);
     if (you !== null && !isInboxCardPersonColumn(column)) throw this.youRefusal();
@@ -4829,7 +4845,7 @@ export class InboxStore {
       said,
       threads,
       prs,
-      agent: byAgent ? input.by : null,
+      agent: target ? target.to : byAgent ? input.by : null,
       created_at: at,
       created_by: input.by,
       moved_at: at,
@@ -4839,7 +4855,7 @@ export class InboxStore {
       aside_from: null,
       idempotency_key: key,
       notes: this.cardNotes(input.notes),
-      sent: null,
+      sent: target ? { at, to: target.to, thread_id: target.thread } : null,
       refs,
     };
     this.appendCard(card, at);
@@ -4990,29 +5006,41 @@ export class InboxStore {
   sendCard(id: string, input: { thread_id: unknown }): InboxCard {
     const card = this.cards.get(id);
     if (!card) throw new InboxError("card_not_found", `No card ${id}.`);
+    const { thread, to } = this.cardSendTarget(card.project_id, input.thread_id);
+    // A retry of the same send (the window's Send or Start, after an answer that was lost) changes nothing.
+    if (isInboxCardSentWaiting(card) && card.sent!.thread_id === thread && card.sent!.to.kind === "agent" && to.kind === "agent" && card.sent!.to.session === to.session) {
+      return card;
+    }
     if (card.column !== "backlog") {
       throw new InboxError("validation_error", `Card ${id} is in ${INBOX_CARD_COLUMN_LABELS[card.column]}: only a Backlog card is sent to an agent.`, { field: "op" });
     }
-    const [thread] = this.cardThreads([input.thread_id], card.project_id);
-    // The message that went: a thread the person started (Send to an agent), or a New message in the
-    // card's thread (Start); either way the person's, addressed to one session.
-    const sentMessage = typeof input.thread_id === "string" ? this.messages.get(input.thread_id.trim()) : undefined;
-    if (!sentMessage || sentMessage.author.kind !== "person" || !sentMessage.to || (sentMessage.id === sentMessage.thread_id && !sentMessage.started_by_person)) {
-      throw new InboxError("validation_error", "thread_id: the person's message for this card (a thread they started, or a message in its thread), addressed to one agent session.", { field: "thread_id" });
-    }
-    const to: InboxAuthor = { kind: "agent", host: sentMessage.to.host, session: sentMessage.to.session, name: INBOX_HOST_NAMES[sentMessage.to.host] ?? null };
     const at = this.stamp();
     const next: InboxCard = {
       ...card,
-      threads: card.threads.includes(thread!) ? card.threads : [...card.threads, thread!],
+      threads: card.threads.includes(thread) ? card.threads : [...card.threads, thread],
       agent: to,
       heard_at: at,
       heard_by: { kind: "person" },
-      sent: { at, to, thread_id: thread! },
+      sent: { at, to, thread_id: thread },
     };
     this.checkLinkCounts(next.threads.length, next.refs.length);
     this.appendCard(next, at);
     return next;
+  }
+
+  /**
+   * Where a card goes when the person sends it: `threadId` is the person's
+   * message for it (a thread they started, or a New message in the card's
+   * thread), in `projectId`, addressed to one agent session. Checked before
+   * anything is written, so a refused send leaves no card and no line.
+   */
+  private cardSendTarget(projectId: string, threadId: unknown): { thread: string; to: InboxAuthor } {
+    const [thread] = this.cardThreads([threadId], projectId);
+    const sentMessage = typeof threadId === "string" ? this.messages.get(threadId.trim()) : undefined;
+    if (!sentMessage || sentMessage.author.kind !== "person" || !sentMessage.to || (sentMessage.id === sentMessage.thread_id && !sentMessage.started_by_person)) {
+      throw new InboxError("validation_error", "thread_id: the person's message for this card (a thread they started, or a message in its thread), addressed to one agent session.", { field: "thread_id" });
+    }
+    return { thread: thread!, to: { kind: "agent", host: sentMessage.to.host, session: sentMessage.to.session, name: INBOX_HOST_NAMES[sentMessage.to.host] ?? null } };
   }
 
   private checkLinkCounts(threads: number, prs: number): void {

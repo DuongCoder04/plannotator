@@ -230,7 +230,8 @@ describe("cards: last heard, and an agent's drop reaching the person", () => {
     advance(3 * 24 * 60 * 60 * 1000);
     const wire = store.cardWire(store.card(card.id)!);
     expect(wire.heard_at).toBe(card.heard_at);
-    expect(Object.keys(wire).sort()).toEqual(Object.keys(card).sort());
+    // Only `heard_seq` is added on the wire (a store seq, for the Board's unread rule): no amber, no stall flag.
+    expect(Object.keys(wire).sort()).toEqual([...Object.keys(card), "heard_seq"].sort());
     expect(readFileSync(join(dir, "inbox", "projects", project.key, "cards.jsonl"), "utf8")).not.toMatch(/amber|stale/);
     const said = store.updateCard(card.id, { by: OTHER, say: "still on it" });
     expect(said.heard_at).not.toBe(card.heard_at);
@@ -400,7 +401,49 @@ describe("cards: the Board page's fields (step 2)", () => {
     // Only through the person's addressed message, and only a Backlog card.
     const agents = store.sendMessage({ project_id: project.id, author: AGENT, body: "hi" });
     expect(refusal(() => store.sendCard(card.id, { thread_id: agents.message.id }))).toBe("validation_error");
+    // The same send again (a retry after a lost answer) writes nothing.
+    const lines = store.cardHistory(card.id).length;
+    expect(store.sendCard(card.id, { thread_id: message.id })).toEqual(sent);
+    expect(store.cardHistory(card.id)).toHaveLength(lines);
     store.updateCard(card.id, { by: OTHER, column: "building" });
     expect(refusal(() => store.sendCard(card.id, { thread_id: message.id }))).toBe("validation_error");
+  });
+
+  test("create and send in one op: a thread that is not the person's leaves no card; a key replays, sending a card it made unsent", () => {
+    const { store, project } = world();
+    const agents = store.sendMessage({ project_id: project.id, author: AGENT, body: "mine" });
+    const before = store.listCards().length;
+    expect(refusal(() => store.createCard({ project_id: project.id, by: PERSON, title: "Wrong", send_thread_id: agents.message.id, idempotency_key: "k" }))).toBe("validation_error");
+    expect(store.listCards()).toHaveLength(before);
+    expect(refusal(() => store.createCard({ project_id: project.id, by: AGENT, title: "Agent", send_thread_id: agents.message.id }))).toBe("validation_error");
+    const { message } = store.startPersonThread({ project_id: project.id, body: "Go", to: { host: "pi", session: "ses_p" }, idempotency_key: "m" });
+    const made = store.createCard({ project_id: project.id, by: PERSON, title: "Go", send_thread_id: message.id, idempotency_key: "k" });
+    expect(made.card).toMatchObject({ column: "backlog", agent: { host: "pi", session: "ses_p" }, threads: [message.thread_id] });
+    expect(made.card.sent).toMatchObject({ thread_id: message.thread_id });
+    expect(store.cardHistory(made.card.id).map((h) => h.kind)).toEqual(["sent", "created"]);
+    const again = store.createCard({ project_id: project.id, by: PERSON, title: "Go", send_thread_id: message.id, idempotency_key: "k" });
+    expect(again).toMatchObject({ replayed: true, card: { id: made.card.id } });
+    // A card a key made unsent (the window's card-first Send, interrupted) is sent by the retry.
+    const first = store.createCard({ project_id: project.id, by: PERSON, title: "Later", idempotency_key: "k2" }).card;
+    const second = store.startPersonThread({ project_id: project.id, body: "Later", to: { host: "pi", session: "ses_p" }, idempotency_key: "m2" });
+    const sentNow = store.createCard({ project_id: project.id, by: PERSON, title: "Later", send_thread_id: second.message.id, idempotency_key: "k2" });
+    expect(sentNow).toMatchObject({ replayed: true, card: { id: first.id, sent: { thread_id: second.message.thread_id } } });
+  });
+
+  test("heard_seq: the line of the last write; a seen mark is not one; two writes in one millisecond differ", () => {
+    const { store, project } = world();
+    const a = store.createCard({ project_id: project.id, by: AGENT, title: "A" }).card;
+    const b = store.createCard({ project_id: project.id, by: AGENT, title: "B" }).card;
+    const seqA = store.cardWire(store.card(a.id)!).heard_seq!;
+    const seqB = store.cardWire(store.card(b.id)!).heard_seq!;
+    expect(seqB).toBeGreaterThan(seqA);
+    expect(store.card(a.id)!.heard_at).toBe(store.card(b.id)!.heard_at);
+    store.updateCard(a.id, { by: AGENT, column: "dropped", reason: "gone" });
+    const dropped = store.cardWire(store.card(a.id)!).heard_seq!;
+    expect(dropped).toBeGreaterThan(seqB);
+    store.markCardDropsSeen();
+    expect(store.cardWire(store.card(a.id)!).heard_seq).toBe(dropped);
+    // The same after a reload from disk.
+    expect(InboxStore.open(store.dir.replace(/\/inbox$/, "")).cardWire(store.card(a.id)!).heard_seq).toBe(dropped);
   });
 });

@@ -178,6 +178,10 @@ test('the first visit shows "Your Board" once; Copy prompt copies the Board prom
   await expect(page.locator('[data-board-page]')).toBeVisible();
   await page.waitForTimeout(800);
   await expect(intro).toHaveCount(0);
+  // The "?" sits left of Shipped and Icebox (the intro mock); the sidebar's Board row has no count.
+  const order = await page.locator('.ib-bhead').evaluate((head) => [...head.querySelectorAll('[data-board-about], [data-board-link]')].map((el) => el.getAttribute('data-board-link') ?? 'about'));
+  expect(order).toEqual(['about', 'shipped', 'icebox']);
+  await expect(page.locator('[data-board-nav] .ib-n')).toHaveCount(0);
   await page.locator('[data-board-about]').click();
   await expect(intro).toBeVisible();
   await page.keyboard.press('Escape');
@@ -260,10 +264,26 @@ test('the opened card: the panel beside the lanes, its links read once it opens,
   await expect(panel.locator('[data-card-ref="acme/widgets#11"]')).toContainText('Electron forge drops the icon');
   expect([...world.forge.calls()].sort()).toEqual(['gh number=11', 'gh number=12']);
   await expect(panel).toContainText('Codex');
+  // History reads the mock's short ref.
+  await expect(panel.locator('section[aria-label="History"]')).toContainText('Linked #11');
+  // Whole lanes beside the panel: none is cut at either edge of the lanes' box.
+  await page.waitForTimeout(300);
+  const cut = await page.locator('.ib-blanes').evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return [...el.querySelectorAll<HTMLElement>('[data-lane]')]
+      .map((lane) => lane.getBoundingClientRect())
+      .filter((r) => r.right > box.left + 1 && r.left < box.right - 1)
+      .some((r) => r.left < box.left - 1 || r.right > box.right + 1);
+  });
+  expect(cut).toBe(false);
   await both(page, 'open-1440');
   // The column menu: Your review.
   await panel.locator('[data-card-column]').click();
   await expect(page.locator(`[data-card-menu="${ids.vite}"]`)).toBeVisible();
+  // One choice: radio items, the card's column checked.
+  await expect(page.locator('[data-card-move-to="building"]')).toHaveAttribute('role', 'menuitemradio');
+  await expect(page.locator('[data-card-move-to="building"]')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[data-card-move-to="your_review"]')).toHaveAttribute('aria-checked', 'false');
   await both(page, 'open-move-1440');
   await page.locator('[data-card-move-to="your_review"]').click();
   await expect(lane(page, 'your_review').locator(`[data-card-id="${ids.vite}"]`)).toBeVisible();
@@ -339,7 +359,9 @@ test('New card: into Backlog with notes, and into Icebox', async () => {
   await expect(dialog).toBeVisible();
   await dialog.locator('[data-new-card-title]').fill('A roadmap page for the site');
   await dialog.locator('[data-new-card-notes]').fill('Maybe one page that lists what is next, from the Board.');
-  await expect(dialog.locator('[data-new-card-mode="backlog"]')).toHaveAttribute('aria-pressed', 'true');
+  // Where it goes: one radio group, Backlog first.
+  await expect(dialog.locator('[role="radiogroup"]')).toHaveAttribute('aria-label', 'Where it goes');
+  await expect(dialog.locator('[data-new-card-mode="backlog"] input')).toBeChecked();
   await expect(dialog.locator('.ib-ncd-acts [data-new-card-add], [data-new-card-add]').last()).toHaveText('Add to Backlog');
   await both(page, 'new-card-1440');
   await dialog.locator('[data-new-card-add]').last().click();
@@ -388,6 +410,22 @@ test('1280: the lanes fit, and an opened card keeps its lane in view', async () 
   await page.locator('[data-thread-card]').click();
   await expect(page.locator(`[data-card-panel="${ids.ticks}"]`)).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 900 });
+});
+
+test('a thread opened from a card on the Shipped page goes back to the Shipped page', async () => {
+  const { page, claude, projects, ids } = world;
+  ids.old = await make(claude, projects.plannotator, 'Old ticks', { column: 'shipped', say: 'merged', thread_id: ids.ticksThread });
+  await page.goto(`${world.url}#board=shipped`);
+  await card(page, ids.old).locator('[data-card-open]').click();
+  const panel = page.locator(`[data-card-panel="${ids.old}"]`);
+  await expect(panel).toBeVisible();
+  await panel.locator('[data-card-thread]').first().click();
+  await expect(page.locator('[data-thread-card]')).toBeVisible();
+  await expect(page).toHaveURL(/from=shipped/);
+  await page.locator('[data-thread-card]').click();
+  await expect(page.locator('[data-board-view="shipped"]')).toBeVisible();
+  await expect(page.locator(`[data-card-panel="${ids.old}"]`)).toBeVisible();
+  await page.goto(`${world.url}#board`);
 });
 
 test.describe('iPhone 15 (WebKit)', () => {

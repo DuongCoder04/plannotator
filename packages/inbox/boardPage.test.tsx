@@ -26,7 +26,7 @@ const { SidebarProvider } = (hasDom ? await import('./shell/sidebar') : {}) as t
 const CLAUDE: InboxAuthor = { kind: 'agent', host: 'claude-code', session: 'ses_claude', name: 'Claude Code' };
 const CODEX: InboxAuthor = { kind: 'agent', host: 'codex', session: 'ses_codex', name: 'Codex' };
 const PERSON: InboxAuthor = { kind: 'person' };
-const LOOK = '2026-10-20T12:00:00.000Z';
+const LOOK = 10;
 const OLD = '2026-10-20T09:00:00.000Z';
 const NEW = '2026-10-21T09:00:00.000Z';
 
@@ -47,6 +47,7 @@ function card(id: string, over: Partial<InboxCardWire> = {}): InboxCardWire {
     moved_at: OLD,
     heard_at: OLD,
     heard_by: CLAUDE,
+    heard_seq: 5,
     dropped: null,
     aside_from: null,
     idempotency_key: null,
@@ -57,9 +58,9 @@ function card(id: string, over: Partial<InboxCardWire> = {}): InboxCardWire {
 }
 
 const CARDS: InboxCardWire[] = [
-  card('crd_auto', { title: 'Auto-update for users', said: 'Pick it up: read the issue first', heard_at: NEW, threads: ['msg_auto'] }),
+  card('crd_auto', { title: 'Auto-update for users', said: 'Pick it up: read the issue first', heard_at: NEW, heard_seq: 12, threads: ['msg_auto'] }),
   card('crd_hero', { title: 'Hero scene timers', column: 'designing', said: 'Option 3 of 6 rendered' }),
-  card('crd_price', { title: 'Pricing page', column: 'your_look', you: 'Read the copy, then say go', said: 'Copy drafted', heard_at: NEW }),
+  card('crd_price', { title: 'Pricing page', column: 'your_look', you: 'Read the copy, then say go', said: 'Copy drafted', heard_at: NEW, heard_seq: 12 }),
   card('crd_vite', { title: 'vite 8 and electron-forge', column: 'building', said: 'vite 8 merged', agent: CODEX, refs: [{ kind: 'pr', source: 'github', ref: 'acme/widgets#12', url: 'https://github.com/acme/widgets/pull/12' }] }),
   card('crd_ticks', { title: 'Delivery ticks on list rows', column: 'your_review', you: 'Merge #14' }),
   card('crd_tab', { title: 'Unread count on the tab', column: 'shipped' }),
@@ -125,7 +126,7 @@ function draw(over: Partial<BoardPageProps> = {}): Drawn {
     view: 'lanes',
     mcpCommand: ['/Users/ada/.local/bin/plannotator', 'inbox', 'mcp'],
     claimIntro: false,
-    model: { serverSession: 's', cursor: 1, cards: CARDS, dropped_unseen: 1, seen_through: LOOK },
+    model: { serverSession: 's', cursor: 1, cards: CARDS, dropped_unseen: 1, seen_seq: LOOK },
     error: null,
     visitLook: LOOK,
     handled: new Set(),
@@ -295,7 +296,7 @@ test.if(hasDom)('New card into Backlog with its notes', async () => {
 
 test.if(hasDom)('an empty Board says "No cards yet" with Copy prompt', async () => {
   scriptFetch();
-  draw({ model: { serverSession: 's', cursor: 1, cards: [], dropped_unseen: 0, seen_through: null } });
+  draw({ model: { serverSession: 's', cursor: 1, cards: [], dropped_unseen: 0, seen_seq: null } });
   await settle();
   expect($('[data-board-empty]')!.textContent).toContain('No cards yet');
   expect($('[data-board-summary]')!.textContent).toBe('Nothing in flight');

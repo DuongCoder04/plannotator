@@ -284,7 +284,7 @@ export function CardPanel(props: CardPanelProps) {
           <span className="ib-bsp" />
           {foot.icebox && (
             <button type="button" className="ib-btn ib-ghost" onClick={props.onIcebox} data-card-icebox="">
-              <Icon name="pause" size={15} />
+              <Icon name="snowflake" size={15} />
               Icebox
             </button>
           )}
@@ -331,21 +331,24 @@ function ColumnMenu({ card, sent, onColumn, onRestore }: { card: InboxCardWire; 
                 <Menu.Separator className="ib-pm-sep" />
               </>
             )}
-            {choices.slice(0, 5).map((choice) => (
-              <Menu.Item key={choice.column} className="ib-pmi" label={choice.label} onClick={() => !choice.current && onColumn(choice.column)} data-card-move-to={choice.column} aria-current={choice.current || undefined}>
-                <span className="ib-lane-dot" data-col={choice.column} aria-hidden="true" />
-                {choice.label}
-                {choice.current && <Icon name="check" size={15} className="ib-pmi-check" />}
-              </Menu.Item>
-            ))}
-            <Menu.Separator className="ib-pm-sep" />
-            {choices.slice(5).map((choice) => (
-              <Menu.Item key={choice.column} className="ib-pmi" label={choice.label} onClick={() => !choice.current && onColumn(choice.column)} data-card-move-to={choice.column} aria-current={choice.current || undefined}>
-                <Icon name={choice.column === 'shipped' ? 'checkCircle' : 'pause'} size={15} />
-                {choice.label}
-                {choice.current && <Icon name="check" size={15} className="ib-pmi-check" />}
-              </Menu.Item>
-            ))}
+            {/* One choice, so radio items: a screen reader hears the card's column as checked. */}
+            <Menu.RadioGroup value={card.column} onValueChange={(value: InboxCardColumn) => value !== card.column && onColumn(value)} aria-label="Column">
+              {choices.slice(0, 5).map((choice) => (
+                <Menu.RadioItem key={choice.column} value={choice.column} closeOnClick className="ib-pmi" label={choice.label} data-card-move-to={choice.column}>
+                  <span className="ib-lane-dot" data-col={choice.column} aria-hidden="true" />
+                  {choice.label}
+                  {choice.current && <Icon name="check" size={15} className="ib-pmi-check" />}
+                </Menu.RadioItem>
+              ))}
+              <Menu.Separator className="ib-pm-sep" />
+              {choices.slice(5).map((choice) => (
+                <Menu.RadioItem key={choice.column} value={choice.column} closeOnClick className="ib-pmi" label={choice.label} data-card-move-to={choice.column}>
+                  <Icon name={choice.column === 'shipped' ? 'checkCircle' : 'snowflake'} size={15} />
+                  {choice.label}
+                  {choice.current && <Icon name="check" size={15} className="ib-pmi-check" />}
+                </Menu.RadioItem>
+              ))}
+            </Menu.RadioGroup>
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

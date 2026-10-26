@@ -273,7 +273,7 @@ export type InboxCardHistoryEntry =
   | { at: string; by: InboxAuthor; kind: "linked_ref"; ref: string; ref_kind: string }
   | { at: string; by: InboxAuthor; kind: "renamed"; title: string }
   | { at: string; by: InboxAuthor; kind: "notes" }
-  | { at: string; by: InboxAuthor; kind: "sent"; to: InboxAuthor; thread_id: string };
+  | { at: string; by: InboxAuthor; kind: "sent"; to: InboxAuthor; thread_id: string; /** Sent into a thread the card already linked (Start), not a new one. */ existing_thread: boolean };
 
 /**
  * A card's history from its snapshots, oldest first in (one per store line),
@@ -289,14 +289,14 @@ export function inboxCardHistory(snapshots: readonly InboxCard[]): InboxCardHist
     const by = card.heard_by;
     if (before === null) {
       out.push({ at: card.created_at, by: card.created_by, kind: "created", column: card.column, thread_id: card.threads[0] ?? null });
-      if (card.sent) out.push({ at: card.sent.at, by, kind: "sent", to: card.sent.to, thread_id: card.sent.thread_id });
+      if (card.sent) out.push({ at: card.sent.at, by, kind: "sent", to: card.sent.to, thread_id: card.sent.thread_id, existing_thread: false });
       before = card;
       continue;
     }
     // A line that changed nothing shown (the person seeing a drop) adds nothing: every entry
     // below is a difference. Two writes in one millisecond are still two entries.
     if (card.sent && (!before.sent || before.sent.at !== card.sent.at)) {
-      out.push({ at, by, kind: "sent", to: card.sent.to, thread_id: card.sent.thread_id });
+      out.push({ at, by, kind: "sent", to: card.sent.to, thread_id: card.sent.thread_id, existing_thread: before.threads.includes(card.sent.thread_id) });
     } else {
       for (const thread of card.threads) if (!before.threads.includes(thread)) out.push({ at, by, kind: "linked_thread", thread_id: thread });
     }
@@ -317,8 +317,22 @@ export function inboxCardHistory(snapshots: readonly InboxCard[]): InboxCardHist
   return out.reverse();
 }
 
-/** A card as every reader gets it: the record, its `threads` only those that still exist. */
-export type InboxCardWire = InboxCard;
+/**
+ * A card as every reader gets it: the record, its `threads` only those that
+ * still exist, and `heard_seq` (additive): the store seq of the line that
+ * last wrote to it (a line that only marks a drop seen is not a write), so
+ * the Board tells news by seq, never by clock.
+ */
+export type InboxCardWire = InboxCard & { heard_seq?: number };
+
+/**
+ * Whether `next` differs from `prev` only in what the person saw (a drop's
+ * `seen_at`): not a write to the card, so its `heard_seq` stays.
+ */
+export function isInboxCardSeenOnlyChange(prev: InboxCard, next: InboxCard): boolean {
+  if (!prev.dropped || !next.dropped || prev.dropped.seen_at === next.dropped.seen_at) return false;
+  return JSON.stringify({ ...next, dropped: { ...next.dropped, seen_at: prev.dropped.seen_at } }) === JSON.stringify(prev);
+}
 
 /** An agent's drop the person has not seen yet. */
 export function isInboxCardDropUnseen(card: Pick<InboxCard, "column" | "dropped">): boolean {
@@ -333,16 +347,17 @@ export function inboxCardLine(card: Pick<InboxCard, "column" | "you" | "said">):
 
 /**
  * Whether a card is unread on the Board (approval "inbox-board-signal":
- * "bold when unread, like mail"): an agent wrote to it last, after the
- * person's last look at the Board (`seenThrough`, the newest `heard_at` the
- * Board showed when it was last opened; null before the first look). The
- * person's own writes (a move, a drop) never make a card unread, and a mark
- * that only records the person saw a drop (`dropped.seen_at`) leaves
- * `heard_at` as it was.
+ * "bold when unread, like mail"): an agent wrote to it last, in a line after
+ * the person's last look at the Board (`seenSeq`, the store's cursor when the
+ * Board was last opened; null before the first look). By seq, never by
+ * clock: two writes in one millisecond are told apart. The person's own
+ * writes (a move, a drop) never make a card unread, and a mark that only
+ * records the person saw a drop keeps `heard_seq`. A card without
+ * `heard_seq` (an older Inbox) reads as unread until the first look.
  */
-export function isInboxCardUnread(card: Pick<InboxCard, "heard_at" | "heard_by">, seenThrough: string | null): boolean {
+export function isInboxCardUnread(card: Pick<InboxCardWire, "heard_by" | "heard_seq">, seenSeq: number | null): boolean {
   if (card.heard_by.kind !== "agent") return false;
-  return seenThrough === null || card.heard_at > seenThrough;
+  return seenSeq === null || (card.heard_seq ?? 0) > seenSeq;
 }
 
 /** A sort key: the Board's column order. */

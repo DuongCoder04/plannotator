@@ -63,6 +63,20 @@ export function boardLanes(cards: readonly InboxCardWire[]): BoardLane[] {
   }));
 }
 
+/** A lane's least width, and the gap between lanes (inbox.css `.ib-lane`, `.ib-blanes`). */
+export const BOARD_LANE_MIN = 188;
+export const BOARD_LANE_GAP = 10;
+
+/** How many whole lanes fit a width (at least one, at most the five). */
+export function lanesThatFit(width: number): number {
+  return Math.max(1, Math.min(INBOX_CARD_LIVE_COLUMNS.length, Math.floor((width + BOARD_LANE_GAP) / (BOARD_LANE_MIN + BOARD_LANE_GAP))));
+}
+
+/** The first lane of the window of `fit` lanes that shows lane `index`: centred on it, held at the ends. */
+export function laneWindowStart(index: number, fit: number, total: number): number {
+  return Math.max(0, Math.min(total - fit, index - Math.floor(fit / 2)));
+}
+
 /** The header's facts: cards in the live lanes, those on the person, and the two links' counts. */
 export function boardCounts(cards: readonly InboxCardWire[]) {
   let inFlight = 0;
@@ -117,15 +131,8 @@ export function cardAge(iso: string, now: number = Date.now()): { short: string;
 }
 
 /** Whether a card shows bold: unread at the visit's look, and not opened or moved by the person this visit. */
-export function cardShowsUnread(card: InboxCardWire, visitLook: string | null, handled: ReadonlySet<string>): boolean {
+export function cardShowsUnread(card: InboxCardWire, visitLook: number | null, handled: ReadonlySet<string>): boolean {
   return !handled.has(card.id) && isInboxCardUnread(card, visitLook);
-}
-
-/** The newest `heard_at` among the cards: how far a look at the Board runs. */
-export function newestHeard(cards: readonly InboxCardWire[]): string | null {
-  let newest: string | null = null;
-  for (const card of cards) if (newest === null || card.heard_at > newest) newest = card.heard_at;
-  return newest;
 }
 
 /** One thing the Move menu offers for a card. */
@@ -204,9 +211,17 @@ export function columnChoices(card: InboxCardWire): { column: InboxCardColumn; l
  * agent's message; the title when there are none), with one line naming the
  * card so the agent finds it in `card list` and moves it as the work goes.
  */
-export function cardMessageBody(title: string, notes: string | null): string {
+export function cardMessageBody(title: string, notes: string | null, cardId: string | null): string {
   const text = notes?.trim() ? notes.trim() : title;
-  return `${text}\n\n(This is “${title}” on my Board. It is yours now: move it there as the work goes.)`;
+  const which = cardId ? `, card ${cardId}` : "";
+  return `${text}\n\n(This is “${title}” on my Board${which}. It is yours now: move it there as the work goes.)`;
+}
+
+/** An idempotency key for one message a dialog sends: its key, the session and the words, so a retry with the same words replays and a changed one is a new message. */
+export function messageKey(key: string, session: string, body: string): string {
+  let hash = 5381;
+  for (let i = 0; i < body.length; i += 1) hash = ((hash << 5) + hash + body.charCodeAt(i)) >>> 0;
+  return `${key}:${session}:${hash.toString(36)}`;
 }
 
 /** "Where is this?": the message "Ask where this is" sends to the card's agent. */
@@ -220,6 +235,12 @@ export function startBody(card: Pick<InboxCardWire, 'id' | 'title' | 'notes'>): 
   return `Please start on “${card.title}” (Board card ${card.id}).${notes}\n\nMove the card as the work goes.`;
 }
 
+/** A ref as the opened card writes it: its number (`#2018`, GitLab's `!7`), the repository left to the link. */
+export function shortRef(ref: string): string {
+  const match = /([#!]\d+)$/.exec(ref);
+  return match ? match[1]! : ref;
+}
+
 function authorName(by: InboxAuthor): string {
   return by.kind === 'person' ? 'you' : inboxAgentName(by);
 }
@@ -231,7 +252,7 @@ export function historyWords(entry: InboxCardHistoryEntry): { before: string; bo
     case 'created':
       return { before: `Created by ${by}`, bold: null, after: '', quote: null };
     case 'sent':
-      return { before: 'Sent to ', bold: inboxAgentName(entry.to), after: ' in a new thread', quote: null };
+      return { before: 'Sent to ', bold: inboxAgentName(entry.to), after: entry.existing_thread ? ' in the card\u2019s thread' : ' in a new thread', quote: null };
     case 'moved':
       return { before: 'Moved to ', bold: INBOX_CARD_COLUMN_LABELS[entry.column], after: ` by ${by}`, quote: entry.you ? `You: “${entry.you}”` : null };
     case 'restored':
@@ -245,7 +266,7 @@ export function historyWords(entry: InboxCardHistoryEntry): { before: string; bo
     case 'linked_thread':
       return { before: 'Linked a thread', bold: null, after: by === 'you' ? '' : ` (${by})`, quote: null };
     case 'linked_ref':
-      return { before: 'Linked ', bold: entry.ref, after: by === 'you' ? '' : ` (${by})`, quote: null };
+      return { before: 'Linked ', bold: shortRef(entry.ref), after: '', quote: null };
     case 'renamed':
       return { before: 'Renamed by ', bold: null, after: by, quote: `“${entry.title}”` };
     case 'notes':

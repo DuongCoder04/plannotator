@@ -41,7 +41,7 @@ export const CARD_DESCRIPTION =
 
 /** Short on purpose: Pi and OpenCode send it with every request (INBOX_TOOL_COST). */
 export const CARD_COLUMN_DESCRIPTION =
-  "backlog (not started yet) · designing (not code) · your_look (a non-code thing waits on the person; give `you`) · building (code, an open PR) · your_review (code or a release waits on the person; give `you`) · shipped (merged or live) · dropped (give `reason`). Waiting on the person wins. icebox: the person's only.";
+  "backlog (not started yet) · designing (not code) · your_look (a non-code thing waits on the person; give `you`) · building (code, an open PR) · your_review (code or a release waits on the person; give `you`) · shipped (merged or live) · dropped (give `reason`). Waiting on the person wins. icebox: the person's only. asked: the old name of backlog.";
 
 const AGENT_SESSION_DESCRIPTION = "Your session id; the `plannotator inbox mcp` shim fills it. The cards you make are yours: list shows them.";
 
@@ -226,7 +226,7 @@ export function registerInboxCardTool(server: McpServer, context: InboxMcpContex
           op: z.enum(INBOX_CARD_OPS),
           card_id: z.string().optional().describe("The card (crd_…); not for create or list."),
           title: z.string().optional().describe("One line."),
-          column: z.enum(INBOX_CARD_COLUMNS).optional().describe(CARD_COLUMN_DESCRIPTION),
+          column: z.enum([...INBOX_CARD_COLUMNS, "asked"]).optional().describe(CARD_COLUMN_DESCRIPTION),
           say: z.string().optional().describe("Your last word: where the work is, one line."),
           you: z.string().optional().describe("What the person owes, one line."),
           pr: z.string().optional().describe("owner/repo#123 or a PR URL."),

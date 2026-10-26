@@ -138,7 +138,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
-import { isInboxBoardTime, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
+import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import type { PairingProbes } from "./inbox-pairing-checks";
@@ -914,8 +914,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const cards = store.listCards({ projectIds: project ? new Set([project]) : null, columns }).map((card) => store.cardWire(card));
     // An agent's drops the person has not seen, in the project (or everywhere): the Board's "N dropped by an agent".
     const droppedUnseen = store.listCards({ projectIds: project ? new Set([project]) : null, columns: new Set(["dropped"]) }).filter(isInboxCardDropUnseen).length;
-    // `seen_through` (additive): the person's last look at the Board; a card an agent wrote to after it is unread (isInboxCardUnread).
-    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen, seen_through: readInboxBoardSeen(store.dir) };
+    // `seen_seq` (additive): the person's last look at the Board (a store seq); a card an agent wrote to in a later line is unread (isInboxCardUnread).
+    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen, seen_seq: readInboxBoardSeen(store.dir) };
   };
 
   /**
@@ -2060,6 +2060,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     const path = url.pathname;
     const origin = req.headers.get("origin");
+    /** The Board's reads carry the person's notes: another site's read is refused, as on the other read routes. */
+    const crossSiteCardRead = (request: Request): Response | null =>
+      isSameOriginOrNoOrigin(origin, request.headers.get("host") ?? "", request.headers.get("sec-fetch-site"))
+        ? null
+        : json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
 
     // Phones (packages/server/inbox-devices.ts): the device door. The tailnet
     // reaches the door only, through its own listener, never this port.
@@ -2402,7 +2407,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
       // The Board's cards (approval "inbox-board", step 1): the person's read and moves.
       if (path === "/api/inbox/cards") {
-        if (req.method === "GET") return json(cardsModel(url));
+        // Cards carry the person's notes: another site's read is refused, as on the other read routes.
+        if (req.method === "GET") return crossSiteCardRead(req) ?? json(cardsModel(url));
         if (req.method !== "POST") return json({ error: "Use GET or POST." }, 405);
         // The person's New card (step 2): a title, notes and links, in Backlog (sent to no agent) or the
         // Icebox; or sent to an agent: `thread_id` is the thread the window just started for it with
@@ -2422,6 +2428,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (!store.project(projectId)) throw new InboxError("project_not_found", `No project ${projectId}.`);
         const refs = body.refs === undefined || body.refs === null ? [] : body.refs;
         if (!Array.isArray(refs)) throw new InboxError("validation_error", "refs: a list of issue or PR links.", { field: "refs" });
+        // One store op: the send is checked before the card is written, so a refused thread leaves no card.
         const made = store.createCard({
           project_id: projectId,
           by: { kind: "person" },
@@ -2430,18 +2437,17 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           notes: body.notes,
           refs,
           idempotency_key: body.idempotency_key,
+          send_thread_id: body.thread_id ?? undefined,
         });
-        // A replayed key answers the card it made (sent or not); a new card is sent now.
-        const card = body.thread_id && !made.replayed ? store.sendCard(made.card.id, { thread_id: body.thread_id }) : made.card;
-        return json({ card: store.cardWire(card), replayed: made.replayed });
+        return json({ card: store.cardWire(made.card), replayed: made.replayed });
       }
-      // The person opened the Board: the look runs through the newest `heard_at` it showed (never back).
+      // The person opened the Board: the look runs through the store's cursor when that Board was read (never back, never ahead).
       if (path === "/api/inbox/cards/seen") {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        if (!isInboxBoardTime(body.through)) throw new InboxError("validation_error", "through: the newest heard_at the Board showed (an ISO time).", { field: "through" });
-        return json({ seen_through: writeInboxBoardSeen(store.dir, body.through) });
+        if (!isInboxBoardSeq(body.through_seq)) throw new InboxError("validation_error", "through_seq: the cursor of the Board read the person saw (a whole number).", { field: "through_seq" });
+        return json({ seen_seq: writeInboxBoardSeen(store.dir, body.through_seq, store.cursor()) });
       }
       // The person looked at Dropped: an agent's drops there are seen (in `project`, or everywhere).
       if (path === "/api/inbox/cards/dropped/seen") {
@@ -2461,15 +2467,16 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       const refsMatch = /^\/api\/inbox\/cards\/([A-Za-z0-9_]+)\/refs$/.exec(path);
       if (refsMatch) {
         if (req.method !== "GET") return json({ error: "Use GET." }, 405);
-        if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
-          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
-        }
+        const refused = crossSiteCardRead(req);
+        if (refused) return refused;
         const card = store.card(refsMatch[1]!);
         if (!card) throw new InboxError("card_not_found", `No card ${refsMatch[1]}.`);
         return json({ serverSession, refs: await resolveInboxCardRefs(inboxCardRefsOf(card), cardRefResolvers) });
       }
       const cardMatch = /^\/api\/inbox\/cards\/([A-Za-z0-9_]+)$/.exec(path);
       if (cardMatch && req.method === "GET") {
+        const refused = crossSiteCardRead(req);
+        if (refused) return refused;
         // The opened card: the card and its history, newest first.
         const card = store.card(cardMatch[1]!);
         if (!card) throw new InboxError("card_not_found", `No card ${cardMatch[1]}.`);

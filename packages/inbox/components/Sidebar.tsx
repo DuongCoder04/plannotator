@@ -22,10 +22,9 @@ export interface SidebarProps {
   page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'board';
   /**
    * The Board (approval "inbox-board", step 2): the row under Inbox, always
-   * shown with `onBoard`; its count is the cards waiting on the person (Your
-   * look and Your review), none when 0.
+   * shown with `onBoard`. No count: the approval keeps the count in the
+   * Board's header ("N in flight · N on you").
    */
-  boardCount?: number;
   onBoard?: () => void;
   projectId: string | null;
   /** Rows waiting on the person, all projects. */
@@ -277,7 +276,6 @@ export function Sidebar(props: SidebarProps) {
         >
           <Icon name="board" />
           Board
-          {(props.boardCount ?? 0) > 0 && <span className="ib-n">{formatCount(props.boardCount ?? 0)}</span>}
         </button>
       )}
       {(props.decideCount ?? 0) > 0 && props.onDecide && (

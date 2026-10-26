@@ -103,21 +103,24 @@ export function NewCardDialog({
     if (failed) setError(failed);
   };
 
-  const modeButton = (value: NewCardMode, icon: 'board' | 'send' | 'pause', label: string, short: string) => (
-    <button
-      type="button"
-      className="ib-ncd-mode"
-      aria-pressed={mode === value}
-      data-new-card-mode={value}
-      onClick={() => {
-        setMode(value);
-        setError(null);
-        if (value === 'send' && !chosen && anyLive) setPicker(true);
-      }}
-    >
+  // One choice of three: native radios in one group (arrows move it), drawn as plain buttons.
+  const modeButton = (value: NewCardMode, icon: 'board' | 'send' | 'snowflake', label: string, short: string) => (
+    <label className="ib-ncd-mode" data-new-card-mode={value} data-on={mode === value ? '' : undefined}>
+      <input
+        type="radio"
+        name={`ib-ncd-mode-${uid}`}
+        value={value}
+        checked={mode === value}
+        aria-label={label}
+        onChange={() => {
+          setMode(value);
+          setError(null);
+          if (value === 'send' && !chosen && anyLive) setPicker(true);
+        }}
+      />
       {value === 'backlog' ? <span className="ib-lane-dot" data-col="backlog" aria-hidden="true" /> : <Icon name={icon} size={15} />}
-      {phone ? short : label}
-    </button>
+      <span aria-hidden="true">{phone ? short : label}</span>
+    </label>
   );
 
   return (
@@ -258,10 +261,10 @@ export function NewCardDialog({
         )}
         <div className="ib-ncd-foot">
           {fixed === null && (
-            <div className="ib-ncd-modes" role="group" aria-label="Where it goes">
+            <div className="ib-ncd-modes" role="radiogroup" aria-label="Where it goes">
               {modeButton('backlog', 'board', 'Backlog', 'Backlog')}
               {modeButton('send', 'send', 'Send to an agent', 'Agent')}
-              {modeButton('icebox', 'pause', 'Icebox', 'Icebox')}
+              {modeButton('icebox', 'snowflake', 'Icebox', 'Icebox')}
             </div>
           )}
           {!phone && (

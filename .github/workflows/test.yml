@@ -165,6 +165,7 @@ jobs:
           packages/inbox/leakedSubject.test.tsx
           packages/inbox/connectPromptRow.test.tsx
           packages/inbox/boardPage.test.tsx
+          packages/inbox/boardSend.test.tsx
           packages/inbox/soundIntro.test.tsx
           packages/inbox/soundSettings.test.tsx
           packages/inbox/notifyHook.test.tsx

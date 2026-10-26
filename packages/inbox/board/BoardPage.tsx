@@ -1,5 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { INBOX_CARD_COLUMN_LABELS, type InboxCardColumn, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, type InboxCardColumn, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
@@ -21,6 +21,9 @@ import {
   cardLabel,
   cardLine,
   cardMessageBody,
+  messageKey,
+  lanesThatFit,
+  laneWindowStart,
   cardOwnerName,
   cardShowsUnread,
   moveSaid,
@@ -42,7 +45,7 @@ export interface BoardPageProps {
   model: CardsModel | null;
   error: string | null;
   /** The person's look when this visit began: cards an agent wrote to after it are bold. */
-  visitLook: string | null;
+  visitLook: number | null;
   /** Cards the person opened or moved this visit: no longer bold. */
   handled: ReadonlySet<string>;
   /** Projects a New card can go in (the sidebar's). */
@@ -117,14 +120,57 @@ export function BoardPage(props: BoardPageProps) {
     setSaid(moveSaid(card, moved));
   };
 
-  /** Make a card from New card: Backlog or Icebox in a project, or sent (a new thread to the agent, then the card). */
+  // One key per dialog, kept across its retries: a retry after a lost answer replays each step (the
+  // card, the thread, the send) instead of making a second card or sending a second message.
+  const dialogKey = useRef('');
+  /** The card a New card dialog already made (a retry sends that one, never a second). */
+  const dialogCard = useRef<InboxCardWire | null>(null);
+  const openCreate = (mode: 'backlog' | 'send') => {
+    dialogKey.current = crypto.randomUUID();
+    dialogCard.current = null;
+    setCreating(mode);
+  };
+  const openSend = (card: InboxCardWire) => {
+    dialogKey.current = crypto.randomUUID();
+    setSendingCard(card);
+  };
+
+  /** Give a card to an agent: a new thread to it (the notes the message, naming the card), then the card is sent. */
+  const sendCardTo = async (card: InboxCardWire, to: NonNullable<NewCardInput["to"]>, key: string): Promise<InboxCardWire> => {
+    const body = cardMessageBody(card.title, card.notes, card.id);
+    const started = await inboxApi.startThread({ to: { host: to.host, session: to.session }, body, idempotency_key: messageKey(key, to.session, body) });
+    return (await inboxApi.editCard(card.id, { op: 'send', thread_id: started.thread_id })).card;
+  };
+
+  /**
+   * Make a card from New card: Backlog or Icebox in a project, or sent to an
+   * agent. Sending makes the card first (Backlog, in the session's project)
+   * and names it in the message, so the agent never gets "it is yours now"
+   * for a card that does not exist; a retry reuses the card and the key.
+   */
   const create = async (input: NewCardInput): Promise<string | null> => {
-    const key = crypto.randomUUID();
+    const key = dialogKey.current || crypto.randomUUID();
+    dialogKey.current = key;
     try {
       if (input.mode === 'send' && input.to) {
-        const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body: cardMessageBody(input.title, input.notes), idempotency_key: key });
-        const { card } = await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key });
-        props.onChanged(card);
+        const project = input.to.project.id;
+        let card = dialogCard.current;
+        if (!card) {
+          if (project) card = (await inboxApi.createCard({ project, title: input.title, notes: input.notes, refs: input.refs, column: 'backlog', idempotency_key: key })).card;
+          else {
+            // A folder the Inbox has not seen has no project yet: the thread makes it, and the card is
+            // made and sent in one step with it (checked by the server before anything is written).
+            const body = cardMessageBody(input.title, input.notes, null);
+            const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body, idempotency_key: messageKey(key, input.to.session, body) });
+            card = (await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key })).card;
+          }
+          dialogCard.current = card;
+        } else if (card.title !== input.title || (card.notes ?? null) !== (input.notes ?? null)) {
+          card = (await inboxApi.editCard(card.id, { op: 'edit', title: input.title, notes: input.notes })).card;
+          dialogCard.current = card;
+        }
+        const sent = card.sent ? card : await sendCardTo(card, input.to, key);
+        props.onChanged(sent);
         setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}.`);
       } else {
         const { card } = await inboxApi.createCard({ project: input.project, title: input.title, notes: input.notes, refs: input.refs, column: input.mode === 'icebox' ? 'icebox' : 'backlog', idempotency_key: key });
@@ -132,8 +178,10 @@ export function BoardPage(props: BoardPageProps) {
         setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}.`);
       }
       setCreating(null);
+      dialogCard.current = null;
       return null;
     } catch (cause) {
+      if (dialogCard.current) props.onChanged(dialogCard.current);
       return cause instanceof Error ? cause.message : 'The card was not made. Try again.';
     }
   };
@@ -141,9 +189,10 @@ export function BoardPage(props: BoardPageProps) {
   /** Send a Backlog card nobody was asked about: a new thread to the agent (its notes the message), then the card is sent. */
   const sendExisting = async (card: InboxCardWire, input: NewCardInput): Promise<string | null> => {
     if (!input.to) return 'Choose an agent to send it to.';
+    const key = dialogKey.current || crypto.randomUUID();
+    dialogKey.current = key;
     try {
-      const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body: cardMessageBody(card.title, card.notes), idempotency_key: crypto.randomUUID() });
-      const { card: next } = await inboxApi.editCard(card.id, { op: 'send', thread_id: started.thread_id });
+      const next = await sendCardTo(card, input.to, key);
       props.onChanged(next);
       setSendingCard(null);
       setSaid(`Sent “${card.title}” to ${hostLabel(input.to.host)}.`);
@@ -185,7 +234,7 @@ export function BoardPage(props: BoardPageProps) {
       rowOf={props.rowOf}
       onClose={() => props.onOpenCard(null)}
       onMove={(change) => void move(open, change)}
-      onSend={() => setSendingCard(open)}
+      onSend={() => openSend(open)}
       onChanged={props.onChanged}
       onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
     />
@@ -234,6 +283,14 @@ export function BoardPage(props: BoardPageProps) {
           </>
         )}
         <span className="ib-bsp" />
+        {/* The "?" sits left of Shipped and Icebox (the intro mock). */}
+        {(view === 'lanes' || phone) && (
+          <Tip content="About the Board">
+            <button type="button" className="ib-iconbtn ib-babout" aria-label="About the Board" aria-haspopup="dialog" onClick={() => setIntro(true)} data-board-about="">
+              <Icon name="question" size={17} />
+            </button>
+          </Tip>
+        )}
         {!phone && view === 'lanes' && model && (
           <nav className="ib-blinks" aria-label="Cards out of the lanes">
             <a href="#board=shipped" data-board-link="shipped" onClick={(event) => (event.preventDefault(), props.onView('shipped'))}>
@@ -245,14 +302,7 @@ export function BoardPage(props: BoardPageProps) {
             </a>
           </nav>
         )}
-        {(view === 'lanes' || phone) && (
-          <Tip content="About the Board">
-            <button type="button" className="ib-iconbtn ib-babout" aria-label="About the Board" aria-haspopup="dialog" onClick={() => setIntro(true)} data-board-about="">
-              <Icon name="question" size={17} />
-            </button>
-          </Tip>
-        )}
-        {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => setCreating('backlog')} />}
+        {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => openCreate('backlog')} />}
       </div>
       {model && drops.length > 0 && view !== 'icebox' && (
         <DroppedNotice drops={drops} onRestore={(card) => void move(card, { op: 'restore' })} onSeen={props.onSeeDrops} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
@@ -330,7 +380,7 @@ function SendDialog({
 }
 
 interface CardCommon {
-  visitLook: string | null;
+  visitLook: number | null;
   handled: ReadonlySet<string>;
   now: number;
   phone: boolean;
@@ -358,14 +408,42 @@ function Lanes({
   const [dragging, setDragging] = useState<InboxCardWire | null>(null);
   const [over, setOver] = useState<InboxCardColumn | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  // With a card open the lanes narrow: the open card's lane is scrolled into view.
+  // With a card open the lanes narrow to as many whole lanes as fit (never a cut sliver of one),
+  // the open card's lane among them: the window centres on it, held at the ends (the mock).
+  const [fit, setFit] = useState<number | null>(null);
   useLayoutEffect(() => {
-    if (!openColumn) return;
-    const lane = scroller.current?.querySelector<HTMLElement>(`[data-lane="${openColumn}"]`);
-    lane?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  }, [openColumn, common.openId]);
+    const el = scroller.current;
+    if (!openColumn || !el) {
+      setFit(null);
+      return;
+    }
+    const measure = () => {
+      const style = getComputedStyle(el);
+      const width = el.clientWidth - parseFloat(style.paddingLeft || '0') - parseFloat(style.paddingRight || '0');
+      setFit(lanesThatFit(width));
+    };
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [openColumn]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!openColumn || !el || fit === null) return;
+    const index = INBOX_CARD_LIVE_COLUMNS.indexOf(openColumn);
+    if (index < 0) return;
+    const start = laneWindowStart(index, fit, INBOX_CARD_LIVE_COLUMNS.length);
+    const lane = el.querySelectorAll<HTMLElement>('[data-lane]')[start];
+    if (lane) el.scrollLeft = lane.offsetLeft - el.querySelector<HTMLElement>('[data-lane]')!.offsetLeft;
+  }, [openColumn, common.openId, fit]);
   return (
-    <div className="ib-blanes" ref={scroller} data-dragging={dragging ? '' : undefined}>
+    <div
+      className="ib-blanes"
+      ref={scroller}
+      data-dragging={dragging ? '' : undefined}
+      data-fit={fit ?? undefined}
+      style={fit ? ({ '--ib-lanes-fit': fit } as CSSProperties) : undefined}
+    >
       {boardLanes(cards).map((lane) => {
         const target = dragging !== null && dragging.column !== lane.column;
         const dragOver = (event: DragEvent) => {
@@ -801,16 +879,21 @@ function OpenedCard({
    * is live there, else a new thread to the live session (linked to the
    * card). Answers the message's id.
    */
-  const tellAgent = async (body: string): Promise<string> => {
+  // One key per action on this opened card, kept across retries (a lost answer replays the message
+  // instead of sending a second one), and fresh after it went (a later Ask is a new message).
+  const startKey = useRef(crypto.randomUUID());
+  const askKey = useRef(crypto.randomUUID());
+  const tellAgent = async (body: string, key: string, link: boolean): Promise<string> => {
     if (!askTarget) throw new Error('No agent is running in this project.');
-    const key = crypto.randomUUID();
+    const idempotency = messageKey(key, askTarget.session, body);
     const thread = card.threads.find((id) => rowOf(id)?.project.id === card.project_id) ?? card.threads[0];
     if (thread && askTarget.session === agentSession) {
-      const sent = await inboxApi.newMessage(thread, { session: askTarget.session, body, idempotency_key: key });
+      const sent = await inboxApi.newMessage(thread, { session: askTarget.session, body, idempotency_key: idempotency });
       return sent.message.id;
     }
-    const started = await inboxApi.startThread({ to: { host: askTarget.host, session: askTarget.session }, body, idempotency_key: key });
-    onChanged((await inboxApi.editCard(card.id, { op: 'link', thread_id: started.thread_id })).card);
+    const started = await inboxApi.startThread({ to: { host: askTarget.host, session: askTarget.session }, body, idempotency_key: idempotency });
+    // A send links the thread itself; an Ask links it here.
+    if (link) onChanged((await inboxApi.editCard(card.id, { op: 'link', thread_id: started.thread_id })).card);
     return started.message.id;
   };
   return (
@@ -836,8 +919,9 @@ function OpenedCard({
         // thread when that agent is the card's own; the card shows "Sent to <agent>" until it moves.
         if (!askTarget) return 'No agent is running in this project.';
         try {
-          const messageId = await tellAgent(startBody(card));
+          const messageId = await tellAgent(startBody(card), startKey.current, false);
           onChanged((await inboxApi.editCard(card.id, { op: 'send', thread_id: messageId })).card);
+          startKey.current = crypto.randomUUID();
           return null;
         } catch (cause) {
           return cause instanceof Error ? cause.message : 'Nothing was sent.';
@@ -846,7 +930,8 @@ function OpenedCard({
       onAsk={async () => {
         if (!askTarget) return 'No agent is running in this project.';
         try {
-          await tellAgent(askWhereBody(card));
+          await tellAgent(askWhereBody(card), askKey.current, true);
+          askKey.current = crypto.randomUUID();
           return null;
         } catch (cause) {
           return cause instanceof Error ? cause.message : 'Nothing was sent.';

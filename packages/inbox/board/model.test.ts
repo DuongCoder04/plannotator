@@ -9,7 +9,7 @@
  */
 import { expect, test } from 'bun:test';
 import type { InboxAuthor, InboxCardWire } from '@plannotator/core/inbox-types';
-import { boardCounts, boardLanes, cardAge, cardFoot, cardLine, cardShowsUnread, columnChoices, newestHeard, refState, sentTo, unseenDrops } from './model';
+import { boardCounts, boardLanes, cardAge, cardFoot, cardLine, cardMessageBody, cardShowsUnread, columnChoices, historyWords, messageKey, refState, sentTo, shortRef, unseenDrops } from './model';
 
 const CLAUDE: InboxAuthor = { kind: 'agent', host: 'claude-code', session: 's1', name: 'Claude Code' };
 const PERSON: InboxAuthor = { kind: 'person' };
@@ -62,18 +62,36 @@ test('the second line: "You: …" only in Your look and Your review; the agent�
   expect(cardLine(card('d'))).toBeNull();
 });
 
-test('unread: an agent wrote after the look the visit began with, and the person has not opened or moved it', () => {
-  const late = card('late', { heard_at: '2026-10-21T10:00:00.000Z' });
-  const early = card('early', { heard_at: '2026-10-19T10:00:00.000Z' });
-  const mine = card('mine', { heard_at: '2026-10-21T10:00:00.000Z', heard_by: PERSON });
-  const look = '2026-10-20T10:00:00.000Z';
+test('unread: an agent wrote in a line after the look the visit began with, and the person has not opened or moved it', () => {
+  // By seq, not by clock: two writes in one millisecond are told apart.
+  const late = card('late', { heard_seq: 12 });
+  const sameMs = card('same', { heard_seq: 11 });
+  const early = card('early', { heard_seq: 9 });
+  const mine = card('mine', { heard_seq: 13, heard_by: PERSON });
+  const look = 10;
   expect(cardShowsUnread(late, look, new Set())).toBe(true);
+  expect(cardShowsUnread(sameMs, look, new Set())).toBe(true);
   expect(cardShowsUnread(early, look, new Set())).toBe(false);
   expect(cardShowsUnread(mine, look, new Set())).toBe(false);
   expect(cardShowsUnread(late, look, new Set(['late']))).toBe(false);
   // Never looked: every card an agent wrote is unread.
   expect(cardShowsUnread(early, null, new Set())).toBe(true);
-  expect(newestHeard([late, early, mine])).toBe('2026-10-21T10:00:00.000Z');
+});
+
+test('a card message names the card; a message key replays the same words and not changed ones', () => {
+  expect(cardMessageBody('Roadmap', 'One page.', 'crd_1')).toBe('One page.\n\n(This is “Roadmap” on my Board, card crd_1. It is yours now: move it there as the work goes.)');
+  expect(cardMessageBody('Roadmap', null, null)).toContain('(This is “Roadmap” on my Board. It is yours now');
+  expect(messageKey('k', 'ses_a', 'hello')).toBe(messageKey('k', 'ses_a', 'hello'));
+  expect(messageKey('k', 'ses_a', 'hello')).not.toBe(messageKey('k', 'ses_a', 'hello!'));
+  expect(messageKey('k', 'ses_a', 'hello')).not.toBe(messageKey('k', 'ses_b', 'hello'));
+});
+
+test('history reads like the mock: short refs, and a Start in the card’s own thread says so', () => {
+  expect(shortRef('acme/widgets#2018')).toBe('#2018');
+  expect(shortRef('g/p!7')).toBe('!7');
+  expect(historyWords({ at: 'x', by: CLAUDE, kind: 'linked_ref', ref: 'acme/widgets#2018', ref_kind: 'pr' })).toMatchObject({ before: 'Linked ', bold: '#2018', after: '' });
+  expect(historyWords({ at: 'x', by: PERSON, kind: 'sent', to: CLAUDE, thread_id: 'msg_1', existing_thread: true }).after).toBe(' in the card’s thread');
+  expect(historyWords({ at: 'x', by: PERSON, kind: 'sent', to: CLAUDE, thread_id: 'msg_1', existing_thread: false }).after).toBe(' in a new thread');
 });
 
 test('an agent’s drops show until the person has looked, newest first', () => {

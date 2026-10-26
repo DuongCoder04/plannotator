@@ -105,7 +105,7 @@ import { ComposeDialog, type ComposeRequest, type ComposeSent } from './compose/
 import { DraftsPage } from './compose/DraftsPage';
 import { BoardPage, type BoardMove } from './board/BoardPage';
 import { CardChip } from './board/CardChip';
-import { boardCounts, boardViewOf, newestHeard, type BoardView } from './board/model';
+import { boardViewOf, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { CardsModel, DraftView } from './api';
@@ -252,6 +252,8 @@ function routeOf(fullHash: string): Route {
     msg: thread ? params.get('msg') : null,
     artifacts: thread ? params.has('artifacts') : false,
     card: thread ? params.get('card') : null,
+    // The Board list the card was opened from (Shipped, Icebox): the way back goes there.
+    board: thread && params.get('card') ? boardViewOf(params.get('from')) : undefined,
   };
 }
 
@@ -280,6 +282,7 @@ function hashOf(route: Route): string {
     if (route.thread && route.guide) params.set('guide', route.guide);
     // A thread opened from a Board card: its way back is the card (`&card=crd_…`).
     if (route.thread && route.card) params.set('card', route.card);
+    if (route.thread && route.card && route.board && route.board !== 'lanes') params.set('from', route.board);
     // `&artifacts`, a flag: written without its empty `=`.
     hash = params.toString().replace(/(^|&)artifacts=(?=&|$)/, '$1artifacts');
   }
@@ -980,7 +983,7 @@ function Inbox() {
    * since (no longer bold). Opening the Board records a new look through the
    * newest card it read, so the next visit is bold only for what came after.
    */
-  const [boardVisit, setBoardVisit] = useState<{ look: string | null; handled: ReadonlySet<string> } | null>(null);
+  const [boardVisit, setBoardVisit] = useState<{ look: number | null; handled: ReadonlySet<string> } | null>(null);
   const onBoard = route.page === 'board';
   useEffect(() => {
     if (!onBoard) {
@@ -990,10 +993,10 @@ function Inbox() {
     let live = true;
     void refreshCards().then((model) => {
       if (!live || !model) return;
-      setBoardVisit({ look: model.seen_through ?? null, handled: new Set() });
-      const through = newestHeard(model.cards);
-      // An Inbox before step 2 has no look to record (no `seen_through`): nothing is bold beyond this visit there.
-      if (through && model.seen_through !== undefined) void inboxApi.seeBoard(through).catch(() => {});
+      setBoardVisit({ look: model.seen_seq ?? null, handled: new Set() });
+      // The look runs through this read's cursor: every line up to it was on the page. An Inbox before
+      // step 2 has no look to record (no `seen_seq`): nothing is bold beyond this visit there.
+      if (model.seen_seq !== undefined) void inboxApi.seeBoard(model.cursor).catch(() => {});
     });
     return () => {
       live = false;
@@ -2814,7 +2817,7 @@ function Inbox() {
   // A thread opened from a Board card (`#thread=…&card=crd_…`): it takes the list's place, led by
   // "‹ Board" and a chip naming the card; both go back to the opened card.
   const fromCard = route.page === 'inbox' && route.thread && route.card ? route.card : null;
-  const backToCard = () => close({ page: 'board', project: null, thread: null, board: 'lanes', card: fromCard });
+  const backToCard = () => close({ page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
@@ -3118,7 +3121,7 @@ function Inbox() {
         view={route.board ?? 'lanes'}
         model={cards}
         error={cardsError}
-        visitLook={boardVisit ? boardVisit.look : (cards?.seen_through ?? null)}
+        visitLook={boardVisit ? boardVisit.look : (cards?.seen_seq ?? null)}
         handled={boardVisit?.handled ?? EMPTY_SET}
         projects={projects}
         defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
@@ -3145,7 +3148,7 @@ function Inbox() {
           void refreshList(false);
         }}
         onSeeDrops={seeDrops}
-        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id })}
+        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
       />
     );
   } else if (route.page === 'drafts') {
@@ -3431,7 +3434,6 @@ function Inbox() {
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
             // The Board (approval "inbox-board"): its count is the cards on the person (Your look, Your review).
-            boardCount={cards ? boardCounts(cards.cards).onYou : 0}
             onBoard={() => leave({ page: 'board', project: null, thread: null })}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
