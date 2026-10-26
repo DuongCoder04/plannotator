@@ -288,10 +288,23 @@ test.describe('ref hover cards', () => {
       await expect(c).toBeVisible();
       await shot(page, 'light-pinned-scrolled');
 
-      // A link in the body asks first and opens nothing on its own.
+      // A link in the body has no href at all, so nothing opens it: not a middle-click, a modified
+      // click or the context menu. A click or Enter only asks; the confirm's Open is the one real link.
       await scroll.evaluate((el) => (el.scrollTop = 0));
-      await c.getByRole('link', { name: 'the report' }).click();
+      const report = c.getByRole('link', { name: 'the report' });
+      expect(await scroll.locator('a[href]').count()).toBe(0);
+      expect(await report.getAttribute('data-ref-card-href')).toBe('https://evil.example/phish');
+      await report.click({ button: 'middle' });
+      await report.click({ modifiers: ['ControlOrMeta'] });
+      await page.waitForTimeout(300);
+      expect(popups).toEqual([]);
+      await report.focus();
+      await page.keyboard.press('Enter');
       await expect(c.locator('[data-ref-card-confirm]')).toContainText('https://evil.example/phish');
+      await c.locator('[data-ref-card-confirm]').getByRole('button', { name: 'Cancel' }).click();
+      await expect(c.locator('[data-ref-card-confirm]')).toHaveCount(0);
+      await report.click();
+      await expect(c.locator('[data-ref-card-confirm] a')).toHaveAttribute('href', 'https://evil.example/phish');
       expect(popups).toEqual([]);
       // The image is drawn as its alt text, never loaded; nothing in the card shows a native tooltip.
       await expect(c.locator('[data-image-unavailable]')).toHaveText('before');

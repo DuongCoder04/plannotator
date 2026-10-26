@@ -76,7 +76,8 @@ export function refKindName(ref: Pick<ForgeRef, 'platform' | 'kind'>): string {
   return ref.kind === 'issue' ? 'Issue' : ref.platform === 'gitlab' ? 'Merge request' : 'Pull request';
 }
 
-const FAILURE_TEXT: Record<Exclude<ForgeRefCardError, 'unsupported'>, (forge: string, cli: string) => string> = {
+const FAILURE_TEXT: Record<ForgeRefCardError, (forge: string, cli: string) => string> = {
+  unsupported: (_forge, cli) => `Details show for hosts your ${cli} is signed in to. This one isn't, so nothing was fetched.`,
   cli_missing: (forge, cli) => `Install the ${forge} CLI (${cli}) on this computer to see details here.`,
   signed_out: (_forge, cli) => `Sign in with ${cli} auth login to see details here.`,
   not_found: (forge) => `None of your signed-in ${forge} accounts can see this one, or it doesn't exist.`,
@@ -190,22 +191,54 @@ const REVIEW_TEXT = {
 /** Body markdown with images and links made harmless (the renderer still sanitizes HTML). An empty title: the alt text says it, and no native tooltip shows. */
 const NO_IMAGES = () => ({ kind: 'unavailable' as const, title: '' });
 
+/**
+ * Links in the body carry no `href` once drawn (it moves to `data-ref-card-href`), so nothing opens
+ * them: not a click, a middle-click, a modified click or the context menu's "Open link". A click or
+ * Enter on one only offers "Open · Cancel" with its full URL; the Open there is the one real link.
+ */
 function SafeMarkdown({ markdown }: { markdown: string }) {
   const [confirm, setConfirm] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Every render: the renderer may draw new links (a confirm row opening re-renders this).
+  useLayoutEffect(() => {
+    for (const a of bodyRef.current?.querySelectorAll<HTMLAnchorElement>('a[href]') ?? []) {
+      a.setAttribute('data-ref-card-href', a.getAttribute('href') ?? '');
+      a.removeAttribute('href');
+      a.removeAttribute('target');
+      a.setAttribute('role', 'link');
+      a.tabIndex = 0;
+      a.style.cursor = 'pointer';
+    }
+  });
+  const ask = (target: EventTarget | null) => {
+    const a = target instanceof Element ? target.closest('a[data-ref-card-href]') : null;
+    if (!a) return false;
+    const href = a.getAttribute('data-ref-card-href') ?? '';
+    setConfirm(/^https?:\/\//i.test(href) ? href : null);
+    return true;
+  };
   return (
     <div
       // `!`: a host may rescale the renderer's fixed sizes in a later cascade layer (the Inbox's text size does).
       className="text-[12.5px] leading-[1.55] text-foreground [overflow-wrap:anywhere] [&_h1]:my-1.5! [&_h1]:text-[13px]! [&_h1]:font-semibold [&_h2]:my-1.5! [&_h2]:text-[13px]! [&_h2]:font-semibold [&_h3]:my-1! [&_h3]:text-[12.5px]! [&_h3]:font-semibold [&_p]:my-1! [&_p]:text-[12.5px]! [&_p]:leading-[1.55]! [&_.text-sm]:text-[12.5px]! [&_pre]:text-[11.5px]! [&_.my-5]:my-2! [&_ul]:my-1! [&_li]:my-0! [&>:first-child]:mt-0!"
-      onClickCapture={(e) => {
-        const a = (e.target as Element).closest('a[href]');
-        if (!a) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const href = a.getAttribute('href') ?? '';
-        setConfirm(/^https?:\/\//i.test(href) ? href : null);
-      }}
     >
-      <RenderedMarkdown markdown={markdown} resolveImage={NO_IMAGES} />
+      <div
+        ref={bodyRef}
+        onClickCapture={(e) => {
+          if (ask(e.target)) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        onAuxClick={(e) => {
+          if ((e.target as Element).closest?.('a[data-ref-card-href]')) e.preventDefault();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && ask(e.target)) e.preventDefault();
+        }}
+      >
+        <RenderedMarkdown markdown={markdown} resolveImage={NO_IMAGES} />
+      </div>
       {confirm ? (
         <div className="mt-1.5 flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-[11.5px]" role="group" aria-label="Open this link?" data-ref-card-confirm="">
           <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{confirm}</span>
@@ -276,7 +309,7 @@ export function RefCardView({ target, href, result, pinned, onClose, sheet }: Re
   }
 
   if (!result || !result.ok) {
-    const error = result && 'error' in result && result.error !== 'unsupported' ? result.error : 'unavailable';
+    const error = result && 'error' in result ? result.error : 'unavailable';
     return (
       <div>
         <div className="px-3.5 pb-3 pt-3">
@@ -490,12 +523,7 @@ export function useRefHoverCards(rootRef: React.RefObject<HTMLElement | null>, {
     const href = anchor.href;
     setCard({ anchor, href, target, via, pinned: via === 'tap', result: undefined });
     void loadRefCard(href, target).then((result) => {
-      setCard((c) => {
-        if (!c || c.anchor !== anchor) return c;
-        // A host this computer does not fetch from: no card at all.
-        if (result && 'error' in result && result.error === 'unsupported') return null;
-        return { ...c, result };
-      });
+      setCard((c) => (c && c.anchor === anchor ? { ...c, result } : c));
     });
   }, []);
 

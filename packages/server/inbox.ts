@@ -699,15 +699,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const repos = createInboxRepoCache(options.readProjectRepo ? { read: options.readProjectRepo } : {});
 
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
-  // Besides github.com and gitlab.com, the hosts the projects' own origins name.
-  const refCards = createRefCards({
-    ...(options.refRunner ? { run: options.refRunner } : {}),
-    knownHosts: () =>
-      store
-        .listProjects()
-        .map((p) => repos.get(p.root)?.host)
-        .filter((h): h is string => typeof h === "string" && h.length > 0),
-  });
+  // github.com, gitlab.com and the hosts this computer's own gh / glab is signed in to; nothing else.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
 
   // Where a path an agent named files its messages: its repository (a linked
   // worktree folds into its main repository's project) or the folder, cached

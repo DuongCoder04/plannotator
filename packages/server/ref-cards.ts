@@ -15,9 +15,12 @@
  *   it (memory only; a token is never logged).
  * - GitLab: the `issue` or `mergeRequest` of a project (GitLab numbers them
  *   apart, so the link's kind decides). glab holds one login per host.
- * - Hosts: github.com and gitlab.com, plus the hosts the caller names
- *   (`knownHosts`: the projects' own origins, GitHub Enterprise and
- *   self-managed GitLab included). Any other host answers `unsupported`.
+ * - Hosts: github.com and gitlab.com, plus the hosts this computer's own gh
+ *   or glab is signed in to (`gh auth status`, `glab auth status`, read once
+ *   per `REF_AUTH_HOSTS_MS`): GitHub Enterprise and self-managed GitLab. Any
+ *   other host answers `unsupported` without running anything, so a link (or
+ *   a cloned repo's origin) naming `github.evil.example` can never make the
+ *   CLI send GH_ENTERPRISE_TOKEN or GITLAB_TOKEN there.
  * - Cache, per ref: an answer is fresh for `REF_FRESH_MS`, a failure for
  *   `REF_FAILURE_MS`; a stale answer is served at once while one refresh runs
  *   (up to `REF_STALE_MAX_MS`). Hovers of one ref share one request; at most
@@ -48,6 +51,7 @@ export const REF_STALE_MAX_MS = 15 * 60_000;
 export const REF_RATE_LIMIT_MS = 60_000;
 export const REF_TIMEOUT_MS = 8_000;
 export const REF_MAX_CONCURRENT = 2;
+export const REF_AUTH_HOSTS_MS = 5 * 60_000;
 const AVATAR_MAX_BYTES = 64 * 1024;
 const AVATAR_CACHE_MAX = 500;
 
@@ -132,7 +136,8 @@ function queryArgs(ref: ForgeRef): { cli: RefCli; args: string[] } {
   if (ref.platform === "github") {
     return {
       cli: "gh",
-      args: ["api", "graphql", ...hostArgs("--hostname", "github.com"), "-f", `query=${GITHUB_REF_QUERY}`, "-F", `owner=${ref.owner}`, "-F", `repo=${ref.repo}`, "-F", `number=${ref.number}`],
+      // -f for strings: -F would turn a repo named `2048`, `true` or `null` into a number, boolean or null.
+      args: ["api", "graphql", ...hostArgs("--hostname", "github.com"), "-f", `query=${GITHUB_REF_QUERY}`, "-f", `owner=${ref.owner}`, "-f", `repo=${ref.repo}`, "-F", `number=${ref.number}`],
     };
   }
   const query = ref.kind === "pull" ? GITLAB_MR_QUERY : GITLAB_ISSUE_QUERY;
@@ -343,6 +348,40 @@ export function refErrorOf(cli: RefCli, result: RefCommandResult): ForgeRefCardE
   return "unavailable";
 }
 
+/**
+ * The hosts a CLI is signed in to, lowercased (never a token). gh: `auth
+ * status --json hosts` (any account that gh could use), else the text form's
+ * "Logged in to <host>" lines. glab: `auth status`'s "Logged in to <host>"
+ * lines (it prints them on stderr). A CLI that is missing or refuses answers
+ * no hosts.
+ */
+export async function readSignedInHosts(run: RefRunner, cli: RefCli): Promise<Set<string>> {
+  const hosts = new Set<string>();
+  const fromText = (text: string) => {
+    for (const m of text.replace(/\u001b\[[0-9;]*m/g, "").matchAll(/Logged in to ([A-Za-z0-9.-]+)/g)) hosts.add(m[1].toLowerCase());
+  };
+  if (cli === "gh") {
+    const json = await run("gh", ["auth", "status", "--json", "hosts"]);
+    if (json.exitCode === 0) {
+      try {
+        const parsed = JSON.parse(json.stdout) as { hosts?: Record<string, { state?: string }[]> };
+        for (const [host, accounts] of Object.entries(parsed.hosts ?? {})) {
+          if (Array.isArray(accounts) && accounts.some((a) => (a?.state ?? "success") === "success")) hosts.add(host.toLowerCase());
+        }
+        return hosts;
+      } catch {
+        // Not that JSON: read the text form below.
+      }
+    }
+    const text = await run("gh", ["auth", "status"], { NO_COLOR: "1" });
+    fromText(`${text.stdout}\n${text.stderr}`);
+    return hosts;
+  }
+  const status = await run("glab", ["auth", "status"], { NO_COLOR: "1" });
+  fromText(`${status.stdout}\n${status.stderr}`);
+  return hosts;
+}
+
 /** Fetch a small avatar and inline it. Null on any failure: the card draws the initial. */
 export async function fetchAvatarDataUri(url: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
   try {
@@ -368,8 +407,6 @@ export interface RefCards {
 export function createRefCards(options: {
   run?: RefRunner;
   now?: () => number;
-  /** Hosts besides github.com and gitlab.com to fetch from (the projects' own origins). */
-  knownHosts?: () => Iterable<string>;
   /** Avatar URL → data URI (default: `fetchAvatarDataUri`). */
   avatar?: (url: string) => Promise<string | null>;
 } = {}): RefCards {
@@ -433,6 +470,21 @@ export function createRefCards(options: {
     return envs;
   };
 
+  /** The hosts each CLI is signed in to, read once per REF_AUTH_HOSTS_MS (a new login shows up after that). */
+  const authHosts = new Map<RefCli, { at: number; hosts: Promise<Set<string>> }>();
+  const signedInHosts = (cli: RefCli): Promise<Set<string>> => {
+    const hit = authHosts.get(cli);
+    if (hit && now() - hit.at < REF_AUTH_HOSTS_MS) return hit.hosts;
+    const hosts = readSignedInHosts(run, cli).catch(() => new Set<string>());
+    authHosts.set(cli, { at: now(), hosts });
+    return hosts;
+  };
+  /** github.com and gitlab.com always; any other host only when this computer's own CLI is signed in to it. */
+  const fetchesFrom = async (ref: ForgeRef): Promise<boolean> => {
+    if (ref.host === (ref.platform === "github" ? "github.com" : "gitlab.com")) return true;
+    return (await signedInHosts(ref.platform === "github" ? "gh" : "glab")).has(ref.host);
+  };
+
   const fail = (error: ForgeRefCardError): ForgeRefCardResult => ({ ok: false, error, fetchedAt: now() });
 
   const fetchOnce = async (ref: ForgeRef): Promise<ForgeRefCardResult> => {
@@ -494,8 +546,7 @@ export function createRefCards(options: {
     async get(href) {
       const ref = parseForgeRefUrl(href);
       if (!ref) return null;
-      const allowed = new Set(["github.com", "gitlab.com", ...[...(options.knownHosts?.() ?? [])].map((h) => h.toLowerCase())]);
-      if (!allowed.has(ref.host)) return fail("unsupported");
+      if (!(await fetchesFrom(ref))) return fail("unsupported");
       const key = forgeRefKey(ref);
       const hit = cache.get(key);
       if (hit) {

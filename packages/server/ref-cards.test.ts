@@ -13,6 +13,7 @@ import {
   createRefCards,
   parseGithubRefAnswer,
   parseGitlabRefAnswer,
+  readSignedInHosts,
   refErrorOf,
   REF_FAILURE_MS,
   REF_FRESH_MS,
@@ -328,9 +329,12 @@ describe("fetching", () => {
     expect((await cards.get("https://github.com/acme/widgets/pull/99"))?.ok).toBe(true);
   });
 
-  test("GitLab through glab: the MR query for an MR link, --hostname for a project's own host, signed out quietly", async () => {
-    const r = runner(({ args }) => (args.includes("--hostname") ? err("glab: 401 Unauthorized") : ok(gitlabMR())));
-    const cards = createRefCards({ run: r.run, knownHosts: () => ["gitlab.acme.dev"], avatar: async () => null });
+  test("GitLab through glab: the MR query for an MR link, --hostname for a host glab is signed in to, signed out quietly", async () => {
+    const r = runner(({ args }) => {
+      if (args[0] === "auth") return { stdout: "", stderr: "gitlab.acme.dev\n  ✓ Logged in to gitlab.acme.dev as lin (/home/lin/.config/glab-cli/config.yml)\n", exitCode: 0 };
+      return args.includes("--hostname") ? err("glab: 401 Unauthorized") : ok(gitlabMR());
+    });
+    const cards = createRefCards({ run: r.run, avatar: async () => null });
     const mr = await cards.get("https://gitlab.com/acme/sub/tools/-/merge_requests/7");
     expect(mr).toMatchObject({ ok: true, data: { platform: "gitlab", state: "draft" } });
     const q = r.queries()[0];
@@ -350,8 +354,62 @@ describe("fetching", () => {
     const cards = createRefCards({ run: r.run });
     expect(await cards.get("https://github.acme.dev/acme/widgets/pull/1")).toMatchObject({ ok: false, error: "unsupported" });
     expect(await cards.get("https://example.com/acme/widgets/pull/1")).toBeNull();
-    expect(r.calls).toHaveLength(0);
+    expect(r.queries()).toHaveLength(0);
     expect(await cards.get(PR_URL)).toMatchObject({ ok: false, error: "cli_missing" });
+  });
+
+  test("a host the CLI is not signed in to is never fetched, so its token never goes there (a cloned repo's origin github.evil.example)", async () => {
+    const r = runner(({ cli, args }) => {
+      if (cli === "gh" && args[0] === "auth") {
+        return ok({ hosts: {
+          "github.com": [{ login: "ada", active: true, state: "success" }],
+          "github.acme.dev": [{ login: "ada", active: true, state: "success" }],
+          "github.broken.dev": [{ login: "ada", active: true, state: "error" }],
+        } });
+      }
+      if (cli === "glab" && args[0] === "auth") return err("glab: no hosts configured", 1);
+      return ok(githubPR());
+    });
+    const cards = createRefCards({ run: r.run, avatar: async () => null });
+    for (const href of [
+      "https://github.evil.example/acme/widgets/pull/1",
+      "https://github.broken.dev/acme/widgets/pull/1",
+      "https://gitlab.evil.example/acme/tools/-/merge_requests/1",
+      "https://tools.gitlab.evil.example/acme/tools/-/issues/1",
+    ]) {
+      expect(await cards.get(href)).toMatchObject({ ok: false, error: "unsupported" });
+    }
+    expect(r.queries()).toHaveLength(0);
+    // A host gh is signed in to (GitHub Enterprise) is fetched, with --hostname.
+    expect(await cards.get("https://github.acme.dev/acme/widgets/pull/12")).toMatchObject({ ok: true });
+    expect(r.queries()[0].args.slice(0, 4)).toEqual(["api", "graphql", "--hostname", "github.acme.dev"]);
+    // The signed-in hosts are read once per CLI, not per hover.
+    expect(r.calls.filter((c) => c.args[0] === "auth").map((c) => c.cli).sort()).toEqual(["gh", "glab"]);
+  });
+
+  test("the signed-in hosts: gh's JSON, gh's text form, glab's status lines", async () => {
+    const ghText: RefRunner = async (_cli, args) =>
+      args.includes("--json")
+        ? err("unknown flag: --json")
+        : { stdout: "", stderr: "github.com\n  ✓ Logged in to github.com account ada (keyring)\nghe.acme.dev\n  ✓ Logged in to ghe.acme.dev account ada (keyring)\n", exitCode: 0 };
+    expect([...(await readSignedInHosts(ghText, "gh"))].sort()).toEqual(["ghe.acme.dev", "github.com"]);
+    const glab: RefRunner = async () => ({ stdout: "", stderr: "gitlab.com\n  ✓ Logged in to gitlab.com as lin\ngitlab.acme.dev\n  x gitlab.acme.dev: api call failed\n", exitCode: 1 });
+    expect([...(await readSignedInHosts(glab, "glab"))]).toEqual(["gitlab.com"]);
+    expect([...(await readSignedInHosts(async () => err("", 127), "glab"))]).toEqual([]);
+  });
+
+  test("owner and repo go as strings: a repo named 2048, true or null stays a string", async () => {
+    const r = runner(() => ok(githubPR()));
+    const cards = createRefCards({ run: r.run, avatar: async () => null });
+    await cards.get("https://github.com/user/2048/pull/5");
+    await cards.get("https://github.com/true/null/issues/6");
+    for (const q of r.queries()) {
+      const pairs = q.args.flatMap((a, i) => (a === "-f" || a === "-F" ? [`${a} ${q.args[i + 1].split("=")[0]}`] : []));
+      expect(pairs).toEqual(["-f query", "-f owner", "-f repo", "-F number"]);
+    }
+    expect(r.queries()[0].args).toContain("repo=2048");
+    expect(r.queries()[1].args).toContain("owner=true");
+    expect(r.queries()[1].args).toContain("repo=null");
   });
 });
 
@@ -368,12 +426,16 @@ describe("the Inbox route", () => {
     roots.push(root);
     const server = await startInboxServer({ dataDir: join(root, "data"), binaryPath: null, refRunner: run, ...extra });
     servers.push(server);
-    return (path: string, headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${server.port}${path}`, { headers });
+    const base = `http://127.0.0.1:${server.port}`;
+    return {
+      get: (path: string, headers: Record<string, string> = {}) => fetch(`${base}${path}`, { headers }),
+      post: (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    };
   }
 
   test("answers the card, refuses another site, a bad url and a phone", async () => {
     const r = runner(() => ok(githubPR()));
-    const get = await inbox(r.run, { phones: true });
+    const { get, post } = await inbox(r.run, { phones: true });
     const card = await get(`/api/inbox/ref?url=${encodeURIComponent(PR_URL)}`);
     expect(card.status).toBe(200);
     expect(card.headers.get("cache-control")).toBe("no-store");
@@ -381,9 +443,16 @@ describe("the Inbox route", () => {
     expect((await get(`/api/inbox/ref?url=${encodeURIComponent(PR_URL)}`, { "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
     expect((await get(`/api/inbox/ref?url=${encodeURIComponent(PR_URL)}`, { Origin: "https://evil.example" })).status).toBe(403);
     expect((await get(`/api/inbox/ref?url=${encodeURIComponent("https://example.com/x")}`)).status).toBe(422);
-    // Not on the device door: a phone (and so the relay) never gets it.
-    const door = await get(`/api/inbox/device/ref?url=${encodeURIComponent(PR_URL)}`, { Authorization: "Bearer tok_nope" });
-    expect(door.status).not.toBe(200);
+    // Not on the device door: a paired phone (and so the relay) is refused the route, and nothing runs.
+    const offer = (await (await post("/api/inbox/pairing", {})).json()) as { offer: { code: string } };
+    const paired = await post("/api/inbox/device/pair", { code: offer.offer.code, name: "iPhone", platform: "ios" });
+    expect(paired.status).toBe(201);
+    const token = ((await paired.json()) as { token: string }).token;
+    const auth = { Authorization: `Bearer ${token}` };
+    expect((await get("/api/inbox/device/threads", auth)).status).toBe(200); // the token works on the door
+    const door = await get(`/api/inbox/device/ref?url=${encodeURIComponent(PR_URL)}`, auth);
+    expect(door.status).toBe(404);
+    expect(((await door.json()) as { code: string }).code).toBe("device_route_not_found");
     expect(r.queries()).toHaveLength(1);
   });
 });
