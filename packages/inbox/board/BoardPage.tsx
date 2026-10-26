@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, type InboxCardColumn, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
+import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, inboxCardMarkRef, type InboxCardColumn, type InboxCardMark, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
@@ -12,6 +12,8 @@ import { useComposeSessions } from '../compose/useComposeSessions';
 import { findTarget, hostLabel } from '../compose/model';
 import { CardPanel } from './CardPanel';
 import { OnceButton } from './OnceButton';
+import { RefMark, markLabel } from './RefMark';
+import { useCardMarks } from './useCardMarks';
 import { NewCardDialog, type NewCardInput } from './NewCardDialog';
 import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
 import {
@@ -65,11 +67,12 @@ export interface BoardPageProps {
   onMove: (card: InboxCardWire, move: BoardMove) => Promise<InboxCardWire | null>;
   /** A card was made or edited here: read the cards again (the event stream does too). */
   onChanged: (card?: InboxCardWire) => void;
-  /** The person looked at the agents' drops ("Got it", or the Icebox page's Dropped). */
   /** The person looked at these agents' drops ("Got it", or the Icebox page while it is in front): only those are marked seen. */
   onSeeDrops: (ids: readonly string[]) => void;
   /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
   onOpenThread: (card: InboxCardWire, threadId: string) => void;
+  /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
+  marks?: boolean;
 }
 
 /**
@@ -220,6 +223,16 @@ export function BoardPage(props: BoardPageProps) {
     }
   };
 
+  // The lane marks: the state of each card's linked PR or issue, for the cards on screen only.
+  const pageRef = useRef<HTMLElement | null>(null);
+  const marks = useCardMarks(cards, props.marks === true && model !== null, pageRef, `${view}|${phone}|${phone && open ? 'card' : ''}`);
+  const markOf = (card: InboxCardWire): InboxCardMark | null => {
+    const ref = inboxCardMarkRef(card);
+    if (!ref) return null;
+    const mark = marks.get(card.id);
+    return mark && mark.url === ref.url ? mark : { kind: ref.kind === 'issue' ? 'issue' : 'pr', ref: ref.ref, url: ref.url, state: 'unknown', title: null };
+  };
+
   const common: CardCommon = {
     visitLook: props.visitLook,
     handled: props.handled,
@@ -227,6 +240,7 @@ export function BoardPage(props: BoardPageProps) {
     phone,
     openId: props.openCard,
     rowOf: props.rowOf,
+    markOf,
     onOpen: (card) => props.onOpenCard(card.id),
   };
 
@@ -269,7 +283,7 @@ export function BoardPage(props: BoardPageProps) {
   }
 
   return (
-    <section className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view} data-card-open={open ? '' : undefined}>
+    <section ref={pageRef} className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view} data-card-open={open ? '' : undefined}>
       <div className="ib-bhead">
         <SidebarTrigger />
         {view !== 'lanes' && !phone ? (
@@ -404,6 +418,8 @@ interface CardCommon {
   phone: boolean;
   openId: string | null;
   rowOf: (threadId: string) => InboxListRow | null;
+  /** The card's lane mark (its linked PR or issue), null when it links neither. */
+  markOf: (card: InboxCardWire) => InboxCardMark | null;
   onOpen: (card: InboxCardWire) => void;
 }
 
@@ -545,6 +561,7 @@ function BoardCard({
   phone,
   openId,
   rowOf,
+  markOf,
   onOpen,
   draggable = false,
   dragging = false,
@@ -556,7 +573,8 @@ function BoardCard({
   const sent = sentTo(card);
   const delivery = sent && card.sent ? (rowOf(card.sent.thread_id)?.delivery ?? null) : null;
   const age = cardAge(card.heard_at, now);
-  const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '');
+  const mark = markOf(card);
+  const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
   return (
     <li
       className="ib-bcard"
@@ -607,6 +625,7 @@ function BoardCard({
               )
             ) : null}
           </span>
+          {mark && <RefMark mark={mark} />}
           <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
             <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
           </Tip>

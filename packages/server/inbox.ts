@@ -47,8 +47,12 @@ import {
   INBOX_CARD_COLUMNS,
   inboxCardColumnOf,
   inboxCardRefsOf,
+  inboxCardMarkRef,
   isInboxCardDropUnseen,
+  INBOX_CARD_MARKS_MAX,
   type InboxCardColumn,
+  type InboxCardMark,
+  type InboxCardRef,
   INBOX_SOUND_DEFAULT_VOLUME,
   INBOX_TEXT_SIZE_DEFAULT,
   INBOX_TOUR_VERSION,
@@ -139,6 +143,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
+import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
@@ -713,6 +718,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
   // The Board's links, one resolver per source (inbox-card-refs.ts): GitHub and GitLab through the hover cards' lookup.
   const cardRefResolvers = [forgeCardRefResolver(refCards)];
+  // The Board's lane marks (inbox-card-marks.ts): GitHub batched per repository, GitLab through the hover cards.
+  const cardMarks = createCardMarks({ refCards, ...(options.refRunner ? { run: options.refRunner } : {}) });
 
   // Where a path an agent named files its messages: its repository (a linked
   // worktree folds into its main repository's project) or the folder, cached
@@ -2554,6 +2561,38 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           throw new InboxError("validation_error", "cards: the crd_ ids of the drops the person was shown (at most 1000).", { field: "cards" });
         }
         return json({ cards: store.markCardDropsSeen(projectIds, new Set(ids as string[])).map((card) => store.cardWire(card)) });
+      }
+      // The lane cards' marks (inbox-card-marks.ts): the state of each card's one marked link, for the
+      // cards on screen. Only this computer's window, only while the Board is on; never on the device
+      // door (not on its allowlist). Read only; it runs gh / glab, so another site is refused first.
+      if (path === "/api/inbox/cards/marks") {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        if (via === "tailnet") return localOnly();
+        const refused = crossSiteCardRead(req);
+        if (refused) return refused;
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        if (!boardOn()) return json({ error: "The Board is off.", code: "board_off" }, 409);
+        const ids = body.cards;
+        if (!Array.isArray(ids) || ids.length > INBOX_CARD_MARKS_MAX || ids.some((id) => !isInboxId("crd", id))) {
+          throw new InboxError("validation_error", `cards: the crd_ ids of the cards on screen (at most ${INBOX_CARD_MARKS_MAX}).`, { field: "cards" });
+        }
+        const wanted: { id: string; ref: InboxCardRef }[] = [];
+        for (const id of new Set(ids as string[])) {
+          const card = store.card(id);
+          const ref = card ? inboxCardMarkRef(card) : null;
+          if (ref) wanted.push({ id, ref });
+        }
+        const resolved = await cardMarks.marks(
+          wanted.map((w) => w.ref),
+          { refresh: body.refresh === true },
+        );
+        const marks: Record<string, InboxCardMark> = {};
+        for (const { id, ref } of wanted) {
+          const mark = resolved.get(ref.url);
+          if (mark) marks[id] = mark;
+        }
+        return json({ serverSession, marks });
       }
       // The opened card's links, resolved now (read only; each source's resolver, inbox-card-refs.ts).
       // Never on the device door, like /api/inbox/ref.

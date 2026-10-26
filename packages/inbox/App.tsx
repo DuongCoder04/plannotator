@@ -3179,6 +3179,8 @@ function Inbox() {
         }}
         onSeeDrops={seeDrops}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
+        marks={settings !== null && settings.via !== 'tailnet'}
       />
     );
   } else if (route.page === 'drafts') {

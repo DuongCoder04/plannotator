@@ -20,6 +20,7 @@ import { fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
 import { Tip } from '../components/Tip';
 import { OnceButton } from './OnceButton';
+import { RefMarkIcon } from './RefMark';
 import { cardAge, cardFoot, columnChoices, historyWords, refState, sentTo } from './model';
 
 export interface CardPanelProps {
@@ -514,7 +515,7 @@ function RefRow({ refItem, resolved, loading }: { refItem: InboxCardRef; resolve
   const number = refItem.ref.replace(/^.*?(?=[#!]\d+$)/, '');
   return (
     <li className="ib-crdp-ref" data-card-ref={refItem.ref} data-ref-state={state?.tone ?? (loading ? 'loading' : 'quiet')}>
-      <Icon name={refItem.kind === 'issue' ? 'question' : 'chip'} size={15} />
+      <RefMarkIcon kind={refItem.kind === 'issue' ? 'issue' : 'pr'} state={data ? data.state : 'unknown'} size={15} />
       <a href={refItem.url} target="_blank" rel="noreferrer noopener" className="ib-crdp-rn" aria-label={`${kind} ${refItem.ref}${data ? `: ${data.title}` : ''}`}>
         {number}
       </a>

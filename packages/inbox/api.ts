@@ -7,6 +7,7 @@
 
 import { isActionRecord, questionsOnly, splitThreadActions } from './actions';
 import type {
+  InboxCardMark,
   InboxDecisionsModel,
   InboxGuideRef,
   InboxHealth,
@@ -828,6 +829,8 @@ export const inboxApi = {
   /** The opened card's links, resolved now (read only). */
   cardRefs: (id: string) => get<{ refs: { ref: InboxCardRef; result: ForgeRefCardResult }[] }>(`/api/inbox/cards/${encodeURIComponent(id)}/refs`),
   /** The person opened the Board: the look runs through the cursor of the read it showed (the server clamps it). */
+  /** The lane cards' marks (their one linked PR or issue's state), for the cards on screen; `refresh` when the window got its focus back. */
+  cardMarks: (ids: readonly string[], refresh = false) => post<{ marks: Record<string, InboxCardMark> }>('/api/inbox/cards/marks', { cards: [...ids], refresh }),
   seeBoard: (throughSeq: number) => post<{ seen_seq: number }>('/api/inbox/cards/seen', { through_seq: throughSeq }),
   /** The Board's first-visit dialog: the first page on this computer to ask gets `show: true`, once per machine. */
   claimBoardIntro: () => post<{ show: boolean }>('/api/inbox/board/intro', {}),

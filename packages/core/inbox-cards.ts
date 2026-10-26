@@ -223,6 +223,42 @@ function prSourceOf(url: string): string {
   }
 }
 
+/**
+ * The one link a lane card marks (approval "inbox-board", card variant C, and
+ * the owner's 2026-10-26 "a symbol ... to indicate merged vs unmerged"): the
+ * card's latest pull request, else its latest issue; null when it links
+ * neither. The server resolves only this link per card, so the Board asks for
+ * one state a card, never all of its links.
+ */
+export function inboxCardMarkRef(card: { refs?: readonly InboxCardRef[] | null; prs: readonly InboxCardPr[] }): InboxCardRef | null {
+  const refs = inboxCardRefsOf(card);
+  for (let i = refs.length - 1; i >= 0; i--) if (refs[i]!.kind === "pr") return refs[i]!;
+  for (let i = refs.length - 1; i >= 0; i--) if (refs[i]!.kind === "issue") return refs[i]!;
+  return null;
+}
+
+/**
+ * What a lane card's mark says: the link's state in the forge's own words
+ * (`completed` and `not_planned` are a closed issue's two kinds), or
+ * `unknown` (not read yet, a source with no reader, a host this computer is
+ * not signed in to, or a failure): a quiet neutral mark. Display only: a
+ * link's state never moves a card.
+ */
+export type InboxCardMarkState = "open" | "draft" | "merged" | "closed" | "completed" | "not_planned" | "unknown";
+
+export interface InboxCardMark {
+  kind: "pr" | "issue";
+  /** As people write it (`acme/widgets#12`). */
+  ref: string;
+  url: string;
+  state: InboxCardMarkState;
+  /** The forge's title, when read. */
+  title: string | null;
+}
+
+/** The most cards one marks request names (the Board asks for the cards on screen). */
+export const INBOX_CARD_MARKS_MAX = 200;
+
 /** A card the person sent to an agent: when, to whom, and the thread it started. */
 export interface InboxCardSent {
   at: string;

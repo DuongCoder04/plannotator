@@ -94,6 +94,11 @@ function scriptFetch(sessions: unknown[] = []) {
     calls.push({ method, path: url.pathname, body });
     if (url.pathname === '/api/inbox/sessions') return json({ serverSession: 's', home: '/Users/ada', projects: sessions });
     if (url.pathname === '/api/inbox/board/intro') return json({ show: false });
+    if (url.pathname === '/api/inbox/cards/marks') {
+      const ids = (body?.cards as string[]) ?? [];
+      const marks = Object.fromEntries(ids.filter((id) => id === 'crd_vite').map((id) => [id, { kind: 'pr', ref: 'acme/widgets#12', url: 'https://github.com/acme/widgets/pull/12', state: 'merged', title: 'vite 8 for the review app' }]));
+      return json({ serverSession: 's', marks });
+    }
     const refs = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)\/refs$/);
     if (refs) return json({ refs: [] });
     const one = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)$/);
@@ -316,4 +321,66 @@ test.if(hasDom)('a phone: one stacked list, Shipped and Icebox folded at the end
   expect(cardEl('crd_tab')).toBeNull();
   act(() => $('[data-board-fold="shipped"]')!.click());
   expect(cardEl('crd_tab')).not.toBeNull();
+});
+
+/** An IntersectionObserver that sees every card it is given (happy-dom never scrolls). */
+function seeEveryCard() {
+  const saved = globalThis.IntersectionObserver;
+  class Seen {
+    constructor(private readonly callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, isIntersecting: true } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  globalThis.IntersectionObserver = Seen as unknown as typeof IntersectionObserver;
+  restorers.push(() => {
+    globalThis.IntersectionObserver = saved;
+  });
+}
+
+test.if(hasDom)('a lane card shows its linked PR as a mark: quiet until read, then its state, in its name and tooltip', async () => {
+  scriptFetch();
+  seeEveryCard();
+  draw({ marks: true });
+  // Before the answer: the neutral mark, named without a state.
+  const neutral = $('.ib-bcard[data-card-id="crd_vite"] [data-card-mark]');
+  expect(neutral?.dataset.cardMark).toBe('unknown');
+  expect($('.ib-bcard[data-card-id="crd_vite"] [data-card-open]')!.getAttribute('aria-label')).toEndWith('. Pull request #12');
+  // Cards with no link carry no mark.
+  expect($('.ib-bcard[data-card-id="crd_hero"] [data-card-mark]')).toBeNull();
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, 300));
+  });
+  await settle();
+  const asked = calls.filter((c) => c.path === '/api/inbox/cards/marks');
+  // One request for the cards in view, naming only those that link something.
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.body!.cards).toEqual(['crd_vite']);
+  const mark = $('.ib-bcard[data-card-id="crd_vite"] [data-card-mark]')!;
+  expect(mark.dataset.cardMark).toBe('merged');
+  expect(mark.querySelector('svg')!.getAttribute('aria-hidden')).toBe('true');
+  expect($('.ib-bcard[data-card-id="crd_vite"] [data-card-open]')!.getAttribute('aria-label')).toEndWith('. Pull request #12, merged');
+  // A component tooltip, never a native title.
+  expect(document.querySelector('.ib-bcard [title]')).toBeNull();
+  // Moving the card, or a re-render, asks nothing more while the mark is fresh.
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, 300));
+  });
+  expect(calls.filter((c) => c.path === '/api/inbox/cards/marks')).toHaveLength(1);
+});
+
+test.if(hasDom)('a page that may not read marks (over the tailnet) asks nothing and keeps the quiet mark', async () => {
+  scriptFetch();
+  seeEveryCard();
+  draw({ marks: false });
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, 300));
+  });
+  expect(calls.filter((c) => c.path === '/api/inbox/cards/marks')).toHaveLength(0);
+  expect($('.ib-bcard[data-card-id="crd_vite"] [data-card-mark]')!.dataset.cardMark).toBe('unknown');
 });

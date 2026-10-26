@@ -4677,6 +4677,27 @@ a.ib-bc-main { cursor: pointer; }
 .ib-bc-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-bc-youw { color: var(--ib-onyou-fg); font-weight: 600; }
 .ib-bc-age { flex: none; font-size: var(--ib-fs-12-5, 12.5px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A linked PR's or issue's state (inbox-card-marks): GitHub's Octicon shapes and colours, the dark
+   values first and the light ones below; unknown is the same shape, quiet. */
+.pn-inbox {
+  --ib-ref-open: #3fb950;
+  --ib-ref-merged: #a371f7;
+  --ib-ref-closed: #f85149;
+  --ib-ref-neutral: #9198a1;
+}
+:root.light .pn-inbox {
+  --ib-ref-open: #1a7f37;
+  --ib-ref-merged: #8250df;
+  --ib-ref-closed: #cf222e;
+  --ib-ref-neutral: #59636e;
+}
+.ib-bc-mark { flex: none; display: inline-flex; align-self: center; }
+.ib-refmark { flex: none; display: block; color: var(--ib-ref-neutral); }
+.ib-refmark[data-ref-state="open"] { color: var(--ib-ref-open); }
+.ib-refmark[data-ref-state="merged"], .ib-refmark[data-ref-state="completed"] { color: var(--ib-ref-merged); }
+.ib-refmark[data-ref-state="closed"][data-ref-kind="pr"] { color: var(--ib-ref-closed); }
+.ib-refmark[data-ref-state="unknown"] { color: var(--muted-foreground); opacity: 0.7; }
+@media (forced-colors: active) { .ib-refmark { color: CanvasText; } }
 .ib-pmi .ib-lane-dot { margin: 0 2px; }
 
 /* The agents' drops the person has not seen. */
