@@ -1204,8 +1204,12 @@ function Inbox() {
   }, [route.page, refreshSettings, loadUpdateDetails]);
   // While Settings shows, General's and About's version rows follow the update control as it moves
   // (available, installing, failed, checking failing), not only what they read when Settings opened.
+  // Only when the key changes: opening Settings already reads them (the effect above).
   const updateKey = `${update?.state ?? ''}:${update?.version ?? ''}:${checkFailing?.since ?? ''}`;
+  const seenUpdateKey = useRef(updateKey);
   useEffect(() => {
+    if (seenUpdateKey.current === updateKey) return;
+    seenUpdateKey.current = updateKey;
     if (route.page === 'settings') void loadUpdateDetails();
   }, [route.page, updateKey, loadUpdateDetails]);
 

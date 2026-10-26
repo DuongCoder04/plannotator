@@ -45,12 +45,12 @@ const update = (state: InboxUpdate['state']): InboxUpdate => ({
   releaseUrl: 'https://github.com/backnotprop/plannotator/releases/tag/v0.28.32',
 });
 const failing: UpdateCheckFailing = { since: new Date(Date.now() - 4 * 3600_000).toISOString(), error: 'page: HTTP 200; api: HTTP 403, rate limited' };
-const details = (over: Partial<UpdateDetails['check']> = {}): UpdateDetails => ({
+const details = (over: Partial<UpdateDetails['check']> = {}, latest: UpdateDetails['latest'] = { version: '0.28.31', fetched_at: new Date().toISOString(), published_at: null }): UpdateDetails => ({
   update: null,
   current: '0.28.31',
   updated: null,
-  latest: { version: '0.28.31', fetched_at: new Date().toISOString(), published_at: null },
-  check: { on: true, env: null, last_attempt_at: new Date().toISOString(), error: null, failing: null, ...over },
+  latest,
+  check: { on: true, env: null, last_attempt_at: new Date().toISOString(), error: null, failing: null, last_failed_at: null, ...over },
   auto_update: { on: false, env: null, supported: true },
   summary: '',
   flags: [],
@@ -149,7 +149,8 @@ test.skipIf(!hasDom)('About: the failing check replaces "the last check failed" 
       onToggle={() => {}}
     />,
   );
-  expect(el.querySelector('[data-update-status]')?.textContent).toMatch(/can't check for updates since .*rate limited/);
+  // Never "Checked … · can't check …": it says when it last tried.
+  expect(el.querySelector('[data-update-status]')?.textContent).toMatch(/^Can't check for updates since .*rate limited\) · last tried today/);
   expect(el.querySelector('[data-update-check-failing] code')?.textContent).toBe(COMMAND);
 });
 
@@ -176,4 +177,27 @@ test('a page opened over the tailnet offers nothing about updating; the computer
   expect(pageOffersUpdates({ via: 'local' })).toBe(true);
   expect(updateForPage(update('available'), { via: 'tailnet' })).toBeNull();
   expect(updateForPage(update('available'), { via: 'local' })?.state).toBe('available');
+});
+
+test.skipIf(!hasDom)('General says "Up to date" only after a recent successful check with checks on', () => {
+  const status = (d: UpdateDetails) => {
+    const el = row({ details: d });
+    const text = el.querySelector('[data-general-update-status]')?.textContent ?? '';
+    act(() => root!.unmount());
+    host!.remove();
+    root = null;
+    return text;
+  };
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+  expect(status(details({}, { version: '0.28.31', fetched_at: hoursAgo(1), published_at: null }))).toMatch(/^Up to date · checked /);
+  // Checks off: never "Up to date", whatever the last check said.
+  expect(status(details({ on: false }, { version: '0.28.31', fetched_at: hoursAgo(1), published_at: null }))).toBe('Update checks are off');
+  // The latest attempt failed (not yet for hours): says so, with when.
+  expect(status(details({ error: 'offline', last_failed_at: hoursAgo(0.5) }))).toMatch(/^Last check failed today .* \(offline\)$/);
+  // Nothing ever checked.
+  expect(status(details({ last_attempt_at: null }, null))).toBe('Not checked yet');
+  // The last success is old (weeks): when, not "Up to date".
+  expect(status(details({}, { version: '0.28.31', fetched_at: hoursAgo(24 * 21), published_at: null }))).toMatch(/^Last checked /);
+  // A newer release known but not offered (Remind me tomorrow, checks off): never "Up to date".
+  expect(status(details({}, { version: '0.28.32', fetched_at: hoursAgo(1), published_at: null }))).toMatch(/^Checked today .* · 0\.28\.32 is available$/);
 });

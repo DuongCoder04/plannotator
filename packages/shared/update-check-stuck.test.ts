@@ -6,12 +6,13 @@
  * check saying plainly that it is failing, with the install command.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildUpdateCheckFailing,
   fetchLatestFromPage,
+  forgetUnwrittenUpdateStateForTests,
   fetchLatestRelease,
   isSnoozed,
   readUpdateState,
@@ -45,6 +46,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   server.stop(true);
+  forgetUnwrittenUpdateStateForTests(dataDir);
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -123,6 +125,39 @@ describe("both sources failing: never silent, never unbounded", () => {
     expect(readUpdateState(dataDir).releaseCheck?.failingSince).toBeUndefined();
   });
 
+  test("an old run is not a failing check: the machine slept (or checks were off) since its last failure", async () => {
+    page = captivePortal;
+    api = rateLimited;
+    let t = NOW;
+    for (; t <= NOW + 4 * HOUR; t += RELEASE_CHECK_RETRY_MS) await check(t);
+    expect(releaseCheckFailing(readUpdateState(dataDir), t)).not.toBeNull();
+    // Offline at 6 pm, asleep until 9 am: before the morning check runs, nothing is claimed.
+    expect(releaseCheckFailing(readUpdateState(dataDir), t + 15 * HOUR)).toBeNull();
+    // Checks turned back on after weeks: the same.
+    expect(releaseCheckFailing(readUpdateState(dataDir), t + 21 * 24 * HOUR)).toBeNull();
+    // The morning check fails too: a new run starts, quiet for its first 3 hours.
+    await check(t + 15 * HOUR);
+    expect(releaseCheckFailing(readUpdateState(dataDir), t + 15 * HOUR)).toBeNull();
+  });
+
+  test("a mirror that only the API may ask (PLANNOTATOR_UPDATE_API_URL), held back by the rate limit: still shown as failing", async () => {
+    api = rateLimited;
+    let fetches = 0;
+    const apiOnly = (now: number) =>
+      runReleaseCheck({
+        dataDir,
+        enabled: () => true,
+        now: () => now,
+        fetchReleasePage: async () => ({ ok: false, error: "no release page source", skipped: true }),
+        fetchRelease: () => (fetches++, fetchLatestRelease(`${base()}/api/repos/backnotprop/plannotator/releases/latest`)),
+      });
+    let t = NOW;
+    for (; t <= NOW + 5 * HOUR; t += RELEASE_CHECK_RETRY_MS) await apiOnly(t);
+    // The API was asked once (then held back for 6 h), yet the run stays visible.
+    expect(fetches).toBe(1);
+    expect(releaseCheckFailing(readUpdateState(dataDir), t - RELEASE_CHECK_RETRY_MS)?.since).toBe(NOW);
+  });
+
   test("a stamp in the future (the clock moved back) is no failure", () => {
     writeUpdateState({ releaseCheck: { attemptedAt: NOW, failedAt: NOW, failingSince: NOW + 10 * HOUR, error: "offline" } }, dataDir);
     expect(releaseCheckFailing(readUpdateState(dataDir), NOW + 5 * HOUR)).toBeNull();
@@ -141,16 +176,34 @@ describe("both sources failing: never silent, never unbounded", () => {
 });
 
 describe("GitHub changing the redirect's spelling", () => {
-  test("the owner or repository in another case is still read", async () => {
-    page = redirectTo("0.28.32", "/BackNotProp/Plannotator/releases/tag/");
-    api = rateLimited;
-    expect(versionFromLatestRedirect(pageUrl(), `${base()}/BackNotProp/Plannotator/releases/tag/v0.28.32`)).toBe("0.28.32");
-    expect(await check(NOW)).toEqual({ outcome: "checked", version: "0.28.32" });
+  test("on github.com the owner or repository in another case is still read; a mirror is read exactly", () => {
+    const github = "https://github.com/backnotprop/plannotator/releases/latest";
+    expect(versionFromLatestRedirect(github, "https://github.com/BackNotProp/Plannotator/releases/tag/v0.28.32")).toBe("0.28.32");
+    expect(versionFromLatestRedirect(github, "/backnotprop/plannotator/releases/tag/v0.28.32")).toBe("0.28.32");
+    expect(versionFromLatestRedirect(pageUrl(), `${base()}/BackNotProp/Plannotator/releases/tag/v0.28.32`)).toBeNull();
+    expect(versionFromLatestRedirect(pageUrl(), `${base()}/backnotprop/plannotator/releases/tag/v0.28.32`)).toBe("0.28.32");
   });
 
   test("another host or another path is still refused (and falls to the API, then to the failing state)", () => {
     expect(versionFromLatestRedirect(pageUrl(), "https://evil.example/backnotprop/plannotator/releases/tag/v9.9.9")).toBeNull();
     expect(versionFromLatestRedirect(pageUrl(), `${base()}/backnotprop/plannotator/releases`)).toBeNull();
+  });
+});
+
+describe("a state file that cannot be written", () => {
+  test("the machine still checks (throttled in memory) and knows the answer; nothing is lost to a failed write", async () => {
+    let requests = 0;
+    page = () => (requests++, redirectTo("0.28.32")());
+    api = rateLimited;
+    // update-state.json is a folder: every write of it fails.
+    mkdirSync(join(dataDir, "update-state.json"));
+    expect(await check(NOW)).toEqual({ outcome: "checked", version: "0.28.32" });
+    expect(readUpdateState(dataDir).latestRelease?.tag).toBe("0.28.32");
+    // Within the 10 minutes: answered from memory, no second request.
+    expect((await check(NOW + 5 * MIN)).outcome).toBe("fresh");
+    expect(requests).toBe(1);
+    expect((await check(NOW + RELEASE_CHECK_RETRY_MS + MIN)).outcome).toBe("checked");
+    expect(requests).toBe(2);
   });
 });
 
@@ -166,6 +219,11 @@ describe("Remind me tomorrow never hides an update for longer than a day", () =>
 
 describe("the terminal hint while checking fails", () => {
   test("says checking is failing, with the install command, once a day; a known newer release still wins", () => {
+    writeUpdateState({ releaseCheck: { attemptedAt: NOW, failedAt: NOW, failingSince: NOW - 4 * HOUR, error: "page: HTTP 200" } }, dataDir);
+    // A binary the install script does not manage (brew, nix): never the curl script.
+    const unmanaged = takeUpdateHint({ current: "0.28.31", enabled: true, now: NOW, dataDir, platform: "linux", managed: false });
+    expect(unmanaged).toContain("update it the way you installed it");
+    expect(unmanaged).not.toContain("curl");
     writeUpdateState({ releaseCheck: { attemptedAt: NOW, failedAt: NOW, failingSince: NOW - 4 * HOUR, error: "page: HTTP 200" } }, dataDir);
     const line = takeUpdateHint({ current: "0.28.31", enabled: true, now: NOW, dataDir, platform: "linux" });
     expect(line).toContain("can't check for updates");

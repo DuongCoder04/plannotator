@@ -103,7 +103,12 @@ export const MenuVersionSection: React.FC<MenuVersionSectionProps> = ({
         )}
         {(hasUpdate || checkFailing) && (
           <div className="w-full mt-1 flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1" data-menu-update-command="">
-            <code className="flex-1 min-w-0 overflow-x-auto whitespace-nowrap font-mono text-[10px] text-foreground">{command}</code>
+            {/* Shown whole when checking fails (it is the only way forward there); one scrolling line beside an update, as before. */}
+            <code
+              className={`flex-1 min-w-0 font-mono text-[10px] text-foreground ${hasUpdate ? 'overflow-x-auto whitespace-nowrap' : 'whitespace-pre-wrap break-all'}`}
+            >
+              {command}
+            </code>
             <button
               onClick={handleCopy}
               className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium border border-border hover:bg-muted transition-colors"

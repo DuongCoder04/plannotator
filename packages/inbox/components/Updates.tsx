@@ -699,6 +699,40 @@ export function CheckFailingRow({ failing, onOpen }: { failing: UpdateCheckFaili
   );
 }
 
+/** "today 2:57 PM", "yesterday 2:57 PM", "Oct 3": when something happened. */
+function whenWords(iso: string): string {
+  const day = dayWords(iso);
+  return day === 'today' || day === 'yesterday' ? `${day} ${clockTime(iso)}` : day;
+}
+
+/** A successful check this recent backs "Up to date". */
+export const UP_TO_DATE_FRESH_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What the last checks say, in words that claim nothing they cannot back:
+ * "Up to date" only after a recent successful check with checks on; else
+ * checks off, failing for hours (with when it last tried), the last check
+ * failed, when it last checked, or not checked yet. `news`: an update is
+ * known or in progress, so never "Up to date".
+ */
+export function checkStatusWords(details: UpdateDetails | null, news: boolean, now: number = Date.now()): string {
+  if (!details) return '';
+  const check = details.check;
+  if (!check.on) return 'Update checks are off';
+  if (check.failing) {
+    const tried = check.last_attempt_at ? ` · last tried ${whenWords(check.last_attempt_at)}` : '';
+    return `${checkFailingWords(check.failing).replace(/^./, (c) => c.toUpperCase())}${tried}`;
+  }
+  if (check.last_failed_at) return `Last check failed ${whenWords(check.last_failed_at)}${check.error ? ` (${check.error})` : ''}`;
+  const ok = details.latest?.fetched_at ?? null;
+  const okAt = ok ? Date.parse(ok) : NaN;
+  if (ok && Number.isFinite(okAt) && now - okAt < UP_TO_DATE_FRESH_MS && okAt - now < 60_000) {
+    return news ? `Checked ${whenWords(ok)}` : `Up to date · checked ${whenWords(ok)}`;
+  }
+  if (ok) return `Last checked ${whenWords(ok)}`;
+  return 'Not checked yet';
+}
+
 // ───────────────────────────── Settings → General ─────────────────────────────
 
 /**
@@ -729,9 +763,7 @@ export function GeneralUpdateRow({
   onUpdate: () => void;
   onWhatsNew: (version: string) => void;
 }) {
-  const last = details?.check.last_attempt_at ?? null;
-  const day = last ? dayWords(last) : '';
-  const checked = !last ? 'not checked yet' : day === 'today' || day === 'yesterday' ? `checked ${day} ${clockTime(last)}` : `checked ${day}`;
+  const known = details?.latest && newerThan(details.latest.version, version) ? details.latest.version : null;
   const busy = restarting || update?.state === 'updating';
   let status: ReactNode;
   if (version === 'dev') status = 'A development build';
@@ -749,7 +781,8 @@ export function GeneralUpdateRow({
       </>
     );
   else if (failing) status = checkFailingWords(failing).replace(/^./, (c) => c.toUpperCase());
-  else status = `Up to date · ${checked}`;
+  // A newer release known but not offered (checks off, or Remind me tomorrow): never "Up to date".
+  else status = [checkStatusWords(details, !!known), known && `${known} is available`].filter(Boolean).join(' · ');
   const label = restarting
     ? 'Restarting…'
     : update?.state === 'updating'
@@ -833,18 +866,14 @@ export function AboutBlock({
   where?: { data: string; mcpUrl: string; mcpCommand: string } | null;
 }) {
   const latest = details?.latest;
-  const last = details?.check.last_attempt_at;
-  let status = '';
   const failing = details?.check.failing ?? null;
+  // What is happening with the version, beside what the checks say (checkStatusWords).
+  let status = '';
   if (version === 'dev') status = 'a development build';
-  else if (failing) status = checkFailingWords(failing);
-  else if (details?.check.error) status = `the last check failed: ${details.check.error}`;
   else if (details?.update?.state === 'updating') status = `installing ${details.update.version}`;
   else if (details?.update?.state === 'ready') status = `${details.update.version} is installed; restart to use it`;
   else if (latest && newerThan(latest.version, version)) status = `${latest.version} is available`;
-  else if (last) status = 'up to date';
-  const day = last ? dayWords(last) : '';
-  const checked = !last ? 'not checked yet' : day === 'today' || day === 'yesterday' ? `checked ${day} ${clockTime(last)}` : `checked ${day}`;
+  const checked = version === 'dev' ? 'not checked' : checkStatusWords(details, status !== '');
   const checks = switches?.update_check;
   const auto = switches?.auto_update;
   const autoSupported = details?.auto_update.supported ?? false;

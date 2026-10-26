@@ -44,7 +44,6 @@ import {
   readUpdateState,
   releaseCheckFailing,
   releaseSummary,
-  RELEASE_CHECK_FAILING_AFTER_MS,
   RELEASE_CHECK_ON_START_MS,
   releaseUrlFor,
   runReleaseCheck,
@@ -93,6 +92,8 @@ export interface InboxUpdateDetails {
      * Additive; null otherwise.
      */
     failing: { since: string; error: string } | null;
+    /** When the latest attempt failed (null: it did not, or none was made). Additive. */
+    last_failed_at: string | null;
   };
   auto_update: { on: boolean; env: boolean | null; supported: boolean };
   /** The first paragraph of the release notes. */
@@ -368,32 +369,16 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
   };
   let updatedLink: string | null = null;
 
-  // This process's own run of failed checks, for a state file it cannot
-  // write (nothing is recorded there then): when it began and why.
-  let ownFailure: { since: number; error: string } | null = null;
-  const noteOutcome = (outcome: { outcome: string; error?: string }) => {
-    if (outcome.outcome === "checked") ownFailure = null;
-    else if (outcome.outcome === "failed") ownFailure = { since: ownFailure?.since ?? now(), error: outcome.error ?? "the check failed" };
-  };
-
   /**
-   * Checking has failed for hours with no success, by any process on this
-   * machine (update-state.json) or by this one when it cannot record it: the
-   * sidebar's quiet "Can't check for updates" and Settings → About. Null in
+   * Checking has failed for hours with no success (update-state.json, or this
+   * process's memory of it when the file cannot be written): the sidebar's
+   * quiet "Can't check for updates" and Settings → General and About. Null in
    * a development build and while update checks are off.
    */
   const failing = (): { since: number; error: string } | null => {
     if (!release || !checksOn()) return null;
     try {
-      const state = readUpdateState(options.dataDir);
-      const at = now();
-      const recorded = releaseCheckFailing(state, at);
-      if (recorded) return recorded;
-      if (!ownFailure || at - ownFailure.since < RELEASE_CHECK_FAILING_AFTER_MS) return null;
-      // Another process got an answer since: not failing.
-      const fetchedAt = state.latestRelease?.fetchedAt;
-      if (typeof fetchedAt === "number" && fetchedAt >= ownFailure.since && fetchedAt <= at) return null;
-      return ownFailure;
+      return releaseCheckFailing(readUpdateState(options.dataDir), now());
     } catch {
       return null;
     }
@@ -483,15 +468,13 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         // Answers from the cache within its window, so this asks at most once
         // every 10 minutes (once a minute for a start or a page load), and 10
         // minutes after a failure.
-        noteOutcome(
-          await runReleaseCheck({
-            dataDir: options.dataDir,
-            now,
-            enabled: checksOn,
-            ...(freshForMs !== undefined && { freshForMs }),
-            ...sources,
-          }),
-        );
+        await runReleaseCheck({
+          dataDir: options.dataDir,
+          now,
+          enabled: checksOn,
+          ...(freshForMs !== undefined && { freshForMs }),
+          ...sources,
+        });
         // The update dialog's summary: the notes of a newer release the
         // redirect named (it carries none), fetched once per version (throttled).
         const latest = knownLatestRelease(readUpdateState(options.dataDir))?.version;
@@ -543,6 +526,11 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         last_attempt_at: state.releaseCheck?.attemptedAt ? new Date(state.releaseCheck.attemptedAt).toISOString() : null,
         error: state.releaseCheck?.failedAt ? state.releaseCheck.error ?? "the check failed" : null,
         failing: failingNow ? { since: new Date(failingNow.since).toISOString(), error: failingNow.error } : null,
+        // The latest attempt failed (its time), for "Last check failed <time>". Additive.
+        last_failed_at:
+          typeof state.releaseCheck?.failedAt === "number" && state.releaseCheck.failedAt >= state.releaseCheck.attemptedAt
+            ? new Date(state.releaseCheck.failedAt).toISOString()
+            : null,
       },
       auto_update: { on: resolveAutoUpdate(config), env: parseAutoUpdateEnv() ?? null, supported: release && isManaged() },
       summary: notes ? releaseSummary(notes.notes) : "",
@@ -620,7 +608,6 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
         force: true,
         ...sources,
       });
-      noteOutcome(outcome);
       refresh();
       return outcome.outcome === "failed" ? { ok: false, error: outcome.error } : { ok: true };
     },

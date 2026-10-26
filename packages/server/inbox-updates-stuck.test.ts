@@ -21,6 +21,7 @@ import { join } from "node:path";
 import type { InboxUpdate } from "@plannotator/core/inbox-types";
 import {
   fetchLatestFromPage,
+  forgetUnwrittenUpdateStateForTests,
   fetchLatestRelease,
   RELEASE_CHECK_FAILING_AFTER_MS,
   RELEASE_CHECK_INTERVAL_MS,
@@ -29,7 +30,7 @@ import {
   type FetchReleaseResult,
 } from "@plannotator/shared/update-check";
 import { startInboxServer, type InboxServer } from "./inbox";
-import { autoUpdatePaths, type InstallerLaunch } from "./auto-update";
+import { autoUpdatePaths, thisLockMachine, type InstallerLaunch } from "./auto-update";
 
 const T0 = Date.now();
 let clock: number;
@@ -67,6 +68,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop();
   gh.stop(true);
+  forgetUnwrittenUpdateStateForTests(dataDir);
   if (savedDataDir === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
   else process.env.PLANNOTATOR_DATA_DIR = savedDataDir;
   if (savedCheck === undefined) delete process.env.PLANNOTATOR_UPDATE_CHECK;
@@ -184,17 +186,34 @@ describe("checking that fails for hours is shown, never silent", () => {
     expect(after.update?.version).toBe("0.28.31");
   });
 
-  test("a state file that cannot be written: nothing is recorded, and the Inbox still says checking fails", async () => {
+  test("a state file that cannot be written: the Inbox still checks (in memory) and shows the release", async () => {
     page = redirectTo("0.28.31");
     // update-state.json is a folder: every write of it fails.
     mkdirSync(join(dataDir, "update-state.json"));
     const server = await start();
-    await Bun.sleep(150);
-    expect((await list(server)).update_check_failing ?? null).toBeNull();
-    clock += RELEASE_CHECK_FAILING_AFTER_MS;
-    await Bun.sleep(30 * 4);
+    expect((await waitFor(() => health(server), (u) => u?.state === "available"))?.version).toBe("0.28.31");
+  });
+
+  test("…and when GitHub fails too, it says checking fails after 3 hours, from memory", async () => {
+    page = captivePortal;
+    mkdirSync(join(dataDir, "update-state.json"));
+    const server = await start();
+    await waitFor(async () => pageRequests, (n) => n >= 1);
+    while (clock - T0 < RELEASE_CHECK_FAILING_AFTER_MS) await advance(RELEASE_CHECK_RETRY_MS);
     const failing = (await waitFor(() => list(server), (l) => !!l.update_check_failing)).update_check_failing!;
-    expect(failing.error).toContain("update-state.json");
+    expect(failing.error).toContain("page: HTTP 200");
+  });
+
+  test("a failing run from before the machine slept is not shown before the next check runs", async () => {
+    page = redirectTo("0.28.30");
+    writeUpdateState(
+      { releaseCheck: { attemptedAt: T0 - 15 * 60 * 60_000, failedAt: T0 - 15 * 60 * 60_000, failingSince: T0 - 20 * 60 * 60_000, error: "offline" } },
+      dataDir,
+    );
+    const server = await start();
+    expect((await list(server)).update_check_failing ?? null).toBeNull();
+    await waitFor(async () => pageRequests, (n) => n >= 1);
+    expect((await list(server)).update_check_failing ?? null).toBeNull();
   });
 
   test("update checks turned off: no failing state (the person chose it), and Check now still works", async () => {
@@ -216,7 +235,7 @@ describe("checking that fails for hours is shown, never silent", () => {
 
 describe("Updating… never spins for good", () => {
   async function deadPid(): Promise<number> {
-    const child = spawn(process.execPath, ["-e", "0"], { stdio: "ignore" });
+    const child = spawn(process.execPath, ["-e", "0"], { stdio: "ignore", detached: true });
     await new Promise((r) => child.on("exit", r));
     return child.pid!;
   }
@@ -225,7 +244,10 @@ describe("Updating… never spins for good", () => {
     page = redirectTo("0.28.31");
     writeUpdateState({ pending: { version: "0.28.31", fromVersion: "0.28.30", startedAt: T0, by: "person" } }, dataDir);
     const lock = autoUpdatePaths(dataDir).lock;
-    writeFileSync(lock, String(await deadPid()));
+    // The line the detached wrapper writes: its process group (gone) and this machine.
+    const dead = await deadPid();
+    const m = thisLockMachine();
+    writeFileSync(lock, `pid=${dead} group=${dead} host=${m.host} boot=${m.boot} pidns=${m.pidns}\n`);
     const at = (Date.now() - 60_000) / 1000;
     utimesSync(lock, at, at);
     const server = await start();

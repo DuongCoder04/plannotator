@@ -152,6 +152,8 @@ export interface UpdateDetails {
     error: string | null;
     /** Checking has failed for hours with no success. Absent from an older Inbox. */
     failing?: UpdateCheckFailing | null;
+    /** When the latest attempt failed (null: it did not). Absent from an older Inbox. */
+    last_failed_at?: string | null;
   };
   auto_update: { on: boolean; env: boolean | null; supported: boolean };
   summary: string;
