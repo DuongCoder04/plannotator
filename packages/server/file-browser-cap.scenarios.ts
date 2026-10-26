@@ -72,7 +72,16 @@ function seedFolder(root: string): void {
   for (let i = 0; i < 50; i++) writeFileSync(join(heavy, `readme-${i}.md`), `# ${i}\n`);
 }
 
-export function defineFileBrowserCapScenarios(runtime: string, start: StartFileBrowserCapServer): void {
+/**
+ * `defaultCap`: the cap with PLANNOTATOR_FILE_BROWSER_MAX_FILES unset. Bun
+ * keeps 5,000; Pi's file browser never had a cap, so it lists every file
+ * unless the variable is set (null).
+ */
+export function defineFileBrowserCapScenarios(
+  runtime: string,
+  start: StartFileBrowserCapServer,
+  defaultCap: number | null,
+): void {
   describe(`${runtime} annotate file browser over its file cap`, () => {
     const saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
     let root = "";
@@ -112,10 +121,28 @@ export function defineFileBrowserCapScenarios(runtime: string, start: StartFileB
     test("under the cap: every supported file, not truncated, heavy folders skipped", async () => {
       const data = await list();
       expect(data.truncated).toBe(false);
-      expect(data.fileLimit).toBe(5_000);
+      if (defaultCap === null) expect(data.fileLimit).toBeUndefined();
+      else expect(data.fileLimit).toBe(defaultCap);
       const files = filesOf(data.tree);
       expect(files).toHaveLength(44);
       expect(files.some((file) => file.startsWith("node_modules/"))).toBe(false);
+    });
+
+    test(`variable unset, over 5,000 files: ${defaultCap === null ? "every file is listed" : `capped at ${defaultCap}`}`, async () => {
+      const bulk = join(folder, "bulk");
+      mkdirSync(bulk);
+      for (let i = 0; i < 5_010; i++) writeFileSync(join(bulk, `n-${i}.md`), "x\n");
+      const data = await list();
+      const files = filesOf(data.tree);
+      if (defaultCap === null) {
+        expect(data.truncated).toBe(false);
+        expect(data.fileLimit).toBeUndefined();
+        expect(files).toHaveLength(5_054);
+      } else {
+        expect(data.truncated).toBe(true);
+        expect(data.fileLimit).toBe(defaultCap);
+        expect(files).toHaveLength(defaultCap);
+      }
     });
 
     test("over the cap: truncated with the cap, and the top levels are the files listed", async () => {

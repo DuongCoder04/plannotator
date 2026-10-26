@@ -22,7 +22,7 @@ import {
 	buildFileTree,
 	isFileBrowserExcludedPath,
 } from "../generated/reference-common.ts";
-import { listFileBrowserFiles } from "../generated/file-browser-files.ts";
+import { explicitFileBrowserMaxFiles, listFileBrowserFiles } from "../generated/file-browser-files.ts";
 import {
 	filterWorkspaceStatusForDirectory,
 	getWorkspaceStatusForDirectory,
@@ -510,14 +510,17 @@ export async function handleFileBrowserRequest(res: Res, url: URL): Promise<void
 	}
 	try {
 		const workspaceStatus = filterWorkspaceStatusForDirectory(await getWorkspaceStatusForDirectory(resolvedDir), resolvedDir, includeWorkspaceFile);
+		// Pi's file browser had no cap: it applies one only when
+		// PLANNOTATOR_FILE_BROWSER_MAX_FILES is set, and lists every file otherwise.
 		const listing = await listFileBrowserFiles(resolvedDir, {
 			seed: getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile),
+			limit: explicitFileBrowserMaxFiles(),
 		});
 		json(res, {
 			tree: buildFileTree(listing.files),
 			workspaceStatus,
 			truncated: listing.truncated,
-			fileLimit: listing.limit,
+			...(Number.isFinite(listing.limit) ? { fileLimit: listing.limit } : {}),
 		});
 	} catch {
 		json(res, { error: "Failed to list directory files" }, 500);

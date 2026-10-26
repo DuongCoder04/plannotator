@@ -15,6 +15,10 @@
  *
  * `seed` (the user's modified and untracked files) is added before the walk,
  * so the files someone just touched are never the ones left out.
+ *
+ * The Pi extension's file browser never had a cap, so it passes a limit only
+ * when PLANNOTATOR_FILE_BROWSER_MAX_FILES is set (`explicitFileBrowserMaxFiles`)
+ * and lists every file otherwise; the Bun server keeps its 5,000 default.
  */
 
 import type { Dirent } from "node:fs";
@@ -28,12 +32,13 @@ export interface FileBrowserListing {
 	files: string[];
 	/** True when supported files were left out because the cap was reached. */
 	truncated: boolean;
-	/** The cap that applied. */
+	/** The cap that applied; Infinity when the caller listed without one. */
 	limit: number;
 }
 
 export interface ListFileBrowserFilesOptions {
 	seed?: Iterable<string>;
+	/** Default: getFileBrowserMaxFiles(). Infinity lists every supported file. */
 	limit?: number;
 	docRegex?: RegExp;
 }
@@ -91,4 +96,14 @@ export async function listFileBrowserFiles(
 	}
 
 	return { files: [...files].sort(), truncated, limit };
+}
+
+/**
+ * The cap from PLANNOTATOR_FILE_BROWSER_MAX_FILES only when it is set to a
+ * positive integer, else Infinity (no cap). For the Pi mirror, whose file
+ * browser listed every file before the cap existed.
+ */
+export function explicitFileBrowserMaxFiles(): number {
+	const value = Number.parseInt(process.env.PLANNOTATOR_FILE_BROWSER_MAX_FILES ?? "", 10);
+	return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
 }

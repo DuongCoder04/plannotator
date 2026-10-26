@@ -11,4 +11,4 @@ defineFileBrowserCapScenarios("bun", async (options) => {
     htmlContent: "<html><body>Plannotator</body></html>",
   });
   return { url: server.url, stop: server.stop };
-});
+}, 5_000);
