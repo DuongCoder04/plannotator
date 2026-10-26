@@ -168,7 +168,8 @@ export function SentAnswers({ groups, onJump }: { groups: readonly SentAnswerGro
  * → Done · Note: …". The rows use the answers' own look. `sent`: the person's
  * sent message ("You did 1 action item"); else the reply box ("Your action
  * item goes with this reply"). One the agent saw done itself carries the
- * person's note: "Seen done · Note: …".
+ * person's note: "Seen done · Note: …" (a Can't do it they had marked: "Seen
+ * done · Your reason: …"); it counts as done.
  */
 export interface ActionRow {
   id: string;
@@ -183,7 +184,7 @@ export interface ActionRow {
 }
 
 export function actionRowWords(a: Pick<ActionRow, 'outcome' | 'note' | 'seen'>): string {
-  if (a.seen) return a.note ? `Seen done · Note: ${a.note}` : 'Seen done';
+  if (a.seen) return a.note ? `Seen done · ${a.outcome === 'cant' ? 'Your reason' : 'Note'}: ${a.note}` : 'Seen done';
   if (a.outcome === 'cant') return `Can't do it${a.note ? `: ${a.note}` : ''}`;
   return a.note ? `Done · Note: ${a.note}` : 'Done';
 }

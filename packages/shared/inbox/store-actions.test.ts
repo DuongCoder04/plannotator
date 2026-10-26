@@ -255,6 +255,77 @@ describe("in the reply draft (approval \"inbox-action-items-in-reply\")", () => 
     expect(again.store.settleActions(0)).toEqual([]);
   });
 
+  test("a re-mark (a note added, Done to Can't do it) keeps the time it was first marked", () => {
+    const { store, clock, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    const first = actionOf(store, asked.id);
+    clock.now += 60_000;
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Promoted.", staged: true });
+    expect(actionOf(store, asked.id)).toMatchObject({ picked_at: first.picked_at, action_result: { at: first.action_result!.at, note: "Promoted." } });
+    store.markAction(asked.id, action.key, { outcome: "cant", note: "No access after all.", staged: true });
+    expect(actionOf(store, asked.id).action_result).toMatchObject({ outcome: "cant", at: first.action_result!.at });
+  });
+
+  test("an agent supersedes a staged Done: it is Replaced and leaves the draft; a timed mark is still refused", () => {
+    const { store, project, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Approved.", staged: true });
+    const ref = `${asked.id}/${action.key}`;
+    const next = store.sendMessage({
+      project_id: project.id,
+      author: AGENT,
+      reply_to: asked.id,
+      body: ":::action\nApprove the 4.2.1 deploy on Vercel instead\nStopped: the hotfix waits on it\n:::",
+      supersedes: [ref],
+    });
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "superseded", superseded_by: { message_id: next.message.id } });
+    expect(rowOf(store, asked.thread_id).unsent?.done ?? 0).toBe(0);
+    // A Send that still names it (a window that has not caught up) has nothing left to send.
+    expect(() => store.sendReply(asked.id, { idempotency_key: "k1", words: "", actions: [{ key: action.key }] })).toThrow(
+      expect.objectContaining({ code: "nothing_to_send" }),
+    );
+
+    const timed = setup();
+    timed.store.markAction(timed.asked.id, timed.action.key, { outcome: "done" });
+    expect(() =>
+      timed.store.sendMessage({ project_id: timed.project.id, author: AGENT, reply_to: timed.asked.id, body: "Never mind.", supersedes: [`${timed.asked.id}/${timed.action.key}`] }),
+    ).toThrow(/the person already marked it; their answer reaches you in a few seconds/);
+  });
+
+  test("a Send of only action items that left the draft meanwhile is nothing to send, not a refusal", () => {
+    const { store, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.markAction(asked.id, action.key, { outcome: null, staged: true });
+    expect(() => store.sendReply(asked.id, { idempotency_key: "k1", words: "", actions: [{ key: action.key }] })).toThrow(
+      expect.objectContaining({ code: "nothing_to_send" }),
+    );
+    // With nothing named at all it is still the words refusal.
+    expect(() => store.sendReply(asked.id, { idempotency_key: "k2", words: "" })).toThrow(expect.objectContaining({ code: "validation_error" }));
+  });
+
+  test("an item on a message the archive closed is left out of a Send, never refusing it", () => {
+    const { store, project, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.resolveThread(asked.id, true);
+    const later = store.sendMessage({ project_id: project.id, author: AGENT, reply_to: asked.id, body: "One more thing: the changelog is out." }).message;
+    const { reply } = store.sendReply(later.id, { idempotency_key: "k1", words: "Thanks.", actions: [{ message_id: asked.id, key: action.key }] });
+    expect(reply.body).not.toContain(INBOX_ACTIONS_HEADING);
+    expect(actionOf(store, asked.id).sent_reply_id).toBeNull();
+  });
+
+  test("a staged Can't do it the agent then saw done counts done everywhere, its reason labelled as theirs", () => {
+    const { store, project, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "cant", note: "No access to the Vercel team.", staged: true });
+    const seen = store.sendMessage({ project_id: project.id, author: AGENT, body: "Dana promoted it.", reply_to: asked.id, done: [`${asked.id}/${action.key}`] });
+    expect(rowOf(store, asked.thread_id).unsent).toMatchObject({ done: 1 });
+    expect(rowOf(store, asked.thread_id).unsent?.cant ?? 0).toBe(0);
+    const { reply } = store.sendReply(seen.message.id, { idempotency_key: "k1", words: "", actions: [{ message_id: asked.id, key: action.key }] });
+    expect(reply.body.startsWith("Did 1 action item.\n\n")).toBe(true);
+    expect(reply.body).toContain("1 of 1 done.");
+    expect(reply.body).toContain("You saw it done, ");
+    expect(reply.body).toContain("\nTheir reason: No access to the Vercel team.");
+    expect(reply.body).not.toContain("Couldn't");
+  });
+
   test("Mark read leaves a staged Done in the draft", () => {
     const { store, asked, action } = setup();
     store.markAction(asked.id, action.key, { outcome: "done", staged: true });

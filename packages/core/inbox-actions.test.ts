@@ -21,7 +21,7 @@ import {
 } from "./inbox-actions";
 import { findQuestionBlocks, indexQuestionBlocks, parseQuestionBlock, isQuestionDirectiveKind } from "./question-block";
 import { composeInboxReplyBody, composeInboxSetAsideBody, inboxQuestionState, parseInboxQuestionBlocks, parseInboxSupersedeRef, summarizeInboxQuestions } from "./inbox-questions";
-import { inboxActionInDraft, readInboxQuestionKind, type InboxQuestion, type InboxQuestionRecord } from "./inbox-types";
+import { inboxActionInDraft, inboxHasUnsent, readInboxQuestionKind, type InboxQuestion, type InboxQuestionRecord } from "./inbox-types";
 
 const BODY = [
   "The deploy is ready.",
@@ -238,6 +238,14 @@ describe("in the person's reply (approval \"inbox-action-items-in-reply\")", () 
     expect(inboxActionInDraft(seen("Rotated it too."))).toBe(true);
     expect(inboxActionInDraft(seen(null))).toBe(false);
     expect(inboxActionInDraft(seen("Rotated it too.", 2))).toBe(false);
+  });
+
+  test("a Done or Can't do it alone in the draft is unsent work (the row's Draft label, the New section)", () => {
+    const none = { reply_at: null, picks: 0, comments: 0 };
+    expect(inboxHasUnsent(none)).toBe(false);
+    expect(inboxHasUnsent({ ...none, done: 1 })).toBe(true);
+    expect(inboxHasUnsent({ ...none, cant: 1 })).toBe(true);
+    expect(inboxHasUnsent({ ...none, done: 0, cant: 0 })).toBe(false);
   });
 
   test("the row: a staged mark keeps the item's Stopped and Holds up, and counts as staged, not open", () => {

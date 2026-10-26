@@ -2192,7 +2192,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           return [{ id: `${m.id}/${a.key}`, messageId: m.id, number: a.position + 1, prompt: a.prompt, outcome: mine.outcome, note: mine.note, seen: a.action_result?.by === 'agent' }];
         }),
   );
-  const draftCant = draftActions.filter((a) => a.outcome === 'cant').length;
+  const draftCant = draftActions.filter((a) => a.outcome === 'cant' && !a.seen).length;
   /** Picks, annotations or action items wait for a Send. */
   const waiting = picksCount > 0 || records.length > 0 || draftActions.length > 0;
   /** The box is closed and its words are kept as a draft (Cancel or Escape kept them): Edit draft brings them back. */

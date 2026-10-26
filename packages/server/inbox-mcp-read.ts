@@ -311,7 +311,7 @@ function numbering(questions: readonly InboxQuestion[]): Map<string, number> {
 function actionResultWords(q: InboxQuestion): string | null {
   const result = q.action_result;
   if (q.kind !== "action" || !result) return null;
-  if (result.by === "agent") return result.person?.note && q.revision !== q.sent_revision ? "you saw it done (the person's note on it comes in their reply)" : "you saw it done";
+  if (result.by === "agent") return result.person?.note && q.revision !== q.sent_revision ? "you saw it done (the person's note on it is in their reply draft, not sent yet)" : "you saw it done";
   // In the person's reply draft (approval "inbox-action-items-in-reply"), or inside the timed path's Undo window.
   const pending = q.state === "picked" ? (result.staged ? " (in the person's reply draft, not sent yet)" : " (not sent yet: the person can still undo it)") : "";
   if (result.outcome === "cant") return `can't do it: ${JSON.stringify(result.note ?? "")}${pending}`;

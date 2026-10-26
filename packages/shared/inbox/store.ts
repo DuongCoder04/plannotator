@@ -348,15 +348,8 @@ function withoutExportLocation(annotation: Record<string, unknown>): Record<stri
 }
 
 /** An action item named where a question's answer or skip goes: it is marked on its card (Done, Can't do it). */
-/**
- * Why an action item the person already marked is refused: a mark in their reply draft goes with their Send
- * (approval "inbox-action-items-in-reply"); one through the timed path (decision mode, the phone door) goes in seconds.
- */
-function personMarkedWords(record: InboxQuestionRecord): string {
-  return record.action_result?.staged === true
-    ? "the person already marked it; their answer comes with their reply"
-    : "the person already marked it; their answer reaches you in a few seconds";
-}
+/** Why an action item the person marked through the timed path (decision mode, the phone door) is refused: it goes in seconds. */
+const PERSON_MARKED_WORDS = "the person already marked it; their answer reaches you in a few seconds";
 
 function actionNotQuestion(field: string, key: string): InboxError {
   return new InboxError("validation_error", `${field}: ${key} is an action item, not a question; mark it Done or Can't do it on its card.`, { field, key });
@@ -1349,7 +1342,8 @@ export class InboxStore {
       if (message.author.kind !== "agent") continue;
       for (const q of this.questionsOf(message.id)) {
         if (!inboxActionInDraft(q)) continue;
-        if (inboxActionPersonMark(q.action_result)?.outcome === "cant") draftCant += 1;
+        // The agent saw it done: it counts done, whatever the person had marked (their reason still goes).
+        if (q.action_result?.by === "person" && q.action_result.outcome === "cant") draftCant += 1;
         else draftDone += 1;
       }
     }
@@ -2865,7 +2859,7 @@ export class InboxStore {
           target.key === null
             ? `${ref}: that message has no open action item.`
             : state === "picked"
-              ? `${ref}: ${personMarkedWords(records[0]!)}.`
+              ? `${ref}: ${PERSON_MARKED_WORDS}.`
               : `${ref} is not open (it is ${state}).`,
         );
         continue;
@@ -3000,14 +2994,16 @@ export class InboxStore {
         continue;
       }
       const resolved = this.closedByArchive(message);
-      // An action item the person already marked (Done or Can't do it, inside its Undo window) is theirs: it is
-      // never superseded, so their answer goes as they said (a message-wide id leaves it out).
-      const personMarked = (r: InboxQuestionRecord) => r.kind === "action" && inboxQuestionState(r, resolved) === "picked";
+      // An action item the person marked through the timed path (inside its Undo window) is theirs: it is never
+      // superseded, so their answer goes as they said (a message-wide id leaves it out). One waiting in their reply
+      // draft (`staged`) may never be sent: it is superseded like a picked question, and leaves the draft as Replaced.
+      const personMarked = (r: InboxQuestionRecord) =>
+        r.kind === "action" && inboxQuestionState(r, resolved) === "picked" && r.action_result?.staged !== true;
       const open = records.filter((r) => isInboxQuestionSupersedable(inboxQuestionState(r, resolved)) && !personMarked(r));
       if (open.length === 0) {
         problems.push(
           target.key !== null && personMarked(records[0]!)
-            ? `${where} ${ref}: ${personMarkedWords(records[0]!)}.`
+            ? `${where} ${ref}: ${PERSON_MARKED_WORDS}.`
             : target.key === null
               ? `${where} ${ref}: that message has no open question.`
               : `${where} ${ref} is not open (it is ${inboxQuestionState(records[0]!, resolved)}).`,
@@ -3254,8 +3250,11 @@ export class InboxStore {
     const stagedActions = this.planStagedActions(message, input.actions);
     if (plan.length === 0 && skips.length === 0 && stagedActions.length === 0 && words.trim() === "" && feedback === "" && attachments.length === 0) {
       // A Send meant only to skip, whose questions closed meanwhile
-      // (answered, replaced, a Mark read): nothing to write, not a refusal.
-      if (listed.length > 0) throw new InboxError("nothing_to_send", "Nothing is left to send on this message.");
+      // (answered, replaced, a Mark read), or only to carry action items that left the draft meanwhile
+      // (taken back, sent from another window, the agent saw it done with no note): nothing to write, not a refusal.
+      if (listed.length > 0 || (Array.isArray(input.actions) && input.actions.length > 0)) {
+        throw new InboxError("nothing_to_send", "Nothing is left to send on this message.");
+      }
       throw new InboxError("validation_error", "words: write a reply or send at least one answer.", { field: "words" });
     }
 
@@ -3385,11 +3384,14 @@ export class InboxStore {
       const e = entry as { message_id?: unknown; key?: unknown };
       if (e.message_id !== undefined && typeof e.message_id !== "string") throw new InboxError("validation_error", `${field}.message_id: a message id.`, { field: `${field}.message_id` });
       if (typeof e.key !== "string") throw new InboxError("validation_error", `${field}.key: an action item's key.`, { field: `${field}.key` });
+      // An action item on a message the archive closed is no longer in the draft (it reads closed): left out, as
+      // one taken back is, so a window that has not caught up never has its Send refused for it.
+      const other = e.message_id === undefined ? undefined : this.messages.get(e.message_id as string);
+      if (other && other.thread_id === message.thread_id && this.closedByArchive(other)) continue;
       const target = this.sendMessageOf(message, e.message_id as string | undefined, `${field}.message_id`);
       const record = this.questionRecords(target.id).find((r) => r.key === e.key);
       if (!record) throw new InboxError("question_not_found", `${field}: message ${target.id} has no action item ${e.key}.`, { field, key: e.key });
       if (record.kind !== "action") throw new InboxError("validation_error", `${field}: ${e.key} is a question, not an action item.`, { field, key: e.key });
-      if (this.closedByArchive(target)) continue;
       const wire = { ...record, state: inboxQuestionState(record, false) };
       if (!inboxActionInDraft(wire) || out.some((r) => r.id === record.id)) continue;
       out.push(record);

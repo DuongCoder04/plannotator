@@ -340,6 +340,28 @@ test.skipIf(!hasDom)('the note under a Done in the draft saves quietly as it is 
   expect(marks).toHaveLength(count);
 });
 
+test.skipIf(!hasDom)('a note still inside its typing pause is saved when its row goes away (the pane closed), never dropped', async () => {
+  const marks: unknown[] = [];
+  const at = '2026-10-21T15:12:00.000Z';
+  const el = mount(
+    <ActionChecklist actions={[record(0, { state: 'picked', revision: 1, action_result: { outcome: 'done', note: null, at, by: 'person', staged: true } })]} agent="Claude Code" onMark={async (_a, mark) => (marks.push(mark), true)} />,
+  );
+  const area = el.querySelector<HTMLTextAreaElement>('[data-action-draft-note]')!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(area, 'Rotated the old one too.');
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(marks).toEqual([]);
+  act(() => root!.render(<></>));
+  await settle();
+  expect(marks).toEqual([{ outcome: 'done', note: 'Rotated the old one too.', quiet: true }]);
+  // Nothing left waiting: the timer is gone, so no second save later.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 650));
+  });
+  expect(marks).toHaveLength(1);
+});
+
 test.skipIf(!hasDom)("the agent saw it done while the person's note waited in the draft: the note stays editable, and emptying it takes it out", async () => {
   const marks: unknown[] = [];
   const result = {

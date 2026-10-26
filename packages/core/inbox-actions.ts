@@ -274,9 +274,13 @@ export interface InboxActionsReportGroup {
   all: readonly AnyAction[];
 }
 
-/** The outcome a report counts for an item: the person's, also when the agent's own `done` settled it first (Q3). */
+/**
+ * The outcome a report counts for an item: the person's, or "done" when the agent's own `done` settled it
+ * (Q3): it is done, whatever the person had marked in their draft; their Can't do it reason still goes, as
+ * "Their reason:".
+ */
 function reportedOutcome(result: InboxActionResult): "done" | "cant" {
-  return result.by === "agent" ? (result.person?.outcome ?? "done") : result.outcome;
+  return result.by === "agent" ? "done" : result.outcome;
 }
 
 /** A note or reason inside one item's lines: blank lines closed up, so the item stays one paragraph. */
@@ -289,7 +293,8 @@ function reportedItem(r: ReportedAction, heading: "###" | "####", timeZone: stri
   if (result.by === "agent") {
     // The agent saw it done while the person's mark waited in their draft: the person's note still goes (Q3).
     const note = flatNote(result.person?.note);
-    return [head, `You saw it done, ${inboxActionTime(result.at, timeZone)}.`, ...(note ? [`Note: ${note}`] : [])].join("\n");
+    const label = result.person?.outcome === "cant" ? "Their reason" : "Note";
+    return [head, `You saw it done, ${inboxActionTime(result.at, timeZone)}.`, ...(note ? [`${label}: ${note}`] : [])].join("\n");
   }
   if (result.outcome === "cant") return `${head}\nCan't do it: ${flatNote(result.note)}`;
   return [head, `Done, ${inboxActionTime(result.at, timeZone)}.`, ...(result.note ? [`Note: ${flatNote(result.note)}`] : [])].join("\n");
@@ -487,4 +492,4 @@ export const INBOX_ACTION_GUIDE = [
 
 /** send_message's (and submit_guide's) `done`, as an agent reads it. */
 export const INBOX_DONE_DESCRIPTION =
-  "Your own action items (`:::action` blocks) in this thread that you saw done yourself, e.g. the deployment you were watching is Ready: \"<message id>/<key>\" for one (the key starts with a-; read_thread gives it) or \"<message id>\" for every open action item of that message. The card then says you saw it done, and nothing is sent to the person. Only your own action items that are still open, or marked by the person in a reply they have not sent (their note still comes with it), in the thread this message lands in (use reply_to); otherwise nothing is sent and the refusal, invalid_done, lists the thread's open action items. Never mark done what you did not see happen.";
+  "Your own action items (`:::action` blocks) in this thread that you saw done yourself, e.g. the deployment you were watching is Ready: \"<message id>/<key>\" for one (the key starts with a-; read_thread gives it) or \"<message id>\" for every open action item of that message. The card then says you saw it done, and nothing is sent to the person. Only your own action items that are still open, or that the person marked in a reply draft they have not sent, in the thread this message lands in (use reply_to); otherwise nothing is sent and the refusal, invalid_done, lists the thread's open action items. Never mark done what you did not see happen.";

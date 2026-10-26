@@ -24,7 +24,7 @@ import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { actionCardState, type ActionCardState } from '../actions';
 import { clockTime } from '../format';
 import { Icon } from '../icons';
-import { trackActionSave } from '../actionSaves';
+import { registerActionFlush, trackActionSave } from '../actionSaves';
 
 /** A Done or Can't do it as the window marks it: always into the reply draft (`staged` on the wire). */
 export interface ActionMark {
@@ -473,6 +473,8 @@ function DraftNote({
   const [text, setText] = useState(mark.note ?? '');
   const saved = useRef(mark.note ?? '');
   const timer = useRef<number | null>(null);
+  /** The words as typed, for a flush (before a Send, or as the row goes away) that runs outside a render. */
+  const typed = useRef(text);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const noteId = useId();
   const cant = mark.outcome === 'cant';
@@ -492,12 +494,20 @@ function DraftNote({
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   }, [text]);
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    [],
-  );
+  // Words still inside their typing pause are saved at once before a Send, and when the row goes away
+  // (the pane closed, the thread changed, the mark sent), never dropped.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    const flush = () => {
+      if (timer.current !== null) saveRef.current(typed.current);
+    };
+    const unregister = registerActionFlush(flush);
+    return () => {
+      unregister();
+      flush();
+    };
+  }, []);
   return (
     <div className="ib-chk-draft" data-action-draft="">
       <label className="ib-chk-sr" htmlFor={noteId}>
@@ -515,6 +525,7 @@ function DraftNote({
         placeholder={`Add a note for ${agent}`}
         onChange={(event) => {
           const value = event.target.value;
+          typed.current = value;
           setText(value);
           if (timer.current !== null) window.clearTimeout(timer.current);
           timer.current = window.setTimeout(() => save(value), 600);
@@ -522,7 +533,7 @@ function DraftNote({
         onBlur={() => save(text)}
       />
       <p className="ib-chk-dline" data-action-draft-line="">
-        {seen ? 'Your note' : cant ? "Can't do it" : 'Done'}
+        {seen ? (cant ? 'Your reason' : 'Your note') : cant ? "Can't do it" : 'Done'}
         {seen ? '' : ` ${clockTime(mark.at)}`} · in your draft
       </p>
     </div>
