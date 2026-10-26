@@ -30,7 +30,7 @@
  * Settings → Agents while the line shows (tests/helpers/reload-proof-shots.ts).
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { InboxHostSessions } from "@plannotator/core/inbox-types";
@@ -166,12 +166,16 @@ async function startService(w: InboxWorld, m: ScriptedModel, registryUrl: string
     const result = Bun.spawnSync([opencodeBin!, ...args], { cwd: w.project, env, stdout: "pipe", stderr: "pipe", timeout: 180_000 });
     return { code: result.exitCode ?? -1, out: `${result.stdout.toString()}${result.stderr.toString()}`.trim() };
   };
-  const type = async (args: string[], timeoutMs = 180_000) => {
+  // The person's shell: `opencode2` on PATH, in whatever folder they paste a copied command.
+  const shellBin = path.join(w.root, "shell-bin");
+  mkdirSync(shellBin, { recursive: true });
+  symlinkSync(opencodeBin!, path.join(shellBin, "opencode2"));
+  const inTerminal = async (argv: string[], cwd: string, timeoutMs: number) => {
     let screen = "";
     const t0 = Date.now();
-    const proc = Bun.spawn([opencodeBin!, ...args], {
-      cwd: w.project,
-      env,
+    const proc = Bun.spawn(argv, {
+      cwd,
+      env: { ...env, PATH: `${shellBin}${path.delimiter}${env.PATH ?? ""}` },
       terminal: { cols: 120, rows: 40, data: (_t, data) => void (screen += new TextDecoder().decode(data)) },
     });
     const timer = setTimeout(() => proc.kill(), timeoutMs);
@@ -180,6 +184,9 @@ async function startService(w: InboxWorld, m: ScriptedModel, registryUrl: string
     const out = screen.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b\][^\x07]*\x07/g, "").replace(/\r/g, "").trim();
     return { code: proc.exitCode ?? -1, out, ms: Date.now() - t0 };
   };
+  const type = (args: string[], timeoutMs = 180_000) => inTerminal([opencodeBin!, ...args], w.project, timeoutMs);
+  /** A command the Inbox offers to copy, pasted as it is into bash in `cwd`. */
+  const paste = (command: string, cwd: string, timeoutMs = 180_000) => inTerminal(["bash", "-c", command], cwd, timeoutMs);
   const started = run(["service", "start"]);
   if (started.code !== 0) throw new Error(`service start: ${started.out}`);
   cleanups.push(() => void run(["service", "stop"]));
@@ -212,7 +219,7 @@ async function startService(w: InboxWorld, m: ScriptedModel, registryUrl: string
     },
     PLUGIN_TIMEOUT_MS,
   );
-  return { env, url, run, type, api };
+  return { env, url, run, type, paste, api };
 }
 
 /** The Inbox at 0.28.99 in this process: the world's data dir, its release check stubbed (never GitHub), OpenCode's config the scratch one. */
@@ -269,16 +276,20 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2: the reload line, on the r
     expect(first.loaded).toBe("0.28.98");
     expect(first.installed).toBe(INBOX_VERSION);
     expect(first.fix).toBe("update_extension");
-    expect(first.update_command).toBe(`opencode2 plugin update ${NAME}@latest`);
+    expect(first.update_command).toBe(`opencode2 plugin list && opencode2 plugin update ${NAME}@latest`);
     w.proof(`1. plugin 0.28.98 loaded and on disk, Inbox ${INBOX_VERSION}: outdated ${JSON.stringify(first)}`);
     await shootAgents(server.port, "real-opencode2-plugin-update", { sidebar: false });
 
-    // A newer release; the person runs the command the Inbox showed.
+    // A newer release; the person pastes the command the Inbox showed, in a folder OpenCode never opened
+    // (the update alone fails there: "Plugin is not configured").
     registry.publish("0.28.99", repack(tarball!, "0.28.99", packs), manifest);
+    const elsewhere = path.join(w.root, "a-folder-opencode-never-opened");
+    mkdirSync(elsewhere, { recursive: true });
     let t0 = Date.now();
-    const updated = await service.type(first.update_command!.split(" ").slice(1), 120_000);
+    const updated = await service.paste(first.update_command!, elsewhere, 120_000);
     w.proof(`   $ ${first.update_command}  (exit ${updated.code}, ${updated.ms} ms)\n${updated.out.replace(/^/gm, "     ")}`);
     expect(updated.code).toBe(0);
+    expect(updated.out).toContain('Updated Server plugin "plannotator"');
     // The new generation polls once the session runs again (its wakes start with the session's next turn or tool call).
     await service.api("POST", `/api/session/${session}/prompt`, { text: "Ask the person about the export." });
     const after = await waitFor("the session to report 0.28.99", async () => {

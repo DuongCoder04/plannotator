@@ -392,9 +392,22 @@ export function openCodeSpecShellSafe(spec: string): boolean {
   return /^@plannotator\/opencode(?:@[\w.-]+)?$/.test(spec);
 }
 
-/** `opencode2 plugin update <spec>`: only Plannotator. OpenCode wants the spec exactly as configured (`@plannotator/opencode@latest`; the bare name is "not configured"). A spec that is not shell-safe gives the command with no target. */
+/**
+ * Runs first, in the same paste: `opencode2 plugin update` answers for the
+ * folder it runs in, and in a folder the service has not opened yet its
+ * plugins are not loaded: with a target it fails ("Plugin is not configured:
+ * @plannotator/opencode@latest"), without one it says "No plugin updates
+ * available". The first OpenCode command in a folder opens it; the next one
+ * sees its plugins. Measured on OpenCode 2.0.22 in fresh folders: the update
+ * alone 0/5, after `opencode2 plugin list` 5/5 (bash and zsh, with and without
+ * a target). `&&` is valid in bash, zsh, fish, PowerShell 7 and cmd.
+ */
+export const OPENCODE2_OPEN_FOLDER_COMMAND = "opencode2 plugin list";
+
+/** `opencode2 plugin update <spec>`: only Plannotator. OpenCode wants the spec exactly as configured (`@plannotator/opencode@latest`; the bare name is "not configured"). A spec that is not shell-safe gives the command with no target. Either way after OPENCODE2_OPEN_FOLDER_COMMAND. */
 export function opencodePluginUpdateCommand(spec: string | null): string {
-  return spec && openCodeSpecShellSafe(spec) ? `${OPENCODE2_PLUGIN_UPDATE_COMMAND} ${spec}` : OPENCODE2_PLUGIN_UPDATE_COMMAND;
+  const update = spec && openCodeSpecShellSafe(spec) ? `${OPENCODE2_PLUGIN_UPDATE_COMMAND} ${spec}` : OPENCODE2_PLUGIN_UPDATE_COMMAND;
+  return `${OPENCODE2_OPEN_FOLDER_COMMAND} && ${update}`;
 }
 /** OpenCode 2: when a reload does not take, restart the background service. */
 export const OPENCODE2_SERVICE_RESTART_COMMAND = "opencode2 service restart";
@@ -451,7 +464,7 @@ export function openCodeSessionOutdated(loaded: LoadedPlugin | null, cliVersion:
     installed: cliVersion,
     fix: "update_extension",
     update_command: command,
-    ...(command === OPENCODE2_PLUGIN_UPDATE_COMMAND ? { update_scope: "all" as const } : {}),
+    ...(command === opencodePluginUpdateCommand(null) ? { update_scope: "all" as const } : {}),
     ...base,
   };
 }
@@ -555,7 +568,7 @@ const DEFAULT_RELOAD: Record<InboxReloadRuntime, { command: string; where: "sess
   "claude-code": { command: "/reload-plugins", where: "session", update: CLAUDE_PLUGIN_UPDATE_COMMANDS.join(" && ") + " --scope user" },
   pi: { command: PI_RELOAD_COMMAND, where: "session", update: PI_UPDATE_COMMAND },
   "oh-my-pi": { command: OMP_RESTART_COMMAND, where: "session", update: OMP_UPGRADE_COMMAND },
-  opencode: { command: OPENCODE2_RELOAD_COMMAND, where: "shell", update: OPENCODE2_PLUGIN_UPDATE_COMMAND },
+  opencode: { command: OPENCODE2_RELOAD_COMMAND, where: "shell", update: opencodePluginUpdateCommand(null) },
 };
 
 const RUNTIME_NAMES: Record<InboxReloadRuntime, string> = { "claude-code": "Claude Code", pi: "Pi", "oh-my-pi": "Oh My Pi", opencode: "OpenCode 2" };

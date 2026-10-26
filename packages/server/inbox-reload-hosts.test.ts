@@ -21,7 +21,6 @@ import { createAgentEnvironmentFor } from "./inbox-agents";
 import {
   OMP_RESTART_COMMAND,
   OMP_UPGRADE_COMMAND,
-  OPENCODE2_PLUGIN_UPDATE_COMMAND,
   OPENCODE2_RELOAD_COMMAND,
   OPENCODE2_SERVICE_RESTART_COMMAND,
   createOpenCodeSpecReader,
@@ -101,10 +100,10 @@ describe("the judgment table", () => {
     // Behind, the configured spec known: only Plannotator updates (OpenCode wants the spec exactly as configured).
     const behind = plugin({ version: "0.28.29", on_disk: "0.28.29" });
     const named = openCodeSessionOutdated(behind, "0.28.31", { spec: "@plannotator/opencode@latest" })!;
-    expect(named).toMatchObject({ fix: "update_extension", update_command: "opencode2 plugin update @plannotator/opencode@latest", ...base });
+    expect(named).toMatchObject({ fix: "update_extension", update_command: "opencode2 plugin list && opencode2 plugin update @plannotator/opencode@latest", ...base });
     expect(named.update_scope).toBeUndefined();
     // The spec unknown: no target, and the window says it updates every outdated plugin.
-    expect(openCodeSessionOutdated(behind, "0.28.31")).toMatchObject({ fix: "update_extension", update_command: OPENCODE2_PLUGIN_UPDATE_COMMAND, update_scope: "all" });
+    expect(openCodeSessionOutdated(behind, "0.28.31")).toMatchObject({ fix: "update_extension", update_command: "opencode2 plugin list && opencode2 plugin update", update_scope: "all" });
     // Pinned to an exact version: plugin update is a no-op, so the pin changes and the service reloads.
     const pinned = openCodeSessionOutdated(behind, "0.28.31", { spec: "@plannotator/opencode@0.28.29" })!;
     expect(pinned).toMatchObject({ fix: "update_extension", pinned_spec: "@plannotator/opencode@0.28.29", pin_to: "@plannotator/opencode@latest", reload_command: OPENCODE2_RELOAD_COMMAND });
@@ -127,14 +126,15 @@ describe("the judgment table", () => {
     expect(openCodeSpecPinned("@plannotator/opencode@0.28.20")).toBe(true);
     expect(openCodeSpecPinned("@plannotator/opencode@latest")).toBe(false);
     expect(openCodeSpecPinned("@plannotator/opencode@^0.28.0")).toBe(false);
-    expect(opencodePluginUpdateCommand("@plannotator/opencode@latest")).toBe("opencode2 plugin update @plannotator/opencode@latest");
-    expect(opencodePluginUpdateCommand("@plannotator/opencode@next")).toBe("opencode2 plugin update @plannotator/opencode@next");
-    expect(opencodePluginUpdateCommand("@plannotator/opencode")).toBe("opencode2 plugin update @plannotator/opencode");
+    // Opened first: in a folder the service has not opened, the update alone fails (see OPENCODE2_OPEN_FOLDER_COMMAND).
+    expect(opencodePluginUpdateCommand("@plannotator/opencode@latest")).toBe("opencode2 plugin list && opencode2 plugin update @plannotator/opencode@latest");
+    expect(opencodePluginUpdateCommand("@plannotator/opencode@next")).toBe("opencode2 plugin list && opencode2 plugin update @plannotator/opencode@next");
+    expect(opencodePluginUpdateCommand("@plannotator/opencode")).toBe("opencode2 plugin list && opencode2 plugin update @plannotator/opencode");
     // Anything a shell would read as more than a word (a redirect, a pipe, a glob, a space) is never pasted unquoted.
     for (const unsafe of [">=0.28.0", "<0.29.0", "^0.28.0", "~0.28.0", "0.28.0 || 0.29.0", "latest; rm -rf ~", "* ", "latest x"]) {
-      expect(opencodePluginUpdateCommand(`@plannotator/opencode@${unsafe}`)).toBe("opencode2 plugin update");
+      expect(opencodePluginUpdateCommand(`@plannotator/opencode@${unsafe}`)).toBe("opencode2 plugin list && opencode2 plugin update");
       const outdated = openCodeSessionOutdated(plugin({ version: "0.28.29", on_disk: "0.28.29" }), "0.28.31", { spec: `@plannotator/opencode@${unsafe}` })!;
-      expect(outdated).toMatchObject({ update_command: "opencode2 plugin update", update_scope: "all" });
+      expect(outdated).toMatchObject({ update_command: "opencode2 plugin list && opencode2 plugin update", update_scope: "all" });
     }
   });
 
