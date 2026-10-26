@@ -1,4 +1,5 @@
 import type { UpdateCheckSetting } from '../hooks/useUpdateCheckSetting';
+import type { PackageChangesSetting } from '../hooks/usePackageChangesSetting';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { AnnotateAgentTerminalSide } from '@plannotator/core/agent-terminal';
@@ -137,6 +138,8 @@ interface SettingsProps {
    *  useUpdateCheckSetting); `env` is PLANNOTATOR_UPDATE_CHECK when it overrides the
    *  config file. Hosts that omit it get no row. */
   updateCheckSetting?: UpdateCheckSetting;
+  /** Code review's package changes switches (usePackageChangesSetting). Hosts that omit it get no rows. */
+  packageChangesSetting?: PackageChangesSetting;
   /** The `plannotator` agent tool switch, as the server reports it
    *  (parseAgentToolSetting of serverConfig: present only when the session's
    *  host registers the tool). Shown only together with onAgentToolChange;
@@ -437,7 +440,7 @@ function VimSettingsTab({
   );
 }
 
-function ReviewAnalysisTab() {
+function ReviewAnalysisTab({ packageChangesSetting }: { packageChangesSetting?: PackageChangesSetting }) {
   const semanticDiffEnabled = useConfigValue('semanticDiffEnabled');
   const callFlowEnabled = useConfigValue('callFlowEnabled');
   return (
@@ -463,6 +466,27 @@ function ReviewAnalysisTab() {
           label="Call flow"
           description="Diffs for function call stacks across git commits. 22 languages supported (AST-based, built using Tree-sitter)."
         />
+        {packageChangesSetting && (
+          <>
+            <div className="border-t border-border" />
+            <AnalysisLayerToggle
+              checked={packageChangesSetting.card}
+              onChange={(on) => packageChangesSetting.setCard(on)}
+              label="Package changes"
+              description="Added, removed and changed dependencies above package.json and lockfile diffs. Off: only the plain diff."
+            />
+            <div className="border-t border-border" />
+            <AnalysisLayerToggle
+              checked={packageChangesSetting.lookup}
+              onChange={(on) => void packageChangesSetting.setLookup(on)}
+              disabled={packageChangesSetting.lookupEnv === false}
+              label="Look up packages on npm"
+              description={packageChangesSetting.lookupEnv === false
+                ? 'Off: PLANNOTATOR_PACKAGE_LOOKUP=0.'
+                : 'License, release date and weekly downloads. Sends the names of changed public packages to registry.npmjs.org and api.npmjs.org.'}
+            />
+          </>
+        )}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -1135,7 +1159,7 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
   const webmcpTools = useWebMcpToolsEnabled();
   const autoUpdate = useConfigValue('autoUpdate');
   const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
@@ -1867,7 +1891,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 )}
 
                 {activeTab === 'analysis' && mode === 'review' && (
-                  <ReviewAnalysisTab />
+                  <ReviewAnalysisTab packageChangesSetting={packageChangesSetting} />
                 )}
 
                 {activeTab === 'display' && mode !== 'review' && (
