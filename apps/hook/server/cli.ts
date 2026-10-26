@@ -228,11 +228,11 @@ export const TELEMETRY_COMMAND_USAGE = [
  */
 export const CARD_COMMAND_USAGE = [
   "Usage:",
-  "  plannotator card create <title> [--column <column>] [--say <text>] [--you <text>] [--thread <id>] [--pr <ref>] [--key <key>]",
+  "  plannotator card create <title> [--column <column>] [--say <text>] [--you <text>] [--thread <id>] [--pr <ref>] [--ref <issue or PR>] [--key <key>]",
   "  plannotator card create --thread <id> [...]      (the thread's subject is the title)",
-  "  plannotator card move <crd_id> <column> [--say <text>] [--you <text>] [--thread <id>] [--pr <ref>] [--reason <text>]",
+  "  plannotator card move <crd_id> <column> [--say <text>] [--you <text>] [--thread <id>] [--pr <ref>] [--ref <issue or PR>] [--reason <text>]",
   "  plannotator card say <crd_id> [<text>] [--you <text>] [--title <text>]",
-  "  plannotator card link <crd_id> [--thread <id>] [--pr <ref>] [--say <text>]",
+  "  plannotator card link <crd_id> [--thread <id>] [--pr <ref>] [--ref <issue or PR>] [--say <text>]",
   "  plannotator card ship <crd_id> [--say <text>] [--pr <ref>] [--thread <id>]",
   "  plannotator card drop <crd_id> <reason> [--say <text>]",
   "  plannotator card list [--anyone | --mine] [--all]",

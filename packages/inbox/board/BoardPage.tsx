@@ -1,25 +1,33 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { Menu } from '@base-ui/react/menu';
-import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_REASON_MAX, INBOX_CARD_TITLE_MAX, type InboxCardColumn, type InboxCardWire } from '@plannotator/core/inbox-types';
-import type { CardsModel, ProjectFolder } from '../api';
+import { INBOX_CARD_COLUMN_LABELS, type InboxCardColumn, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
+import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
+import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
-import { Modal } from '../components/Updates';
 import { Tip } from '../components/Tip';
+import { DeliveryTick } from '../components/DeliveryTick';
 import { SidebarTrigger } from '../shell/sidebar';
+import { useComposeSessions } from '../compose/useComposeSessions';
+import { findTarget, hostLabel } from '../compose/model';
+import { CardPanel } from './CardPanel';
+import { NewCardDialog, type NewCardInput } from './NewCardDialog';
+import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
 import {
+  agentState,
+  askWhereBody,
   boardCounts,
   boardLanes,
   cardAge,
   cardLabel,
   cardLine,
-  cardMoves,
+  cardMessageBody,
   cardOwnerName,
   cardShowsUnread,
   moveSaid,
+  sentTo,
+  startBody,
   unseenDrops,
   type BoardView,
-  type CardMove,
 } from './model';
 
 /** A move the person makes on a card (the window's route `POST /api/inbox/cards/:id`). */
@@ -27,54 +35,80 @@ export type BoardMove = { op: 'move'; column: InboxCardColumn } | { op: 'icebox'
 
 export interface BoardPageProps {
   view: BoardView;
+  /** This computer's `plannotator` (settings `mcp_command`): the Board prompt names it. */
+  mcpCommand: readonly string[] | null;
+  /** Ask for the first-visit dialog (once per machine; never over the tailnet). False: never ask (tests, the tour). */
+  claimIntro?: boolean;
   model: CardsModel | null;
   error: string | null;
   /** The person's look when this visit began: cards an agent wrote to after it are bold. */
   visitLook: string | null;
   /** Cards the person opened or moved this visit: no longer bold. */
   handled: ReadonlySet<string>;
-  /** Projects a New card can go in (the sidebar's), most recent first. */
+  /** Projects a New card can go in (the sidebar's). */
   projects: readonly ProjectFolder[];
   /** Where a New card goes unless the person picks another. */
   defaultProject: string | null;
+  home: string | null;
   phone: boolean;
+  /** The opened card (`#board&card=crd_…`), or null. */
+  openCard: string | null;
+  onOpenCard: (id: string | null) => void;
+  /** A thread's list row (its subject, state and delivery), or null when the list does not hold it. */
+  rowOf: (threadId: string) => InboxListRow | null;
   onView: (view: BoardView) => void;
-  /** A card with a thread opens it in the normal Inbox view. */
-  onOpenCard: (card: InboxCardWire) => void;
   onMove: (card: InboxCardWire, move: BoardMove) => Promise<InboxCardWire | null>;
-  onCreate: (project: string, title: string) => Promise<boolean>;
+  /** A card was made or edited here: read the cards again (the event stream does too). */
+  onChanged: (card?: InboxCardWire) => void;
   /** The person looked at the agents' drops ("Got it", or the Icebox page's Dropped). */
   onSeeDrops: () => void;
+  /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
+  onOpenThread: (card: InboxCardWire, threadId: string) => void;
 }
 
 /**
  * The Board (approval "inbox-board", step 2): the five live columns as lanes
  * (Soft + Lanes), cards in variant C "Lean", Shipped and Icebox as links to
- * their own lists, the agents' unseen drops above the lanes. On a phone the
- * same order is one stacked list, with Shipped and Icebox folded at the end.
- * A card with a thread opens it in the Inbox; every move is on its Move menu
- * (the keyboard's way) and, on a desktop, by dragging it to another lane.
+ * their own lists, the agents' unseen drops above the lanes. A card opens in
+ * a panel beside the Board (the lanes narrow and scroll, so the card's lane
+ * stays in view); on a phone the lanes are one stacked list (Shipped and
+ * Icebox folded at the end) and an opened card is a full screen. Every move
+ * is on the opened card's column menu (the keyboard's way), and on a desktop
+ * a card can be dragged to another lane.
  */
 export function BoardPage(props: BoardPageProps) {
   const { model, view, phone } = props;
   const cards = model?.cards ?? [];
   const counts = boardCounts(cards);
   const drops = unseenDrops(cards);
-  const [creating, setCreating] = useState(false);
-  const [dropping, setDropping] = useState<InboxCardWire | null>(null);
+  const [creating, setCreating] = useState<null | 'backlog' | 'send'>(null);
+  const [intro, setIntro] = useState(false);
+  const claimed = useRef(false);
+  useEffect(() => {
+    if (claimed.current || props.claimIntro === false) return;
+    claimed.current = true;
+    inboxApi
+      .claimBoardIntro()
+      .then((answer) => answer.show && setIntro(true))
+      .catch(() => {});
+  }, [props.claimIntro]);
+  const promptCopy = useCopyBoardPrompt(props.mcpCommand);
+  const liveCount = counts.inFlight;
+  const [sendingCard, setSendingCard] = useState<InboxCardWire | null>(null);
   const [said, setSaid] = useState('');
   const [failed, setFailed] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  // Ages move on by themselves ("5m ago" becomes "6m ago").
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
-  const refocus = useRefocus(cards);
+  const { model: sessions } = useComposeSessions(true);
+  const live = sessions ? sessions.projects.flatMap((g) => g.sessions) : null;
+  const open = props.openCard ? (cards.find((c) => c.id === props.openCard) ?? null) : null;
+  const projectOf = (card: InboxCardWire) => props.projects.find((p) => p.id === card.project_id) ?? null;
 
   const move = async (card: InboxCardWire, change: BoardMove) => {
     setFailed(null);
-    refocus.expect(card);
     const moved = await props.onMove(card, change);
     if (!moved) {
       setFailed(`“${card.title}” did not move. Try again.`);
@@ -82,35 +116,93 @@ export function BoardPage(props: BoardPageProps) {
     }
     setSaid(moveSaid(card, moved));
   };
-  const choose = (card: InboxCardWire, choice: CardMove) => {
-    if (choice.kind === 'drop') setDropping(card);
-    else if (choice.kind === 'restore') void move(card, { op: 'restore' });
-    else if (choice.kind === 'icebox') void move(card, { op: 'icebox' });
-    else if (choice.kind === 'ship') void move(card, { op: 'move', column: 'shipped' });
-    else void move(card, { op: 'move', column: choice.column });
+
+  /** Make a card from New card: Backlog or Icebox in a project, or sent (a new thread to the agent, then the card). */
+  const create = async (input: NewCardInput): Promise<string | null> => {
+    const key = crypto.randomUUID();
+    try {
+      if (input.mode === 'send' && input.to) {
+        const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body: cardMessageBody(input.title, input.notes), idempotency_key: key });
+        const { card } = await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key });
+        props.onChanged(card);
+        setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}.`);
+      } else {
+        const { card } = await inboxApi.createCard({ project: input.project, title: input.title, notes: input.notes, refs: input.refs, column: input.mode === 'icebox' ? 'icebox' : 'backlog', idempotency_key: key });
+        props.onChanged(card);
+        setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}.`);
+      }
+      setCreating(null);
+      return null;
+    } catch (cause) {
+      return cause instanceof Error ? cause.message : 'The card was not made. Try again.';
+    }
   };
 
-  const common = { visitLook: props.visitLook, handled: props.handled, now, phone, onOpen: props.onOpenCard, onChoose: choose };
+  /** Send a Backlog card nobody was asked about: a new thread to the agent (its notes the message), then the card is sent. */
+  const sendExisting = async (card: InboxCardWire, input: NewCardInput): Promise<string | null> => {
+    if (!input.to) return 'Choose an agent to send it to.';
+    try {
+      const started = await inboxApi.startThread({ to: { host: input.to.host, session: input.to.session }, body: cardMessageBody(card.title, card.notes), idempotency_key: crypto.randomUUID() });
+      const { card: next } = await inboxApi.editCard(card.id, { op: 'send', thread_id: started.thread_id });
+      props.onChanged(next);
+      setSendingCard(null);
+      setSaid(`Sent “${card.title}” to ${hostLabel(input.to.host)}.`);
+      return null;
+    } catch (cause) {
+      return cause instanceof Error ? cause.message : 'Nothing was sent. Try again.';
+    }
+  };
+
+  const common: CardCommon = {
+    visitLook: props.visitLook,
+    handled: props.handled,
+    now,
+    phone,
+    openId: props.openCard,
+    rowOf: props.rowOf,
+    onOpen: (card) => props.onOpenCard(card.id),
+  };
 
   let body: ReactNode;
   if (!model) body = props.error ? <div className="ib-error">{props.error}</div> : <div className="ib-bload" aria-busy="true" />;
   else if (phone) body = <PhoneBoard cards={cards} counts={counts} {...common} onRestore={(card) => void move(card, { op: 'restore' })} />;
   else if (view === 'shipped') body = <CardList title="Shipped" empty="Nothing shipped yet. A card goes here when its work is merged or live." cards={cards.filter((c) => c.column === 'shipped')} {...common} />;
   else if (view === 'icebox')
-    body = (
-      <IceboxPage
-        cards={cards}
-        {...common}
-        onRestore={(card) => void move(card, { op: 'restore' })}
-        onSeeDrops={props.onSeeDrops}
-        unseen={drops.length}
-      />
-    );
-  else body = <Lanes cards={cards} {...common} onMove={(card, column) => void move(card, { op: 'move', column })} />;
+    body = <IceboxPage cards={cards} {...common} onRestore={(card) => void move(card, { op: 'restore' })} onSeeDrops={props.onSeeDrops} unseen={drops.length} />;
+  else body = <Lanes cards={cards} {...common} openColumn={open?.column ?? null} onMove={(card, column) => void move(card, { op: 'move', column })} />;
 
   const titleId = useId();
+  const panel = open ? (
+    <OpenedCard
+      key={open.id}
+      card={open}
+      projectName={projectOf(open)?.name ?? ''}
+      projectRoot={projectOf(open)?.root ?? null}
+      sessions={sessions}
+      live={live}
+      phone={phone}
+      now={now}
+      rowOf={props.rowOf}
+      onClose={() => props.onOpenCard(null)}
+      onMove={(change) => void move(open, change)}
+      onSend={() => setSendingCard(open)}
+      onChanged={props.onChanged}
+      onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
+    />
+  ) : null;
+
+  // On a phone an opened card is a screen of its own, over the Board.
+  if (phone && panel) {
+    return (
+      <section className="ib-bpage ib-bpage-card" aria-label={`Card: ${open!.title}`} data-board-page="" data-board-view="card">
+        {panel}
+        {sendingCard && <SendDialog card={sendingCard} sessions={sessions} projects={props.projects} home={props.home} phone={phone} onClose={() => setSendingCard(null)} onSend={sendExisting} />}
+      </section>
+    );
+  }
+
   return (
-    <section className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view}>
+    <section className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view} data-card-open={open ? '' : undefined}>
       <div className="ib-bhead">
         <SidebarTrigger />
         {view !== 'lanes' && !phone ? (
@@ -130,7 +222,13 @@ export function BoardPage(props: BoardPageProps) {
             </h1>
             {model && (
               <span className="ib-bsum" data-board-summary="">
-                {formatCount(counts.inFlight)} in flight · <b>{formatCount(counts.onYou)} on you</b>
+                {counts.inFlight === 0 ? (
+                  'Nothing in flight'
+                ) : (
+                  <>
+                    {phone ? formatCount(counts.inFlight) : `${formatCount(counts.inFlight)} in flight`} · <b>{formatCount(counts.onYou)} on you</b>
+                  </>
+                )}
               </span>
             )}
           </>
@@ -148,8 +246,13 @@ export function BoardPage(props: BoardPageProps) {
           </nav>
         )}
         {(view === 'lanes' || phone) && (
-          <NewCardButton disabled={props.projects.length === 0} phone={phone} onOpen={() => setCreating(true)} />
+          <Tip content="About the Board">
+            <button type="button" className="ib-iconbtn ib-babout" aria-label="About the Board" aria-haspopup="dialog" onClick={() => setIntro(true)} data-board-about="">
+              <Icon name="question" size={17} />
+            </button>
+          </Tip>
         )}
+        {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => setCreating('backlog')} />}
       </div>
       {model && drops.length > 0 && view !== 'icebox' && (
         <DroppedNotice drops={drops} onRestore={(card) => void move(card, { op: 'restore' })} onSeen={props.onSeeDrops} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
@@ -159,7 +262,19 @@ export function BoardPage(props: BoardPageProps) {
           {failed}
         </div>
       )}
-      {body}
+      <div className="ib-bmain">
+        {body}
+        {panel}
+        {model && view === 'lanes' && !phone && liveCount === 0 && !open && (
+          <div className="ib-bempty" data-board-empty="">
+            No cards yet
+            <button type="button" className="ib-btn ib-sm" onClick={() => void promptCopy.copy()} data-board-empty-copy="">
+              <Icon name={promptCopy.state === 'copied' ? 'check' : 'copy'} size={14} />
+              {promptCopy.state === 'copied' ? 'Copied' : 'Copy prompt'}
+            </button>
+          </div>
+        )}
+      </div>
       <div className="ib-sr" aria-live="polite" data-board-live="">
         {said}
       </div>
@@ -167,61 +282,61 @@ export function BoardPage(props: BoardPageProps) {
         <NewCardDialog
           projects={props.projects}
           defaultProject={props.defaultProject}
-          onClose={() => setCreating(false)}
-          onCreate={async (project, title) => {
-            const ok = await props.onCreate(project, title);
-            if (ok) {
-              setCreating(false);
-              setSaid(`Added “${title}” to Backlog.`);
-            }
-            return ok;
-          }}
+          sessions={sessions}
+          home={props.home}
+          phone={phone}
+          initialMode={creating}
+          onClose={() => setCreating(null)}
+          onCreate={create}
         />
       )}
-      {dropping && (
-        <DropDialog
-          card={dropping}
-          onClose={() => setDropping(null)}
-          onDrop={async (reason) => {
-            const card = dropping;
-            setDropping(null);
-            await move(card, { op: 'drop', reason: reason || null });
-          }}
-        />
-      )}
+      {intro && <BoardIntro mcpCommand={props.mcpCommand} phone={phone} onClose={() => setIntro(false)} />}
+      {sendingCard && <SendDialog card={sendingCard} sessions={sessions} projects={props.projects} home={props.home} phone={phone} onClose={() => setSendingCard(null)} onSend={sendExisting} />}
     </section>
   );
 }
 
-/**
- * After a move the card is drawn again in another list, so focus would fall
- * to the page: it goes back to the card's Move button where the card now is,
- * else (the card left this view) to the heading of the list it left.
- */
-function useRefocus(cards: readonly InboxCardWire[]) {
-  const pending = useRef<{ id: string; column: InboxCardColumn; focused: boolean } | null>(null);
-  useLayoutEffect(() => {
-    const want = pending.current;
-    if (!want) return;
-    const card = cards.find((c) => c.id === want.id);
-    if (!card || card.column === want.column) return;
-    pending.current = null;
-    if (!want.focused) return;
-    const root = document.querySelector('[data-board-page]');
-    const target =
-      root?.querySelector<HTMLElement>(`[data-card-id="${want.id}"] [data-card-move]`) ??
-      root?.querySelector<HTMLElement>(`[data-lane="${want.column}"] h2`) ??
-      root?.querySelector<HTMLElement>('h1');
-    target?.focus();
-  }, [cards]);
-  return {
-    expect(card: InboxCardWire) {
-      const active = document.activeElement;
-      // Only a move made from the card (its menu, its row) brings focus back; a drag leaves the pointer where it is.
-      const focused = active instanceof HTMLElement && (active === document.body || !!active.closest(`[data-card-id="${card.id}"]`) || !!active.closest('[data-card-menu]'));
-      pending.current = { id: card.id, column: card.column, focused };
-    },
-  };
+/** Send to an agent from the opened card: New card's dialog, its text already the card's, only the agent to pick. */
+function SendDialog({
+  card,
+  sessions,
+  projects,
+  home,
+  phone,
+  onClose,
+  onSend,
+}: {
+  card: InboxCardWire;
+  sessions: ComposeSessionsModel | null;
+  projects: readonly ProjectFolder[];
+  home: string | null;
+  phone: boolean;
+  onClose: () => void;
+  onSend: (card: InboxCardWire, input: NewCardInput) => Promise<string | null>;
+}) {
+  return (
+    <NewCardDialog
+      projects={projects}
+      defaultProject={card.project_id}
+      sessions={sessions}
+      home={home}
+      phone={phone}
+      initialMode="send"
+      fixed={{ title: card.title, notes: card.notes }}
+      onClose={onClose}
+      onCreate={(input) => onSend(card, input)}
+    />
+  );
+}
+
+interface CardCommon {
+  visitLook: string | null;
+  handled: ReadonlySet<string>;
+  now: number;
+  phone: boolean;
+  openId: string | null;
+  rowOf: (threadId: string) => InboxListRow | null;
+  onOpen: (card: InboxCardWire) => void;
 }
 
 function NewCardButton({ disabled, phone, onOpen }: { disabled: boolean; phone: boolean; onOpen: () => void }) {
@@ -234,20 +349,23 @@ function NewCardButton({ disabled, phone, onOpen }: { disabled: boolean; phone: 
   return disabled ? <Tip content="A card needs a project: an agent's first message makes one.">{button}</Tip> : button;
 }
 
-interface CardCommon {
-  visitLook: string | null;
-  handled: ReadonlySet<string>;
-  now: number;
-  phone: boolean;
-  onOpen: (card: InboxCardWire) => void;
-  onChoose: (card: InboxCardWire, choice: CardMove) => void;
-}
-
-function Lanes({ cards, onMove, ...common }: CardCommon & { cards: readonly InboxCardWire[]; onMove: (card: InboxCardWire, column: InboxCardColumn) => void }) {
+function Lanes({
+  cards,
+  onMove,
+  openColumn,
+  ...common
+}: CardCommon & { cards: readonly InboxCardWire[]; openColumn: InboxCardColumn | null; onMove: (card: InboxCardWire, column: InboxCardColumn) => void }) {
   const [dragging, setDragging] = useState<InboxCardWire | null>(null);
   const [over, setOver] = useState<InboxCardColumn | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  // With a card open the lanes narrow: the open card's lane is scrolled into view.
+  useLayoutEffect(() => {
+    if (!openColumn) return;
+    const lane = scroller.current?.querySelector<HTMLElement>(`[data-lane="${openColumn}"]`);
+    lane?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [openColumn, common.openId]);
   return (
-    <div className="ib-blanes" data-dragging={dragging ? '' : undefined}>
+    <div className="ib-blanes" ref={scroller} data-dragging={dragging ? '' : undefined}>
       {boardLanes(cards).map((lane) => {
         const target = dragging !== null && dragging.column !== lane.column;
         const dragOver = (event: DragEvent) => {
@@ -281,7 +399,6 @@ function Lanes({ cards, onMove, ...common }: CardCommon & { cards: readonly Inbo
               <span className="ib-lane-dot" data-col={lane.column} aria-hidden="true" />
               <span className="ib-lane-l">{lane.label}</span>
               <span className="ib-lane-n">{formatCount(lane.cards.length)}</span>
-              {lane.onYou && <span className="ib-onyou">on you</span>}
             </h2>
             {lane.cards.length > 0 ? (
               <ul className="ib-lane-cards" aria-labelledby={`ib-lane-${lane.column}`}>
@@ -320,9 +437,9 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
 
 /**
  * One card, variant C "Lean": the agent's mark and the title; then "You: …"
- * (the person's columns) or the agent's last word, and how long ago anyone
- * last wrote to it. Bold while unread. A card with a thread is a link to it;
- * its Move menu sits beside it (a sibling, never inside the link).
+ * (the person's columns), "Sent to <agent>" with the delivery tick (a card
+ * the person sent, until it moves), or the agent's last word; and how long
+ * ago anyone last wrote to it. Bold while unread. A button: it opens the card.
  */
 function BoardCard({
   card,
@@ -330,8 +447,9 @@ function BoardCard({
   handled,
   now,
   phone,
+  openId,
+  rowOf,
   onOpen,
-  onChoose,
   draggable = false,
   dragging = false,
   onDragStart,
@@ -339,37 +457,10 @@ function BoardCard({
 }: CardCommon & { card: InboxCardWire; draggable?: boolean; dragging?: boolean; onDragStart?: () => void; onDragEnd?: () => void }) {
   const unread = cardShowsUnread(card, visitLook, handled);
   const line = cardLine(card);
+  const sent = sentTo(card);
+  const delivery = sent && card.sent ? (rowOf(card.sent.thread_id)?.delivery ?? null) : null;
   const age = cardAge(card.heard_at, now);
-  const thread = card.threads[0] ?? null;
-  const label = cardLabel(card, unread, now) + (thread ? '. Opens its thread' : '');
-  const inner = (
-    <>
-      <span className="ib-bc-top">
-        {card.agent ? <AuthorMark author={card.agent} /> : <span className="ib-mk ib-bc-you" aria-hidden="true"><Icon name="user" size={14} /></span>}
-        <Tip content={card.title} cut>
-          <span className="ib-bc-t" dir="auto">
-            {card.title}
-          </span>
-        </Tip>
-      </span>
-      <span className="ib-bc-bot">
-        <span className="ib-bc-line" dir="auto">
-          {line ? (
-            line.you ? (
-              <>
-                <b className="ib-bc-youw">You:</b> {line.text}
-              </>
-            ) : (
-              line.text
-            )
-          ) : null}
-        </span>
-        <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
-          <span className="ib-bc-age">{age.short}</span>
-        </Tip>
-      </span>
-    </>
-  );
+  const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '');
   return (
     <li
       className="ib-bcard"
@@ -377,6 +468,8 @@ function BoardCard({
       data-column={card.column}
       data-unread={unread ? '' : undefined}
       data-dragging={dragging ? '' : undefined}
+      data-open={openId === card.id ? '' : undefined}
+      data-sent={sent ? '' : undefined}
       draggable={draggable && !phone ? true : undefined}
       onDragStart={(event) => {
         if (!draggable || phone) return;
@@ -386,75 +479,46 @@ function BoardCard({
       }}
       onDragEnd={onDragEnd}
     >
-      {thread ? (
-        <a
-          className="ib-bc-main"
-          href={`#thread=${encodeURIComponent(thread)}`}
-          draggable={false}
-          aria-label={label}
-          data-card-open=""
-          onClick={(event) => {
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-            event.preventDefault();
-            onOpen(card);
-          }}
-        >
-          {inner}
-        </a>
-      ) : (
-        <div className="ib-bc-main" role="group" aria-label={label}>
-          {inner}
-        </div>
-      )}
-      <MoveMenu card={card} phone={phone} onChoose={(choice) => onChoose(card, choice)} />
+      <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
+        <span className="ib-bc-top">
+          {card.agent ? (
+            <AuthorMark author={card.agent} />
+          ) : (
+            <span className="ib-mk ib-bc-you" aria-hidden="true">
+              <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
+            </span>
+          )}
+          <Tip content={card.title} cut>
+            <span className="ib-bc-t" dir="auto">
+              {card.title}
+            </span>
+          </Tip>
+        </span>
+        <span className="ib-bc-bot">
+          <span className="ib-bc-line" dir="auto">
+            {sent ? (
+              <span className="ib-bc-sent">
+                {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
+                Sent to {sent}
+              </span>
+            ) : line ? (
+              line.you ? (
+                <>
+                  <b className="ib-bc-youw">You:</b> {line.text}
+                </>
+              ) : (
+                line.text
+              )
+            ) : null}
+          </span>
+          <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
+            <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
+          </Tip>
+        </span>
+      </button>
     </li>
   );
 }
-
-/** The card's Move menu: every move the person may make, the keyboard's way to drag. */
-function MoveMenu({ card, phone, onChoose }: { card: InboxCardWire; phone: boolean; onChoose: (choice: CardMove) => void }) {
-  const [open, setOpen] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [portal, setPortal] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => setPortal(trigger.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
-  const moves = cardMoves(card);
-  const columns = moves.filter((m) => m.kind === 'column');
-  const rest = moves.filter((m) => m.kind !== 'column');
-  return (
-    <Menu.Root open={open} onOpenChange={setOpen} modal={false}>
-      <Tip content="Move">
-        <Menu.Trigger ref={trigger} className="ib-bc-more" aria-label={`Move “${card.title}”`} data-card-move="" data-open={open ? '' : undefined}>
-          <Icon name="dots" size={16} />
-        </Menu.Trigger>
-      </Tip>
-      <Menu.Portal container={portal ?? undefined}>
-        {phone && <Menu.Backdrop className="ib-pm-scrim" />}
-        <Menu.Positioner className="ib-pm-pos" side="bottom" align="end" sideOffset={4} data-phone={phone ? '' : undefined}>
-          <Menu.Popup className="ib-pm" aria-label={`Move “${card.title}”`} data-card-menu={card.id}>
-            <div className="ib-pm-title" dir="auto" aria-hidden="true">
-              {card.title}
-            </div>
-            {columns.map((choice) => (
-              <Menu.Item key={choice.label} className="ib-pmi" label={choice.label} onClick={() => onChoose(choice)} data-card-move-to={choice.kind === 'column' ? choice.column : undefined}>
-                <span className="ib-lane-dot" data-col={choice.kind === 'column' ? choice.column : undefined} aria-hidden="true" />
-                {choice.label}
-              </Menu.Item>
-            ))}
-            {columns.length > 0 && rest.length > 0 && <Menu.Separator className="ib-pm-sep" />}
-            {rest.map((choice) => (
-              <Menu.Item key={choice.label} className="ib-pmi" label={choice.label} onClick={() => onChoose(choice)} data-card-action={choice.kind}>
-                <Icon name={MOVE_ICONS[choice.kind]} size={15} />
-                {choice.label}
-              </Menu.Item>
-            ))}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
-  );
-}
-
-const MOVE_ICONS = { column: 'forward', ship: 'check', icebox: 'pause', drop: 'trash', restore: 'replay' } as const;
 
 /** "2 dropped by an agent", with each title and reason, until the person has looked. */
 function DroppedNotice({
@@ -561,7 +625,7 @@ function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; on
       {cards.length > 0 ? (
         <ul className="ib-drops">
           {cards.map((card) => {
-            const by = card.dropped?.by.kind === 'agent' ? cardOwnerName({ ...card, agent: card.dropped.by }) : 'You';
+            const by = card.dropped?.by.kind === 'agent' ? cardOwnerName({ ...card, agent: card.dropped.by }) : 'you';
             return (
               <li key={card.id} className="ib-drop" data-dropped-row={card.id}>
                 <span className="ib-drop-t">
@@ -589,8 +653,8 @@ function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; on
 
 /**
  * A phone: the lanes as one stacked list in column order, each foldable,
- * with Shipped and Icebox (Dropped inside it) folded at the end. No drag:
- * every move is on the card's Move menu, a sheet from the bottom edge.
+ * with Shipped and Icebox (Dropped inside it) folded at the end. No drag: a
+ * card opens full screen, where its column menu moves it.
  */
 function PhoneBoard({
   cards,
@@ -606,54 +670,31 @@ function PhoneBoard({
       else next.add(key);
       return next;
     });
-  const groups: { key: string; label: string; count: number; onYou?: boolean; body: ReactNode }[] = boardLanes(cards).map((lane) => ({
-    key: lane.column,
-    label: lane.label,
-    count: lane.cards.length,
-    onYou: lane.onYou,
-    body:
-      lane.cards.length > 0 ? (
-        <ul className="ib-lane-cards">
-          {lane.cards.map((card) => (
-            <BoardCard key={card.id} card={card} {...common} />
-          ))}
-        </ul>
-      ) : (
-        <p className="ib-lane-empty">{LANE_EMPTY[lane.column]}</p>
-      ),
-  }));
-  const shipped = cards.filter((c) => c.column === 'shipped');
-  const iced = cards.filter((c) => c.column === 'icebox');
-  const dropped = cards.filter((c) => c.column === 'dropped');
-  groups.push({
-    key: 'shipped',
-    label: 'Shipped',
-    count: counts.shipped,
-    body: shipped.length ? (
+  const list = (items: readonly InboxCardWire[], empty: string) =>
+    items.length ? (
       <ul className="ib-lane-cards">
-        {shipped.map((card) => (
+        {items.map((card) => (
           <BoardCard key={card.id} card={card} {...common} />
         ))}
       </ul>
     ) : (
-      <p className="ib-lane-empty">Nothing shipped yet.</p>
-    ),
-  });
+      <p className="ib-lane-empty">{empty}</p>
+    );
+  const groups: { key: string; label: string; count: number; body: ReactNode }[] = boardLanes(cards).map((lane) => ({
+    key: lane.column,
+    label: lane.label,
+    count: lane.cards.length,
+    body: list(lane.cards, LANE_EMPTY[lane.column] ?? ''),
+  }));
+  const dropped = cards.filter((c) => c.column === 'dropped');
+  groups.push({ key: 'shipped', label: 'Shipped', count: counts.shipped, body: list(cards.filter((c) => c.column === 'shipped'), 'Nothing shipped yet.') });
   groups.push({
     key: 'icebox',
     label: 'Icebox',
     count: counts.icebox,
     body: (
       <>
-        {iced.length ? (
-          <ul className="ib-lane-cards">
-            {iced.map((card) => (
-              <BoardCard key={card.id} card={card} {...common} />
-            ))}
-          </ul>
-        ) : (
-          <p className="ib-lane-empty">Nothing on ice.</p>
-        )}
+        {list(cards.filter((c) => c.column === 'icebox'), 'Nothing on ice.')}
         {dropped.length > 0 && <DroppedList cards={dropped} onRestore={onRestore} />}
       </>
     ),
@@ -661,21 +702,20 @@ function PhoneBoard({
   return (
     <div className="ib-bstack">
       {groups.map((group) => {
-        const open = !folded.has(group.key);
+        const opened = !folded.has(group.key);
         const bodyId = `ib-bstack-${group.key}`;
         return (
           <section key={group.key} className="ib-bgroup" data-lane={group.key} aria-labelledby={`${bodyId}-h`}>
             <h2 className="ib-bgroup-h" id={`${bodyId}-h`}>
-              <button type="button" aria-expanded={open} aria-controls={bodyId} onClick={() => toggle(group.key)} data-board-fold={group.key}>
+              <button type="button" aria-expanded={opened} aria-controls={bodyId} onClick={() => toggle(group.key)} data-board-fold={group.key}>
                 <span className="ib-lane-dot" data-col={group.key} aria-hidden="true" />
                 <span className="ib-lane-l">{group.label}</span>
                 <span className="ib-lane-n">{formatCount(group.count)}</span>
-                {group.onYou && <span className="ib-onyou">on you</span>}
                 <span className="ib-bsp" />
-                <Icon name={open ? 'chevU' : 'chevD'} size={16} />
+                <Icon name={opened ? 'chevU' : 'chevD'} size={16} />
               </button>
             </h2>
-            <div id={bodyId} hidden={!open}>
+            <div id={bodyId} hidden={!opened}>
               {group.body}
             </div>
           </section>
@@ -685,124 +725,150 @@ function PhoneBoard({
   );
 }
 
-/** New card: a title, and the project when there is more than one; it lands in Backlog, sent to no agent. */
-function NewCardDialog({
-  projects,
-  defaultProject,
+/**
+ * The opened card with what it reads: its history (read when it opens and
+ * after each write) and its links' live state (read once when it opens, and
+ * again when a link is added; never before a card is opened).
+ */
+function OpenedCard({
+  card,
+  projectName,
+  projectRoot,
+  sessions,
+  live,
+  phone,
+  now,
+  rowOf,
   onClose,
-  onCreate,
+  onMove,
+  onSend,
+  onChanged,
+  onOpenThread,
 }: {
-  projects: readonly ProjectFolder[];
-  defaultProject: string | null;
+  card: InboxCardWire;
+  projectName: string;
+  projectRoot: string | null;
+  sessions: ComposeSessionsModel | null;
+  live: { session: string; busy: boolean | null }[] | null;
+  phone: boolean;
+  now: number;
+  rowOf: (threadId: string) => InboxListRow | null;
   onClose: () => void;
-  onCreate: (project: string, title: string) => Promise<boolean>;
+  onMove: (move: BoardMove) => void;
+  onSend: () => void;
+  onChanged: (card?: InboxCardWire) => void;
+  onOpenThread: (threadId: string) => void;
 }) {
-  const [title, setTitle] = useState('');
-  const [project, setProject] = useState<string>(defaultProject ?? projects[0]?.id ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => input.current?.focus(), []);
-  const submit = async () => {
-    const text = title.replace(/\s+/g, ' ').trim();
-    if (!text) {
-      setError('Give the card a title.');
-      input.current?.focus();
+  const [history, setHistory] = useState<InboxCardHistoryEntry[] | null>(null);
+  const [refs, setRefs] = useState<{ ref: InboxCardRef; result: ForgeRefCardResult }[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    inboxApi
+      .card(card.id)
+      .then((answer) => alive && setHistory(answer.history))
+      .catch(() => alive && setHistory([]));
+    return () => {
+      alive = false;
+    };
+  }, [card.id, card.heard_at]);
+  const refKey = (card.refs ?? []).map((r) => r.url).join(' ') || card.prs.map((p) => p.url).join(' ');
+  useEffect(() => {
+    let alive = true;
+    setRefs(null);
+    if (!refKey) {
+      setRefs([]);
       return;
     }
-    setBusy(true);
-    setError(null);
-    const ok = await onCreate(project, text);
-    setBusy(false);
-    if (!ok) setError('The card was not added. Try again.');
+    inboxApi
+      .cardRefs(card.id)
+      .then((answer) => alive && setRefs(answer.refs))
+      .catch(() => alive && setRefs([]));
+    return () => {
+      alive = false;
+    };
+  }, [card.id, refKey]);
+  const agentSession = card.agent?.kind === 'agent' ? card.agent.session : null;
+  // "Ask where this is": the card's agent while it is live, else a live session in the card's project.
+  const askTarget = (() => {
+    if (!sessions) return null;
+    const own = findTarget(sessions.projects, agentSession);
+    if (own) return own;
+    const group = sessions.projects.find((g) => g.project.id === card.project_id || (projectRoot !== null && g.project.root === projectRoot));
+    return group?.sessions[0] ? { ...group.sessions[0], project: group.project } : null;
+  })();
+  /**
+   * A message to the agent: into the card's thread when the card's own agent
+   * is live there, else a new thread to the live session (linked to the
+   * card). Answers the message's id.
+   */
+  const tellAgent = async (body: string): Promise<string> => {
+    if (!askTarget) throw new Error('No agent is running in this project.');
+    const key = crypto.randomUUID();
+    const thread = card.threads.find((id) => rowOf(id)?.project.id === card.project_id) ?? card.threads[0];
+    if (thread && askTarget.session === agentSession) {
+      const sent = await inboxApi.newMessage(thread, { session: askTarget.session, body, idempotency_key: key });
+      return sent.message.id;
+    }
+    const started = await inboxApi.startThread({ to: { host: askTarget.host, session: askTarget.session }, body, idempotency_key: key });
+    onChanged((await inboxApi.editCard(card.id, { op: 'link', thread_id: started.thread_id })).card);
+    return started.message.id;
   };
   return (
-    <Modal labelledBy="ib-newcard-title" describedBy="ib-newcard-desc" testId="new-card" onClose={onClose} ownKeys>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <h2 id="ib-newcard-title">New card</h2>
-        <p className="ib-sub" id="ib-newcard-desc">
-          It goes in Backlog. No agent is told about it.
-        </p>
-        <label className="ib-bfield">
-          <span>Title</span>
-          <input
-            ref={input}
-            type="text"
-            value={title}
-            maxLength={INBOX_CARD_TITLE_MAX}
-            onChange={(event) => setTitle(event.target.value)}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? 'ib-newcard-error' : undefined}
-            data-new-card-title=""
-          />
-        </label>
-        {projects.length > 1 && (
-          <fieldset className="ib-bprojects">
-            <legend>Project</legend>
-            {projects.map((p) => (
-              <label key={p.id} className="ib-bproject">
-                <input type="radio" name="ib-newcard-project" value={p.id} checked={project === p.id} onChange={() => setProject(p.id)} />
-                <span dir="auto">{p.name}</span>
-              </label>
-            ))}
-          </fieldset>
-        )}
-        {error && (
-          <p className="ib-error ib-bfield-err" id="ib-newcard-error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="ib-acts-row">
-          <button type="button" className="ib-btn ib-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="ib-btn ib-pri" disabled={busy} data-new-card-add="">
-            Add to Backlog
-          </button>
-        </div>
-      </form>
-    </Modal>
+    <CardPanel
+      card={card}
+      history={history}
+      refs={refs}
+      projectName={projectName}
+      state={agentState(agentSession, live)}
+      canAsk={askTarget !== null}
+      rowOf={rowOf}
+      phone={phone}
+      now={now}
+      onClose={onClose}
+      onColumn={(column) => onMove(column === 'icebox' ? { op: 'icebox' } : { op: 'move', column })}
+      onShip={() => onMove({ op: 'move', column: 'shipped' })}
+      onIcebox={() => onMove({ op: 'icebox' })}
+      onRestore={() => onMove({ op: 'restore' })}
+      onDrop={(reason) => onMove({ op: 'drop', reason })}
+      onSend={onSend}
+      onStart={async () => {
+        // Start: the card's agent (else a live session in its project) is told to begin, in the card's
+        // thread when that agent is the card's own; the card shows "Sent to <agent>" until it moves.
+        if (!askTarget) return 'No agent is running in this project.';
+        try {
+          const messageId = await tellAgent(startBody(card));
+          onChanged((await inboxApi.editCard(card.id, { op: 'send', thread_id: messageId })).card);
+          return null;
+        } catch (cause) {
+          return cause instanceof Error ? cause.message : 'Nothing was sent.';
+        }
+      }}
+      onAsk={async () => {
+        if (!askTarget) return 'No agent is running in this project.';
+        try {
+          await tellAgent(askWhereBody(card));
+          return null;
+        } catch (cause) {
+          return cause instanceof Error ? cause.message : 'Nothing was sent.';
+        }
+      }}
+      onNotes={async (notes) => {
+        try {
+          onChanged((await inboxApi.editCard(card.id, { op: 'edit', notes })).card);
+          return true;
+        } catch {
+          return false;
+        }
+      }}
+      onLink={async (ref) => {
+        try {
+          onChanged((await inboxApi.editCard(card.id, { op: 'link', ref })).card);
+          return null;
+        } catch (cause) {
+          return cause instanceof Error ? cause.message : 'Not linked.';
+        }
+      }}
+      onOpenThread={onOpenThread}
+    />
   );
 }
-
-/** Drop…: an optional reason, kept with the card under Icebox, Dropped. */
-function DropDialog({ card, onClose, onDrop }: { card: InboxCardWire; onClose: () => void; onDrop: (reason: string) => Promise<void> }) {
-  const [reason, setReason] = useState('');
-  const area = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => area.current?.focus(), []);
-  return (
-    <Modal labelledBy="ib-dropcard-title" describedBy="ib-dropcard-desc" testId="drop-card" onClose={onClose} ownKeys>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onDrop(reason.replace(/\s+/g, ' ').trim());
-        }}
-      >
-        <h2 id="ib-dropcard-title" dir="auto">
-          Drop “{card.title}”?
-        </h2>
-        <p className="ib-sub" id="ib-dropcard-desc">
-          It is kept under Icebox, Dropped, and can be restored.
-        </p>
-        <label className="ib-bfield">
-          <span>Reason (optional)</span>
-          <textarea ref={area} rows={2} value={reason} maxLength={INBOX_CARD_REASON_MAX} onChange={(event) => setReason(event.target.value)} data-drop-reason="" />
-        </label>
-        <div className="ib-acts-row">
-          <button type="button" className="ib-btn ib-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="ib-btn ib-pri" data-drop-confirm="">
-            Drop
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-

@@ -23,10 +23,15 @@ import {
   inboxCardLine,
   isInboxCardDropUnseen,
   isInboxCardPersonColumn,
+  isInboxCardSentWaiting,
   isInboxCardUnread,
+  type InboxCardHistoryEntry,
+  type InboxAuthor,
   type InboxCardColumn,
   type InboxCardWire,
 } from '@plannotator/core/inbox-types';
+
+import type { ForgeRefCardData } from '@plannotator/core/forge-ref-card';
 
 export type BoardView = 'lanes' | 'shipped' | 'icebox';
 
@@ -49,7 +54,12 @@ export function boardLanes(cards: readonly InboxCardWire[]): BoardLane[] {
     column,
     label: INBOX_CARD_COLUMN_LABELS[column],
     onYou: isInboxCardPersonColumn(column),
-    cards: cards.filter((card) => card.column === column),
+    // A card the person sent to an agent sits at the top of Backlog until it moves (step 2 amendment).
+    cards: cards
+      .filter((card) => card.column === column)
+      .map((card, index) => ({ card, index }))
+      .sort((a, b) => Number(isInboxCardSentWaiting(b.card)) - Number(isInboxCardSentWaiting(a.card)) || a.index - b.index)
+      .map(({ card }) => card),
   }));
 }
 
@@ -157,6 +167,121 @@ export function moveSaid(card: InboxCardWire, moved: InboxCardWire): string {
 /** The agent's name a card belongs to, or "You" for a card the person made. */
 export function cardOwnerName(card: InboxCardWire): string {
   return card.agent?.kind === 'agent' ? inboxAgentName(card.agent) : 'You';
+}
+
+/** The agent a sent card went to, while it waits in Backlog: "Sent to Codex". */
+export function sentTo(card: InboxCardWire): string | null {
+  return isInboxCardSentWaiting(card) && card.sent ? inboxAgentName(card.sent.to) : null;
+}
+
+/**
+ * The opened card's foot: Send to an agent for a Backlog card nobody was
+ * asked about (no agent, never sent), Restore in the Icebox or Dropped, else
+ * Ship; Icebox and Drop… beside it where they apply.
+ */
+export function cardFoot(card: InboxCardWire): { primary: 'send' | 'start' | 'ship' | 'restore' | null; icebox: boolean; drop: boolean } {
+  if (card.column === 'icebox') return { primary: 'restore', icebox: false, drop: true };
+  if (card.column === 'dropped') return { primary: 'restore', icebox: false, drop: false };
+  const unasked = card.column === 'backlog' && card.agent === null && card.sent === null;
+  if (unasked) return { primary: 'send', icebox: true, drop: true };
+  // A Backlog card with an agent (not just sent to it): Start tells that agent to begin (owner's note).
+  if (card.column === 'backlog' && card.agent !== null && !isInboxCardSentWaiting(card)) return { primary: 'start', icebox: true, drop: true };
+  return { primary: card.column === 'shipped' ? null : 'ship', icebox: true, drop: true };
+}
+
+/** The column menu on the opened card: the five lanes (the card's own checked), then Shipped and Icebox. */
+export function columnChoices(card: InboxCardWire): { column: InboxCardColumn; label: string; current: boolean }[] {
+  const columns: InboxCardColumn[] = [...INBOX_CARD_LIVE_COLUMNS, 'shipped', 'icebox'];
+  return columns.map((column) => ({ column, label: INBOX_CARD_COLUMN_LABELS[column], current: card.column === column }));
+}
+
+/**
+ * What a card sent to an agent says (owner's amendment: its notes are the
+ * agent's message; the title when there are none), with one line naming the
+ * card so the agent finds it in `card list` and moves it as the work goes.
+ */
+export function cardMessageBody(title: string, notes: string | null): string {
+  const text = notes?.trim() ? notes.trim() : title;
+  return `${text}\n\n(This is “${title}” on my Board. It is yours now: move it there as the work goes.)`;
+}
+
+/** "Where is this?": the message "Ask where this is" sends to the card's agent. */
+export function askWhereBody(card: Pick<InboxCardWire, 'id' | 'title'>): string {
+  return `Where is “${card.title}”? (Board card ${card.id}) Move the card, or say where it stands with the card action.`;
+}
+
+/** Start (a Backlog card that has an agent): the short message telling it to begin, with the card's title and notes. */
+export function startBody(card: Pick<InboxCardWire, 'id' | 'title' | 'notes'>): string {
+  const notes = card.notes?.trim() ? `\n\n${card.notes.trim()}` : '';
+  return `Please start on “${card.title}” (Board card ${card.id}).${notes}\n\nMove the card as the work goes.`;
+}
+
+function authorName(by: InboxAuthor): string {
+  return by.kind === 'person' ? 'you' : inboxAgentName(by);
+}
+
+/** One history line, in words: a lead, the bold part, the rest, and a quote under it. */
+export function historyWords(entry: InboxCardHistoryEntry): { before: string; bold: string | null; after: string; quote: string | null } {
+  const by = authorName(entry.by);
+  switch (entry.kind) {
+    case 'created':
+      return { before: `Created by ${by}`, bold: null, after: '', quote: null };
+    case 'sent':
+      return { before: 'Sent to ', bold: inboxAgentName(entry.to), after: ' in a new thread', quote: null };
+    case 'moved':
+      return { before: 'Moved to ', bold: INBOX_CARD_COLUMN_LABELS[entry.column], after: ` by ${by}`, quote: entry.you ? `You: “${entry.you}”` : null };
+    case 'restored':
+      return { before: 'Restored to ', bold: INBOX_CARD_COLUMN_LABELS[entry.column], after: ` by ${by}`, quote: null };
+    case 'dropped':
+      return { before: `Dropped by ${by}`, bold: null, after: '', quote: entry.reason ? `“${entry.reason}”` : null };
+    case 'said':
+      return { before: by === 'you' ? 'You' : by, bold: null, after: '', quote: `“${entry.text}”` };
+    case 'you':
+      return { before: `${by === 'you' ? 'You' : by} asked you`, bold: null, after: '', quote: `“${entry.text}”` };
+    case 'linked_thread':
+      return { before: 'Linked a thread', bold: null, after: by === 'you' ? '' : ` (${by})`, quote: null };
+    case 'linked_ref':
+      return { before: 'Linked ', bold: entry.ref, after: by === 'you' ? '' : ` (${by})`, quote: null };
+    case 'renamed':
+      return { before: 'Renamed by ', bold: null, after: by, quote: `“${entry.title}”` };
+    case 'notes':
+      return { before: `Notes edited by ${by}`, bold: null, after: '', quote: null };
+  }
+}
+
+/**
+ * A link's live state as the opened card shows it, the hover card's words
+ * with the date it closed or merged: "Open", "Draft", "Merged Oct 20",
+ * "Closed Oct 18", "Not planned". Display only: it never moves the card.
+ */
+export function refState(data: Pick<ForgeRefCardData, 'state' | 'kind' | 'closedAt'>): { label: string; tone: 'open' | 'merged' | 'closed' | 'neutral' } {
+  const day = data.closedAt ? ` ${dayOfMonth(data.closedAt)}` : '';
+  switch (data.state) {
+    case 'open':
+      return { label: 'Open', tone: 'open' };
+    case 'draft':
+      return { label: 'Draft', tone: 'neutral' };
+    case 'merged':
+      return { label: `Merged${day}`, tone: 'merged' };
+    case 'completed':
+      return { label: `Closed${day}`, tone: 'merged' };
+    case 'not_planned':
+      return { label: `Not planned${day}`, tone: 'neutral' };
+    default:
+      return { label: `Closed${day}`, tone: data.kind === 'pull' ? 'closed' : 'neutral' };
+  }
+}
+
+function dayOfMonth(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** The working state of a card's agent, from the live sessions: working, idle, or ended (not live). */
+export function agentState(session: string | null, live: readonly { session: string; busy: boolean | null }[] | null): 'working' | 'idle' | 'ended' | null {
+  if (!session || live === null) return null;
+  const found = live.find((s) => s.session === session);
+  return found ? (found.busy ? 'working' : 'idle') : 'ended';
 }
 
 /**

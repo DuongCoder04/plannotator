@@ -46,6 +46,7 @@ import {
   INBOX_APP_ID,
   INBOX_CARD_COLUMNS,
   inboxCardColumnOf,
+  inboxCardRefsOf,
   isInboxCardDropUnseen,
   type InboxCardColumn,
   INBOX_SOUND_DEFAULT_VOLUME,
@@ -136,6 +137,7 @@ import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, C
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
+import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { isInboxBoardTime, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
@@ -705,6 +707,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
   // github.com, gitlab.com and the hosts this computer's own gh / glab is signed in to; nothing else.
   const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
+  // The Board's links, one resolver per source (inbox-card-refs.ts): GitHub and GitLab through the hover cards' lookup.
+  const cardRefResolvers = [forgeCardRefResolver(refCards)];
 
   // Where a path an agent named files its messages: its repository (a linked
   // worktree folds into its main repository's project) or the folder, cached
@@ -934,8 +938,17 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return store.updateCard(id, { by, column: "dropped", reason });
       case "restore":
         return store.updateCard(id, { by, restore: true });
+      case "edit":
+        // The opened card: the title and the notes (either; notes "" or null clears them).
+        return store.updateCard(id, { by, title: body.title === undefined ? undefined : body.title, notes: body.notes === undefined ? undefined : body.notes ?? "" });
+      case "link":
+        // A thread or a reference (issue, PR) the person links from the opened card.
+        return store.updateCard(id, { by, threads: body.thread_id ? [body.thread_id] : [], refs: body.ref ? [body.ref] : [] });
+      case "send":
+        // Sent to an agent: `thread_id` is the thread the window just started for it (compose's Send).
+        return store.sendCard(id, { thread_id: body.thread_id });
       default:
-        throw new InboxError("validation_error", "op: move, icebox, drop or restore.", { field: "op" });
+        throw new InboxError("validation_error", "op: move, icebox, drop, restore, edit, link or send.", { field: "op" });
     }
   };
 
@@ -2356,6 +2369,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ show, sound: soundState() });
       }
 
+      // The Board's first-visit dialog (approval "inbox-board", intro amendment): the first page on this
+      // computer to open the Board claims it, once per machine (config.json `inboxBoardIntro.shownAt`);
+      // a page reached over the tailnet never claims it.
+      if (path === "/api/inbox/board/intro") {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        if (via !== "local" || loadConfig().inboxBoardIntro?.shownAt) return json({ show: false });
+        const at = new Date().toISOString();
+        saveConfig({ inboxBoardIntro: { shownAt: at } });
+        // Not written (a read-only data dir): showing it anyway would show it on every visit.
+        return json({ show: loadConfig().inboxBoardIntro?.shownAt === at });
+      }
+
       // Search: a read route (and the recent searches the window writes on opening a result).
       const searched = await search.handle(req, url);
       if (searched) return searched;
@@ -2377,13 +2404,36 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (path === "/api/inbox/cards") {
         if (req.method === "GET") return json(cardsModel(url));
         if (req.method !== "POST") return json({ error: "Use GET or POST." }, 405);
-        // The person's New card (step 2): a title in a project, in Backlog (not sent to any agent).
+        // The person's New card (step 2): a title, notes and links, in Backlog (sent to no agent) or the
+        // Icebox; or sent to an agent: `thread_id` is the thread the window just started for it with
+        // compose's Send (its body the notes), and the card lands in that thread's project, sent.
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        if (!isInboxId("prj", body.project)) throw new InboxError("validation_error", "project: a prj_ id.", { field: "project" });
-        if (!store.project(body.project)) throw new InboxError("project_not_found", `No project ${body.project}.`);
-        const made = store.createCard({ project_id: body.project, by: { kind: "person" }, title: body.title, column: "backlog" });
-        return json({ card: store.cardWire(made.card) });
+        const column = body.column === undefined || body.column === null ? "backlog" : body.column;
+        if (column !== "backlog" && column !== "icebox") throw new InboxError("validation_error", "column: backlog or icebox (a New card).", { field: "column" });
+        let projectId: unknown = body.project;
+        if (body.thread_id !== undefined && body.thread_id !== null) {
+          if (column !== "backlog") throw new InboxError("validation_error", "thread_id: a card sent to an agent starts in Backlog.", { field: "thread_id" });
+          const message = typeof body.thread_id === "string" ? store.message(body.thread_id) : null;
+          if (!message) throw new InboxError("thread_not_found", `No thread ${String(body.thread_id)}.`);
+          projectId = message.project_id;
+        }
+        if (!isInboxId("prj", projectId)) throw new InboxError("validation_error", "project: a prj_ id.", { field: "project" });
+        if (!store.project(projectId)) throw new InboxError("project_not_found", `No project ${projectId}.`);
+        const refs = body.refs === undefined || body.refs === null ? [] : body.refs;
+        if (!Array.isArray(refs)) throw new InboxError("validation_error", "refs: a list of issue or PR links.", { field: "refs" });
+        const made = store.createCard({
+          project_id: projectId,
+          by: { kind: "person" },
+          title: body.title,
+          column,
+          notes: body.notes,
+          refs,
+          idempotency_key: body.idempotency_key,
+        });
+        // A replayed key answers the card it made (sent or not); a new card is sent now.
+        const card = body.thread_id && !made.replayed ? store.sendCard(made.card.id, { thread_id: body.thread_id }) : made.card;
+        return json({ card: store.cardWire(card), replayed: made.replayed });
       }
       // The person opened the Board: the look runs through the newest `heard_at` it showed (never back).
       if (path === "/api/inbox/cards/seen") {
@@ -2406,7 +2456,25 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         }
         return json({ cards: store.markCardDropsSeen(projectIds).map((card) => store.cardWire(card)) });
       }
+      // The opened card's links, resolved now (read only; each source's resolver, inbox-card-refs.ts).
+      // Never on the device door, like /api/inbox/ref.
+      const refsMatch = /^\/api\/inbox\/cards\/([A-Za-z0-9_]+)\/refs$/.exec(path);
+      if (refsMatch) {
+        if (req.method !== "GET") return json({ error: "Use GET." }, 405);
+        if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
+          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
+        }
+        const card = store.card(refsMatch[1]!);
+        if (!card) throw new InboxError("card_not_found", `No card ${refsMatch[1]}.`);
+        return json({ serverSession, refs: await resolveInboxCardRefs(inboxCardRefsOf(card), cardRefResolvers) });
+      }
       const cardMatch = /^\/api\/inbox\/cards\/([A-Za-z0-9_]+)$/.exec(path);
+      if (cardMatch && req.method === "GET") {
+        // The opened card: the card and its history, newest first.
+        const card = store.card(cardMatch[1]!);
+        if (!card) throw new InboxError("card_not_found", `No card ${cardMatch[1]}.`);
+        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id) });
+      }
       if (cardMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);

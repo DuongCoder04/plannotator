@@ -124,7 +124,8 @@ import { pendingInboxUploadBlobs, removeUnusedInboxUploadFiles } from "./uploads
 import { inboxDraftsBytes } from "./drafts";
 import { checkInboxReplyDraftInput, readInboxReplyDrafts, removeInboxReplyDraft, writeInboxReplyDraft } from "./reply-drafts";
 import { checkInboxPinOrder, checkInboxPinRestore, readInboxPins, writeInboxPins } from "./pins";
-import { INBOX_CARD_PR_HINT, parseInboxCardPr } from "./cards";
+import { INBOX_CARD_PR_HINT } from "./cards";
+import { INBOX_CARD_REF_HINT, parseInboxCardRef } from "./card-refs";
 import {
   INBOX_CARD_COLUMN_LABELS,
   INBOX_CARD_KEY_MAX,
@@ -137,6 +138,8 @@ import {
   readInboxCard,
   normalizeInboxCardNotes,
   inboxCardHistory,
+  inboxCardRefsOf,
+  type InboxCardRef,
   type InboxCardHistoryEntry,
   isInboxCardDropUnseen,
   isInboxCardLiveColumn,
@@ -4717,14 +4720,30 @@ export class InboxStore {
     return out;
   }
 
-  private cardPrs(values: readonly unknown[]): InboxCardPr[] {
-    const out: InboxCardPr[] = [];
-    for (const value of values) {
-      const pr = parseInboxCardPr(value);
-      if (!pr) throw new InboxError("validation_error", `${INBOX_CARD_PR_HINT} Not a PR: ${JSON.stringify(String(value).slice(0, 200))}.`, { field: "pr" });
-      if (!out.some((known) => known.ref === pr.ref)) out.push(pr);
-    }
+  /**
+   * The references `prs` (each a PR: the card action's `pr`) and `refs` (any
+   * source: an issue, a PR, …) name, through the source registry
+   * (card-refs.ts), added to `known` each once (by URL).
+   */
+  private cardRefs(known: readonly InboxCardRef[], prs: readonly unknown[], refs: readonly unknown[]): InboxCardRef[] {
+    const out = [...known];
+    const add = (value: unknown, hint: "pr" | "any") => {
+      const ref = parseInboxCardRef(value, hint);
+      if (!ref) {
+        const field = hint === "pr" ? "pr" : "ref";
+        const help = hint === "pr" ? INBOX_CARD_PR_HINT : INBOX_CARD_REF_HINT;
+        throw new InboxError("validation_error", `${help} Not one: ${JSON.stringify(String(value).slice(0, 200))}.`, { field });
+      }
+      if (!out.some((k) => k.url === ref.url || k.ref === ref.ref)) out.push(ref);
+    };
+    for (const value of prs) add(value, "pr");
+    for (const value of refs) add(value, "any");
     return out;
+  }
+
+  /** The PRs among a card's references, as step 1's `prs` (still written, for an older Inbox). */
+  private prsOf(refs: readonly InboxCardRef[]): InboxCardPr[] {
+    return refs.filter((ref) => ref.kind === "pr").map((ref) => ({ ref: ref.ref, url: ref.url }));
   }
 
   private cardText(value: unknown, field: string, max: number): string {
@@ -4759,6 +4778,7 @@ export class InboxStore {
     you?: unknown;
     threads?: readonly unknown[];
     prs?: readonly unknown[];
+    refs?: readonly unknown[];
     idempotency_key?: unknown;
     notes?: unknown;
   }): { card: InboxCard; replayed: boolean } {
@@ -4796,8 +4816,9 @@ export class InboxStore {
     const you: string | null = input.you === undefined || input.you === null ? null : this.cardText(input.you, "you", INBOX_CARD_LINE_MAX);
     if (you !== null && !isInboxCardPersonColumn(column)) throw this.youRefusal();
     if (byAgent && isInboxCardPersonColumn(column) && you === null) throw this.youRequired(column);
-    const prs = this.cardPrs(input.prs ?? []);
-    this.checkLinkCounts(threads.length, prs.length);
+    const refs = this.cardRefs([], input.prs ?? [], input.refs ?? []);
+    const prs = this.prsOf(refs);
+    this.checkLinkCounts(threads.length, refs.length);
     const at = this.stamp();
     const card: InboxCard = {
       id: inboxId("crd"),
@@ -4819,6 +4840,7 @@ export class InboxStore {
       idempotency_key: key,
       notes: this.cardNotes(input.notes),
       sent: null,
+      refs,
     };
     this.appendCard(card, at);
     return { card, replayed: false };
@@ -4845,6 +4867,7 @@ export class InboxStore {
       title?: unknown;
       threads?: readonly unknown[];
       prs?: readonly unknown[];
+      refs?: readonly unknown[];
       reason?: unknown;
       restore?: boolean;
       notes?: unknown;
@@ -4861,6 +4884,7 @@ export class InboxStore {
       !given(input.title) &&
       !(input.threads && input.threads.length > 0) &&
       !(input.prs && input.prs.length > 0) &&
+      !(input.refs && input.refs.length > 0) &&
       input.notes === undefined &&
       !input.restore
     ) {
@@ -4910,9 +4934,9 @@ export class InboxStore {
     const title = given(input.title) ? this.cardText(input.title, "title", INBOX_CARD_TITLE_MAX) : card.title;
     const threads = [...card.threads];
     for (const thread of this.cardThreads(input.threads ?? [], card.project_id)) if (!threads.includes(thread)) threads.push(thread);
-    const prs = [...card.prs];
-    for (const pr of this.cardPrs(input.prs ?? [])) if (!prs.some((known) => known.ref === pr.ref)) prs.push(pr);
-    this.checkLinkCounts(threads.length, prs.length);
+    const refs = this.cardRefs(inboxCardRefsOf(card), input.prs ?? [], input.refs ?? []);
+    const prs = this.prsOf(refs);
+    this.checkLinkCounts(threads.length, refs.length);
     const at = this.stamp();
     // Leaving a live column (or Shipped) for the Icebox or Dropped remembers it, so restoring goes back there.
     const asideFrom =
@@ -4931,6 +4955,7 @@ export class InboxStore {
       said,
       threads,
       prs,
+      refs,
       moved_at: moves ? at : card.moved_at,
       heard_at: at,
       heard_by: input.by,
@@ -4969,11 +4994,13 @@ export class InboxStore {
       throw new InboxError("validation_error", `Card ${id} is in ${INBOX_CARD_COLUMN_LABELS[card.column]}: only a Backlog card is sent to an agent.`, { field: "op" });
     }
     const [thread] = this.cardThreads([input.thread_id], card.project_id);
-    const root = this.messages.get(thread!);
-    if (!root || root.author.kind !== "person" || !root.started_by_person || !root.to) {
-      throw new InboxError("validation_error", "thread_id: a thread the person started for this card, addressed to one agent session.", { field: "thread_id" });
+    // The message that went: a thread the person started (Send to an agent), or a New message in the
+    // card's thread (Start); either way the person's, addressed to one session.
+    const sentMessage = typeof input.thread_id === "string" ? this.messages.get(input.thread_id.trim()) : undefined;
+    if (!sentMessage || sentMessage.author.kind !== "person" || !sentMessage.to || (sentMessage.id === sentMessage.thread_id && !sentMessage.started_by_person)) {
+      throw new InboxError("validation_error", "thread_id: the person's message for this card (a thread they started, or a message in its thread), addressed to one agent session.", { field: "thread_id" });
     }
-    const to: InboxAuthor = { kind: "agent", host: root.to.host, session: root.to.session, name: INBOX_HOST_NAMES[root.to.host] ?? null };
+    const to: InboxAuthor = { kind: "agent", host: sentMessage.to.host, session: sentMessage.to.session, name: INBOX_HOST_NAMES[sentMessage.to.host] ?? null };
     const at = this.stamp();
     const next: InboxCard = {
       ...card,
@@ -4983,7 +5010,7 @@ export class InboxStore {
       heard_by: { kind: "person" },
       sent: { at, to, thread_id: thread! },
     };
-    this.checkLinkCounts(next.threads.length, next.prs.length);
+    this.checkLinkCounts(next.threads.length, next.refs.length);
     this.appendCard(next, at);
     return next;
   }

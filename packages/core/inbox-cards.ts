@@ -179,6 +179,48 @@ export interface InboxCard {
    * since. Null otherwise, and on a card written before step 2.
    */
   sent: InboxCardSent | null;
+  /**
+   * Everything the card links outside the Inbox: PRs, issues (step 2). Kept
+   * beside `prs` (still written, the PRs only, for an older Inbox); read
+   * through inboxCardRefsOf.
+   */
+  refs: InboxCardRef[];
+}
+
+/**
+ * Something outside the Inbox a card links (owner's answer, 2026-10-26: a
+ * general reference model, not PR-only): a pull or merge request, an issue,
+ * and later anything a new source adapter reads (a Linear issue, a Vercel
+ * deployment). `kind` and `source` are open strings so an older window shows
+ * a source it does not know as a plain link. `ref` is how people write it
+ * (`owner/repo#123`, `group/project!12`); `url` opens it. The source adapters
+ * live in `@plannotator/shared/inbox/card-refs` (parse) and the server's
+ * `inbox-card-refs.ts` (resolve, read only).
+ */
+export interface InboxCardRef {
+  kind: "pr" | "issue" | (string & {});
+  source: "github" | "gitlab" | "bitbucket" | (string & {});
+  ref: string;
+  url: string;
+}
+
+/**
+ * A card's references: `refs` when the card has them (written since step 2),
+ * else its PRs as references (a card from step 1 has only `prs`).
+ */
+export function inboxCardRefsOf(card: { refs?: readonly InboxCardRef[] | null; prs: readonly InboxCardPr[] }): InboxCardRef[] {
+  if (card.refs && card.refs.length > 0) return [...card.refs];
+  return card.prs.map((pr) => ({ kind: "pr", source: prSourceOf(pr.url), ref: pr.ref, url: pr.url }));
+}
+
+function prSourceOf(url: string): string {
+  try {
+    const host = new URL(url).hostname;
+    if (host === "bitbucket.org") return "bitbucket";
+    return /\/-\/merge_requests\//.test(url) ? "gitlab" : "github";
+  } catch {
+    return "github";
+  }
 }
 
 /** A card the person sent to an agent: when, to whom, and the thread it started. */
@@ -194,8 +236,8 @@ export const INBOX_CARD_NOTES_MAX = 4000;
 /** A stored card with the fields added since step 1 filled in (`notes`, `sent`) and its columns read (`asked` → `backlog`). */
 export function readInboxCard(card: InboxCard): InboxCard {
   const read = readInboxCardColumns(card);
-  if (read.notes !== undefined && read.sent !== undefined) return read;
-  return { ...read, notes: read.notes ?? null, sent: read.sent ?? null };
+  if (read.notes !== undefined && read.sent !== undefined && read.refs !== undefined) return read;
+  return { ...read, notes: read.notes ?? null, sent: read.sent ?? null, refs: inboxCardRefsOf(read) };
 }
 
 /**
@@ -228,7 +270,7 @@ export type InboxCardHistoryEntry =
   | { at: string; by: InboxAuthor; kind: "said"; text: string }
   | { at: string; by: InboxAuthor; kind: "you"; text: string }
   | { at: string; by: InboxAuthor; kind: "linked_thread"; thread_id: string }
-  | { at: string; by: InboxAuthor; kind: "linked_pr"; ref: string }
+  | { at: string; by: InboxAuthor; kind: "linked_ref"; ref: string; ref_kind: string }
   | { at: string; by: InboxAuthor; kind: "renamed"; title: string }
   | { at: string; by: InboxAuthor; kind: "notes" }
   | { at: string; by: InboxAuthor; kind: "sent"; to: InboxAuthor; thread_id: string };
@@ -260,7 +302,8 @@ export function inboxCardHistory(snapshots: readonly InboxCard[]): InboxCardHist
     } else {
       for (const thread of card.threads) if (!before.threads.includes(thread)) out.push({ at, by, kind: "linked_thread", thread_id: thread });
     }
-    for (const pr of card.prs) if (!before.prs.some((p) => p.ref === pr.ref)) out.push({ at, by, kind: "linked_pr", ref: pr.ref });
+    const known = inboxCardRefsOf(before);
+    for (const ref of inboxCardRefsOf(card)) if (!known.some((k) => k.url === ref.url)) out.push({ at, by, kind: "linked_ref", ref: ref.ref, ref_kind: ref.kind });
     if (card.title !== before.title) out.push({ at, by, kind: "renamed", title: card.title });
     if ((card.notes ?? null) !== (before.notes ?? null)) out.push({ at, by, kind: "notes" });
     if (card.column !== before.column) {

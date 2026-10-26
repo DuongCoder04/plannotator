@@ -345,6 +345,12 @@ export interface PlannotatorConfig {
    * `{ experimental: { decision_mode } }`.
    */
   experimental?: { decisionMode?: boolean };
+  /**
+   * The Board's one-time first-visit dialog (approval "inbox-board", intro
+   * amendment): `shownAt` once a page on this computer claimed it
+   * (`POST /api/inbox/board/intro`, a compare-and-set), once per machine.
+   */
+  inboxBoardIntro?: { shownAt?: string };
   inboxSound?: {
     enabled?: boolean;
     volume?: number;

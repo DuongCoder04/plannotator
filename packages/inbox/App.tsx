@@ -104,6 +104,7 @@ import { parseSettingsHash, settingsHash, type SettingsSection } from './setting
 import { ComposeDialog, type ComposeRequest, type ComposeSent } from './compose/ComposeDialog';
 import { DraftsPage } from './compose/DraftsPage';
 import { BoardPage, type BoardMove } from './board/BoardPage';
+import { CardChip } from './board/CardChip';
 import { boardCounts, boardViewOf, newestHeard, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
@@ -194,6 +195,8 @@ interface Route {
   page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour' | 'board';
   /** The Board's list (`#board`, `#board=shipped`, `#board=icebox`; approval "inbox-board", step 2). */
   board?: BoardView;
+  /** The opened Board card (`#board&card=crd_…`), or on a thread the card it was opened from (its "‹ Board" way back). */
+  card?: string | null;
   /** The onboarding tour's step (`#tour=3`, approval "inbox-onboarding-tour"): 1 to 6. */
   step?: number;
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
@@ -237,7 +240,7 @@ function routeOf(fullHash: string): Route {
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
   if (params.has('drafts')) return { page: 'drafts', project: null, thread: null };
-  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')) };
+  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
   const thread = params.get('thread');
   const fileId = thread ? params.get('file') : null;
   return {
@@ -248,6 +251,7 @@ function routeOf(fullHash: string): Route {
     guide: thread ? params.get('guide') : null,
     msg: thread ? params.get('msg') : null,
     artifacts: thread ? params.has('artifacts') : false,
+    card: thread ? params.get('card') : null,
   };
 }
 
@@ -257,7 +261,7 @@ function hashOf(route: Route): string {
   if (route.page === 'settings') hash = settingsHash({ section: route.section ?? null, pair: route.pair });
   else if (route.page === 'whats-new') hash = new URLSearchParams({ 'whats-new': route.version ?? '' }).toString();
   else if (route.page === 'drafts') hash = 'drafts';
-  else if (route.page === 'board') hash = route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board';
+  else if (route.page === 'board') hash = (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') + (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
@@ -274,6 +278,8 @@ function hashOf(route: Route): string {
       if (route.file.view) params.set('view', route.file.view);
     }
     if (route.thread && route.guide) params.set('guide', route.guide);
+    // A thread opened from a Board card: its way back is the card (`&card=crd_…`).
+    if (route.thread && route.card) params.set('card', route.card);
     // `&artifacts`, a flag: written without its empty `=`.
     hash = params.toString().replace(/(^|&)artifacts=(?=&|$)/, '$1artifacts');
   }
@@ -1005,17 +1011,6 @@ function Inbox() {
     } catch {
       void refreshCards();
       return null;
-    }
-  };
-  const createCard = async (project: string, title: string): Promise<boolean> => {
-    try {
-      const { card } = await inboxApi.createCard(project, title);
-      handleCard(card.id);
-      setCards((model) => (model ? { ...model, cards: [card, ...model.cards.filter((c) => c.id !== card.id)] } : model));
-      void refreshCards();
-      return true;
-    } catch {
-      return false;
     }
   };
   const seeDrops = useCallback(() => {
@@ -2816,6 +2811,10 @@ function Inbox() {
 
   // A file beside the thread takes the list's and the sidebar's room (record 2.2).
   const fileOpen = route.page === 'inbox' && !!route.thread && !!route.file;
+  // A thread opened from a Board card (`#thread=…&card=crd_…`): it takes the list's place, led by
+  // "‹ Board" and a chip naming the card; both go back to the opened card.
+  const fromCard = route.page === 'inbox' && route.thread && route.card ? route.card : null;
+  const backToCard = () => close({ page: 'board', project: null, thread: null, board: 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
@@ -3108,6 +3107,10 @@ function Inbox() {
       />
     );
   } else if (route.page === 'board') {
+    // The opened card's threads and a sent card's ticks read the list's rows (pins included).
+    const rowById = new Map<string, InboxListRow>();
+    for (const section of latestSections) for (const row of section.threads) rowById.set(row.thread_id, row);
+    for (const row of latest?.pins ?? []) if (!rowById.has(row.thread_id)) rowById.set(row.thread_id, row);
     // A New card goes in the project of the card heard from last, else the first project.
     const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
     main = (
@@ -3119,15 +3122,30 @@ function Inbox() {
         handled={boardVisit?.handled ?? EMPTY_SET}
         projects={projects}
         defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
+        home={settings?.home ?? null}
+        mcpCommand={settings?.mcp_command ?? null}
         phone={phone}
-        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
-        onOpenCard={(card) => {
-          handleCard(card.id);
-          if (card.threads[0]) go({ page: 'inbox', project: null, thread: card.threads[0] });
+        openCard={route.card ?? null}
+        onOpenCard={(id) => {
+          if (id) handleCard(id);
+          const next: Route = { page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: id };
+          // Another card replaces the open one's entry; opening the first and closing are entries of their own (a phone's Back closes it).
+          if (id === null && route.card) close(next);
+          else writeRoute(next, { replace: !!route.card && id !== null });
         }}
+        rowOf={(threadId) => rowById.get(threadId) ?? null}
+        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
         onMove={moveCard}
-        onCreate={createCard}
+        onChanged={(card) => {
+          if (card) {
+            handleCard(card.id);
+            setCards((model) => (model ? { ...model, cards: [card, ...model.cards.filter((c) => c.id !== card.id)] } : model));
+          }
+          void refreshCards();
+          void refreshList(false);
+        }}
         onSeeDrops={seeDrops}
+        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id })}
       />
     );
   } else if (route.page === 'drafts') {
@@ -3166,7 +3184,7 @@ function Inbox() {
   } else {
     main = (
       <>
-        {!fileOpen && (
+        {!fileOpen && !fromCard && (
         <InboxList
           scope={route.project}
           title={filterProject?.name ?? 'Inbox'}
@@ -3234,7 +3252,7 @@ function Inbox() {
               focusThreadSubject.current = true;
             }}
             onRetry={() => setThreadRetry((n) => n + 1)}
-            onClose={() => close({ ...route, thread: null, file: null })}
+            onClose={fromCard ? backToCard : () => close({ ...route, thread: null, file: null })}
           />
         )}
         {route.thread && thread && thread.thread_id === route.thread && (
@@ -3270,7 +3288,7 @@ function Inbox() {
             onReplyOpened={() => setReplyFor(null)}
             onQuestions={patchQuestions}
             onChanged={afterWrite}
-            onClose={() => close({ ...route, thread: null, file: null })}
+            onClose={fromCard ? backToCard : () => close({ ...route, thread: null, file: null })}
             file={route.file ?? null}
             onOpenFile={(file, options) => {
               if (!file) return closeTo({ ...routeRef.current, file });
@@ -3322,9 +3340,10 @@ function Inbox() {
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
-            backLabel={filterProject?.name ?? 'Inbox'}
+            backLabel={fromCard ? 'Board' : (filterProject?.name ?? 'Inbox')}
+            cardChip={fromCard ? <CardChip card={cards?.cards.find((c) => c.id === fromCard) ?? null} onOpen={backToCard} /> : undefined}
             phone={phone}
-            stacked={stack.thread}
+            stacked={stack.thread || !!fromCard}
             fileStacked={stack.file}
             remote={settings ? (settings.via ?? 'local') === 'tailnet' : null}
             onToast={(t) => showToast(t)}
@@ -3390,7 +3409,7 @@ function Inbox() {
             />
           ) : (
           <Sidebar
-            page={route.page === 'tour' ? 'inbox' : route.page}
+            page={route.page === 'tour' ? 'inbox' : fromCard ? 'board' : route.page}
             projectId={route.project}
             inboxCount={waitingCount(latestSections)}
             projects={projects}

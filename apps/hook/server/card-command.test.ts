@@ -124,7 +124,7 @@ describe.if(INBOX_CARD_ACTION_ON)("plannotator card", () => {
     expect(moved.stdout).toContain("Moved to Your look");
     expect(moved.stdout).toContain('You: "pick one of five options"');
     expect((await card(box, ["say", id, "--you", "pick one of five options, or none"])).code).toBe(0);
-    expect((await card(box, ["move", id, "building", "--pr", "backnotprop/plannotator#2020"])).stdout).toContain("PRs backnotprop/plannotator#2020");
+    expect((await card(box, ["move", id, "building", "--pr", "backnotprop/plannotator#2020"])).stdout).toContain("links backnotprop/plannotator#2020");
     const shipped = await card(box, ["ship", id, "--say", "merged"]);
     expect(shipped.stderr).toBe("");
     expect(shipped.stdout).toContain("Shipped");
