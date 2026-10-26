@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAnnotateTarget } from "../../apps/hook/server/annotate-resolution";
@@ -236,5 +237,82 @@ describe("the live proxy refuses a Plannotator server", () => {
     const write = await proxiedPost(proxy, "/api/config", { agentTool: true });
     expect(write.status).toBe(502);
     expect(JSON.stringify(await (await fetch(`${annotate.url}/api/plan`)).json())).not.toContain('"agentTool":true');
+  });
+});
+
+/** A raw WebSocket handshake to `port`; resolves with the response head. */
+function rawUpgrade(port: number, extra: Record<string, string> = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      const lines = [
+        "GET / HTTP/1.1",
+        `Host: localhost:${port}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version: 13",
+        ...Object.entries(extra).map(([name, value]) => `${name}: ${value}`),
+      ];
+      socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    });
+    let head = "";
+    socket.on("data", (chunk) => {
+      head += chunk.toString("latin1");
+      if (head.includes("\r\n\r\n")) {
+        socket.destroy();
+        resolve(head);
+      }
+    });
+    socket.on("error", reject);
+    socket.on("close", () => resolve(head));
+  });
+}
+
+describe("WebSocket upgrades through the live proxy", () => {
+  test("the proxy tags the upstream handshake once", async () => {
+    let tag: string | null | undefined;
+    const app = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        tag = req.headers.get(PLANNOTATOR_LIVE_PROXY_HEADER);
+        if (srv.upgrade(req)) return;
+        return new Response("no", { status: 400 });
+      },
+      websocket: { message() {} },
+    });
+    cleanups.push(() => app.stop(true));
+    const proxy = proxyTo(`http://127.0.0.1:${app.port}/`);
+    const ws = new WebSocket(`ws://localhost:${proxy.port}/`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error("upgrade failed"));
+    });
+    // The proxy connects upstream once the client's socket is open.
+    for (let i = 0; i < 100 && tag === undefined; i++) await Bun.sleep(20);
+    ws.close();
+    expect(tag).toBe("1");
+  });
+
+  test("an upgrade through the proxy to an Inbox is refused", async () => {
+    const inbox = await scratchInbox();
+    // The Inbox refuses a tagged handshake before any route.
+    const direct = await rawUpgrade(inbox.port, { [PLANNOTATOR_LIVE_PROXY_HEADER]: "1" });
+    expect(direct).toStartWith("HTTP/1.1 403");
+    expect(direct.toLowerCase()).toContain(`x-plannotator-error: ${LIVE_PROXIED_REFUSED_CODE}`);
+
+    // Through the proxy, the client's socket is closed and never carries a message.
+    const proxy = proxyTo(`http://127.0.0.1:${inbox.port}/`);
+    const ws = new WebSocket(`ws://localhost:${proxy.port}/`);
+    let messages = 0;
+    ws.onmessage = () => {
+      messages += 1;
+    };
+    const closed = await new Promise<boolean>((resolve) => {
+      ws.onclose = () => resolve(true);
+      setTimeout(() => resolve(false), 5000);
+    });
+    expect(closed).toBe(true);
+    expect(messages).toBe(0);
   });
 });

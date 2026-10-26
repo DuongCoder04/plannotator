@@ -10,7 +10,8 @@
  * Pi annotate server.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { connect, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startInboxServer, type InboxServer } from "../../../packages/server/inbox.ts";
@@ -154,5 +155,101 @@ describe("pi: annotate's live app mode never proxies a Plannotator server", () =
 		const write = await proxiedPost(proxy, "/api/config", { agentTool: true });
 		expect(write.status).toBe(502);
 		expect(readConfig() ?? "").not.toContain("agentTool");
+	});
+});
+
+/**
+ * The node proxy in a REAL node process: under Bun's node:http shim, writes
+ * to an 'upgrade' socket never reach the wire (see
+ * packages/shared/live-proxy-node.child.ts), so WebSocket cases run there.
+ */
+async function nodeProxyTo(targetUrl: string): Promise<number> {
+	const dir = mkdtempSync(join(tmpdir(), "plannotator-pi-live-ws-"));
+	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	const entrySource = join(dir, "child.ts");
+	const modulePath = join(import.meta.dir, "..", "generated", "live-proxy-node.ts");
+	writeFileSync(
+		entrySource,
+		`import { startLiveAppProxyNode } from ${JSON.stringify(modulePath)};\n`
+			+ `const proxy = await startLiveAppProxyNode({ targetUrl: process.env.LIVE_PROXY_TARGET, editorOrigins: ["http://localhost:1"], bridgeJs: "" });\n`
+			+ `process.stdout.write(JSON.stringify({ port: proxy.port }) + "\\n");\n`,
+	);
+	const build = await Bun.build({ entrypoints: [entrySource], target: "node", format: "esm" });
+	if (!build.success) throw new Error(build.logs.map((log) => log.message).join("; "));
+	const entry = join(dir, "child.mjs");
+	writeFileSync(entry, await build.outputs[0]!.text());
+	const child = Bun.spawn(["node", entry], {
+		env: { ...process.env, LIVE_PROXY_TARGET: targetUrl },
+		stdout: "pipe",
+		stderr: "inherit",
+	});
+	cleanups.push(() => {
+		child.kill();
+	});
+	const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+	let banner = "";
+	while (!banner.includes("\n")) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		banner += new TextDecoder().decode(value);
+	}
+	reader.releaseLock();
+	return (JSON.parse(banner.split("\n")[0]!) as { port: number }).port;
+}
+
+/** A raw WebSocket handshake to `port`; resolves with the response head. */
+function rawUpgrade(port: number, extra: Record<string, string> = {}): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const socket = connect(port, "127.0.0.1", () => {
+			const lines = [
+				"GET / HTTP/1.1",
+				`Host: localhost:${port}`,
+				"Upgrade: websocket",
+				"Connection: Upgrade",
+				"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+				"Sec-WebSocket-Version: 13",
+				...Object.entries(extra).map(([name, value]) => `${name}: ${value}`),
+			];
+			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+		});
+		let head = "";
+		socket.on("data", (chunk) => {
+			head += chunk.toString("latin1");
+			if (head.includes("\r\n\r\n")) {
+				socket.destroy();
+				resolve(head);
+			}
+		});
+		socket.on("error", reject);
+		socket.on("close", () => resolve(head));
+	});
+}
+
+describe("pi: WebSocket upgrades through the node live proxy", () => {
+	test("the upstream handshake carries the tag exactly once, a client's copy dropped", async () => {
+		let received = "";
+		const upstream = createNetServer((socket) => {
+			socket.on("data", (chunk) => {
+				received += chunk.toString("latin1");
+				if (received.includes("\r\n\r\n")) socket.end("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+			});
+		});
+		await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => {
+			upstream.close();
+		});
+		const port = (upstream.address() as { port: number }).port;
+		const proxyPort = await nodeProxyTo(`http://127.0.0.1:${port}/`);
+		await rawUpgrade(proxyPort, { [PLANNOTATOR_LIVE_PROXY_HEADER]: "forged" });
+		const tags = received.split("\r\n").filter((line) => line.toLowerCase().startsWith(`${PLANNOTATOR_LIVE_PROXY_HEADER}:`));
+		expect(tags).toEqual([`${PLANNOTATOR_LIVE_PROXY_HEADER}: 1`]);
+	});
+
+	test("an upgrade through the proxy to an Inbox is refused", async () => {
+		const inbox = await scratchInbox();
+		const proxyPort = await nodeProxyTo(`http://127.0.0.1:${inbox.port}/`);
+		const head = await rawUpgrade(proxyPort);
+		expect(head).toStartWith("HTTP/1.1 403");
+		expect(head.toLowerCase()).toContain(`x-plannotator-error: ${LIVE_PROXIED_REFUSED_CODE}`);
 	});
 });

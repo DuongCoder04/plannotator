@@ -337,9 +337,9 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
       if (lower === "origin") continue;
       if (lower === PLANNOTATOR_LIVE_PROXY_HEADER) continue;
       handshake += `${name}: ${req.rawHeaders[i + 1]}\r\n`;
+    }
     // The live proxy header makes a Plannotator upstream refuse the upgrade.
     handshake += `${PLANNOTATOR_LIVE_PROXY_HEADER}: 1\r\n`;
-    }
 
     const upstreamSocket = netConnect(targetPort, targetHostname);
     upgradeSockets.add(socket);
