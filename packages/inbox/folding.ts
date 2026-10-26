@@ -109,10 +109,14 @@ export function planFolds(messages: readonly InboxMessageWire[], fresh: Readonly
   return { folded, hidden };
 }
 
-/** The words an answer reads as: "Pagefind", "Guides, API reference", "skipped". */
+/**
+ * The words an answer reads as: "Pagefind", "Guides, API reference", "skipped".
+ * A picked label shows as its plain words (`plainLabel`); Other and free text
+ * are the person's own words, shown as typed.
+ */
 export function answerWords(answer: QuestionAnswer): string {
   if (answer.skipped) return 'skipped';
-  const parts = [...answer.selected];
+  const parts = answer.selected.map(plainLabel);
   if (answer.other) parts.push(answer.other);
   if (answer.text) parts.push(answer.text);
   return parts.join(', ');
@@ -253,6 +257,19 @@ export function cleanInline(text: string): string {
     out = out.replace(pair, '$1$2');
   }
   return out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => code[Number(i)] ?? '');
+}
+
+/**
+ * A picked choice's label as plain words. A label is the agent's inline
+ * markdown (a link, code, bold): a line or row that draws it as text shows
+ * "15% off", never `[15% off](forecast-15.html)`. Display only: the stored
+ * answer and the reply the agent reads keep the label exactly as written, so
+ * the agent matches it to its choice. A label that is only an image reads as
+ * its alt text, so the pick never shows as nothing.
+ */
+export function plainLabel(label: string): string {
+  const plain = (text: string) => cleanInline(text).replace(/\s+/g, ' ').trim();
+  return plain(label) || plain(label.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')) || label.trim();
 }
 
 /**

@@ -232,6 +232,14 @@ describe('answers', () => {
     expect(swipeChoices(A1.question)).toEqual(['Yes', 'No']);
     expect(swipeChoices({ ...A1.question, kind: 'multi' })).toBeNull();
   });
+
+  test("a picked label's markdown reads as its words on the stamp; the answer keeps the label as written", () => {
+    const linked = { ...A1.question, choices: [{ label: '[15% off](forecast-15.html)' }, { label: '`FLAT10` code' }] } as InboxQuestion;
+    const answer = choiceAnswer(linked, ['[15% off](forecast-15.html)'], '');
+    expect(answer.selected).toEqual(['[15% off](forecast-15.html)']);
+    expect(answerWords(answer)).toBe('15% off');
+    expect(answerWords({ ...answer, selected: ['**20%** for members', '`FLAT10` code'] })).toBe('20% for members, FLAT10 code');
+  });
 });
 
 describe('the contract lines (approval "inbox-decision-mode", agent contract lines)', () => {

@@ -10,6 +10,7 @@ import type { InboxDecision, InboxListRow, InboxMessageWire, InboxQuestion, Inbo
 import { readInboxQuestionKind, inboxAgentName } from '@plannotator/core/inbox-types';
 import { capQuestionPrompt, type QuestionAnswer } from '@plannotator/core/question-block';
 import { sendTargetsOf, type SendTarget } from '../sendTargets';
+import { plainLabel } from '../folding';
 
 /** Why a decision left the projection while the queue held it. */
 export type DecisionGone = 'sent' | 'replaced' | 'closed';
@@ -426,7 +427,8 @@ export function skipAnswer(question: InboxQuestion, note: string): QuestionAnswe
 export function answerWords(answer: QuestionAnswer | null): string {
   if (!answer) return 'No answer';
   if (answer.skipped) return 'Skipped';
-  const parts = [...answer.selected];
+  // A picked label as its plain words (`plainLabel`): "15% off", not its markdown.
+  const parts = answer.selected.map(plainLabel);
   if (answer.other?.trim()) parts.push(answer.other.trim());
   if (answer.text?.trim()) parts.push(answer.text.trim());
   const words = parts.join(', ') || (answer.note ? 'A note' : 'No answer');

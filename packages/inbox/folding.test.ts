@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import type { InboxAuthor, InboxMessageWire, InboxThread } from '@plannotator/core/inbox-types';
 import { QUESTION_ANSWERS_HEADING } from '@plannotator/core/question-block';
-import { SNIPPET_PROMPT_MAX, cleanInline, cutAtWord, firstWords, foldSnippet, lookBoundary, newSinceLook, planFolds, replyWords } from './folding';
+import { SNIPPET_PROMPT_MAX, cleanInline, cutAtWord, firstWords, foldSnippet, lookBoundary, newSinceLook, plainLabel, planFolds, replyWords, snippetText } from './folding';
 
 const AGENT: InboxAuthor = { kind: 'agent', host: 'claude-code', session: 'ses_a', name: null };
 const PERSON: InboxAuthor = { kind: 'person' };
@@ -124,6 +124,31 @@ test('a long prompt is cut at a word near 40 characters, so the answer after it 
   expect(snippet.parts[0]!.prompt.length).toBeLessThanOrEqual(SNIPPET_PROMPT_MAX + 1);
   expect(snippet.parts[0]!.full).toBe('Which of the three options in the search table should the docs site use for its first release, given the deploy cost');
   expect(cutAtWord('short', 40)).toBe('short');
+});
+
+test("a picked label's markdown (a link, code, bold) reads as its words on the line; Other and free text stay as typed", () => {
+  const prompt = 'Which discount should the promo run?';
+  const message = msg('m1', AGENT, 2, {
+    body: `:::question-multi\n${prompt}\n\n- [ ] [15% off](forecast-15.html)\n- [ ] \`FLAT10\` code\n- [ ] **20%** for members\n- [ ] No discount\n:::`,
+    questions: [
+      {
+        key: 'q-1',
+        prompt,
+        state: 'sent',
+        orphaned: false,
+        answer: { v: 1, key: 'q-1', kind: 'multi', prompt, selected: ['[15% off](forecast-15.html)', '`FLAT10` code', '**20%** for members', 'No discount'], other: 'a **custom** deal' },
+      } as never,
+    ],
+  });
+  const snippet = foldSnippet(message);
+  expect(snippet).toEqual({
+    kind: 'answers',
+    parts: [{ prompt: 'Which discount should the promo run', full: 'Which discount should the promo run', answer: '15% off, FLAT10 code, 20% for members, No discount, a **custom** deal' }],
+  });
+  expect(snippetText(snippet)).toBe('Which discount should the promo run: 15% off, FLAT10 code, 20% for members, No discount, a **custom** deal');
+  // A label that is only a picture reads as its alt text, never as nothing.
+  expect(plainLabel('![The dark mock](dark.png)')).toBe('The dark mock');
+  expect(plainLabel('snake_case and 2 * 3')).toBe('snake_case and 2 * 3');
 });
 
 test("a reply of skips or of answers and skips: the store's first line is dropped too", () => {
