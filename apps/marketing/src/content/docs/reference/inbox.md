@@ -345,7 +345,7 @@ Both forms remove the `plannotator-inbox` entries `plannotator inbox` added to y
 
 ### The agent has no plannotator_inbox tool
 
-- On Pi and OpenCode, run `plannotator inbox` once, then restart OpenCode or start a new Pi session. A session that started before the Inbox was installed does not get the tool. Claude Code gets the tool without that step, but a Claude Code process that started before you changed the setting needs a restart.
+- On Pi and OpenCode, run `plannotator inbox` once, then type `/reload` in Pi (`/restart` in Oh My Pi), run `opencode2 reload` for OpenCode 2, or restart OpenCode 1. A session that started before the Inbox was installed does not get the tool. Claude Code gets the tool without that step, but a Claude Code process that started before you changed the setting needs a restart.
 - On Pi and OpenCode, turn the inbox tool setting on: it is off by default there.
 - On Claude Code, check that the mod is on (see [Turning the mod off](/docs/guides/claude-code/#turning-the-mod-off)). Without it, use `plannotator inbox mcp`.
 - Check `PLANNOTATOR_INBOX_TOOL`: when set, it decides for every host, and the switches in **Settings** are disabled.

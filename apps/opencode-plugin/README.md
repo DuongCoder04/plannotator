@@ -38,9 +38,9 @@ Install stable OpenCode 2 with `npm install -g @opencode/cli`, then add Plannota
 }
 ```
 
-Restart OpenCode 2 and verify that `plannotator` appears in `opencode2 plugin list`.
+Run `opencode2 reload` (or start OpenCode 2) and verify that `plannotator` appears in `opencode2 plugin list`.
 
-To update, run the [install script](https://plannotator.ai/docs/getting-started/installation/) again and restart OpenCode 2. The script clears OpenCode 2's cached copy of the plugin, so the restart loads the latest `@plannotator/opencode`.
+To update, run the [install script](https://plannotator.ai/docs/getting-started/installation/) again, then run `opencode2 reload`. The script clears OpenCode 2's cached copy of the plugin, so the reload installs and loads the latest `@plannotator/opencode` in every open session. `opencode2 plugin update` does the same without the script. Quitting OpenCode 2 is not enough: its background server keeps the plugin it loaded until a reload (or `opencode2 service restart`, which also stops any running turn). The Inbox's Settings → Agents says when an open OpenCode 2 session runs an older plugin, with the command to copy.
 
 Plannotator builds against the stable `@opencode/plugin` API and checks its installed package against a real stable OpenCode 2 host in CI. The core `submit_plan` review flow and native slash commands are supported. Capability checks preserve fallbacks for older V2 builds:
 
@@ -68,7 +68,7 @@ Restart OpenCode. By default, the `submit_plan` tool is available to OpenCode's 
 > ```bash
 > curl -fsSL https://plannotator.ai/install.sh | bash
 > ```
-> This also clears cached plugin versions for both OpenCode 1 and OpenCode 2. To update the plugin later, run the install script again and restart OpenCode.
+> This also clears cached plugin versions for both OpenCode 1 and OpenCode 2. To update the plugin later, run the install script again, then restart OpenCode 1 (on OpenCode 2, run `opencode2 reload`).
 
 ## Workflow Modes
 

@@ -315,8 +315,8 @@ export function UpdateDialog({ details, update, error, busy, onUpdateNow, onRemi
       ) : (
         managed && (
           <p className="ib-sum ib-quietline">
-            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: restart those agents
-            afterwards. Pi: run <code>pi update --extensions</code>.
+            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: reload those agents
+            afterwards (Settings, Agents says which). Pi: run <code>pi update --extensions</code>, then <code>/reload</code>.
           </p>
         )
       )}

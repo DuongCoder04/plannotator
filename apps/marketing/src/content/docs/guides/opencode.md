@@ -184,7 +184,7 @@ Install the CLI for slash command support:
 curl -fsSL https://plannotator.ai/install.sh | bash
 ```
 
-This also clears cached plugin versions for both OpenCode 1 and OpenCode 2. To update the plugin later, run the install script again and restart OpenCode.
+This also clears cached plugin versions for both OpenCode 1 and OpenCode 2. To update the plugin later, run the install script again, then restart OpenCode 1, or on OpenCode 2 run `opencode2 reload`. Quitting OpenCode 2 is not enough: its background server keeps the plugin it loaded until `opencode2 reload` (or `opencode2 plugin update`, which updates and reloads in one step). The Inbox's Settings → Agents says when an open session runs an older plugin, with the command to copy.
 
 ## The `plannotator` tool
 

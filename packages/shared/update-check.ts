@@ -1014,8 +1014,8 @@ export function installCommandFor(platform: NodeJS.Platform, flags: readonly Ins
  * What updating means for the host that launched this server:
  *  - `script`: the binary the install script manages; one click runs it.
  *  - `copy`: a binary the script does not manage; the page offers the command.
- *  - `pi`: the Pi extension (npm): `pi update --extensions`, then restart Pi.
- *  - `opencode`: the install script again (it clears OpenCode's plugin cache), then restart OpenCode.
+ *  - `pi`: the Pi extension (npm): `pi update --extensions`, then `/reload` in Pi.
+ *  - `opencode`: the install script again (it clears OpenCode's plugin cache), then `opencode2 reload` (OpenCode 1: restart it).
  */
 export type UpdateAction = "script" | "copy" | "pi" | "opencode";
 
