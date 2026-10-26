@@ -7,14 +7,17 @@
  * (and WebKit as an iPhone) drives the window.
  *
  * Proves: one full-screen mode. An HTML file opens full screen with its
- * toolbar showing (pen, count, N/M, ⋯, Side by side, » Hide tools), the
+ * toolbar showing (pen, count, N/M, ⋯, Side by side, » Hide tools, × Exit
+ * full screen), the
  * page filling the window, and plan review's shared hide-tools cookie neither
  * read nor written; a pin and a comment work and the count goes up without
  * opening the drawer; Hide tucks the toolbar into its corner handle, the
  * corner and the keyboard bring it back, the pin keeps it out; the count
  * opens the comments drawer and the page narrows beside it (remembered across
  * a reload); ⋯ holds Open in and Download; Side by side puts the file beside
- * the thread and Full screen brings the toolbar back showing; Escape climbs one
+ * the thread and Full screen brings the toolbar back showing; × leaves full
+ * screen as Escape does (HTML, markdown and the image), its tooltip showing
+ * Esc; Escape climbs one
  * rung per press (a draft, typed words asked about, the drawer, Annotate, the
  * page's own Escape left to the page) and only then leaves full screen;
  * ⌘⇧X from the window and the page tucks and shows; `]` keeps full screen
@@ -188,7 +191,7 @@ async function stateShots(name: string) {
   await page.waitForTimeout(600);
   await expect(dock()).toHaveAttribute('data-bar', 'tucked');
   await shot(page, `${name}-tucked`);
-  // The corner: the toolbar comes out with the pin as its last button.
+  // The corner: the toolbar comes out with » turned into the pin.
   await page.mouse.move(1270, 20);
   await expect(dock()).toHaveAttribute('data-bar', 'revealed');
   await expect(hide()).toHaveAttribute('data-full-view-hide', 'pin');
@@ -231,6 +234,8 @@ test('an HTML file opens full screen: the page fills the window, one toolbar is 
   await expect(bar().locator('[data-full-view-position]')).toHaveText('1/3');
   await expect(bar().getByRole('button', { name: 'Side by side' })).toBeVisible();
   await expect(hide()).toHaveAccessibleName('Hide tools');
+  // × Exit full screen ends the toolbar, in its top-right corner.
+  await expect(bar().locator('button').last()).toHaveAccessibleName('Exit full screen');
   await expect(pane().locator('[data-full-view-changed]')).toHaveCount(0);
   // The shared plan-review choice is neither read nor written.
   expect((await world.context.cookies(world.url)).find((c) => c.name === 'plannotator-html-chrome')).toBeUndefined();
@@ -333,6 +338,48 @@ test('⋯ holds Open in and Download; Side by side puts the file beside the thre
   await expect(pane()).toHaveClass(/ib-full/);
   await expect(dock()).toHaveAttribute('data-bar', 'pinned');
   await expect(bar().locator('[data-full-view-pen]')).toBeFocused();
+});
+
+/** The component tooltip open now (ui's Tooltip popup, portaled out of the window's root). */
+const tooltip = (page = world.page) => page.locator('[data-side].bg-popover');
+
+test('× Exit full screen, last in the toolbar, leaves full screen as Escape does (HTML, markdown, the image): beside the thread, focus on the view switch, nothing remembered', async () => {
+  const page = world.page;
+  for (const name of ['turnkey.html', 'rollout.md', 'landing.png'] as const) {
+    await expect(pane()).toHaveAttribute('data-attachment-pane', world.ids[name]!);
+    await expect(pane()).toHaveAttribute('data-full-view', '');
+    const close = bar().locator('[data-full-view-close]');
+    await expect(bar().locator('button').last()).toHaveAttribute('data-full-view-close', '');
+    await expect(close).toHaveAccessibleName('Exit full screen');
+    await expect(close).not.toHaveAttribute('title');
+    // Its component tooltip names it and shows the key that does the same: Esc.
+    await close.hover();
+    await expect(tooltip()).toContainText('Exit full screen');
+    await expect(tooltip().locator('kbd')).toHaveText('Esc');
+    if (name === 'turnkey.html') await shot(page, 'html-exit-tooltip');
+    await close.click();
+    await expect(pane()).not.toHaveClass(/ib-full/);
+    await expect(bar()).toHaveCount(0);
+    await expect(pane().locator('.ib-vhead [data-view-side]')).toBeFocused();
+    // Not a pick, as with Escape: no view is remembered.
+    expect((await world.context.cookies(world.url)).find((c) => c.name === 'plannotator-inbox-file-view')).toBeUndefined();
+    // Back to full screen, then on to the next file.
+    await pane().locator('.ib-vhead [data-full-screen-toggle]').click();
+    await expect(pane()).toHaveAttribute('data-full-view', '');
+    // That press was a pick: forgotten, so the next file's check starts clean.
+    await forgetFileViewChoice(page);
+    if (name !== 'landing.png') {
+      await bar().locator('[data-full-view-position]').focus();
+      await page.keyboard.press(']');
+    }
+  }
+  // The page again, for the next test.
+  await bar().locator('[data-full-view-position]').focus();
+  await page.keyboard.press('[');
+  await page.keyboard.press('[');
+  await expect(pane()).toHaveAttribute('data-attachment-pane', world.ids['turnkey.html']!);
+  await expect(pane()).toHaveAttribute('data-full-view', '');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 });
 
 test('the approved states of an HTML page, in light and dark', async () => {

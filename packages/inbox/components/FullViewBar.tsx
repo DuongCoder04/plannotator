@@ -13,13 +13,15 @@ import { Tip as HoverTip } from './Tip';
  * window), the pen (HTML that takes comments), the comment count (opens the
  * comments drawer), the position `N/M ⌄` (opens the file peek; on a phone a
  * pill that opens the peek's bottom sheet in one tap), ⋯ (Open in, Download,
- * the other version), Side by side, and » Hide tools.
+ * the other version), Side by side, » Hide tools, and × Exit full screen
+ * (a desktop beside which the file can sit: Escape's last rung as a button,
+ * not a pick; a phone and a stacked window have Back to the thread instead).
  *
  * Hide tucks the toolbar into a handle flush with the corner (‹, the comment
  * count, an amber dot when the file changed since it was sent). A pointer in
  * the corner (a 96 × 64 px box that holds the handle) reveals it after
- * 120 ms; leaving tucks it again after 450 ms; while it is out that way the
- * last button is a pin that keeps it out. Tucked, the toolbar is `inert` and
+ * 120 ms; leaving tucks it again after 450 ms; while it is out that way »
+ * becomes a pin that keeps it out. Tucked, the toolbar is `inert` and
  * the handle is a real button, so nothing invisible takes focus and focus is
  * never lost. Every opening of full screen starts with the toolbar showing.
  */
@@ -76,6 +78,12 @@ export interface FullViewBarProps {
    * stacked window), which leads the bar instead.
    */
   leave: { kind: 'exit' | 'back'; onLeave: () => void };
+  /**
+   * × Exit full screen, last in the toolbar: what Escape's last rung does
+   * (the file goes back beside the thread; not a pick, nothing remembered).
+   * Only where Side by side is the way out (`leave.kind` `exit`, not a phone).
+   */
+  onExitFull?: () => void;
   /** The Hide / Show tools chord (`Mod+Shift+X`, HTML only), shown in the tooltips. */
   chord: string | null;
   /** The comments drawer is open beside the page (desktop): the dock sits left of it. */
@@ -427,6 +435,20 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
             <Icon name={pinned ? 'chevsR' : 'pin'} size={iconSize} />
           </button>
         </Tip>
+        {props.onExitFull && props.leave.kind === 'exit' && !phone && (
+          <Tip text="Exit full screen" binding="Escape" phone={phone}>
+            <button
+              type="button"
+              className="ib-fvb"
+              onClick={props.onExitFull}
+              aria-label="Exit full screen"
+              aria-keyshortcuts="Escape"
+              data-full-view-close=""
+            >
+              <Icon name="x" size={iconSize} />
+            </button>
+          </Tip>
+        )}
       </div>
     </div>
   );
