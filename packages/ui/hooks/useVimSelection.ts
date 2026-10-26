@@ -24,7 +24,6 @@ import {
   type SemanticTargetGraph,
 } from '../utils/blockTargeting';
 import { copyTextPreservingFocus } from '../utils/clipboard';
-import { copyRichTextToClipboard, selectionRangeToHtml } from '../utils/richClipboard';
 import { isDocumentKeyboardControl } from '../utils/domSelection';
 import {
   createVimHudCommand,
@@ -186,17 +185,6 @@ function selectedTextRange(
 ): Range | null {
   const range = createRangeBetweenTextPositions(container, state.anchor, state.cursor);
   return range && !range.collapsed ? range : null;
-}
-
-function copyRichRange(
-  range: Range,
-  focusOwner: HTMLElement,
-  text = range.toString(),
-): void {
-  const html = selectionRangeToHtml(range);
-  void copyRichTextToClipboard(html, text).then((copied) => {
-    if (!copied) copyTextPreservingFocus(text, focusOwner);
-  });
 }
 
 function visualBlockPoints(
@@ -574,7 +562,7 @@ export function useVimSelection({
     if (current.phase === 'visual') {
       const range = selectedTextRange(graph.container, current);
       if (!range) return false;
-      copyRichRange(range, graph.container);
+      copyTextPreservingFocus(range.toString(), graph.container);
       updateTextState(graph, {
         phase: 'text',
         targetKey: current.targetKey,
@@ -585,16 +573,17 @@ export function useVimSelection({
     if (current.phase === 'visual-block') {
       const range = visualBlockRange(graph, current);
       if (!range) return false;
-      copyRichRange(range, graph.container);
+      copyTextPreservingFocus(range.toString(), graph.container);
       const target = resolveSemanticTarget(graph, current.targetKey);
       if (target) setSemanticTarget(target);
       return true;
     }
     const target = resolveSemanticTarget(graph, current.targetKey);
     if (!target) return false;
-    const range = document.createRange();
-    range.selectNode(target.element);
-    copyRichRange(range, graph.container, target.element.textContent?.trim() ?? '');
+    copyTextPreservingFocus(
+      target.element.textContent?.trim() ?? '',
+      graph.container,
+    );
     return true;
   }, [setSemanticTarget, updateTextState]);
 

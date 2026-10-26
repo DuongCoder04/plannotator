@@ -273,7 +273,7 @@ body[data-plannotator-vim-focus-owner]:focus {
  * generated `bridge-script.asset.js` separately (`bridgeScriptUrl`), where a
  * cached asset from a previous package version can outlive the parent code.
  */
-export const BRIDGE_PROTOCOL_VERSION = 2;
+export const BRIDGE_PROTOCOL_VERSION = 1;
 
 export const BRIDGE_SCRIPT = `(function() {
   var PREFIX = 'plannotator-bridge-';
@@ -580,6 +580,9 @@ export const BRIDGE_SCRIPT = `(function() {
     clearHoverHighlight();
 
     var rect = range.getBoundingClientRect();
+    // Markup for the toolbar's Copy as rich text button (text selections only).
+    // Optional and additive: the parent sanitizes it again and shows the
+    // button only when it arrives, so no protocol version bump.
     var richHtml = extras && extras.pinpoint ? '' : htmlForRange(range);
     pendingRange = range;
     pendingSelection = {
@@ -5415,11 +5418,12 @@ export const BRIDGE_SCRIPT = `(function() {
     if (document.body) document.body.removeAttribute('data-plannotator-vim-focus-owner');
   }
 
+  // Selected markup for the parent's Copy as rich text button. Keeps the
+  // enclosing formatting that cloneContents omits for text endpoints (the same
+  // semantic ancestors selectionRangeToHtml keeps) and absolutizes links.
   function htmlForRange(range) {
     var holder = document.createElement('div');
     var fragment = range.cloneContents();
-    // Keep enclosing formatting that cloneContents omits for text endpoints.
-    // Match the semantic ancestors retained by selectionRangeToHtml.
     var ancestor = range.commonAncestorContainer.nodeType === 1
       ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
     while (ancestor && ancestor !== document.body) {
@@ -5436,12 +5440,12 @@ export const BRIDGE_SCRIPT = `(function() {
     return holder.innerHTML;
   }
 
-  function copyVimText(text, range) {
+  function copyVimText(text) {
     if (!text) return;
-    var html = range ? htmlForRange(range) : '';
-    var message = { type: PREFIX + 'vim-copy', text: text };
-    if (html && html.length <= 262144) message.html = html;
-    postToParent(message);
+    postToParent({
+      type: PREFIX + 'vim-copy',
+      text: text
+    });
   }
 
   function vimActionMode(key) {
@@ -5610,9 +5614,7 @@ export const BRIDGE_SCRIPT = `(function() {
             updateVimUi();
           }
         } else if (key === 'y') {
-          var targetRange = document.createRange();
-          if (vimPinpointEl) targetRange.selectNode(vimPinpointEl);
-          copyVimText(vimPinpointEl && vimPinpointEl.textContent || '', vimPinpointEl ? targetRange : null);
+          copyVimText(vimPinpointEl && vimPinpointEl.textContent || '');
           handled = !!vimPinpointEl;
         } else if (key === 'Enter' || vimActionMode(key)) {
           var semanticActionMode = key === 'Enter' ? vimActiveMode : vimActionMode(key);
@@ -5665,7 +5667,7 @@ export const BRIDGE_SCRIPT = `(function() {
         else if (key === '{') handled = modifyVimSelection('backward', 'paragraph');
         else if (key === '}') handled = modifyVimSelection('forward', 'paragraph');
         else if (key === 'y' && selection && !selection.isCollapsed) {
-          copyVimText(selection.toString(), selection.getRangeAt(0));
+          copyVimText(selection.toString());
           setCollapsedSelection(selection.focusNode, selection.focusOffset);
           vimPhase = 'text';
           updateVimUi();
@@ -5700,7 +5702,7 @@ export const BRIDGE_SCRIPT = `(function() {
           if (previousBlockAnchor) vimPinpointEl = previousBlockAnchor;
           handled = true;
         } else if (key === 'y' && blockSelection && !blockSelection.isCollapsed) {
-          copyVimText(blockSelection.toString(), blockSelection.getRangeAt(0));
+          copyVimText(blockSelection.toString());
           restoreVimSemanticTarget();
           handled = true;
         } else if ((key === 'Enter' || vimActionMode(key)) && blockSelection && !blockSelection.isCollapsed) {
@@ -5750,17 +5752,6 @@ export const BRIDGE_SCRIPT = `(function() {
     hidePinpointLabel();
     updateVimUi();
   }, true);
-
-  // The parent owns sanitized clipboard data; iframe key events do not bubble.
-  document.addEventListener('keydown', function(e) {
-    if (!pendingSelection || e.defaultPrevented || e.isComposing || e.repeat) return;
-    if (isVimEditableTarget(e.target)) return;
-    var key = (e.key || '').toUpperCase();
-    var copyKey = key === 'C' || (!/^[A-Z]$/.test(key) && e.code === 'KeyC');
-    if (!(e.metaKey || e.ctrlKey) || !e.altKey || e.shiftKey || !copyKey) return;
-    e.preventDefault();
-    postToParent({ type: PREFIX + 'rich-copy' });
-  });
 
   // --- Type-to-comment ---
   // While a selection is pending, focus is inside this iframe, so the parent's

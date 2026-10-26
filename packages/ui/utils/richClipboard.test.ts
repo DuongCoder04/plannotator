@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, test, mock } from 'bun:test';
 import {
   copyRichTextToClipboard,
-  copySelectionFromKeyboard,
   MAX_RICH_CLIPBOARD_HTML_LENGTH,
   sanitizeRichHtml,
   selectionRangeToHtml,
-  writeSelectionClipboard,
 } from './richClipboard';
 
 const hasDom = typeof document !== 'undefined';
@@ -93,77 +91,33 @@ describe('sanitizeRichHtml', () => {
     expect(sanitizeRichHtml('x'.repeat(256 * 1024 + 1))).toBeNull();
     expect(sanitizeRichHtml('')).toBeNull();
   });
-});
 
-describe('copySelectionFromKeyboard', () => {
-  test.skipIf(!hasDom)('keeps ordinary captured selection copy plain', () => {
-    const writeText = mock(async (_text: string) => {});
-    const write = mock(async () => {});
-    override(navigator, 'clipboard', { writeText, write });
-    const event = new KeyboardEvent('keydown', {
-      key: 'c', metaKey: true, cancelable: true, bubbles: true,
-    });
-
-    expect(copySelectionFromKeyboard(event, 'rich')).toBe(true);
-    expect(event.defaultPrevented).toBe(false);
-    expect(event.cancelBubble).toBe(false);
-    expect(writeText).toHaveBeenCalledWith('rich');
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  test.skipIf(!hasDom)('uses text-only host fallback and leaves editable/composition shortcuts alone', () => {
-    const writeText = mock(async (_text: string) => {});
-    override(navigator, 'clipboard', { writeText });
-    override(globalThis, 'ClipboardItem', undefined);
-    const plainEvent = new KeyboardEvent('keydown', {
-      key: 'c', ctrlKey: true, cancelable: true,
-    });
-    expect(copySelectionFromKeyboard(plainEvent, 'plain')).toBe(true);
-    expect(plainEvent.defaultPrevented).toBe(false);
-    expect(writeText).toHaveBeenCalledWith('plain');
-
-    const inputEvent = new KeyboardEvent('keydown', {
-      key: 'c', ctrlKey: true, cancelable: true,
-    });
-    Object.defineProperty(inputEvent, 'target', { value: document.createElement('input') });
-    expect(copySelectionFromKeyboard(inputEvent, 'rich')).toBe(false);
-    expect(inputEvent.defaultPrevented).toBe(false);
-    const composing = new KeyboardEvent('keydown', {
-      key: 'c', ctrlKey: true, isComposing: true, cancelable: true,
-    });
-    expect(copySelectionFromKeyboard(composing, 'rich')).toBe(false);
-    expect(composing.defaultPrevented).toBe(false);
-  });
-});
-
-describe('writeSelectionClipboard', () => {
-  test.skipIf(!hasDom)('keeps native document selection copy plain', () => {
-    const captured = new Map<string, string>();
-    const event = new Event('copy', { cancelable: true }) as ClipboardEvent;
-    Object.defineProperty(event, 'clipboardData', {
-      value: { setData: (type: string, value: string) => captured.set(type, value) },
-    });
-
-    expect(writeSelectionClipboard(event, 'rich')).toBe(true);
-    expect(event.defaultPrevented).toBe(true);
-    expect(captured).toEqual(new Map([
-      ['text/plain', 'rich'],
-    ]));
-  });
-
-  test.skipIf(!hasDom)('leaves editable-target and unavailable clipboard events native', () => {
-    const input = document.createElement('input');
-    const editable = new Event('copy', { cancelable: true }) as ClipboardEvent;
-    Object.defineProperty(editable, 'target', { value: input });
-    Object.defineProperty(editable, 'clipboardData', {
-      value: { setData: mock(() => {}) },
-    });
-    expect(writeSelectionClipboard(editable, 'selection')).toBe(false);
-    expect(editable.defaultPrevented).toBe(false);
-
-    const unavailable = new Event('copy', { cancelable: true }) as ClipboardEvent;
-    expect(writeSelectionClipboard(unavailable, 'selection')).toBe(false);
-    expect(unavailable.defaultPrevented).toBe(false);
+  test.skipIf(!hasDom)('page markup from the HTML bridge keeps no script, handler or unsafe link', () => {
+    document.head.innerHTML = '<base href="http://localhost/">';
+    const html = sanitizeRichHtml([
+      '<p onmouseover="x()" style="background:url(javascript:x())">',
+      '<a href=" JaVaScRiPt:alert(1)">js</a>',
+      '<a href="data:text/html,<script>x()</script>">data</a>',
+      '<a href="vbscript:x">vb</a>',
+      '<a href="https://user:pw@example.test/ok" onclick="x()" target="_blank">ok</a>',
+      '<img src="x" onerror="x()">',
+      '<iframe srcdoc="<script>x()</script>"></iframe>',
+      '<math><mi xlink:href="javascript:x()">m</mi></math>',
+      '<script>x()</script>',
+      '<!-- comment --><strong class="c" data-block-id="b">kept</strong>',
+      '</p>',
+      '<form action="https://evil.test"><input value="v"></form>',
+    ].join(''))!;
+    expect(html).toBe(
+      '<p><a>js</a><a>data</a><a>vb</a><a href="https://example.test/ok">ok</a>m<strong>kept</strong></p>',
+    );
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    for (const element of Array.from(parsed.body.querySelectorAll('*'))) {
+      for (const attribute of Array.from(element.attributes)) {
+        expect(['href', 'title', 'start', 'value', 'colspan', 'rowspan', 'scope', 'dir'])
+          .toContain(attribute.name);
+      }
+    }
   });
 });
 
@@ -230,6 +184,34 @@ describe('copyRichTextToClipboard', () => {
     expect(captured.get('text/html')).toBe('<p>rich</p>');
     expect(captured.get('text/plain')).toBe('plain');
     expect(execCommand).toHaveBeenCalledTimes(1);
+  });
+
+  test.skipIf(!hasDom)('the fallback copy event is the button\'s own: a page copy handler never sees it', async () => {
+    override(navigator, 'clipboard', undefined);
+    const captured = new Map<string, string>();
+    const pageCopyHandler = mock((event: ClipboardEvent) => {
+      event.clipboardData?.setData('text/plain', 'page handler text');
+      event.preventDefault();
+    });
+    document.addEventListener('copy', pageCopyHandler);
+    restorers.push(() => document.removeEventListener('copy', pageCopyHandler));
+    override(document, 'execCommand', mock((command: string) => {
+      if (command !== 'copy') return false;
+      const event = new Event('copy', { cancelable: true, bubbles: true }) as ClipboardEvent;
+      Object.defineProperty(event, 'clipboardData', {
+        value: { setData: (type: string, value: string) => captured.set(type, value) },
+      });
+      document.body.dispatchEvent(event);
+      return event.defaultPrevented;
+    }));
+
+    await expect(copyRichTextToClipboard('<p>rich</p>', 'plain')).resolves.toBe('rich');
+    expect(pageCopyHandler).not.toHaveBeenCalled();
+    expect(captured.get('text/plain')).toBe('plain');
+
+    // Outside the button's call, the page's copy handler runs as before.
+    document.body.dispatchEvent(new Event('copy', { bubbles: true }));
+    expect(pageCopyHandler).toHaveBeenCalledTimes(1);
   });
 
   test.skipIf(!hasDom)('uses a text-only host clipboard honestly when rich clipboard is unsupported', async () => {

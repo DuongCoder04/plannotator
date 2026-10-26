@@ -18,7 +18,6 @@ import {
 import type { Annotation, EditorMode, HostDraft, ImageAttachment, InputMethod } from "../../types";
 import { AnnotationType } from "../../types";
 import { copyTextPreservingFocus } from "../../utils/clipboard";
-import { copyRichTextToClipboard, MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml } from "../../utils/richClipboard";
 import { elementIdentityForAskAI } from "../../utils/parser";
 import { getIdentity } from "../../utils/identity";
 import { THUMBS_UP_LABEL } from "../../utils/quickLabels";
@@ -180,28 +179,14 @@ export function formatBridgeUnavailableMessage(info: BridgeUnavailableInfo): str
   return `Annotation tools may not work: this viewer expects bridge protocol version ${info.expectedVersion}, but the script at ${info.url} reported ${reported}. Serve the bridge-script asset from the same @plannotator/ui version as the viewer.`;
 }
 
-interface VimBridgeCopy {
-  text: string;
-  html?: string;
-}
-
-function parseVimBridgeCopy(value: unknown): VimBridgeCopy | null {
-  if (
-    !isRecord(value)
-    || value.type !== `${PREFIX}vim-copy`
-    || typeof value.text !== "string"
-    || value.text.length === 0
-    || value.text.length > MAX_VIM_COPY_TEXT_LENGTH
-    || ("html" in value && (
-      typeof value.html !== "string"
-      || value.html.length === 0
-      || value.html.length > MAX_RICH_CLIPBOARD_HTML_LENGTH
-    ))
-  ) return null;
-  return {
-    text: value.text,
-    ...(typeof value.html === "string" ? { html: value.html } : {}),
-  };
+function parseVimBridgeCopy(value: unknown): string | null {
+  return isRecord(value)
+    && value.type === `${PREFIX}vim-copy`
+    && typeof value.text === "string"
+    && value.text.length > 0
+    && value.text.length <= MAX_VIM_COPY_TEXT_LENGTH
+    ? value.text
+    : null;
 }
 
 /** Inputs for the sandboxed raw-HTML viewer and its parent-side annotation UI. */
@@ -863,14 +848,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
             && iframe
             && document.activeElement === iframe
           ) {
-            const richHtml = vimCopy.html ? sanitizeRichHtml(vimCopy.html) : null;
-            if (richHtml) {
-              void copyRichTextToClipboard(richHtml, vimCopy.text).then((copied) => {
-                if (!copied) copyTextPreservingFocus(vimCopy.text, iframe);
-              });
-            } else {
-              copyTextPreservingFocus(vimCopy.text, iframe);
-            }
+            copyTextPreservingFocus(vimCopy, iframe);
           }
           return;
         }

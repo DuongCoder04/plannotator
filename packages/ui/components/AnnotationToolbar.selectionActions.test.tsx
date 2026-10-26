@@ -144,6 +144,38 @@ describe.if(hasDom)('AnnotationToolbar host seams', () => {
     expect(buttonTitles()).toEqual(['Copy as rich text', 'Delete', 'Comment', 'Quick label', 'Looks good', 'Cancel']);
   });
 
+  test('the rich-copy button writes text/html and text/plain in one clipboard item', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const clipboardItemDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem');
+    let items: Record<string, Blob> | undefined;
+    class TestClipboardItem {
+      constructor(value: Record<string, Blob>) { items = value; }
+    }
+    const write = mock(async () => {});
+    const writeText = mock(async (_text: string) => {});
+    Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: TestClipboardItem });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText } });
+    try {
+      await mount({ copyText: 'SELECTED', richCopyHtml: '<p><strong>SELECTED</strong></p>', hideCopyButton: true });
+      const richCopy = Array.from(toolbar().querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.title === 'Copy as rich text');
+      if (!richCopy) throw new Error('rich-copy action missing');
+      await click(richCopy);
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(writeText).not.toHaveBeenCalled();
+      expect(Object.keys(items ?? {}).sort()).toEqual(['text/html', 'text/plain']);
+      expect(await items!['text/html'].text()).toBe('<p><strong>SELECTED</strong></p>');
+      expect(await items!['text/plain'].text()).toBe('SELECTED');
+      expect(buttonTitles()).toContain('Copied as rich text');
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+      if (clipboardItemDescriptor) Object.defineProperty(globalThis, 'ClipboardItem', clipboardItemDescriptor);
+      else delete (globalThis as typeof globalThis & { ClipboardItem?: unknown }).ClipboardItem;
+    }
+  });
+
   test('reports plain fallback without claiming why rich copy was unavailable', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     const writeText = mock(async (_text: string) => {});
@@ -156,13 +188,33 @@ describe.if(hasDom)('AnnotationToolbar host seams', () => {
       const richCopy = Array.from(toolbar().querySelectorAll<HTMLButtonElement>('button'))
         .find((button) => button.title === 'Copy as rich text');
       if (!richCopy) throw new Error('rich-copy action missing');
-      const shortcut = new KeyboardEvent('keydown', {
-        key: 'c', code: 'KeyC', ctrlKey: true, altKey: true, cancelable: true,
-      });
-      await act(async () => { window.dispatchEvent(shortcut); });
-      expect(shortcut.defaultPrevented).toBe(true);
+      await click(richCopy);
       expect(writeText).toHaveBeenCalledWith('SELECTED');
       expect(buttonTitles()).toContain('Copied as plain text (rich clipboard unavailable)');
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
+  test('rich copy has no keyboard shortcut: Ctrl+Alt+C and Cmd+Option+C do nothing', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const write = mock(async () => {});
+    const writeText = mock(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText } });
+    try {
+      await mount({ richCopyHtml: '<p><strong>SELECTED</strong></p>' });
+      for (const init of [
+        { key: 'c', code: 'KeyC', ctrlKey: true, altKey: true },
+        { key: 'ç', code: 'KeyC', metaKey: true, altKey: true },
+      ]) {
+        const event = new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true });
+        await act(async () => { window.dispatchEvent(event); });
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(write).not.toHaveBeenCalled();
+      expect(writeText).not.toHaveBeenCalled();
+      expect(buttonTitles()).toContain('Copy as rich text');
     } finally {
       if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
       else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
@@ -207,7 +259,7 @@ describe.if(hasDom)('AnnotationToolbar host seams', () => {
       });
 
       expect(buttonTitles()).toContain('Copy as rich text');
-      expect(buttonTitles()).not.toContain('Copied as rich text!');
+      expect(buttonTitles()).not.toContain('Copied as rich text');
     } finally {
       if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
       else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;

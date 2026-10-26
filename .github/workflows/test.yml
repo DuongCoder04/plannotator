@@ -98,6 +98,7 @@ jobs:
           packages/ui/annotationDraftPersistence.test.tsx
           packages/ui/codeAnnotationDraftPersistence.test.tsx
           packages/ui/utils/richClipboard.test.ts
+          packages/ui/components/Viewer.richCopy.test.tsx
           packages/ui/components/html-viewer/srcdoc.test.ts
           packages/ui/components/html-viewer/htmlPinpointProtocol.test.tsx
           packages/ui/components/html-viewer/htmlLiveProtocol.test.tsx

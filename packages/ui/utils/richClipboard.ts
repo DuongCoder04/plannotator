@@ -1,5 +1,4 @@
 import { copyTextToClipboard } from './clipboard';
-import { isDocumentKeyboardControl } from './domSelection';
 import { restoreClipboardLists } from './richClipboardLists';
 
 export const MAX_RICH_CLIPBOARD_HTML_LENGTH = 256 * 1024;
@@ -151,7 +150,11 @@ function copyRichTextWithFallback(html: string, text: string): boolean {
     : [];
   let copied = false;
 
+  // Only this button's own execCommand('copy') passes through here: the
+  // listener exists for that one synchronous call, at window capture, and
+  // stops the event so no page copy handler (Viewer's plain-text one) runs.
   const handleCopy = (event: ClipboardEvent) => {
+    event.stopImmediatePropagation();
     const clipboardData = event.clipboardData;
     if (!clipboardData) return;
     try {
@@ -164,13 +167,13 @@ function copyRichTextWithFallback(html: string, text: string): boolean {
     }
   };
 
-  document.addEventListener('copy', handleCopy);
+  window.addEventListener('copy', handleCopy, true);
   try {
     copied = document.execCommand('copy') && copied;
   } catch {
     copied = false;
   } finally {
-    document.removeEventListener('copy', handleCopy);
+    window.removeEventListener('copy', handleCopy, true);
   }
 
   if (activeElement?.isConnected) {
@@ -181,35 +184,6 @@ function copyRichTextWithFallback(html: string, text: string): boolean {
     savedRanges.forEach((range) => selection.addRange(range));
   }
   return copied;
-}
-
-/** Keep ordinary keyboard copy plain, including text-only embedded hosts. */
-export function copySelectionFromKeyboard(event: KeyboardEvent, text: string): boolean {
-  if (
-    event.isComposing
-    || event.altKey
-    || event.shiftKey
-    || !(event.metaKey || event.ctrlKey)
-    || event.key.toLowerCase() !== 'c'
-    || isDocumentKeyboardControl(event.target)
-  ) return false;
-
-  // Leave the native copy event eligible: Viewer handles it synchronously
-  // from the captured payload if async clipboard access fails or is denied.
-  void copyTextToClipboard(text);
-  return true;
-}
-
-/** Override native selection copy only for document selections, never editable controls. */
-export function writeSelectionClipboard(event: ClipboardEvent, text: string): boolean {
-  if (isDocumentKeyboardControl(event.target) || !event.clipboardData) return false;
-  try {
-    event.clipboardData.setData('text/plain', text);
-    event.preventDefault();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export type RichClipboardResult = 'rich' | 'plain' | false;

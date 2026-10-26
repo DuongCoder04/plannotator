@@ -6,7 +6,6 @@ import { type QuickLabel, getQuickLabels, quickLabelIndexForDigit, THUMBS_UP_LAB
 import { copyTextToClipboard } from "../utils/clipboard";
 import { copyRichTextToClipboard } from "../utils/richClipboard";
 import { acquireTypeToCommentCapture } from "../shortcuts/plan-review/annotationMode.shortcuts";
-import { useAnnotationToolbarShortcuts } from "../shortcuts/plan-review/annotationToolbar.shortcuts";
 import { FloatingQuickLabelPicker } from "./FloatingQuickLabelPicker";
 import { FloatingSelectionActionsPicker } from "./SelectionActionsDropdown";
 import { buildSelectionActionContext, type SelectionAction } from "../utils/selectionActions";
@@ -32,7 +31,9 @@ interface AnnotationToolbarProps {
   onQuickLabel?: (label: QuickLabel) => void;
   /** Text to copy when the button is clicked */
   copyText?: string;
-  /** Sanitized HTML captured from a Markdown text selection. */
+  /** Sanitized HTML of the captured text selection. When present the toolbar
+   *  shows a "Copy as rich text" button (text/html plus text/plain), also when
+   *  hideCopyButton hides the plain Copy button. Button only: no shortcut. */
   richCopyHtml?: string;
   /** Full plain fallback when annotation text was capped or normalized. */
   richCopyText?: string;
@@ -161,18 +162,6 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
       }, 1500);
     }
   };
-
-  useAnnotationToolbarShortcuts({
-    handlers: {
-      copyRichText: {
-        when: (event) => !!richCopyHtml
-          && !event.defaultPrevented && !event.isComposing && !event.repeat
-          && !quickLabelsOpen && !selectionActionsOpen
-          && !isEditableElement(event.target) && !isEditableElement(document.activeElement),
-        handle: () => { void handleRichCopy(); },
-      },
-    },
-  });
 
   // Update position on scroll/resize
   useEffect(() => {
@@ -318,11 +307,11 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
             {richCopyHtml && (
               <ToolbarButton
                 onClick={handleRichCopy}
-                icon={richCopied ? <CheckIcon /> : <CopyIcon />}
+                icon={richCopied ? <CheckIcon /> : <RichCopyIcon />}
                 label={richCopied === 'plain'
                   ? "Copied as plain text (rich clipboard unavailable)"
                   : richCopied === 'rich'
-                    ? "Copied as rich text!"
+                    ? "Copied as rich text"
                     : "Copy as rich text"}
                 className={richCopied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
               />
@@ -418,6 +407,14 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 const CopyIcon = () => (
   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+);
+
+/** CopyIcon's two sheets with a "T" on the front one: copy with formatting. */
+const RichCopyIcon = () => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12.5 11.5h5M15 11.5v5.5" />
   </svg>
 );
 

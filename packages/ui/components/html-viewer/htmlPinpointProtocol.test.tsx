@@ -150,18 +150,21 @@ describe.if(hasDom)('parseBridgeMessage selection additions', () => {
     });
   });
 
-  test('accepts bounded rich HTML and rejects malformed or oversized HTML fields', () => {
+  test('keeps bounded rich-copy HTML and drops a malformed one without rejecting the selection', () => {
     const message = {
       type: 'plannotator-bridge-selection',
       text: 'Hello',
       rect,
     };
-    expect(hookModule!.parseBridgeMessage({ ...message, html: '<strong>Hello</strong>' }))
-      .toMatchObject({ html: '<strong>Hello</strong>' });
-    expect(hookModule!.parseBridgeMessage({ ...message, html: 42 })).toBeNull();
-    expect(hookModule!.parseBridgeMessage({ ...message, html: '' })).toBeNull();
-    expect(hookModule!.parseBridgeMessage({ ...message, html: 'x'.repeat(256 * 1024 + 1) }))
-      .toBeNull();
+    expect(hookModule!.parseBridgeMessage({
+      ...message, html: '<strong>Hello</strong>', clipboardText: 'Hello world',
+    })).toMatchObject({ html: '<strong>Hello</strong>', clipboardText: 'Hello world' });
+    for (const html of [42, '', 'x'.repeat(256 * 1024 + 1)]) {
+      const parsed = hookModule!.parseBridgeMessage({ ...message, html, clipboardText: 'Hello' });
+      expect(parsed).toMatchObject({ type: 'plannotator-bridge-selection', text: 'Hello' });
+      expect(parsed).not.toHaveProperty('html');
+      expect(parsed).not.toHaveProperty('clipboardText');
+    }
   });
 
   test('a malformed anchor is dropped without rejecting the selection', () => {
