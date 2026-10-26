@@ -1586,6 +1586,7 @@ export class InboxStore {
                 kind: file.kind,
                 size: file.size,
                 media_type: file.media_type ?? null,
+                paths: [file.path, ...(file.named_path ? [file.named_path] : [])],
               })),
             },
             thread: { id: threadId, subject: row.subject, thread_name: row.thread_name, project: row.project, section: row.section },
@@ -3413,8 +3414,11 @@ export class InboxStore {
         .some((m) => m.author.kind === "agent" && m.author.session === by.session && (m.author.host ?? "") === (by.host ?? ""));
       if (wrote) return;
       // `live`: only while that session is still there (the sessions route's grace). A note to a session that ended
-      // waits on nobody who will ask again.
-      if (options.live && presence && by.session && !presence.askerLive(by.session)) return;
+      // waits on nobody who will ask again. Only a session that wakes can be told ended (the thread's rule): the note
+      // went `to` a live session, or the asking message came through a connection that wakes its session. An agent
+      // that reads the Inbox through MCP may be blocked in wait_for_reply right now, so its note always waits.
+      const wakes = note.to ? true : asked?.wakes === true;
+      if (options.live && presence && by.session && wakes && !presence.askerLive(by.session)) return;
       for (const id of note.reask!) listed.add(id);
     });
     return listed;
@@ -3432,7 +3436,10 @@ export class InboxStore {
    * One bound more than the list: only while that session is still there
    * (presence's `askerLive`, with its grace), so a note to a session that ended
    * never hides its questions for good; the list's row may still read Sent then.
-   * With no presence (tests, tools) every session counts as there.
+   * That bound holds only for a session that wakes (the note went `to` a live
+   * session, or the asked message has `wakes`), the one kind that can be told
+   * ended: an MCP-only agent's note waits until it writes again. With no
+   * presence (tests, tools) every session counts as there.
    */
   reaskListedIds(threadId: string): Set<string> {
     const messages = this.threadMessages(threadId);

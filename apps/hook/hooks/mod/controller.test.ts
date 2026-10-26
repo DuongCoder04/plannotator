@@ -53,6 +53,36 @@ describe('busy counts the main loop only', () => {
   })
 })
 
+// The failure this guards: another plugin delivers its own messages as turns;
+// Send now (and the Inbox's auto-send) put our reply into such a turn, and that
+// plugin then read the agent's answer to our reply as the answer to its message.
+describe("Send now leaves another plugin's turn alone", () => {
+  function steerable(mod: PlannotatorMod): string | null {
+    return (mod.inbox as unknown as { options: { steerableTurn: () => string | null } }).options.steerableTurn()
+  }
+
+  test("a turn the person started takes it; a turn another plugin's prompt started does not, and the session reads busy", async () => {
+    const mod = new PlannotatorMod(fakeHost(), { ...SESSION, inboxTools: [] })
+    mod.onPromptEntered({ text: 'Fix the export.', fromUs: false, originKind: 'composer' })
+    await mod.onTurnStart('person', 'Fix the export.')
+    expect(steerable(mod)).toBe('person')
+    mod.onTurnComplete('person', 'Done.', false)
+
+    mod.onPromptEntered({ text: 'Review PR 12.', fromUs: false, originKind: 'plugin' })
+    await mod.onTurnStart('plugin-turn', 'The workspaces plugin sent a message: Review PR 12.')
+    expect(steerable(mod)).toBeNull()
+    expect(mod.turns.busy).toBe(true)
+    mod.onTurnComplete('plugin-turn', 'Reviewed.', false)
+    expect(mod.turns.busy).toBe(false)
+
+    // An engine-started turn (a background task's notification) is the session's own: as today.
+    mod.onPromptEntered({ text: 'Task done.', fromUs: false, originKind: 'task-notification' })
+    await mod.onTurnStart('note', 'Task done.')
+    expect(steerable(mod)).toBe('note')
+    mod.dispose()
+  })
+})
+
 describe('plan review', () => {
   test('ExitPlanMode is denied at once and the review starts detached with the plan on stdin', async () => {
     const host = fakeHost()

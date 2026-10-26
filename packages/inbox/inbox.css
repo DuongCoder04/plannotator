@@ -984,6 +984,15 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-ranswer-a::before { content: "\2192\00a0"; color: var(--muted-foreground); font-weight: 400; }
 /* Answers to several messages: a quiet line naming the message above its rows (each message numbers its own Q1). */
 .ib-ranswers-g { padding: 4px 4px 0; font-size: var(--ib-fs-11, 11px); font-weight: 500; color: var(--muted-foreground); }
+/* The person's own sent reply (sentReply.ts): the answers it carried, under their words, in the message's type. */
+.ib-ranswers.ib-sentanswers { margin: 6px 0 4px; padding: 0; border-top: 0; max-width: 720px; }
+.ib-sentanswers .ib-ranswers-h { padding: 0 0 2px; font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-sentanswers .ib-ranswers-l { max-height: none; overflow: visible; }
+.ib-sentanswers .ib-ranswer { margin-inline: -4px; width: calc(100% + 8px); font-size: var(--ib-fs-14, 14px); min-height: 30px; }
+.ib-sentanswers div.ib-ranswer { cursor: default; }
+.ib-sentanswers div.ib-ranswer:hover { background: none; }
+.ib-sentanswers .ib-ranswers-g { padding: 6px 0 0; font-size: var(--ib-fs-12, 12px); }
+.ib-ranswer-a.ib-ranswer-skip { font-weight: 400; font-style: italic; color: var(--muted-foreground); }
 .ib-rfoot { display: flex; gap: 6px; padding: 6px 8px 8px; }
 /* The chips wrap as a row inside the box (a 440 px thread beside a file, a stacked pane, a phone); a chip never shrinks or breaks its own label. */
 .ib-rfoot { flex-wrap: wrap; }
@@ -1516,6 +1525,41 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .pn-inbox .ib-fvdock-phone .ib-fvhandle { top: auto; bottom: calc(14px + max(var(--ib-fvfoot, 0px), env(safe-area-inset-bottom))); height: 52px; min-width: 44px; padding: 0 10px 0 12px; border-radius: 14px 0 0 14px; }
 .ib-view.ib-fullview.ib-phone.ib-panel-open .ib-fvdock { visibility: hidden; }
 .ib-view.ib-fullview.ib-phone .ib-fvchip { bottom: calc(80px + max(var(--ib-fvfoot, 0px), env(safe-area-inset-bottom))); }
+/* A phone's position: the `4/9 ⌄` pill opens every file of the thread in one tap (fileSwipe.ts steps by a swipe). */
+.pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvpill { min-width: 52px; padding: 0 6px 0 9px; gap: 0; background: color-mix(in oklch, var(--muted) 70%, transparent); color: var(--foreground); font-weight: 600; }
+.pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvpill[aria-expanded="true"] { background: var(--muted); }
+.ib-fvpill small { margin-right: 3px; }
+/* The narrowest phones (320 px): the HTML page's toolbar (Back, pen, count, pill, ⋯, Hide) fits with two-digit counts in the count and the pill ("12", "13/13"). Every button keeps its 44 px. */
+@media (max-width: 359px) {
+  .ib-fvdock-phone .ib-fvbar { right: calc(8px + env(safe-area-inset-right)); gap: 0; padding: 3px; }
+  .ib-fvdock-phone .ib-fvdv { display: none; }
+  .pn-inbox .ib-fvdock-phone .ib-fvb { padding: 0 5px; }
+  .pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvcount { gap: 3px; }
+  .pn-inbox .ib-fvdock-phone .ib-fvb.ib-fvpill { min-width: 44px; padding: 0 3px 0 6px; }
+  .ib-fvpill small { margin-right: 1px; }
+}
+/* ‹ Previous and Next › at the top of the phone's file sheet: 44 px each, the position between them. */
+.pn-inbox .ib-peekstep { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 8px; border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent); }
+.pn-inbox .ib-peekstep-b { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 44px; min-width: 44px; padding: 0 12px; border-radius: 10px; background: var(--muted); color: var(--foreground); font-size: var(--ib-fs-14, 14px); font-weight: 600; }
+.pn-inbox .ib-peekstep-b:first-child { padding-left: 8px; }
+.pn-inbox .ib-peekstep-b:last-child { padding-right: 8px; }
+.pn-inbox .ib-peekstep-b[aria-disabled="true"] { opacity: 0.4; }
+.pn-inbox .ib-peekstep-b:active:not([aria-disabled="true"]) { background: color-mix(in oklch, var(--muted) 70%, var(--foreground) 12%); }
+.pn-inbox .ib-peekstep-n { min-width: 0; color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The file a swipe brings in: "Next · name" at the edge it comes from (the file itself follows the finger by transform). */
+.ib-swipecard { position: absolute; z-index: 9; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 8px; max-width: min(64%, 280px); padding: 8px 12px; border-radius: 14px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3); pointer-events: none; }
+:root.light .ib-swipecard { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14); }
+.ib-swipecard-r { right: calc(12px + env(safe-area-inset-right)); }
+.ib-swipecard-l { left: calc(12px + env(safe-area-inset-left)); }
+.ib-swipecard > svg { flex: none; color: var(--muted-foreground); }
+.ib-swipecard-th { width: 28px; height: 28px; flex: none; border-radius: 6px; overflow: hidden; display: inline-grid; place-items: center; background: var(--muted); }
+.ib-swipecard-th img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A type tile grows with its label ("JSONC", "HTML") instead of clipping it. */
+.ib-swipecard-th.ib-swipecard-th-tile { width: auto; min-width: 28px; padding: 0 4px; box-sizing: border-box; }
+.ib-swipecard-tile { font: 700 9.5px/1 var(--font-sans, system-ui); letter-spacing: 0.02em; color: var(--muted-foreground); white-space: nowrap; }
+.ib-swipecard-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.ib-swipecard-dir { font-size: var(--ib-fs-11-5, 11.5px); color: var(--muted-foreground); }
+.ib-swipecard-nm { font-size: var(--ib-fs-14, 14px); font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; }
 /* the image's size bar moves out from under the toolbar */
 .ib-view.ib-fullview:not(.ib-phone) .ib-imgbar { right: auto; left: 14px; }
 /* and the "Your marked-up copy" chip sits under it */
@@ -2272,7 +2316,10 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .pn-inbox .ib-mfold-b { height: 44px; }
   .ib-tmeta { margin-top: -6px; }
   /* the question cards (ui's QuestionBlock): rows and buttons a thumb can hit */
-  .ib-body [data-question-option] { min-height: 44px; align-items: center; padding-top: 8px; padding-bottom: 8px; }
+  .ib-body [data-question-option]:not([data-question-tile] > *) { min-height: 44px; align-items: center; padding-top: 8px; padding-bottom: 8px; }
+  /* A picture tile: its caption row is the 44 px target, the radio or checkbox drawn at 20 px. */
+  .ib-body [data-question-tile] [data-question-control] { width: 20px; height: 20px; margin-top: 0; }
+  .ib-body [data-question-tile] [data-question-part="choice"] { font-size: var(--ib-fs-15, 15px); }
   .ib-body [data-question-option] > input { width: 20px; height: 20px; margin-top: 0; }
   .ib-body [data-question-part="choice"] { font-size: var(--ib-fs-15, 15px); }
   .ib-body [data-question-key] input[type="text"] { min-height: 40px; }
@@ -2305,6 +2352,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-ranswer { min-height: 44px; align-items: center; }
   /* About two and a half rows, then it scrolls: with the keyboard up the box must not eat the thread. */
   .ib-ranswers-l { max-height: 110px; overscroll-behavior: contain; }
+  .ib-sentanswers .ib-ranswers-l { max-height: none; }
+  /* A phone's row is narrow: the answer goes on its own line under the prompt, so neither is cut to a word. */
+  .ib-sentanswers .ib-ranswer { flex-wrap: wrap; row-gap: 0; align-items: baseline; padding-block: 6px; }
+  .ib-sentanswers .ib-ranswer-p { flex: 1 1 0; }
+  .ib-sentanswers .ib-ranswer-a { flex: 0 0 100%; max-width: 100%; padding-inline-start: 2.1em; }
   .ib-route { padding: 10px 6px 8px; }
   .ib-opt { min-height: 44px; }
   /* menus are sheets from the bottom edge: New message's sessions, the annotations list */
@@ -2593,6 +2645,8 @@ label.ib-anote-r:hover { background: color-mix(in oklch, var(--muted) 40%, trans
 .ib-try-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ib-try-where { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .ib-try-where b { color: var(--foreground); font-weight: 550; }
+/* The notifications ask on the first-run screen sits in Try it's column, as wide as the prompt above it. */
+.ib-try .ib-askline { margin: 4px 0 0; max-width: 640px; }
 
 /* First run, "One next step" (the approved design inbox-connect-next-step, variant C): one card with the next step, then what is done and what is left. */
 .ib-cn { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 16px; padding: 20px 22px; border: 1px solid color-mix(in oklch, var(--primary) 50%, var(--border)); border-radius: 12px; background: var(--card); box-shadow: var(--card-shadow); }
@@ -2629,6 +2683,8 @@ label.ib-anote-r:hover { background: color-mix(in oklch, var(--muted) 40%, trans
 .ib-cl li > .ib-mut { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); min-width: 0; overflow-wrap: anywhere; }
 .ib-cl li.ib-mut { color: var(--muted-foreground); }
 .pn-inbox .ib-cl svg.ib-cl-tick { width: 14px; height: 14px; flex: none; color: var(--success); stroke-width: 2.2; }
+.ib-empty .ib-note.ib-cn-wake { align-items: flex-start; margin: 0; line-height: 1.5; font-size: var(--ib-fs-13, 13px); }
+.pn-inbox .ib-empty .ib-note.ib-cn-wake svg.ib-ic { flex: none; margin-top: 2px; }
 .ib-cl-ring { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); flex: none; }
 .ib-cl-ring.ib-cl-dash { border-style: dashed; }
 .ib-cl li.ib-cl-now { font-weight: 550; }
@@ -2758,7 +2814,7 @@ details.ib-wn-skipped[open] > summary { margin-bottom: 6px; }
 .ib-wn-body + .ib-wn-skipped, .ib-sum + .ib-wn-skipped { margin-top: 18px; }
 
 /* A tall screenshot in a message shows its top at its own width (images.ts markTallImage), as the gallery does. */
-.ib-body img[data-ib-tall] { width: min(100%, var(--ib-nw, 100%)); max-height: min(480px, 60vh); object-fit: cover; object-position: top center; }
+.ib-body img[data-ib-tall]:not([data-question-picture]) { width: min(100%, var(--ib-nw, 100%)); max-height: min(480px, 60vh); object-fit: cover; object-position: top center; }
 
 /* The thread on a phone (PHONE_QUERY in phone.ts). */
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
@@ -3245,6 +3301,7 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
   --ib-qc-tag-bg-s: var(--ib-soft-card) var(--card);
   --ib-qc-tag-track-s: var(--ib-soft-card) 0;
   --ib-qc-opt-r-s: var(--ib-soft-card) var(--ib-lr-sm);
+  --ib-qc-tile-r-s: var(--ib-soft-card) var(--ib-lr-md);
   --ib-qc-btn-r-s: var(--ib-soft-card) 10px;
   --ib-qc-opt-hover-s: var(--ib-soft-card) color-mix(in oklch, var(--card) 70%, transparent);
   --ib-qc-opt-on-s: var(--ib-soft-card) var(--card);
@@ -3398,9 +3455,14 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
 .pn-inbox .question-block > div:first-child svg { color: var(--ib-qc-svg-s); }
 .pn-inbox .question-block label[data-question-option] { border-radius: var(--ib-qc-opt-r-s, 7px); }
 .pn-inbox .question-block label[data-question-option]:hover { background: var(--ib-qc-opt-hover-s, color-mix(in oklab, var(--muted) 45%, transparent)); }
+.pn-inbox .question-block [data-question-tile] { border-radius: var(--ib-qc-tile-r-s, 9px); }
+/* A picture tile draws its own state (border and tint); its label stays clear. */
+.pn-inbox .question-block [data-question-tile] > label[data-question-option], .pn-inbox .question-block [data-question-tile] > label[data-question-option]:hover, .pn-inbox .question-block [data-question-tile] > label[data-question-option]:has(input:checked) { background: transparent; border-radius: 0; }
 .pn-inbox .question-block label[data-question-option]:has(input:checked) { background: var(--ib-qc-opt-on-s, color-mix(in oklab, var(--primary) 12%, transparent)); }
 .pn-inbox .question-block [data-question-part="choice"] > span:first-child { font-weight: var(--ib-qc-choice-w-s, 550); }
-.pn-inbox .question-block [data-question-part="choice"] .rounded { border-radius: var(--ib-qc-pill-s, 0.25rem); letter-spacing: var(--ib-qc-tag-track-s, 0.03em); }
+/* The Recommended tag only (ui's Tag carries data-question-tag): an image or inline code in a choice keeps its
+   own radius. */
+.pn-inbox .question-block [data-question-part="choice"] [data-question-tag] { border-radius: var(--ib-qc-pill-s, 0.25rem); letter-spacing: var(--ib-qc-tag-track-s, 0.03em); }
 .pn-inbox .question-block [role="radiogroup"] > div, .pn-inbox .question-block [role="group"] > div { border-radius: var(--ib-qc-opt-r-s, 7px); }
 .pn-inbox .question-block > div.border-t { border-top-color: var(--ib-qc-foot-line-s, color-mix(in oklab, var(--border) 55%, transparent)); }
 .pn-inbox .question-block > div.border-t > button:not(.ml-auto) { border-radius: var(--ib-qc-btn-r-s, 5px); }
@@ -4224,6 +4286,28 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-actbtns { display: flex; gap: 8px; }
 .ib-dm-why { margin: 0; font-size: var(--ib-fs-14, 14px); color: var(--muted-foreground); }
 .ib-dm-swipehint { margin: 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+/* The agent contract lines (approval "inbox-decision-mode", "Agent contract lines"; contract-compare.html). */
+.ib-dm-stakes { font-weight: 600; }
+.ib-dm-stakes svg { color: color-mix(in oklab, var(--warning, oklch(0.75 0.15 80)) 60%, var(--foreground)); }
+.ib-badge.ib-b-oneway { border-color: transparent; background: color-mix(in oklab, var(--destructive) 10%, transparent); color: color-mix(in oklab, var(--destructive) 70%, var(--foreground)); }
+.ib-dm-confirm1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-radius: var(--ib-lr-md, 9px); background: color-mix(in oklab, var(--destructive) 10%, var(--card)); font-size: var(--ib-fs-14, 14px); line-height: 1.45; }
+.ib-dm-confirm1 > span { flex: 1 1 260px; min-width: 0; }
+.pn-inbox .ib-btn.ib-dm-danger { background: var(--destructive); border-color: var(--destructive); color: var(--destructive-foreground, #fff); font-weight: 600; }
+.pn-inbox .ib-dm-confirm1 .ib-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* Picture choices: the thread card's own tiles (ui QuestionPictureTiles), at the dialog's size. */
+.ib-dm-tiles { min-width: 0; }
+.ib-dm-tiles [data-question-tiles] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin: 0; }
+.ib-dm-tiles [data-question-tile] { border-radius: var(--ib-lr-md, 9px); border: 1px solid var(--border); background: var(--card); }
+.ib-dm-tiles [data-question-tile]:hover { border-color: color-mix(in oklab, var(--primary) 45%, var(--border)); }
+.ib-dm-tiles [data-question-tile][data-question-tile-recommended] { border-color: color-mix(in oklab, var(--primary) 40%, var(--border)); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 25%, transparent); }
+.ib-dm-tiles [data-question-tile][data-question-tile-checked] { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); background: color-mix(in oklab, var(--primary) 7%, var(--card)); }
+.ib-dm-tiles [data-question-tile-picture] { aspect-ratio: auto; height: 230px; padding: 8px; box-sizing: border-box; border-bottom-color: var(--border); background: color-mix(in oklab, var(--muted) 55%, var(--card)); }
+.ib-dm-tiles [data-question-tile-caption] { padding: 9px 11px 11px; gap: 8px; }
+.ib-dm-tiles [data-question-part="choice"] { display: flex; flex-direction: column; gap: 3px; font-size: var(--ib-fs-13, 13px); }
+.ib-dm-tiles [data-question-tile-label] { font-size: var(--ib-fs-14-5, 14.5px); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.ib-dm-tiles [data-question-tile-description] { font-size: var(--ib-fs-13, 13px); line-height: 1.4; }
+.ib-dm-tiles .ib-dm-rec { align-self: flex-start; margin-top: 4px; font-size: var(--ib-fs-12, 12px); }
+.pn-inbox .ib-dm-tiles [data-question-zoom] { right: 7px; top: 7px; width: 30px; height: 30px; border-radius: 8px; background: var(--card); box-shadow: var(--ib-float-shadow); }
 .ib-dm-more { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -10px; }
 .ib-dm-more .ib-dm-lnk { color: var(--muted-foreground); }
 .ib-dm-nav { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding-top: 12px; flex: none; }
@@ -4285,9 +4369,224 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-dm-main { padding: 18px 16px 14px; overflow: visible; }
   .ib-dm-prompt { font-size: var(--ib-fs-22, 22px); }
   .ib-dm-choices.ib-dm-two { flex-direction: column; }
-  .ib-dm-two .ib-dm-choice { min-height: 72px; }
+  /* Stacked, a choice is as tall as its words (a basis of 0 left a description outside its box). */
+  .ib-dm-two .ib-dm-choice { flex: none; min-height: 72px; }
   .ib-dm-choice, .pn-inbox .ib-dm-lnk, .pn-inbox .ib-dm-file, .pn-inbox .ib-dm-open, .pn-inbox .ib-dm-go { min-height: 44px; }
   .ib-dm-ctx { max-height: none; }
   .ib-dm-peek { display: none; }
   .ib-dm-all { grid-template-columns: 1fr; }
+  .ib-dm-tiles [data-question-tiles] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ib-dm-tiles [data-question-tile-picture] { height: 150px; }
+  .pn-inbox .ib-dm-tiles [data-question-zoom]::before { inset: -7px; }
+  .pn-inbox .ib-dm-confirm1 .ib-btn { min-height: 44px; }
 }
+
+/* ───────────────── The onboarding tour (approval "inbox-onboarding-tour"; tour/) ─────────────────
+   The window's own list, thread and question card over the tour's fixture, with one bar on top while it
+   runs, a coach card beside what it points at, and the replay's marks. Every colour is a theme token, so it
+   follows every palette, light and dark. */
+.pn-inbox[data-tour] { --ib-tour-bar-h: 45px; display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+.pn-inbox[data-tour] > .ib-shell { min-height: 0; }
+.pn-inbox[data-tour] .ib-sb-panel { top: var(--ib-tour-bar-h); }
+.ib-tour-bar { display: flex; align-items: center; gap: 12px; height: var(--ib-tour-bar-h, 45px); box-sizing: border-box; position: relative; z-index: 20; padding: 6px 14px; background: color-mix(in oklch, var(--primary) 11%, var(--background)); border-bottom: 1px solid color-mix(in oklch, var(--primary) 30%, var(--border)); font-size: var(--ib-fs-13, 13px); color: var(--foreground); }
+.ib-tour-tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-weight: 650; font-size: var(--ib-fs-12, 12px); flex: none; }
+.pn-inbox .ib-tour-tag svg.ib-ic { stroke-width: 2; }
+.ib-tour-what { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-what b { font-weight: 600; }
+.ib-tour-steps { display: flex; align-items: center; gap: 5px; flex: none; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.ib-tour-dot { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in oklch, var(--muted-foreground) 35%, transparent); }
+.ib-tour-dot[data-on] { background: var(--primary); }
+.ib-tour-dot[data-done] { background: color-mix(in oklch, var(--primary) 55%, transparent); }
+.pn-inbox .ib-tour-exit { flex: none; height: 30px; padding: 0 12px; border-radius: 8px; font-weight: 550; color: var(--foreground); background: var(--card); box-shadow: 0 0 0 1px var(--border); }
+.pn-inbox .ib-tour-exit:hover { background: var(--muted); }
+.pn-inbox .ib-tour-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary-foreground); background: var(--primary); }
+
+/* The coach: one card per step, next to what it points at; not modal. */
+.ib-tour-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+.ib-tour-layer > * { pointer-events: auto; }
+.ib-tour-coach { position: fixed; z-index: 60; width: 300px; max-width: calc(100vw - 24px); padding: 14px 16px 12px; border-radius: 12px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 45%, var(--border)), var(--ib-float-shadow, 0 16px 40px -12px rgb(0 0 0 / 0.45)); font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; }
+.ib-tour-coach .ib-tc-eb { font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; color: var(--primary); letter-spacing: 0.02em; margin-bottom: 2px; }
+.ib-tour-coach h2 { margin: 0 0 4px; font-size: var(--ib-fs-15, 15px); font-weight: 650; line-height: 1.35; }
+.ib-tour-coach h2:focus { outline: none; }
+.ib-tour-coach h2:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.ib-tour-coach p { margin: 0; color: var(--muted-foreground); }
+.ib-tour-coach p b { color: var(--foreground); font-weight: 600; }
+.ib-tour-coach .ib-tc-acts { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.ib-tour-coach .ib-tc-acts .ib-sp { flex: 1; }
+.pn-inbox .ib-tc-back { height: 30px; padding: 0 8px; border-radius: 7px; color: var(--muted-foreground); font-weight: 500; }
+.pn-inbox .ib-tc-back:hover { color: var(--foreground); background: var(--muted); }
+.pn-inbox .ib-tc-next { height: 30px; padding: 0 12px; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+.ib-tc-do { font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary); font-weight: 600; display: inline-flex; gap: 5px; align-items: center; }
+.ib-tc-wait { display: inline-flex; align-items: center; gap: 8px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tc-wait::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklch, var(--primary) 30%, transparent); border-top-color: var(--primary); }
+/* What the step points at: the focus ring's colour, a little outside, and two slow pulses. */
+.pn-inbox .ib-tour-target { outline: 2px solid var(--primary) !important; outline-offset: 3px; border-radius: 10px; }
+@media (prefers-reduced-motion: no-preference) {
+  .pn-inbox .ib-tour-target { animation: ib-tour-pulse 1.4s ease-out 2; }
+  @keyframes ib-tour-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+  .ib-tour-coach { animation: ib-pm-in 160ms ease-out; }
+  .ib-tc-wait::before { animation: ib-spin 0.9s linear infinite; }
+}
+
+/* The replay's marks: what is a replay of the real thread says so. */
+.ib-tour-replay { display: flex; align-items: center; gap: 8px; margin: 22px 0 4px; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-tour-replay::before, .ib-tour-replay::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.ib-tour-realtime { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: var(--ib-fs-11, 11px); font-weight: 550; margin-left: 6px; white-space: nowrap; }
+.ib-tour-note { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: color-mix(in oklch, var(--primary) 8%, var(--card)); font-size: var(--ib-fs-13, 13px); color: var(--foreground); }
+.ib-tour-slice { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-tour-attach-h { display: flex; align-items: center; gap: 6px; margin: 14px 0 0; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.pn-inbox .ib-tour-filetile { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 420px; padding: 10px 12px; border-radius: 10px; background: var(--muted); text-align: left; margin-top: 10px; color: var(--foreground); }
+.pn-inbox button.ib-tour-filetile:hover { background: color-mix(in oklch, var(--muted) 70%, var(--primary) 10%); }
+.ib-tour-filetile .ib-tft-i { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; background: var(--card); color: var(--primary); box-shadow: 0 0 0 1px var(--border); flex: none; }
+.ib-tour-filetile .ib-tft-t { min-width: 0; display: flex; flex-direction: column; }
+.ib-tour-filetile .ib-tft-t b { font-weight: 600; font-size: var(--ib-fs-14, 14px); }
+.ib-tour-filetile .ib-tft-t span { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tour-filetile .ib-tft-o { margin-left: auto; font-size: var(--ib-fs-13, 13px); font-weight: 600; color: var(--primary); }
+.ib-tour-filetile .ib-tft-o.ib-tft-off { font-weight: 500; color: var(--muted-foreground); }
+/* The mock's place when its copy is not here: a still of it, or a quiet card naming it (never an error). */
+.ib-tour-file .ib-tf-still { display: grid; place-items: center; overflow: auto; padding: 20px; min-height: 0; background: var(--background); }
+.ib-tour-file .ib-tf-still img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 0 0 1px var(--border); }
+.ib-tour-file .ib-tf-card { padding: 32px 22px; }
+/* A picture in the viewer that is not here: its own words, calmly, where it would be. */
+.ib-tour-viewer .ib-tv-words { max-width: 46ch; padding: 24px; border-radius: 10px; background: var(--muted); color: var(--foreground); text-align: center; line-height: 1.5; }
+.ib-tour-gal { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.pn-inbox .ib-tour-gal button { flex: 1 1 240px; max-width: 360px; text-align: left; border-radius: 9px; }
+.ib-tour-gal img { width: 100%; aspect-ratio: 1.6; object-fit: cover; object-position: top left; border-radius: 8px; box-shadow: 0 0 0 1px var(--border); display: block; }
+.ib-tour-gal .ib-kd { display: block; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); margin-top: 4px; }
+.ib-tour-gal .ib-tg-n { font-size: var(--ib-fs-13, 13px); font-weight: 550; margin-top: 6px; display: block; }
+
+/* The picture viewer (the file viewer's stand-in for the tour's pictures). */
+.ib-tour-viewer { position: fixed; inset: 0; z-index: 80; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: color-mix(in oklch, var(--background) 92%, black); color: var(--foreground); }
+.ib-tour-viewer header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: var(--ib-fs-13-5, 13.5px); min-width: 0; }
+.ib-tour-viewer header b { font-weight: 600; flex: none; }
+.ib-tour-viewer header .ib-mut { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-viewer header .ib-sp { flex: 1; }
+.ib-tour-viewer .ib-tv-stage { display: grid; place-items: center; overflow: auto; padding: 20px; min-height: 0; }
+.ib-tour-viewer .ib-tv-stage img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 0 0 1px var(--border); }
+.ib-tour-viewer footer { display: flex; justify-content: center; gap: 10px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+
+/* The mock beside the thread. */
+.ib-tour-file { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; flex: 1 1 auto; background: var(--card); border-radius: var(--ib-lr-pane, 10px); box-shadow: var(--ib-pane-shadow, 0 0 0 1px var(--border)); overflow: hidden; }
+.ib-tour-file header { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); min-width: 0; }
+.ib-tour-file .ib-tf-n { font-weight: 600; font-size: var(--ib-fs-14, 14px); flex: none; }
+.ib-tour-file .ib-tf-from { font-size: var(--ib-fs-12-5, 12.5px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-file header .ib-sp { flex: 1; }
+.ib-tour-file iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--background); }
+
+/* The entry screen: connecting is a first-class path. */
+.pn-inbox .ib-empty.ib-te-empty { max-width: 1180px; }
+.ib-te-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 900px; }
+/* The bento's top tile: how the Inbox fits with your agents (tour/Fit.tsx), wide, the picture beside the words. */
+.ib-te-fit { display: grid; grid-template-columns: minmax(0, 1fr); max-width: 900px; margin-bottom: 16px; }
+.ib-te-fit .ib-te-fit-pic { padding: 18px 20px 12px; background: color-mix(in oklch, var(--primary) 6%, var(--muted)); }
+.ib-te-fit .ib-te-body { justify-content: center; gap: 0; }
+.pn-inbox .ib-te-fit .ib-te-body h3 { margin: 0 0 8px; }
+.ib-te-fit .ib-te-body p { flex: none; margin: 0 0 6px; }
+@media (max-width: 359px) { .tp-win .tp-note-long { display: none; } .tp-win .tp-note-short { display: inline; } }
+/* The picture (tour/Fit.tsx): your agents in a column, a straight arrow from each into the Inbox card, the reply back. */
+.tp { display: grid; grid-template-columns: minmax(0, 1fr) 76px minmax(0, 0.95fr); grid-template-rows: repeat(3, minmax(0, 1fr)); row-gap: 8px; align-items: stretch; }
+.tp-win { grid-column: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 40px; border-radius: 8px; background: var(--card); box-shadow: 0 0 0 1px var(--border); font-size: var(--ib-fs-13, 13px); white-space: nowrap; min-width: 0; overflow: hidden; }
+.tp-win .ib-mk { width: var(--ib-mark-20); height: var(--ib-mark-20); border-radius: var(--ib-mark-20-r); flex: none; }
+.tp-win .ib-mk > svg, .tp-win .ib-mk > img { width: var(--ib-mark-20-g); height: var(--ib-mark-20-g); }
+.tp-win b { font-weight: 600; flex: none; }
+.tp-win .tp-note { color: var(--muted-foreground); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tp-win .tp-note-short { display: none; }
+.tp-link { grid-column: 2; position: relative; display: flex; flex-direction: column; justify-content: center; gap: 7px; padding: 0 4px; }
+.tp-link i { position: relative; display: block; height: 0; border-top: 1.5px solid var(--muted-foreground); }
+.tp-link i::after { content: ""; position: absolute; top: -4.75px; border: 4px solid transparent; }
+.tp-link .tp-to::after { right: -1px; border-left: 6px solid var(--muted-foreground); border-right: 0; }
+.tp-link .tp-back { border-top: 2px solid var(--primary); }
+.tp-link .tp-back::after { left: -1px; top: -5px; border-right: 6px solid var(--primary); border-left: 0; }
+.tp-link .tp-reply { position: absolute; left: 0; right: 0; bottom: 2px; text-align: center; font-size: var(--ib-fs-10, 10px); font-weight: 600; color: var(--primary); white-space: nowrap; }
+@media (prefers-reduced-motion: no-preference) {
+  .tp-ret-draw { transform-origin: right center; animation: tp-draw 600ms 450ms ease-out both; }
+}
+@keyframes tp-draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.tp-down { display: none; }
+.tp-inbox { grid-column: 3; grid-row: 1 / span 3; }
+.tp-inbox { border-radius: 10px; background: var(--card); box-shadow: 0 0 0 1px var(--border); overflow: hidden; min-width: 0; }
+.tp-inbox .tp-ih { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: var(--ib-fs-11-5, 11.5px); font-weight: 650; }
+.tp-inbox .tp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; padding: 8px 10px; font-size: var(--ib-fs-12, 12px); align-items: center; }
+.tp-inbox .tp-row + .tp-row { border-top: 1px solid var(--border); }
+.tp-inbox .tp-row .ib-mk { width: var(--ib-mark-16); height: var(--ib-mark-16); border-radius: var(--ib-mark-16-r); }
+.tp-inbox .tp-row .ib-mk > svg, .tp-inbox .tp-row .ib-mk > img { width: var(--ib-mark-16-g); height: var(--ib-mark-16-g); }
+.tp-inbox .tp-row b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-inbox .tp-row .tp-c { color: var(--muted-foreground); font-size: var(--ib-fs-11, 11px); white-space: nowrap; }
+.tp-inbox .tp-row .tp-th { grid-column: 2; width: 74px; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
+/* The tour's first card ("a fresh reminder"): the same words and picture, Show me. Below the tour bar, so Exit stays in reach. */
+.ib-tour-intro-scrim { position: fixed; inset: var(--ib-tour-bar-h, 45px) 0 0 0; display: grid; place-items: center; padding: 24px; background: color-mix(in oklch, var(--background) 55%, transparent); backdrop-filter: blur(2px); overflow: auto; }
+.ib-tour-intro { width: min(720px, 100%); border-radius: 14px; overflow: hidden; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 45%, var(--border)), var(--ib-float-shadow, 0 16px 40px -12px rgb(0 0 0 / 0.45)); }
+.ib-tour-intro .ib-ti-pic { padding: 22px 26px 10px; background: color-mix(in oklch, var(--primary) 6%, var(--muted)); border-bottom: 1px solid var(--border); }
+.ib-tour-intro .ib-ti-body { padding: 20px 26px 22px; font-size: var(--ib-fs-14, 14px); line-height: 1.55; }
+.pn-inbox .ib-tour-intro h2 { margin: 0 0 8px; font-size: var(--ib-fs-20, 20px); font-weight: 650; }
+.ib-tour-intro p { margin: 0 0 6px; color: var(--muted-foreground); }
+.ib-tour-intro .ib-ti-acts { display: flex; margin-top: 14px; }
+.ib-tour-intro .ib-ti-acts .ib-btn.ib-pri { height: 36px; padding: 0 18px; font-weight: 600; }
+.ib-te-card { display: flex; flex-direction: column; border-radius: 12px; background: var(--card); box-shadow: 0 0 0 1px var(--border), var(--card-shadow, none); overflow: hidden; }
+.ib-te-paths .ib-te-card { box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 35%, var(--border)), var(--card-shadow, none); }
+.ib-te-pic { position: relative; aspect-ratio: 16 / 8; background: #111; overflow: hidden; }
+.ib-te-pic img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+.ib-te-time { position: absolute; left: 10px; bottom: 10px; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; background: color-mix(in oklch, black 62%, transparent); color: white; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; }
+.ib-te-marks { display: flex; align-items: center; justify-content: center; gap: 14px; background: color-mix(in oklch, var(--primary) 8%, var(--muted)); }
+.ib-te-mk { position: relative; display: inline-flex; }
+.ib-te-mk .ib-mk.ib-big { width: var(--ib-mark-44); height: var(--ib-mark-44); border-radius: var(--ib-mark-44-r); background: var(--card); }
+.ib-te-mk .ib-mk.ib-big > svg, .ib-te-mk .ib-mk.ib-big > img { width: var(--ib-mark-44-g); height: var(--ib-mark-44-g); }
+.ib-te-mk[data-ready]::after { content: ""; position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--card); background: var(--muted-foreground); }
+.ib-te-mk[data-ready="true"]::after { background: var(--success); }
+.ib-te-marks .ib-te-count { background: var(--card); color: var(--foreground); box-shadow: 0 0 0 1px var(--border); }
+.ib-te-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px 18px 18px; flex: 1; }
+.pn-inbox .ib-te-body h3 { margin: 0; font-size: var(--ib-fs-16, 16px); font-weight: 650; }
+.ib-te-body p { margin: 0 0 6px; color: var(--muted-foreground); line-height: 1.5; font-size: var(--ib-fs-13-5, 13.5px); flex: 1; }
+.ib-tour-again, .ib-wn-tour { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.pn-inbox .ib-tour-again .ib-lnk, .pn-inbox .ib-wn-tour .ib-lnk { display: inline; margin: 0; font-size: inherit; position: relative; }
+.ib-wn-tour { margin: 18px 0 0; }
+.ib-tour-lead { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.pn-inbox .ib-tour-lead svg.ib-ic { color: var(--success); }
+.ib-tour-notified { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: var(--ib-fs-13-5, 13.5px); }
+.pn-inbox .ib-tour-notified svg.ib-ic { color: var(--success); }
+.ib-tour-notify-again { margin: 4px 0 12px; }
+
+/* A phone (PHONE_QUERY in phone.ts): one screen at a time, 44 px targets, sheets that never cover their target. */
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox[data-tour] { --ib-tour-bar-h: 52px; }
+  .ib-tour-bar { padding: 4px 10px; gap: 8px; }
+  .ib-tour-long { display: none; }
+  .pn-inbox .ib-tour-exit, .pn-inbox .ib-tour-chip { height: 44px; }
+  .pn-inbox .ib-tour-chip { padding: 0 10px; }
+  .ib-tour-coach { left: 10px; right: 10px; width: auto; max-width: none; bottom: calc(10px + env(safe-area-inset-bottom)); top: auto; }
+  .ib-tour-coach[data-at="top"] { top: calc(var(--ib-tour-bar-h, 52px) + 8px); bottom: auto; }
+  .pn-inbox .ib-tc-next, .pn-inbox .ib-tc-back { height: 44px; min-width: 44px; }
+  .ib-te-paths { grid-template-columns: minmax(0, 1fr); }
+  .ib-te-pic { aspect-ratio: 16 / 6; }
+  .pn-inbox .ib-te-body .ib-btn { height: 44px; width: 100%; justify-content: center; }
+  .pn-inbox .ib-tour-filetile { max-width: none; min-height: 56px; }
+  .pn-inbox .ib-tour-gal button { flex-basis: 100%; max-width: none; }
+  .pn-inbox .ib-tour-again .ib-lnk::after, .pn-inbox .ib-wn-tour .ib-lnk::after { content: ""; position: absolute; inset: -12px -6px; }
+  .pn-inbox .ib-tour-viewer footer .ib-btn { height: 44px; }
+  .pn-inbox .ib-tour-viewer header .ib-iconbtn { width: 44px; height: 44px; }
+  .ib-tour-viewer header .ib-mut { display: none; }
+  .ib-tour-file .ib-tf-from { display: none; }
+  /* The picture stacks: your agents on top, the questions down and the reply up, then the Inbox card. */
+  .tp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; row-gap: 6px; }
+  .tp-win { grid-row: auto !important; min-height: 44px; }
+  .tp-link { display: none; }
+  .tp-down { display: flex; justify-content: center; gap: 28px; padding: 6px 0 4px; font-size: var(--ib-fs-11, 11px); font-weight: 600; }
+  .tp-down span { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
+  .tp-down span::before { content: ""; width: 0; height: 22px; border-left: 1.5px solid var(--muted-foreground); }
+  .tp-dn { color: var(--muted-foreground); }
+  .tp-dn::before { border-image: none; }
+  .tp-up { color: var(--primary); }
+  .tp-up::before { border-left: 2px solid var(--primary) !important; }
+  .tp-inbox { grid-column: auto; grid-row: auto; }
+  .ib-te-fit .ib-te-fit-pic { padding: 14px 14px 10px; }
+  /* The tour's first card: a sheet under the tour bar, Show me full width and 44 px. */
+  .ib-tour-intro-scrim { padding: 0; place-items: stretch; }
+  .ib-tour-intro { width: 100%; border-radius: 0; display: flex; flex-direction: column; min-height: 100%; }
+  .ib-tour-intro .ib-ti-pic { padding: 16px 14px 10px; }
+  .ib-tour-intro .ib-ti-body { padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; flex: 1; }
+  .ib-tour-intro .ib-ti-acts { margin-top: auto; padding-top: 16px; }
+  .ib-tour-intro .ib-ti-acts .ib-btn.ib-pri { height: 44px; width: 100%; justify-content: center; }
+}
+/* The tour thread's controls that do nothing in the tour (Mark read, Archive, Reply): drawn quiet, still focusable, their tooltip says why. */
+.pn-inbox [data-tour-thread] button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.pn-inbox [data-tour-thread] button[aria-disabled="true"]:hover { background: none; }

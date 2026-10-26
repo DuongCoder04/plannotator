@@ -273,8 +273,6 @@ interface FullScreenMoreProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   versionAction: FullScreenVersionAction | null;
-  /** A phone's position (its toolbar has no `N/M`): opens the peek sheet. */
-  position?: { label: string; onOpen: () => void } | null;
 }
 
 /**
@@ -319,15 +317,6 @@ function FullScreenMoreMenu(props: FullScreenMoreProps & { openIn: React.ReactNo
         <Icon name="dots" size={props.phone ? 20 : 17} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side={props.phone ? 'top' : 'bottom'} sideOffset={8} className="min-w-[14rem]" data-full-view-menu={attachment.id}>
-        {props.position && (
-          <>
-            <DropdownMenuItem className="text-xs" onClick={props.position.onOpen} data-full-view-menu-position="">
-              <Icon name="stack" size={15} className="ib-appi ib-glyph" />
-              <span className="flex-1 truncate">{props.position.label}</span>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
         {props.openIn}
         {tab && (
           <DropdownMenuItem className="text-xs" render={<a href={tab} target="_blank" rel="noopener noreferrer" />} data-open-in-tab="">

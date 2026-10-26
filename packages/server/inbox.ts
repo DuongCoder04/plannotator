@@ -50,6 +50,9 @@ import {
   type InboxCardColumn,
   INBOX_SOUND_DEFAULT_VOLUME,
   INBOX_TEXT_SIZE_DEFAULT,
+  INBOX_TOUR_VERSION,
+  type InboxTourChange,
+  type InboxTourState,
   INBOX_HOST_NAMES,
   isInboxId,
   isInboxSoundVolume,
@@ -116,9 +119,11 @@ import {
 import { openBrowser } from "./browser";
 import { isAddressInUseError } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { markPlannotatorResponse, withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { createInboxMcpServer } from "./inbox-mcp";
 import { inboxGuideRoute } from "./inbox-guides";
 import { createInboxRepoCache } from "./inbox-repos";
+import { createRefCards, type RefRunner } from "./ref-cards";
 import { createInboxProjectRoots, nearestProjectHolding, type InboxGitRunner } from "./inbox-project-root";
 import { handleFavicon } from "./shared-handlers";
 import { createInboxAttachmentRoutes } from "./inbox-attachments";
@@ -141,6 +146,7 @@ import { createInboxUpdates, type InboxUpdatesOptions } from "./inbox-updates";
 import { INBOX_WHATS_NEW_IMAGE_PATH, whatsNewImageRoute } from "./inbox-whats-new-images";
 import { inboxCanonicalBaseUrl, inboxCanonicalRedirect } from "./inbox-canonical";
 import { createInboxWindows, parseWindowId, parseWindowOrigin, parseWindowPermission } from "./inbox-windows";
+import { handleInboxTourRequest } from "./inbox-tour";
 import {
   agentSpec,
   claudeCodeModOn,
@@ -168,6 +174,9 @@ import {
   type InboxConnectReport,
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
+
+/** The hosts whose own connection polls the bridge and wakes its session with the reply. */
+const BRIDGE_WAKING_HOSTS: ReadonlySet<string> = new Set(["claude-code", "pi", "opencode"]);
 
 /** Where a request came in: the window's loopback port, or the tailnet-only listener `tailscale serve` points at. */
 type RequestVia = "local" | "tailnet";
@@ -291,6 +300,8 @@ export interface InboxServerOptions {
   openInLauncher?: InboxOpenInLauncher;
   /** Tests: how a project root's `origin` is read (default `readInboxProjectRepo`, inbox-repos.ts). */
   readProjectRepo?: (root: string) => Promise<InboxProjectRepo | null>;
+  /** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+  refRunner?: RefRunner;
   /** Tests: the git that decides a path's project (default `inboxGitRunner`, inbox-project-root.ts). */
   projectRootGit?: InboxGitRunner;
   /**
@@ -392,6 +403,8 @@ const ERROR_STATUS: Record<string, number> = {
   // The project menu: a batch_id already answered another project or action.
   batch_id_reused: 409,
   config_not_saved: 500,
+  // pins.json from a newer Plannotator: kept as it is (packages/shared/inbox/pins.ts).
+  pins_newer: 409,
   // Attachments and annotations (step 2).
   attachment_not_found: 404,
   attachment_missing: 404,
@@ -546,7 +559,7 @@ export { resolveInboxProjectRoot } from "./inbox-project-root";
 
 function startOnLoopback(fetch: Parameters<typeof Bun.serve>[0]["fetch"], preferred: number | null): { server: ReturnType<typeof Bun.serve>; portChanged: boolean } {
   const serve = (port: number) =>
-    Bun.serve({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch } as Parameters<typeof Bun.serve>[0]);
+    Bun.serve(withPlannotatorServerHeader({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch }) as Parameters<typeof Bun.serve>[0]);
   let portChanged = false;
   // Never remote mode's port, and never Phones' tailnet HTTPS port: the
   // window's tailnet mapping uses the Inbox's own port, so the two never meet.
@@ -688,6 +701,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // when a project is first seen, never while a request waits (inbox-repos.ts).
   const repos = createInboxRepoCache(options.readProjectRepo ? { read: options.readProjectRepo } : {});
 
+  // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
+  // github.com, gitlab.com and the hosts this computer's own gh / glab is signed in to; nothing else.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
+
   // Where a path an agent named files its messages: its repository (a linked
   // worktree folds into its main repository's project) or the folder, cached
   // per folder (packages/server/inbox-project-root.ts). One cache for sends
@@ -761,6 +778,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
+        // A Claude Code, Pi or OpenCode session whose bridge polls now is woken by the reply, whoever sent for it
+        // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID).
+        sessionWakes: async (host, session) =>
+          typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
@@ -1087,7 +1108,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       }
     }
     if (typeof body.note === "boolean") {
-      if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no instructions file.", { field: "note" });
+      if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no Inbox note workflow.", { field: "note" });
+      if (agent === "cursor") throw new InboxError("validation_error", "Cursor rules must be copied manually from Settings → Agents.", { field: "note" });
       if (inboxNotesDisabled(agentEnvironment.env) && body.note) throw new InboxError("notes_disabled", "PLANNOTATOR_INBOX_NOTES=0 is set: notes are off.");
       // Adding one needs the agent here, as the note dialog and --notes ask; switching one off never does.
       if (body.note && !agentSpec(agent).detect(agentEnvironment)) {
@@ -1125,10 +1147,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // Read before adding: an agent whose note is added is no longer a candidate.
     const shown = (body.asked as InboxNoteAgentId[] | undefined) ?? (await noteCandidateIds(options));
     const results = adding.map((agent) =>
-      // Never a file for an agent that is not on this computer.
-      agentSpec(agent).detect(agentEnvironment)
-        ? addInboxNote(agent, dataDir, agentEnvironment)
-        : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
+      agent === "cursor"
+        ? ({ ok: true, agent, action: "manual", path: null } as const)
+        // Never a file for an agent that is not on this computer.
+        : agentSpec(agent).detect(agentEnvironment)
+          ? addInboxNote(agent, dataDir, agentEnvironment)
+          : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
     );
     const failed = new Set(results.filter((result) => !result.ok).map((result) => result.agent));
     await markNotesAsked([...new Set([...shown, ...adding])].filter((id) => !failed.has(id)), options);
@@ -1186,7 +1210,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return notificationsState();
     saveConfig({ inboxNotifications: next });
     if (JSON.stringify(loadConfig().inboxNotifications) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return notificationsState();
   };
@@ -1241,7 +1265,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return soundState();
     saveConfig({ inboxSound: next });
     if (JSON.stringify(loadConfig().inboxSound) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return soundState();
   };
@@ -1289,7 +1313,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig({ theme: next });
     const saved = themeState();
     if (!saved || Object.entries(next).some(([key, value]) => saved[key as keyof ThemeConfig] !== value)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return saved;
   };
@@ -1308,8 +1332,56 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (!isInboxTextSize(input)) throw new InboxError("validation_error", "text_size: 12, 13, 14 or 15.", { field: "text_size" });
     if (validateOnly) return textSizeState();
     saveConfig({ inboxTextSize: input });
-    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
+  };
+
+  /**
+   * The onboarding tour (config.json `inboxTour`, approval
+   * "inbox-onboarding-tour"): when it was started, finished or skipped, and
+   * whether the first real thread offers notifications once more. Kept per
+   * machine, so a port change keeps it.
+   */
+  const tourState = (): InboxTourState => {
+    const value = loadConfig().inboxTour;
+    const stamp = (v: unknown) => (typeof v === "string" && v ? v : null);
+    return {
+      version: typeof value?.version === "number" ? value.version : INBOX_TOUR_VERSION,
+      seen_at: stamp(value?.seen_at),
+      finished_at: stamp(value?.finished_at),
+      skipped_at: stamp(value?.skipped_at),
+      notify_again: value?.notify_again === true,
+    };
+  };
+
+  const saveTour = (input: unknown, validateOnly = false): InboxTourState => {
+    const keys = ["seen", "finished", "skipped", "notify_again"];
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).length === 0 ||
+      Object.entries(input).some(([key, value]) => !keys.includes(key) || typeof value !== "boolean")
+    ) {
+      throw new InboxError("validation_error", "tour: { seen?, finished?, skipped?, notify_again? }, each a boolean.", { field: "tour" });
+    }
+    if (validateOnly) return tourState();
+    const change = input as InboxTourChange;
+    const now = new Date().toISOString();
+    const current = tourState();
+    const next: InboxTourState = {
+      version: INBOX_TOUR_VERSION,
+      seen_at: change.seen ? now : current.seen_at,
+      finished_at: change.finished ? now : current.finished_at,
+      skipped_at: change.skipped ? now : current.skipped_at,
+      notify_again: change.notify_again ?? current.notify_again,
+    };
+    saveConfig({ inboxTour: next });
+    const saved = tourState();
+    if (saved.seen_at !== next.seen_at || saved.finished_at !== next.finished_at || saved.skipped_at !== next.skipped_at || saved.notify_again !== next.notify_again) {
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
+    }
+    return saved;
   };
 
   /**
@@ -1327,7 +1399,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return diffStyleState();
     // saveConfig merges diffOptions per field, so code review's other diff options stay.
     saveConfig({ diffOptions: { diffStyle: input } });
-    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
   };
 
@@ -1383,7 +1455,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig(toSave);
     const saved = loadConfig();
     if ((toSave.updateCheck !== undefined && saved.updateCheck !== toSave.updateCheck) || (toSave.autoUpdate !== undefined && saved.autoUpdate !== toSave.autoUpdate)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return updatesState();
   };
@@ -1417,7 +1489,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     if (validateOnly) return experimentalState();
     saveConfig({ experimental: { decisionMode: on } });
-    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return experimentalState();
   };
 
@@ -1452,6 +1524,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     diff_style: diffStyleState(),
     /** Experimental features, each off unless switched on (Settings → General → Experimental). */
     experimental: experimentalState(),
+    /** The onboarding tour: started, finished or skipped, and whether the first real thread offers notifications once more. */
+    tour: tourState(),
     store: store.diskUsage(),
     /** Whether this Inbox serves phones; the window shows the Phones block only then. */
     phones: phonesOn,
@@ -1482,7 +1556,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const saved = loadConfig();
     for (const [host, value] of Object.entries(next)) {
       if (configuredInboxTool(saved, host as InboxToolHost) !== value) {
-        throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+        throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
       }
     }
     return inboxToolState();
@@ -2057,6 +2131,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // What reached the pairing code, and step 1's checks of this computer, are this computer's own business too.
     if (via === "tailnet" && (path === "/api/inbox/pairing" || path === "/api/inbox/pairing/checks")) return localOnly();
 
+    // The onboarding tour's fixture and assets (inbox-tour.ts): read only, served from the binary on demand.
+    const tourAnswer = await handleInboxTourRequest(req, path);
+    if (tourAnswer) return tourAnswer;
+
     try {
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
       if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url)));
@@ -2073,6 +2151,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
+      // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
+      // read guard; the owner over the tailnet gets it too. Never on the device door (not in its
+      // allowlist), so nothing of it reaches a phone or the relay.
+      if (path === "/api/inbox/ref") {
+        if (req.method !== "GET") return json({ error: "Use GET." }, 405);
+        if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
+          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
+        }
+        const href = url.searchParams.get("url") ?? "";
+        if (href.length > 2048) throw new InboxError("validation_error", "url: at most 2048 characters.", { field: "url" });
+        const result = await refCards.get(href);
+        if (!result) throw new InboxError("validation_error", "url: an https link to an issue, pull request or merge request.", { field: "url" });
+        return json({ serverSession, ...result });
+      }
       if (path === "/api/inbox/events" && req.method === "GET") {
       // Another site's page must not hold (or time) a stream of everything the Inbox holds:
       // refused like the other read routes. The phone's door and agents send no fetch metadata.
@@ -2203,9 +2295,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.text_size === undefined &&
           body.diff_style === undefined &&
           body.experimental === undefined &&
+          body.tour === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, update_check or auto_update is required.");
         }
         // Updating changes this computer: never from a page that came through the tailnet.
         if (updateSwitches && via === "tailnet") return localOnly();
@@ -2237,6 +2330,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.text_size !== undefined) saveTextSize(body.text_size, true);
         if (body.diff_style !== undefined) saveDiffStyle(body.diff_style, true);
         if (body.experimental !== undefined) saveExperimental(body.experimental, true);
+        if (body.tour !== undefined) saveTour(body.tour, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
@@ -2247,7 +2341,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const textSize = body.text_size === undefined ? textSizeState() : saveTextSize(body.text_size);
         const diffStyle = body.diff_style === undefined ? diffStyleState() : saveDiffStyle(body.diff_style);
         const experimental = body.experimental === undefined ? experimentalState() : saveExperimental(body.experimental);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental });
+        const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
@@ -2651,7 +2746,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     dataDir,
     port: () => port,
     registry: () => registry,
-    dispatch: (req) => handle(req, "tailnet"),
+    dispatch: async (req) => markPlannotatorResponse(await handle(req, "tailnet")),
     // Compress the page for the tailnet before the first phone asks (#2032).
     onListen: () => prewarmAppHtml(options.htmlContent ?? NOT_BUILT_PAGE, "br"),
     tailscale: options.tailscale,

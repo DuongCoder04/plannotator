@@ -743,10 +743,34 @@ export interface InboxQuestionChoice {
   description: string | null;
   recommended: boolean;
   settled: boolean;
+  /**
+   * A picture choice (`- [ ] Label — ![alt](path)`): the image, its src as
+   * the body writes it (the message image route and the captured
+   * `inline_images` take that same src). Present only on a picture choice;
+   * absent from records written before picture choices.
+   */
+  image?: { alt: string; src: string };
+}
+
+/**
+ * The optional contract lines of a question block (approval
+ * "inbox-decision-mode", agent contract lines): read at send time, kept on
+ * the record and served with the question. Each is present only when the
+ * block carries it; absent from older records.
+ */
+export interface InboxQuestionContract {
+  /** `Stakes:` — what the choice affects. */
+  stakes?: string;
+  /** `Shows:` — the one picture (`image`) or file (`link`) the decision is about, its src as written. */
+  shows?: { kind: "image" | "link"; label: string; src: string };
+  /** `Why:` — why the recommendation. */
+  why?: string;
+  /** `Reversible: no — <why>`: the answer cannot be taken back. Absent means reversible. */
+  reversible?: { value: false; why: string | null };
 }
 
 /** The parsed facts of a question block, kept on its record. */
-export interface InboxQuestionFacts {
+export interface InboxQuestionFacts extends InboxQuestionContract {
   context: string | null;
   choices: InboxQuestionChoice[];
   /** Plannotator's older names per choice (core `aliases`), in choice order; never served. */
@@ -899,7 +923,7 @@ export type InboxQuestionState = "open" | "picked" | "sent" | "closed" | "supers
  * exactly (`asked_by_checked_at` omitted, as Workspaces omits it outside its
  * two comment lists), plus the Inbox's `message_id`.
  */
-export interface InboxQuestion {
+export interface InboxQuestion extends InboxQuestionContract {
   key: string;
   position: number;
   /** `"action"` for an action item; read it with `readInboxQuestionKind` (fail-closed). */
@@ -960,7 +984,8 @@ export interface InboxDecision {
    */
   pictures: {
     inline: { attachment_id: string; ref: string; name: string; media_type: string | null; width: number | null; height: number | null }[];
-    attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null }[];
+    /** `paths` (additive): the file's real path, and the path it was named by when that was a link; a `Shows:` file is matched by them. */
+    attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null; paths?: string[] }[];
   };
   thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string }; section: InboxSectionId };
   /**
@@ -1345,6 +1370,35 @@ export function isInboxSoundVolume(value: unknown): value is number {
 }
 
 /**
+ * The onboarding tour (approval "inbox-onboarding-tour"; config.json
+ * `inboxTour`, through GET and POST /api/inbox/settings `tour`), kept per
+ * machine and written by the server only. `seen_at`: the tour was started;
+ * `finished_at`: it reached the end; `skipped_at`: the person left it, or
+ * chose "Connect my agents" on the entry screen. Once finished or skipped the
+ * first-run screen no longer opens on the entry screen; a quiet "Take the
+ * tour" link stays. `notify_again`: the tour ended with notifications not on,
+ * so the person's first real thread offers them once more, inline.
+ */
+export interface InboxTourState {
+  version: number;
+  seen_at: string | null;
+  finished_at: string | null;
+  skipped_at: string | null;
+  notify_again: boolean;
+}
+
+/** What POST /api/inbox/settings `tour` takes: each `true` stamps now; `notify_again` sets the flag. */
+export interface InboxTourChange {
+  seen?: boolean;
+  finished?: boolean;
+  skipped?: boolean;
+  notify_again?: boolean;
+}
+
+/** The tour's content version: the fixture's `v`, recorded with each stamp. */
+export const INBOX_TOUR_VERSION = 1;
+
+/**
  * The Inbox window's text size (config.json `inboxTextSize`, through GET and
  * POST /api/inbox/settings `text_size`): the body size in px the whole type
  * ramp scales from (packages/inbox/inbox.css `--ib-type`). 14 is the window
@@ -1439,8 +1493,8 @@ export interface InboxConnectReport {
 }
 
 /** The agents whose own instructions file can carry the Inbox note (packages/server/inbox-agent-notes.ts). */
-export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini";
-export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "pi", "opencode"];
+export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini" | "cursor";
+export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "pi", "opencode", "cursor"];
 
 /**
  * Where an agent's note would go and how it stands:
@@ -1457,7 +1511,7 @@ export interface InboxAgentNoteStatus {
   path: string | null;
   /** The file is a link; `target` is where it leads (shown). */
   target: string | null;
-  state: "absent" | "added" | "edited" | "damaged" | "refused" | "unavailable";
+  state: "absent" | "added" | "edited" | "damaged" | "refused" | "unavailable" | "manual";
   /** Adding it creates the file. */
   create: boolean;
   /** Plannotator created the file (removing the note deletes it when nothing else is left). */
@@ -1609,15 +1663,25 @@ export type InboxToolCostHost = "pi" | "opencode";
  * card action and 9,364 (2,268) with it, estimated, not re-measured on Pi.
  * Renaming "to-do" to "action item" (owner, #2059) moved the entry by 5 bytes
  * (8,228; 1,962 tokens), and "Action items you asked for" by 5 more (8,233;
- * 1,963 tokens): the stated cost stands.
+ * 1,963 tokens): the stated cost stands. The question contract lines
+ * (approval "inbox-decision-mode": `Stakes:`, `Shows:`, `Why:`,
+ * `Reversible:`, picture choices) added one paragraph to `body`, measured on
+ * Pi with the cost test (INBOX_TOOL_COST_DUMP): 8,248 → 8,701 bytes, 1,964 →
+ * 2,086 tokens with o200k_base (+453 bytes, +122 tokens). So 8,701 bytes
+ * without the card action and 9,817 with it (9,364 + 453, estimated).
+ * The screenshot nudge in `attachments` ("For something visual, a screenshot
+ * or image usually reads fastest…") added one sentence, measured on Pi with
+ * the cost test: 8,701 → 8,841 bytes (+140; about +30 tokens, so the rounded
+ * token figure stands). So 8,841 without the card action and 9,957 with it
+ * (9,817 + 140, estimated).
  */
-const INBOX_TOOL_COST_NOW = INBOX_CARD_ACTION_ON ? { bytes: 9364, tokens: 2700 } : { bytes: 8189, tokens: 2300 };
+const INBOX_TOOL_COST_NOW = INBOX_CARD_ACTION_ON ? { bytes: 9957, tokens: 2800 } : { bytes: 8841, tokens: 2500 };
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
 };
 
-/** "about 8 KB, roughly 2,300 tokens" for a host's measured cost. */
+/** "about 9 KB, roughly 2,500 tokens" for a host's measured cost. */
 export function inboxToolCostText(host: InboxToolCostHost): string {
   const cost = INBOX_TOOL_COST[host];
   return `about ${Math.round(cost.bytes / 1000)} KB, roughly ${cost.tokens.toLocaleString("en-US")} tokens`;

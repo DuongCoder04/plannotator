@@ -19,6 +19,7 @@
 
 import { findExecutable } from "../sources/runner";
 import type { ManagedAdapterSpec, ManagedLaunch } from "./adapters";
+import { isSameProgram, type SameProgramCheck, type SameProgramSignature } from "./same-program";
 import { readEffortSelect, readModelSelect, type ConfigChoice, type ConfigSelect } from "./client";
 import type { AuthMethod, SessionConfigOption } from "@agentclientprotocol/sdk";
 
@@ -31,6 +32,13 @@ export interface AgentDescriptor {
   command: string;
   /** Other names the same program is installed under, tried in order after `command`. */
   altCommands?: readonly string[];
+  /**
+   * How to tell the agent's own program from another one installed under an
+   * `altCommands` name (a generic name such as `agent`). When set, a program
+   * found under another name is used only when it has this signature, and is
+   * otherwise taken as not installed.
+   */
+  altCommandsSignature?: SameProgramSignature;
   /** Arguments that start its ACP server on stdio. */
   args: readonly string[];
   /** How to install it, as the agent's docs say (for an npm adapter: a global install of the pinned version). */
@@ -142,6 +150,12 @@ export const COPILOT: AgentDescriptor = {
 /**
  * Cursor's CLI in ACP mode. Source: https://cursor.com/docs/cli/acp (`agent
  * acp`); the ACP registry starts the same program as `cursor-agent acp`.
+ * Cursor's installer links both names to
+ * `~/.local/share/cursor-agent/versions/<version>/cursor-agent`, whose
+ * `--version` prints a dated build (`2026.07.08-0c04a8a`, seen on Cursor CLI
+ * 2026.07.08). Other tools also install an `agent` (Grok Build's
+ * `~/.grok/bin/agent` prints `grok 1.0.70 (f50904eaee6c) [stable]`), so
+ * `agent` counts as Cursor only with Cursor's signature.
  */
 export const CURSOR: AgentDescriptor = {
   id: "cursor",
@@ -149,6 +163,7 @@ export const CURSOR: AgentDescriptor = {
   engine: "cursor",
   command: "cursor-agent",
   altCommands: ["agent"],
+  altCommandsSignature: { realName: "cursor-agent", versionLine: /^\d{4}\.\d{1,2}\.\d{1,2}-[0-9a-f]{6,40}$/ },
   args: ["acp"],
   installCommand: "curl https://cursor.com/install -fsS | bash",
   // https://cursor.com/docs/cli/installation, "Windows (native, PowerShell)".
@@ -261,7 +276,8 @@ export interface CommandOverride {
 /**
  * The command to start, in this order: the override when it names a program
  * (its args, else the agent's own); the agent's program on PATH (or one of
- * its other names); the adapter copy Guided Reviews installed (`managed`).
+ * its other names, when it is the agent's own program: `altCommandsSignature`);
+ * the adapter copy Guided Reviews installed (`managed`).
  * When none is there, the answer says whether Guided Reviews can install the
  * adapter now (`reason: "adapter"`) or the user must install the agent. The
  * same for a local run and a pull request run.
@@ -272,6 +288,7 @@ export function resolveAgentLaunch(
   find: (name: string) => string | null = findExecutable,
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   platform: NodeJS.Platform = process.platform,
+  sameProgram: SameProgramCheck = isSameProgram,
 ): AdapterResolution {
   const configured = override.command?.trim();
   if (configured) {
@@ -284,9 +301,18 @@ export function resolveAgentLaunch(
     const r = agent.requires;
     return { ok: false, reason: "requires", message: `${r.label} is not installed: \`${r.command}\` is not on PATH. Install it with \`${r.installCommand}\`, then try again.` };
   }
-  for (const name of [agent.command, ...(agent.altCommands ?? [])]) {
+  const own = find(agent.command);
+  if (own) return { ok: true, command: own, args: [...agent.args], source: "path" };
+  /** Other names found on PATH that are some other program. */
+  const others: string[] = [];
+  for (const name of agent.altCommands ?? []) {
     const found = find(name);
-    if (found) return { ok: true, command: found, args: [...agent.args], source: "path" };
+    if (!found) continue;
+    if (agent.altCommandsSignature && !sameProgram(found, agent.altCommandsSignature)) {
+      others.push(name);
+      continue;
+    }
+    return { ok: true, command: found, args: [...agent.args], source: "path" };
   }
   const copy = agent.adapter ? managed(agent) : null;
   if (copy) return { ok: true, command: copy.command, args: copy.args, ...(copy.env && { env: copy.env }), source: "managed" };
@@ -298,14 +324,16 @@ export function resolveAgentLaunch(
     };
   }
   const install = installCommandFor(agent.installCommand, agent.installCommandWindows, platform);
+  const another = others.length > 0 ? ` (${others.map((n) => `the \`${n}\` there`).join(" and ")} ${others.length > 1 ? "are other programs" : "is another program"})` : "";
+  const notOnPath = `\`${agent.command}\` is not on PATH${another}`;
   return {
     ok: false,
     reason: agent.installCommand ? "agent" : "setting",
     message: !agent.installCommand
-      ? `\`${agent.command}\` is not on PATH.`
+      ? `${notOnPath}.`
       : install
-        ? `${agent.label} is not installed: \`${agent.command}\` is not on PATH. Install it with \`${install}\`, then try again.`
-        : `${agent.label} is not installed: \`${agent.command}\` is not on PATH. Install it as its docs say (${agent.docsUrl}), then try again.`,
+        ? `${agent.label} is not installed: ${notOnPath}. Install it with \`${install}\`, then try again.`
+        : `${agent.label} is not installed: ${notOnPath}. Install it as its docs say (${agent.docsUrl}), then try again.`,
   };
 }
 
@@ -335,8 +363,12 @@ export function detectAgents(
   find: (name: string) => string | null = findExecutable,
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   installAdapters = false,
+  sameProgram: SameProgramCheck = isSameProgram,
 ): AgentStatus[] {
-  const all = [...KNOWN_AGENTS, ...(custom ? [custom] : [])].map((agent) => ({ agent, launch: resolveAgentLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : overrides(agent.id), find, managed) }));
+  const all = [...KNOWN_AGENTS, ...(custom ? [custom] : [])].map((agent) => ({
+    agent,
+    launch: resolveAgentLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : overrides(agent.id), find, managed, process.platform, sameProgram),
+  }));
   const ready = (s: AgentStatus) => s.launch.ok || (installAdapters && s.launch.reason === "adapter");
   return [...all.filter(ready), ...all.filter((s) => !ready(s))];
 }

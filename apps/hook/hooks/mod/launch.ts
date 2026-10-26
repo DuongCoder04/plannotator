@@ -385,6 +385,12 @@ export interface ReadyInfo {
   isRemote: boolean
   /** What the server shows, in full, as the CLI resolved it (absent from an older CLI). */
   target?: string | string[]
+  /**
+   * A `--tailscale` session from a CLI that keeps "Ask this session" over the
+   * tailnet (#2166): `ask` true when the machine owner's tab gets it. Absent
+   * from every other session, and from an older CLI.
+   */
+  tailnet?: { ask: boolean }
 }
 
 function readyTargetOf(value: unknown): string | string[] | undefined {
@@ -403,7 +409,15 @@ export function parseReadyFile(text: string): ReadyInfo | null {
       const value = JSON.parse(line) as Record<string, unknown>
       if (typeof value.url === 'string' && typeof value.port === 'number') {
         const target = readyTargetOf(value.target)
-        return { url: value.url, port: value.port, isRemote: value.isRemote === true, ...(target !== undefined ? { target } : {}) }
+        const tailnet = value.tailnet
+        const ask = tailnet && typeof tailnet === 'object' && typeof (tailnet as { ask?: unknown }).ask === 'boolean' ? (tailnet as { ask: boolean }).ask : undefined
+        return {
+          url: value.url,
+          port: value.port,
+          isRemote: value.isRemote === true,
+          ...(target !== undefined ? { target } : {}),
+          ...(ask !== undefined ? { tailnet: { ask } } : {}),
+        }
       }
     } catch {
       // A partial line: not ready yet.
@@ -453,7 +467,9 @@ export function cliArgvFor(kind: Exclude<SessionKind, 'plan'>, args: string | re
     case 'annotate':
       return ['plannotator', 'annotate', ...words]
     case 'last':
-      return ['plannotator', 'annotate-last', '--stdin']
+      // `last` takes no words but `--tailscale` (the tool's `tailscale`, or a
+      // person who typed it after /plannotator-last).
+      return ['plannotator', 'annotate-last', '--stdin', ...(words.includes('--tailscale') ? ['--tailscale'] : [])]
   }
 }
 

@@ -91,7 +91,8 @@ export function lightboxImageName(image: Pick<LightboxImage, 'src' | 'alt'>): st
  * heading it sits under: what the lightbox steps through (plan review and
  * annotate's light version of the Inbox's one viewer, approval
  * "inbox-image-viewer"). Only images that open the lightbox count
- * (`.cursor-zoom-in`).
+ * (`.cursor-zoom-in`, or `[data-zoomable]`: a question card's picture
+ * choices, whose picture picks and whose separate zoom button opens it).
  */
 export function collectDocumentImages(container: ParentNode | null): LightboxImage[] {
   if (!container) return [];
@@ -103,7 +104,7 @@ export function collectDocumentImages(container: ParentNode | null): LightboxIma
       continue;
     }
     const img = el as HTMLImageElement;
-    if (!img.classList.contains('cursor-zoom-in')) continue;
+    if (!img.classList.contains('cursor-zoom-in') && !img.hasAttribute('data-zoomable')) continue;
     const src = img.getAttribute('src');
     if (!src || out.some((i) => i.src === src)) continue;
     const image: LightboxImage = { src, alt: img.getAttribute('alt') ?? '', section };

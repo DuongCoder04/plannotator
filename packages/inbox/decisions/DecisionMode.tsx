@@ -156,12 +156,18 @@ export function DecisionMode(props: DecisionModeProps) {
    */
   const [touched, setTouched] = useState<Map<string, number>>(new Map());
   /**
-   * What the last fresh read before a send said about a thread's reply draft, good until the next list
-   * read (`rows` is that read): the row may be older than the draft, never newer.
+   * What the last fresh reads before a send said about a thread's reply draft and the comments waiting for its
+   * Send, good until the next list read (`rows` is that read): the row may be older than they are, never newer.
    */
-  const [draftRead, setDraftRead] = useState<Map<string, { reply: boolean; rows: ReadonlyMap<string, InboxListRow> }>>(new Map());
+  const [draftRead, setDraftRead] = useState<Map<string, { reply: boolean; comments: number; rows: ReadonlyMap<string, InboxListRow> }>>(new Map());
   /** Sends on their way, by group: a second Send, "Keep as a draft" and "Send what you answered" wait for them. */
   const inFlight = useRef(new Map<string, Promise<SendResult>>());
+  /**
+   * The same groups as state, for what the render draws from them (the card's "Sending" lock, Undo, the close
+   * question): the ref alone changes without a render, so a lock drawn from it stayed until something else
+   * happened to render.
+   */
+  const [inFlightKeys, setInFlightKeys] = useState<ReadonlySet<string>>(() => new Set());
   /** The card being edited (a box open, or words typed): its group's Hold waits meanwhile. */
   const [editingId, setEditingId] = useState<string | null>(null);
   /** Words typed on a card the queue moved away from (Later, Previous, a notification): back when it is again. */
@@ -332,15 +338,15 @@ export function DecisionMode(props: DecisionModeProps) {
 
   // ── Each send group: ready → a 5 s Hold → its reply (model `nextGroupSend`). ──
   /**
-   * Whether a thread's reply goes from the thread: a reply draft (the latest list row, or a fresh read made
-   * since it), or comments waiting for the thread's Send (the row's `unsent.comments`).
+   * Whether a thread's reply goes from the thread: a reply draft, or comments waiting for the thread's Send
+   * (the latest list row's `unsent`, or the fresh reads made before a send since it).
    */
   const draftOf = useCallback(
     (threadId: string) => {
       const row = props.rows.get(threadId);
       const read = draftRead.get(threadId);
-      const reply = read && read.rows === props.rows ? read.reply : (row?.unsent?.reply_at ?? null) !== null;
-      return reply || (row?.unsent?.comments ?? 0) > 0;
+      if (read && read.rows === props.rows) return read.reply || read.comments > 0;
+      return (row?.unsent?.reply_at ?? null) !== null || (row?.unsent?.comments ?? 0) > 0;
     },
     [props.rows, draftRead],
   );
@@ -440,7 +446,16 @@ export function DecisionMode(props: DecisionModeProps) {
     if (running) return running;
     const run = sendOnce(key);
     inFlight.current.set(key, run);
-    void run.finally(() => inFlight.current.delete(key));
+    setInFlightKeys((current) => new Set(current).add(key));
+    void run.finally(() => {
+      inFlight.current.delete(key);
+      setInFlightKeys((current) => {
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    });
     return run;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.refresh]);
@@ -453,22 +468,25 @@ export function DecisionMode(props: DecisionModeProps) {
     setSend(key, { kind: 'sending' });
     try {
       await pickChain.current;
-      // A thread whose reply goes from the thread (a reply draft, comments waiting): never from here. The draft
-      // is read fresh; a read that fails sends nothing (fail closed).
+      // A thread whose reply goes from the thread (a reply draft, comments waiting): never from here. Both are
+      // read fresh (the draft, and the thread's own row for its comments); a read that fails sends nothing.
       let draft: { draft: unknown };
+      let model: Awaited<ReturnType<typeof inboxApi.thread>>;
       try {
-        draft = await inboxApi.replyDraft(first.thread.id);
+        [draft, model] = await Promise.all([inboxApi.replyDraft(first.thread.id), inboxApi.thread(first.thread.id)]);
       } catch {
         setSend(key, { kind: 'failed', error: "Couldn't check the thread for a draft reply, so nothing was sent." });
         return 'failed';
       }
       const reply = draft.draft !== null && draft.draft !== undefined;
-      setDraftRead((current) => new Map(current).set(first.thread.id, { reply, rows: rowsRef.current }));
-      if (reply || (rowsRef.current.get(first.thread.id)?.unsent?.comments ?? 0) > 0) {
+      // The thread's own row is the fresh count; an older Inbox without it falls back to the list's row.
+      const comments = (model.row !== undefined ? model.row?.unsent?.comments : rowsRef.current.get(first.thread.id)?.unsent?.comments) ?? 0;
+      setDraftRead((current) => new Map(current).set(first.thread.id, { reply, comments, rows: rowsRef.current }));
+      if (reply || comments > 0) {
         setSend(key, { kind: 'draft', held: before.kind === 'held' && before.by === 'person' });
         return 'draft';
       }
-      const { thread } = await inboxApi.thread(first.thread.id);
+      const { thread } = model;
       const targets = groupSendTargets(thread, first.session.key);
       if (targets.length === 0) {
         // Sent from the thread meanwhile: nothing left here.
@@ -653,7 +671,7 @@ export function DecisionMode(props: DecisionModeProps) {
     const decision = queue.cache.get(entry.id);
     if (!decision) return false;
     if (sentIds.has(entry.id) || queue.gone.get(entry.id) === 'sent') return false;
-    if (sends.get(groupKeyOf(decision))?.kind === 'sending' || inFlight.current.has(groupKeyOf(decision))) return false;
+    if (sends.get(groupKeyOf(decision))?.kind === 'sending' || inFlightKeys.has(groupKeyOf(decision))) return false;
     if (entry.kind === 'action') return at - entry.at < DECISION_ACTION_UNDO_MS;
     return true;
   };
@@ -719,7 +737,7 @@ export function DecisionMode(props: DecisionModeProps) {
     const reasons: CloseReasons = { half: 0, ready: 0, failed: 0, drafts: 0, sending: 0, words: wordsLeft() };
     for (const key of groupKeys(queue)) {
       const state = sends.get(key) ?? { kind: 'waiting' as const };
-      if (state.kind === 'sending' || inFlight.current.has(key)) {
+      if (state.kind === 'sending' || inFlightKeys.has(key)) {
         reasons.sending += 1;
         continue;
       }
@@ -798,7 +816,7 @@ export function DecisionMode(props: DecisionModeProps) {
   // A replacement on its way is still a decision: the end screen waits for it.
   const done = loaded && queue.current === null && !swapPending;
   const startTarget = startBanner && startBanner !== current?.id && !isHandled(queue, startBanner) ? queue.cache.get(startBanner) ?? null : null;
-  const sendingCard = current !== null && sentAnswer === null && (sends.get(groupKeyOf(current))?.kind === 'sending' || inFlight.current.has(groupKeyOf(current)));
+  const sendingCard = current !== null && sentAnswer === null && (sends.get(groupKeyOf(current))?.kind === 'sending' || inFlightKeys.has(groupKeyOf(current)));
 
   return (
     <dialog

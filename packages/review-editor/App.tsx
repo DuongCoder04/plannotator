@@ -285,8 +285,9 @@ function getFileTabTitle(filePath: string): string {
 // diff switch, PR response) also resets the session staging overrides, so
 // snapshot ≡ effective when the order is computed. Do NOT call this
 // mid-session to re-sort on stage/unstage: live staged display belongs to
-// useGitAdd's effective stagedFiles set (see AGENTS.md), and the file order
-// deliberately stays stable until the next refresh.
+// useGitAdd's effective stagedFiles set (see "Staging display invariant" in
+// docs/agent-guides/code-review.md), and the file order deliberately stays
+// stable until the next refresh.
 function orderFilesBySections(files: DiffFile[], sections?: SinceBaseSections | null): DiffFile[] {
   if (!sections) return files;
   const rank = (file: DiffFile): number => {
@@ -1593,6 +1594,9 @@ const ReviewApp: React.FC = () => {
   // Initial panel creation happens in the effect below once dockApi is set.
   const handleDockReady = useCallback((event: DockviewReadyEvent) => {
     setDockApi(event.api);
+    // A new dock has no panels. It is new after the dock remounted (a diff
+    // with 0 files unmounts it), so the initial panel must open again here.
+    needsInitialDiffPanel.current = true;
 
     // Sync activeFileIndex when user switches between dock tabs
     event.api.onDidActivePanelChange((panel) => {
@@ -2194,6 +2198,16 @@ const ReviewApp: React.FC = () => {
       });
     return () => controller.abort();
   }, [applyCallFlowAdvert, applySemanticDiffAdvert, callFlowEnabled, isLoading, semanticDiffEnabled]);
+
+  // The dock is mounted only while the diff has files (see the render below).
+  // A diff with 0 files unmounts it and disposes its API. Forget that API, or
+  // the next diff with files runs the effect below against the disposed dock
+  // (before the new dock's onReady state lands), spends its one-shot flag
+  // there, and the new dock stays empty: files in the tree, a blank pane.
+  const dockMounted = files.length > 0;
+  useEffect(() => {
+    if (!dockMounted) setDockApi(null);
+  }, [dockMounted]);
 
   // Open the All files overview on first load. Semantic diff stays available via
   // the file-tree nav entry, but it's no longer the default landing view.

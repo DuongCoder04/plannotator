@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
+import { useRefHoverCards } from '@plannotator/ui/components/RefHoverCard';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
+import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
@@ -58,7 +61,8 @@ import { ReaskNote } from './ReaskNote';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
-import { ReplyAnswers, draftAnswerWords, type DraftAnswer } from './ReplyAnswers';
+import { ReplyAnswers, SentAnswers, draftAnswerWords, type DraftAnswer } from './ReplyAnswers';
+import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentReply';
 import { SkillsLine } from './SkillsLine';
 import { paintSkillReferences } from '../skillHighlight';
 import { paintTagReferences, type TagMarkPlace } from '../tagHighlight';
@@ -238,6 +242,8 @@ export function commentTags(record: InboxAnnotationRecord): string[] {
   return Array.isArray(mentions) ? mentions.filter((id): id is string => typeof id === 'string') : [];
 }
 
+const NO_SENT_ANSWERS: readonly SentAnswerGroup[] = [];
+
 /** One message's text, with its question cards (exported for its DOM test). */
 export function MessageBody({
   message,
@@ -253,6 +259,11 @@ export function MessageBody({
   renderReplacesLine,
   renderActions,
   comments,
+  sentAnswers,
+  onJumpQuestion,
+  imageBase,
+  onImage,
+  pictureBadge,
 }: {
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
@@ -297,17 +308,56 @@ export function MessageBody({
     onUnanchored?: (report: { attempted: readonly string[]; unanchored: readonly string[] }) => void;
     onPainted?: () => void;
   };
+  /**
+   * The person's own sent reply (sentReply.ts): the answers it carried, read
+   * from the thread's questions. The reply is then drawn in the person's
+   * words, these answers as a short list, then its comments and files; the
+   * agent-facing parts of the body ("Answered N questions.", the still-open
+   * line, "## Answers to your questions") are left out. Display only: the
+   * stored body and what agents get are unchanged.
+   */
+  sentAnswers?: readonly SentAnswerGroup[];
+  /** A row of `sentAnswers` was pressed: show its question. */
+  onJumpQuestion?: (target: JumpTarget) => void;
+  /**
+   * Where the body's images load from, in place of the message's own image
+   * route (`inboxMessageImageBase`): the onboarding tour's assets
+   * (`inbox-tour:`, images.ts). Absent: the message's route.
+   */
+  imageBase?: string;
+  /** An image the body shows (a picture choice's zoom included) was opened: the host shows it. Absent: the thread's viewer. */
+  onImage?: (src: string, alt: string) => void;
+  /** A label over each picture choice's picture (ui QuestionBlock `pictureBadge`); absent: none. */
+  pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
   // is shown whole, whatever it says.
   const skills = useMemo(() => (message.author.kind === 'person' ? splitInboxSkillsBlock(message.body) : null), [message.author.kind, message.body]);
-  const shown = skills ? skills.before : message.body;
+  const sent = skills ? skills.before : message.body;
+  const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
+  const shown = replyParts ? replyParts.words : sent;
+  const restShown = replyParts ? replyParts.rest : '';
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false }), [shown]);
+  const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false }) : []), [restShown]);
   const refRepo = useRefRepo(repo);
+  // The body's images go through a host resolver that names the same URL ui's
+  // default would (the window's resolver, `inboxImageSrcResolver`), only so ui
+  // draws an image the Inbox refuses (403 image_hidden, 404) as its alt text in
+  // a quiet chip instead of a broken-image icon: markdown images, `<img>` in
+  // raw-HTML blocks and question cards' pictures alike. Remote, `data:` and
+  // `blob:` sources keep their URL (HtmlBlock's default test: `https:host/a.png`
+  // is remote too).
+  const imageBaseDir = imageBase ?? inboxMessageImageBase(message.id);
+  const resolveImage = useCallback<ImageResolver>(
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    [imageBaseDir],
+  );
   // A tall screenshot in the body shows its top, cropped like the gallery's
   // (inbox.css); a click still opens it whole.
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Hover cards for issue, PR and MR links in the body (ui RefHoverCard).
+  const refCard = useRefHoverCards(bodyRef);
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -348,11 +398,15 @@ export function MessageBody({
     },
     [imageOf, message.id],
   );
-  const onImageClick = useCallback((src: string, alt: string) => void openImage(src, alt), [openImage]);
+  const onImageRef = useRef(onImage);
+  onImageRef.current = onImage;
+  const onImageClick = useCallback((src: string, alt: string) => (onImageRef.current ? onImageRef.current(src, alt) : void openImage(src, alt)), [openImage]);
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
     for (const img of body.querySelectorAll<HTMLImageElement>('img')) {
+      // A question card's picture (a picture choice, `Shows:`): the card makes it pick, or opens it with its own button.
+      if (img.hasAttribute('data-question-picture')) continue;
       const src = img.getAttribute('src');
       const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
       if (ref === null || img.hasAttribute('data-ib-broken')) continue;
@@ -372,14 +426,14 @@ export function MessageBody({
     // Markdown images reach openImage through Viewer's onImageClick; an image in a raw-HTML block has no handler of its own.
     const onClick = (event: MouseEvent) => {
       const img = event.target instanceof HTMLImageElement ? event.target : null;
-      if (!img || img.classList.contains('cursor-zoom-in')) return;
+      if (!img || img.classList.contains('cursor-zoom-in') || img.hasAttribute('data-question-picture')) return;
       if (openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
       const img = event.target instanceof HTMLImageElement ? event.target : null;
-      if (img && openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
+      if (img && !img.hasAttribute('data-question-picture') && openImage(img.getAttribute('src'), img.alt)) event.preventDefault();
     };
     body.addEventListener('click', onClick);
     body.addEventListener('keydown', onKey);
@@ -567,7 +621,10 @@ export function MessageBody({
   );
 
   return (
-    <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} ref={bodyRef}>
+    <ImageResolverContext.Provider value={resolveImage}>
+    <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef}>
+      {refCard}
+      {(!replyParts || shown !== '') && (
       <Viewer
         ref={viewerRef}
         blocks={blocks}
@@ -584,7 +641,7 @@ export function MessageBody({
         maxWidth={null}
         stickyActions={false}
         disableCodePathValidation
-        imageBaseDir={inboxMessageImageBase(message.id)}
+        imageBaseDir={imageBaseDir}
         onImageClick={onImageClick}
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
@@ -596,12 +653,42 @@ export function MessageBody({
         renderQuestionFooter={renderFooter}
         // The Inbox records no decisions: a `Decision:` line an older agent wrote is context.
         questionDecisionLines={false}
+        // The Inbox draws the contract lines (Stakes, Shows, Why, Can't be undone), approval "inbox-decision-mode".
+        questionContractLines
         questionReadOnly={answerLocked}
         questionStatusLabel={statusLabel}
+        questionPictureBadge={pictureBadge}
         renderQuestionCard={renderReplacedCard ? questionCard : undefined}
         renderQuestionBelowPrompt={renderReplacesLine ? belowPrompt : undefined}
         renderDirectiveBlock={renderActions ? directiveBlock : undefined}
       />
+      )}
+      {replyParts && sentAnswers && sentAnswers.length > 0 && <SentAnswers groups={sentAnswers} onJump={onJumpQuestion} />}
+      {replyParts && restShown && (
+        <div data-sent-rest="">
+        <Viewer
+          blocks={restBlocks}
+          markdown={restShown}
+          annotations={NO_ANNOTATIONS}
+          onAddAnnotation={noop}
+          onSelectAnnotation={noop}
+          selectedAnnotationId={null}
+          allowImages={false}
+          mode="selection"
+          taterMode={false}
+          maxWidth={null}
+          stickyActions={false}
+          disableCodePathValidation
+          imageBaseDir={imageBaseDir}
+          onImageClick={onImageClick}
+          resolveLocalLink={resolveLocalLink}
+          refRepo={refRepo}
+          answerOnly
+          readOnly
+          questionDecisionLines={false}
+        />
+        </div>
+      )}
       {skills && <SkillsLine split={skills} />}
       {tagLabels && (
         <div className="ib-tg-marks" ref={tagLayerRef} aria-hidden="true" data-tag-marks="">
@@ -614,10 +701,13 @@ export function MessageBody({
       )}
       {fallback && createPortal(<ImageLightbox src={fallback.src} alt={fallback.alt} onClose={() => setFallback(null)} />, document.body)}
     </div>
+    </ImageResolverContext.Provider>
   );
 }
 
 export interface ThreadPaneProps {
+  /** A line under the subject, from the window (the tour's notifications ask, once more, in the first real thread). */
+  notice?: React.ReactNode;
   thread: InboxThread;
   /**
    * The thread's list row's `sent`: the person's reply is the last message
@@ -897,7 +987,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -2076,6 +2166,18 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
         }),
   );
 
+  // The person's own sent replies are drawn in their words, with the answers they carried as a
+  // short list read from the questions (sentReply.ts): never the agent-facing answers section.
+  const sentAnswersByReply = useMemo(() => {
+    const out = new Map<string, SentAnswerGroup[]>();
+    for (const m of thread.messages) {
+      if (m.author.kind !== 'person') continue;
+      const groups = sentAnswersOf(m, thread.messages, (asked) => `${agentName(asked.author)}'s message, ${whenTime(asked.created_at)}`);
+      if (groups.length > 0) out.set(m.id, groups);
+    }
+    return out;
+  }, [thread.messages]);
+
   const openBox = () => {
     setNewMessage(null);
     setRoute((current) => ({ ...current, open: false, error: null }));
@@ -3020,6 +3122,7 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
       <div className={`ib-pbody${one ? '' : ' ib-folding'}`} ref={bodyRef} hidden={artifactsOn}>
         {/* A focus target (the way back's fallback, a stacked thread), never a tab stop. */}
         <h2 className="ib-subject" dir="auto" tabIndex={-1}>{thread.subject ?? '(no subject)'}</h2>
+        {notice}
         {startedTo && (
           <div className="ib-tmeta" data-started-by="">
             <span>You started this thread</span>
@@ -3312,6 +3415,8 @@ export function ThreadPane({ thread, sent, onQuestions, onChanged, draftChanged 
                 ) : (
                 <MessageBody
                   message={message}
+                  sentAnswers={message.author.kind === 'person' ? (sentAnswersByReply.get(message.id) ?? NO_SENT_ANSWERS) : undefined}
+                  onJumpQuestion={jumpTo}
                   projectRoot={thread.project.root}
                   repo={thread.project.repo ?? null}
                   onOpenAttachment={openFromMessage}

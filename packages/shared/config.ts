@@ -5,6 +5,7 @@
  * Runtime-agnostic: uses only node:fs, node:os, node:child_process.
  */
 
+import { childEnv } from "./child-env";
 import { join } from "path";
 import { getPlannotatorDataDir } from "./data-dir";
 import {
@@ -330,6 +331,13 @@ export interface PlannotatorConfig {
    */
   inboxTextSize?: number;
   /**
+   * The Inbox's onboarding tour, per machine (approval "inbox-onboarding-tour"):
+   * when it was started, finished or skipped, and whether the first real thread
+   * offers notifications once more. Written by the server only, through POST
+   * /api/inbox/settings `{ tour }`.
+   */
+  inboxTour?: { version?: number; seen_at?: string | null; finished_at?: string | null; skipped_at?: string | null; notify_again?: boolean };
+  /**
    * Experimental features, each off unless switched on (owner, approval
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;
@@ -548,13 +556,41 @@ export function loadConfig(): PlannotatorConfig {
   try {
     const configPath = getConfigPath();
     if (!existsSync(configPath)) return {};
-    const raw = readFileSync(configPath, "utf-8");
+    // A UTF-8 BOM (Notepad's "UTF-8 with BOM") is not part of the JSON.
+    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null ? parsed : {};
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch (e) {
     process.stderr.write(`[plannotator] Warning: failed to read config.json: ${e}\n`);
     return {};
   }
+}
+
+/**
+ * config.json as saveConfig reads it before a merge. A missing file (or one
+ * holding only whitespace) is an empty config, so a first save creates it as
+ * before. A file that exists but cannot be read, or is not a JSON object, is
+ * refused: merging onto loadConfig's `{}` and writing would replace every
+ * setting in it with the one key being saved.
+ */
+function readConfigForSave(configPath: string): { ok: true; config: PlannotatorConfig } | { ok: false; reason: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { ok: true, config: {} };
+    return { ok: false, reason: `it could not be read (${code ?? String(e)})` };
+  }
+  if (raw.trim() === "") return { ok: true, config: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "it is not valid JSON" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false, reason: "it is not a JSON object" };
+  return { ok: true, config: parsed as PlannotatorConfig };
 }
 
 // --- config.json write serialization ----------------------------------------
@@ -716,10 +752,17 @@ function writeConfigAtomic(configPath: string, contents: string): void {
  * (in this process or another one sharing the data dir) cannot drop each
  * other's keys. See the lock notes above for the failure mode: it degrades to
  * the old unlocked behavior with a warning, never to a hang.
+ *
+ * A config.json that exists but cannot be read or is not a JSON object is
+ * never written over (readConfigForSave): the save is refused with a warning
+ * and the file is left in place, so fixing it brings every setting back.
+ * Returns whether the file was written; callers that report a save check it
+ * (or read the value back).
  */
-export function saveConfig(partial: Partial<PlannotatorConfig>): void {
+export function saveConfig(partial: Partial<PlannotatorConfig>): boolean {
   let lockPath: string | null = null;
   let locked = false;
+  let saved = false;
   try {
     mkdirSync(getConfigDir(), { recursive: true });
     lockPath = getConfigLockPath();
@@ -731,42 +774,45 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
       );
     }
 
-    const current = loadConfig();
+    const read = readConfigForSave(getConfigPath());
+    if (!read.ok) {
+      process.stderr.write(
+        `[plannotator] Warning: not saving config.json because ${read.reason}; `
+        + `the settings in it are kept. Fix or remove ${getConfigPath()} to save settings again.\n`,
+      );
+      return false;
+    }
+    const current = read.config;
     configSaveMergeWindowHook?.();
-    const mergedDiffOptions = (current.diffOptions || partial.diffOptions)
-      ? { ...current.diffOptions, ...partial.diffOptions }
-      : undefined;
-    const mergedTheme = (current.theme || partial.theme)
-      ? { ...current.theme, ...partial.theme }
-      : undefined;
-    const mergedReviewAnalysis = (current.reviewAnalysis || partial.reviewAnalysis)
-      ? { ...current.reviewAnalysis, ...partial.reviewAnalysis }
-      : undefined;
-    const mergedPrompts = mergePromptConfig(current.prompts, partial.prompts);
-    // One experimental switch saved keeps the others as they are.
-    // A hand-edited config.json may hold anything there: only plain objects are merged.
-    const plain = (value: unknown): Record<string, unknown> | undefined =>
-      value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-    const currentExperimental = plain(current.experimental);
-    const partialExperimental = plain(partial.experimental);
-    const mergedExperimental = currentExperimental || partialExperimental
-      ? { ...currentExperimental, ...partialExperimental } as PlannotatorConfig["experimental"]
-      : undefined;
-    const merged = {
-      ...current,
-      ...partial,
-      experimental: mergedExperimental,
-      diffOptions: mergedDiffOptions,
-      theme: mergedTheme,
-      reviewAnalysis: mergedReviewAnalysis,
-      prompts: mergedPrompts,
+    // The nested settings merge key by key (one experimental switch saved keeps the others), but a
+    // hand-edited config.json may hold anything there. A key the write does not name is kept verbatim,
+    // whatever it holds; one it names merges only when both sides are plain objects, else the write's
+    // value replaces it (a string `theme` is never spread into characters).
+    const plain = (value: unknown): value is Record<string, unknown> =>
+      !!value && typeof value === "object" && !Array.isArray(value);
+    const merged: Record<string, unknown> = { ...current, ...partial };
+    const nested = (key: "experimental" | "diffOptions" | "theme" | "reviewAnalysis" | "prompts") => {
+      const cur = (current as Record<string, unknown>)[key];
+      const par = (partial as Record<string, unknown>)[key];
+      if (par === undefined) {
+        if (cur !== undefined) merged[key] = cur;
+        return;
+      }
+      if (!plain(cur) || !plain(par)) {
+        merged[key] = par;
+        return;
+      }
+      merged[key] = key === "prompts" ? mergePromptConfig(cur as PromptConfig, par as PromptConfig) : { ...cur, ...par };
     };
+    for (const key of ["experimental", "diffOptions", "theme", "reviewAnalysis", "prompts"] as const) nested(key);
     writeConfigAtomic(getConfigPath(), JSON.stringify(merged, null, 2) + "\n");
+    saved = true;
   } catch (e) {
     process.stderr.write(`[plannotator] Warning: failed to write config.json: ${e}\n`);
   } finally {
     if (locked && lockPath) releaseConfigLock(lockPath);
   }
+  return saved;
 }
 
 /**
@@ -775,7 +821,7 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): void {
  */
 export function detectGitUser(cwd?: string): string | null {
   try {
-    const name = execSync("git config user.name", { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    const name = execSync("git config user.name", { cwd, env: childEnv(), encoding: "utf-8", timeout: 3000 }).trim();
     return name || null;
   } catch {
     return null;
