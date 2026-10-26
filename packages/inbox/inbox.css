@@ -4604,6 +4604,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .pm-acts { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .pm-count { font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .pm-count[data-over] { color: var(--destructive); }
+/* A config.json path outside the home folder can be long: it wraps, never runs off a phone's screen. */
+.pm-path { overflow-wrap: anywhere; }
 .pm-over { margin: 8px 0 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); line-height: 1.45; }
 .pm-err { margin: 8px 0 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--destructive); line-height: 1.45; }
 .pn-inbox .pm-disc { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; padding: 2px 0; background: none; border: 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); cursor: pointer; }

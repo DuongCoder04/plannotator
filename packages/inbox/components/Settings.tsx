@@ -700,7 +700,7 @@ export function SettingsPage(props: SettingsPageProps) {
         break;
       case 'prompts':
         body = settings.prompts ? (
-          <PromptsSection prompts={settings.prompts} onPrompts={props.onPrompts} configPath={tildePath(`${settings.data_dir}/config.json`, settings.home)} />
+          <PromptsSection prompts={settings.prompts} onPrompts={props.onPrompts} configFile={`${settings.data_dir}/config.json`} home={settings.home} />
         ) : (
           <div className="ib-card ib-sempty">
             <Icon name="prompt" />

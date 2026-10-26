@@ -14,6 +14,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxPromptHost, InboxPromptsSettings } from '@plannotator/core/inbox-types';
+import { tooltipOf } from './testing/tooltip';
 
 const hasDom = typeof document !== 'undefined';
 const { PromptsSection, promptsSummary } = (hasDom ? await import('./components/PromptsSettings') : {}) as typeof import('./components/PromptsSettings');
@@ -75,7 +76,8 @@ function mount(start: InboxPromptsSettings) {
     root!.render(
       <PromptsSection
         prompts={current}
-        configPath="~/.plannotator/config.json"
+        configFile="/Users/ann/.plannotator/config.json"
+        home="/Users/ann"
         onPrompts={(next) => {
           current = next;
           render();
@@ -278,6 +280,22 @@ test.skipIf(!hasDom)("OpenCode 1: its row shows the default it really gets (the 
   });
   expect(q(host!, '[data-prompt-status="opencode"]')?.textContent).toBe('Uses the shared text · Reminder off in Agents');
   expect(q(host!, '[data-prompt-text="opencode"]')).toBeNull();
+});
+
+test.skipIf(!hasDom)('config.json is named with the home folder as ~, the full path in the component tooltip; outside home, in full with none', async () => {
+  const el = mount(model());
+  const path = q(el, '[data-prompts-config-path]')!;
+  expect(path.textContent).toBe('~/.plannotator/config.json');
+  expect(path.hasAttribute('title')).toBe(false);
+  expect(await tooltipOf(path)).toBe('/Users/ann/.plannotator/config.json');
+  act(() => root!.unmount());
+  act(() => {
+    root = createRoot(host!);
+    root.render(<PromptsSection prompts={model()} configFile="/srv/plannotator/config.json" home="/Users/ann" />);
+  });
+  const outside = q(host!, '[data-prompts-config-path]')!;
+  expect(outside.textContent).toBe('/srv/plannotator/config.json');
+  expect(await tooltipOf(outside)).toBeNull();
 });
 
 test.skipIf(!hasDom)('through the tailnet: read-only, no Edit anywhere', () => {

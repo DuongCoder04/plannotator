@@ -7,6 +7,7 @@ import {
   type InboxPromptsSettings,
 } from '@plannotator/core/inbox-types';
 import { inboxApi } from '../api';
+import { tildePath } from '../format';
 import { HostMark, Icon } from '../icons';
 import { Tip } from './Tip';
 
@@ -48,12 +49,15 @@ function Chevron() {
 export function PromptsSection({
   prompts,
   onPrompts,
-  configPath = '~/.plannotator/config.json',
+  configFile = '~/.plannotator/config.json',
+  home = null,
 }: {
   prompts: InboxPromptsSettings;
   onPrompts?: (next: InboxPromptsSettings) => void;
-  /** Where config.json is, as the page names it. */
-  configPath?: string;
+  /** Where config.json is, in full. */
+  configFile?: string;
+  /** The home folder, shown as `~` in the config.json path (the full path in a tooltip). */
+  home?: string | null;
 }) {
   const { reminder } = prompts;
   const id = useId();
@@ -327,12 +331,13 @@ export function PromptsSection({
           {INBOX_PROMPT_HOSTS.map(agent)}
         </div>
       </section>
-      <OtherPrompts others={prompts.others} open={otherOpen} onToggle={() => setOtherOpen((open) => !open)} configPath={configPath} />
+      <OtherPrompts others={prompts.others} open={otherOpen} onToggle={() => setOtherOpen((open) => !open)} configFile={configFile} home={home} />
     </div>
   );
 }
 
-function OtherPrompts({ others, open, onToggle, configPath }: { others: InboxPromptItem[]; open: boolean; onToggle: () => void; configPath: string }) {
+function OtherPrompts({ others, open, onToggle, configFile, home }: { others: InboxPromptItem[]; open: boolean; onToggle: () => void; configFile: string; home: string | null }) {
+  const shown = tildePath(configFile, home);
   const id = useId();
   const customs = others.filter((item) => item.custom).length;
   const groups: { label: string; items: InboxPromptItem[] }[] = [];
@@ -347,7 +352,15 @@ function OtherPrompts({ others, open, onToggle, configPath }: { others: InboxPro
     <section className="ib-sgroup" aria-labelledby={`${id}-h`}>
       <h2 id={`${id}-h`}>Plan, review and annotate</h2>
       <p>
-        Read-only here. Set them in <code>{configPath}</code>.
+        Read-only here. Set them in{' '}
+        {shown === configFile ? (
+          <code className="pm-path" data-prompts-config-path="">{shown}</code>
+        ) : (
+          <Tip content={configFile}>
+            <code className="pm-path" data-prompts-config-path="">{shown}</code>
+          </Tip>
+        )}
+        .
       </p>
       <div className="ib-card">
         <button type="button" className="pm-fold" aria-expanded={open} aria-controls={`${id}-list`} onClick={onToggle} data-prompts-fold="">
