@@ -69,7 +69,8 @@ extension runs in OMP too. Install it, then restart OMP:
 omp plugin install @plannotator/pi-extension
 ```
 
-Update with `omp plugin upgrade @plannotator/pi-extension`. Remove with
+Update with `omp plugin upgrade @plannotator/pi-extension`, then type
+`/restart` in each open OMP session to load the new version. Remove with
 `omp plugin uninstall @plannotator/pi-extension`.
 
 Open reviews with the extension's commands: `/plannotator-review`,
