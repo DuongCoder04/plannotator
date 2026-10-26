@@ -22,6 +22,7 @@ import {
   inboxLoadedPredatesSendNow,
   type InboxDeliveryReason,
   type InboxDeliveryState,
+  type InboxReloadRuntime,
   type InboxSessionOutdated,
 } from '@plannotator/core/inbox-types';
 
@@ -70,11 +71,24 @@ export function waitInputs(
  */
 export interface RestartNote {
   fix: InboxSessionOutdated['fix'];
-  /** The command that brings the session back as itself; null when the Inbox does not know its folder. */
+  /** The command that brings the session back as itself (Claude Code); null when the Inbox does not know its folder. */
   command: string | null;
-  /** The plugin update command (`update_plugin`). */
+  /** The plugin update command (`update_plugin`, `update_extension`). */
   updateCommand: string | null;
+  /**
+   * The runtime and its reload (owner approval "reload-hosts"): Claude Code
+   * `/reload-plugins`, Pi `/reload`, Oh My Pi `/restart` (typed in the
+   * session), OpenCode 2 `opencode2 reload` or `opencode2 plugin update` (run
+   * in a shell), with OpenCode's fallback `opencode2 service restart`.
+   */
+  runtime: InboxReloadRuntime;
+  reloadCommand: string;
+  reloadWhere: 'session' | 'shell';
+  fallbackCommand: string | null;
 }
+
+/** Claude Code's reload (the mod reloads with the plugins). */
+export const CLAUDE_RELOAD_COMMAND = '/reload-plugins';
 
 /**
  * The restart note for a session that works now and has no Send now
@@ -91,11 +105,22 @@ export function restartNote(connection: RecipientConnection | null | undefined):
   // turn, the engine refused a row): a restart would not change that, so the line never blames the plugin.
   if (!inboxLoadedPredatesSendNow(outdated.loaded)) return null;
   const command = connection.restart_command ?? null;
-  if (outdated.fix === 'update_plugin') {
-    return { fix: outdated.fix, command, updateCommand: outdated.update_command ?? null };
+  const runtime = outdated.runtime ?? 'claude-code';
+  const reload = {
+    runtime,
+    reloadCommand: outdated.reload_command ?? CLAUDE_RELOAD_COMMAND,
+    reloadWhere: outdated.reload_where ?? 'session',
+    fallbackCommand: outdated.fallback_command ?? null,
+  } as const;
+  if (runtime === 'claude-code') {
+    if (outdated.fix === 'update_plugin') return { fix: outdated.fix, command, updateCommand: outdated.update_command ?? null, ...reload };
+    if (outdated.fix !== 'restart') return null;
+    return { fix: outdated.fix, command, updateCommand: null, ...reload };
   }
-  if (outdated.fix !== 'restart') return null;
-  return { fix: outdated.fix, command, updateCommand: null };
+  // Pi, Oh My Pi, OpenCode 2: a reload alone, or the update first.
+  if (outdated.fix === 'reload') return { fix: outdated.fix, command: null, updateCommand: null, ...reload };
+  if (outdated.fix === 'update_extension' && outdated.update_command) return { fix: outdated.fix, command: null, updateCommand: outdated.update_command, ...reload };
+  return null;
 }
 
 export type DeliveryLineState = InboxDeliveryState;

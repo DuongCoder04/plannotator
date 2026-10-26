@@ -31,6 +31,8 @@ import type {
 } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import type { RecipientConnection } from './deliveryLine';
+import { parseRestartAgents } from './restartAgents';
+import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import type { InboxSearchAnswer, InboxSearchFrom, InboxSearchGroupId, InboxSearchStatus } from '@plannotator/core/inbox-search';
 import type {
   InboxAgentId,
@@ -85,6 +87,8 @@ export interface ListModel {
   updated?: string | null;
   /** Claude Code sessions a /reload-plugins would bring up to date: the sidebar's "Reload Claude Code N". Absent from an older Inbox. */
   restart_claude_code?: number;
+  /** Every runtime's sessions a reload brings up to date: the sidebar's "Reload agents N". Absent from an older Inbox. */
+  restart_agents?: InboxRestartAgents;
   notice: string | null;
   projects: ProjectFolder[];
   project: string | null;
@@ -889,9 +893,10 @@ export interface InboxEventHandlers {
   onRecord: (event: InboxEvent | null) => void;
   /**
    * `updated` is undefined from an Inbox older than the field (the "What's new in X" link stays as the list said);
-   * `restartClaudeCode` too (the sidebar's "Reload Claude Code N" stays as the list said).
+   * `restartClaudeCode` too (the sidebar's "Reload Claude Code N" stays as the list said), and
+   * `restartAgents` (every runtime's count, "Reload agents N").
    */
-  onStatus: (update: InboxHealth['update'], updated?: string | null, restartClaudeCode?: number) => void;
+  onStatus: (update: InboxHealth['update'], updated?: string | null, restartClaudeCode?: number, restartAgents?: InboxRestartAgents) => void;
   /** Whether a notification can reach the person now (inbox-windows.ts); never called by an older Inbox. */
   onReach?: (reach: InboxNotifyReach) => void;
   /**
@@ -993,11 +998,12 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
     }
     case 'status':
       try {
-        const data = JSON.parse(frame.data) as { update: InboxHealth['update']; updated?: string | null; restart_claude_code?: unknown };
+        const data = JSON.parse(frame.data) as { update: InboxHealth['update']; updated?: string | null; restart_claude_code?: unknown; restart_agents?: unknown };
         handlers.onStatus(
           data.update,
           'updated' in data ? (data.updated ?? null) : undefined,
           typeof data.restart_claude_code === 'number' ? data.restart_claude_code : undefined,
+          parseRestartAgents(data.restart_agents) ?? undefined,
         );
       } catch {
         // A malformed frame changes nothing.

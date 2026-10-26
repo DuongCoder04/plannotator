@@ -133,7 +133,16 @@ import { createInboxOpenInRoute, systemOpenInLauncher, type InboxOpenInLauncher 
 import { recordInboxAttachments, sweepStaleInboxSendTemps } from "@plannotator/shared/inbox/attachments";
 import { inboxBodyForAgent, inboxUploadAttachments, removeInboxAttachmentFiles, removeInboxUploads } from "@plannotator/shared/inbox/uploads";
 import { createInboxLiveSessions } from "./inbox-sessions";
-import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, CLAUDE_PLUGIN_UPDATE_COMMAND, createClaudePluginInstallReader, piSessionOutdated } from "./inbox-restart";
+import {
+  claudePluginBehindInbox,
+  claudeRestartCommand,
+  claudeSessionOutdated,
+  CLAUDE_PLUGIN_UPDATE_COMMAND,
+  createClaudePluginInstallReader,
+  createPiPinReader,
+  openCodeSessionOutdated,
+  piSessionOutdated,
+} from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
@@ -863,6 +872,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       updated: updates.updated(),
       /** Claude Code sessions a restart would bring up to date (inbox-restart.ts): the sidebar's "Reload Claude Code N". Additive. */
       restart_claude_code: live.restartCount(),
+      /** Every runtime's sessions a reload brings up to date (Claude Code, Pi, Oh My Pi, OpenCode 2): "Reload agents N". Additive. */
+      restart_agents: live.restartAgents(),
       notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
       projects: projectFolders(rows),
       project: projectFilter,
@@ -1651,7 +1662,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // `updated` (additive): the "What's new in X" link appears or goes once its notes are fetched or cannot be.
         // `restart_claude_code` (additive): the sidebar's "Reload Claude Code N" follows the sessions as they restart.
         const onStatus = () =>
-          send(`event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount() })}\n\n`);
+          send(`event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount(), restart_agents: live.restartAgents() })}\n\n`);
         statusListeners.add(onStatus);
         // An Inbox window (not the phone's door): counted while its stream is open, with what it reported.
         const windowId = parseWindowId(url.searchParams.get("window"));
@@ -1905,6 +1916,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // ── New message (step 8): the live sessions and the window's two routes (packages/server/inbox-sessions.ts) ──
   // Which polling sessions run an older plugin than a restart loads (inbox-restart.ts).
   const claudePluginInstall = createClaudePluginInstallReader(agentEnvironment);
+  // Pi's settings pin an exact extension version: `pi update --extensions` skips it.
+  const piPinned = createPiPinReader(agentEnvironment);
   const live = createInboxLiveSessions({
     store,
     serverSession,
@@ -1920,7 +1933,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           changedAt: claudePluginInstall.changedAt,
         });
       }
-      return host === "pi" ? piSessionOutdated(plugin, version) : null;
+      if (host === "pi") return piSessionOutdated(plugin, version, { pinned: piPinned() });
+      return host === "opencode" ? openCodeSessionOutdated(plugin, version) : null;
     },
     displayFolder: (path) => displayPath(path, agentEnvironment) ?? path,
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),
@@ -1957,9 +1971,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const autoSendWatch = setInterval(autoSendSweep, options.autoSendSweepMs ?? INBOX_AUTO_SEND_SWEEP_MS);
   (autoSendWatch as { unref?: () => void }).unref?.();
   // The sidebar's "Reload Claude Code N" is pushed as it changes (a session restarts, goes away, or an update lands).
-  let lastRestartCount = 0;
+  let lastRestartCount = "";
   const restartWatch = setInterval(() => {
-    const count = live.restartCount();
+    const count = JSON.stringify(live.restartAgents());
     if (count === lastRestartCount) return;
     lastRestartCount = count;
     for (const listener of statusListeners) listener();

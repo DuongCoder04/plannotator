@@ -13,7 +13,8 @@ import { inboxApi } from '../api';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon } from '../icons';
 import { ConnectPicker } from './ConnectPicker';
-import { CopyCommand, Fold, ReloadLead } from './RestartNote';
+import { CommandLine, CopyCommand, Fold, ReloadLead, type ReloadSpec } from './RestartNote';
+import type { InboxReloadRuntime } from '@plannotator/core/inbox-types';
 import { clockTime, dayWords, formatCount } from '../format';
 
 /** Whether any host has an open session that needs a restart or an update: Settings' Agents dot. */
@@ -48,17 +49,21 @@ function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHo
   const stale = sessions.sessions.filter((s) => s.outdated);
   const versions = [...new Set(stale.map((s) => s.plugin))];
   const what = id === 'pi' ? 'extension' : 'plugin';
+  // OpenCode reports its plugin since "reload-hosts"; an older OpenCode connection says nothing.
+  const reports = id !== 'opencode' || sessions.sessions.some((s) => s.plugin);
   const older =
     stale.length === 0
-      ? id === 'opencode'
-        ? ''
-        : ' · up to date'
+      ? reports
+        ? ' · up to date'
+        : ''
       : versions.length === 1 && versions[0]
         ? ` · ${stale.length} on ${what} ${versions[0]}`
         : ` · ${stale.length} on an older ${what}`;
-  const runningOnly = id === 'pi' && stale.length === 0 && sessions.sessions[0]?.plugin ? ` · extension ${sessions.sessions[0].plugin}` : '';
+  const runningOnly = id !== 'claude-code' && stale.length === 0 && sessions.sessions[0]?.plugin ? ` · ${what} ${sessions.sessions[0].plugin}` : '';
+  // Pi, Oh My Pi and OpenCode 2 sessions whose connection says which command loads the new code.
+  const reloadable = stale.filter((s) => s.outdated?.runtime && s.outdated.runtime !== 'claude-code');
   let sub: ReactNode = null;
-  if (id === 'pi' && stale.length > 0) {
+  if (id === 'pi' && stale.length > 0 && reloadable.length === 0) {
     const first = stale[0]!;
     sub = (
       <>
@@ -66,8 +71,6 @@ function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHo
         {stale.length === 1 ? ` (${first.project ?? 'Pi'}, since ${sinceText(first.started_at)})` : ''}.
       </>
     );
-  } else if (id === 'opencode' && stale.length > 0) {
-    sub = <>Restart OpenCode to load the newer plugin.</>;
   }
   const reload = id === 'claude-code' && stale.length > 0;
   const updating = stale.some((s) => s.outdated?.fix === 'update_plugin');
@@ -86,6 +89,7 @@ function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHo
           <span>{sub}</span>
         </span>
       )}
+      {reloadable.length > 0 && <HostReload sessions={reloadable} />}
       {reload && (
         <div className="ib-rl" data-reload-sessions="">
           <ReloadLead
@@ -114,6 +118,71 @@ function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHo
         </div>
       )}
     </div>
+  );
+}
+
+const RUNTIME_LABEL: Record<InboxReloadRuntime, string> = { 'claude-code': 'Claude Code', pi: 'Pi', 'oh-my-pi': 'Oh My Pi', opencode: 'OpenCode' };
+
+/**
+ * Pi, Oh My Pi and OpenCode 2 sessions on older code (owner approval
+ * "reload-hosts"): per runtime and command, one large line with Copy
+ * ("Type /reload in each of these 2 Pi sessions.", "Type /restart in this Oh
+ * My Pi session.", "Run opencode2 reload: it loads the new plugin in every
+ * OpenCode session."), the update first when the package on disk is behind
+ * too, then the sessions as a short list. OpenCode's fallback is folded.
+ */
+function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
+  const groups = new Map<string, InboxOpenSession[]>();
+  for (const s of sessions) {
+    const o = s.outdated!;
+    const key = `${o.runtime}|${o.reload_command ?? ''}|${o.fix === 'update_extension' ? (o.update_command ?? '') : ''}`;
+    groups.set(key, [...(groups.get(key) ?? []), s]);
+  }
+  return (
+    <>
+      {[...groups.values()].map((group) => {
+        const o = group[0]!.outdated!;
+        const runtime = o.runtime!;
+        const name = RUNTIME_LABEL[runtime];
+        const reload: ReloadSpec = { command: o.reload_command ?? '/reload', where: o.reload_where ?? 'session' };
+        const n = group.length;
+        const shell = reload.where === 'shell';
+        const where = shell
+          ? o.reload_command === 'opencode2 plugin update'
+            ? 'to load the newer plugin in every OpenCode session'
+            : 'to load the new plugin in every OpenCode session'
+          : n === 1
+            ? `in this ${name} session`
+            : `in each of these ${n} ${name} sessions`;
+        const what = runtime === 'opencode' ? "Plannotator's OpenCode plugin" : "Plannotator's extension";
+        return (
+          <div className="ib-rl" data-reload-sessions={runtime} key={`${runtime}-${reload.command}`}>
+            <ReloadLead where={where} updateCommand={o.fix === 'update_extension' ? (o.update_command ?? null) : null} reload={reload} what={what} />
+            {runtime === 'opencode' && (
+              <p className="ib-rl-manual" data-opencode-quit-note="">
+                Quitting OpenCode is not enough: its background server keeps the old plugin.
+              </p>
+            )}
+            <ul className="ib-rw-sess" aria-label={`${name} sessions on older code`}>
+              {group.map((s) => (
+                <li key={s.session}>
+                  <SessionRow session={s} />
+                </li>
+              ))}
+            </ul>
+            {runtime === 'opencode' && o.fallback_command && (
+              <Fold question="Still listed after reloading?">
+                <div className="ib-rl-manual" data-restart-fallback="">
+                  Restart OpenCode's background server:
+                  <CommandLine text={o.fallback_command} label="Copy the command that restarts OpenCode's background server" />
+                  <span className="ib-rw-warn">It stops any turn an OpenCode session is working on.</span>
+                </div>
+              </Fold>
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }
 

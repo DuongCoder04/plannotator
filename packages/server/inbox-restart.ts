@@ -35,17 +35,35 @@
  * checkout) reloads that folder when restarted, so the installed record says
  * nothing about it: never outdated.
  *
- * Pi reports its extension's version only (it has no registry the Inbox can
- * read): behind this Inbox's own release it is `fix: "update_extension"`
- * (`pi update --extensions`, then `/reload`).
+ * Pi, Oh My Pi and OpenCode 2 (owner approval "reload-hosts", 2026-10-26)
+ * report what they loaded and what is on disk now: `plugin: { version,
+ * on_disk, host }` (Pi and Oh My Pi, which polls as host `pi` and says
+ * `host: "oh-my-pi"`), `plugin: { version, on_disk }` (OpenCode 2, `on_disk`
+ * null when its plugin generation folder was deleted under it).
+ *  - Pi: `on_disk` differs from `version` (the package was updated in place
+ *    under the running session, which breaks its lazy imports, #2085):
+ *    `/reload`. Both equal and behind this Inbox: `pi update --extensions`
+ *    (`pi install npm:@plannotator/pi-extension` for a pinned install), then
+ *    `/reload`.
+ *  - Oh My Pi: the same, with `/restart` (`/reload-plugins` does not reload
+ *    extension code) and `omp plugin upgrade @plannotator/pi-extension`.
+ *  - OpenCode 2: the plugin runs in a background service that outlives every
+ *    TUI, so quitting OpenCode loads nothing. Its generation folder deleted
+ *    (the install script clears the cache): `opencode2 reload`, which
+ *    installs the newest version and loads it. Still there and behind this
+ *    Inbox: `opencode2 plugin update`, which loads a newer generation through
+ *    the running service (a reload alone would load the same generation
+ *    again). `opencode2 service restart` is the fallback.
+ * An older Pi connection that sends `{ version }` alone keeps the old rule:
+ * behind this Inbox's release, `update_extension`.
  */
 
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { INBOX_PLUGIN_REPORTS_LOADED_SINCE, type InboxSessionOutdated } from "@plannotator/core/inbox-types";
+import { INBOX_PLUGIN_REPORTS_LOADED_SINCE, type InboxReloadRuntime, type InboxSessionOutdated } from "@plannotator/core/inbox-types";
 import { compareStableVersions, parseStableVersion, CLAUDE_PLUGIN_UPDATE_COMMANDS } from "@plannotator/shared/update-check";
-import { readAgentFile } from "./agent-files";
-import { claudeConfigDir, type AgentEnvironment } from "./inbox-agents";
+import { readAgentFile, stripJsonComments } from "./agent-files";
+import { claudeConfigDir, piAgentDir, type AgentEnvironment } from "./inbox-agents";
 
 /**
  * The first Plannotator release whose Claude Code mod reports `plugin` on its
@@ -70,6 +88,14 @@ export interface LoadedPlugin {
   root: string | null;
   /** When the module loaded, ms. */
   loadedAt: number | null;
+  /**
+   * The package's version on disk now (Pi, Oh My Pi, OpenCode 2): a string,
+   * null when the package is gone from disk, absent when the connection does
+   * not send the field (Claude Code, an older Pi).
+   */
+  onDisk?: string | null;
+  /** `oh-my-pi` when a Pi connection runs inside Oh My Pi. */
+  host?: "pi" | "oh-my-pi";
 }
 
 /** One record of Plannotator's plugin in Claude Code's registry. */
@@ -108,7 +134,16 @@ const ms = (value: unknown): number | null => {
 export function parseLoadedPlugin(value: unknown): LoadedPlugin | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  return { version: str(record.version), root: abs(record.root), loadedAt: ms(record.loaded_at) };
+  // `on_disk`: a version, or null for a package gone from disk; anything else counts as not sent.
+  const onDisk = !("on_disk" in record) ? undefined : record.on_disk === null ? null : (str(record.on_disk) ?? undefined);
+  const host = record.host === "oh-my-pi" || record.host === "pi" ? record.host : undefined;
+  return {
+    version: str(record.version),
+    root: abs(record.root),
+    loadedAt: ms(record.loaded_at),
+    ...(onDisk !== undefined && (onDisk === null || onDisk.length <= 64) ? { onDisk } : {}),
+    ...(host ? { host } : {}),
+  };
 }
 
 /** A poll's `engine` field (Claude Code's own version). */
@@ -326,10 +361,138 @@ export function claudePluginBehindInbox(install: ClaudePluginInstall | null, cli
   return !!install && older(install.version, cliVersion);
 }
 
-/** Pi: the extension's version behind this Inbox's release (`pi update --extensions`, then `/reload`). */
-export function piSessionOutdated(loaded: LoadedPlugin | null, cliVersion: string): InboxSessionOutdated | null {
-  if (!loaded?.version || !older(loaded.version, cliVersion)) return null;
-  return { loaded: loaded.version, installed: cliVersion, fix: "update_extension" };
+/** Pi's reload: typed in the session; it reloads the extension from disk in place (Pi 0.79.9+). */
+export const PI_RELOAD_COMMAND = "/reload";
+/** Oh My Pi imports extensions once per process: `/restart` restarts omp and resumes the session (18.0.10+). */
+export const OMP_RESTART_COMMAND = "/restart";
+/** Updates Plannotator's Pi extension in place (skips a pinned source). */
+export const PI_UPDATE_COMMAND = "pi update --extensions";
+/** A pinned source: install the newest version over it. */
+export const PI_INSTALL_LATEST_COMMAND = "pi install npm:@plannotator/pi-extension";
+/** Oh My Pi's own updater for the extension it loads as a plugin. */
+export const OMP_UPGRADE_COMMAND = "omp plugin upgrade @plannotator/pi-extension";
+/** OpenCode 2: reload every location of the running service (reinstalls a plugin whose cache was deleted). */
+export const OPENCODE2_RELOAD_COMMAND = "opencode2 reload";
+/** OpenCode 2: install a newer plugin generation and load it through the running service. */
+export const OPENCODE2_PLUGIN_UPDATE_COMMAND = "opencode2 plugin update";
+/** OpenCode 2: when a reload does not take, restart the background service. */
+export const OPENCODE2_SERVICE_RESTART_COMMAND = "opencode2 service restart";
+
+/**
+ * Pi and Oh My Pi (`loaded.host`): the package on disk differs from what the
+ * session loaded (`/reload`, Oh My Pi `/restart`), or both are behind this
+ * Inbox's release (update, then reload). `pinned`: Pi's settings name an
+ * exact version, which `pi update --extensions` skips.
+ * A connection that sends no `on_disk` (older than the field) keeps the old
+ * rule: behind this Inbox's release, `update_extension` with no runtime.
+ */
+export function piSessionOutdated(loaded: LoadedPlugin | null, cliVersion: string, options: { pinned?: boolean } = {}): InboxSessionOutdated | null {
+  if (!loaded?.version) return null;
+  if (loaded.onDisk === undefined) {
+    if (!older(loaded.version, cliVersion)) return null;
+    return { loaded: loaded.version, installed: cliVersion, fix: "update_extension" };
+  }
+  // Gone from disk (uninstalled): a reload would unload Plannotator, not update it. Nothing to say.
+  if (loaded.onDisk === null) return null;
+  const omp = loaded.host === "oh-my-pi";
+  const reload = { runtime: omp ? "oh-my-pi" : "pi", reload_command: omp ? OMP_RESTART_COMMAND : PI_RELOAD_COMMAND, reload_where: "session" } as const;
+  if (loaded.onDisk !== loaded.version) return { loaded: loaded.version, installed: loaded.onDisk, fix: "reload", ...reload };
+  if (!older(loaded.version, cliVersion)) return null;
+  const update_command = omp ? OMP_UPGRADE_COMMAND : options.pinned ? PI_INSTALL_LATEST_COMMAND : PI_UPDATE_COMMAND;
+  return { loaded: loaded.version, installed: loaded.onDisk, fix: "update_extension", update_command, ...reload };
+}
+
+/**
+ * OpenCode 2: its plugin generation folder was deleted under the running
+ * service (the install script clears the cache: `opencode2 reload` installs
+ * the newest version and loads it), or the plugin is behind this Inbox's
+ * release and still on disk (`opencode2 plugin update` loads a newer
+ * generation through the running service; a reload would load the same
+ * generation again). Quitting OpenCode loads nothing: the service outlives
+ * every TUI. A connection that sends no `on_disk` says nothing.
+ */
+export function openCodeSessionOutdated(loaded: LoadedPlugin | null, cliVersion: string): InboxSessionOutdated | null {
+  if (!loaded?.version || loaded.onDisk === undefined) return null;
+  const base = { runtime: "opencode", reload_where: "shell", fallback_command: OPENCODE2_SERVICE_RESTART_COMMAND } as const;
+  if (loaded.onDisk === null || loaded.onDisk !== loaded.version) {
+    return { loaded: loaded.version, installed: loaded.onDisk, fix: "reload", reload_command: OPENCODE2_RELOAD_COMMAND, ...base };
+  }
+  if (!older(loaded.version, cliVersion)) return null;
+  return { loaded: loaded.version, installed: cliVersion, fix: "reload", reload_command: OPENCODE2_PLUGIN_UPDATE_COMMAND, ...base };
+}
+
+/**
+ * Whether Pi's settings pin Plannotator's extension to an exact version
+ * (`npm:@plannotator/pi-extension@0.28.20`), which `pi update --extensions`
+ * skips. `text` is Pi's settings.json (comments allowed).
+ */
+export function piExtensionPinned(text: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(text));
+  } catch {
+    return false;
+  }
+  const packages = (parsed as { packages?: unknown } | null)?.packages;
+  if (!Array.isArray(packages)) return false;
+  return packages.some((entry) => {
+    const source = typeof entry === "string" ? entry : entry && typeof entry === "object" ? (entry as { source?: unknown }).source : null;
+    if (typeof source !== "string") return false;
+    const match = /^npm:@plannotator\/pi-extension@(.+)$/.exec(source.trim());
+    return !!match && /^v?\d+\.\d+\.\d+/.test(match[1]!);
+  });
+}
+
+/** The runtime a polling session runs in: a Pi connection inside Oh My Pi says `plugin.host: "oh-my-pi"`. Null for another host. */
+export function runtimeOf(host: string, plugin: LoadedPlugin | null): InboxReloadRuntime | null {
+  if (host === "claude-code") return "claude-code";
+  if (host === "pi") return plugin?.host === "oh-my-pi" ? "oh-my-pi" : "pi";
+  if (host === "opencode") return "opencode";
+  return null;
+}
+
+/** What loads new code in each runtime when nothing more precise is known. */
+const DEFAULT_RELOAD: Record<InboxReloadRuntime, { command: string; where: "session" | "shell"; update: string }> = {
+  "claude-code": { command: "/reload-plugins", where: "session", update: CLAUDE_PLUGIN_UPDATE_COMMANDS.join(" && ") + " --scope user" },
+  pi: { command: PI_RELOAD_COMMAND, where: "session", update: PI_UPDATE_COMMAND },
+  "oh-my-pi": { command: OMP_RESTART_COMMAND, where: "session", update: OMP_UPGRADE_COMMAND },
+  opencode: { command: OPENCODE2_RELOAD_COMMAND, where: "shell", update: OPENCODE2_PLUGIN_UPDATE_COMMAND },
+};
+
+const RUNTIME_NAMES: Record<InboxReloadRuntime, string> = { "claude-code": "Claude Code", pi: "Pi", "oh-my-pi": "Oh My Pi", opencode: "OpenCode 2" };
+
+/**
+ * One sentence for the `tag_needs_update` refusal: the host's own command
+ * ("Type /reload in that Pi."), with the update first when the plugin on disk
+ * is behind this Inbox too. A session the Inbox cannot judge (a development
+ * Inbox, an older connection) gets the update and the reload: tags need a
+ * newer Plannotator there whatever is on disk.
+ */
+export function tagUpdateFix(runtime: InboxReloadRuntime | null, outdated: InboxSessionOutdated | null): string {
+  if (!runtime) return "Update Plannotator there.";
+  const name = RUNTIME_NAMES[runtime];
+  const fallback = DEFAULT_RELOAD[runtime];
+  const command = outdated?.reload_command ?? fallback.command;
+  const where = outdated?.reload_where ?? fallback.where;
+  const reload = where === "shell" ? `run \`${command}\`` : `type \`${command}\` in that ${name}`;
+  const capital = (text: string) => text[0]!.toUpperCase() + text.slice(1);
+  if (outdated && (outdated.fix === "reload" || outdated.fix === "restart")) return `${capital(reload)}.`;
+  const update = outdated?.update_command ?? fallback.update;
+  // OpenCode 2's plugin update loads the new generation itself: no reload after it.
+  if (runtime === "opencode") return `Run \`${update}\`.`;
+  return `Run \`${update}\`, then ${reload}.`;
+}
+
+/** Reads Pi's settings for a pinned Plannotator source, at most once per `INSTALL_FRESH_MS`. */
+export function createPiPinReader(environment: AgentEnvironment, now: () => number = Date.now) {
+  let cached: { at: number; value: boolean } | null = null;
+  return (): boolean => {
+    if (cached && now() - cached.at < INSTALL_FRESH_MS) return cached.value;
+    const file = readAgentFile(join(piAgentDir(environment), "settings.json"));
+    const value = file.kind === "file" ? piExtensionPinned(file.text) : false;
+    cached = { at: now(), value };
+    return value;
+  };
 }
 
 /** The command that updates the Claude Code plugin itself (the install script's two steps). */
