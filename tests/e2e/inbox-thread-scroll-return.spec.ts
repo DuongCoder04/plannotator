@@ -319,8 +319,14 @@ test("the app's own scrolls are not pulled back by the place held after a file (
   await p.waitForTimeout(300);
   await pane(p).getByRole('button', { name: /^Close / }).first().click();
   await expect(pane(p)).toHaveCount(0);
-  const held = await p.evaluate((sel) => document.querySelector<HTMLElement>(sel)!.scrollTop, BODY);
-  await p.evaluate((sel) => (document.querySelector<HTMLElement>(sel)!.scrollTop -= 600), BODY);
+  // Read and scrolled in one step: the hold may put the place back again between two steps (the thread grows a
+  // frame after the file closes), and the scroll is measured from where it started.
+  const held = await p.evaluate((sel) => {
+    const body = document.querySelector<HTMLElement>(sel)!;
+    const top = body.scrollTop;
+    body.scrollTop = top - 600;
+    return top;
+  }, BODY);
   await p.waitForTimeout(1500);
   // The list and sidebar still reflow the thread a little as they spring back; the place is never put back over the scroll.
   const final = await p.evaluate((sel) => document.querySelector<HTMLElement>(sel)!.scrollTop, BODY);
