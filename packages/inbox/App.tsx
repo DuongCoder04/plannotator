@@ -2942,6 +2942,7 @@ function Inbox() {
         onToggleExperimental={(next) => void toggleExperimental(next)}
         agents={agents}
         onAgents={setAgents}
+        onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
         tailscaleBusy={tailscaleBusy}
         permission={notifications.permission}
