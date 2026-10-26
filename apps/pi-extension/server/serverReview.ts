@@ -1,5 +1,5 @@
 import { piUpdateAdvert } from "./update-advert.ts";
-import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES } from "../generated/package-changes-service.ts";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, prSettingsSource } from "../generated/package-changes-service.ts";
 import { parseDiffToFiles } from "../generated/diff-files.ts";
 import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
@@ -2149,7 +2149,16 @@ export async function startReviewServer(options: {
 					},
 				};
 			}
-			if (isPRMode) return { kind: "remote" };
+			if (isPRMode) {
+				if (!prMeta || !prRef) return { kind: "none" };
+				const ref = prRef;
+				return prSettingsSource({
+					git: reviewRuntime,
+					checkout: options.worktreePool ? options.worktreePool.resolve(prMeta.url) : options.agentCwd,
+					headSha: prMeta.headSha,
+					fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+				});
+			}
 			if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
 			return {
 				kind: "local",

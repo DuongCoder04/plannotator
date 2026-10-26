@@ -141,8 +141,8 @@ const NameTags: React.FC<{ change: PackageChange; meta?: PackageMetadata; withhe
     ) : null}
     {change.workspace && <span className="flex-none truncate font-mono text-[10px] text-muted-foreground">{change.workspace}</span>}
     {withheld && (
-      <Tooltip content="Private scope · not looked up">
-        <span className="flex-none text-muted-foreground"><LockIcon /><span className="sr-only">Private scope, not looked up</span></span>
+      <Tooltip content="Not sent to npm">
+        <span className="flex-none text-muted-foreground"><LockIcon /><span className="sr-only">Not sent to npm</span></span>
       </Tooltip>
     )}
     {meta?.deprecated && (
@@ -292,17 +292,19 @@ export const CardBody: React.FC<CardBodyProps> = ({ card, folded, lookup, lookup
   const indirect = card.indirect;
 
   const headerRight = consent ? (
-    <button
-      type="button"
-      data-package-lookup-allow=""
-      data-pn-touch-target={touch}
-      disabled={consent.asking}
-      onClick={consent.onAllow}
-      aria-label={`Look up ${consent.names} package ${consent.names === 1 ? 'name' : 'names'} on npm: sends them to registry.npmjs.org`}
-      className="ml-auto flex-none rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-    >
-      Look up {consent.names} on npm
-    </button>
+    <Tooltip content="Counts the packages of every card in this review" side="bottom" align="end">
+      <button
+        type="button"
+        data-package-lookup-allow=""
+        data-pn-touch-target={touch}
+        disabled={consent.asking}
+        onClick={consent.onAllow}
+        aria-label={`Look up ${consent.names} package ${consent.names === 1 ? 'name' : 'names'} from every card in this review on npm: sends them to registry.npmjs.org`}
+        className="ml-auto flex-none rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      >
+        Look up {consent.names} on npm
+      </button>
+    </Tooltip>
   ) : failure ? (
     <span className="ml-auto flex flex-none items-center gap-1 text-[11px] text-muted-foreground" role="status" data-package-lookup-state="failed">
       <span>{failure === 'offline' || failure === 'timed out' ? 'npm unreachable' : failure === 'rate limited' ? 'npm rate limited' : 'npm lookup failed'}</span>

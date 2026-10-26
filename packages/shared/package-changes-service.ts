@@ -36,6 +36,7 @@ import {
   type PackageRouting,
   type PackageRoutingFiles,
 } from "./package-metadata";
+import { readDiffSideBytes, type FileBytesRead, type ReviewGitRuntime } from "./review-core";
 
 /** One side of one file, as the host read it. */
 export type PackageSideRead =
@@ -47,8 +48,18 @@ export type PackageSideRead =
 export type PackageSettingsSource =
   /** A working tree on this machine: `dirOf` maps a diff path to the absolute directory that holds it (null: unknown). */
   | { kind: "local"; dirOf(path: string): Promise<string | null> }
-  /** No working tree (a PR review): settings are read at the new side of the review, through `readSide`. */
-  | { kind: "remote" }
+  /**
+   * A PR's head commit in a local checkout: `list` names every file at the
+   * commit (null: unknown), `read` reads one. The commit is known to be
+   * there, so a file it lacks is trusted as missing. No platform calls.
+   */
+  | { kind: "commit"; key: string; list(): Promise<string[] | null>; read(path: string): Promise<PackageSideRead> }
+  /**
+   * A PR without a checkout: each read is a platform API call. At most
+   * `REMOTE_SETTINGS_READS` per head commit; a PR that needs more withholds
+   * every name instead.
+   */
+  | { kind: "remote"; key: string; read(path: string): Promise<PackageSideRead> }
   /** Nothing to read them from: nothing is sent. */
   | { kind: "none" };
 
@@ -59,7 +70,7 @@ export interface PackageChangesHost {
   diffFiles(): { path: string; oldPath?: string; status: DiffFileStatus }[];
   /** One side of a path at the current diff. A throw counts as unreadable. */
   readSide(side: "old" | "new", path: string, oldPath: string | undefined, base: string | undefined): Promise<PackageSideRead>;
-  settings(): PackageSettingsSource;
+  settings(): PackageSettingsSource | Promise<PackageSettingsSource>;
   /** The user's home directory, or null. */
   homeDir(): string | null;
   /** Reads a settings file on this machine (tests stub it). */
@@ -88,7 +99,14 @@ export interface PackageChangesResponse {
 
 /** The largest manifest or lockfile side read (the core refuses more anyway). */
 export const MAX_PACKAGE_FILE_BYTES = 32 * 1024 * 1024;
-const SETTINGS_MAX_BYTES = 1024 * 1024;
+export const SETTINGS_MAX_BYTES = 1024 * 1024;
+/**
+ * Platform API calls a PR without a checkout may spend on settings, per head
+ * commit: a root package (4 files) or a few nested ones. A monorepo PR needs
+ * more and withholds every name instead (GitHub's hourly quota is shared with
+ * everything else the reviewer runs).
+ */
+export const REMOTE_SETTINGS_READS = 16;
 const READ_CONCURRENCY = 4;
 
 type SettingsKind = keyof Omit<PackageRoutingFiles, "unreadable">;
@@ -165,6 +183,49 @@ export function readLocalSettingsFile(path: string): PackageSideRead {
   }
 }
 
+function bytesRead(read: FileBytesRead): PackageSideRead {
+  if (read.kind === "ok") return { kind: "ok", text: new TextDecoder().decode(read.bytes) };
+  if (read.kind === "missing") return { kind: "missing" };
+  return { kind: "unreadable", reason: read.kind === "too-large" ? "too large" : "could not be read" };
+}
+
+const COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
+
+/**
+ * Where a PR review reads registry settings: the local checkout at the head
+ * commit when it holds that commit (no platform calls; one `git ls-tree`, then
+ * only the files that exist), else the platform API, capped by the service.
+ * Shared by both servers.
+ */
+export async function prSettingsSource(options: {
+  git: ReviewGitRuntime;
+  /** The PR's local checkout, when there is one. */
+  checkout: string | undefined;
+  headSha: string;
+  fetchBytes(sha: string, path: string, maxBytes: number): Promise<FileBytesRead>;
+}): Promise<PackageSettingsSource> {
+  const { git, checkout, headSha: sha } = options;
+  if (checkout && COMMIT_SHA.test(sha)) {
+    const present = await git.runGit(["cat-file", "-e", `${sha}^{commit}`], { cwd: checkout }).catch(() => null);
+    if (present?.exitCode === 0) {
+      return {
+        kind: "commit",
+        key: `commit:${sha}`,
+        list: async () => {
+          const out = await git.runGit(["ls-tree", "-r", "-z", "--name-only", "--full-tree", sha], { cwd: checkout });
+          return out.exitCode === 0 ? out.stdout.split("\0").filter(Boolean) : null;
+        },
+        read: async (path) => bytesRead(await readDiffSideBytes(git, { kind: "object", rev: sha, path }, SETTINGS_MAX_BYTES, checkout)),
+      };
+    }
+  }
+  return {
+    kind: "remote",
+    key: `remote:${sha}`,
+    read: async (path) => bytesRead(await options.fetchBytes(sha, path, SETTINGS_MAX_BYTES)),
+  };
+}
+
 function repoAncestors(path: string): string[] {
   const parts = path.split("/").slice(0, -1);
   const out = [""];
@@ -227,6 +288,28 @@ function lookupCandidate(change: PackageChange): string | null {
 export function createPackageChangesService(host: PackageChangesHost) {
   const cache = new Map<string, Promise<PackageChangesResponse>>();
   const readLocal = host.readLocalFile ?? readLocalSettingsFile;
+  // Settings at a PR head commit never change: read each file once per commit,
+  // whatever snapshot or base asks. A failed read is not kept.
+  const commitSettings = new Map<string, { list?: Promise<Set<string> | null>; reads: Map<string, Promise<PackageSideRead>> }>();
+  const memoFor = (key: string) => {
+    let memo = commitSettings.get(key);
+    if (!memo) {
+      memo = { reads: new Map() };
+      commitSettings.set(key, memo);
+      while (commitSettings.size > 4) commitSettings.delete(commitSettings.keys().next().value!);
+    }
+    return memo;
+  };
+  const readOnce = (key: string, path: string, run: () => Promise<PackageSideRead>): Promise<PackageSideRead> => {
+    const memo = memoFor(key);
+    let hit = memo.reads.get(path);
+    if (!hit) {
+      hit = run().catch((): PackageSideRead => ({ kind: "unreadable", reason: "could not be read" }));
+      memo.reads.set(path, hit);
+      hit.then((r) => { if (r.kind === "unreadable") memo.reads.delete(path); });
+    }
+    return hit;
+  };
 
   const readSide = async (side: "old" | "new", path: string, oldPath: string | undefined, base: string | undefined): Promise<PackageSideRead> => {
     try {
@@ -265,7 +348,7 @@ export function createPackageChangesService(host: PackageChangesHost) {
   };
 
   /** Every registry setting that applies to these cards. Fails closed. */
-  const readRouting = async (cards: PackageChangeCard[], base: string | undefined): Promise<PackageRouting> => {
+  const readRouting = async (cards: PackageChangeCard[]): Promise<PackageRouting> => {
     const files: { npmrc: string[]; yarnrc: string[]; yarnrcClassic: string[]; bunfig: string[]; unreadable: boolean } = {
       npmrc: [], yarnrc: [], yarnrcClassic: [], bunfig: [], unreadable: false,
     };
@@ -280,7 +363,7 @@ export function createPackageChangesService(host: PackageChangesHost) {
       if (card.lockfile) anchors.add(card.lockfile);
     }
 
-    const source = host.settings();
+    const source = await Promise.resolve(host.settings()).catch((): PackageSettingsSource => ({ kind: "none" }));
     if (source.kind === "none") {
       files.unreadable = true;
     } else if (source.kind === "local") {
@@ -297,10 +380,24 @@ export function createPackageChangesService(host: PackageChangesHost) {
       }
       for (const dir of dirs) for (const [name, kind] of names) take(readLocal(join(dir, name)), kind);
     } else {
+      // Repository-relative: every directory from the package up to the root.
       const dirs = new Set<string>();
       for (const anchor of anchors) for (const d of repoAncestors(anchor)) dirs.add(d);
-      const paths = [...dirs].flatMap((dir) => names.map(([name, kind]) => [dir ? `${dir}/${name}` : name, kind] as const));
-      const reads = await pool(paths, READ_CONCURRENCY, ([path]) => readSide("new", path, undefined, base));
+      let paths = [...dirs].flatMap((dir) => names.map(([name, kind]) => [dir ? `${dir}/${name}` : name, kind] as const));
+      if (source.kind === "commit") {
+        // One listing of the commit, then only the files that exist.
+        const memo = memoFor(source.key);
+        const settingsNamesSet = new Set(names.map(([name]) => name));
+        memo.list ??= source.list()
+          .then((all) => (all ? new Set(all.filter((p) => settingsNamesSet.has(p.slice(p.lastIndexOf("/") + 1)))) : null))
+          .catch(() => null);
+        const listed = await memo.list;
+        if (listed) paths = paths.filter(([path]) => listed.has(path));
+      } else if (paths.length > REMOTE_SETTINGS_READS) {
+        files.unreadable = true;
+        paths = [];
+      }
+      const reads = await pool(paths, READ_CONCURRENCY, ([path]) => readOnce(source.key, path, () => source.read(path)));
       reads.forEach((read, i) => take(read, paths[i][1]));
     }
 
@@ -316,7 +413,7 @@ export function createPackageChangesService(host: PackageChangesHost) {
     // cards that have a name to send.
     const candidates = cards.filter((c) => c.changes.some((ch) => lookupCandidate(ch)));
     const routing = candidates.length > 0 && parsePackageLookupEnv(host.env) !== false
-      ? await readRouting(candidates, base)
+      ? await readRouting(candidates)
       : null;
 
     // A name any card withholds (a lockfile fetches it from another host) is withheld on every card.

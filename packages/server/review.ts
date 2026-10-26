@@ -10,7 +10,7 @@
  */
 
 import { childPath } from "@plannotator/shared/child-env";
-import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES } from "@plannotator/shared/package-changes-service";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, prSettingsSource } from "@plannotator/shared/package-changes-service";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { homedir } from "node:os";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
@@ -2198,7 +2198,16 @@ export async function startReviewServer(
           },
         };
       }
-      if (isPRMode) return { kind: "remote" };
+      if (isPRMode) {
+        if (!prMetadata || !prRef) return { kind: "none" };
+        const ref = prRef;
+        return prSettingsSource({
+          git: gitRuntime,
+          checkout: resolvePRLocalCwd(),
+          headSha: prMetadata.headSha,
+          fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+        });
+      }
       if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
       return {
         kind: "local",

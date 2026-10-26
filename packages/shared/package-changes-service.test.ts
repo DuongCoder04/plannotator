@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import type { DiffFileStatus } from '@plannotator/core/diff-files';
 import {
   createPackageChangesService,
+  readLocalSettingsFile,
+  REMOTE_SETTINGS_READS,
   type PackageChangesHost,
   type PackageChangesResponse,
   type PackageSettingsSource,
@@ -71,6 +73,30 @@ function host(opts: {
   };
 }
 
+/** The platform API at the PR head: every read is logged as one call. */
+function remoteSource(files: Record<string, PackageSideRead | 'throw'>, log: string[] = []): PackageSettingsSource {
+  return {
+    kind: 'remote',
+    key: 'remote:head',
+    read: async (path) => {
+      log.push(path);
+      const r = files[path];
+      if (r === 'throw') throw new Error('gh: API rate limit exceeded');
+      return r ?? { kind: 'missing' };
+    },
+  };
+}
+
+/** A local checkout holding the head commit: `files` are the commit's files. */
+function commitSource(files: Record<string, string>, log: string[] = []): PackageSettingsSource {
+  return {
+    kind: 'commit',
+    key: 'commit:head',
+    list: async () => { log.push('list'); return Object.keys(files); },
+    read: async (path) => { log.push(`read:${path}`); return path in files ? { kind: 'ok', text: files[path] } : { kind: 'missing' }; },
+  };
+}
+
 const local = (dir: string): PackageSettingsSource => ({ kind: 'local', dirOf: async (path) => join(dir, path.split('/').slice(0, -1).join('/')) });
 
 async function analysis(h: PackageChangesHost): Promise<PackageChangesResponse> {
@@ -113,11 +139,11 @@ describe('settings: where a private registry can be configured', () => {
 
   test('PR review: settings at the PR head count; a failed or oversized read withholds every name', async () => {
     const npmrc: PackageSideRead = { kind: 'ok', text: '@acme:registry=https://npm.acme.dev/\n' };
-    const ok = await analysis(host({ settings: { kind: 'remote' }, remote: { '.npmrc': npmrc }, home: tempDir() }));
+    const ok = await analysis(host({ settings: remoteSource({ '.npmrc': npmrc }), home: tempDir() }));
     expect(ok.cards[0].lookup).toEqual({ names: ['@types/node', 'pg'], withheld: ['@acme/billing'] });
 
     for (const failure of ['throw', { kind: 'unreadable', reason: 'too large' }] as const) {
-      const out = await analysis(host({ settings: { kind: 'remote' }, remote: { 'bunfig.toml': failure }, home: tempDir() }));
+      const out = await analysis(host({ settings: remoteSource({ 'bunfig.toml': failure }), home: tempDir() }));
       expect(out.cards[0].lookup).toEqual({ names: [], withheld: ALL });
     }
   });
@@ -148,7 +174,13 @@ describe('settings: where a private registry can be configured', () => {
     const home = tempDir();
     const h = host({ settings: local(tempDir()), home });
     h.env = { PATH: join(prefix, 'bin') };
+    // Only this test's own folders exist: the machine's /usr/local/etc/npmrc and the like stay out.
+    const mine = [prefix, home];
+    h.readLocalFile = (path) => (mine.some((d) => path.startsWith(d)) ? readLocalSettingsFile(path) : { kind: 'missing' });
     expect((await analysis(h)).lookup.total).toBe(0);
+    // And without that npmrc the same setup sends the names.
+    rmSync(join(prefix, 'etc', 'npmrc'));
+    expect((await analysis(h)).lookup.total).toBe(3);
   });
 
   test('a scoped registry in the environment', async () => {
@@ -214,14 +246,57 @@ describe('consent count and reads', () => {
     expect(out.lookup.total).toBe(0);
   });
 
-  test('PR review reads settings at the new side only', async () => {
-    const reads: string[] = [];
-    await analysis(host({ diff: { 'apps/web/package.json': { old: BEFORE, new: AFTER } }, settings: { kind: 'remote' }, home: tempDir(), reads }));
-    const settingsReads = reads.filter((r) => !r.endsWith('package.json'));
-    expect(settingsReads.length).toBeGreaterThan(0);
-    expect(settingsReads.every((r) => r.startsWith('new:'))).toBe(true);
-    expect(settingsReads).toContain('new:apps/web/.npmrc');
-    expect(settingsReads).toContain('new:.yarnrc.yml');
+});
+
+describe('PR reviews: platform calls for settings, per head commit', () => {
+  /** A PR with `n` changed manifests: one at the root, or `n` under packages/. */
+  const prDiff = (n: number): Record<string, DiffEntry> => n === 1
+    ? { 'package.json': { old: BEFORE, new: AFTER } }
+    : Object.fromEntries(Array.from({ length: n }, (_, i) => [`packages/p${i}/package.json`, { old: BEFORE, new: AFTER }]));
+
+  for (const [n, calls, sent] of [[1, 4, 3], [5, 0, 0], [30, 0, 0]] as const) {
+    test(`no checkout, ${n} card${n === 1 ? '' : 's'}: ${calls} API calls; over the cap every name is withheld`, async () => {
+      const log: string[] = [];
+      let snapshot = 's1';
+      const h = host({ diff: prDiff(n), settings: remoteSource({}, log), home: tempDir() });
+      h.snapshotId = () => snapshot;
+      const service = createPackageChangesService(h);
+      const first = (await service.get({ snapshot: null, base: undefined })).body as PackageChangesResponse;
+      expect(log).toHaveLength(calls);
+      expect(log.length).toBeLessThanOrEqual(REMOTE_SETTINGS_READS);
+      expect(first.lookup.total).toBe(sent);
+      // A new snapshot of the same head commit reads nothing again.
+      snapshot = 's2';
+      await service.get({ snapshot: null, base: undefined });
+      expect(log).toHaveLength(calls);
+    });
+
+    test(`a checkout holding the head commit, ${n} card${n === 1 ? '' : 's'}: no API call, one listing, only existing files read`, async () => {
+      const log: string[] = [];
+      const local: string[] = [];
+      const out = await analysis(host({
+        diff: prDiff(n),
+        settings: commitSource({ '.npmrc': '@acme:registry=https://npm.acme.dev/\n', 'README.md': '' }, local),
+        remote: {},
+        home: tempDir(),
+        reads: log,
+      }));
+      expect(log.filter((r) => !r.endsWith('package.json'))).toEqual([]);
+      expect(local).toEqual(['list', 'read:.npmrc']);
+      expect(out.lookup.total).toBe(2);
+    });
+  }
+
+  test('a lockfile-only PR at the root stays at 4 calls', async () => {
+    const lock = (pg: string) => JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { pg: '^8.0.0' } }, 'node_modules/pg': { version: pg } } });
+    const log: string[] = [];
+    const out = await analysis(host({
+      diff: { 'package-lock.json': { old: lock('8.13.1'), new: lock('8.16.3') }, 'package.json': { status: 'modified', old: manifest({ pg: '^8.0.0' }), new: manifest({ pg: '^8.0.0' }) } },
+      settings: remoteSource({}, log),
+      home: tempDir(),
+    }));
+    expect(log).toHaveLength(4);
+    expect(out.lookup.total).toBe(1);
   });
 });
 
