@@ -293,10 +293,10 @@ test.describe('ref hover cards', () => {
       await c.getByRole('link', { name: 'the report' }).click();
       await expect(c.locator('[data-ref-card-confirm]')).toContainText('https://evil.example/phish');
       expect(popups).toEqual([]);
-      // The image is drawn as its alt text, never loaded; nothing in the card carries a native title.
+      // The image is drawn as its alt text, never loaded; nothing in the card shows a native tooltip.
       await expect(c.locator('[data-image-unavailable]')).toHaveText('before');
       expect(await c.locator('img[src^="https://"]').count()).toBe(0);
-      expect(await c.locator('[title]').count()).toBe(0);
+      expect(await c.locator('[title]:not([title=""])').count()).toBe(0);
 
       // Escape closes it; the thread stays open.
       await page.keyboard.press('Escape');

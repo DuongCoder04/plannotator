@@ -17,7 +17,7 @@ interface HtmlBlockProps {
 function unavailableMedia(doc: Document, label: string, title: string): HTMLSpanElement {
   const placeholder = doc.createElement('span');
   placeholder.className = UNAVAILABLE_IMAGE_CLASS;
-  if (title) placeholder.title = title;
+  placeholder.title = title;
   placeholder.setAttribute('data-image-unavailable', '');
   placeholder.textContent = label;
   return placeholder;
@@ -86,7 +86,13 @@ function rewriteRelativeRefs(
     // Media was already decided by the host before insertion (see
     // resolveHostMedia); only the load-failure fallback is wired here.
     root.querySelectorAll<HTMLImageElement>('img[data-host-image]').forEach((img) => {
-      const onError = () => img.replaceWith(unavailableMedia(img.ownerDocument, img.getAttribute('alt') || 'Image', IMAGE_NOT_FOUND_TITLE));
+      // The raw HTML is not React's: replacing the <img> here cannot trip React's insertBefore.
+      // The placeholder's alt text is never quoted by a text comment (annotation-exclude).
+      const onError = () => {
+        const placeholder = unavailableMedia(img.ownerDocument, img.getAttribute('alt') || 'Image', IMAGE_NOT_FOUND_TITLE);
+        placeholder.classList.add('annotation-exclude');
+        img.replaceWith(placeholder);
+      };
       img.addEventListener('error', onError);
       cleanups.push(() => img.removeEventListener('error', onError));
     });

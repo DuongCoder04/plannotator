@@ -187,7 +187,7 @@ const REVIEW_TEXT = {
   review_required: { text: 'Review required', cls: 'text-warning' },
 } as const;
 
-/** Body markdown with images and links made harmless (the renderer still sanitizes HTML). No title: the alt text says it. */
+/** Body markdown with images and links made harmless (the renderer still sanitizes HTML). An empty title: the alt text says it, and no native tooltip shows. */
 const NO_IMAGES = () => ({ kind: 'unavailable' as const, title: '' });
 
 function SafeMarkdown({ markdown }: { markdown: string }) {
