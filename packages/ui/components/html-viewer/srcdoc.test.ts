@@ -3133,6 +3133,49 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     }
   });
 
+  test("rich copy: the plain text is the selection's own text, with its line breaks", async () => {
+    document.body.innerHTML = "<h1>Heading</h1>\n    <p>Para</p>\n    <ul><li>Item one</li><li>Item two</li></ul>";
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    const received: Record<string, unknown>[] = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data && /^plannotator-bridge-(selection|rich-copy)$/.test(String(data.type))) received.push(data);
+    };
+    const until = async (type: string) => {
+      for (let i = 0; i < 200 && !received.some((m) => m.type === type); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return received.find((m) => m.type === type)!;
+    };
+    // happy-dom's Selection.toString() is the range's raw text; a browser's
+    // puts line breaks between blocks. Stand in for the browser here.
+    const rendered = "Heading\nPara\n\nItem one\nItem two";
+    const realToString = Selection.prototype.toString;
+    Selection.prototype.toString = function () { return rendered; };
+    window.addEventListener("message", collect);
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(document.body);
+      expect(range.toString()).not.toBe(rendered);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      document.querySelector("li")!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      const selection = await until("plannotator-bridge-selection");
+      expect(selection.text).toBe(rendered);
+
+      postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-blocks" });
+      const answer = await until("plannotator-bridge-rich-copy");
+      expect(answer).toMatchObject({ id: "rc-blocks", text: rendered, truncated: false, tooLarge: false });
+      expect(String(answer.html)).toContain("<li>Item one</li>");
+    } finally {
+      Selection.prototype.toString = realToString;
+      window.removeEventListener("message", collect);
+      postBridge({ type: "plannotator-bridge-cancel-selection" });
+      document.body.replaceChildren();
+    }
+  });
+
   test("hit-testing for new selections yields placed markers to reach the page beneath", async () => {
     document.body.innerHTML = '<p id="beneath">Beneath text</p><div data-testid="hit">H</div>';
     postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
