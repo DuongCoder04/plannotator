@@ -1199,6 +1199,9 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-sw[aria-checked="true"]::after { left: 16px; background: #fff; }
 .ib-note { display: flex; align-items: center; gap: 8px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); margin-top: 6px; }
 .pn-inbox .ib-note svg.ib-ic { width: 14px; height: 14px; }
+/* Checking for updates has failed for hours: why, and the command that updates without it (Settings → General and About). */
+.ib-chkfail { display: flex; flex-direction: column; gap: 2px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); margin-top: 8px; }
+.ib-chkfail .ib-cmd { margin-top: 4px; }
 .ib-stbl { width: 100%; border-collapse: collapse; font-size: var(--ib-fs-13-5, 13.5px); }
 .ib-stbl td { padding: 8px 0; border-bottom: 1px solid color-mix(in oklch, var(--border) 45%, transparent); }
 .ib-stbl td .ib-ic { vertical-align: -2px; }
