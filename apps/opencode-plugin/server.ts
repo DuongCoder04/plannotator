@@ -2,8 +2,8 @@ import type { Plugin } from "@opencode/plugin";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadConfig, resolveAgentTool, resolveInboxReminder, resolveSharingEnabled } from "@plannotator/shared/config";
-import { INBOX_REMINDER_TEXT, INBOX_TOOL_NAME, inboxReminderText } from "@plannotator/shared/inbox/connection";
+import { loadConfig, resolveAgentTool, resolveInboxReminder, resolveInboxReminderText, resolveSharingEnabled, type PlannotatorConfig } from "@plannotator/shared/config";
+import { INBOX_REMINDER_TEXT, INBOX_TOOL_NAME } from "@plannotator/shared/inbox/connection";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
 import { composeSystemPrompt, stripConflictingPlanModeRules } from "./plan-mode";
@@ -212,11 +212,13 @@ const serverPlugin = {
       // answer: OpenCode 2 applies a tool transform lazily, per request, so
       // that answer is still false here; `addInboxReminder` checks each
       // request's own tool list instead.
-      if (inboxFound && hasSessionHooks && resolveInboxReminder(loadConfig(), process.env, "opencode")) {
+      const inboxConfig = loadConfig();
+      if (inboxFound && hasSessionHooks && resolveInboxReminder(inboxConfig, process.env, "opencode")) {
         try {
           // A host without session.prompt registers the tool without the wake
           // (registerInboxOpenCode2): its line names wait_for_reply instead.
-          const reminder = openCode2InboxReminder(v2);
+          // The person's own line (config.json prompts.inbox) replaces either.
+          const reminder = openCode2InboxReminder(v2, inboxConfig);
           await ctx.session.hook("context", async (event) => {
             await addInboxReminder(event, getAgents, reminder);
           });
@@ -662,12 +664,13 @@ export function pushComposedSystemReminder(
 }
 
 /**
- * The reminder line for this OpenCode 2 host: the wake's wording where the
+ * The reminder line for this OpenCode 2 host: the person's own text from
+ * config.json (`prompts.inbox`) when set, else the wake's wording where the
  * host can deliver a reply as a turn (`session.prompt`), else the no-wake one,
  * as `registerInboxOpenCode2` registers the tool `wakes: false` there.
  */
-export function openCode2InboxReminder(v2: { session?: { prompt?: unknown } }): string {
-  return inboxReminderText(INBOX_TOOL_NAME, { wakes: typeof v2.session?.prompt === "function" });
+export function openCode2InboxReminder(v2: { session?: { prompt?: unknown } }, config: PlannotatorConfig = {}): string {
+  return resolveInboxReminderText(config, "opencode", { toolName: INBOX_TOOL_NAME, wakes: typeof v2.session?.prompt === "function" });
 }
 
 /**

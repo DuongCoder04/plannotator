@@ -189,16 +189,16 @@ export async function findInboxConnection(): Promise<InboxAgentConnection | null
  * a reply as a turn. Never on a title request; never twice. The caller decides
  * whether the request's agent has the tool (`openCode1AgentHasInbox`).
  */
-export function addInboxReminderOpenCode1(system: string[]): void {
+export function addInboxReminderOpenCode1(system: string[], reminder: string = INBOX_REMINDER_TEXT_NO_WAKE): void {
   const lower = system.join("\n").toLowerCase();
   if (lower.includes("title generator") || lower.includes("generate a title")) return;
-  if (system.some((part) => part.includes(INBOX_REMINDER_TEXT_NO_WAKE))) return;
+  if (system.some((part) => part.includes(reminder))) return;
   const last = system.length - 1;
   if (last < 0) {
-    system.push(INBOX_REMINDER_TEXT_NO_WAKE);
+    system.push(reminder);
     return;
   }
-  system[last] = system[last] ? `${system[last]}\n\n${INBOX_REMINDER_TEXT_NO_WAKE}` : INBOX_REMINDER_TEXT_NO_WAKE;
+  system[last] = system[last] ? `${system[last]}\n\n${reminder}` : reminder;
 }
 
 /** A name against an OpenCode tool-switch key, which may hold `*` wildcards. */

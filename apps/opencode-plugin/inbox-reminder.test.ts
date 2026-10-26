@@ -44,6 +44,27 @@ describe("addInboxReminder", () => {
     expect(event.system[0]!.text).not.toContain(INBOX_REMINDER_TEXT);
   });
 
+  // #2194: a config.json without a usable prompts.inbox changes nothing; with one, the person's text replaces the line.
+  test("prompts.inbox: unset gives today's bytes on both hosts; set, it replaces the line", async () => {
+    const wake = { session: { prompt: () => undefined } };
+    for (const config of [{}, { prompts: { review: { denied: "Check." } } }, { prompts: { inbox: { reminder: " ", runtimes: { pi: { reminder: "Pi." } } } } }]) {
+      expect(openCode2InboxReminder(wake, config as never)).toBe(INBOX_REMINDER_TEXT);
+      expect(openCode2InboxReminder({}, config as never)).toBe(INBOX_REMINDER_TEXT_NO_WAKE);
+      const event = request("build");
+      await addInboxReminder(event, agents, openCode2InboxReminder(wake, config as never));
+      const before = request("build");
+      await addInboxReminder(before, agents);
+      expect(event.system).toEqual(before.system);
+    }
+    const custom = { prompts: { inbox: { reminder: "Shared.", runtimes: { opencode: { reminder: "Ask upstream first." } } } } };
+    expect(openCode2InboxReminder(wake, custom as never)).toBe("Ask upstream first.");
+    expect(openCode2InboxReminder({}, custom as never)).toBe("Ask upstream first.");
+    const event = request("build");
+    await addInboxReminder(event, agents, openCode2InboxReminder(wake, custom as never));
+    expect(event.system[0]!.text).toContain("Ask upstream first.");
+    expect(event.system[0]!.text).not.toContain(INBOX_REMINDER_TEXT);
+  });
+
   test("no line without the tool, for a subagent, or on a title request", async () => {
     for (const event of [request("build", {}), request("explore"), request("build", undefined, "You are a title generator.")]) {
       const before = JSON.stringify(event.system);
