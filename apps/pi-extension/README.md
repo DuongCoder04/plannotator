@@ -39,6 +39,11 @@ Plannotator requires **Pi 0.79.1 or newer**. Updating only the Plannotator
 extension does not repair the security behavior of an older Pi host; update Pi
 itself before loading the extension.
 
+Run Pi on **Node 22.23.4+, 24.22.1+ or 26.12.1+**. These October 2026 security
+releases stop trusting the compromised eMudhra certificate chain. On an older
+Node, HTTPS calls made inside Pi still trust it. The package's `engines` field
+states this floor; npm warns but does not block the install.
+
 Pi 0.79 introduced project trust for repository-local inputs. In interactive
 sessions, Pi asks before loading project settings, instructions, resources, and
 packages, and can save the decision for that working directory. Plannotator

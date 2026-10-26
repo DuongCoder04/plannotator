@@ -64,6 +64,8 @@ Add to your `opencode.json`:
 
 Restart OpenCode. By default, the `submit_plan` tool is available to OpenCode's `plan` agent, not to `build` or other primary agents.
 
+In Bun-hosted OpenCode the embedded server runs on OpenCode's own Bun. Use an OpenCode build on **Bun 1.4.4 or later**: older Bun still trusts the compromised eMudhra certificate chain (October 2026). The package's `engines` field states this floor; it warns, it does not block.
+
 > **OpenCode 1 slash commands:** Run the install script to get `/plannotator-review`, `/plannotator-annotate`, and `/plannotator-last`:
 > ```bash
 > curl -fsSL https://plannotator.ai/install.sh | bash
