@@ -68,7 +68,7 @@ import { Icon } from './icons';
 import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, loadTour, tourComposeBody, tourComposeTransport, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
 import { TourEntry, tourEntryModel } from './tour/TourEntry';
 import { TOUR_FIT_LINES, TOUR_FIT_TITLE, TourIntro } from './tour/Fit';
-import { TOUR_FIRST_QUESTION_PROMPT, TOUR_PROJECT_ID, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded, type TourUi } from './tour/model';
+import { TOUR_FIRST_QUESTION_PROMPT, TOUR_PROJECT_ID, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCanForward, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded, type TourUi } from './tour/model';
 import { ThreadWait } from './components/ThreadWait';
 import { AgentNoteDialog } from './components/AgentNoteDialog';
 import { cardReport, noteQuestionRows } from './agents';
@@ -1016,7 +1016,7 @@ function Inbox() {
             const threadId = event.message.thread_id;
             setTourArrivals((current) => ({ count: current.count + 1, thread: threadId }));
           }
-          // The replay (steps 1 to 5) in front: the chip says it, nothing rings. Everywhere else, step 6
+          // The replay (steps 1 to 9) in front: the chip says it, nothing rings. Everywhere else, step 6
           // included (it sends the person to get their first question), and with the tab in the background,
           // notifications and the sound work as always, so nothing is ever passed over unseen.
           if (!(now.page === 'tour' && (now.step ?? 1) < TOUR_STEPS && tourPageInFront())) observeEvent(event);
@@ -1330,7 +1330,7 @@ function Inbox() {
   const close = (next: Route) => closeTo(next);
 
   const openSearch = (opener?: HTMLElement | null) => {
-    // Not over the tour's replay (steps 1 to 5): search shows the person's own threads, which the tour keeps out of sight.
+    // Not over the tour’s replay (steps 1 to 9): search shows the person's own threads, which the tour keeps out of sight.
     if (routeRef.current.page === 'tour' && (routeRef.current.step ?? 1) < TOUR_STEPS) return;
     searchOpener.current = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setSearchMounted(true);
@@ -2620,6 +2620,37 @@ function Inbox() {
     dispatchTourRaw({ type: 'compose', open: true });
   }, []);
   const tourTransport = useMemo(() => (tourFixture ? tourComposeTransport(tourFixture, () => {}) : null), [tourFixture]);
+  /**
+   * The tour's answer to a click it cannot use (the owner, 2026-10-25: a card or button is never dead): one short
+   * line on the coach card for a few seconds, said in the live region.
+   */
+  const [tourNudge, setTourNudge] = useState<string | null>(null);
+  const tourNudgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nudgeTour = useCallback(
+    (text: string) => {
+      setTourNudge(text);
+      say(text);
+      if (tourNudgeTimer.current) clearTimeout(tourNudgeTimer.current);
+      tourNudgeTimer.current = setTimeout(() => setTourNudge(null), 4500);
+    },
+    [say],
+  );
+  useEffect(() => () => void (tourNudgeTimer.current && clearTimeout(tourNudgeTimer.current)), []);
+  /** Fast-forward (the owner, 2026-10-25): the end of this step, said once. */
+  const forwardTour = useCallback(() => {
+    if (!tourFixture) return;
+    setTourNudge(null);
+    dispatchTour({ type: 'forward', realAnswer: tourReal, fixture: tourFixture }, { focusCoach: true });
+    say('Fast-forwarded to the end of this step.');
+  }, [tourFixture, tourReal, dispatchTour, say]);
+  /** New message in the tour's sidebar: live on step 9; before it, the coach says when. */
+  const openTourComposeOrNudge = useCallback(
+    (opener: HTMLElement) => {
+      if (tourState.step === TOUR_STEPS - 1) openTourCompose(opener);
+      else nudgeTour('New message comes later in the tour, at step 9.');
+    },
+    [tourState.step, openTourCompose, nudgeTour],
+  );
   const tourCoachCard =
     tourOn && tourFixture && tourState.step < TOUR_STEPS && !tourIntroShown
       ? tourCoach(tourState, { developer: tourFixture.developer, agent: 'Claude Code' }, tourDegraded, tourUi)
@@ -2629,6 +2660,8 @@ function Inbox() {
   useEffect(() => {
     if (tourCoachKey === lastTourCoach.current) return;
     lastTourCoach.current = tourCoachKey;
+    // A new card: the last one's answer to a click goes with it.
+    setTourNudge(null);
     if (!tourCoachCard) return;
     // Each change is said once. The replay's own lines say Sending and Delivered; the second arrival leads the next card.
     if (!tourCoachCard.wait) say(tourCoachSpeech(tourCoachCard, tourState.step));
@@ -2949,7 +2982,8 @@ function Inbox() {
         say={say}
         onDegraded={degradeTour}
         onUi={setTourUi}
-        onCompose={openTourCompose}
+        onCompose={openTourComposeOrNudge}
+        onNudge={nudgeTour}
       />
     );
   } else if (tourOn) {
@@ -3289,8 +3323,8 @@ function Inbox() {
               fixture={tourFixture}
               state={tourState}
               dispatch={dispatchTour}
-              say={say}
-              onCompose={openTourCompose}
+              say={nudgeTour}
+              onCompose={openTourComposeOrNudge}
               onSettings={() => endTour('exit', { page: 'settings', project: null, thread: null })}
             />
           ) : (
@@ -3459,6 +3493,9 @@ function Inbox() {
                     focusTick={0}
                     onBack={() => {}}
                     onNext={() => dispatchTour({ type: 'next' }, { focusCoach: true })}
+                    canForward={tourCanForward(tourState, tourCoachCard)}
+                    onForward={forwardTour}
+                    nudge={tourNudge}
                   />
                 </div>
               ) : null}
@@ -3478,6 +3515,9 @@ function Inbox() {
             focusTick={coachFocus}
             onBack={() => dispatchTour({ type: 'back' }, { focusCoach: true })}
             onNext={() => dispatchTour({ type: 'next' }, { focusCoach: true })}
+            canForward={tourCanForward(tourState, tourCoachCard)}
+            onForward={forwardTour}
+            nudge={tourNudge}
           />
         </div>
       )}

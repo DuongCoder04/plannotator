@@ -30,7 +30,8 @@
           "id": "tour-vscode-2",
           "who": "agent",
           "time": "11:48",
-          "body": "Understood. An Opus agent is evaluating it now: your Plannotator guide reader against the VS Code split, using the real screenshots, and 3 to 4 mocked alternatives, each with a short honest note on cost and what VS Code allows."
+          "body": "Understood. An Opus agent can evaluate it now: your Plannotator guide reader against the VS Code split, using the real screenshots, with 3 to 4 mocked alternatives and a short honest note on each.\n\n:::question\nStart the evaluation with 3 to 4 mockups?\n- [ ] Yes, start it\n- [ ] Evaluate only, no mockups yet\nRecommended: Yes, start it\n:::",
+          "warmup": true
         },
         {
           "id": "tour-vscode-3",
@@ -68,7 +69,8 @@
           "suggest": {
             "phrase": "a 2-day check that hover feels instant",
             "comment": "Good. If hover isn’t instant, tell me before you build B."
-          }
+          },
+          "after_warmup": true
         },
         {
           "id": "tour-vscode-4",
@@ -107,7 +109,9 @@
           ]
         }
       ],
-      "reply_time": "12:17"
+      "reply_time": "12:17",
+      "warmup_answer": "Yes, start it",
+      "warmup_reply_time": "11:49"
     },
     {
       "id": "tour-film",

@@ -43,6 +43,7 @@ import {
   TOUR_NEW_THREAD,
   TOUR_PROJECT_ID,
   TOUR_REPLY_ID,
+  TOUR_WARM_REPLY_ID,
   TOUR_SESSION,
   TOUR_STEPS,
   TOUR_THREAD,
@@ -66,6 +67,10 @@ import {
   tourSubject,
   tourTime,
   tourWaitingCount,
+  tourWarmAnswer,
+  tourYourTurn,
+  warmDiffers,
+  warmTimings,
   type TourAction,
   type TourCoach as TourCoachModel,
   type TourDegraded,
@@ -142,6 +147,22 @@ export function useTourFixture(active: boolean): { fixture: TourFixture | null; 
  * already, so nothing is scheduled.
  */
 export function useTourReplay(state: TourState, dispatch: (action: TourAction) => void, reduced: boolean, say: (text: string) => void): void {
+  useEffect(() => {
+    if (!state.warmSent || state.warmArrived) return;
+    const t = warmTimings(reduced);
+    const timers = [
+      setTimeout(() => {
+        dispatch({ type: 'warmDelivered' });
+        say('Delivered to Claude Code.');
+      }, t.delivered),
+      setTimeout(() => {
+        dispatch({ type: 'warmArrive' });
+        say('New message from Claude Code, replayed from the real thread: the evaluation, with pictures to choose from.');
+      }, t.reply),
+    ];
+    return () => timers.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.warmSent]);
   const aDone = state.delivered && state.arrived >= 2;
   useEffect(() => {
     if (!state.sent || aDone) return;
@@ -264,6 +285,8 @@ const TARGET_SELECTORS: Record<TourTarget, string> = {
   row: row(TOUR_THREAD),
   'film-row': row(TOUR_FILM_THREAD),
   'new-row': row(TOUR_NEW_THREAD),
+  'warm-choices': '[data-tour-message="warm"] .question-block',
+  'warm-send': '[data-tour-warm-send]',
   choices: '[data-tour-message="ask"] [data-question-tiles]',
   phrase: '[data-tour-phrase-host]',
   composer: '[data-comment-popover]',
@@ -312,7 +335,7 @@ function targetRect(target: TourTarget | null): DOMRect | null {
 type Side = 'right' | 'left' | 'below' | 'above' | 'corner';
 
 /** Targets whose controls are at the foot of a phone's screen: the sheet sits at the top for them. */
-const PHONE_SHEET_TOP = new Set<TourTarget>(['film-rail', 'film-composer', 'film-send', 'image-foot', 'markup', 'reply', 'reply-box', 'composer']);
+const PHONE_SHEET_TOP = new Set<TourTarget>(['warm-send', 'film-rail', 'film-composer', 'film-send', 'image-foot', 'markup', 'reply', 'reply-box', 'composer']);
 
 /** Targets the card never scrolls to: a comment box, a drawing's row, the open file (a scroll would close or move them). */
 const NO_SCROLL = new Set<TourTarget>(['file', 'art-grid', 'composer', 'eval-line', 'markup', 'image-foot', 'film-rail', 'film-composer', 'compose-to', 'compose-send']);
@@ -321,6 +344,8 @@ const SIDES: Partial<Record<TourTarget, Side[]>> = {
   row: ['below', 'above', 'right'],
   'film-row': ['below', 'above', 'right'],
   'new-row': ['below', 'right', 'above'],
+  'warm-choices': ['left', 'above', 'below', 'right'],
+  'warm-send': ['above', 'left', 'right'],
   choices: ['left', 'right', 'above', 'below'],
   phrase: ['below', 'above', 'left'],
   composer: ['left', 'right', 'above', 'below'],
@@ -381,13 +406,21 @@ function fitAroundSheet(target: HTMLElement, sheet: HTMLElement | null, reduced:
  * sidebar, a row per thread (one subject each), a thread that reads like an
  * email, and its files as the familiar tiles.
  */
-export function OrientPicture({ fixture }: { fixture: TourFixture }) {
+export function OrientPicture({ fixture, onNext }: { fixture: TourFixture; onNext?: () => void }) {
   const a = fixture.threads.find((t) => t.id === TOUR_THREAD)!;
   const film = fixture.threads.find((t) => t.id === TOUR_FILM_THREAD);
   const ask = a.messages.find((m) => m.asks);
   const files = ask?.attachments ?? [];
   return (
-    <div className="ib-tour-orient" role="img" aria-label="The Inbox in small: a project in the sidebar, one row per thread, a thread read like an email, its files as tiles." data-tour-orient="">
+    // A click on the picture goes on (a card is never dead): the picture is the Inbox the next step opens.
+    <div
+      className="ib-tour-orient"
+      role="img"
+      aria-label="The Inbox in small: a project in the sidebar, one row per thread, a thread read like an email, its files as tiles."
+      data-tour-orient=""
+      onClick={onNext}
+      style={onNext ? { cursor: 'pointer' } : undefined}
+    >
       <div className="ib-to-side" aria-hidden="true">
         <span className="ib-to-lbl">Projects</span>
         <span className="ib-to-proj">
@@ -434,10 +467,18 @@ export function TourCoach({
   fixture,
   onBack,
   onNext,
+  canForward = false,
+  onForward,
+  nudge = null,
 }: {
   coach: TourCoachModel;
   step: number;
   canBack: boolean;
+  /** Fast-forward (the owner, 2026-10-25): skips to the end of this step. */
+  canForward?: boolean;
+  onForward?: () => void;
+  /** The tour's answer to a click it cannot use (a card is never dead): shown on the card for a few seconds. */
+  nudge?: string | null;
   phone: boolean;
   reduced: boolean;
   /** Raised when the person acted and the card changed: focus goes to its title. */
@@ -532,10 +573,40 @@ export function TourCoach({
   }, [focusTick]);
 
   const style = phone ? undefined : place ? { left: place.left, top: place.top } : { visibility: 'hidden' as const };
+  const yourTurn = tourYourTurn(coach);
+  /** A click on the card itself (not a button) shows what it points at again: the ring pulses, the target scrolls into view. */
+  const onCardClick = (event: React.MouseEvent) => {
+    if ((event.target as Element).closest('button, a, [data-tour-orient]')) return;
+    const target = tourTargetElement(coach.target);
+    if (!target) return;
+    if (!NO_SCROLL.has(coach.target!)) target.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+    target.classList.remove('ib-tour-again');
+    void target.offsetWidth;
+    target.classList.add('ib-tour-again');
+    setTimeout(() => target.classList.remove('ib-tour-again'), 1600);
+  };
   return (
-    <div ref={ref} className={`ib-tour-coach${coach.picture ? ' ib-tc-wide' : ''}`} role="region" aria-label={`Tour, step ${step} of ${TOUR_STEPS}`} data-tour-coach={coach.key} data-at={phone ? (place?.at ?? 'bottom') : undefined} style={style}>
+    <div
+      ref={ref}
+      className={`ib-tour-coach${coach.picture ? ' ib-tc-wide' : ''}`}
+      role="region"
+      aria-label={`Tour, step ${step} of ${TOUR_STEPS}`}
+      data-tour-coach={coach.key}
+      data-your-turn={yourTurn ? '' : undefined}
+      data-at={phone ? (place?.at ?? 'bottom') : undefined}
+      style={style}
+      onClick={onCardClick}
+    >
       <div className="ib-tc-eb">
-        Step {step} of {TOUR_STEPS}
+        <span>
+          Step {step} of {TOUR_STEPS}
+        </span>
+        {yourTurn && (
+          <span className="ib-tc-turn" data-tour-your-turn="">
+            <Icon name="chevR" size={12} />
+            Your turn
+          </span>
+        )}
       </div>
       <h2 ref={titleRef} tabIndex={-1}>
         {coach.title}
@@ -551,7 +622,7 @@ export function TourCoach({
           )}
         </p>
       )}
-      {coach.picture === 'orient' && fixture && <OrientPicture fixture={fixture} />}
+      {coach.picture === 'orient' && fixture && <OrientPicture fixture={fixture} onNext={onNext} />}
       {coach.items && (
         <ul className="ib-tour-also" data-tour-also="">
           {coach.items.map((item) => (
@@ -563,25 +634,31 @@ export function TourCoach({
           ))}
         </ul>
       )}
+      {nudge && (
+        <p className="ib-tc-nudge" data-tour-nudge="">
+          {nudge}
+        </p>
+      )}
       <div className="ib-tc-acts">
         {canBack && (
           <button type="button" className="ib-tc-back" onClick={onBack} data-tour-back="">
             Back
           </button>
         )}
+        {coach.wait && <span className="ib-tc-wait">Replaying…</span>}
         <span className="ib-sp" />
         {coach.next ? (
           <button type="button" className="ib-tc-next" onClick={onNext} data-tour-next="">
             {coach.nextLabel ?? 'Next'}
           </button>
-        ) : coach.wait ? (
-          <span className="ib-tc-wait">Replaying…</span>
-        ) : (
-          <span className="ib-tc-do">
-            <Icon name="chevR" size={14} />
-            Your move
-          </span>
-        )}
+        ) : canForward && onForward ? (
+          <Tip content="Skip to the end of this step">
+            <button type="button" className="ib-tc-ff" onClick={onForward} data-tour-forward="">
+              <Icon name="fastForward" size={14} />
+              Fast-forward
+            </button>
+          </Tip>
+        ) : null}
       </div>
     </div>
   );
@@ -817,8 +894,10 @@ export interface TourMainProps {
   onDegraded?: (change: TourDegraded) => void;
   /** What is on screen that the state does not hold (TourUi): the coach follows it. */
   onUi?: (ui: TourUi) => void;
-  /** Step 8's compose: open it (the sidebar's, the list header's New message). */
+  /** Step 9's compose: open it (the sidebar's, the list header's New message). */
   onCompose: (opener: HTMLElement) => void;
+  /** A click the tour cannot use: the coach says why (a card or button is never dead). */
+  onNudge?: (text: string) => void;
 }
 
 /** The view on top, for `.pn-inbox[data-view]`. */
@@ -853,7 +932,8 @@ function useTourUi(onUi: ((ui: TourUi) => void) | undefined) {
   }, [onUi]);
 }
 
-export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say, onDegraded, onUi, onCompose }: TourMainProps) {
+export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, say, onDegraded, onUi, onCompose, onNudge }: TourMainProps) {
+  const nudge = useCallback((text: string) => (onNudge ? onNudge(text) : say(text)), [onNudge, say]);
   const [viewer, setViewer] = useState<{ picture: TourViewerPicture; opener: HTMLElement | null } | null>(null);
   const degradedRef = useRef(onDegraded);
   degradedRef.current = onDegraded;
@@ -898,8 +978,8 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
   const ask = question?.message;
   const evalPhrase = ask?.attachments?.find((a) => a.name === 'EVALUATION.md')?.suggest?.phrase ?? null;
   useTourPhrases({
-    message: state.step === 3 && openThread === TOUR_THREAD ? (ask?.suggest?.phrase ?? null) : null,
-    file: state.step === 4 && state.file ? evalPhrase : null,
+    message: state.step === 4 && openThread === TOUR_THREAD ? (ask?.suggest?.phrase ?? null) : null,
+    file: state.step === 5 && state.file ? evalPhrase : null,
   });
 
   const closeViewer = useCallback(() => {
@@ -950,7 +1030,7 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
       notice={null}
       onShowNew={noop}
       onOpen={(r) => dispatch({ type: 'open', thread: r.thread_id }, { focusCoach: true })}
-      onCompose={state.step === 8 && state.compose !== 'sent' ? onCompose : undefined}
+      onCompose={state.step === 9 && state.compose !== 'sent' ? onCompose : undefined}
       phone={phone}
     />
   );
@@ -970,6 +1050,7 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
       onImage={onImage}
       onOpenFile={openFile}
       say={say}
+      nudge={nudge}
     />
   ) : null;
 
@@ -1113,6 +1194,7 @@ function TourThreadPane({
   onImage,
   onOpenFile,
   say,
+  nudge,
 }: {
   fixture: TourFixture;
   threadId: string;
@@ -1126,6 +1208,7 @@ function TourThreadPane({
   onImage: (src: string, alt: string) => void;
   onOpenFile: (attachment: InboxAttachmentState, view?: 'full' | 'side' | null) => void;
   say: (text: string) => void;
+  nudge: (text: string) => void;
 }) {
   const thread = fixture.threads.find((t) => t.id === threadId)!;
   const isA = threadId === TOUR_THREAD;
@@ -1145,11 +1228,25 @@ function TourThreadPane({
   const waiting = state.comments.filter((r) => r.thread_id === threadId && r.sent_reply_id === null);
 
   // A replay follows the thread's end, the way the Inbox follows an arrival at the bottom.
-  const arrivals = `${state.delivered}${state.arrived}${state.filmDelivered}${state.filmArrived}${state.newDelivered}${state.newArrived}`;
+  const arrivals = `${state.warmDelivered}${state.warmArrived}${state.delivered}${state.arrived}${state.filmDelivered}${state.filmArrived}${state.newDelivered}${state.newArrived}`;
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    if ((isA && state.sent && state.step === 6 && state.arrived < 2) || (isFilm && state.filmSent) || threadId === TOUR_NEW_THREAD) body.scrollTo({ top: body.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
+    // The warm-up's answer arrives as a long message (text, pictures, files): its top comes into view, as the Inbox follows an arrival's first lines.
+    if (isA && state.warmArrived && state.step === 3 && !state.picked) {
+      requestAnimationFrame(() => {
+        const arrival = body.querySelector<HTMLElement>('[data-tour-message="ask"]');
+        if (!arrival) return;
+        const view = body.getBoundingClientRect();
+        const card = arrival.querySelector<HTMLElement>('.question-block')?.getBoundingClientRect();
+        // Its top, or less far when that would hide the bottom of the picture choices (the step's own control).
+        let top = body.scrollTop + arrival.getBoundingClientRect().top - view.top - 8;
+        if (card) top = Math.min(Math.max(top, body.scrollTop + card.bottom - view.bottom + 16), body.scrollTop + card.top - view.top - 8);
+        body.scrollTo({ top, behavior: reduced ? 'auto' : 'smooth' });
+      });
+      return;
+    }
+    if ((isA && state.warmSent && !state.warmArrived) || (isA && state.sent && state.step === 7 && state.arrived < 2) || (isFilm && state.filmSent) || threadId === TOUR_NEW_THREAD) body.scrollTo({ top: body.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrivals]);
 
@@ -1161,7 +1258,7 @@ function TourThreadPane({
   );
   const offInTour = (label: string, icon: 'checkCircle' | 'archive', withLabel: boolean) => (
     <Tip content={`${label}: not in the tour`}>
-      <button type="button" className={withLabel ? 'ib-hbtn' : 'ib-iconbtn'} aria-disabled="true" aria-label={withLabel ? undefined : label} onClick={noop}>
+      <button type="button" className={withLabel ? 'ib-hbtn' : 'ib-iconbtn'} aria-disabled="true" aria-label={withLabel ? undefined : label} onClick={() => nudge(`${label} works in your own Inbox, after the tour.`)}>
         <Icon name={icon} size={16} />
         {withLabel && label}
       </button>
@@ -1192,9 +1289,9 @@ function TourThreadPane({
     isA && !state.sent && question?.answer
       ? [{ id: `${asking!.wire.id}/${question.key}`, messageId: asking!.wire.id, key: question.key, number: question.position + 1, prompt: question.prompt, answer: draftAnswerWords(question.answer), messageName: messageName(asking!.fixture!.time) }]
       : [];
-  const canReply = isA ? !state.sent && !!state.picked : isFilm ? !state.filmSent && waiting.length > 0 : false;
+  const canReply = isA ? state.warmArrived && !state.sent && !!state.picked : isFilm ? !state.filmSent && waiting.length > 0 : false;
   const boxOpen = canReply && (state.replyOpen || (isFilm && waiting.length > 0));
-  const sendReady = isA ? state.step === 5 : isFilm && state.step === 7;
+  const sendReady = isA ? state.step === 6 : isFilm && state.step === 8;
   const sendNow = () => {
     if (isA) {
       dispatch({ type: 'send' }, { focusCoach: true });
@@ -1218,7 +1315,7 @@ function TourThreadPane({
   };
   const sendButton = (attr: Record<string, string>) => (
     <Tip content={sendReady ? 'Send it, in the tour: a replay of the real thread' : 'In the tour, Send comes after the comments'}>
-      <button type="button" className="ib-btn ib-pri" aria-disabled={!sendReady || undefined} onClick={() => sendReady && sendNow()} {...attr}>
+      <button type="button" className="ib-btn ib-pri" aria-disabled={!sendReady || undefined} onClick={() => (sendReady ? sendNow() : nudge('Send comes after the comments: the coach says when.'))} {...attr}>
         <Icon name="send" size={15} />
         Send
       </button>
@@ -1240,9 +1337,37 @@ function TourThreadPane({
     </div>
   ) : null;
 
-  const footStatus = isA && !state.sent && state.picked ? `${plural(1, 'pick')}${waiting.length > 0 ? `, ${plural(waiting.length, 'comment')}` : ''}` : null;
-  let foot: ReactNode;
-  if (boxOpen)
+  const warmOpen = isA && !state.warmSent;
+  const footStatus = isA && state.warmArrived && !state.sent && state.picked ? `${plural(1, 'pick')}${waiting.length > 0 ? `, ${plural(waiting.length, 'comment')}` : ''}` : null;
+  let foot: ReactNode = null;
+  if (warmOpen && state.warmPicked)
+    // The warm-up (step 2): one pick, sent from the foot as a real draft is.
+    foot = (
+      <div className="ib-acts ib-footrow" data-foot-row="">
+        <div className="ib-footbtns" data-foot-buttons="">
+          <Tip content="Send it, in the tour: a replay of the real thread">
+            <button
+              type="button"
+              className="ib-btn ib-pri"
+              data-tour-warm-send=""
+              onClick={() => {
+                dispatch({ type: 'warmSend' }, { focusCoach: true });
+                say('Sent. Sending to Claude Code.');
+              }}
+            >
+              <Icon name="send" size={15} />
+              Send
+            </button>
+          </Tip>
+        </div>
+        <div className="ib-footstatus" data-foot-status="">
+          <span className="ib-draft-foot">
+            <span className="ib-draft-pill">Draft</span> <span className="ib-st">{plural(1, 'pick')}</span>
+          </span>
+        </div>
+      </div>
+    );
+  else if (boxOpen)
     foot = (
       <>
         {replyBox}
@@ -1278,12 +1403,20 @@ function TourThreadPane({
         )}
       </div>
     );
-  else
+  const replyWhy =
+    isA && state.warmSent && !state.warmArrived
+      ? 'Your answer is on its way; Claude Code’s reply comes next'
+      : isA && !state.sent
+        ? 'In the tour, pick an answer above first'
+        : isFilm && !state.filmSent
+          ? 'Comment on the film first; the comment goes with the reply'
+          : 'Replies to this thread are not part of the tour';
+  if (!foot)
     foot = (
       <div className="ib-acts ib-footrow" data-foot-row="">
         <div className="ib-footbtns" data-foot-buttons="">
-          <Tip content={isA && !state.sent ? 'In the tour, pick an answer above first' : isFilm && !state.filmSent ? 'Comment on the film first; the comment goes with the reply' : 'Replies are not part of the tour'}>
-            <button type="button" className="ib-btn" aria-disabled="true" onClick={noop}>
+          <Tip content={replyWhy}>
+            <button type="button" className="ib-btn" aria-disabled="true" onClick={() => nudge(replyWhy)}>
               <Icon name="reply" size={15} />
               Reply
             </button>
@@ -1363,12 +1496,15 @@ function TourThreadPane({
             const fx = view.fixture;
             const isAgent = m.author.kind === 'agent';
             const asks = !!fx?.asks;
+            const warm = !!fx?.warmup;
+            /** The card takes a pick now: the warm-up on step 2, the picture question until its Send. */
+            const cardLive = warm ? isA && state.step === 2 && !state.warmSent : isAgent && isA && asks && !state.sent;
             const q = m.questions?.[0];
             const answers = new Map<string, QuestionAnswer>(q?.answer ? [[q.key, q.answer]] : []);
             const footerFor = (key: string) => {
               const found = m.questions?.find((x) => x.key === key);
               if (!found?.answer) return null;
-              if (found.state === 'sent') return `Sent ${tourTime(thread.reply_time ?? '12:17')}`;
+              if (found.state === 'sent') return `Sent ${tourTime((warm ? thread.warmup_reply_time : thread.reply_time) ?? '12:17')}`;
               if (found.answer.skipped) return 'Skipped · in your draft';
               return tourPickOf(found.answer) ? 'Picked · in your draft' : 'Note · in your draft';
             };
@@ -1376,13 +1512,21 @@ function TourThreadPane({
             const messageComments = state.comments.filter((r) => r.message_id === m.id && r.message).map((r) => annotationOf(r) as Annotation);
             const takesComments = isAgent && isA && asks && !state.sent;
             const sentHere = view.reply ? state.comments.filter((r) => r.sent_reply_id === m.id) : [];
-            const delivered = view.reply && (m.id === TOUR_REPLY_ID ? state.delivered : m.id === TOUR_FILM_REPLY_ID ? state.filmDelivered : state.newDelivered);
-            const replyTime = m.id === TOUR_REPLY_ID ? (thread.reply_time ?? '12:17') : m.id === TOUR_FILM_REPLY_ID ? (thread.reply_time ?? '18:10') : (thread.compose?.time ?? '13:06');
+            const delivered =
+              view.reply && (m.id === TOUR_WARM_REPLY_ID ? state.warmDelivered : m.id === TOUR_REPLY_ID ? state.delivered : m.id === TOUR_FILM_REPLY_ID ? state.filmDelivered : state.newDelivered);
+            const replyTime =
+              m.id === TOUR_WARM_REPLY_ID
+                ? (thread.warmup_reply_time ?? '11:49')
+                : m.id === TOUR_REPLY_ID
+                  ? (thread.reply_time ?? '12:17')
+                  : m.id === TOUR_FILM_REPLY_ID
+                    ? (thread.reply_time ?? '18:10')
+                    : (thread.compose?.time ?? '13:06');
             const myFiles = files.filter((a) => a.message_id === m.id && a.ref === undefined);
             const note = fx?.attachments?.find((a) => a.note)?.note;
             return (
               <div key={m.id}>
-                {index === replayAt && !thread.person && (
+                {view.replay && (index === 0 || !views[index - 1]!.replay) && index >= replayAt && !thread.person && (
                   <div className="ib-tour-replay" role="note">
                     <Icon name="replay" size={14} />
                     Replay of the real thread: what Claude Code did next
@@ -1391,12 +1535,33 @@ function TourThreadPane({
                 <article
                   className="ib-message"
                   data-author={m.author.kind}
-                  data-tour-message={asks ? 'ask' : view.reply ? 'reply' : undefined}
+                  data-tour-message={asks ? 'ask' : warm ? 'warm' : view.reply ? 'reply' : undefined}
+                  onClickCapture={
+                    // A card that takes no pick now still answers a click (a card is never dead).
+                    (asks || warm) && !cardLive
+                      ? (event) => {
+                          const el = event.target as Element;
+                          if (!el.closest('.question-block') || el.closest('[data-question-zoom]')) return;
+                          nudge(
+                            (warm ? state.warmSent : state.sent)
+                              ? 'This answer was sent already; it went with your reply.'
+                              : warm
+                                ? 'This one is answered; the next question is below.'
+                                : 'This question comes up in a later step.',
+                          );
+                        }
+                      : undefined
+                  }
                   data-tour-arrival={view.replay ? (fx?.replay ?? 1) : undefined}
                   data-tour-arrival-last={m.id === lastArrival ? '' : undefined}
                 >
                   <MessageHead who={view.who} host={isAgent ? 'claude-code' : null} to={view.to} time={view.time} project={fixture.project} replay={view.replay} />
                   <div className="ib-msg">
+                    {isA && fx?.after_warmup && warmDiffers(state, tourWarmAnswer(fixture)) && (
+                      <p className="ib-tour-note" data-tour-differs="warm">
+                        {tourPickWords(state.warmPicked!)}. In the real thread the answer was “{tourWarmAnswer(fixture)}”, so this is what Claude Code did.
+                      </p>
+                    )}
                     {isA && fx?.replay === 1 && pickDiffers(state, realAnswer) && (
                       <p className="ib-tour-note" data-tour-differs="">
                         {tourPickWords(state.picked!)}. In the real thread the answer was {realAnswer.split(' · ')[0]}, so this is what Claude Code built.
@@ -1415,11 +1580,11 @@ function TourThreadPane({
                           if (found) onOpenFile(found, 'full');
                         }}
                         inlineRefOf={inlineRefOf}
-                        readOnly={!isAgent || !isA || !asks || state.sent}
+                        readOnly={!cardLive}
                         answers={answers}
                         onPick={(_key, answer) => {
                           const picked = tourPickOf(answer);
-                          dispatch({ type: 'pick', label: picked, answer });
+                          dispatch({ type: warm ? 'warmPick' : 'pick', label: picked, answer }, { focusCoach: warm });
                           if (picked) say(`${tourPickWords(picked)}.`);
                         }}
                         footerFor={footerFor}

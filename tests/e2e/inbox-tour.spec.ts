@@ -8,7 +8,7 @@
  *  - The walk on a desktop through the Inbox's real viewers: a pick, a comment
  *    on the question's words, a comment on a line of EVALUATION.md, one Send,
  *    the replay, a circle on a screenshot, Artifacts, the film commented at a
- *    moment, compose to a session, and the person's own Inbox at step 9. Every
+ *    moment, compose to a session, and the person's own Inbox at step 10. Every
  *    comment box opens with the developer's real comment; nothing is written
  *    but the tour setting; the person's list is exactly as it was. Shots light
  *    and dark, one headless video.
@@ -313,45 +313,57 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
   await shot('01-row');
   if (to === 1) return;
   await press('[data-thread-id="tour-vscode"]:is(button,a,[role=button])');
+  // Crawl: a plain question first, and the "Your turn" cue on the card.
   await at('2');
-  await shot('02-pick');
+  await expect(coach(page).locator('[data-tour-your-turn]')).toBeVisible();
+  await shot('02-plain');
   if (to === 2) return;
-  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
+  await page.locator('[data-tour-message="warm"] input[type=radio]').first().click({ force: true });
+  await at('2-send');
+  await shot('02-send');
+  await press('[data-tour-warm-send]');
+  // Walk: the answer arrives with picture choices and the files (the rich message).
   await at('3');
-  await shot('03-words');
+  await expect(page.locator('[data-tour-message="ask"] [data-question-tiles]')).toBeVisible();
+  await expect(page.locator('[data-tour-message="ask"] .ib-att-t[data-attachment-name="d1-clean.png"]')).toBeVisible();
+  await shot('03-pictures');
   if (to === 3) return;
-  await selectWords(page, '[data-tour-message="ask"] .ib-body', PHRASE);
-  await page.locator(toolbarComment).first().click();
-  await at('3-box');
-  await keep('[data-comment-popover] textarea');
-  await shot('03-comment');
-  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
+  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
   await at('4');
-  await shot('04-file-tile');
+  await shot('04-words');
   if (to === 4) return;
-  await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]');
-  await at('4-file');
-  await shot('04-file');
-  await selectWords(page, '[data-attachment-pane] .ib-docscroll', EV_LINE);
+  await selectWords(page, '[data-tour-message="ask"] .ib-body', PHRASE);
   await page.locator(toolbarComment).first().click();
   await at('4-box');
   await keep('[data-comment-popover] textarea');
   await shot('04-comment');
   await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
   await at('5');
-  await shot('05-reply');
+  await shot('05-file-tile');
   if (to === 5) return;
-  await press('[data-tour-reply]');
+  await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]');
+  await at('5-file');
+  await shot('05-file');
+  await selectWords(page, '[data-attachment-pane] .ib-docscroll', EV_LINE);
+  await page.locator(toolbarComment).first().click();
   await at('5-box');
-  await shot('05-recap');
-  await press('[data-tour-send]');
+  await keep('[data-comment-popover] textarea');
+  await shot('05-comment');
+  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
   await at('6');
-  await shot('06-replay');
+  await shot('06-reply');
   if (to === 6) return;
+  await press('[data-tour-reply]');
+  await at('6-box');
+  await shot('06-recap');
+  await press('[data-tour-send]');
+  await at('7');
+  await shot('07-replay');
+  if (to === 7) return;
   await press('[data-tour-thread] img[data-inline-image="tour-img-built-a1"]');
-  await at('6-file');
+  await at('7-file');
   await keep('[data-image-composer] textarea');
-  await shot('06-screenshot');
+  await shot('07-screenshot');
   // Mark up: a circle on the screenshot.
   await press('[data-attachment-pane] [data-markup-open]');
   await page.waitForTimeout(600);
@@ -362,27 +374,27 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
   await page.mouse.down();
   await page.mouse.move(canvas.x + canvas.width * 0.55, canvas.y + canvas.height * 0.6, { steps: 8 });
   await page.mouse.up();
-  await shot('06-markup');
+  await shot('07-markup');
   await page.keyboard.press('Enter');
-  await at('6-drawn-unsaved');
+  await at('7-drawn-unsaved');
   await page.locator('[data-attachment-pane] [data-image-comment-save]').click();
-  await at('6-drawn');
-  await shot('06-circled');
+  await at('7-drawn');
+  await shot('07-circled');
   await press('[data-tour-next]');
-  await at('6-art');
+  await at('7-art');
   await press('[data-tour-thread] [data-artifacts-button]');
-  await at('6-art-grid');
-  await shot('06-artifacts');
+  await at('7-art-grid');
+  await shot('07-artifacts');
   await page.locator('[data-artifacts-view] [data-artifact-kind="markdown"]').first().click();
-  await at('6-art-open');
+  await at('7-art-open');
   await press('[data-tour-next]');
-  await at('7-open');
-  await shot('07-film-row');
-  if (to === 7) return;
+  await at('8-open');
+  await shot('08-film-row');
+  if (to === 8) return;
   await press('[data-thread-id="tour-film"]:is(button,a,[role=button])');
-  await at('7');
+  await at('8');
   await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="guides-vscode.mp4"]');
-  await at('7-file');
+  await at('8-file');
   await page.waitForTimeout(600);
   // The film really plays (from the asset route, by Range): its clock moves.
   await page.evaluate(async () => {
@@ -399,20 +411,20 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
     v.pause();
   });
   if (phone) await press('[data-video-compose]');
-  await at('7-pinned');
+  await at('8-pinned');
   await keep('[data-video-composer] textarea');
-  await shot('07-film');
+  await shot('08-film');
   await page.locator('[data-video-comment-save]').click();
-  await at('7-send');
+  await at('8-send');
   await press('[data-tour-film-send]');
-  await at('7-done');
-  await shot('07-answer');
+  await at('8-done');
+  await shot('08-answer');
   await press('[data-tour-next]');
-  await at('8');
-  await shot('08-compose-button');
-  if (to === 8) return;
+  await at('9');
+  await shot('09-compose-button');
+  if (to === 9) return;
   await press('[data-open-compose]');
-  await at('8-open');
+  await at('9-open');
   // Compose is modal, but the tour bar stays in view above it and its Exit is pressable.
   await expect(page.locator('[data-tour-bar-over] [data-tour-exit]')).toBeVisible();
   const barBox = (await page.locator('[data-tour-bar-over]').boundingBox())!;
@@ -426,19 +438,19 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
     }),
   ).toBe(true);
   await keep('[data-compose] textarea');
-  await shot('08-compose');
+  await shot('09-compose');
   await press('[data-compose] [data-compose-to]');
   await page.locator('[role="option"]').first().click();
-  await at('8-to');
+  await at('9-to');
   await press('[data-compose] [data-compose-send]');
-  await at('8-loop');
-  await shot('08-answer');
+  await at('9-loop');
+  await shot('09-answer');
   await press('[data-tour-next]');
-  await at('8-also');
-  await shot('08-also');
+  await at('9-also');
+  await shot('09-also');
   await press('[data-tour-next]');
   await expect(page.locator('[data-tour-exit="finish"]')).toBeVisible();
-  await shot('09-yours');
+  await shot('10-yours');
 }
 
 /** Routes the tour may ask for: its own read-only routes, the window's reads, the `tour` setting and the window's presence report. */
@@ -475,7 +487,7 @@ test('the walk on a desktop: the real viewers, compose and Artifacts; writes not
   const suggestions: string[] = [];
   const began = Date.now();
   shooting = 0;
-  await walk(page, 9, { suggestions, shot: (name) => shoot(page, `desktop-${name}`) });
+  await walk(page, 10, { suggestions, shot: (name) => shoot(page, `desktop-${name}`) });
   const seconds = (Date.now() - began - shooting) / 1000;
   expect(suggestions).toEqual(SUGGESTIONS);
   // Nothing of the tour reached the server but the tour setting.
@@ -519,6 +531,73 @@ test('keyboard only: Tab and Enter through the coach cards, focus never on the p
   await context.close();
 });
 
+test('Fast-forward on every step lands on its end state, writing nothing; a click the tour cannot use is answered, never ignored', async ({ browser }) => {
+  const w = startWorld('forward');
+  const errors: string[] = [];
+  const { context, page } = await open(browser, w, errors);
+  const writes = writesOf(page);
+  const before = await ownList(w);
+  await page.locator('[data-tour-start]').click();
+  await pastIntro(page);
+  // The opener has Next, no Fast-forward; a click on its picture goes on (it is never dead).
+  await expect(page.locator('[data-tour-forward]')).toHaveCount(0);
+  await page.locator('[data-tour-orient]').click();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '1');
+  await expect(coach(page).locator('[data-tour-your-turn]')).toHaveText('Your turn');
+  // A click on the card's own words points at its target again.
+  await coach(page).locator('h2').click();
+  await expect(page.locator('.ib-tour-again')).toHaveCount(1);
+  // The step's end, then the next step's card, for every step to 9; then step 9's end is the loop.
+  const ends: Record<number, string> = { 1: '2', 2: '3', 3: '4', 4: '5', 5: '6', 6: '7', 7: '8-open', 8: '9' };
+  for (let n = 1; n <= 8; n++) {
+    await expect(step(page)).toHaveAttribute('aria-label', `Step ${n} of 10`);
+    await page.locator('[data-tour-forward]').click();
+    await expect(coach(page), `after step ${n}`).toHaveAttribute('data-tour-coach', ends[n]!);
+    await focusKept(page);
+    if (n === 2) {
+      // The rich message is there: the picture question above its files.
+      await expect(page.locator('[data-tour-message="ask"] [data-question-tiles]')).toBeVisible();
+      await expect(page.locator('[data-tour-message="ask"] .ib-att-t[data-attachment-name="d1-clean.png"]')).toBeVisible();
+    }
+    if (n === 3) {
+      // The step's end state: the real answer picked; Mark read is not part of the tour, and says so.
+      await page.locator('[data-tour-thread] .ib-phead button[aria-disabled="true"]').first().click({ force: true });
+      await expect(page.locator('[data-tour-nudge]')).toContainText('after the tour');
+      // A sent card answers a click too, once the walk is past it.
+      await page.locator('[data-tour-message="warm"] .question-block label').first().dispatchEvent('click');
+      await expect(page.locator('[data-tour-nudge]')).toContainText('sent already');
+    }
+  }
+  // New message before step 9 says when; on 9 it opens compose, whose own coach can fast-forward too.
+  await page.locator('[data-open-compose]').first().click();
+  await expect(page.locator('dialog[data-compose]')).toBeVisible();
+  await page.locator('[data-compose] [data-tour-forward]').click();
+  await expect(page.locator('dialog[data-compose]')).toHaveCount(0);
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '9-loop');
+  await expect(page.locator('[data-tour-forward]')).toHaveCount(0);
+  await page.locator('[data-tour-next]').click();
+  await page.locator('[data-tour-next]').click();
+  await expect(step(page)).toHaveAttribute('aria-label', 'Step 10 of 10');
+  expect(writes.filter((r) => !r.startsWith('POST /api/inbox/settings'))).toEqual([]);
+  expect(await ownList(w)).toBe(before);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('New message before step 9 is answered, not ignored', async ({ browser }) => {
+  const w = startWorld('early-compose');
+  const errors: string[] = [];
+  const { context, page } = await open(browser, w, errors);
+  await page.locator('[data-tour-start]').click();
+  await pastIntro(page);
+  await page.locator('[data-tour-next]').click();
+  await page.locator('[data-open-compose]').first().click();
+  await expect(page.locator('dialog[data-compose]')).toHaveCount(0);
+  await expect(page.locator('[data-tour-nudge]')).toContainText('step 9');
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
 test('an iPhone in WebKit: taps, 44 px targets, the film comment at a moment; light and dark shots', async () => {
   const w = startWorld('phone');
   const errors: string[] = [];
@@ -554,12 +633,14 @@ test('an iPhone in WebKit: taps, 44 px targets, the film comment at a moment; li
     await big('[data-tour-exit]');
     await big('[data-tour-next]');
     const suggestions: string[] = [];
-    await walk(page, 9, {
+    await walk(page, 10, {
       phone: true,
       suggestions,
       shot: async (name) => {
-        if (name === '05-reply') await big('[data-tour-reply]');
-        if (name === '07-answer') await big('[data-tour-next]');
+        if (name === '02-plain') await big('[data-tour-forward]');
+        if (name === '02-send') await big('[data-tour-warm-send]');
+        if (name === '06-reply') await big('[data-tour-reply]');
+        if (name === '08-answer') await big('[data-tour-next]');
         await shoot(page, `phone-${name}`);
       },
     });
@@ -586,20 +667,25 @@ test('reduced motion: no pulse, a shorter replay; a stacked window: the thread c
   // Stacked: the thread covers the list, its way back leads.
   await expect(page.locator('.ib-listcol')).toHaveCount(0);
   await expect(page.locator('[data-tour-thread-back]')).toBeVisible();
-  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
+  await page.locator('[data-tour-message="warm"] input[type=radio]').first().click({ force: true });
+  const warmSent = Date.now();
+  await page.locator('[data-tour-warm-send]').filter({ visible: true }).first().click();
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '3');
+  expect(Date.now() - warmSent).toBeLessThan(2600);
+  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4');
   await selectWords(page, '[data-tour-message="ask"] .ib-body', PHRASE);
   await page.locator(toolbarComment).first().click();
   await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4');
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5');
   await page.locator('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]').click();
   // Stacked: the file covers the thread.
   await expect(page.locator('[data-attachment-pane]')).toBeVisible();
-  await shoot(page, 'stacked-04-file', ['light']);
+  await shoot(page, 'stacked-05-file', ['light']);
   await selectWords(page, '[data-attachment-pane] .ib-docscroll', EV_LINE);
   await page.locator(toolbarComment).first().click();
   await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5');
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '6');
   await page.locator('[data-tour-reply]').filter({ visible: true }).first().click();
   const sent = Date.now();
   await page.locator('[data-tour-send]').filter({ visible: true }).first().click();
@@ -625,10 +711,10 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await expect(page).toHaveURL(/#tour=1$/);
     await pastIntro(page);
   };
-  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
     await enter();
     await walk(page, n);
-    await expect(step(page)).toHaveAttribute('aria-label', `Step ${n} of 9`);
+    await expect(step(page)).toHaveAttribute('aria-label', `Step ${n} of 10`);
     await page.locator('[data-tour-exit="exit"]').click();
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
     // Started in Settings: Exit returns to Settings, as the browser's Back (no new entry).
@@ -639,9 +725,9 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
   }
   // Exit with compose open (a modal dialog): the bar's copy over it ends the tour and closes compose.
   await enter();
-  await walk(page, 8);
+  await walk(page, 9);
   await page.locator('[data-open-compose]').first().click();
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '8-open');
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '9-open');
   await page.locator('[data-tour-bar-over] [data-tour-exit="exit"]').click();
   await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await expect(page.locator('dialog[data-compose]')).toHaveCount(0);
@@ -714,11 +800,11 @@ test('leaving by the chip or the tour sidebar’s Settings: Back never reopens t
   await context.close();
 });
 
-test('step 9 and after a reload: every way out leaves the tour behind; from step 9 it counts as finished, How to allow opens Settings → General', async ({ browser }) => {
+test('step 10 and after a reload: every way out leaves the tour behind; from step 10 it counts as finished, How to allow opens Settings → General', async ({ browser }) => {
   const w = startWorld('step9');
   const first = await agentWrites(w, 'A first real message.', 'First one');
   const errors: string[] = [];
-  // The browser blocked notifications for this address: step 9 offers How to allow.
+  // The browser blocked notifications for this address: step 10 offers How to allow.
   const { context, page } = await open(browser, w, errors, {}, () => {
     if (window.Notification) Object.defineProperty(window.Notification, 'permission', { get: () => 'denied' });
   });
@@ -728,13 +814,13 @@ test('step 9 and after a reload: every way out leaves the tour behind; from step
     await expect(page).toHaveURL(/#tour=1$/);
     await pastIntro(page);
   };
-  // Reached by its address: step 9 is the person's own Inbox, whatever came before.
+  // Reached by its address: step 10 is the person's own Inbox, whatever came before.
   const toStep9 = async () => {
     // In the tour's own history entry, as a step change is.
     await page.evaluate(() => {
-      location.replace('#tour=9');
+      location.replace('#tour=10');
     });
-    await expect(step(page)).toHaveAttribute('aria-label', 'Step 9 of 9');
+    await expect(step(page)).toHaveAttribute('aria-label', 'Step 10 of 10');
   };
   const neverTheTour = async () => {
     await page.goBack();
