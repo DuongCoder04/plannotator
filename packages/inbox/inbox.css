@@ -2475,6 +2475,8 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-ccard .ib-cbtn-l { display: none; }
   .ib-ccard .ib-markup, .pn-inbox .ib-kept .ib-kept-img { width: 44px; height: 44px; }
   .pn-inbox .ib-kept.ib-kept-wide .ib-kept-img { width: 56px; }
+  /* the drawing's ×: an 18 px mark, a 44 px target */
+  .pn-inbox .ib-kept .ib-kept-x::after { inset: -13px; }
   .ib-imgcompose .ib-vframe { width: 56px; height: 44px; }
   /* the drawing's chip under the size bar, not beside it; the toast above the box and the full-screen toolbar, not over them */
   .ib-imgshowing { top: 64px; left: 12px; }

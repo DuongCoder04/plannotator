@@ -9,6 +9,7 @@
  * `.pn-inbox`), not inside the pane.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
@@ -18,6 +19,7 @@ import type { InboxToastModel } from './components/Toast';
 
 const hasDom = typeof document !== 'undefined';
 const { AttachmentPane } = (hasDom ? await import('./components/AttachmentPane') : {}) as typeof import('./components/AttachmentPane');
+const { VideoAttachmentView } = (hasDom ? await import('./components/VideoAttachmentView') : {}) as typeof import('./components/VideoAttachmentView');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -36,9 +38,12 @@ const FRAME = '/home/me/.plannotator/inbox/markups/' + 'c'.repeat(64) + '.jpg';
 
 type Post = { url: string; body: Record<string, unknown> | null };
 let posts: Post[] = [];
+/** How long the markups route takes to answer (a slow upload). */
+let uploadMs = 0;
 
 beforeEach(() => {
   posts = [];
+  uploadMs = 0;
   if (!hasDom) return;
   // A 2D context that draws nothing; a canvas that hands back a small PNG or JPEG.
   const ctx = new Proxy({}, { get: () => () => {} });
@@ -61,6 +66,7 @@ beforeEach(() => {
     const url = String(input);
     if (url.startsWith('/api/inbox/markups')) {
       posts.push({ url, body: null });
+      if (uploadMs) await new Promise((resolve) => setTimeout(resolve, uploadMs));
       const path = url.includes('jpeg') || new Headers(init?.headers).get('content-type') === 'image/jpeg' ? FRAME : MARKED;
       return Response.json({ path, name: path.split('/').pop(), url: '/api/inbox/markups/x' });
     }
@@ -141,10 +147,13 @@ function record(annotation: object, id: string, attachmentId = shot.id): InboxAn
 }
 
 let toasts: Omit<InboxToastModel, 'id'>[] = [];
+/** The thread's records from outside the pane: an edit in the panel, a Send that closes them. */
+let setThreadRecords: (update: (now: InboxAnnotationRecord[]) => InboxAnnotationRecord[]) => void = () => {};
 
 /** The pane with its records kept as the thread keeps them (a save upserts, a removal drops). */
 function Harness({ attachment, initial = [] }: { attachment: InboxAttachmentState; initial?: InboxAnnotationRecord[] }) {
   const [records, setRecords] = useState(initial);
+  setThreadRecords = setRecords;
   const noop = () => {};
   return (
     <div className="pn-inbox">
@@ -357,4 +366,150 @@ test.skipIf(!hasDom)('a video frame takes the same flow: Enter adds the marked-u
   await act(async () => toasts[0]!.onUndo!());
   await settle();
   expect(removed()).toEqual([added!.id as string]);
+});
+
+test.skipIf(!hasDom)('a second ✓ or Enter while the drawing uploads adds it once', async () => {
+  uploadMs = 40;
+  await render(<Harness attachment={shot} />);
+  await openAndDraw();
+  await press('Enter');
+  await press('Enter');
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 120)));
+  expect(saved()).toHaveLength(1);
+  expect(document.querySelectorAll('[data-annotation-id]')).toHaveLength(1);
+  expect(toasts).toHaveLength(1);
+});
+
+test.skipIf(!hasDom)('a note and a redraw build on the comment as it reads now: words written in the panel stay', async () => {
+  await render(<Harness attachment={shot} />);
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  const id = saved()[0]!.id as string;
+  // Words written on the card in Annotations meanwhile.
+  await act(async () =>
+    setThreadRecords((now) => now.map((r) => (r.id === id ? { ...r, annotation: { ...r.annotation, text: 'Panel words' } } : r))),
+  );
+  // A redraw replaces the picture and keeps the words; no second "added" toast (its Undo would take the whole comment).
+  await act(async () => $<HTMLButtonElement>('[data-markup-kept] [data-markup-redraw]')!.click());
+  await settle();
+  await act(async () => $('[data-pn-image-annotator-stage] img')!.dispatchEvent(new Event('load')));
+  const canvas = $('[data-pn-image-annotator-stage] canvas')!;
+  for (const [type, x] of [['pointerdown', 5], ['pointermove', 40], ['pointerup', 40]] as const) {
+    await act(async () => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: x, pointerId: 1 })));
+  }
+  await press('Enter');
+  await settle();
+  expect(saved()[1]).toMatchObject({ id, text: 'Panel words', images: [{ path: MARKED }] });
+  expect(toasts).toHaveLength(1);
+  // A note follows the panel's words.
+  await typeInto($<HTMLTextAreaElement>('[data-image-composer] textarea')!, 'Box note');
+  await act(async () => $<HTMLButtonElement>('[data-image-comment-save]')!.click());
+  await settle();
+  expect(saved()[2]).toMatchObject({ id, text: 'Panel words\n\nBox note' });
+});
+
+test.skipIf(!hasDom)('once its comment is gone (removed in the panel, or sent), the box lets the drawing go; the next drawing is a new comment', async () => {
+  await render(<Harness attachment={shot} />);
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  const first = saved()[0]!.id as string;
+  expect($('[data-markup-kept]')).not.toBeNull();
+  // The card deleted in the panel, or the reply sent: the record leaves the unsent ones.
+  await act(async () => setThreadRecords((now) => now.filter((r) => r.id !== first)));
+  await settle();
+  // (A boolean: bun cannot print a happy-dom element in a failure.)
+  expect($('[data-markup-kept]') !== null).toBe(false);
+  expect($<HTMLTextAreaElement>('[data-image-composer] textarea')!.placeholder).toBe('Comment on this image…');
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  expect(saved()).toHaveLength(2);
+  expect(saved()[1]!.id).not.toBe(first);
+  expect(saved()[1]).toMatchObject({ text: MARKUP_ONLY_TEXT });
+});
+
+test.skipIf(!hasDom)("a video's Undo lets go of the selection, as an image's does", async () => {
+  stub(HTMLMediaElement.prototype, 'pause', { value: () => {}, writable: true });
+  stub(HTMLVideoElement.prototype, 'videoWidth', { get: () => 1920 });
+  stub(HTMLVideoElement.prototype, 'videoHeight', { get: () => 1080 });
+  const selections: (string | null)[] = [];
+  const notices: Omit<InboxToastModel, 'id'>[] = [];
+  await render(
+    <div className="pn-inbox">
+      <VideoAttachmentView
+        attachment={film}
+        version="current"
+        annotations={[]}
+        selectedId={null}
+        onSelect={(id) => selections.push(id)}
+        readOnly={false}
+        onSave={async () => true}
+        onError={() => {}}
+        onRemove={() => {}}
+        onNotice={(notice) => notices.push(notice)}
+      />
+    </div>,
+  );
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  expect(notices).toHaveLength(1);
+  await act(async () => notices[0]!.onUndo!());
+  expect(selections.at(-1)).toBeNull();
+});
+
+test('on a phone the drawing’s × is a 44 px target', () => {
+  const css = readFileSync(new URL('./inbox.css', import.meta.url), 'utf8');
+  const size = Number(/\.pn-inbox \.ib-kept \.ib-kept-x \{[^}]*\bwidth: (\d+)px/.exec(css)![1]);
+  const phone = css.slice(css.indexOf('/* the comment box: one row, 44 px targets'));
+  const inset = /\.pn-inbox \.ib-kept \.ib-kept-x::after \{ inset: -(\d+)px; \}/.exec(phone);
+  expect(inset).not.toBeNull();
+  expect(size + 2 * Number(inset![1])).toBeGreaterThanOrEqual(44);
+});
+
+/** A film in the pane, paused at 1:42 (happy-dom's media element keeps no time: a plain field stands in). */
+async function renderFilm() {
+  stub(HTMLMediaElement.prototype, 'pause', { value: () => {}, writable: true });
+  stub(HTMLMediaElement.prototype, 'currentTime', {
+    get(this: { _t?: number }) {
+      return this._t ?? 0;
+    },
+    set(this: { _t?: number }, value: number) {
+      this._t = value;
+    },
+  });
+  stub(HTMLVideoElement.prototype, 'videoWidth', { get: () => 1920 });
+  stub(HTMLVideoElement.prototype, 'videoHeight', { get: () => 1080 });
+  await render(<Harness attachment={film} />);
+  const video = $<HTMLVideoElement>('video[data-video-player]')!;
+  video.currentTime = 102.4;
+  await act(async () => video.dispatchEvent(new Event('timeupdate', { bubbles: true })));
+}
+
+test.skipIf(!hasDom)('on a video too, a second Enter while the frame uploads adds it once', async () => {
+  uploadMs = 40;
+  await renderFilm();
+  await openAndDraw();
+  await press('Enter');
+  await press('Enter');
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 120)));
+  expect(saved()).toHaveLength(1);
+  expect(toasts).toHaveLength(1);
+});
+
+test.skipIf(!hasDom)("on a video too, a note keeps the panel's words and the moment", async () => {
+  await renderFilm();
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  const id = saved()[0]!.id as string;
+  await act(async () =>
+    setThreadRecords((now) => now.map((r) => (r.id === id ? { ...r, annotation: { ...r.annotation, text: 'Panel words' } } : r))),
+  );
+  await typeInto($<HTMLTextAreaElement>('[data-video-composer] textarea')!, 'Box note');
+  await act(async () => $<HTMLButtonElement>('[data-video-comment-save]')!.click());
+  await settle();
+  expect(saved()[1]).toMatchObject({ id, text: 'Panel words\n\nBox note', inboxVideo: { time: 102.4 } });
 });

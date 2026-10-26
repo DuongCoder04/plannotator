@@ -23,3 +23,14 @@ export function markupWords(words: string, hasDrawing: boolean): string {
   const trimmed = words.trim();
   return trimmed || (hasDrawing ? MARKUP_ONLY_TEXT : '');
 }
+
+/**
+ * A note from the comment box onto the comment the ✓ added, as the comment
+ * reads NOW (it may have been edited in the panel meanwhile): the note replaces
+ * the stand-in words, and follows words already there.
+ */
+export function noteOnto(current: Pick<Annotation, 'text' | 'images'>, words: string): string {
+  const note = words.trim();
+  if (!note) return current.text ?? '';
+  return isWordlessMarkup(current) ? note : `${(current.text ?? '').trim()}\n\n${note}`;
+}

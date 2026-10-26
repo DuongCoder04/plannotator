@@ -12,7 +12,7 @@ import { PHONE_QUERY } from '../phone';
 import { Tip } from './Tip';
 import { useConfigValue } from '@plannotator/ui/config';
 import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
-import { markupWords } from '../markup';
+import { markupWords, noteOnto } from '../markup';
 import { DRAWING_SCREEN, KeptMarkup, markupAddedToast, OverWindow, type Notice } from './Markup';
 
 /** A fresh annotation id. */
@@ -118,6 +118,8 @@ export function ImageAttachmentView({
   const [markup, setMarkup] = useState<ImageAttachment | null>(null);
   // The drawing the ✓ just added to the reply: its comment's id, for a note, a redraw or ×.
   const [kept, setKept] = useState<{ id: string; image: ImageAttachment } | null>(null);
+  // A drawing on its way into the reply: a second ✓ or Enter meanwhile adds nothing (ui calls onAccept again).
+  const adding = useRef(false);
   const [annotating, setAnnotating] = useState(false);
   const [saving, setSaving] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
@@ -183,6 +185,11 @@ export function ImageAttachmentView({
   // A selected comment that carries a drawing shows the drawing over the image.
   const selected = selectedId ? annotations.find((a) => a.id === selectedId) : undefined;
   const selectedMarkup = selected?.images?.[0] ?? null;
+  // The kept drawing's comment as it reads now; gone once removed (the panel, Undo) or sent, and the box lets it go.
+  const keptNow = kept ? annotations.find((a) => a.id === kept.id) ?? null : null;
+  useEffect(() => {
+    if (kept && !keptNow) setKept(null);
+  }, [kept, keptNow]);
   const [showOriginal, setShowOriginal] = useState(false);
   useEffect(() => setShowOriginal(false), [selectedId]);
   const showingMarkup = selectedMarkup !== null && !showOriginal && !failed;
@@ -192,13 +199,15 @@ export function ImageAttachmentView({
     const words = text.trim();
     if (saving) return;
     // A note: onto the drawing the ✓ added, the same comment.
-    if (kept) {
-      if (!words) return;
+    if (kept && keptNow) {
+      // (A redraw whose save failed waits as `markup`: it goes with the note.)
+      if (!words && !markup) return;
       setSaving(true);
-      const ok = await onSave(imageCommentAnnotation({ id: kept.id, name: attachment.name, text: words, markup: kept.image }));
+      const ok = await onSave({ ...keptNow, text: noteOnto(keptNow, words), ...(markup ? { images: [markup] } : {}) });
       setSaving(false);
       if (ok) {
         setText('');
+        setMarkup(null);
         setKept(null);
       }
       return;
@@ -234,8 +243,14 @@ export function ImageAttachmentView({
    */
   const addDrawing = async (image: ImageAttachment) => {
     const words = text.trim();
-    const id = kept?.id ?? newId();
-    const ok = await onSave(imageCommentAnnotation({ id, name: attachment.name, text: markupWords(words, true), markup: image }));
+    // A redraw: the comment as it reads now, its picture replaced (and any words typed, as a note).
+    const redraw = kept && keptNow ? keptNow : null;
+    const id = redraw?.id ?? newId();
+    const ok = await onSave(
+      redraw
+        ? { ...redraw, text: noteOnto(redraw, words), images: [image] }
+        : imageCommentAnnotation({ id, name: attachment.name, text: markupWords(words, true), markup: image }),
+    );
     if (!ok) {
       // Not saved (the error shows): the drawing waits in the box for Comment, as before.
       setMarkup(image);
@@ -245,7 +260,8 @@ export function ImageAttachmentView({
     setText('');
     setKept(words ? null : { id, image });
     onSelect?.(id);
-    onNotice?.(markupAddedToast(() => removeKept(id)));
+    // A new comment says so, with Undo; a redraw only replaced the picture (Undo would take the whole comment).
+    if (!redraw) onNotice?.(markupAddedToast(() => removeKept(id)));
   };
 
   return (
@@ -398,7 +414,7 @@ export function ImageAttachmentView({
               type="button"
               className="ib-btn ib-pri ib-csave"
               onClick={() => void submit()}
-              disabled={saving || (kept ? !text.trim() : !text.trim() && !markup)}
+              disabled={saving || (!text.trim() && !markup)}
               data-image-comment-save=""
             >
               {kept ? 'Add note' : 'Comment'}
@@ -418,12 +434,15 @@ export function ImageAttachmentView({
           }}
           onAccept={async (blob, hasDrawings) => {
             // Nothing drawn: nothing to keep; the comment box stays as it was.
-            if (!hasDrawings) return;
+            if (!hasDrawings || adding.current) return;
+            adding.current = true;
             try {
               const keptFile = await source.keepMarkup(blob);
               await addDrawing({ path: keptFile.path, name: `${stem(attachment.name)}, marked up` });
             } catch (cause) {
               onError(cause instanceof InboxApiError ? cause.message : 'The drawing was not kept.');
+            } finally {
+              adding.current = false;
             }
           }}
         />

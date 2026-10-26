@@ -12,7 +12,7 @@ import { FileName } from './FileName';
 import { Tip } from './Tip';
 import { useConfigValue } from '@plannotator/ui/config';
 import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
-import { markupWords } from '../markup';
+import { markupWords, noteOnto } from '../markup';
 import { DRAWING_SCREEN, KeptMarkup, markupAddedToast, OverWindow, type Notice } from './Markup';
 
 /** A fresh annotation id. */
@@ -84,7 +84,7 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
   version: 'current' | 'sent';
   annotations: readonly Annotation[];
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string | null) => void;
   readOnly: boolean;
   onSave: (annotation: Annotation) => Promise<boolean>;
   onError: (message: string) => void;
@@ -117,6 +117,13 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
   const [markup, setMarkup] = useState<ImageAttachment | null>(null);
   // The drawing the ✓ just added to the reply: its comment, for a note, a redraw or ×.
   const [kept, setKept] = useState<{ id: string; image: ImageAttachment; time: number } | null>(null);
+  // A drawing on its way into the reply: a second ✓ or Enter meanwhile adds nothing (ui calls onAccept again).
+  const adding = useRef(false);
+  // The kept drawing's comment as it reads now; gone once removed (the panel, Undo) or sent, and the row lets it go.
+  const keptNow = kept ? annotations.find((a) => a.id === kept.id) ?? null : null;
+  useEffect(() => {
+    if (kept && !keptNow) setKept(null);
+  }, [kept, keptNow]);
   const [annotating, setAnnotating] = useState(false);
   const [saving, setSaving] = useState(false);
   /** A phone opens the row from "Comment at 1:42". */
@@ -196,11 +203,12 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
   };
 
   const shownTime = pinned ?? current;
-  const canSave = !saving && (text.trim() !== '' || (!kept && markup !== null));
+  const canSave = !saving && (text.trim() !== '' || markup !== null);
 
   /** Take the added drawing out of the reply (its × or the toast's Undo). */
   const removeKept = (id: string) => {
     setKept((now) => (now?.id === id ? null : now));
+    onSelect(null);
     void onRemove?.(id);
   };
 
@@ -211,9 +219,15 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
    */
   const addDrawing = async (image: ImageAttachment) => {
     const words = text.trim();
-    const time = kept?.time ?? pinned ?? videoTimeOf(videoRef.current?.currentTime ?? current);
-    const id = kept?.id ?? newId();
-    const ok = await onSave(videoCommentAnnotation({ id, name: attachment.name, time, text: markupWords(words, true), frame: image }));
+    // A redraw: the comment as it reads now, its frame replaced (and any words typed, as a note).
+    const redraw = kept && keptNow ? keptNow : null;
+    const time = redraw && kept ? kept.time : pinned ?? videoTimeOf(videoRef.current?.currentTime ?? current);
+    const id = redraw?.id ?? newId();
+    const ok = await onSave(
+      redraw
+        ? ({ ...redraw, text: noteOnto(redraw, words), images: [image] } as Annotation)
+        : videoCommentAnnotation({ id, name: attachment.name, time, text: markupWords(words, true), frame: image }),
+    );
     if (!ok) {
       // Not saved (the error shows): the drawing waits in the row for Comment, as before.
       setMarkup(image);
@@ -226,15 +240,17 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
       setKept({ id, image, time });
     }
     onSelect(id);
-    onNotice?.(markupAddedToast(() => removeKept(id)));
+    // A new comment says so, with Undo; a redraw only replaced the frame (Undo would take the whole comment).
+    if (!redraw) onNotice?.(markupAddedToast(() => removeKept(id)));
   };
 
   const submit = async () => {
     if (!canSave) return;
     // A note: onto the drawing the ✓ added, the same comment at the same moment.
-    if (kept) {
+    if (kept && keptNow) {
       setSaving(true);
-      const ok = await onSave(videoCommentAnnotation({ id: kept.id, name: attachment.name, time: kept.time, text: text.trim(), frame: kept.image }));
+      // (A redraw whose save failed waits as `markup`: it goes with the note.)
+      const ok = await onSave({ ...keptNow, text: noteOnto(keptNow, text), ...(markup ? { images: [markup] } : {}) } as Annotation);
       setSaving(false);
       if (ok) reset();
       return;
@@ -520,12 +536,15 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
           }}
           onAccept={async (blob, hasDrawings) => {
             // Nothing drawn: the plain frame still rides the comment.
-            if (!hasDrawings) return;
+            if (!hasDrawings || adding.current) return;
+            adding.current = true;
             try {
               const keptFile = await source.keepMarkup(blob);
               await addDrawing({ path: keptFile.path, name: `${videoFrameName(attachment.name, kept?.time ?? pinned ?? current)}, marked up` });
             } catch (cause) {
               onError(cause instanceof InboxApiError ? cause.message : 'The drawing was not kept.');
+            } finally {
+              adding.current = false;
             }
           }}
         />
