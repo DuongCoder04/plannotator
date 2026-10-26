@@ -48,6 +48,8 @@ let reader: ReadableStreamDefaultReader<Uint8Array>;
 let buffered = '';
 /** The next request whose answer the test throws away after the server handled it (a lost answer). */
 let loseAnswerOf: { method: string; path: RegExp } | null = null;
+/** The next request that fails before it reaches the server (nothing happens there). */
+let failBeforeOf: { method: string; path: RegExp } | null = null;
 
 function loopback(path: string, method = 'GET', body?: string): Promise<{ status: number; text: string }> {
   return new Promise((done, fail) => {
@@ -88,7 +90,7 @@ beforeAll(async () => {
   // The Board is off by default: this person turned it on (config.json `inboxBoard`), so agents get the card action.
   mkdirSync(join(dir, 'data'), { recursive: true });
   writeFileSync(join(dir, 'data', 'config.json'), JSON.stringify({ inboxBoard: true }));
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '3'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '5'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), HOME: dir },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -117,6 +119,10 @@ beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const method = init?.method ?? 'GET';
+    if (failBeforeOf && failBeforeOf.method === method && failBeforeOf.path.test(path)) {
+      failBeforeOf = null;
+      throw new TypeError('Failed to fetch');
+    }
     const answer = await loopback(path, method, init?.body ? String(init.body) : undefined);
     if (loseAnswerOf && loseAnswerOf.method === method && loseAnswerOf.path.test(path)) {
       loseAnswerOf = null;
@@ -132,6 +138,7 @@ afterEach(() => {
   root = null;
   globalThis.fetch = savedFetch;
   loseAnswerOf = null;
+  failBeforeOf = null;
   document.body.innerHTML = '';
 });
 
@@ -271,4 +278,82 @@ test.if(hasDom)('New card into Backlog: the answer lost, the title edited, then 
   const cards = await cardsTitled('Retry me, better words');
   expect(cards).toHaveLength(1);
   expect(cards[0]!.column).toBe('backlog');
+});
+
+/** New card's title field, typed into. */
+async function typeTitle(value: string) {
+  const title = document.querySelector<HTMLInputElement>('[data-new-card-title]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(title, value);
+    title.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/** New card's project menu: pick another project (by id). */
+async function pickProject(id: string) {
+  const trigger = document.querySelector<HTMLElement>('[data-new-card-project]')!;
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    trigger.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    trigger.click();
+  });
+  const { projects } = await get<{ projects: { id: string; name: string }[] }>('/api/inbox/projects');
+  const name = projects.find((p) => p.id === id)!.name;
+  await until(() => [...document.querySelectorAll('[role="menuitem"]')].some((el) => el.textContent?.trim() === name), 'the project menu');
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent?.trim() === name)!;
+  await act(async () => item.click());
+  await until(() => document.querySelector('[data-new-card-project]')?.getAttribute('data-new-card-project') === id, 'the project chosen');
+}
+
+const addButton = () => [...document.querySelectorAll<HTMLButtonElement>('[data-new-card-add]')].at(-1)!;
+async function addExpectingError() {
+  await act(async () => addButton().click());
+  await until(() => !!document.querySelector('[data-new-card-error]'), 'the error');
+}
+
+// What regresses: the answer lost, the project changed, and the old card's drop fails (two live cards),
+// or its drop landed with the answer lost and every retry is refused for dropping a dropped card.
+test.if(hasDom)('New card: the answer lost, the project changed, the drop failing then its answer lost: one live card, in the new project', async () => {
+  const other = worlds.find((w) => w.project !== world.project)!.project;
+  await drawBoard(null);
+  act(() => document.querySelector<HTMLButtonElement>('[data-board-new]')!.click());
+  await until(() => !!document.querySelector('[data-new-card-title]'), 'New card');
+  await typeTitle('Moved after a lost answer');
+  loseAnswerOf = { method: 'POST', path: /^\/api\/inbox\/cards$/ };
+  await addExpectingError();
+  expect((await cardsTitled('Moved after a lost answer')).map((c) => c.project_id)).toEqual([world.project]);
+  await pickProject(other);
+  // The old card's drop never reaches the server: nothing new is made beside it.
+  failBeforeOf = { method: 'POST', path: /^\/api\/inbox\/cards\/crd_/ };
+  await addExpectingError();
+  let cards = await cardsTitled('Moved after a lost answer');
+  expect(cards.map((c) => [c.project_id, c.column])).toEqual([[world.project, 'backlog']]);
+  // The drop lands, its answer lost.
+  loseAnswerOf = { method: 'POST', path: /^\/api\/inbox\/cards\/crd_/ };
+  await addExpectingError();
+  // Then Add works: the dropped card is not dropped again, and one card stands, in the new project.
+  await act(async () => addButton().click());
+  await until(() => !document.querySelector('[data-new-card-title]'), 'the dialog closed');
+  cards = await cardsTitled('Moved after a lost answer');
+  const live = cards.filter((c) => c.column !== 'dropped');
+  expect(live.map((c) => [c.project_id, c.column])).toEqual([[other, 'backlog']]);
+  expect(cards.filter((c) => c.column === 'dropped').map((c) => c.project_id)).toEqual([world.project]);
+});
+
+test.if(hasDom)('New card: a first try that never reached the server, then another project: the card is made there only, nothing dropped', async () => {
+  const other = worlds.find((w) => w.project !== world.project)!.project;
+  await drawBoard(null);
+  act(() => document.querySelector<HTMLButtonElement>('[data-board-new]')!.click());
+  await until(() => !!document.querySelector('[data-new-card-title]'), 'New card');
+  await typeTitle('Never reached the server');
+  failBeforeOf = { method: 'POST', path: /^\/api\/inbox\/cards$/ };
+  await addExpectingError();
+  expect(await cardsTitled('Never reached the server')).toHaveLength(0);
+  await pickProject(other);
+  await act(async () => addButton().click());
+  await until(() => !document.querySelector('[data-new-card-title]'), 'the dialog closed');
+  const cards = await cardsTitled('Never reached the server');
+  expect(cards.map((c) => [c.project_id, c.column])).toEqual([[other, 'backlog']]);
 });

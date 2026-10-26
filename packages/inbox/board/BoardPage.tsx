@@ -150,7 +150,7 @@ export function BoardPage(props: BoardPageProps) {
   /** The card a New card dialog already made (a retry reconciles and sends that one, never a second). */
   const dialogCard = useRef<InboxCardWire | null>(null);
   /** The try that makes the card, while its answer is not known: replayed as it was. */
-  const madeTry = useRef<{ input: NewCardInput; target: string; run: () => Promise<InboxCardWire> } | null>(null);
+  const madeTry = useRef<{ input: NewCardInput; target: string; key: string; run: () => Promise<InboxCardWire> } | null>(null);
   /** The inputs the card was last brought to (what the made card already holds). */
   const madeFrom = useRef<{ input: NewCardInput; target: string } | null>(null);
   /** The message that sends the dialog's card, as first tried: a retry sends the same words, so never twice. */
@@ -184,7 +184,7 @@ export function BoardPage(props: BoardPageProps) {
     input.mode === 'send' && input.to ? (input.to.project.id ? `project:${input.to.project.id}` : `session:${input.to.session}`) : `project:${input.project ?? ''}`;
 
   /** One try at making the dialog's card, with its own key and these words; replayable as it is. */
-  const makeTry = (input: NewCardInput): (() => Promise<InboxCardWire>) => {
+  const makeTry = (input: NewCardInput): { key: string; run: () => Promise<InboxCardWire> } => {
     const key = crypto.randomUUID();
     const column: 'backlog' | 'icebox' = input.mode === 'icebox' ? 'icebox' : 'backlog';
     if (input.mode === 'send' && input.to && !input.to.project.id) {
@@ -192,13 +192,16 @@ export function BoardPage(props: BoardPageProps) {
       // made and sent in one step with it (checked by the server before anything is written).
       const to = input.to;
       const body = cardMessageBody(input.title, input.notes, null);
-      return async () => {
-        const started = await inboxApi.startThread({ to: { host: to.host, session: to.session }, body, idempotency_key: messageKey(key, to.session, body) });
-        return (await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key })).card;
+      return {
+        key,
+        run: async () => {
+          const started = await inboxApi.startThread({ to: { host: to.host, session: to.session }, body, idempotency_key: messageKey(key, to.session, body) });
+          return (await inboxApi.createCard({ title: input.title, notes: input.notes, refs: input.refs, thread_id: started.thread_id, idempotency_key: key })).card;
+        },
       };
     }
     const project = input.mode === 'send' && input.to ? input.to.project.id : input.project;
-    return async () => (await inboxApi.createCard({ project, title: input.title, notes: input.notes, refs: input.refs, column, idempotency_key: key })).card;
+    return { key, run: async () => (await inboxApi.createCard({ project, title: input.title, notes: input.notes, refs: input.refs, column, idempotency_key: key })).card };
   };
 
   /** The dialog's card, made once and brought to what the dialog says now. */
@@ -206,24 +209,35 @@ export function BoardPage(props: BoardPageProps) {
     const target = targetOf(input);
     let card = dialogCard.current;
     if (!card && madeTry.current) {
-      // The last try's answer was lost: replay it as it was.
       const before = madeTry.current;
-      card = await before.run();
+      if (before.target !== target && before.target.startsWith('project:') && target.startsWith('project:')) {
+        // The answer was lost and the person chose another project: look for the card that try made
+        // (by its key) instead of replaying it, so a try that never reached the server is not made in
+        // the old project only to be dropped there.
+        const { cards: all } = await inboxApi.cards();
+        card = all.find((c) => c.idempotency_key === before.key) ?? null;
+      } else {
+        // The last try's answer was lost: replay it as it was.
+        card = await before.run();
+      }
       dialogCard.current = card;
-      madeFrom.current = { input: before.input, target: before.target };
+      madeFrom.current = card ? { input: before.input, target: before.target } : null;
       madeTry.current = null;
     }
     if (card && madeFrom.current && madeFrom.current.target !== target) {
       // Made in another project (or for another session's new folder): the person moved it, so that
-      // card goes (their own drop, kept in Dropped) and this try makes it where they chose now.
-      await inboxApi.moveCard(card.id, { op: 'drop', reason: 'Made again in another project' }).catch(() => {});
+      // card goes (their own drop, kept in Dropped) and this try makes it where they chose now. The
+      // card is read first: a drop whose answer was lost has landed, and dropping it again is refused.
+      // A drop that fails stops here (the retry drops it), so two live cards never stand.
+      const now = (await inboxApi.card(card.id)).card;
+      if (now.column !== 'dropped') await inboxApi.moveCard(card.id, { op: 'drop', reason: 'Made again in another project' });
       card = null;
       dialogCard.current = null;
       madeFrom.current = null;
     }
     if (!card) {
-      const run = makeTry(input);
-      madeTry.current = { input, target, run };
+      const { key, run } = makeTry(input);
+      madeTry.current = { input, target, key, run };
       card = await run();
       dialogCard.current = card;
       madeFrom.current = { input, target };
