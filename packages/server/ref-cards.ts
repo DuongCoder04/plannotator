@@ -368,7 +368,8 @@ export async function readSignedInHosts(run: RefRunner, cli: RefCli): Promise<Se
       try {
         const parsed = JSON.parse(json.stdout) as { hosts?: Record<string, { state?: string }[]> };
         for (const [host, accounts] of Object.entries(parsed.hosts ?? {})) {
-          if (Array.isArray(accounts) && accounts.some((a) => (a?.state ?? "success") === "success")) hosts.add(host.toLowerCase());
+          // Only an account gh says is signed in: every gh with `--json hosts` writes `state`, so one without it is not trusted.
+          if (Array.isArray(accounts) && accounts.some((a) => a?.state === "success")) hosts.add(host.toLowerCase());
         }
         return hosts;
       } catch {

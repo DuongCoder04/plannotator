@@ -407,6 +407,17 @@ describe("fetching", () => {
     expect(r.calls.filter((c) => c.args[0] === "auth").map((c) => c.cli).sort()).toEqual(["gh", "glab"]);
   });
 
+  test("gh's JSON: an account with no state, or a state other than success, does not make its host signed in", async () => {
+    const gh: RefRunner = async () =>
+      ok({ hosts: {
+        "github.com": [{ login: "ada", active: true, state: "success" }],
+        "ghe.nostate.dev": [{ login: "ada", active: true }],
+        "ghe.error.dev": [{ login: "ada", active: true, state: "error" }],
+        "ghe.null.dev": [null],
+      } });
+    expect([...(await readSignedInHosts(gh, "gh"))]).toEqual(["github.com"]);
+  });
+
   test("the signed-in hosts: gh's JSON, gh's text form, glab's status lines", async () => {
     const ghText: RefRunner = async (_cli, args) =>
       args.includes("--json")

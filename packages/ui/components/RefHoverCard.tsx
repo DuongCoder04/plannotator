@@ -231,6 +231,45 @@ function neutralizeLinks(root: Element): void {
   }
 }
 
+/** The longest path the confirm shows whole; a longer one keeps its start and end. */
+const CONFIRM_PATH_MAX = 48;
+
+/**
+ * A link's parts for the confirm row: the host whole (it says where the link really goes, so it is
+ * never shortened, however long a lookalike makes it), then the path, cut in the middle when long.
+ */
+export function confirmUrlParts(url: string): { scheme: string; host: string; path: string } {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { scheme: '', host: url, path: '' };
+  }
+  const rest = `${u.pathname === '/' && !u.search && !u.hash ? '' : u.pathname}${u.search}${u.hash}`;
+  const half = Math.floor((CONFIRM_PATH_MAX - 1) / 2);
+  const path = rest.length > CONFIRM_PATH_MAX ? `${rest.slice(0, half)}…${rest.slice(-half)}` : rest;
+  return { scheme: `${u.protocol}//`, host: u.host, path };
+}
+
+/** The confirm's URL: a screen reader gets it whole; the eye gets the host whole, in the text colour. */
+function ConfirmUrl({ url }: { url: string }) {
+  const { scheme, host, path } = confirmUrlParts(url);
+  return (
+    <span className="min-w-0 flex-1 font-mono" data-ref-card-confirm-url="">
+      <span className="sr-only">{url}</span>
+      <span aria-hidden="true" className="[overflow-wrap:anywhere]">
+        <span className="text-muted-foreground">{scheme}</span>
+        <span className="font-semibold text-foreground" data-ref-card-confirm-host="">
+          {host}
+        </span>
+        <span className="text-muted-foreground" data-ref-card-confirm-path="">
+          {path}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 /**
  * Links in the body carry no `href` once drawn. A click with any button or modifier, or Enter, on
  * one only offers "Open · Cancel" with its full URL; the Open there is the one real link. The
@@ -289,7 +328,7 @@ function SafeMarkdown({ markdown }: { markdown: string }) {
       </div>
       {confirm ? (
         <div className="mt-1.5 flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-[11.5px]" role="group" aria-label="Open this link?" data-ref-card-confirm="">
-          <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{confirm}</span>
+          <ConfirmUrl url={confirm} />
           <a href={confirm} target="_blank" rel="noopener noreferrer nofollow" className="font-medium text-primary hover:underline" onClick={() => setConfirm(null)}>
             Open
           </a>

@@ -139,6 +139,35 @@ describe.if(hasDom)('ref card body links', () => {
     });
   }
 
+  test('the confirm shows a long deceptive host whole, and gives a screen reader the whole URL', async () => {
+    const host = 'github.com.acme.widgets.pull.12.' + 'a'.repeat(60) + '.evil.example';
+    const url = `https://${host}/acme/widgets/pull/12/${'x'.repeat(80)}/files?tab=checks`;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const body = `[looks fine](${url})`;
+    await act(async () => {
+      root?.render(<RefCardView target={TARGET} href="https://github.com/acme/widgets/pull/12" result={result(body)} />);
+    });
+    const c = container;
+    await act(async () => {
+      link(c, 'looks fine').click();
+    });
+    const shown = c.querySelector('[data-ref-card-confirm-url]') as HTMLElement;
+    expect(c.querySelector('[data-ref-card-confirm-host]')?.textContent).toBe(host);
+    // The row never truncates the host away.
+    expect(shown.querySelector('.truncate')).toBeNull();
+    // The path is cut in the middle, the host is not.
+    const path = c.querySelector('[data-ref-card-confirm-path]')?.textContent ?? '';
+    expect(path).toContain('…');
+    expect(path).toStartWith('/acme/widgets');
+    expect(path).toEndWith('?tab=checks');
+    // A screen reader gets the URL whole; the shortened parts are hidden from it.
+    expect(shown.querySelector('.sr-only')?.textContent).toBe(url);
+    expect(shown.querySelector('[aria-hidden="true"]')?.textContent).not.toBe(url);
+    expect(c.querySelector('[data-ref-card-confirm] a')?.getAttribute('href')).toBe(url);
+  });
+
   test('a link written into the body later is neutralized too, and still caught before that', async () => {
     const c = await mount();
     const body = c.querySelector('[data-ref-card-scroll] .html-block') as HTMLElement;
