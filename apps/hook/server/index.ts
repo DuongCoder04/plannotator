@@ -153,7 +153,7 @@ import {
   BRIDGE_SCRIPT,
   LIVE_BRIDGE_BOOTSTRAP,
 } from "@plannotator/ui/components/html-viewer/bridge-script";
-import { rmSync, realpathSync, existsSync } from "fs";
+import { rmSync, realpathSync, existsSync, readFileSync } from "fs";
 import { parseRemoteUrl } from "@plannotator/shared/repo";
 import {
   composePlanDeniedMessage,
@@ -246,18 +246,28 @@ import {
   supportsAnnotateClientLease,
 } from "./annotate-output";
 
-// Embed the built HTML at compile time
-// @ts-ignore - Bun import attribute for text
-import planHtml from "../dist/index.html" with { type: "text" };
-const planHtmlContent = planHtml as unknown as string;
+// The built pages, embedded at compile time as files and read into a string
+// when a server first needs one (then kept). Not `type: "text"`: from Bun 1.4
+// that stores each page as its own embedded file, in UTF-16 when it holds any
+// character past Latin-1 (these do), so the three ~20 MB pages cost twice
+// their size in the binary (+64 MB, #2215). As files they are stored as built.
+// The read is from the binary's embedded files, which Bun holds from startup:
+// replacing the binary (the installer renames a new one over it) does not
+// change what a running process reads (smoke-binaries checks this).
+// @ts-ignore - Bun import attribute for file
+import planHtmlPath from "../dist/index.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import reviewHtmlPath from "../dist/review.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import inboxHtmlPath from "../dist/inbox.html" with { type: "file" };
 
-// @ts-ignore - Bun import attribute for text
-import reviewHtml from "../dist/review.html" with { type: "text" };
-const reviewHtmlContent = reviewHtml as unknown as string;
-
-// @ts-ignore - Bun import attribute for text
-import inboxHtml from "../dist/inbox.html" with { type: "text" };
-const inboxHtmlContent = inboxHtml as unknown as string;
+function embeddedPage(path: unknown): () => string {
+  let html: string | undefined;
+  return () => (html ??= readFileSync(path as string, "utf8"));
+}
+const planHtmlContent = embeddedPage(planHtmlPath);
+const reviewHtmlContent = embeddedPage(reviewHtmlPath);
+const inboxHtmlContent = embeddedPage(inboxHtmlPath);
 
 // Code review's diagram engine: embedded too, read on first need.
 import { loadEmbeddedDiagramEngine } from "./diagram-engine";
@@ -759,7 +769,7 @@ if (args[0] === "install-runtime") {
 // (inbox/inbox.json). Dispatched before the session registry and the
 // auto-update trigger below, which belong to review sessions.
 if (args[0] === "inbox") {
-  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent });
+  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent() });
 }
 
 if (isInteractiveNoArgInvocation(args, process.stdin.isTTY)) {
@@ -1051,7 +1061,7 @@ if (args[0] === "sessions") {
   const server = await startGoalSetupServer({
     bundle,
     origin: detectedOrigin,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleGoalSetupServerReady(url, isRemote, port);
     },
@@ -1481,7 +1491,7 @@ if (args[0] === "sessions") {
     // The approved branch below prints result.feedback after the prompt, so
     // this CLI's origins may see approve-carrying menu items (spec §6.4).
     approvalNotesSupported: supportsReviewApprovalNotes(detectedOrigin),
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     tailnetPublished: tailscaleFlag,
     onCleanup: worktreeCleanup,
@@ -1776,7 +1786,7 @@ if (args[0] === "sessions") {
     convertHtml: renderMarkdownFlag,
     agentCwd: projectRoot,
     project: annotateProject,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
       if (tailscaleFlag) {
@@ -2058,7 +2068,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     recentMessages: pickerMessages,
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
@@ -2119,7 +2129,7 @@ if (args[0] === "sessions") {
     mode: "archive",
     sharingEnabled,
     shareBaseUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
     },
@@ -2180,7 +2190,7 @@ if (args[0] === "sessions") {
     sharingEnabled: bridgeSharingEnabled,
     shareBaseUrl: bridgeShareBaseUrl,
     pasteApiUrl: bridgePasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: async (url, isRemote, port) => {
       await handleServerReady(url, isRemote, port);
@@ -2418,7 +2428,7 @@ if (args[0] === "sessions") {
     // never trick an old bridge into dropping a reviewer's note.
     approvalNotesSupported:
       supportsReviewApprovalNotes("opencode") && input.supportsApprovalNotes === true,
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: (url, isRemote, port) => {
@@ -2532,7 +2542,7 @@ if (args[0] === "sessions") {
       hook: false,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
     },
@@ -2595,7 +2605,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 
@@ -2700,7 +2710,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
 
@@ -2791,7 +2801,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
       if (isRemote && sharingEnabled) {
@@ -2909,7 +2919,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
 
@@ -2979,7 +2989,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
         if (isRemote && sharingEnabled) {
@@ -3073,7 +3083,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 
