@@ -115,6 +115,8 @@ describe('the walk', () => {
     expect(tourCoach(s, names)).toMatchObject({ key: '7', target: 'inline-img' });
     s = tourReducer(s, { type: 'openFile', id: fileNamed('a1.png').id, full: true });
     expect(tourCoach(s, names)!.key).toBe('7-file');
+    // While the drawing surface is open, the card points at nothing (it stands clear of the drawing tools).
+    expect(tourCoach(s, names, {}, { annotating: true })).toMatchObject({ key: '7-drawing', target: null });
     expect(tourCoach(s, names, {}, { drawn: true })!.key).toBe('7-drawn-unsaved');
     s = tourReducer(s, { type: 'comment', record: fileComment('a1.png') });
     expect(tourCoach(s, names)).toMatchObject({ key: '7-drawn', next: true });
@@ -304,7 +306,7 @@ describe('your turn', () => {
 
 describe('the coach', () => {
   test('every card is at most two sentences plus its action, and only positive', () => {
-    const ui: TourUi[] = [{}, { composing: true }, { drawn: true }, { pinnedAt: '0:07' }, { toChosen: true }];
+    const ui: TourUi[] = [{}, { composing: true }, { annotating: true }, { drawn: true }, { pinnedAt: '0:07' }, { toChosen: true }];
     const states: TourState[] = [];
     for (let n = 1; n < TOUR_STEPS; n++) {
       const s = tourStateAt(n, REAL, fixture);

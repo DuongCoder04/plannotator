@@ -751,6 +751,8 @@ export const TOUR_ALSO_ITEMS: { mark: string; title: string; text: string }[] = 
  */
 export interface TourUi {
   composing?: boolean;
+  /** The drawing surface (Mark up) is open over the picture. */
+  annotating?: boolean;
   drawn?: boolean;
   /** "0:07": the film's comment pinned at that moment. */
   pinnedAt?: string | null;
@@ -833,6 +835,8 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
         : { key: '7-art', title: 'Every file in one place', text: 'Artifacts gathers every file, picture and film in a thread, newest first.', action: 'Press Artifacts.', target: 'art-button' };
     if (tourImageCommented(state)) return { key: '7-drawn', title: 'Pictures take comments too', text: 'The drawing waits in your draft and goes with your next reply.', next: true, target: state.file ? 'image-foot' : 'arrival' };
     if (!state.file) return { key: '7', title: 'It keeps working, and shows you', text: `An hour later ${agent} was done, with screenshots right in the message.`, action: 'Open the first screenshot.', target: 'inline-img' };
+    // While Mark up's drawing surface is open, the card stands clear of its tools (it points at nothing).
+    if (ui.annotating && !ui.drawn) return { key: '7-drawing', title: 'Circle what you like', text: 'Drag on the picture to draw; Save keeps the drawing.', action: 'Drag a circle.', target: null };
     return ui.drawn
       ? { key: '7-drawn-unsaved', title: 'Circle what you like', text: 'Your circle is on the picture; the suggestion is the developer’s real reaction.', action: 'Save it.', target: 'image-foot' }
       : { key: '7-file', title: 'Circle what you like', text: 'Mark up draws on the picture, and the drawing goes with your words.', action: 'Press Mark up, then drag a circle.', target: 'markup' };

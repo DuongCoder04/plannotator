@@ -544,11 +544,23 @@ export function TourCoach({
 
   useLayoutEffect(() => {
     measure();
-    const target = tourTargetElement(coach.target);
-    // Never scroll under an open comment box or drawing: a scroll closes it. What is already in view stays put.
-    if (target && !NO_SCROLL.has(coach.target!)) {
+    const bring = (target: HTMLElement) => {
       if (phone) fitAroundSheet(coach.target === 'choices' ? (target.closest<HTMLElement>('.question-block') ?? target) : target, ref.current, reduced);
       else target.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+    };
+    // Never scroll under an open comment box or drawing: a scroll closes it. What is already in view stays put.
+    const scrolls = coach.target !== null && !NO_SCROLL.has(coach.target);
+    const target = tourTargetElement(coach.target);
+    if (target && scrolls) bring(target);
+    // A target that renders a moment after its card (an image in a message that just arrived) is brought into view once it is there.
+    let late: ReturnType<typeof setInterval> | null = null;
+    if (!target && scrolls) {
+      let tries = 0;
+      late = setInterval(() => {
+        const found = tourTargetElement(coach.target);
+        if (found) bring(found);
+        if (found || ++tries > 20) clearInterval(late!);
+      }, 100);
     }
     const again = () => measure();
     window.addEventListener('resize', again);
@@ -558,6 +570,7 @@ export function TourCoach({
       window.removeEventListener('resize', again);
       document.removeEventListener('scroll', again, true);
       clearInterval(tick);
+      if (late) clearInterval(late);
     };
   }, [measure, coach.key, coach.target, reduced, phone]);
 
@@ -916,6 +929,7 @@ function useTourUi(onUi: ((ui: TourUi) => void) | undefined) {
       const to = document.querySelector('[data-compose] [data-compose-to]')?.getAttribute('data-compose-to');
       const ui: TourUi = {
         composing: document.querySelector('[data-comment-popover]') !== null,
+        annotating: document.querySelector('[data-pn-image-annotator-stage]') !== null,
         drawn: document.querySelector('[data-attachment-pane] [data-image-composer] .ib-markup') !== null,
         pinnedAt: pinned?.textContent?.trim() || null,
         toChosen: to === TOUR_SESSION,
