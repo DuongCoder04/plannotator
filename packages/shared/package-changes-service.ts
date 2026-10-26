@@ -26,6 +26,7 @@ import {
   type PackageChange,
   type PackageChangeCard,
   type PackageFileSide,
+  type PackageSourceFile,
 } from "@plannotator/core/package-changes";
 import { parsePackageLookupEnv } from "./config";
 import {
@@ -73,12 +74,25 @@ export interface PackageChangesHost {
   settings(): PackageSettingsSource | Promise<PackageSettingsSource>;
   /** The user's home directory, or null. */
   homeDir(): string | null;
+  /**
+   * Called before each analysis, to settle where reads go (a PR review waits
+   * here for its checkout). `final: false`: the reads went a temporary way
+   * (the checkout is still being prepared), so the result is not kept.
+   * `remote`: package files are read through a platform API, at most
+   * `budget` side reads per `key` (the PR's base and head commits).
+   */
+  prepare?(): Promise<PackageReadPlan>;
   /** Reads a settings file on this machine (tests stub it). */
   readLocalFile?(absolutePath: string): PackageSideRead;
   /** Whether the reviewer allowed npm lookups (config and env resolved). */
   lookupEnabled(): boolean;
   env: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+}
+
+export interface PackageReadPlan {
+  final: boolean;
+  remote?: { key: string; budget: number };
 }
 
 /** What a card's lookup would send. */
@@ -107,6 +121,13 @@ export const SETTINGS_MAX_BYTES = 1024 * 1024;
  * everything else the reviewer runs).
  */
 export const REMOTE_SETTINGS_READS = 16;
+/**
+ * Platform API calls a PR without a checkout may spend on package files
+ * (manifests and lockfiles, one per side), per base and head commit. Cards
+ * past it are not drawn, and nothing is offered for lookup: the total a click
+ * would send is not knowable.
+ */
+export const REMOTE_PACKAGE_READS = 20;
 const READ_CONCURRENCY = 4;
 
 type SettingsKind = keyof Omit<PackageRoutingFiles, "unreadable">;
@@ -190,6 +211,20 @@ function bytesRead(read: FileBytesRead): PackageSideRead {
 }
 
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
+
+/** How long a PR review's card waits for its checkout before reading through the platform API instead (that result is not kept). */
+export const PACKAGE_CHECKOUT_WAIT_MS = 18_000;
+
+/** `promise`, or `timedOut` after `ms`. */
+export async function waitAtMost<T>(promise: Promise<T>, ms: number): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ timedOut: true }>((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), ms); });
+  try {
+    return await Promise.race([promise.then((value) => ({ timedOut: false as const, value })), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Where a PR review reads registry settings: the local checkout at the head
@@ -324,7 +359,11 @@ export function createPackageChangesService(host: PackageChangesHost) {
    * that comes back missing is unreadable, never absent: a 6 MB lockfile
    * must not read as every package removed.
    */
-  const readPackageFiles = async (base: string | undefined) => {
+  // Package files read through a platform API, per base and head commit:
+  // each side is read once, and the reads spent count against the budget.
+  const remotePackageReads = new Map<string, { spent: number; reads: Map<string, Promise<PackageSideRead>> }>();
+
+  const readPackageFiles = async (base: string | undefined, plan: PackageReadPlan): Promise<{ files: PackageSourceFile[]; overBudget: boolean }> => {
     const diff = new Map(host.diffFiles().map((f) => [f.path, f]));
     const reads = packageChangeReads([...diff.keys()]);
     const side = (read: PackageSideRead, expected: boolean): PackageFileSide => {
@@ -332,19 +371,67 @@ export function createPackageChangesService(host: PackageChangesHost) {
       if (read.kind === "unreadable") return { unreadable: read.reason };
       return expected ? { unreadable: "could not be read" } : null;
     };
-    return pool(reads, READ_CONCURRENCY, async ({ path, inDiff }) => {
+
+    let memo: { spent: number; reads: Map<string, Promise<PackageSideRead>> } | null = null;
+    if (plan.remote) {
+      memo = remotePackageReads.get(plan.remote.key) ?? null;
+      if (!memo) {
+        memo = { spent: 0, reads: new Map() };
+        remotePackageReads.set(plan.remote.key, memo);
+        while (remotePackageReads.size > 4) remotePackageReads.delete(remotePackageReads.keys().next().value!);
+      }
+    }
+    const readKey = (s: "old" | "new", path: string, oldPath: string | undefined) => `${s}\u0000${path}\u0000${oldPath ?? ""}`;
+    const once = (s: "old" | "new", path: string, oldPath: string | undefined): Promise<PackageSideRead> => {
+      if (!memo) return readSide(s, path, oldPath, base);
+      const key = readKey(s, path, oldPath);
+      let hit = memo.reads.get(key);
+      if (!hit) {
+        const m = memo;
+        hit = readSide(s, path, oldPath, base);
+        m.reads.set(key, hit);
+        hit.then((r) => { if (r.kind === "unreadable") m.reads.delete(key); });
+      }
+      return hit;
+    };
+
+    // Which sides each file needs; over the budget, the files that do not fit are left out.
+    type Job = { path: string; inDiff: boolean; sides: ["old" | "new", string | undefined][] };
+    const jobs: Job[] = [];
+    let overBudget = false;
+    for (const { path, inDiff } of reads) {
       const entry = diff.get(path);
-      if (inDiff && entry) {
+      const sides: Job["sides"] = inDiff && entry
+        ? [
+          ...(entry.status === "added" ? [] : [["old", entry.oldPath] as ["old", string | undefined]]),
+          ...(entry.status === "deleted" ? [] : [["new", undefined] as ["new", undefined]]),
+        ]
+        : [["new", undefined]];
+      if (memo && plan.remote) {
+        const fresh = sides.filter(([s, oldPath]) => !memo!.reads.has(readKey(s, path, oldPath))).length;
+        if (memo.spent + fresh > plan.remote.budget) {
+          overBudget = true;
+          continue;
+        }
+        memo.spent += fresh;
+      }
+      jobs.push({ path, inDiff: inDiff && !!entry, sides });
+    }
+
+    const files = await pool(jobs, READ_CONCURRENCY, async ({ path, inDiff }): Promise<PackageSourceFile> => {
+      if (inDiff) {
+        const entry = diff.get(path)!;
         const [oldSide, newSide] = await Promise.all([
-          entry.status === "added" ? null : readSide("old", path, entry.oldPath, base).then((r) => side(r, true)),
-          entry.status === "deleted" ? null : readSide("new", path, undefined, base).then((r) => side(r, true)),
+          entry.status === "added" ? null : once("old", path, entry.oldPath).then((r) => side(r, true)),
+          entry.status === "deleted" ? null : once("new", path, undefined).then((r) => side(r, true)),
         ]);
         return { path, inDiff, old: oldSide, new: newSide };
       }
       // A manifest the diff leaves unchanged reads the same on both sides.
-      const now = side(await readSide("new", path, undefined, base), false);
+      const now = side(await once("new", path, undefined), false);
       return { path, inDiff, old: now, new: now };
     });
+    return { files, overBudget };
   };
 
   /** Every registry setting that applies to these cards. Fails closed. */
@@ -405,14 +492,19 @@ export function createPackageChangesService(host: PackageChangesHost) {
     return packageRouting(files, host.env);
   };
 
-  const compute = async (base: string | undefined): Promise<PackageChangesResponse> => {
+  const compute = async (base: string | undefined): Promise<{ response: PackageChangesResponse; final: boolean }> => {
     const snapshot = host.snapshotId();
-    const cards = analyzePackageChanges(await readPackageFiles(base));
+    const plan: PackageReadPlan = host.prepare
+      ? await host.prepare().catch((): PackageReadPlan => ({ final: false }))
+      : { final: true };
+    const { files, overBudget } = await readPackageFiles(base, plan);
+    const cards = analyzePackageChanges(files);
 
     // Settings are read only while a lookup can happen at all, and only for
-    // cards that have a name to send.
+    // cards that have a name to send. Past the package-file budget nothing is
+    // offered: the names of the cards left out are not known.
     const candidates = cards.filter((c) => c.changes.some((ch) => lookupCandidate(ch)));
-    const routing = candidates.length > 0 && parsePackageLookupEnv(host.env) !== false
+    const routing = !overBudget && candidates.length > 0 && parsePackageLookupEnv(host.env) !== false
       ? await readRouting(candidates)
       : null;
 
@@ -438,16 +530,18 @@ export function createPackageChangesService(host: PackageChangesHost) {
       for (const n of names) all.add(n);
       return { ...card, lookup: { names: [...names].sort(), withheld: [...kept].sort() } };
     });
-    return { snapshot, cards: out, lookup: { total: all.size } };
+    return { response: { snapshot, cards: out, lookup: { total: all.size } }, final: plan.final };
   };
 
   const analysis = (base: string | undefined): Promise<PackageChangesResponse> => {
     const key = `${host.snapshotId()}\u0000${base ?? ""}`;
     let hit = cache.get(key);
     if (!hit) {
-      hit = compute(base);
+      const run = compute(base);
+      hit = run.then((r) => r.response);
       cache.set(key, hit);
-      hit.catch(() => cache.delete(key));
+      // A result read the temporary way (the checkout was not ready) is not kept.
+      run.then((r) => { if (!r.final && cache.get(key) === hit) cache.delete(key); }, () => cache.delete(key));
       // A handful of views per session: keep the last few.
       while (cache.size > 4) cache.delete(cache.keys().next().value!);
     }

@@ -5,8 +5,12 @@
  * GitHub's hourly quota is shared with everything else the reviewer runs, so:
  *  - with a local checkout that holds the head commit, settings are read
  *    there and the card makes no `contents` call at all;
- *  - without one, settings cost at most REMOTE_SETTINGS_READS calls per head
- *    commit; a PR that would need more withholds every name instead.
+ *  - the checkout is usually still being prepared on first load: the card
+ *    waits for it rather than spending calls;
+ *  - without one, package files cost at most REMOTE_PACKAGE_READS calls and
+ *    settings at most REMOTE_SETTINGS_READS per head commit; past either,
+ *    every name is withheld (and past the first, the cards that do not fit
+ *    are left out).
  *
  * The `gh` commands go to a fake runtime (tests/helpers/fake-pr-runtime.ts)
  * that serves the contents API from a local git repository; nothing reaches
@@ -20,7 +24,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PRMetadata } from '@plannotator/shared/pr-types';
 import type { CommandResult } from '@plannotator/shared/pr-types';
-import { REMOTE_SETTINGS_READS } from '@plannotator/shared/package-changes-service';
+import { REMOTE_PACKAGE_READS, REMOTE_SETTINGS_READS } from '@plannotator/shared/package-changes-service';
+import type { PoolEntry, WorktreePool } from '@plannotator/shared/worktree-pool';
+import { NO_BROWSER } from '../../tests/helpers/no-browser';
 import { startReviewServer as startBunReviewServer } from './review';
 import { setPRCommandRuntimeForTests as setBunPRRuntime } from './pr';
 import { startReviewServer as startPiReviewServer } from '../../apps/pi-extension/server/serverReview';
@@ -119,10 +125,10 @@ describe('package changes in a PR review: GitHub API calls before consent', () =
     ['Bun', startBunReviewServer, setBunPRRuntime],
     ['Pi', startPiReviewServer, setPiPRRuntime],
   ] as const) {
-    async function review(n: number, checkout: boolean) {
+    async function review(n: number, checkout: boolean | 'late') {
       process.env.PLANNOTATOR_AI = 'disabled';
       process.env.PLANNOTATOR_REMOTE = '0';
-      process.env.PLANNOTATOR_BROWSER = '/usr/bin/true';
+      process.env.PLANNOTATOR_BROWSER = NO_BROWSER;
       process.env.PLANNOTATOR_DATA_DIR = tempDir('plannotator-pkg-pr-data-');
       process.env.HOME = tempDir('plannotator-pkg-pr-home-');
       process.env.npm_config_globalconfig = join(process.env.HOME, 'no-global-npmrc');
@@ -156,7 +162,8 @@ describe('package changes in a PR review: GitHub API calls before consent', () =
         gitRef: 'PR #42',
         htmlContent: '<!doctype html><html><body>review</body></html>',
         prMetadata,
-        ...(checkout ? { agentCwd: repo } : {}),
+        ...(checkout === true ? { agentCwd: repo } : {}),
+        ...(checkout === 'late' ? { worktreePool: latePool(prMetadata.url, repo, 400) } : {}),
       });
       stops.push(() => server.stop());
       const contentsCalls = () => fake.calls.filter((c) => c.args.some((a) => a.includes('/contents/'))).length;
@@ -168,16 +175,20 @@ describe('package changes in a PR review: GitHub API calls before consent', () =
       return { contentsCalls, get };
     }
 
-    // Package files: two reads per changed manifest. Settings: 4 for a root package; over the cap, none.
-    for (const [n, calls, sends] of [[1, 2 + 4, true], [5, 10, false], [30, 60, false]] as const) {
+    // Package files: two reads per changed manifest, at most REMOTE_PACKAGE_READS (10 cards).
+    // Settings: 4 for a root package; over the cap, none.
+    for (const [n, calls, cards, sends] of [[1, 2 + 4, 1, true], [5, 10, 5, false], [30, REMOTE_PACKAGE_READS, 10, false]] as const) {
       test(`${runtime}: no checkout, ${n} card${n === 1 ? '' : 's'}: ${calls} contents calls`, async () => {
         const { contentsCalls, get } = await review(n, false);
         const body = await get();
-        expect(body.cards).toHaveLength(n);
+        expect(body.cards).toHaveLength(cards);
         expect(contentsCalls()).toBe(calls);
-        expect(contentsCalls() - 2 * n).toBeLessThanOrEqual(REMOTE_SETTINGS_READS);
-        // Over the cap nothing is offered: every name is withheld.
+        expect(contentsCalls()).toBeLessThanOrEqual(REMOTE_PACKAGE_READS + REMOTE_SETTINGS_READS);
+        // Over a cap nothing is offered: every name is withheld.
         expect(body.lookup.total > 0).toBe(sends);
+        // A second look at the same head commit costs nothing.
+        await get();
+        expect(contentsCalls()).toBe(calls);
       });
 
       test(`${runtime}: a local checkout, ${n} card${n === 1 ? '' : 's'}: no contents call`, async () => {
@@ -188,5 +199,27 @@ describe('package changes in a PR review: GitHub API calls before consent', () =
         expect(body.lookup.total).toBe(2);
       });
     }
+
+    test(`${runtime}: a checkout still being prepared: the card waits for it and makes no contents call`, async () => {
+      const { contentsCalls, get } = await review(5, 'late');
+      const body = await get();
+      expect(body.cards).toHaveLength(5);
+      expect(contentsCalls()).toBe(0);
+      expect(body.lookup.total).toBe(2);
+    });
   }
 });
+
+/** A pool whose checkout of the PR is still being prepared: it is ready `ms` after the first ensure(). */
+function latePool(url: string, path: string, ms: number): WorktreePool {
+  const entry: PoolEntry = { path, prUrl: url, number: 42, ready: false };
+  let pending: Promise<PoolEntry> | null = null;
+  return {
+    get: (u) => (u === url ? entry : undefined),
+    has: (u) => u === url,
+    resolve: (u) => (u === url && entry.ready ? entry.path : undefined),
+    ensure: () => (pending ??= new Promise((resolve) => setTimeout(() => { entry.ready = true; resolve(entry); }, ms))),
+    entries: () => [entry][Symbol.iterator](),
+    cleanup: async () => {},
+  };
+}

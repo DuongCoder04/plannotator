@@ -16,6 +16,7 @@ import type { DiffFileStatus } from '@plannotator/core/diff-files';
 import {
   createPackageChangesService,
   readLocalSettingsFile,
+  REMOTE_PACKAGE_READS,
   REMOTE_SETTINGS_READS,
   type PackageChangesHost,
   type PackageChangesResponse,
@@ -286,6 +287,37 @@ describe('PR reviews: platform calls for settings, per head commit', () => {
       expect(out.lookup.total).toBe(2);
     });
   }
+
+  test('without a checkout, package files cost at most the budget: the cards that fit show, nothing is offered', async () => {
+    const reads: string[] = [];
+    const h = host({ diff: prDiff(15), settings: remoteSource({}), home: tempDir(), reads });
+    h.prepare = async () => ({ final: true, remote: { key: 'base:head', budget: REMOTE_PACKAGE_READS } });
+    const service = createPackageChangesService(h);
+    const out = (await service.get({ snapshot: null, base: undefined })).body as PackageChangesResponse;
+    expect(reads).toHaveLength(REMOTE_PACKAGE_READS);
+    expect(out.cards).toHaveLength(REMOTE_PACKAGE_READS / 2);
+    expect(out.lookup.total).toBe(0);
+    expect(out.cards.every((c) => c.lookup.names.length === 0)).toBe(true);
+    // The same head commit, a new snapshot: no read again, the budget stays spent.
+    h.snapshotId = () => 's2';
+    await service.get({ snapshot: null, base: undefined });
+    expect(reads).toHaveLength(REMOTE_PACKAGE_READS);
+  });
+
+  test('a result read while the checkout was still being prepared is not kept', async () => {
+    let ready = false;
+    const log: string[] = [];
+    const h = host({ settings: remoteSource({}, log), home: tempDir() });
+    h.prepare = async () => (ready ? { final: true } : { final: false, remote: { key: 'base:head', budget: REMOTE_PACKAGE_READS } });
+    const service = createPackageChangesService(h);
+    await service.get({ snapshot: null, base: undefined });
+    ready = true;
+    h.settings = () => commitSource({ '.npmrc': '@acme:registry=https://npm.acme.dev/' });
+    const out = (await service.get({ snapshot: null, base: undefined })).body as PackageChangesResponse;
+    expect(out.lookup.total).toBe(2);
+    // The second look read through the checkout, not the API.
+    expect(log).toHaveLength(4);
+  });
 
   test('a lockfile-only PR at the root stays at 4 calls', async () => {
     const lock = (pg: string) => JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { pg: '^8.0.0' } }, 'node_modules/pg': { version: pg } } });

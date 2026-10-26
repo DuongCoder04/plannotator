@@ -1,5 +1,5 @@
 import { piUpdateAdvert } from "./update-advert.ts";
-import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, prSettingsSource } from "../generated/package-changes-service.ts";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, PACKAGE_CHECKOUT_WAIT_MS, prSettingsSource, REMOTE_PACKAGE_READS, waitAtMost } from "../generated/package-changes-service.ts";
 import { parseDiffToFiles } from "../generated/diff-files.ts";
 import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
@@ -2186,6 +2186,24 @@ export async function startReviewServer(options: {
 			} catch {
 				return null;
 			}
+		},
+		// Mirrors packages/server/review.ts: wait for the PR checkout before reading.
+		prepare: async () => {
+			if (!isPRMode || !prMeta) return { final: true };
+			const meta = prMeta;
+			const pool = options.worktreePool;
+			let checkout = pool ? pool.resolve(meta.url) : options.agentCwd;
+			let final = true;
+			if (!checkout && pool) {
+				const waited = await waitAtMost(
+					pool.ensure(reviewRuntime, meta).then((entry) => entry.path, () => undefined),
+					PACKAGE_CHECKOUT_WAIT_MS,
+				);
+				if (waited.timedOut) final = false;
+				else checkout = waited.value;
+			}
+			if (checkout) return { final };
+			return { final, remote: { key: `${meta.mergeBaseSha ?? meta.baseSha}:${meta.headSha}`, budget: REMOTE_PACKAGE_READS } };
 		},
 		lookupEnabled: () => resolvePackageLookup(loadConfig()),
 		env: process.env,

@@ -10,7 +10,7 @@
  */
 
 import { childPath } from "@plannotator/shared/child-env";
-import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, prSettingsSource } from "@plannotator/shared/package-changes-service";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, PACKAGE_CHECKOUT_WAIT_MS, prSettingsSource, REMOTE_PACKAGE_READS, waitAtMost } from "@plannotator/shared/package-changes-service";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { homedir } from "node:os";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
@@ -2233,6 +2233,22 @@ export async function startReviewServer(
     },
     homeDir: () => {
       try { return homedir(); } catch { return null; }
+    },
+    // A PR review reads from its checkout: wait for it (it is usually still
+    // being prepared on first load), and use the platform API only when no
+    // checkout can exist, or for now after a timeout (that result is not kept).
+    prepare: async () => {
+      if (!isPRMode || !prMetadata) return { final: true };
+      const meta = prMetadata;
+      let checkout = resolvePRLocalCwd(meta);
+      let final = true;
+      if (!checkout && options.worktreePool) {
+        const waited = await waitAtMost(ensurePRLocalCwd(meta), PACKAGE_CHECKOUT_WAIT_MS);
+        if (waited.timedOut) final = false;
+        else checkout = waited.value;
+      }
+      if (checkout) return { final };
+      return { final, remote: { key: `${meta.mergeBaseSha ?? meta.baseSha}:${meta.headSha}`, budget: REMOTE_PACKAGE_READS } };
     },
     lookupEnabled: () => resolvePackageLookup(loadConfig()),
     env: process.env,
