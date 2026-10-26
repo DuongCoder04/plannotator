@@ -10,6 +10,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -171,6 +172,31 @@ describe("getRecentDshMessages", () => {
     expect(out).toContain('"m399"');
     expect(out).not.toContain('"m200"');
     expect(decodes).toBeLessThanOrEqual(2 * frames.length + 4);
+  });
+
+  // Catches: after a damaged frame, a frame whose compressed data happens to
+  // hold a zstd magic number (so it does not decode in pieces) being dropped,
+  // with `last` then serving an older answer.
+  test("after a damaged frame, the scan resyncs on a frame holding a stray magic number", () => {
+    const magic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+    // Incompressible bytes, so zstd stores them verbatim and the magic stays
+    // inside the frame's data.
+    const noise = Buffer.concat(Array.from({ length: 64 }, (_, i) => createHash("sha256").update(`noise-${i}`).digest()));
+    const middle = Buffer.from(Bun.zstdCompressSync(Buffer.concat([
+      Buffer.from("MIDDLE\n"), noise.subarray(0, 1000), magic, noise.subarray(1000), Buffer.from("\n"),
+    ])));
+    expect(middle.indexOf(magic, 1)).toBeGreaterThan(0);
+
+    const out = decompressDshLog(Buffer.concat([
+      Buffer.from(Bun.zstdCompressSync(Buffer.from("BEFORE\n"))),
+      Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x13, 0x37, 0x42]),
+      middle,
+      Buffer.from(Bun.zstdCompressSync(Buffer.from("AFTER\n"))),
+    ]));
+
+    expect(out.startsWith("BEFORE\n")).toBe(true);
+    expect(out).toContain("MIDDLE\n");
+    expect(out.endsWith("AFTER\n")).toBe(true);
   });
 
   // Catches: a corrupt log throwing out of annotate-last instead of reporting

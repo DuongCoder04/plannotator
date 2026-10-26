@@ -128,14 +128,18 @@ function laterFrameStarts(bytes: Buffer): number[] {
  * Decompress a multi-frame log. DSH appends one zstd frame per write, so the
  * whole file usually decodes at once. When it does not, walk forward one
  * frame at a time, so each byte is decoded about twice however long the log:
- * - a run that fails is joined with the next one when the next does not
- *   decode alone (a magic number inside compressed data split a frame);
- * - a run that fails while the next decodes alone is a damaged frame: it is
- *   skipped and every newer frame is kept;
+ * - a run that fails is joined with the next one (a magic number inside
+ *   compressed data split a frame), unless a decodable run starts where it
+ *   ends: then it is a damaged frame, skipped, and the scan resyncs there.
+ *   That run may itself hold a stray magic, so it may join up to
+ *   RESYNC_JOINS more segments; every newer frame is kept;
  * - the last run may also end in a frame being written (a read racing an
  *   append) or a 1-3 byte partial magic: the cut tail is tried, else dropped.
  * Throws when nothing decodes. Exported for tests (`decode` counts calls).
  */
+/** How many later segments a resync probe joins to find one decodable run. */
+const RESYNC_JOINS = 8;
+
 export function decompressDshLog(bytes: Buffer, decode: DshFrameDecoder = decodeZstd): string {
   let lastError: unknown;
   const tryDecode = (from: number, to: number): string | undefined => {
@@ -150,22 +154,33 @@ export function decompressDshLog(bytes: Buffer, decode: DshFrameDecoder = decode
   const whole = tryDecode(0, bytes.length);
   if (whole !== undefined) return whole;
 
+  // One run of frames; the run that ends the file may also end in a frame
+  // being written or a 1-3 byte partial magic, so its cut tails are tried.
+  const decodeRun = (start: number, end: number): string | undefined => {
+    let text = tryDecode(start, end);
+    if (text === undefined && end === bytes.length) {
+      for (let cut = 1; cut <= 3 && end - cut > start && text === undefined; cut++) text = tryDecode(start, end - cut);
+    }
+    return text;
+  };
+
   const ends = [...laterFrameStarts(bytes), bytes.length];
   const parts: string[] = [];
   let from = 0;
   for (let i = 0; i < ends.length; i++) {
     const to = ends[i];
-    let text = tryDecode(from, to);
-    if (text === undefined && to === bytes.length) {
-      for (let cut = 1; cut <= 3 && to - cut > from && text === undefined; cut++) text = tryDecode(from, to - cut);
-    }
+    const text = decodeRun(from, to);
     if (text !== undefined) {
       parts.push(text);
       from = to;
       continue;
     }
-    const next = ends[i + 1];
-    if (next !== undefined && tryDecode(to, next) !== undefined) from = to;
+    for (let j = i + 1; j < ends.length && j <= i + RESYNC_JOINS; j++) {
+      if (decodeRun(to, ends[j]) !== undefined) {
+        from = to;
+        break;
+      }
+    }
   }
   if (parts.length === 0) throw lastError;
   return parts.join("");
