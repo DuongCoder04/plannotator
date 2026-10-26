@@ -2921,14 +2921,21 @@ export class InboxStore {
     return out;
   }
 
-  /** A thread's questions that may still be superseded (open, or picked and not sent), with their prompts. */
+  /**
+   * A thread's questions and action items that may still be superseded (open, or picked and not sent), with
+   * their prompts, as `invalid_supersedes` lists them. An action item the person marked through the timed path
+   * (inside its Undo window) is never superseded, so it is not listed either: the refusal and the list agree.
+   */
   openQuestionsOf(threadId: string | null): { id: string; prompt: string }[] {
     if (threadId === null) return [];
     const out: { id: string; prompt: string }[] = [];
     for (const message of this.threadMessages(threadId)) {
       const closed = this.closedByArchive(message);
       for (const record of this.questionRecords(message.id)) {
-        if (isInboxQuestionSupersedable(inboxQuestionState(record, closed))) out.push({ id: record.id, prompt: record.prompt });
+        const state = inboxQuestionState(record, closed);
+        if (!isInboxQuestionSupersedable(state)) continue;
+        if (record.kind === "action" && state === "picked" && record.action_result?.staged !== true) continue;
+        out.push({ id: record.id, prompt: record.prompt });
       }
     }
     return out;

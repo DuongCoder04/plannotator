@@ -289,6 +289,16 @@ describe("in the reply draft (approval \"inbox-action-items-in-reply\")", () => 
     expect(() =>
       timed.store.sendMessage({ project_id: timed.project.id, author: AGENT, reply_to: timed.asked.id, body: "Never mind.", supersedes: [`${timed.asked.id}/${timed.action.key}`] }),
     ).toThrow(/the person already marked it; their answer reaches you in a few seconds/);
+    // The refusal's list agrees with it: the marked item is not offered as open; the question still is.
+    let refusal: InboxError | null = null;
+    try {
+      timed.store.sendMessage({ project_id: timed.project.id, author: AGENT, reply_to: timed.asked.id, body: "Never mind.", supersedes: [`${timed.asked.id}/${timed.action.key}`] });
+    } catch (error) {
+      refusal = error as InboxError;
+    }
+    const listed = (refusal!.details as { open_questions: { id: string }[] }).open_questions.map((q) => q.id);
+    expect(listed).toEqual([`${timed.asked.id}/${timed.question.key}`]);
+    expect(refusal!.message).not.toContain(`${timed.asked.id}/${timed.action.key} (`);
   });
 
   test("a Send of only action items that left the draft meanwhile is nothing to send, not a refusal", () => {

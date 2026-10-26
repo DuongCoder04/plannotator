@@ -11,6 +11,7 @@
  */
 
 import type { ActionMark } from './components/ActionChecklist';
+import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
@@ -1899,7 +1900,8 @@ function Inbox() {
     try {
       ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
     } catch (cause) {
-      showError(cause);
+      // A note typed while the item was sent elsewhere or replaced: the thread redraws it as it is now.
+      if (!isMootNoteRefusal(mark, cause)) showError(cause);
       await afterWrite();
       return null;
     }
