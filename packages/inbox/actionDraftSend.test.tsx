@@ -48,7 +48,7 @@ function action(note: string | null): InboxQuestion {
     set_aside_at: null,
     action: PARSED.action,
     action_result: { outcome: 'done', note, at: '2026-10-26T15:12:00.000Z', by: 'person', staged: true },
-  } as InboxQuestion;
+  } as unknown as InboxQuestion;
 }
 
 function thread(): InboxThread {

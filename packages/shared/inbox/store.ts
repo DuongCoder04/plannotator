@@ -86,7 +86,6 @@ import {
   isInboxNote,
   isInboxActionReport,
   inboxActionInDraft,
-  inboxActionPersonMark,
   inboxAgentName,
   INBOX_HOST_NAMES,
   INBOX_TAGS_MAX,
