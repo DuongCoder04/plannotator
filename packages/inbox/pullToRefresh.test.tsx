@@ -49,6 +49,8 @@ let posted: string[] = [];
 let postedBodies: { path: string; body: Record<string, unknown> }[] = [];
 /** The window's reads of the list (GET /api/inbox/threads?…). */
 let listReads = 0;
+/** While set, the window's list reads wait for it (a refresh held in flight). */
+let listGate: Promise<void> | null = null;
 
 function loopback(path: string, method = 'GET', body?: string): Promise<{ status: number; text: string }> {
   return new Promise((done, fail) => {
@@ -81,7 +83,7 @@ async function agentSends(body: string, reply_to?: string): Promise<string> {
   return (JSON.parse(await readLine()) as { sent: string }).sent;
 }
 
-const TESTS = 7;
+const TESTS = 13;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -122,8 +124,12 @@ beforeEach(() => {
   posted = [];
   postedBodies = [];
   listReads = 0;
+  listGate = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if ((init?.method ?? 'GET') === 'GET' && String(input).startsWith('/api/inbox/threads?')) listReads += 1;
+    if ((init?.method ?? 'GET') === 'GET' && String(input).startsWith('/api/inbox/threads?')) {
+      listReads += 1;
+      if (listGate) await listGate;
+    }
     if ((init?.method ?? 'GET') === 'POST') {
       posted.push(String(input));
       postedBodies.push({ path: String(input), body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {} });
@@ -324,13 +330,35 @@ test.skipIf(!hasDom)('a list scrolled away from its top scrolls: nothing cancell
   const el = await renderApp('');
   await heldArrival(el);
   const body = list(el);
-  body.scrollTop = 120;
-  expect(body.scrollTop).toBe(120);
+  // Which touchmove listeners the list holds: scrolled away from the top, none that can block a scroll.
+  const blocking = new Set<EventListenerOrEventListenerObject>();
+  const add = body.addEventListener.bind(body);
+  const remove = body.removeEventListener.bind(body);
+  body.addEventListener = ((type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions) => {
+    if (type === 'touchmove' && typeof opts === 'object' && opts.passive === false) blocking.add(fn);
+    add(type, fn, opts);
+  }) as typeof body.addEventListener;
+  body.removeEventListener = ((type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | EventListenerOptions) => {
+    if (type === 'touchmove') blocking.delete(fn);
+    remove(type, fn, opts);
+  }) as typeof body.removeEventListener;
+  body.scrollTop = 400;
+  expect(body.scrollTop).toBe(400);
+  act(() => {
+    body.dispatchEvent(new Event('scroll'));
+  });
+  expect(blocking.size).toBe(0);
   const reads = listReads;
   expect(drag(body, { x: 180, y: 200 }, 0, PAST)).toBe(false);
   expect(indicator(el)!.hasAttribute('data-state')).toBe(false);
   await wait(300);
   expect(listReads).toBe(reads);
+  // Back at the top, the listener is there before the next finger lands (an engine decides at touchstart).
+  body.scrollTop = 0;
+  act(() => {
+    body.dispatchEvent(new Event('scroll'));
+  });
+  expect(blocking.size).toBe(1);
 }, 30_000);
 
 test.skipIf(!hasDom)('reduced motion: the pull still refreshes; the ↻ does not turn and nothing springs', async () => {
@@ -359,4 +387,139 @@ test.skipIf(!hasDom)('a desktop window has no pull: no indicator, and a touch dr
   await wait(300);
   expect(listReads).toBe(reads);
   expect(notice(el)).not.toBeNull();
+}, 30_000);
+
+/** The pointer event a browser sends when a touch lifts (pointer events reach the element under the finger). */
+function pointer(target: EventTarget, type: 'pointerup' | 'pointercancel') {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'pointerType', { value: 'touch' });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+}
+
+/**
+ * The row the finger is on leaves the list mid-pull: the agent asks a question in that thread, so its row
+ * moves from "New since you looked" to "Waiting on you", and React draws it anew there (the old row element
+ * leaves the document). Taken in by Show, as a second finger could.
+ */
+async function rowLeaves(el: HTMLElement, id: string, row: HTMLElement) {
+  await agentSends(':::question\nShip it today?\n- Yes\n- No\n:::', id);
+  act(() => pokeStream!());
+  await until(() => notice(el) !== null, 'the "1 new" notice');
+  act(() => (notice(el) as HTMLElement).click());
+  await until(() => !row.isConnected, 'the row element to leave the document');
+}
+
+test.skipIf(!hasDom)('touchcancel mid-pull springs back and reads nothing', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  const reads = listReads;
+  drag(body, { x: 180, y: 200 }, 0, PAST, false);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  touch(body, 'touchcancel', [], [{ x: 180, y: 200 + PAST }]);
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the spring back');
+  expect(body.style.transform).toBe('');
+  await wait(300);
+  expect(listReads).toBe(reads);
+}, 30_000);
+
+test.skipIf(!hasDom)('the row under the finger leaves the list mid-pull: the lift still ends the pull, and nothing is left stuck', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  // The pull starts on a row (touch events keep going to it, even once it is gone).
+  const id = world.news[0]!;
+  const row = rowOf(el, id)!;
+  drag(row, { x: 180, y: 200 }, 0, PAST, false);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  await rowLeaves(el, id, row);
+  expect(row.isConnected).toBe(false);
+  // Its touchend goes to the detached row and reaches nothing; the touch pointer's end reaches the document.
+  touch(row, 'touchend', [], [{ x: 180, y: 200 + PAST }]);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  const reads = listReads;
+  pointer(document.body, 'pointerup');
+  expect(indicator(el)!.getAttribute('data-state')).toBe('refreshing');
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
+  expect(body.style.transform).toBe('');
+  expect(listReads - reads).toBe(1);
+}, 30_000);
+
+test.skipIf(!hasDom)('a pull whose lift never came is let go by the next touch on the list', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  const id = world.news[0]!;
+  const row = rowOf(el, id)!;
+  drag(row, { x: 180, y: 200 }, 0, PAST, false);
+  await rowLeaves(el, id, row);
+  // Neither the touchend nor a pointer end arrives anywhere: the list is held down, ready.
+  touch(row, 'touchend', [], [{ x: 180, y: 200 + PAST }]);
+  expect(body.style.transform).toContain('translate3d(0');
+  const reads = listReads;
+  // A later tap on the list lets the stuck pull go (and is a tap, not a refresh).
+  touch(body, 'touchstart', [{ x: 180, y: 300 }]);
+  touch(body, 'touchend', [], [{ x: 180, y: 300 }]);
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
+  expect(body.style.transform).toBe('');
+  await wait(300);
+  expect(listReads).toBe(reads);
+}, 30_000);
+
+test.skipIf(!hasDom)('a thread opening during a pull takes the list off screen: the pull is let go, nothing refreshes', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  drag(body, { x: 180, y: 200 }, 0, PAST, false);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  // A thread opens (a notification's click, a link): the list goes under it.
+  act(() => {
+    window.location.hash = `#thread=${world.news[1]}`;
+  });
+  await until(() => el.querySelector('section.ib-pane') !== null, 'the thread');
+  expect(body.style.transform).toBe('');
+  expect(indicator(el)!.hasAttribute('data-state')).toBe(false);
+  // The lift that follows does nothing.
+  touch(body, 'touchend', [], [{ x: 180, y: 200 + PAST }]);
+  await wait(300);
+  expect(indicator(el)!.hasAttribute('data-state')).toBe(false);
+  expect(live()).not.toBe('Inbox refreshed');
+}, 30_000);
+
+test.skipIf(!hasDom)('a refresh already in flight (the title was tapped): a pull adds no second read and does not stay stuck', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const late = await heldArrival(el);
+  const body = list(el);
+  let open: () => void = () => {};
+  listGate = new Promise<void>((done) => (open = done));
+  const reads = listReads;
+  act(() => el.querySelector<HTMLButtonElement>('.ib-lhead [data-list-refresh]')!.click());
+  await until(() => listReads - reads === 1, 'the title read in flight');
+  drag(body, { x: 180, y: 200 }, 0, PAST);
+  // The pull finds the refresh running: its ↻ goes away without waiting on it, and no second read starts.
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the settle');
+  expect(body.style.transform).toBe('');
+  expect(listReads - reads).toBe(1);
+  listGate = null;
+  open();
+  await until(() => rowOf(el, late) !== null && notice(el) === null, 'the refresh');
+  await until(() => live() === 'Inbox refreshed', 'the announcement');
+  expect(listReads - reads).toBe(1);
+}, 30_000);
+
+test.skipIf(!hasDom)('a list at a fractional top (0.5 px) still pulls', async () => {
+  media.phone = true;
+  const el = await renderApp('');
+  const body = list(el);
+  Object.defineProperty(body, 'scrollTop', { configurable: true, get: () => 0.5 });
+  act(() => {
+    body.dispatchEvent(new Event('scroll'));
+  });
+  expect(drag(body, { x: 180, y: 200 }, 0, PAST, false)).toBe(true);
+  expect(indicator(el)!.getAttribute('data-state')).toBe('ready');
+  touch(body, 'touchcancel', [], [{ x: 180, y: 200 + PAST }]);
+  await until(() => !indicator(el)!.hasAttribute('data-state'), 'the spring back');
 }, 30_000);

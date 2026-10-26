@@ -11,7 +11,9 @@
  * list holds at PULL_HOLD_PX and the ↻ spins until the read lands, then both
  * spring back; released short, they spring back. A sideways move, a second
  * finger, or a start while the list is not at its top is not a pull. Only a
- * pull's own touchmoves are cancelled, so scrolling is never blocked.
+ * pull's own touchmoves are cancelled, and the non-passive touchmove listener
+ * exists only while the list is near its top or a gesture is tracked, so a
+ * scroll anywhere else never waits for this script.
  *
  * Everything moves by writing styles (never a React render per frame): the
  * list's transform, and on the indicator `--ib-pull` (the travel in px) and
@@ -34,6 +36,12 @@ export const PULL_SLOP_PX = 4;
 export const PULL_SETTLE_MS = 320;
 /** The rubber band's limit: travel approaches it and never reaches it. */
 const PULL_LIMIT_PX = 240;
+/**
+ * The touchmove listener is there while the list is this close to its top: a fling that ends at the top and a pull
+ * straight after it find it in place (an engine reads the listeners when the finger lands, and adding one takes a
+ * frame or two to reach it). Further down no scroll waits for this script.
+ */
+const PULL_ARM_PX = 200;
 
 /** The finger's travel, damped: about half at first, then less and less (Apple's rubber band). */
 export function dampPull(raw: number): number {
@@ -59,9 +67,15 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
   let startX = 0;
   let startY = 0;
   let travel = 0;
+  /** The element the finger landed on: touch events keep going to it, even once it has left the document. */
+  let startTarget: EventTarget | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   const reduced = () => options.reduced?.() ?? false;
+  const doc = body.ownerDocument;
+  /** At the very top (under 1 px: a browser can report 0.5 at rest there). */
+  const atTop = () => body.scrollTop < 1;
+  const tracking = () => phase === 'maybe' || phase === 'pull';
 
   const paint = (px: number, state: string | null, animate: boolean) => {
     const motion = animate && !reduced();
@@ -81,28 +95,70 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
     }
   };
 
+  /*
+   * The non-passive touchmove listener is there only while it can matter: while the list is near its top (a
+   * touch that starts there may become a pull) or a gesture is tracked. It must already be there when the
+   * finger lands: both engines decide at touchstart whether that touch's moves may be cancelled (WebKit
+   * from the touchmove listeners present then), so one added from touchstart would leave the pull's moves
+   * uncancellable. A passive scroll listener adds it back near the top (PULL_ARM_PX) and takes it away below.
+   *
+   * While a gesture is tracked its end is also heard on the document (capture), and the touch pointer's
+   * end too: the row the finger landed on can leave the list mid-pull (it moves section, another tab
+   * archives it), and then its own touchend never reaches the list.
+   */
+  let armed = false;
+  let watching = false;
+  const sync = () => {
+    const arm = !disposed && (tracking() || body.scrollTop < PULL_ARM_PX);
+    if (arm !== armed) {
+      armed = arm;
+      if (arm) body.addEventListener('touchmove', onMove, { passive: false });
+      else body.removeEventListener('touchmove', onMove);
+    }
+    const watch = !disposed && tracking();
+    if (watch !== watching) {
+      watching = watch;
+      if (watch) {
+        doc.addEventListener('touchend', onEnd, true);
+        doc.addEventListener('touchcancel', onCancel, true);
+        doc.addEventListener('pointerup', onPointerEnd, true);
+        doc.addEventListener('pointercancel', onPointerCancel, true);
+      } else {
+        doc.removeEventListener('touchend', onEnd, true);
+        doc.removeEventListener('touchcancel', onCancel, true);
+        doc.removeEventListener('pointerup', onPointerEnd, true);
+        doc.removeEventListener('pointercancel', onPointerCancel, true);
+      }
+    }
+  };
+  const setPhase = (next: Phase) => {
+    phase = next;
+    if (!tracking()) startTarget = null;
+    sync();
+  };
+
   const settle = () => {
     if (settleTimer) clearTimeout(settleTimer);
-    phase = 'settling';
     travel = 0;
     if (reduced()) {
+      setPhase('idle');
       paint(0, null, false);
-      phase = 'idle';
       return;
     }
+    setPhase('settling');
     paint(0, 'settling', true);
     indicator.style.opacity = '0';
     settleTimer = setTimeout(() => {
       settleTimer = null;
       if (phase !== 'settling') return;
-      phase = 'idle';
+      setPhase('idle');
       paint(0, null, false);
     }, PULL_SETTLE_MS);
   };
 
   const release = () => {
     if (phase === 'maybe') {
-      phase = 'idle';
+      setPhase('idle');
       return;
     }
     if (phase !== 'pull') return;
@@ -110,7 +166,7 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
       settle();
       return;
     }
-    phase = 'refreshing';
+    setPhase('refreshing');
     paint(PULL_HOLD_PX, 'refreshing', true);
     void Promise.resolve()
       .then(() => options.onRefresh())
@@ -122,26 +178,32 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
 
   const cancel = () => {
     if (phase === 'pull') settle();
-    else if (phase === 'maybe') phase = 'idle';
+    else if (phase === 'maybe') setPhase('idle');
   };
 
-  const onStart = (event: TouchEvent) => {
-    if (phase === 'refreshing' || phase === 'settling') return;
-    if (event.touches.length !== 1) {
-      cancel();
+  function onStart(event: TouchEvent) {
+    // A pull whose end never came (the lift was lost with its row): let it go before anything else.
+    // (A second finger on a pull lands here too: the pull is let go.)
+    if (phase === 'pull') settle();
+    if (phase === 'refreshing') return;
+    if (event.touches.length !== 1 || !atTop()) {
+      if (phase === 'maybe') setPhase('idle');
       return;
     }
-    // Only from the very top (iOS can report a negative scrollTop mid-bounce).
-    if (body.scrollTop > 0) return;
+    // A touch during the spring back takes the list at rest.
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = null;
+    if (phase === 'settling') paint(0, null, false);
     const touch = event.touches[0]!;
     startX = touch.clientX;
     startY = touch.clientY;
     travel = 0;
-    phase = 'maybe';
-  };
+    setPhase('maybe');
+    startTarget = event.target;
+  }
 
-  const onMove = (event: TouchEvent) => {
-    if (phase !== 'maybe' && phase !== 'pull') return;
+  function onMove(event: TouchEvent) {
+    if (!tracking()) return;
     if (event.touches.length !== 1) {
       cancel();
       return;
@@ -152,16 +214,16 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
     if (phase === 'maybe') {
       // Upward (the list scrolls) or sideways: not a pull.
       if (dy < -PULL_SLOP_PX || (Math.abs(dx) > PULL_SLOP_PX && Math.abs(dx) > dy)) {
-        phase = 'idle';
+        setPhase('idle');
         return;
       }
       if (dy <= PULL_SLOP_PX) return;
       // The browser started scrolling already (it will not let this move be cancelled), or the list moved: let it go.
-      if (!event.cancelable || body.scrollTop > 0) {
-        phase = 'idle';
+      if (!event.cancelable || !atTop()) {
+        setPhase('idle');
         return;
       }
-      phase = 'pull';
+      setPhase('pull');
     }
     // A pull that turns sideways is let go.
     if (Math.abs(dx) > 30 && Math.abs(dx) > dy) {
@@ -172,32 +234,49 @@ export function attachPullToRefresh(body: HTMLElement, indicator: HTMLElement, o
     if (event.cancelable) event.preventDefault();
     travel = dampPull(dy - PULL_SLOP_PX);
     paint(travel, travel >= PULL_READY_PX ? 'ready' : 'pull', false);
-  };
+  }
 
-  const onEnd = (event: TouchEvent) => {
+  function onEnd(event: TouchEvent) {
+    if (!tracking()) return;
     // One finger of two lifted: what is left is not this pull.
     if (event.touches.length > 0) {
       cancel();
       return;
     }
     release();
-  };
+  }
 
-  const onCancel = () => cancel();
+  function onCancel() {
+    cancel();
+  }
+
+  // The element the finger landed on has left the document: its touch events reach neither the list nor the
+  // document, but the touch pointer, no longer held by it, ends on whatever is under the finger.
+  const lostTarget = () => startTarget instanceof Node && !startTarget.isConnected;
+  function onPointerEnd(event: PointerEvent) {
+    if (event.pointerType === 'touch' && lostTarget()) release();
+  }
+  function onPointerCancel(event: PointerEvent) {
+    if (event.pointerType === 'touch' && lostTarget()) cancel();
+  }
+
+  const onScroll = () => sync();
 
   body.addEventListener('touchstart', onStart, { passive: true });
-  // Not passive: a pull cancels its own moves (only those), so the list does not scroll or bounce under it.
-  body.addEventListener('touchmove', onMove, { passive: false });
   body.addEventListener('touchend', onEnd, { passive: true });
   body.addEventListener('touchcancel', onCancel, { passive: true });
+  body.addEventListener('scroll', onScroll, { passive: true });
+  sync();
   return () => {
     disposed = true;
     if (settleTimer) clearTimeout(settleTimer);
     body.removeEventListener('touchstart', onStart);
-    body.removeEventListener('touchmove', onMove);
     body.removeEventListener('touchend', onEnd);
     body.removeEventListener('touchcancel', onCancel);
+    body.removeEventListener('scroll', onScroll);
     phase = 'idle';
+    startTarget = null;
+    sync();
     paint(0, null, false);
   };
 }

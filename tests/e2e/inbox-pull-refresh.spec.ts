@@ -14,6 +14,8 @@
  * - scrolling from the top still scrolls (Chromium's real touch moves the
  *   list; in WebKit the dispatched moves are not cancelled), and a drag down
  *   from a scrolled list is no pull;
+ * - in Chromium, the row under the finger leaving the list mid-pull (its
+ *   thread moves section) still ends the pull on the lift, nothing stuck;
  * - a tap on a row still opens its thread.
  *
  * Chromium gets real touches through the DevTools protocol (the browser's own
@@ -253,6 +255,29 @@ for (const phone of [
           await page.waitForTimeout(300);
           expect(reads).toBe(before);
           await body(page).evaluate((el) => (el.scrollTop = 0));
+          await page.waitForTimeout(100);
+        }
+
+        // The row under the finger leaves the list mid-pull (its thread moves to "Waiting on you", so the row is drawn
+        // anew): Chromium's real touch keeps sending the touch to the detached row; the lift still ends the pull.
+        if (phone.browserName === 'chromium') {
+          const start = (await row(page, late).boundingBox())!;
+          const fx = start.x + start.width / 2;
+          const fy = start.y + start.height / 2;
+          await touch.down(fx, fy);
+          await touch.move(fx, fy + 260);
+          await expect(indicator(page)).toHaveAttribute('data-state', 'ready');
+          const old = await row(page, late).elementHandle();
+          await world.agent.send({ project_path: world.path, reply_to: late, body: ':::question\nShip it today?\n- Yes\n- No\n:::', agent_session: `ses_pull_ask_${tag}` } as Parameters<SimAgent['send']>[0]);
+          await expect(notice(page)).toContainText('1 new');
+          // Show, taken in without lifting the finger (as a second finger could).
+          await notice(page).evaluate((el) => (el as HTMLElement).click());
+          await expect.poll(() => old!.evaluate((el) => el.isConnected)).toBe(false);
+          before = reads;
+          await touch.up();
+          await expect(indicator(page)).not.toHaveAttribute('data-state', /./);
+          expect(await body(page).evaluate((el) => (el as HTMLElement).style.transform)).toBe('');
+          expect(reads - before).toBe(1);
         }
 
         // A tap on a row still opens its thread.
