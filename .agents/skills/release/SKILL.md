@@ -132,6 +132,10 @@ Bump the version string in these **8 files** (and only these — other package.j
 
 Read each file, confirm the current version matches expectations, then update all 8 atomically.
 
+`node scripts/check-release-version.mjs` (also `bun run check:release-version`) checks exactly these 8 files and fails the release when one differs; `apps/dsh-plugin/package.json` (`@plannotator/dsh`) is one of them.
+
+The DeepSeek Harness plugin is checked like the other packages: the release workflow's `test` job runs `bun run typecheck` (which includes `apps/dsh-plugin/tsconfig.json`) and `bun test` (which includes `apps/dsh-plugin` and `apps/hook/server/dsh-*.test.ts`).
+
 Do not bump the VS Code extension (`apps/vscode-extension/package.json`) — it has independent versioning.
 
 ---

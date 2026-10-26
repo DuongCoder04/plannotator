@@ -221,6 +221,8 @@ bun run --cwd apps/review build && bun run build:hook && \
 
 These are the flags `.github/workflows/release.yml` compiles with; without the `__CLI_VERSION__` define `plannotator --version` falls back to `plannotator dev` and the binary cannot be told apart from any other local build. On macOS build with bun >= 1.3.14 (what CI pins): 1.3.12 loses the linker signature and the compiled binary is SIGKILLed on launch with no error (#541).
 
+**Release versions:** a release bumps 8 version files together, `apps/dsh-plugin/package.json` (`@plannotator/dsh`) among them; `scripts/check-release-version.mjs` lists them and fails on a mismatch. The full procedure is [`.agents/skills/release/SKILL.md`](../../.agents/skills/release/SKILL.md). `bun run build` also builds the DeepSeek Harness plugin (`build:dsh`), whose type check and tests run in the release workflow's `test` job with everything else.
+
 Running only `build:opencode` will copy stale HTML files.
 
 ## Marketing Site

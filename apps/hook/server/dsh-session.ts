@@ -124,10 +124,13 @@ function laterFrameStarts(bytes: Buffer): number[] {
   return starts;
 }
 
+/** How many later segments a resync probe joins to find one decodable run. */
+const RESYNC_JOINS = 8;
+
 /**
  * Decompress a multi-frame log. DSH appends one zstd frame per write, so the
  * whole file usually decodes at once. When it does not, walk forward one
- * frame at a time, so each byte is decoded about twice however long the log:
+ * frame at a time:
  * - a run that fails is joined with the next one (a magic number inside
  *   compressed data split a frame), unless a decodable run starts where it
  *   ends: then it is a damaged frame, skipped, and the scan resyncs there.
@@ -135,11 +138,13 @@ function laterFrameStarts(bytes: Buffer): number[] {
  *   RESYNC_JOINS more segments; every newer frame is kept;
  * - the last run may also end in a frame being written (a read racing an
  *   append) or a 1-3 byte partial magic: the cut tail is tried, else dropped.
+ * Cost: where frames decode, each byte is decoded about twice (the whole-file
+ * attempt, then its own frame). Around a damaged or split frame, each failed
+ * run adds up to RESYNC_JOINS probes, and a failing decode stops at the first
+ * bad block, so damage costs a few extra decodes per segment, not a decode of
+ * the whole prefix per frame as a backward retry would.
  * Throws when nothing decodes. Exported for tests (`decode` counts calls).
  */
-/** How many later segments a resync probe joins to find one decodable run. */
-const RESYNC_JOINS = 8;
-
 export function decompressDshLog(bytes: Buffer, decode: DshFrameDecoder = decodeZstd): string {
   let lastError: unknown;
   const tryDecode = (from: number, to: number): string | undefined => {
