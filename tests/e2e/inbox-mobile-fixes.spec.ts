@@ -405,4 +405,33 @@ test.describe('a desktop, the thread beside a file (Chromium)', () => {
     await first.scrollIntoViewIfNeeded();
     await shot(page, 'desktop-beside-file-card-footer');
   });
+
+  test('a 700 px desktop window: the footer keeps one row when it fits, as before; the system radios stay', async () => {
+    await page.setViewportSize({ width: 700, height: 900 });
+    await page.goto(`${world.url}#thread=${threadId}`);
+    const first = page.locator('section.ib-pane fieldset[data-question-key]').first();
+    await expect(first).toBeVisible();
+    // Run alone, the note the test above wrote is not there yet: write it.
+    if ((await first.locator('.ib-qfoot-st').count()) === 0) {
+      await first.getByRole('button', { name: 'Add note' }).click();
+      await first.locator('textarea').last().fill('For backlog items I’d like a way to tell the agent to start.');
+    }
+    await expect(first.locator('.ib-qfoot-st')).toContainText('in your draft');
+    await first.scrollIntoViewIfNeeded();
+    expect(await footerProblems(page, 0)).toEqual([]);
+    // One row: the status on the buttons' line, after the last of them (no phone reordering on a mouse).
+    const row = await first.evaluate((card) => {
+      const foot = card.querySelector(':scope > div.border-t')!;
+      const status = foot.querySelector('.ib-qfoot-st')!.getBoundingClientRect();
+      const buttons = [...foot.querySelectorAll('button')].map((b) => b.getBoundingClientRect());
+      return {
+        sameLine: buttons.every((b) => status.top < b.bottom && status.bottom > b.top),
+        after: buttons.every((b) => status.left >= b.right - 0.5),
+      };
+    });
+    expect(row).toEqual({ sameLine: true, after: true });
+    const appearance = await first.locator('input[type="radio"]').first().evaluate((el) => getComputedStyle(el).appearance);
+    expect(appearance).not.toBe('none');
+    await shot(page, 'desktop-700-card-footer');
+  });
 });

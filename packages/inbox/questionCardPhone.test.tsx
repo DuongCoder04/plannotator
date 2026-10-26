@@ -128,3 +128,12 @@ test.skipIf(!hasDom)('every selector of the card footer and control rules finds 
   expect(host.querySelectorAll('input[type="radio"][data-question-control]').length).toBe(2);
   expect(host.querySelectorAll('input[type="checkbox"][data-question-control]').length).toBe(2);
 });
+
+test('the drawn controls are the same for a touch screen and for iOS and iPadOS WebKit (a trackpad iPad)', () => {
+  const css = readFileSync(resolve(import.meta.dir, 'inbox.css'), 'utf8');
+  const coarse = /\/\* drawn-controls:start \*\/\n@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}\n\/\* drawn-controls:end \*\//.exec(css)?.[1];
+  const ios = /@supports \(-webkit-touch-callout: none\) \{\n([\s\S]*?)\n\}\n/.exec(css.slice(css.indexOf('/* drawn-controls:end */')))?.[1];
+  expect(coarse).toBeTruthy();
+  expect(coarse).toContain('appearance: none');
+  expect(ios).toBe(coarse);
+});

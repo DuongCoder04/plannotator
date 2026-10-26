@@ -1034,7 +1034,10 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
    disc whether picked or not (the owner's iPhone), so picked and unpicked read alike. Unpicked: a hollow ring
    on the card; picked: the accent's ring with its dot (radio), or the accent filled with a check (checkbox).
    The size and place stay ui's (15 px, 20 px on a phone); a checkbox has the "Other…" box's 3 px corner. Only
-   on a touch screen (phones, iPads): a desktop keeps the system's control, as before. Forced colours keep it too. */
+   on a touch screen (pointer: coarse) or in iOS and iPadOS WebKit (-webkit-touch-callout: a trackpad iPad's
+   primary pointer is fine): a desktop, a touch laptop and desktop Safari keep the system's control, as before.
+   Forced colours keep it everywhere. */
+/* drawn-controls:start */
 @media (pointer: coarse) {
   .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
     -webkit-appearance: none;
@@ -1071,10 +1074,49 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
   .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
   .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
 }
-@media (pointer: coarse) and (prefers-reduced-motion: reduce) {
+/* drawn-controls:end */
+/* The same rules for iPadOS and iOS WebKit, whose primary pointer is fine with a trackpad (CSS cannot join a
+   media query and @supports with OR). Keep the two blocks equal: questionCardPhone.test.tsx checks it. */
+@supports (-webkit-touch-callout: none) {
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    box-sizing: border-box;
+    border: 1.5px solid color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+    border-radius: 50%;
+    background-color: transparent;
+    color: var(--primary-foreground);
+    transition: border-color 120ms ease-out, background-color 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"] { border-radius: 3px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"])::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    transform: scale(0);
+    transition: transform 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]::before {
+    width: 10px;
+    height: 10px;
+    border-radius: 0;
+    background: currentColor;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked { border-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]:checked { background-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked::before { transform: scale(1); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
+}
+@media (prefers-reduced-motion: reduce) {
   .pn-inbox .question-block input[data-question-control], .pn-inbox .question-block input[data-question-control]::before { transition: none; }
 }
-@media (pointer: coarse) and (forced-colors: active) {
+@media (forced-colors: active) {
   .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) { -webkit-appearance: auto; appearance: auto; }
 }
 
@@ -2382,10 +2424,13 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-body [data-question-part="choice"] { font-size: var(--ib-fs-15, 15px); }
   .ib-body [data-question-key] input[type="text"] { min-height: 40px; }
   .ib-body [data-question-key] > [data-pinpoint-ignore]:last-child > button, .ib-body [data-question-key] > [data-pinpoint-ignore]:last-child > div > button { min-height: 44px; padding-left: 10px; padding-right: 10px; font-size: var(--ib-fs-14, 14px); }
-  /* The footer on a phone: the buttons and the status never fit one row, so the status leads on its own line
-     and the buttons follow it in reading order (one that does not fit goes to the next line, below). */
-  .pn-inbox .question-block > div.border-t { flex-wrap: wrap; column-gap: 4px; }
-  .pn-inbox .question-block > div.border-t > div.ml-auto > [data-question-host-footer] { order: -1; flex-basis: 100%; margin-left: 0; padding: 2px 0 0 4px; }
+  /* The footer on a touch phone: the buttons and the status never fit one row, so the status leads on its own
+     line and the buttons follow it in reading order (one that does not fit goes to the next line, below). A
+     narrow desktop window keeps the base rule (one row when it fits, else the status above, wrap-reverse). */
+  @media (pointer: coarse) {
+    .pn-inbox .question-block > div.border-t { flex-wrap: wrap; column-gap: 4px; }
+    .pn-inbox .question-block > div.border-t > div.ml-auto > [data-question-host-footer] { order: -1; flex-basis: 100%; margin-left: 0; padding: 2px 0 0 4px; }
+  }
   .pn-inbox .question-block input[data-question-control][type="radio"]::before { width: 10px; height: 10px; }
   .pn-inbox .question-block input[data-question-control][type="checkbox"]::before { width: 12px; height: 12px; }
   .ib-atts.ib-tiles { grid-template-columns: minmax(0, 1fr); }
