@@ -318,9 +318,11 @@ test.if(hasDom)('a phone: one stacked list, Shipped and Icebox folded at the end
     ['shipped', 'false'],
     ['icebox', 'false'],
   ]);
-  expect(cardEl('crd_tab')).toBeNull();
+  // A folded group keeps its body (aria-controls names it), hidden.
+  expect(cardEl('crd_tab')!.closest('[hidden]')).not.toBeNull();
   act(() => $('[data-board-fold="shipped"]')!.click());
   expect(cardEl('crd_tab')).not.toBeNull();
+  expect(cardEl('crd_tab')!.closest('[hidden]')).toBeNull();
 });
 
 /** An IntersectionObserver that sees every card it is given (happy-dom never scrolls). */
