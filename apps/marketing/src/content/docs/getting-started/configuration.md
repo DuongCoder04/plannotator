@@ -62,7 +62,8 @@ clear all `localhost` cookies, which also removes other apps' data.
 The switch is locked when config.json already sets `urlHost` to another value
 (for example a tailnet name for remote mode, which it never replaces), or when
 `PLANNOTATOR_URL_HOST` is set. It is not shown in remote mode or in a
-`--tailscale` session.
+`--tailscale` session. A remote session ignores `plannotator.localhost`
+and advertises `localhost` as if nothing were set.
 
 Browsers resolve `*.localhost` to `127.0.0.1` themselves. Tools that are not
 browsers, such as `curl`, use the system resolver: on Linux without

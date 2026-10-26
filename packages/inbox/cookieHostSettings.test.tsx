@@ -81,6 +81,7 @@ describe('Inbox Settings: the cookie switch', () => {
     const label = document.getElementById(toggle()!.getAttribute('aria-labelledby')!);
     expect(label?.textContent).toContain('cookies');
     expect(group()?.textContent).toContain('plannotator.localhost');
+    expect(group()?.textContent).toContain('Notifications need allowing once');
     act(() => toggle()?.click());
     expect(toggles).toEqual([true]);
   });

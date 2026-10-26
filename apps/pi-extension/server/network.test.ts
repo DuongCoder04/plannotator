@@ -14,6 +14,7 @@ import { closeServer, occupyConsecutivePorts } from "../../../tests/helpers/port
 import {
 	buildAdvertisedUrl,
 	getLocalUrlHostname,
+	isUrlHostOverridden,
 	getServerHostname,
 	getServerPort,
 	getServerPorts,
@@ -367,6 +368,16 @@ describe("pi buildAdvertisedUrl", () => {
 		expect(getLocalUrlHostname()).toBeUndefined();
 		process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
 		expect(getServerHostname()).toBe("127.0.0.1");
+	});
+
+	test("a remote session treats a localhost subdomain as unset: localhost, no 'open it on your device'", () => {
+		clearEnv();
+		process.env.PLANNOTATOR_REMOTE = "1";
+		process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+		expect(buildAdvertisedUrl(19432)).toBe("http://localhost:19432");
+		expect(isUrlHostOverridden()).toBe(false);
+		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+		expect(isUrlHostOverridden()).toBe(true);
 	});
 
 	test("with nothing configured there is no local name", () => {

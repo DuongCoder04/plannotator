@@ -110,7 +110,7 @@ function CookieHostGroup({ cookieHost, onToggle }: { cookieHost: InboxCookieHost
             <span className="ib-l" id="ib-cookie-host-label">
               Keep Plannotator's cookies to itself
             </span>
-            <span className="ib-desc">{cookieHostDescription({ env: cookieHost.env ?? undefined, urlHost: cookieHost.url_host ?? undefined })}</span>
+            <span className="ib-desc">{cookieHostDescription({ on: cookieHost.on, env: cookieHost.env ?? undefined, urlHost: cookieHost.url_host ?? undefined }, { inbox: true })}</span>
           </span>
           <span className="ib-ctl">
             <Switch on={cookieHost.on} labelledBy="ib-cookie-host-label" disabled={locked} onClick={() => onToggle(!cookieHost.on)} />

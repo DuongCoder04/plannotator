@@ -80,9 +80,11 @@ describe('Settings cookie switch', () => {
       expect(row()?.getAttribute('data-cookie-host-setting')).toBe('off');
       expect(toggle()?.getAttribute('aria-checked')).toBe('false');
       expect(row()?.textContent).toContain('plannotator.localhost');
+      expect(row()?.textContent).toContain('Off: Plannotator opens at localhost');
       await act(async () => toggle()?.click());
       expect(bodies).toEqual([{ cookieHost: true }]);
       expect(toggle()?.getAttribute('aria-checked')).toBe('true');
+      expect(row()?.textContent).toContain('On: Plannotator opens at plannotator.localhost');
     });
 
     test.skipIf(!hasDom)(`${mode}: no row without the server's advert (remote, --tailscale, an older server)`, async () => {

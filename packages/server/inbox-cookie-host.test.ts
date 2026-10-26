@@ -83,3 +83,18 @@ test("PLANNOTATOR_URL_HOST locks the switch", async () => {
   expect(res.status).toBe(409);
   expect((await res.json()).code).toBe("cookie_host_env_decides");
 });
+
+test("a refused tailnet change in the same save writes no cookie switch", async () => {
+  const before = process.env.PLANNOTATOR_INBOX_TAILSCALE;
+  process.env.PLANNOTATOR_INBOX_TAILSCALE = "0";
+  try {
+    const server = await start();
+    const res = await post(server, { tailscale: { on: true }, cookie_host: true });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("tailscale_env_decides");
+    expect(loadConfig().urlHost).toBeUndefined();
+  } finally {
+    if (before === undefined) delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
+    else process.env.PLANNOTATOR_INBOX_TAILSCALE = before;
+  }
+});

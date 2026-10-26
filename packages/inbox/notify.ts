@@ -220,9 +220,11 @@ export function askKind(
  * "Moved" is the Inbox's port changing under the same name. Another name
  * (the tailnet address on another device, or localhost after the tailnet)
  * is another place the Inbox is open, with its own permission: the plain ask.
+ * A `.localhost` name (`plannotator.localhost`, the cookie switch, #2184) is
+ * this computer, so moving there from localhost is "moved" too.
  */
 function sameHost(a: string, b: string): boolean {
-  const loopback = (host: string) => host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+  const loopback = (host: string) => host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || /^127\./.test(host);
   try {
     const left = new URL(a).hostname;
     const right = new URL(b).hostname;

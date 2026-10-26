@@ -19,15 +19,25 @@ export interface CookieHostSetting {
   onChange: (next: boolean) => void;
 }
 
-/** The cookie switch's one sub line: what it does, or why it is locked. */
-export function cookieHostDescription(setting: Pick<CookieHostSetting, 'env' | 'urlHost'>): string {
+/**
+ * The cookie switch's one sub line: where Plannotator opens in the state
+ * shown, or why the switch is locked. `inbox` adds that the Inbox's
+ * notifications need allowing once at the new address.
+ */
+export function cookieHostDescription(
+  setting: Pick<CookieHostSetting, 'on' | 'env' | 'urlHost'>,
+  options: { inbox?: boolean } = {},
+): string {
   if (setting.env !== undefined) {
     return setting.env.trim() === ''
       ? 'Set by PLANNOTATOR_URL_HOST in your environment (empty).'
       : `Set by PLANNOTATOR_URL_HOST=${setting.env.trim()} in your environment.`;
   }
   if (setting.urlHost !== undefined) return `config.json sets urlHost to ${setting.urlHost}; this switch never replaces it.`;
-  return "Opens at plannotator.localhost from the next start. This browser's own preferences start fresh once; config.json settings carry over.";
+  const notifications = options.inbox ? ' Notifications need allowing once there.' : '';
+  return setting.on
+    ? `On: Plannotator opens at plannotator.localhost from the next start. This browser's own preferences start fresh once.${notifications}`
+    : `Off: Plannotator opens at localhost. On moves it to plannotator.localhost from the next start.${notifications}`;
 }
 
 interface CookieHostState {

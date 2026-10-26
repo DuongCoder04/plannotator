@@ -732,6 +732,14 @@ describe("the update control never answers through the tailnet", () => {
     const shown = await throughServe(inbox, "/api/inbox/settings", { method: "GET", headers: own });
     expect(shown.status).toBe(200);
     expect((await shown.json()).cookie_host).toBeUndefined();
+    // Nor in the answer to a save it may make.
+    const saved = await throughServe(inbox, "/api/inbox/settings", {
+      method: "POST",
+      headers: own,
+      body: JSON.stringify({ serverSession: inbox.serverSession, text_size: 14 }),
+    });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).cookie_host).toBeUndefined();
     // The same Update now works on this computer.
     const local = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     expect(local.status).toBe(200);

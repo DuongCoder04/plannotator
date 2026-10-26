@@ -193,9 +193,22 @@ export function getServerHostname(): string {
   return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
 }
 
+/**
+ * The url host this session uses: resolveUrlHost, except that a localhost
+ * name (`plannotator.localhost`, the cookie switch, #2184) counts as unset
+ * in a remote session. It names this computer's browser only, so a remote
+ * session advertises (and offers to open on another device) exactly as if
+ * nothing were configured.
+ */
+function sessionUrlHost(): string | undefined {
+  const host = resolveUrlHost(loadConfig());
+  if (host !== undefined && isRemoteSession() && isLocalhostHostname(host)) return undefined;
+  return host;
+}
+
 /** True when the advertised-URL host is overridden away from localhost. */
 export function isUrlHostOverridden(): boolean {
-  const host = resolveUrlHost(loadConfig());
+  const host = sessionUrlHost();
   if (host === undefined) return false;
   if (isAutoUrlHost(host)) return isRemoteSession() && resolveAutoHostCached() !== undefined;
   return true;
@@ -225,7 +238,7 @@ let warnedLocalUrlHost = false;
  * tailnet-only hostname can't break local agent jobs.
  */
 export function buildAdvertisedUrl(port: number): string {
-  const host = resolveUrlHost(loadConfig());
+  const host = sessionUrlHost();
   if (host === undefined) return `http://localhost:${port}`;
   if (!isRemoteSession() && !isLocalhostHostname(host)) {
     if (!warnedLocalUrlHost) {
