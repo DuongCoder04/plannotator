@@ -2223,6 +2223,29 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 /* The stepping bar beside the thread wraps rather than cutting its parts in a narrow pane. */
 .pn-inbox .ib-vfoot { flex-wrap: wrap; row-gap: 8px; padding-top: 8px; padding-bottom: 8px; }
 
+/* Pull down to refresh, on a phone's list (pullRefresh.ts): the list moves down from the very top and
+   uncovers a small ↻ under the header, behind it. The script writes the travel (--ib-pull), the ↻'s
+   turn (--ib-pull-turn), the opacity and data-state (pull, ready, refreshing, settling); the list is
+   painted over the ↻ while a pull is on, so the ↻ shows only in the gap it leaves. */
+@property --ib-pull { syntax: '<length>'; inherits: true; initial-value: 0px; }
+.ib-pull { position: relative; height: 0; z-index: 0; pointer-events: none; opacity: 0; --ib-pull-turn: 0deg; clip-path: inset(0 0 -200px 0); }
+.ib-pull-dot {
+  position: absolute; left: 50%; top: 0; width: 34px; height: 34px; margin-left: -17px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--muted-foreground);
+  background: color-mix(in oklch, var(--muted) 72%, var(--card));
+  translate: 0 calc(var(--ib-pull) / 2 - 17px); scale: 0.88;
+  transition: color 160ms ease-out, scale 160ms ease-out;
+}
+.ib-pull-dot svg { transform: rotate(var(--ib-pull-turn)); }
+.ib-pull:is([data-state="ready"], [data-state="refreshing"]) .ib-pull-dot { color: var(--foreground); scale: 1; }
+.ib-pull[data-state="refreshing"] .ib-pull-dot svg { animation: ib-pull-spin 800ms linear infinite; }
+@keyframes ib-pull-spin { from { transform: rotate(var(--ib-pull-turn)); } to { transform: rotate(calc(var(--ib-pull-turn) + 360deg)); } }
+.ib-lbody[data-pull] { z-index: 1; background: var(--card); }
+@media (prefers-reduced-motion: reduce) {
+  .ib-pull-dot, .ib-pull:is([data-state="ready"], [data-state="refreshing"]) .ib-pull-dot { transition: none; }
+  .ib-pull-dot svg, .ib-pull[data-state="refreshing"] .ib-pull-dot svg { transform: none; animation: none; }
+}
+
 /* ───────────── The Inbox on a phone ─────────────
    One screen at a time, like a mail app: the list, then a thread (Back to
    the list), then a file (Back to the thread). The query is PHONE_QUERY in
