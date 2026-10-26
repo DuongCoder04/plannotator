@@ -25,9 +25,31 @@ describe("detectOrigin", () => {
 
   // Catches: a runtime started from a DSH shell or terminal being mislabeled
   // dsh because DSH_SHELL is inherited by everything below it.
-  test("a runtime launched from a DSH shell is detected as itself", () => {
-    expect(detectOrigin({ DSH_SHELL: "1", CODEX_THREAD_ID: "t" })).toBe("codex");
-    expect(detectOrigin({ DSH_SHELL: "1", GEMINI_CLI: "1" })).toBe("gemini-cli");
+  // One row per agent marker: each agent started from a DSH shell carries its
+  // own marker beside the inherited DSH_SHELL (and DSH_SESSION_ID), and must
+  // win. Claude Code and Pi are not named in the chain, so they fall back to
+  // claude-code exactly as they do outside DSH; mislabeling Claude Code as dsh
+  // made its plan hook tell Claude to call DSH's exit_plan_mode.
+  const inheritedDsh = { DSH_SHELL: "1", DSH_SESSION_ID: "s1", DSH_HOME: "/tmp/dsh" };
+  test.each([
+    ["Claude Code", { CLAUDECODE: "1" }, "claude-code"],
+    ["Pi", { PI_SESSION_ID: "pi-1" }, "claude-code"],
+    ["Codex", { CODEX_THREAD_ID: "t" }, "codex"],
+    ["Copilot CLI", { COPILOT_CLI: "1" }, "copilot-cli"],
+    ["OpenCode", { OPENCODE: "1" }, "opencode"],
+    ["Gemini CLI", { GEMINI_CLI: "1" }, "gemini-cli"],
+    ["oh-my-pi", { OMPCODE: "1" }, "oh-my-pi"],
+    ["Amp (wrapper override)", { PLANNOTATOR_ORIGIN: "amp" }, "amp"],
+    ["Droid (wrapper override)", { PLANNOTATOR_ORIGIN: "droid" }, "droid"],
+    ["Kiro CLI (skill override)", { PLANNOTATOR_ORIGIN: "kiro-cli" }, "kiro-cli"],
+    ["Mistral Vibe (skill override)", { PLANNOTATOR_ORIGIN: "mistral-vibe" }, "mistral-vibe"],
+  ] as const)("%s started from a DSH shell is detected as itself", (_name, marker, origin) => {
+    expect(detectOrigin({ ...inheritedDsh, ...marker })).toBe(origin);
+  });
+
+  // Catches: a blank marker (exported but empty) hiding a real DSH shell.
+  test("an empty agent marker does not hide DSH", () => {
+    expect(detectOrigin({ ...inheritedDsh, CLAUDECODE: "", PI_SESSION_ID: "" })).toBe("dsh");
   });
 
   // Catches: an invalid override swallowing detection instead of falling through.
