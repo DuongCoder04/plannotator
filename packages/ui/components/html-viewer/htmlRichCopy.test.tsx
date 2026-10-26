@@ -1,5 +1,5 @@
 /**
- * Copy as rich text on HTML surfaces (DOM-gated, DOM_TESTS=1): the parent
+ * The rich-text Copy on HTML surfaces (DOM-gated, DOM_TESTS=1): the parent
  * asks the bridge for the pending range's markup when the button is pressed.
  *
  * Failures to catch: the button appearing for a host that did not opt in,
@@ -104,8 +104,8 @@ const titles = () => Array.from(
 
 async function press() {
   const button = Array.from(document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button'))
-    .find((b) => b.title === 'Copy as rich text');
-  if (!button) throw new Error('Copy as rich text missing');
+    .find((b) => b.title === 'Copy');
+  if (!button) throw new Error('Copy missing');
   await act(async () => { button.click(); });
 }
 
@@ -117,16 +117,21 @@ const answer = (id: unknown, rest: Record<string, unknown>) => ({
   type: 'plannotator-bridge-rich-copy', id, html: '', text: '', truncated: false, tooLarge: false, ...rest,
 });
 
-describe.if(hasDom)('Copy as rich text on HTML surfaces', () => {
-  test('a host that did not opt in gets no button; opted in, nothing is requested before the press', async () => {
+describe.if(hasDom)('Rich-text Copy on HTML surfaces', () => {
+  test('a host that did not opt in keeps plain Copy; opted in, nothing is requested before the press', async () => {
+    const clipboard = fakeClipboard();
     const { fromBridge, requests } = await mount();
     await fromBridge(selection);
-    expect(titles()).toContain('Copy');
-    expect(titles()).not.toContain('Copy as rich text');
+    expect(titles().filter((t) => t === 'Copy')).toHaveLength(1);
+    await press();
+    await settle();
+    expect(requests()).toEqual([]);
+    expect(clipboard.write).not.toHaveBeenCalled();
+    expect(clipboard.writeText).toHaveBeenCalledWith('Pinpoint target');
 
     policy!.setRichCopyEnabled(true);
     await fromBridge({ ...selection, text: 'Pinpoint target again' });
-    expect(titles()).toContain('Copy as rich text');
+    expect(titles().filter((t) => t === 'Copy')).toHaveLength(1);
     expect(requests()).toEqual([]);
   });
 
@@ -153,7 +158,7 @@ describe.if(hasDom)('Copy as rich text on HTML surfaces', () => {
       'text/plain': 'Pinpoint target, whole',
     }]);
     expect(clipboard.writeText).not.toHaveBeenCalled();
-    expect(titles()).toContain('Copied as rich text');
+    expect(titles()).toContain('Copied!');
   });
 
   test('no answer within 1.5 s: the quote is written once, as plain text, and a late answer changes nothing', async () => {

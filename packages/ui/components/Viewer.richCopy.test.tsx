@@ -1,5 +1,5 @@
 /**
- * Copy as rich text through the REAL Viewer and web-highlighter (DOM-gated,
+ * The rich-text Copy through the REAL Viewer and web-highlighter (DOM-gated,
  * DOM_TESTS=1).
  *
  * Failures to catch: the toolbar button stops writing text/html beside
@@ -104,18 +104,22 @@ function fakeClipboard() {
   return { items, write, writeText };
 }
 
-test.skipIf(!hasDom)('a @plannotator/ui host that does not opt in keeps the toolbar as it was: no rich-copy button', async () => {
+test.skipIf(!hasDom)('a @plannotator/ui host that does not opt in keeps the toolbar as it was: no Copy on desktop', async () => {
   await mountAndSelect('four and eight');
   expect(document.querySelector('.annotation-toolbar')).not.toBeNull();
-  expect(toolbarButton('Copy as rich text')).toBeUndefined();
+  expect(toolbarButton('Copy')).toBeUndefined();
 });
 
 test.skipIf(!hasDom)('the toolbar button copies the selection as text/html plus text/plain, without review markup', async () => {
   policy!.setRichCopyEnabled(true);
   await mountAndSelect('four and eight');
   const clipboard = fakeClipboard();
-  const button = toolbarButton('Copy as rich text');
-  if (!button) throw new Error('Copy as rich text missing from the selection toolbar');
+  // One Copy button (the copy icon), shown on desktop too once rich copy is on.
+  const copyButtons = [...document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button')]
+    .filter((b) => /^Cop(y|ied)/.test(b.getAttribute('aria-label') ?? b.title));
+  expect(copyButtons).toHaveLength(1);
+  const button = toolbarButton('Copy');
+  if (!button) throw new Error('Copy missing from the selection toolbar');
 
   await act(async () => { button.click(); });
   await settle();
@@ -134,7 +138,7 @@ test.skipIf(!hasDom)('Ctrl+C / Cmd+C are unchanged: plain text through the copy 
   policy!.setRichCopyEnabled(true);
   await mountAndSelect('four and eight');
   const clipboard = fakeClipboard();
-  expect(toolbarButton('Copy as rich text')).toBeDefined();
+  expect(toolbarButton('Copy')).toBeDefined();
 
   for (const init of [{ ctrlKey: true }, { metaKey: true }]) {
     const keydown = new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', bubbles: true, cancelable: true, ...init });

@@ -599,8 +599,8 @@ export const BRIDGE_SCRIPT = `(function() {
       targetLabel: (extras && extras.targetLabel) || undefined,
       context: (extras && extras.context) || undefined,
       // This bridge answers rich-copy-request for a text selection (the
-      // toolbar's Copy as rich text). Optional and additive: an older bridge
-      // omits it and the parent shows no button, so no protocol version bump.
+      // toolbar's rich-text Copy). Optional and additive: an older bridge
+      // omits it and Copy stays plain text, so no protocol version bump.
       richCopy: (extras && extras.pinpoint) ? undefined : true,
       // The quote above was cut to MAX_SELECTION_TEXT: a plain-text copy made
       // from it alone (no answer to rich-copy-request) says so.
@@ -653,7 +653,7 @@ export const BRIDGE_SCRIPT = `(function() {
     if (!e.data || !e.data.type) return;
     var type = e.data.type;
 
-    // Copy as rich text was pressed in the parent: build the pending text
+    // Copy (rich text) was pressed in the parent: build the pending text
     // range's markup now (never on selection). A throw or an oversized range
     // answers without markup, so the parent copies plain text.
     if (type === PREFIX + 'rich-copy-request') {
@@ -5456,7 +5456,7 @@ export const BRIDGE_SCRIPT = `(function() {
     if (document.body) document.body.removeAttribute('data-plannotator-vim-focus-owner');
   }
 
-  // Selected markup for the parent's Copy as rich text button, built only when
+  // Selected markup for the parent's rich-text Copy button, built only when
   // the button is pressed (rich-copy-request). Keeps the enclosing formatting
   // that cloneContents omits for text endpoints (the same semantic ancestors
   // selectionRangeToHtml keeps) and absolutizes links.

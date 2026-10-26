@@ -1603,7 +1603,7 @@ export function useAnnotationHighlighter({
               element: doms[0] as HTMLElement,
               source,
               selectionText,
-              // Built only when "Copy as rich text" is pressed: the pending
+              // Built only when Copy (rich text) is pressed: the pending
               // highlight's marks still bound the selected words, and the
               // sanitizer drops the marks themselves.
               getRichCopy: () => {

@@ -465,7 +465,7 @@ describe('shortcuts', () => {
     expect(handled).toBe(false);
   });
 
-  // Copy as rich text is a toolbar button only (owner's decision on #2191):
+  // Rich-text copy is the toolbar's Copy button only (owner's decision on #2191):
   // Cmd+Option+C is Chrome's Inspect Element key on a Mac, and new shortcuts
   // need the owner's approval. No surface may bind Alt+C, and Mod+C stays the
   // one copy binding, described as before.

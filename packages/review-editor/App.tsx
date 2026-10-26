@@ -245,8 +245,8 @@ import {
 
 declare const __APP_VERSION__: string;
 
-// Plannotator's own code review offers "Copy as rich text" in the selection
-// toolbar; @plannotator/ui hosts keep it off unless they opt in.
+// Plannotator's own code review: the selection toolbar's Copy copies rich
+// text; @plannotator/ui hosts keep plain Copy unless they opt in.
 configurePlannotatorUI({ richCopy: true });
 
 function getReviewRecoveryStorage(): ReviewRecoveryStorage | null {

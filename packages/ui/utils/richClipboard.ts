@@ -7,7 +7,7 @@ export const MAX_RICH_CLIPBOARD_HTML_LENGTH = 256 * 1024;
 export const MAX_RICH_CLIPBOARD_OUTPUT_LENGTH = 512 * 1024;
 
 /**
- * What the toolbar's Copy as rich text button copies, built when it is
+ * What the toolbar's Copy button copies when rich copy is on, built when it is
  * pressed: sanitized HTML plus its plain text (`html: ''` when no markup came
  * back), the selection marked too large for rich text, or null when nothing
  * could be built. `truncated` marks `text` as not the whole selection.

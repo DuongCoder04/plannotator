@@ -137,10 +137,11 @@ export interface PlannotatorUIConfig {
    */
   digitHexIssueRefs?: boolean;
   /**
-   * Offer "Copy as rich text" (text/html plus text/plain) in the selection
-   * toolbar of the Viewer and HtmlViewer. Default: false, the toolbar exactly
-   * as before. Plannotator's plan review, annotate, code review and Inbox pass
-   * true (#1972, `utils/richCopyPolicy`).
+   * Make the selection toolbar's Copy button (Viewer and HtmlViewer) copy rich
+   * text: text/html plus text/plain in one clipboard write, and show Copy
+   * where `hideCopyButton` hid it (the Viewer on desktop). Default: false,
+   * Copy exactly as before. Plannotator's plan review, annotate, code review
+   * and Inbox pass true (#1972, `utils/richCopyPolicy`).
    */
   richCopy?: boolean;
   /** Re-hydrate settings from the installed (SYNCHRONOUS) storageBackend after install. */

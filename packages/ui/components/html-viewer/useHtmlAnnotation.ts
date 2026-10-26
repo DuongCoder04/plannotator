@@ -114,7 +114,7 @@ interface BridgeRichCopyMessage {
   tooLarge: boolean;
 }
 
-/** How long Copy as rich text waits for the bridge before copying the quote as plain text. */
+/** How long the rich-text Copy waits for the bridge before copying the quote as plain text. */
 export const RICH_COPY_TIMEOUT_MS = 1500;
 
 /** One draft target in an in-flight multi-select comment. Index 0 is primary. */
@@ -617,7 +617,7 @@ export function useHtmlAnnotation({
   hostCapRef.current = maxAdditionalTargets !== undefined;
 
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  /** Copy as rich text requests waiting for the bridge's markup, by id. An
+  /** Rich-text Copy requests waiting for the bridge's markup, by id. An
    *  answer with an id not in here (unsolicited, or after its timeout) is ignored. */
   const richCopyRequestsRef = useRef(new Map<string, (answer: BridgeRichCopyMessage) => void>());
 
@@ -842,7 +842,7 @@ export function useHtmlAnnotation({
             element: anchor,
             source: null,
             selectionText: message.text,
-            // The markup is built only when Copy as rich text is pressed: ask
+            // The markup is built only when Copy is pressed: ask
             // the bridge for the pending range's HTML and wait a moment.
             ...(message.richCopy ? {
               getRichCopy: () => new Promise<RichCopySource>((resolve) => {

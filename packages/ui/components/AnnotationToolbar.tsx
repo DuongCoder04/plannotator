@@ -32,9 +32,10 @@ interface AnnotationToolbarProps {
   /** Text to copy when the button is clicked */
   copyText?: string;
   /** Builds the captured text selection's sanitized HTML and plain text when
-   *  the "Copy as rich text" button is pressed (never before). When present
-   *  the toolbar shows that button (text/html plus text/plain), also when
-   *  hideCopyButton hides the plain Copy button. Button only: no shortcut. */
+   *  Copy is pressed (never before). When present, Copy writes text/html plus
+   *  text/plain in one clipboard write (a plain field still pastes plain
+   *  text), and the Copy button shows even where hideCopyButton hides it.
+   *  Absent: Copy copies plain text, exactly as before. No shortcut. */
   getRichCopy?: () => RichCopySource | Promise<RichCopySource>;
   /** Comment-only surfaces (HTML / live-app viewer): hide the Delete action,
    *  the quick-label picker, and the Alt+digit label shortcuts. A provided
@@ -147,7 +148,8 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
     setRichCopied(false);
     const build = getRichCopy;
     if (!build) return;
-    const result = await copyRichSelection(build, copyText ?? '');
+    const fallback = copyText || element.querySelector('code')?.textContent || element.textContent || '';
+    const result = await copyRichSelection(build, fallback);
     const current = richCopySelectionRef.current;
     if (current.element !== element || current.getRichCopy !== build) return;
     if (result) {
@@ -293,20 +295,24 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
       <div data-pn-annotation-toolbar-row="true" className="flex items-center p-1 gap-0.5">
         {(!hideCopyButton || getRichCopy) && (
           <>
-            {!hideCopyButton && (
+            {getRichCopy ? (
+              // One Copy button: rich text (text/html plus text/plain) where
+              // the host turned rich copy on. "Copied!" for a rich copy; a
+              // plain-text fallback says what went on the clipboard.
+              <ToolbarButton
+                onClick={handleRichCopy}
+                icon={richCopied ? <CheckIcon /> : <CopyIcon />}
+                label={!richCopied ? "Copy"
+                  : richCopied.copied === 'rich' ? "Copied!"
+                  : richCopyOutcomeLabel(richCopied)}
+                className={richCopied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
+              />
+            ) : (
               <ToolbarButton
                 onClick={handleCopy}
                 icon={copied ? <CheckIcon /> : <CopyIcon />}
                 label={copied ? "Copied!" : "Copy"}
                 className={copied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
-              />
-            )}
-            {getRichCopy && (
-              <ToolbarButton
-                onClick={handleRichCopy}
-                icon={richCopied ? <CheckIcon /> : <RichCopyIcon />}
-                label={richCopied ? richCopyOutcomeLabel(richCopied) : "Copy as rich text"}
-                className={richCopied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
               />
             )}
             <div className="w-px h-5 bg-border mx-0.5" />
@@ -400,14 +406,6 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 const CopyIcon = () => (
   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-  </svg>
-);
-
-/** CopyIcon's two sheets with a "T" on the front one: copy with formatting. */
-const RichCopyIcon = () => (
-  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12.5 11.5h5M15 11.5v5.5" />
   </svg>
 );
 
