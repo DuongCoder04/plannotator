@@ -3,29 +3,48 @@
  * tour v2 brief, step 0, exactly): the top tile of the first-run "Two paths"
  * bento, and the short first card when the tour starts ("a fresh reminder").
  *
- * The picture: three agent sessions with their real marks, arrows into an
- * Inbox card, and a primary "your reply" arrow back into the Claude Code
- * session. Drawn in HTML and one inline SVG (two, the phone's runs
- * downward; CSS shows one), no asset but the tile's thumbnail. The reply
- * arrow draws once, 600 ms, not under reduced motion.
+ * The picture: your own agents, one line each (their real mark, their
+ * name, "(you run this as normal)"), a straight arrow from each into the
+ * Inbox card at the same height, and a primary "your reply" arrow back,
+ * parallel to Claude Code's. HTML and CSS only, no asset but the card's
+ * thumbnail. The reply arrow draws once, 600 ms, not under reduced motion.
  */
 import { HostMark, Icon } from '../icons';
 import { tourAssetUrl } from './assets';
 
 export const TOUR_FIT_TITLE = 'The Inbox works beside your agents';
 export const TOUR_FIT_LINES = [
-  'It doesn’t replace them: keep running Claude Code, Codex, Pi or OpenCode in your terminal or editor, as you do now.',
+  'It doesn’t replace them: keep running Claude Code, Pi or OpenCode in your terminal or editor, as you do now.',
   'When they need you, they send their questions, finished work and files here.',
   'Your reply goes back into the same session, and it keeps working.',
 ] as const;
 const PICTURE_ALT = 'Your agents keep running in your terminal and editor. They send questions, work and files to the Inbox; your reply goes back to the same session.';
 
-function Session({ host, title, line, back }: { host: string; title: string; line: string; back?: boolean }) {
+/** One of your agents, in one line: its mark, its name, and that you run it as normal. */
+function Session({ host, name, row }: { host: string; name: string; row: number }) {
   return (
-    <div className="tp-win">
+    <div className="tp-win" style={{ gridRow: row }}>
       <HostMark host={host} />
-      <b>{title}</b>
-      <span className={`tp-line${back ? ' tp-back' : ''}`}>{line}</span>
+      <b>{name}</b>
+      <span className="tp-note">
+        <span className="tp-note-long">(you run this as normal)</span>
+        <span className="tp-note-short">(run as normal)</span>
+      </span>
+    </div>
+  );
+}
+
+/** A straight arrow from a session into the Inbox card, at the session's height; Claude Code's has the reply back beside it. */
+function Link({ row, reply }: { row: number; reply?: boolean }) {
+  return (
+    <div className="tp-link" style={{ gridRow: row }}>
+      <i className="tp-to" />
+      {reply && (
+        <>
+          <i className="tp-back tp-ret-draw" />
+          <span className="tp-reply">your reply</span>
+        </>
+      )}
     </div>
   );
 }
@@ -34,30 +53,17 @@ export function TourFitPicture() {
   return (
     <div className="tp-wrap">
       <div className="tp" role="img" aria-label={PICTURE_ALT}>
-        <div className="tp-sess">
-          <Session host="claude-code" title="claude · api" line="↳ continues with A" back />
-          <Session host="codex" title="codex · web" line="▌ working…" />
-          <Session host="pi" title="pi · docs" line="▌ working…" />
+        <Session host="claude-code" name="Claude Code" row={1} />
+        <Session host="pi" name="Pi" row={2} />
+        <Session host="opencode" name="OpenCode" row={3} />
+        <Link row={1} reply />
+        <Link row={2} />
+        <Link row={3} />
+        {/* A phone: the sessions on top, then the questions down and the reply up, side by side. */}
+        <div className="tp-down" aria-hidden="true">
+          <span className="tp-dn">↓ questions, work, files</span>
+          <span className="tp-up">↑ your reply</span>
         </div>
-        <svg className="tp-arrows tp-arrows-h" viewBox="0 0 70 170" aria-hidden="true">
-          <path d="M2 26 C 34 26, 36 70, 66 78" />
-          <path d="M2 85 L 66 85" />
-          <path d="M2 144 C 34 144, 36 100, 66 92" />
-          <path className="tp-ret tp-ret-draw" d="M66 108 C 38 118, 34 40, 4 34" />
-          <text x="6" y="16">questions</text>
-          <text className="tp-ret" x="16" y="166">
-            your reply
-          </text>
-        </svg>
-        <svg className="tp-arrows tp-arrows-v" viewBox="0 0 340 56" preserveAspectRatio="none" aria-hidden="true">
-          <path d="M56 2 C 56 28, 150 30, 160 52" />
-          <path d="M170 2 L 170 52" />
-          <path d="M284 2 C 284 28, 190 30, 180 52" />
-          <path className="tp-ret tp-ret-draw" d="M196 52 C 220 24, 80 26, 64 4" />
-          <text className="tp-ret" x="196" y="30">
-            your reply ↑
-          </text>
-        </svg>
         <div className="tp-inbox">
           <div className="tp-ih">
             <Icon name="inbox" size={13} />
@@ -71,15 +77,11 @@ export function TourFitPicture() {
             <img className="tp-th" src={tourAssetUrl('vs-a-thumb.webp')} alt="" onError={(event) => (event.currentTarget.style.display = 'none')} />
           </div>
           <div className="tp-row">
-            <HostMark host="codex" />
+            <HostMark host="pi" />
             <b>Checkout page is done</b>
             <span className="tp-c">2 files</span>
           </div>
         </div>
-      </div>
-      <div className="tp-cap" aria-hidden="true">
-        <span>Your terminal and editor, as now</span>
-        <span>The Inbox</span>
       </div>
     </div>
   );

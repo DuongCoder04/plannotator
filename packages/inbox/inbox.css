@@ -4475,31 +4475,33 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .pn-inbox .ib-empty.ib-te-empty { max-width: 1180px; }
 .ib-te-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 900px; }
 /* The bento's top tile: how the Inbox fits with your agents (tour/Fit.tsx), wide, the picture beside the words. */
-.ib-te-fit { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); max-width: 900px; margin-bottom: 16px; }
+.ib-te-fit { display: grid; grid-template-columns: minmax(0, 1fr); max-width: 900px; margin-bottom: 16px; }
 .ib-te-fit .ib-te-fit-pic { padding: 18px 20px 12px; background: color-mix(in oklch, var(--primary) 6%, var(--muted)); }
 .ib-te-fit .ib-te-body { justify-content: center; gap: 0; }
 .pn-inbox .ib-te-fit .ib-te-body h3 { margin: 0 0 8px; }
 .ib-te-fit .ib-te-body p { flex: none; margin: 0 0 6px; }
-@media (max-width: 1100px) { .ib-te-fit { grid-template-columns: minmax(0, 1fr); } }
-/* The picture (tour/Fit.tsx): sessions, arrows in, the Inbox card, and the reply arrow back. */
-.tp { display: grid; grid-template-columns: minmax(0, 1fr) 62px minmax(0, 1.05fr); align-items: center; }
-.tp-sess { display: grid; gap: 8px; }
-.tp-win { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: center; padding: 7px 9px; border-radius: 8px; background: var(--card); box-shadow: 0 0 0 1px var(--border); font: var(--ib-fs-11-5, 11.5px)/1.35 var(--font-mono, ui-monospace, monospace); color: var(--muted-foreground); min-width: 0; }
-.tp-win .ib-mk { grid-row: 1 / span 2; width: var(--ib-mark-24); height: var(--ib-mark-24); border-radius: var(--ib-mark-24-r); }
-.tp-win .ib-mk > svg, .tp-win .ib-mk > img { width: var(--ib-mark-24-g); height: var(--ib-mark-24-g); }
-.tp-win b { color: var(--foreground); font-weight: 600; font-family: var(--font-sans, inherit); font-size: var(--ib-fs-12, 12px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tp-win .tp-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tp-win .tp-back { color: var(--primary); font-weight: 600; }
-.tp-arrows { width: 62px; height: 100%; }
-.tp-arrows-v { display: none; }
-.tp-arrows path { fill: none; stroke: var(--muted-foreground); stroke-width: 1.5; }
-.tp-arrows path.tp-ret { stroke: var(--primary); stroke-width: 2; }
-.tp-arrows text { font-weight: 600; font-size: var(--ib-fs-9, 9px); fill: var(--muted-foreground); }
-.tp-arrows text.tp-ret { fill: var(--primary); }
+@media (max-width: 359px) { .tp-win .tp-note-long { display: none; } .tp-win .tp-note-short { display: inline; } }
+/* The picture (tour/Fit.tsx): your agents in a column, a straight arrow from each into the Inbox card, the reply back. */
+.tp { display: grid; grid-template-columns: minmax(0, 1fr) 76px minmax(0, 0.95fr); grid-template-rows: repeat(3, minmax(0, 1fr)); row-gap: 8px; align-items: stretch; }
+.tp-win { grid-column: 1; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 40px; border-radius: 8px; background: var(--card); box-shadow: 0 0 0 1px var(--border); font-size: var(--ib-fs-13, 13px); white-space: nowrap; min-width: 0; overflow: hidden; }
+.tp-win .ib-mk { width: var(--ib-mark-20); height: var(--ib-mark-20); border-radius: var(--ib-mark-20-r); flex: none; }
+.tp-win .ib-mk > svg, .tp-win .ib-mk > img { width: var(--ib-mark-20-g); height: var(--ib-mark-20-g); }
+.tp-win b { font-weight: 600; flex: none; }
+.tp-win .tp-note { color: var(--muted-foreground); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tp-win .tp-note-short { display: none; }
+.tp-link { grid-column: 2; position: relative; display: flex; flex-direction: column; justify-content: center; gap: 7px; padding: 0 4px; }
+.tp-link i { position: relative; display: block; height: 0; border-top: 1.5px solid var(--muted-foreground); }
+.tp-link i::after { content: ""; position: absolute; top: -4.75px; border: 4px solid transparent; }
+.tp-link .tp-to::after { right: -1px; border-left: 6px solid var(--muted-foreground); border-right: 0; }
+.tp-link .tp-back { border-top: 2px solid var(--primary); }
+.tp-link .tp-back::after { left: -1px; top: -5px; border-right: 6px solid var(--primary); border-left: 0; }
+.tp-link .tp-reply { position: absolute; left: 0; right: 0; bottom: 2px; text-align: center; font-size: var(--ib-fs-10, 10px); font-weight: 600; color: var(--primary); white-space: nowrap; }
 @media (prefers-reduced-motion: no-preference) {
-  .tp-ret-draw { stroke-dasharray: 140; stroke-dashoffset: 140; animation: tp-draw 600ms 450ms ease-out forwards; }
+  .tp-ret-draw { transform-origin: right center; animation: tp-draw 600ms 450ms ease-out both; }
 }
-@keyframes tp-draw { to { stroke-dashoffset: 0; } }
+@keyframes tp-draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.tp-down { display: none; }
+.tp-inbox { grid-column: 3; grid-row: 1 / span 3; }
 .tp-inbox { border-radius: 10px; background: var(--card); box-shadow: 0 0 0 1px var(--border); overflow: hidden; min-width: 0; }
 .tp-inbox .tp-ih { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: var(--ib-fs-11-5, 11.5px); font-weight: 650; }
 .tp-inbox .tp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; padding: 8px 10px; font-size: var(--ib-fs-12, 12px); align-items: center; }
@@ -4509,7 +4511,6 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .tp-inbox .tp-row b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-inbox .tp-row .tp-c { color: var(--muted-foreground); font-size: var(--ib-fs-11, 11px); white-space: nowrap; }
 .tp-inbox .tp-row .tp-th { grid-column: 2; width: 74px; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
-.tp-cap { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: var(--ib-fs-11, 11px); color: var(--muted-foreground); font-weight: 550; }
 /* The tour's first card ("a fresh reminder"): the same words and picture, Show me. Below the tour bar, so Exit stays in reach. */
 .ib-tour-intro-scrim { position: fixed; inset: var(--ib-tour-bar-h, 45px) 0 0 0; display: grid; place-items: center; padding: 24px; background: color-mix(in oklch, var(--background) 55%, transparent); backdrop-filter: blur(2px); overflow: auto; }
 .ib-tour-intro { width: min(720px, 100%); border-radius: 14px; overflow: hidden; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px color-mix(in oklch, var(--primary) 45%, var(--border)), var(--ib-float-shadow, 0 16px 40px -12px rgb(0 0 0 / 0.45)); }
@@ -4563,13 +4564,18 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-tour-viewer header .ib-iconbtn { width: 44px; height: 44px; }
   .ib-tour-viewer header .ib-mut { display: none; }
   .ib-tour-file .ib-tf-from { display: none; }
-  /* The picture stacks: the sessions on top, the Inbox card below, the arrows running down. */
-  .tp { grid-template-columns: minmax(0, 1fr); }
-  .tp-arrows-h { display: none; }
-  .tp-arrows-v { display: block; width: 100%; height: 56px; }
-  .tp-sess { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-  .tp-win { grid-template-columns: minmax(0, 1fr); padding: 7px 8px; }
-  .tp-win .ib-mk { grid-row: auto; justify-self: start; }
+  /* The picture stacks: your agents on top, the questions down and the reply up, then the Inbox card. */
+  .tp { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; row-gap: 6px; }
+  .tp-win { grid-row: auto !important; min-height: 44px; }
+  .tp-link { display: none; }
+  .tp-down { display: flex; justify-content: center; gap: 28px; padding: 6px 0 4px; font-size: var(--ib-fs-11, 11px); font-weight: 600; }
+  .tp-down span { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
+  .tp-down span::before { content: ""; width: 0; height: 22px; border-left: 1.5px solid var(--muted-foreground); }
+  .tp-dn { color: var(--muted-foreground); }
+  .tp-dn::before { border-image: none; }
+  .tp-up { color: var(--primary); }
+  .tp-up::before { border-left: 2px solid var(--primary) !important; }
+  .tp-inbox { grid-column: auto; grid-row: auto; }
   .ib-te-fit .ib-te-fit-pic { padding: 14px 14px 10px; }
   /* The tour's first card: a sheet under the tour bar, Show me full width and 44 px. */
   .ib-tour-intro-scrim { padding: 0; place-items: stretch; }
