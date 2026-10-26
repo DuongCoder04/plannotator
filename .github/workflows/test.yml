@@ -12,13 +12,21 @@ on:
 permissions:
   contents: read
 
+# One run per PR at a time: a new push cancels the PR's older run, which no one
+# will merge. A push to main is never cancelled: deploy.yml waits for the Test
+# run of each main commit, so every one of them gets a group of its own.
+concurrency:
+  group: test-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  # Everything that is not a sharded test file: the checks that used to lead
+  # the single test job, and the two DOM steps that must run in processes of
+  # their own.
+  checks:
+    name: Checks (types, packages, own-process DOM tests, lane guards)
     runs-on: ubuntu-24.04
-    # A backstop, not a budget: green runs take 16-19 minutes. Some DOM tests
-    # run on fake timers, where bun's per-test timeout cannot fire, so a stuck
-    # await would otherwise idle until GitHub's 6-hour default.
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -54,9 +62,6 @@ jobs:
       - name: Type check VS Code extension
         run: bun run --cwd apps/vscode-extension lint
 
-      - name: Run tests
-        run: bun test
-
       # The file-browser watcher test is timing-sensitive (a 120ms SSE debounce
       # asserted with real timers). Run it in its own process — matching the
       # historical config — so it isn't destabilized by sharing a process with
@@ -65,17 +70,17 @@ jobs:
       - name: Run file-browser DOM test (isolated)
         run: DOM_TESTS=1 bun test packages/ui/hooks/useFileBrowser.test.tsx
 
-      # These two render against the REAL @pierre/diffs, because the defects
-      # they cover (a stale render cache served across a cacheKey collision;
-      # an empty stub card) only exist inside its renderer. A sibling in the
-      # list below, AllFilesCodeView.lifecycle.test.tsx, calls
+      # These render against the REAL @pierre/diffs, because the defects they
+      # cover (a stale render cache served across a cacheKey collision; an
+      # empty stub card) only exist inside its renderer. A file in the DOM list,
+      # AllFilesCodeView.lifecycle.test.tsx, calls
       # `mock.module('@pierre/diffs', ...)` with a hunk-less getSingularPatch
       # and `processFile: () => null` — and bun's module mocks are process
       # global with no restore, so in one shared process the real renderer is
       # not guaranteed to still be there by the time these load. That leak
       # reproduced on the Linux runner and not on macOS. Their own process
       # removes the coupling outright, same reasoning as the isolated step
-      # above.
+      # above. scripts/ci-test-lanes.test.ts keeps them out of the DOM list.
       - name: Run diff-renderer DOM tests (isolated, real @pierre/diffs)
         run: >-
           DOM_TESTS=1 bun test
@@ -87,391 +92,87 @@ jobs:
           packages/review-editor/components/DiffViewer.markdownPreview.test.tsx
           packages/review-editor/components/DiffViewer.changeNavigation.test.tsx
 
-      # Seam contracts + the remaining DOM-gated tests. Scoped to the DOM files
-      # (not the whole ui suite) to keep this process light. Files get isolated
-      # globals because theme, storage, and DOM test state must not leak between
-      # suites when Bun schedules them differently across platforms.
-      - name: Run UI seam-contract + DOM tests
-        run: >-
-          DOM_TESTS=1 bun test --isolate
-          packages/ui/markdownEditorFidelity.test.tsx
-          packages/ui/annotationDraftPersistence.test.tsx
-          packages/ui/codeAnnotationDraftPersistence.test.tsx
-          packages/ui/utils/richClipboard.test.ts
-          packages/ui/components/Viewer.richCopy.test.tsx
-          packages/ui/components/html-viewer/htmlRichCopy.test.tsx
-          packages/ui/components/html-viewer/srcdoc.test.ts
-          packages/ui/components/html-viewer/htmlPinpointProtocol.test.tsx
-          packages/ui/components/html-viewer/htmlLiveProtocol.test.tsx
-          packages/ui/components/html-viewer/HtmlViewer.vimHud.test.tsx
-          packages/ui/components/html-viewer/HtmlViewer.bridgeAsset.test.tsx
-          packages/ui/components/Viewer.vimMode.integration.test.tsx
-          packages/ui/components/CodeFilePopout.lineScroll.test.tsx
-          packages/ui/hooks/useVimSelection.test.tsx
-          packages/ui/hooks/useVimSelection.selectionScope.test.tsx
-          packages/ui/hooks/useModelCatalogs.dom.test.tsx
-          packages/ui/hooks/useAIProviderActivation.dom.test.tsx
-          packages/ui/components/ModelSourceHint.dom.test.tsx
-          packages/ui/components/ai/AIProviderBar.dom.test.tsx
-          packages/ui/components/ai/SessionAskNotice.dom.test.tsx
-          packages/ui/hooks/useAIChat.sessionAsk.test.tsx
-          packages/ui/hooks/useAIChat.newChat.test.tsx
-          packages/ui/components/ai/NewChatButton.dom.test.tsx
-          packages/review-editor/hooks/useAIChat.newChat.test.tsx
-          packages/ui/hooks/useAgentSettings.dom.test.tsx
-          packages/ui/utils/codeHighlight.test.ts
-          packages/ui/utils/htmlChrome.test.ts
-          packages/ui/utils/inputMethod.test.ts
-          packages/ui/utils/vimNavigation.test.ts
-          packages/ui/utils/clipboard.test.ts
-          packages/ui/utils/pasteInsert.test.ts
-          apps/vscode-extension/src/vscode-theme.test.ts
-          packages/ui/utils/vimScroll.test.ts
-          packages/ui/components/InlineMarkdown.resolveLinkedDoc.test.tsx
-          packages/ui/components/MarkdownDiff.frozen.test.tsx
-          packages/ui/components/MarkdownEditor.extensions.test.tsx
-          packages/ui/components/ThemeProvider.favicon.test.tsx
-          packages/ui/components/Tooltip.dom.test.tsx
-          packages/ui/components/MermaidBlock.theme.test.tsx
-          packages/ui/components/DiagramBlock.anchor.test.tsx
-          packages/ui/components/DiagramBlock.askAI.test.tsx
-          packages/ui/components/Viewer.askAISelectionLine.test.tsx
-          packages/ui/components/Viewer.textComments.test.tsx
-          packages/ui/components/ImageLightbox.test.tsx
-          packages/ui/components/ImageZoomStage.wheelHint.test.tsx
-          packages/ui/components/Viewer.imageRegions.test.tsx
-          packages/ui/components/HostTitle.dom.test.tsx
-          packages/ui/components/RefHoverCard.dom.test.tsx
-          packages/inbox/images.test.tsx
-          packages/inbox/inlineImages.test.tsx
-          packages/inbox/refusedImages.test.tsx
-          packages/inbox/codeAttachment.test.tsx
-          packages/inbox/fileViewClean.test.tsx
-          packages/inbox/links.test.tsx
-          packages/inbox/issueRefs.test.tsx
-          packages/inbox/attachmentKinds.test.tsx
-          packages/inbox/updates.test.tsx
-          packages/inbox/whatsNewLink.test.tsx
-          packages/inbox/whatsNewHeader.test.tsx
-          packages/inbox/whatsNewImages.test.tsx
-          packages/inbox/replaced.test.tsx
-          packages/inbox/reask.test.tsx
-          packages/inbox/openQuestions.test.tsx
-          packages/inbox/decisionMode.test.tsx
-          packages/inbox/decisionCardContract.test.tsx
-          packages/inbox/threadFolding.test.tsx
-          packages/inbox/pasteTarget.test.ts
-          packages/inbox/seenOnSight.test.tsx
-          packages/inbox/projectList.test.tsx
-          packages/inbox/softQuietRows.test.tsx
-          packages/inbox/sidebarQuiet.test.tsx
-          packages/inbox/leakedSubject.test.tsx
-          packages/inbox/connectPromptRow.test.tsx
-          packages/inbox/boardPage.test.tsx
-          packages/inbox/boardSend.test.tsx
-          packages/inbox/boardOff.test.tsx
-          packages/inbox/soundIntro.test.tsx
-          packages/inbox/soundSettings.test.tsx
-          packages/inbox/notifyHook.test.tsx
-          packages/inbox/notificationStates.test.tsx
-          packages/inbox/attachmentStepping.test.tsx
-          packages/inbox/imageZoom.test.tsx
-          packages/inbox/fullView.test.tsx
-          packages/inbox/phoneStepping.test.tsx
-          packages/inbox/fullScreenThread.test.tsx
-          packages/inbox/sideBySide.test.tsx
-          packages/inbox/attachmentSteppingSave.test.tsx
-          packages/inbox/listColumn.test.tsx
-          packages/inbox/endedSession.test.tsx
-          packages/inbox/compose.test.tsx
-          packages/inbox/listHeaderCompose.test.tsx
-          packages/inbox/composeThread.test.tsx
-          packages/inbox/sendNow.test.tsx
-          packages/inbox/undelivered.test.tsx
-          packages/inbox/tagAgents.test.tsx
-          packages/inbox/restartWarning.test.tsx
-          packages/inbox/pasteFiles.test.tsx
-          packages/inbox/markRead.test.tsx
-          packages/inbox/ack.test.tsx
-          packages/inbox/actionChecklist.test.tsx
-          packages/inbox/wordsOnlyTwoAsks.test.tsx
-          packages/inbox/firstRunNotifications.test.tsx
-          packages/inbox/tour.test.tsx
-          packages/inbox/sentReply.test.tsx
-          packages/inbox/skillHighlightSent.test.ts
-          packages/inbox/threadFoot.test.tsx
-          packages/inbox/replyDrafts.test.tsx
-          packages/inbox/skipNote.test.tsx
-          packages/inbox/picksWhileComposing.test.tsx
-          packages/inbox/projectMenu.test.tsx
-          packages/inbox/rowMenu.test.tsx
-          packages/inbox/pinnedThreads.test.tsx
-          packages/inbox/fileBack.test.tsx
-          packages/inbox/archived.test.tsx
-          packages/inbox/openStaysPut.test.tsx
-          packages/inbox/clickToRefresh.test.tsx
-          packages/inbox/pullToRefresh.test.tsx
-          packages/inbox/threadReadRetry.test.tsx
-          packages/inbox/tabCountWindow.test.tsx
-          packages/inbox/phoneList.test.tsx
-          packages/inbox/listLabels.test.tsx
-          packages/inbox/listRowMemo.test.tsx
-          packages/inbox/rowTicks.test.tsx
-          packages/inbox/guideDiffStyle.test.tsx
-          packages/inbox/componentTooltips.test.tsx
-          packages/inbox/toast.test.tsx
-          packages/inbox/attachmentsHeader.test.tsx
-          packages/inbox/threadArtifacts.test.tsx
-          packages/inbox/sentQuestionLocked.test.tsx
-          packages/inbox/themeToggle.test.tsx
-          packages/inbox/sidebarUpdateDot.test.tsx
-          packages/inbox/updateStuck.test.tsx
-          packages/inbox/palettePicker.test.tsx
-          packages/inbox/textSize.test.tsx
-          packages/inbox/agentNoteDialog.test.tsx
-          packages/inbox/agentsSettings.test.tsx
-          packages/inbox/promptsSettings.test.tsx
-          packages/inbox/connectNextStep.test.tsx
-          packages/inbox/settingsSections.test.tsx
-          packages/inbox/searchPalette.test.tsx
-          packages/inbox/searchShortcut.test.tsx
-          packages/inbox/openIn.test.tsx
-          packages/inbox/htmlLinks.test.tsx
-          packages/inbox/videoAttachment.test.tsx
-          packages/inbox/commentSubmitKey.test.tsx
-          packages/inbox/skillReferences.test.tsx
-          packages/inbox/messageComments.test.tsx
-          packages/ui/components/HumanOnlySkillNotice.test.tsx
-          packages/ui/components/MenuVersionSection.test.tsx
-          packages/ui/components/blocks/QuestionBlock.test.tsx
-          packages/ui/components/blocks/QuestionBlock.pictures.test.tsx
-          packages/ui/components/blocks/QuestionContext.lines.test.tsx
-          packages/ui/components/blocks/QuestionBlock.host.test.tsx
-          packages/ui/components/blocks/QuestionBlock.decisionToggle.test.tsx
-          packages/ui/components/blocks/QuestionBlock.decisionAnyQuestion.test.tsx
-          packages/ui/hooks/useAnnotationHighlighter.questionSkip.test.tsx
-          packages/ui/hooks/usePinpoint.question.test.tsx
-          packages/ui/utils/blockTargeting.blocks.test.tsx
-          packages/ui/components/blocks/BlockquoteBlock.test.tsx
-          packages/ui/components/RenderedMarkdown.hostSeams.test.tsx
-          packages/ui/components/plan-diff/PlanCleanDiffView.seams.test.tsx
-          packages/ui/components/AnnotationPanel.questions.test.tsx
-          packages/ui/hooks/useActiveSection.test.tsx
-          packages/editor/hooks/useQuestionAnswers.test.tsx
-          packages/ui/components/diagram/DiagramViewer.test.tsx
-          packages/ui/utils/diagramAnchor.test.ts
-          packages/ui/utils/diagramAnchorGraphviz.test.ts
-          packages/ui/hooks/useAnnotationHighlighter.diagramSkip.test.tsx
-          packages/ui/hooks/useAnnotationHighlighter.blankSelection.test.tsx
-          packages/ui/components/Viewer.diagramLazyRestore.test.tsx
-          packages/ui/components/Viewer.diagramAnchorHostile.test.tsx
-          packages/ui/components/CommentPopover.skillReferences.test.tsx
-          packages/ui/components/commentSubmitKey.composers.test.tsx
-          packages/ui/components/CommentPopover.mentionChips.test.tsx
-          packages/ui/components/SkillReferenceMenu.placement.test.tsx
-          packages/ui/components/sidebar/FileBrowser.test.ts
-          packages/editor/editableDocumentsHook.test.tsx
-          packages/review-editor/components/ReviewSubmissionDialog.ui.test.tsx
-          packages/review-editor/App.panelView.test.tsx
-          packages/review-editor/App.agentTool.test.tsx
-          packages/review-editor/App.guideViewed.test.tsx
-          packages/review-editor/App.commitsJj.test.tsx
-          packages/review-editor/App.emptyDiffSwitch.test.tsx
-          packages/review-editor/components/AnnotationToolbar.placement.test.tsx
-          packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
-          packages/review-editor/components/FileHeader.edit.test.tsx
-          packages/review-editor/edit/useEditSession.recovery.test.tsx
-          packages/review-editor/edit/discardRestoreRender.test.tsx
-          packages/review-editor/edit/selectionActionPopover.test.ts
-          packages/review-editor/components/AllFilesCodeView.lifecycle.test.tsx
-          packages/review-editor/components/AllFilesCodeView.generated.test.tsx
-          packages/review-editor/components/AllFilesCodeView.autoViewed.test.tsx
-          packages/review-editor/components/AllFilesCodeView.imagePreview.test.tsx
-          packages/review-editor/components/AllFilesCodeView.markdownPreview.test.tsx
-          packages/review-editor/components/AllFilesCodeView.changeNavigation.test.tsx
-          packages/review-editor/components/MarkdownFilePreview.test.tsx
-          packages/review-editor/components/guide/overviewDiagram.test.tsx
-          packages/review-editor/hooks/useMarkdownPreview.test.tsx
-          packages/review-editor/components/MarkdownViewMenu.test.tsx
-          packages/review-editor/components/DiffViewer.compactTouchSelection.test.tsx
-          packages/guide-viewer/GuideSectionCard.test.tsx
-          packages/guide-viewer/GuideSectionCard.fileKinds.test.tsx
-          packages/guide-viewer/GuideView.test.tsx
-          packages/guide-viewer/GuideViewportManager.test.tsx
-          packages/guide-viewer/GuideOverview.test.tsx
-          packages/review-editor/components/guide/GuideExportButton.test.tsx
-          packages/review-editor/hooks/useReviewSearch.test.tsx
-          packages/review-editor/hooks/useTokenHover.test.tsx
-          packages/review-editor/components/TokenHoverCard.test.tsx
-          packages/review-editor/components/TokenHoverAnnouncementDialog.test.tsx
-          packages/review-editor/utils/stitchTokenIdentifier.test.ts
-          packages/review-editor/utils/diffSelection.test.ts
-          packages/review-editor/hooks/useAutoViewed.test.tsx
-          packages/review-editor/hooks/useReviewProgress.test.tsx
-          packages/review-editor/hooks/useCallFlowAnalysis.test.tsx
-          packages/review-editor/hooks/useCallFlowInstall.test.tsx
-          packages/review-editor/hooks/useCallFlowAutoInstall.test.tsx
-          packages/review-editor/dock/panels/ReviewCallFlowPanel.install.test.tsx
-          packages/review-editor/dock/panels/ReviewCallFlowPanel.raw.test.tsx
-          packages/review-editor/components/CallFlowFileBadge.interaction.test.tsx
-          packages/review-editor/components/CallFlowTreeView.interaction.test.tsx
-          packages/review-editor/components/PanelChrome.test.tsx
-          packages/review-editor/components/FileTree.search-placement.test.tsx
-          packages/review-editor/components/FileTree.fileKinds.test.tsx
-          packages/review-editor/components/FileHeader.fileKind.test.tsx
-          packages/review-editor/components/FileTreeNode.controls.test.tsx
-          packages/ui/components/Settings.analysis.test.tsx
-          packages/ui/components/AnnotationPanel.props.test.tsx
-          packages/ui/components/AnnotationPanel.cardHeader.test.tsx
-          packages/ui/components/AnnotationPanel.editMentions.test.tsx
-          packages/ui/components/Viewer.consumer.test.tsx
-          packages/ui/components/Viewer.documentHeader.test.tsx
-          packages/ui/components/Viewer.codeBlockHighlightSwap.test.tsx
-          packages/ui/components/ImageAnnotator/ImageAnnotator.layout.test.tsx
-          packages/ui/components/ImageAnnotator/ImageAnnotator.shortcuts.test.tsx
-          packages/ui/utils/undoHistory.dom.test.ts
-          packages/ui/utils/codeBlockMark.test.ts
-          packages/ui/components/InlineMarkdown.seam.test.tsx
-          packages/ui/components/ImageThumbnail.seam.test.tsx
-          packages/ui/hooks/useAnnotationHighlighter.test.tsx
-          packages/ui/hooks/annotationRestoreVerify.test.tsx
-          packages/ui/hooks/useAnnotationDraft.seam.test.tsx
-          packages/ui/hooks/useExternalAnnotations.seam.test.tsx
-          packages/ui/hooks/useAIChat.seam.test.tsx
-          packages/ui/hooks/useAIChat.supersede.test.tsx
-          packages/ui/hooks/useFileBrowser.seam.test.tsx
-          packages/ui/hooks/usePlanDiff.test.tsx
-          packages/ui/hooks/useLinkedDoc.test.tsx
-          packages/ui/components/DocBadges.test.tsx
-          packages/editor/planDiffAutoExit.test.tsx
-          packages/editor/App.archiveReadOnly.test.tsx
-          packages/editor/App.htmlChrome.test.tsx
-          packages/editor/App.sidebarTabsAgentTerminal.test.tsx
-          packages/editor/App.htmlLinkDraft.test.tsx
-          packages/editor/App.decisionControl.test.tsx
-          packages/editor/App.planDecisionControl.test.tsx
-          packages/editor/App.planRevision.test.tsx
-          packages/editor/App.liveVersion.test.tsx
-          packages/editor/askSessionDrafts.test.tsx
-          packages/editor/askDocumentLatch.test.tsx
-          packages/review-editor/App.decisionControl.test.tsx
-          packages/ui/components/TerminalToolsAnnouncementDialog.test.tsx
-          packages/editor/App.terminalToolsAnnouncement.test.tsx
-          packages/ui/components/AskSessionAnnouncementDialog.test.tsx
-          packages/editor/App.askSessionAnnouncement.test.tsx
-          packages/ui/components/AgentToolAnnouncementDialog.test.tsx
-          packages/ui/components/ServerSessionReplacedBanner.test.tsx
-          packages/editor/App.agentTool.test.tsx
-          packages/ui/hooks/useFirstRunAnnouncementWindow.test.tsx
-          packages/review-editor/components/ReviewSidebar.generalComment.test.tsx
-          packages/review-editor/components/commentSubmitKey.review.test.tsx
-          packages/review-editor/components/ReviewSidebar.outdated.test.tsx
-          packages/ui/components/HtmlSurfaceControls.test.tsx
-          packages/ui/components/AnnotationPanel.unanchored.test.tsx
-          packages/ui/components/AnnotationPanel.breakUi.test.tsx
-          packages/ui/hooks/useHtmlRefresh.test.tsx
-          packages/ui/hooks/useSharing.contentRevision.test.tsx
-          packages/ui/hooks/useSharing.shortUrlLifecycle.test.tsx
-          packages/ui/components/AnnotationToolbar.commentOnly.test.tsx
-          packages/ui/components/AnnotationToolbar.selectionActions.test.tsx
-          packages/ui/components/CommentPopover.mentionSource.test.tsx
-          packages/ui/components/Viewer.mentionSource.test.tsx
-          packages/ui/components/html-viewer/HtmlViewer.mentionSource.test.tsx
-          packages/ui/components/AnnotationToolstrip.test.tsx
-          packages/ui/components/StickyHeaderLane.test.tsx
-          packages/editor/actionsLabelMode.test.ts
-          packages/ui/webmcp/useToolset.seam.test.tsx
-          packages/ui/components/AnnotationPanel.inReplyTo.test.tsx
-          packages/editor/webmcp/useDocumentWebMcp.toggle.test.tsx
-          packages/editor/components/AppHeader.webmcpIndicator.test.tsx
-          packages/ui/components/MathBlock.firstPaint.test.tsx
-          packages/ui/components/DiagramBlock.lazyRetry.test.tsx
-          packages/ui/components/DecisionControl.test.tsx
-          packages/ui/components/DiffFileTree.test.tsx
-          packages/ui/components/ActionMenu.test.tsx
-          packages/ui/components/PlanHeaderMenu.mobile.test.tsx
-          packages/review-editor/components/ReviewHeaderMenu.mobile.test.tsx
-          packages/editor/App.editModeShortcut.test.tsx
-          packages/editor/App.editModeCrossBlockHighlights.test.tsx
-          packages/editor/App.markdownUnanchored.test.tsx
-          packages/editor/App.restoreAcrossEdit.test.tsx
-          packages/editor/App.documentDrafts.test.tsx
-          packages/editor/App.bundle.test.tsx
-          packages/editor/App.bundleBackScroll.test.tsx
-          packages/editor/annotationDraftStaleRetry.test.tsx
-          packages/ui/components/blocks/AlertBlock.title.test.tsx
-          packages/ui/components/blocks/AlertBlock.seam.test.tsx
-          packages/ui/hooks/useFenceTheme.seam.test.tsx
-          packages/ui/components/blocks/AlertBlock.annotation.test.tsx
-          packages/ui/components/Viewer.driftedRestore.test.tsx
-          packages/ui/components/Viewer.crossBlockRestore.test.tsx
-          packages/ui/components/Viewer.restoreMovedAnchors.test.tsx
-          packages/ui/components/Viewer.questionContract.test.tsx
-          packages/ui/components/Viewer.alertDraftRestore.test.tsx
-          packages/ui/components/Viewer.belowTitle.test.tsx
-          packages/ui/utils/belowTitleSlot.test.ts
-          packages/ui/components/AnnotationPanel.allFiles.test.tsx
-          packages/ui/hooks/useLinkedDoc.crossFile.test.tsx
-          packages/ui/hooks/useLinkedDoc.revealSidebar.test.tsx
-          packages/ui/hooks/useLinkedDoc.reapplyFilter.test.tsx
-          packages/ui/hooks/useLinkedDoc.scrollRestore.test.tsx
-          packages/ui/components/html-viewer/htmlLinkProtocol.test.tsx
-          packages/editor/hooks/useAnnotationJump.test.tsx
-          packages/ui/components/TableOfContents.linkedDoc.test.tsx
-          packages/ui/components/CommentPopover.overlayGutter.test.tsx
-          packages/ui/components/CommentPopover.multiTarget.test.tsx
-          packages/ui/aiProviderConfigPersistence.test.tsx
-          packages/ui/components/sidebar/SidebarContainer.mobile.test.tsx
-          packages/ui/components/sidebar/FileBrowser.fileLimit.test.tsx
-          packages/ui/components/ui/mobile-foundation.test.tsx
-          packages/ui/components/Settings.vim.test.tsx
-          packages/ui/components/Settings.annotateParity.test.tsx
-          packages/ui/components/Settings.compactDisplay.test.tsx
-          packages/ui/components/Settings.customFont.test.tsx
-          packages/ui/components/Settings.documentTextSize.test.tsx
-          packages/ui/config/documentTextSizeSetting.test.ts
-          packages/ui/utils/diffFonts.test.ts
-          packages/ui/components/Settings.agentTool.test.tsx
-          packages/ui/components/settings/QuickLabelsTab.test.tsx
-          packages/ui/components/AnnotationToolbar.touchTargets.test.tsx
-          packages/ui/components/AnnotationToolbar.modeShortcutGuard.test.tsx
-          packages/ui/components/PermissionModeSetup.mobile.test.tsx
-          packages/ui/components/html-viewer/useHtmlAnnotation.mintedIds.test.tsx
-          packages/ui/components/LookAndFeelAnnouncementDialog.test.tsx
-          packages/ui/components/CommentPopover.mobile.test.tsx
-          packages/ui/components/CommentPopover.forcedDialog.test.tsx
-          packages/ui/components/ConfirmDialog.mobile.test.tsx
-          packages/ui/components/ThemeProvider.test.tsx
-          packages/ui/components/MarkdownEditor.embedPicker.test.ts
-          packages/ui/hooks/useViewportEnvironment.test.tsx
-          packages/ui/hooks/useIsMobile.test.tsx
-          packages/ui/hooks/useVimDocumentFocus.test.tsx
-          packages/ui/hooks/useScrollKeyRouting.test.tsx
-          packages/ui/hooks/useScrollViewport.test.ts
-          packages/review-editor/components/ExpandedCommentDialog.mobile.test.tsx
-          packages/review-editor/components/DiffTypePicker.openState.test.tsx
-          packages/review-editor/components/EditModeAnnouncementDialog.test.tsx
-          packages/review-editor/components/DestinationSpotlight.test.tsx
-          packages/review-editor/dock/panels/PRArtifactGallery.test.tsx
-          packages/review-editor/dock/panels/artifactDocument.test.ts
-          packages/review-editor/dock/ReviewDockRightActions.test.tsx
-          packages/editor/skillPrimeRenderLoop.test.tsx
-          packages/editor/App.compactToc.mobile.test.tsx
-          packages/editor/App.permissionModeSetup.test.tsx
-          packages/editor/components/CompactPlanStage.test.tsx
-          packages/editor/components/FolderAnnotationEmptyState.test.tsx
-          packages/editor/components/AppHeader.mobile.test.tsx
-          packages/editor/components/AppHeader.documentName.test.tsx
-          packages/editor/components/CompactAnnotationControls.test.tsx
-          packages/editor/components/AnnotateAgentTerminalPanel.displayReset.test.tsx
+      # The DOM list (tests/dom-test-list.txt) is hand-maintained, and every
+      # feature that adds a DOM-gated test file has to remember it — which is
+      # exactly what stopped happening (34 tests guarding shipped controls never
+      # ran). This asserts that every DOM-gated test file in the repo is in the
+      # list or in one of the own-process steps above, so it cannot drift again.
+      # The lane guard holds the matrices below to scripts/ci-test-lane.ts, so
+      # no shard can be dropped without failing here.
+      - name: Guard the DOM test allowlist and the test lanes
+        run: bun test scripts/dom-test-allowlist.test.ts scripts/ci-test-lanes.test.ts
 
-      # The list above is hand-maintained, and every feature that adds a
-      # DOM-gated test file has to remember it — which is exactly what stopped
-      # happening (34 tests guarding shipped controls never ran). This asserts
-      # that every DOM-gated test file in the repo is named in one of the
-      # DOM_TESTS steps of this workflow, so the list cannot drift again.
-      - name: Guard the DOM test allowlist
-        run: bun test scripts/dom-test-allowlist.test.ts
+  # The plain `bun test` sweep, split across jobs (scripts/ci-test-lane.ts).
+  # It took 20-23 min as one process; the longest lane is now about 4 min.
+  # heavy-*: the files that drive real agent processes, one process each.
+  # unit-k: Bun's own --shard=k/N over every other discovered file, so a new
+  # test file always lands in some shard.
+  unit:
+    name: Unit tests (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    # A backstop, not a budget: lanes take about 4-5 min. Some tests run on
+    # fake timers, where bun's per-test timeout cannot fire, so a stuck await
+    # would otherwise idle until GitHub's 6-hour default.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [heavy-mod, heavy-agents, unit-1, unit-2, unit-3, unit-4]
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Pi extension shared copies
+        run: bash apps/pi-extension/vendor.sh
+
+      - name: Run tests
+        env:
+          LANE: ${{ matrix.lane }}
+        run: bun run scripts/ci-test-lane.ts "$LANE"
+
+  # DOM-gated tests: tests/dom-test-list.txt with happy-dom globals, split
+  # across jobs. Files get isolated globals (--isolate) because theme, storage,
+  # and DOM test state must not leak between suites when Bun schedules them
+  # differently across platforms; without it most of the list fails.
+  dom:
+    name: DOM tests (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    # A backstop, not a budget: lanes take about 3-5 min. Some DOM tests run on
+    # fake timers, where bun's per-test timeout cannot fire.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [dom-1, dom-2, dom-3, dom-4, dom-5, dom-6]
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Pi extension shared copies
+        run: bash apps/pi-extension/vendor.sh
+
+      - name: Run DOM tests
+        env:
+          LANE: ${{ matrix.lane }}
+        run: bun run scripts/ci-test-lane.ts "$LANE"
 
   opencode-v2:
     name: OpenCode 2 installed package
@@ -1128,3 +829,30 @@ jobs:
             Set-Content -Path $hostsFile -Value $original -NoNewline
             ipconfig /flushdns | Out-Null
           }
+
+  # One check that stands for the whole workflow: green only when every job
+  # above succeeded. It runs even when one of them failed or was cancelled
+  # (`always()`), so it always reports. A branch rule or a merge script can
+  # require this one name instead of tracking every lane.
+  all-green:
+    name: Test (all green)
+    if: always()
+    needs:
+      - checks
+      - unit
+      - dom
+      - opencode-v2
+      - guides-show
+      - uninstall-windows
+      - pi-extension-ai-runtime-windows
+      - install-cmd-windows
+      - install-ps1-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+          jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null
