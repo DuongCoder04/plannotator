@@ -5,7 +5,10 @@
  * question by picks, skips or the reply's sections; Mark read leaving one open
  * or closing one already on its way; the agent's `done` reaching another
  * thread, a question, or an action item no longer open; a replay that changes any of
- * it.
+ * it. In the reply (approval "inbox-action-items-in-reply"): a staged Done sent
+ * before the person's Send, or left out of it, or its note lost; the row
+ * leaving "Stopped on you" while the Done waits; the agent's own done dropping
+ * the person's note; a reload losing the staged Done.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -60,6 +63,9 @@ function setup(dir?: string) {
   const question = all.find((q) => q.kind !== "action")!;
   return { ...opened, project, asked, action, question };
 }
+
+const pickYes = (store: InboxStore, messageId: string, q: InboxQuestion) =>
+  store.savePicks(messageId, [{ key: q.key, revision: q.revision, answer: { v: 1, key: q.key, kind: q.kind as "single", prompt: q.prompt, selected: ["Yes"] } }]);
 
 const rowOf = (store: InboxStore, threadId: string) => store.listRows().find((r) => r.thread_id === threadId)!;
 const actionOf = (store: InboxStore, messageId: string): InboxQuestion => store.questionsOf(messageId).find((q) => q.kind === "action")!;
@@ -149,6 +155,111 @@ describe("Done and Can't do it", () => {
     const { reply } = store.sendReply(asked.id, { idempotency_key: "k2", words: "Looking now." });
     expect(reply.body).toBe("Looking now.\n\nNo question answered yet; it is still open. Don't re-ask it; the person will answer in the Inbox.");
     expect(actionOf(store, asked.id).state).toBe("open");
+  });
+});
+
+describe("in the reply draft (approval \"inbox-action-items-in-reply\")", () => {
+  test("a staged Done is never sent on a timer: it waits for the Send, the row stays Stopped on you and its draft counts it", () => {
+    const { store, clock, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "picked", action_result: { outcome: "done", by: "person", staged: true } });
+    clock.now += UNDO_MS * 100;
+    expect(store.settleActions(UNDO_MS)).toEqual([]);
+    expect(store.actionsPending()).toBe(0);
+    expect(store.pendingReplies("ses_a")).toEqual([]);
+    // Q2: the question of the same message answered too, so nothing is open; the Done keeps the row in Stopped on you.
+    pickYes(store, asked.id, store.questionsOf(asked.id).find((q) => q.kind !== "action")!);
+    const row = rowOf(store, asked.thread_id);
+    expect(row.questions.open).toBe(0);
+    expect(row.section).toBe("stopped");
+    expect(row.unsent).toMatchObject({ picks: 1, done: 1 });
+  });
+
+  test("the Send carries it and its note: one first line, the section after the answers; marked sent with that reply", () => {
+    const { store, asked, action, question } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Promoted at 3:12.", staged: true });
+    pickYes(store, asked.id, store.questionsOf(asked.id).find((q) => q.key === question.key)!);
+    const { reply } = store.sendReply(asked.id, {
+      idempotency_key: "k1",
+      words: "Go ahead.",
+      questions: [{ key: question.key, revision: store.questionsOf(asked.id).find((q) => q.key === question.key)!.revision }],
+      actions: [{ key: action.key }],
+    });
+    expect(reply.body.startsWith("Answered 1 question, did 1 action item.\n\n")).toBe(true);
+    expect(reply.body).toContain("Go ahead.");
+    const section = reply.body.slice(reply.body.indexOf(`## ${INBOX_ACTIONS_HEADING}`));
+    expect(section.startsWith(`## ${INBOX_ACTIONS_HEADING}\n\n1 of 1 done.\n\n### A1. Approve the production deploy on Vercel\nDone, `)).toBe(true);
+    expect(section).toContain("\nNote: Promoted at 3:12.");
+    // The section goes after everything else: the answers come before it.
+    expect(reply.body.indexOf("## Answers to your questions")).toBeLessThan(reply.body.indexOf(`## ${INBOX_ACTIONS_HEADING}`));
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "sent", sent_reply_id: reply.id });
+    expect(rowOf(store, asked.thread_id).section).not.toBe("stopped");
+    // Sent once: a second Send naming it carries nothing of it.
+    const again = store.sendReply(asked.id, { idempotency_key: "k2", words: "Thanks.", actions: [{ key: action.key }] }).reply;
+    expect(again.body).not.toContain(INBOX_ACTIONS_HEADING);
+  });
+
+  test("Can't do it alone opens the reply with its own sentence; taking a Done back leaves it out", () => {
+    const { store, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "cant", note: "I'm not an org owner.", staged: true });
+    const { reply } = store.sendReply(asked.id, { idempotency_key: "k1", words: "", actions: [{ key: action.key }] });
+    expect(reply.body.startsWith("Couldn't do 1 action item.\n\n")).toBe(true);
+    // The question still open is the reply's own line; the section goes last.
+    expect(reply.body.endsWith(`## ${INBOX_ACTIONS_HEADING}\n\n0 of 1 done.\n\n### A1. Approve the production deploy on Vercel\nCan't do it: I'm not an org owner.`)).toBe(true);
+
+    const b = setup();
+    b.store.markAction(b.asked.id, b.action.key, { outcome: "done", staged: true });
+    b.store.markAction(b.asked.id, b.action.key, { outcome: null, staged: true });
+    expect(actionOf(b.store, b.asked.id)).toMatchObject({ state: "open", action_result: null });
+    const words = b.store.sendReply(b.asked.id, { idempotency_key: "k1", words: "Later.", actions: [{ key: b.action.key }] }).reply;
+    expect(words.body).not.toContain(INBOX_ACTIONS_HEADING);
+    expect(actionOf(b.store, b.asked.id).state).toBe("open");
+  });
+
+  test("Q3: the agent's own done settles a staged Done; the person's note still goes with their Send", () => {
+    const { store, project, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Promoted from the CLI.", staged: true });
+    const ref = `${asked.id}/${action.key}`;
+    const seen = store.sendMessage({ project_id: project.id, author: AGENT, body: "The deployment is Ready.", reply_to: asked.id, done: [ref] });
+    expect(seen.done).toEqual([ref]);
+    expect(actionOf(store, asked.id)).toMatchObject({
+      state: "closed",
+      action_result: { outcome: "done", by: "agent", message_id: seen.message.id, person: { outcome: "done", note: "Promoted from the CLI." } },
+    });
+    // The note waits in the draft.
+    expect(rowOf(store, asked.thread_id).unsent).toMatchObject({ done: 1 });
+    const { reply } = store.sendReply(seen.message.id, { idempotency_key: "k1", words: "", actions: [{ message_id: asked.id, key: action.key }] });
+    expect(reply.body).toContain("### A1. Approve the production deploy on Vercel\nYou saw it done, ");
+    expect(reply.body).toContain("\nNote: Promoted from the CLI.");
+    expect(reply.body.startsWith("Did 1 action item.")).toBe(true);
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "closed", sent_reply_id: reply.id });
+    expect(rowOf(store, asked.thread_id).unsent?.done ?? 0).toBe(0);
+  });
+
+  test("the agent's done over a staged Done with no note leaves nothing in the draft; a timed mark still refuses it", () => {
+    const { store, project, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.sendMessage({ project_id: project.id, author: AGENT, body: "Ready.", reply_to: asked.id, done: [`${asked.id}/${action.key}`] });
+    expect(rowOf(store, asked.thread_id).unsent?.done ?? 0).toBe(0);
+    const { reply } = store.sendReply(asked.id, { idempotency_key: "k1", words: "Thanks.", actions: [{ key: action.key }] });
+    expect(reply.body).not.toContain(INBOX_ACTIONS_HEADING);
+  });
+
+  test("a reload from disk keeps the staged Done and its note, still in the draft", () => {
+    const first = setup();
+    first.store.markAction(first.asked.id, first.action.key, { outcome: "done", note: "Approved.", staged: true });
+    const again = open(first.dir);
+    expect(actionOf(again.store, first.asked.id)).toMatchObject({ state: "picked", action_result: { outcome: "done", note: "Approved.", staged: true } });
+    expect(rowOf(again.store, first.asked.thread_id)).toMatchObject({ section: "stopped", unsent: { done: 1 } });
+    expect(again.store.settleActions(0)).toEqual([]);
+  });
+
+  test("Mark read leaves a staged Done in the draft", () => {
+    const { store, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.markRead(asked.thread_id, true);
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "picked", action_result: { staged: true } });
   });
 });
 

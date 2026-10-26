@@ -6,22 +6,32 @@
  * Holds up badge; one row per item, a round tick (Done), the task and a
  * chevron. Rows are disclosures and one is open at a time (the first open item
  * to start with): why, what it holds up in words, Open for its link, the whole
- * command with Copy, then Done / Can't do it… / Add note…. Done and Can't do
- * it are recorded at once and go to the agent after a 10 s Undo window (as
- * 👍 Looks good): nothing is sent inside the window.
+ * command with Copy, then Done / Can't do it….
+ *
+ * Done and Can't do it go into the person's reply draft, like a pick
+ * (approval "inbox-action-items-in-reply", 2026-10-26): recorded at once, sent
+ * only with their Send, under "Action items you asked for". The marked row
+ * shows a note field ("Add a note for <agent>") and "Done 3:12 PM · in your
+ * draft"; the tick takes the mark back. No timer, no toast. A mark made
+ * through the timed path (decision mode, the phone door) still shows its
+ * "Goes to <agent> in a few seconds" line and Undo.
  */
 
 import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { InboxQuestion } from '@plannotator/core/inbox-types';
+import { inboxActionInDraft, inboxActionPersonMark, type InboxQuestion } from '@plannotator/core/inbox-types';
 import { INBOX_ACTION_NOTE_MAX } from '@plannotator/core/inbox-actions';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { actionCardState, type ActionCardState } from '../actions';
 import { clockTime } from '../format';
 import { Icon } from '../icons';
+import { trackActionSave } from '../actionSaves';
 
+/** A Done or Can't do it as the window marks it: always into the reply draft (`staged` on the wire). */
 export interface ActionMark {
   outcome: 'done' | 'cant';
   note?: string | null;
+  /** A note typed under the marked row: saved without a word for a screen reader. */
+  quiet?: boolean;
 }
 
 export interface ActionChecklistProps {
@@ -31,7 +41,7 @@ export interface ActionChecklistProps {
   agent: string;
   /** No Done (the thread is archived, a test). */
   readOnly?: boolean;
-  /** Done or Can't do it (`mark`), or the Undo (`null`). Resolves false when it was refused. */
+  /** Done or Can't do it into the reply draft (`mark`), or taking it back (`null`). Resolves false when it was refused. */
   onMark: (action: InboxQuestion, mark: ActionMark | null) => Promise<boolean>;
 }
 
@@ -80,12 +90,11 @@ export function ActionChecklist({ actions, agent, readOnly = false, onMark }: Ac
     : holds > 0
       ? { label: `Holds up ${holds}`, className: 'ib-badge ib-b-hold' }
       : null;
-  // What the agent watches, for the items still waiting (open, or inside their Undo window): a settled or replaced item's watch is over.
+  // What the agent watches, for the items it still waits on (open, or marked and not sent): a settled or replaced item's watch is over.
   const watching = useMemo(
     () => [...new Set(actions.filter((_, i) => states[i] === 'open' || states[i] === 'pending').map((a) => a.action?.watching).filter((w): w is string => !!w))],
     [actions],
   );
-  const hint = !readOnly && openItems.length > 0;
 
   // One row open at a time: the first open item to start with.
   const [openKey, setOpenKey] = useState<string | null>(() => openItems[0]?.key ?? null);
@@ -155,17 +164,11 @@ export function ActionChecklist({ actions, agent, readOnly = false, onMark }: Ac
           />
         ))}
       </ul>
-      {(watching.length > 0 || hint) && (
+      {watching.length > 0 && (
         <p className="ib-chk-foot" data-action-foot="">
-          {watching.length > 0 && <Icon name="eye" />}
-          <span>
-            {watching.length > 0 && (
-              <span data-action-watching="">
-                {agent} is watching: {sentence(watching.join('; '))}
-              </span>
-            )}
-            {watching.length > 0 && hint && ' '}
-            {hint && <span data-action-hint="">Done reaches {agent} after 10 s, so you can undo.</span>}
+          <Icon name="eye" />
+          <span data-action-watching="">
+            {agent} is watching: {sentence(watching.join('; '))}
           </span>
         </p>
       )}
@@ -189,8 +192,12 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
   const result = action.action_result ?? null;
   const live = state === 'open';
   const pending = state === 'pending';
+  /** The person's mark waits in their reply draft: their Done or Can't do it, or (the agent saw it done) their note. */
+  const inDraft = inboxActionInDraft(action);
+  /** Marked through the timed path (decision mode, the phone door): sent once its Undo window passes. */
+  const timed = pending && result?.staged !== true;
   const doneLike = isDoneState(action, state);
-  const [composing, setComposing] = useState<'note' | 'cant' | null>(null);
+  const [composing, setComposing] = useState<'cant' | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<'ok' | 'failed' | null>(null);
@@ -210,7 +217,7 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
     if (busy) return;
     setBusy(true);
     try {
-      const ok = await onMark(next, from);
+      const ok = await trackActionSave(onMark(next, from));
       if (ok) {
         setComposing(null);
         setText('');
@@ -228,15 +235,16 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
   };
 
   const when = result ? clockTime(result.at) : '';
+  const mine = inboxActionPersonMark(result);
   const chip = pending
     ? result?.outcome === 'cant'
       ? CHIP.cant
       : CHIP.done
     : CHIP[state];
 
-  // The line under the task while it can still be undone, and for a reason the person gave.
+  // The line under the task: a timed mark's Undo, a reason the person sent, the agent's own done over a note in the draft.
   const underLine = (() => {
-    if (pending && result) {
+    if (timed && result) {
       return (
         <>
           <span>
@@ -252,12 +260,15 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
         </>
       );
     }
-    if (state === 'cant' && result) return <span>Can't do it: “{result.note ?? ''}” Sent to {agent}.</span>;
+    if (state === 'cant' && result) return <span>Can't do it: “{result.note ?? ''}” Sent to {agent}{result.staged ? ' with your reply' : ''}.</span>;
+    if (state === 'seen' && result && inDraft) return <span>{agent} saw it done, {when}.</span>;
     return null;
   })();
   // The settled line inside the open row.
   const settled = (() => {
-    if (state === 'done' && result) return `You marked it done, ${when}${result.note ? ' with a note' : ''}. Sent to ${agent}.`;
+    if (state === 'done' && result) return `You marked it done, ${when}${result.note ? ' with a note' : ''}. Sent to ${agent}${result.staged ? ' with your reply' : ''}.`;
+    if (state === 'seen' && result && inDraft) return null;
+    if (state === 'seen' && result && mine?.note) return `${agent} saw it done, ${when}. Your note went with your reply.`;
     if (state === 'seen' && result) return `${agent} saw it done, ${when}.`;
     if (state === 'set-aside') return `Set aside when you marked the thread read. ${agent} was told not to wait.`;
     if (state === 'replaced') return `${agent} replaced this action item.`;
@@ -329,6 +340,15 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
           {underLine}
         </p>
       )}
+      {inDraft && mine && (
+        <DraftNote
+          mark={mine}
+          seen={state === 'seen'}
+          agent={agent}
+          readOnly={readOnly}
+          onSave={(next) => trackActionSave(onMark(next, 'tick'))}
+        />
+      )}
       <div className="ib-chk-panel" id={panelId} hidden={!open} data-action-panel="">
         {action.context && <p className="ib-chk-why">{action.context}</p>}
         {live && action.stopped !== null && (
@@ -381,7 +401,7 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
         )}
         {live && !readOnly && (composing ? (
           <div className="ib-chk-compose">
-            <label htmlFor={noteId}>{composing === 'cant' ? `Why can't you? ${agent} gets this word for word.` : `A note for ${agent} (optional)`}</label>
+            <label htmlFor={noteId}>{`Why can't you? ${agent} gets this word for word.`}</label>
             <textarea
               id={noteId}
               ref={areaRef}
@@ -399,22 +419,15 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
               }}
             />
             <div className="ib-chk-acts">
-              {composing === 'cant' ? (
-                <button
-                  type="button"
-                  className="ib-btn ib-sm ib-pri"
-                  data-action-cant-send=""
-                  disabled={busy || text.trim() === ''}
-                  onClick={() => void mark({ outcome: 'cant', note: text.trim() }, 'panel')}
-                >
-                  Send “Can't do it”
-                </button>
-              ) : (
-                <button type="button" className="ib-btn ib-sm ib-pri" data-action-done="" disabled={busy} onClick={() => void mark({ outcome: 'done', note: text.trim() || null }, 'panel')}>
-                  <Icon name="check" />
-                  Done
-                </button>
-              )}
+              <button
+                type="button"
+                className="ib-btn ib-sm ib-pri"
+                data-action-cant-send=""
+                disabled={busy || text.trim() === ''}
+                onClick={() => void mark({ outcome: 'cant', note: text.trim() }, 'panel')}
+              >
+                Can't do it
+              </button>
               <button type="button" className="ib-btn ib-sm ib-ghost" onClick={() => setComposing(null)}>
                 Cancel
               </button>
@@ -429,12 +442,89 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
             <button type="button" className="ib-btn ib-sm ib-ghost" data-action-cant="" disabled={busy} onClick={() => setComposing('cant')}>
               Can't do it…
             </button>
-            <button type="button" className="ib-btn ib-sm ib-ghost" data-action-note="" disabled={busy} onClick={() => setComposing('note')}>
-              Add note…
-            </button>
           </div>
         ))}
       </div>
     </li>
+  );
+}
+
+/**
+ * A mark waiting in the reply draft, under its row (approval
+ * "inbox-action-items-in-reply"): the note for the agent, saved as it is
+ * typed (and on leaving the field, so a Send right after carries it), then
+ * "Done 3:12 PM · in your draft", the question card's own words for a pick.
+ * Can't do it's note is its reason, so it never empties. `seen`: the agent saw
+ * the item done itself, and the note is what still goes (Q3).
+ */
+function DraftNote({
+  mark,
+  seen,
+  agent,
+  readOnly,
+  onSave,
+}: {
+  mark: { outcome: 'done' | 'cant'; note: string | null; at: string };
+  seen: boolean;
+  agent: string;
+  readOnly: boolean;
+  onSave: (mark: ActionMark | null) => Promise<boolean>;
+}) {
+  const [text, setText] = useState(mark.note ?? '');
+  const saved = useRef(mark.note ?? '');
+  const timer = useRef<number | null>(null);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const noteId = useId();
+  const cant = mark.outcome === 'cant';
+  const save = (value: string) => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    const note = value.trim();
+    if (note === saved.current.trim() || (cant && note === '')) return;
+    saved.current = note;
+    // The agent saw it done: an emptied note leaves nothing of the person's to send.
+    void onSave(seen && note === '' ? null : { outcome: mark.outcome, note: note || null, quiet: true });
+  };
+  // Grows with its words: one line until there are more.
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text]);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  return (
+    <div className="ib-chk-draft" data-action-draft="">
+      <label className="ib-chk-sr" htmlFor={noteId}>
+        {cant ? `Why you can't, for ${agent}` : `A note for ${agent}`}
+      </label>
+      <textarea
+        id={noteId}
+        ref={areaRef}
+        className="ib-chk-dnote"
+        data-action-draft-note=""
+        rows={1}
+        value={text}
+        readOnly={readOnly}
+        maxLength={INBOX_ACTION_NOTE_MAX}
+        placeholder={`Add a note for ${agent}`}
+        onChange={(event) => {
+          const value = event.target.value;
+          setText(value);
+          if (timer.current !== null) window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => save(value), 600);
+        }}
+        onBlur={() => save(text)}
+      />
+      <p className="ib-chk-dline" data-action-draft-line="">
+        {seen ? 'Your note' : cant ? "Can't do it" : 'Done'}
+        {seen ? '' : ` ${clockTime(mark.at)}`} · in your draft
+      </p>
+    </div>
   );
 }

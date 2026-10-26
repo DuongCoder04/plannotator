@@ -637,13 +637,18 @@ export const inboxApi = {
     }).then((result) => ({ ...result, questions: questionsOnly(result.questions) })),
   /**
    * An action item's Done (with an optional note) or Can't do it (with the reason),
-   * or its Undo (`null`): sent to the agent once the Undo window passes.
-   * Answers the message's action items.
+   * or taking it back (`null`). `staged` (the thread's checklist; approval
+   * "inbox-action-items-in-reply"): it waits in the reply draft and goes with the
+   * Send (`reply`'s `actions`). Without it (decision mode): sent to the agent once
+   * the Undo window passes. Answers the message's action items.
    */
-  markAction: (messageId: string, key: string, mark: { outcome: 'done' | 'cant'; note?: string | null } | null) =>
+  markAction: (messageId: string, key: string, mark: { outcome: 'done' | 'cant'; note?: string | null } | null, staged = false) =>
     post<{ questions: InboxQuestion[] }>(
       `/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`,
-      mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}) } : { outcome: null },
+      {
+        ...(mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}) } : { outcome: null }),
+        ...(staged ? { staged: true } : {}),
+      },
     ).then((result) => ({ actions: result.questions.filter(isActionRecord) })),
   reply: (
     messageId: string,
@@ -661,6 +666,8 @@ export const inboxApi = {
        * `message_id`) another of the same session. A Send never skips anything else.
        */
       skip?: { message_id?: string; key: string }[];
+      /** The action items whose Done or Can't do it waits in the draft (approval "inbox-action-items-in-reply"); one on another message of the same session names it. */
+      actions?: { message_id?: string; key: string }[];
       /** Files pasted into the reply box (upload ids): attachments on this reply. */
       uploads?: string[];
       /** The sessions the person tagged with `@` (approval "inbox-tag-agents"): each one gets this reply too. */

@@ -2540,16 +2540,19 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json(result);
       }
 
-      // An action item (approval "inbox-next-actions"): the person's Done (with an
-      // optional note) or Can't do it (with a reason), sent to the agent once
-      // the Undo window passes; `{ outcome: null }` is the Undo.
+      // An action item: the person's Done (with an optional note) or Can't do it
+      // (with a reason). `staged: true` (the window; approval
+      // "inbox-action-items-in-reply") puts it in the reply draft, sent with the
+      // person's Send; without it (approval "inbox-next-actions") it is sent once
+      // the Undo window passes. `{ outcome: null }` takes it back.
       const actionMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/actions\/(a-[0-9a-f]{8}(?:-\d{1,3})?)$/.exec(path);
       if (actionMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note });
-        if (body.outcome !== null) scheduleActionSettle();
+        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note, staged: body.staged });
+        // A staged mark waits for the person's Send: no timer.
+        if (body.outcome !== null && body.staged !== true) scheduleActionSettle();
         return json({ questions });
       }
 
@@ -2678,6 +2681,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 // The questions the person chose to skip ("Skip them"): only these. The old
                 // `skip_unanswered` flag is ignored (approval "inbox-explicit-skip", 2026-10-21).
                 skip: body.skip,
+                actions: body.actions,
               });
             } catch (error) {
               removeInboxAttachmentFiles(store.dir, attachments);
