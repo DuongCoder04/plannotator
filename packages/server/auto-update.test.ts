@@ -30,6 +30,7 @@ import {
 } from "./auto-update";
 import { RELEASE_API_FALLBACK_INTERVAL_MS, RELEASE_CHECK_RETRY_MS } from "@plannotator/shared/update-check";
 import { sweepStaleUpdateDirs } from "./update-prepare";
+import { UPDATE_EXIT_CHECKSUM_MISMATCH as MISMATCH } from "@plannotator/core/update-exit-codes";
 import type { SessionInfo } from "./sessions";
 
 const NOW = 1_800_000_000_000;
@@ -232,9 +233,9 @@ describe("safe-update failures in the notice", () => {
   const bg = { version: "0.28.0", fromVersion: "0.27.22", startedAt: NOW };
   const person = { ...bg, by: "person" as const };
 
-  test("a mismatch (exit 3) is shown once per version, whatever the attempt", () => {
-    const a = deriveAutoUpdateNotice({ pending: bg }, { version: "v0.28.0", exitCode: 3 }, "0.27.22", "/d/update.log");
-    const b = deriveAutoUpdateNotice({ pending: { ...bg, startedAt: NOW + 5 } }, { version: "v0.28.0", exitCode: 3 }, "0.27.22", "/d/update.log");
+  test("a mismatch is shown once per version, whatever the attempt", () => {
+    const a = deriveAutoUpdateNotice({ pending: bg }, { version: "v0.28.0", exitCode: MISMATCH }, "0.27.22", "/d/update.log");
+    const b = deriveAutoUpdateNotice({ pending: { ...bg, startedAt: NOW + 5 } }, { version: "v0.28.0", exitCode: MISMATCH }, "0.27.22", "/d/update.log");
     expect(a).toMatchObject({ kind: "failed", reason: "mismatch" });
     expect(a!.id).toBe(b!.id);
   });
@@ -262,28 +263,28 @@ describe("mismatch back-off (1, 3, then 7 days)", () => {
   }
 
   test("each mismatch waits longer; the window is spent while it waits, so nothing loops", async () => {
-    expect(await attempt(NOW, 3)).toBe("launched");
+    expect(await attempt(NOW, MISMATCH)).toBe("launched");
     // 1 day: the next daily check tries again.
-    expect(await attempt(NOW + DAY, 3)).toBe("launched");
+    expect(await attempt(NOW + DAY, MISMATCH)).toBe("launched");
     expect(readAutoUpdateState(dataDir).mismatchBackoff).toEqual({ version: "0.28.0", attempts: 1, lastAttemptAt: NOW });
     // Second mismatch: 3 days from it.
-    expect(await attempt(NOW + 2 * DAY, 3)).toBe("backed-off");
+    expect(await attempt(NOW + 2 * DAY, MISMATCH)).toBe("backed-off");
     // A back-off spends the 24 h window: the same day asks nothing more.
-    expect(await attempt(NOW + 2 * DAY + 60_000, 3)).toBe("throttled");
-    expect(await attempt(NOW + 3 * DAY, 3)).toBe("backed-off");
-    expect(await attempt(NOW + 4 * DAY, 3)).toBe("launched");
+    expect(await attempt(NOW + 2 * DAY + 60_000, MISMATCH)).toBe("throttled");
+    expect(await attempt(NOW + 3 * DAY, MISMATCH)).toBe("backed-off");
+    expect(await attempt(NOW + 4 * DAY, MISMATCH)).toBe("launched");
     // Third: 7 days, and 7 after that.
-    expect(await attempt(NOW + 10 * DAY, 3)).toBe("backed-off");
-    expect(await attempt(NOW + 11 * DAY, 3)).toBe("launched");
-    expect(await attempt(NOW + 17 * DAY, 3)).toBe("backed-off");
-    expect(await attempt(NOW + 18 * DAY, 3)).toBe("launched");
+    expect(await attempt(NOW + 10 * DAY, MISMATCH)).toBe("backed-off");
+    expect(await attempt(NOW + 11 * DAY, MISMATCH)).toBe("launched");
+    expect(await attempt(NOW + 17 * DAY, MISMATCH)).toBe("backed-off");
+    expect(await attempt(NOW + 18 * DAY, MISMATCH)).toBe("launched");
     expect(readAutoUpdateState(dataDir).mismatchBackoff?.attempts).toBe(4);
     expect(launches).toHaveLength(5);
   });
 
   test("a newer release is tried at once, and other failures never back off", async () => {
-    expect(await attempt(NOW, 3)).toBe("launched");
-    expect(await attempt(NOW + DAY, 3)).toBe("launched");
+    expect(await attempt(NOW, MISMATCH)).toBe("launched");
+    expect(await attempt(NOW + DAY, MISMATCH)).toBe("launched");
     // v0.28.1 ships: the hold on 0.28.0 does not apply to it.
     const newer = await runAutoUpdateCheck(deps({ now: () => NOW + 2 * DAY, fetchLatestTag: async () => "v0.28.1" }));
     expect(newer).toBe("launched");
@@ -296,15 +297,15 @@ describe("mismatch back-off (1, 3, then 7 days)", () => {
 
   test("the same attempt is counted once, however many checks read its result", () => {
     const state = { pending: { version: "0.28.0", fromVersion: "0.27.22", startedAt: NOW } };
-    const first = noteMismatchResult(state, { version: "v0.28.0", exitCode: 3 });
+    const first = noteMismatchResult(state, { version: "v0.28.0", exitCode: MISMATCH });
     expect(first).toEqual({ version: "0.28.0", attempts: 1, lastAttemptAt: NOW });
-    expect(noteMismatchResult({ ...state, mismatchBackoff: first }, { version: "v0.28.0", exitCode: 3 })).toBe(first);
+    expect(noteMismatchResult({ ...state, mismatchBackoff: first }, { version: "v0.28.0", exitCode: MISMATCH })).toBe(first);
   });
 
   test("Update now ignores the back-off", async () => {
-    expect(await attempt(NOW, 3)).toBe("launched");
-    expect(await attempt(NOW + DAY, 3)).toBe("launched");
-    expect(await attempt(NOW + 2 * DAY, 3)).toBe("backed-off");
+    expect(await attempt(NOW, MISMATCH)).toBe("launched");
+    expect(await attempt(NOW + DAY, MISMATCH)).toBe("launched");
+    expect(await attempt(NOW + 2 * DAY, MISMATCH)).toBe("backed-off");
     const r = startManualUpdate({
       currentVersion: "0.27.22",
       dataDir,

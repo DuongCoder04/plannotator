@@ -9,17 +9,16 @@
  *
  *   1. download the install script (https://plannotator.ai/install.sh, or the
  *      PLANNOTATOR_INSTALL_SCRIPT_URL test/mirror knob) and the `.sha256` of
- *      both binaries this OS's install script may pick (it picks the CPU type
- *      itself, with `uname -m`, which can differ from this process's arch
- *      under Rosetta);
+ *      the binary install.sh will pick on this machine (required), plus the
+ *      other CPU type's when it can be read (optional);
  *   2. write the script and `expected-sha256` into a private temp dir (0700,
  *      files 0600) and print that dir.
  *
  * The POSIX update wrapper (auto-update.ts) runs it as `plannotator
  * update-prepare <version>`, then runs the saved script with
  * PLANNOTATOR_EXPECTED_SHA256, which install.sh compares its own download
- * against before it replaces anything (exit 3 on a mismatch, the old binary
- * kept). Any failure here means nothing runs and nothing changes: exit
+ * against before it replaces anything (exit UPDATE_CHECKSUM_MISMATCH on a
+ * mismatch, the old binary kept). Any failure here means nothing runs and nothing changes: exit
  * UPDATE_PREPARE_FAILED, an `update:` line on stderr (update.log), and a
  * later retry. There is never a fallback to downloading the script with curl.
  *
@@ -55,6 +54,17 @@ export function candidateAssets(platform: NodeJS.Platform): string[] {
   return [`plannotator-${os}-arm64`, `plannotator-${os}-x64`];
 }
 
+/**
+ * The binary install.sh will pick on this machine. It reads `uname -m` with
+ * no Rosetta detection, and a child of this process sees the same CPU type
+ * this process runs as (an x64 build under Rosetta: x86_64), so it is
+ * `process.arch`. Null for a CPU type install.sh does not ship.
+ */
+export function nativeAsset(platform: NodeJS.Platform, arch: string): string | null {
+  if (arch !== "arm64" && arch !== "x64") return null;
+  return `plannotator-${platform === "darwin" ? "darwin" : "linux"}-${arch}`;
+}
+
 /** Where release assets download from: PLANNOTATOR_RELEASE_DOWNLOAD_URL (`https:` or loopback `http:`), else GitHub. */
 export function releaseDownloadUrl(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.PLANNOTATOR_RELEASE_DOWNLOAD_URL?.trim().replace(/\/+$/, "");
@@ -62,12 +72,15 @@ export function releaseDownloadUrl(env: NodeJS.ProcessEnv = process.env): string
 }
 
 export type PrepareResult =
-  | { ok: true; dir: string; expected: string; scriptChecksPin: boolean }
+  /** `notes`: the other CPU type's checksum, when it could not be read (optional; never a failure). */
+  | { ok: true; dir: string; expected: string; scriptChecksPin: boolean; notes: string[] }
   | { ok: false; error: string };
 
 export interface PrepareDeps {
   version: string;
   platform: NodeJS.Platform;
+  /** This process's CPU type (default `process.arch`): its checksum is required, the other one's is not. */
+  arch?: string;
   env?: NodeJS.ProcessEnv;
   tmpRoot?: string;
   fetchImpl?: typeof fetch;
@@ -104,7 +117,12 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
   if (!tag) return { ok: false, error: `not a release version: ${deps.version}` };
   if (deps.platform === "win32") return { ok: false, error: "Windows updates do not use this step" };
 
-  const assets = candidateAssets(deps.platform);
+  const native = nativeAsset(deps.platform, deps.arch ?? process.arch);
+  if (!native) return { ok: false, error: `no Plannotator build for this CPU type (${deps.arch ?? process.arch})` };
+  // The native first: it is required. The other CPU type's checksum is only
+  // pinned when it can be read, so a release that stops shipping one CPU type
+  // never stops updates for the other.
+  const assets = [native, ...candidateAssets(deps.platform).filter((a) => a !== native)];
   const base = releaseDownloadUrl(env);
   const [script, ...sums] = await Promise.all([
     fetchText(installScriptUrl(deps.platform, env), f, timeoutMs),
@@ -116,12 +134,17 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
     return { ok: false, error: "install script: the download is not Plannotator's install script" };
   }
   const pairs: string[] = [];
+  const notes: string[] = [];
   for (let i = 0; i < assets.length; i++) {
     const r = sums[i]!;
-    if (!r.ok) return { ok: false, error: `${assets[i]}.sha256: ${r.error}` };
-    const m = /^([0-9a-fA-F]{64})(?:\s|$)/.exec(r.text);
-    if (!m) return { ok: false, error: `${assets[i]}.sha256: not a SHA-256 checksum` };
-    pairs.push(`${assets[i]}=${m[1]!.toLowerCase()}`);
+    const m = r.ok ? /^([0-9a-fA-F]{64})(?:\s|$)/.exec(r.text) : null;
+    if (m) {
+      pairs.push(`${assets[i]}=${m[1]!.toLowerCase()}`);
+      continue;
+    }
+    const reason = `${assets[i]}.sha256: ${r.ok ? "not a SHA-256 checksum" : r.error}`;
+    if (assets[i] === native) return { ok: false, error: reason };
+    notes.push(`${reason} (not this machine's CPU type; skipped)`);
   }
 
   let dir: string | null = null;
@@ -130,7 +153,7 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
     chmodSync(dir, 0o700);
     writeFileSync(join(dir, "install.sh"), body, { mode: 0o600 });
     writeFileSync(join(dir, "expected-sha256"), pairs.join(" "), { mode: 0o600 });
-    return { ok: true, dir, expected: pairs.join(" "), scriptChecksPin: body.includes("PLANNOTATOR_EXPECTED_SHA256") };
+    return { ok: true, dir, expected: pairs.join(" "), scriptChecksPin: body.includes("PLANNOTATOR_EXPECTED_SHA256"), notes };
   } catch (err) {
     if (dir) rmSync(dir, { recursive: true, force: true });
     return { ok: false, error: `could not stage the update: ${err instanceof Error ? err.message : String(err)}` };
@@ -188,6 +211,7 @@ export async function runUpdatePrepareCommand(args: string[], deps: UpdatePrepar
     err(`update: could not download the update (${result.error}); nothing was changed\n`);
     return UPDATE_PREPARE_FAILED;
   }
+  for (const note of result.notes) err(`update: ${note}\n`);
   if (!result.scriptChecksPin) {
     err("update: this install script does not check the pinned checksum yet; it runs as before\n");
   }

@@ -14,6 +14,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -2468,8 +2469,9 @@ describe.skipIf(process.platform === "win32" || !Bun.which("node"))(
 // Safe updates (step 1): Plannotator's own updater downloads this script and
 // the .sha256 of both binaries with its own connection, and hands them over in
 // PLANNOTATOR_EXPECTED_SHA256. The script must compare its download against
-// that value before anything is replaced, exit 3 on a mismatch, and keep the
-// installed binary. Without the variable it behaves exactly as before.
+// that value before anything is replaced, exit 113 on a mismatch (after
+// marking it in the updater's PLANNOTATOR_UPDATE_MISMATCH_FILE), and keep the
+// installed binary. Without the variables it behaves exactly as before.
 describe.skipIf(process.platform === "win32" || !Bun.which("node"))(
   "install.sh PLANNOTATOR_EXPECTED_SHA256 (safe updates)",
   () => {
@@ -2482,7 +2484,7 @@ describe.skipIf(process.platform === "win32" || !Bun.which("node"))(
     const other = `plannotator-${os}-${arch === "x64" ? "arm64" : "x64"}`;
     const OLD = "#!/bin/sh\necho plannotator-old\n";
 
-    function run(pin: string | undefined, opts: { servedChecksum?: string } = {}) {
+    function run(pin: string | undefined, opts: { servedChecksum?: string; marker?: string } = {}) {
       const sandbox = setupInstallSandbox({ gh: "pass-all", binary });
       const installed = join(sandbox.home, ".local", "bin", "plannotator");
       mkdirSync(join(sandbox.home, ".local", "bin"), { recursive: true });
@@ -2491,6 +2493,7 @@ describe.skipIf(process.platform === "win32" || !Bun.which("node"))(
       const env: Record<string, string> = { STUB_CURL_LOG: log };
       if (pin !== undefined) env.PLANNOTATOR_EXPECTED_SHA256 = pin;
       if (opts.servedChecksum) env.STUB_CHECKSUM = opts.servedChecksum;
+      if (opts.marker) env.PLANNOTATOR_UPDATE_MISMATCH_FILE = opts.marker;
       const result = runInstallSh(sandbox, args, env);
       const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
       return { ...result, calls, installed: readFileSync(installed, "utf8"), checksum: sandbox.binaryChecksum! };
@@ -2507,21 +2510,45 @@ describe.skipIf(process.platform === "win32" || !Bun.which("node"))(
     });
 
     test("the pin is read for this machine's CPU type only, and in any letter case", () => {
-      expect(run(`${mine}=${sha(binary).toUpperCase()} ${other}=${"f".repeat(64)}`).code).toBe(0);
+      // Upper case is the pin itself (no fallback to the .sha256): it says so.
+      const upper = run(`${mine}=${sha(binary).toUpperCase()} ${other}=${"f".repeat(64)}`);
+      expect(upper.code).toBe(0);
+      expect(upper.out).toContain("Checksum matches the one Plannotator fetched for v99.9.9.");
+      expect(fetchedSha256(upper.calls)).toBe(false);
       // Only the other CPU type matches: this one is a mismatch.
       const r = run(`${mine}=${"f".repeat(64)} ${other}=${sha(binary)}`);
-      expect(r.code).toBe(3);
+      expect(r.code).toBe(113);
     });
 
-    test("tamper: a download that differs from the pin exits 3 and keeps the installed binary", () => {
+    test("only this machine's pin is enough (the other CPU type's may be missing)", () => {
+      const r = run(`${mine}=${sha(binary)}`);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Checksum matches the one Plannotator fetched for v99.9.9.");
+      expect(r.installed).toBe(binary);
+    });
+
+    test("tamper: a download that differs from the pin exits 113, marks it, and keeps the installed binary", () => {
       // The network serves a .sha256 that matches the altered binary: only the pin catches it.
-      const r = run(`${mine}=${sha("the genuine binary")} ${other}=${sha("the genuine binary")}`, { servedChecksum: sha(binary) });
-      expect(r.code).toBe(3);
+      const markerDir = mkdtempSync(join(tmpdir(), "plannotator-mismatch-mark-"));
+      const marker = join(markerDir, "checksum-mismatch");
+      const r = run(`${mine}=${sha("the genuine binary")} ${other}=${sha("the genuine binary")}`, { servedChecksum: sha(binary), marker });
+      expect(r.code).toBe(113);
+      expect(existsSync(marker)).toBe(true);
+      rmSync(markerDir, { recursive: true, force: true });
       expect(r.out).toContain("Stopped: the v99.9.9 download doesn't match the checksum Plannotator fetched for it.");
       expect(r.out).toContain("Nothing was changed; the Plannotator you have still works.");
       expect(r.out).not.toContain("curl -fsSL");
       expect(r.installed).toBe(OLD);
       expect(fetchedSha256(r.calls)).toBe(false);
+    });
+
+    test("the marker is only ever a file named checksum-mismatch at an absolute path", () => {
+      const markerDir = mkdtempSync(join(tmpdir(), "plannotator-mismatch-mark-"));
+      const elsewhere = join(markerDir, "some-other-file");
+      const r = run(`${mine}=${"f".repeat(64)}`, { marker: elsewhere });
+      expect(r.code).toBe(113);
+      expect(existsSync(elsewhere)).toBe(false);
+      rmSync(markerDir, { recursive: true, force: true });
     });
 
     test("a pin with no entry for this binary, or a malformed one, falls back to the .sha256 check", () => {

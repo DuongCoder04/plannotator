@@ -806,10 +806,12 @@ curl -fsSL -o "$tmp_file" "$binary_url"
 # this script after the running Plannotator downloaded it, and the .sha256 of
 # both binaries this OS may use, with its OWN connection (not this script's
 # curl, which on macOS still trusts the leaked eMudhra root keys). They arrive
-# as PLANNOTATOR_EXPECTED_SHA256="<asset>=<hex> <asset>=<hex>": both CPU types,
-# because this script picks the arch itself (uname -m). A valid value for
-# ${binary_name} is the expected checksum, and the .sha256 is not fetched again;
-# a mismatch exits 3 before anything is replaced. Without the variable (a
+# as PLANNOTATOR_EXPECTED_SHA256="<asset>=<hex> [<asset>=<hex>]" (this machine's
+# CPU type, and the other one when it was available). A valid value for
+# ${binary_name} is the expected checksum, and the .sha256 is not fetched again.
+# A mismatch exits 113 before anything is replaced, after touching the marker
+# file the updater named in PLANNOTATOR_UPDATE_MISMATCH_FILE (the updater only
+# reports a mismatch when that marker exists). Without the variables (a
 # person running the script, an older Plannotator) nothing changes.
 pinned_checksum=""
 for _pin_pair in ${PLANNOTATOR_EXPECTED_SHA256:-}; do
@@ -845,7 +847,10 @@ if [ "$actual_checksum" != "$expected_checksum" ]; then
         echo "Stopped: the ${latest_tag} download doesn't match the checksum Plannotator fetched for it." >&2
         echo "Nothing was changed; the Plannotator you have still works." >&2
         echo "Something on the network may have changed the download. Try again later, or on another network." >&2
-        exit 3
+        case "${PLANNOTATOR_UPDATE_MISMATCH_FILE:-}" in
+            /*/checksum-mismatch) : > "$PLANNOTATOR_UPDATE_MISMATCH_FILE" 2>/dev/null || true ;;
+        esac
+        exit 113
     fi
     echo "Checksum verification failed!" >&2
     exit 1

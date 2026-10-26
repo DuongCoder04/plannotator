@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runUpdateCommand, type UpdateCommandDeps } from "./update-command";
+import { UPDATE_EXIT_CHECKSUM_MISMATCH } from "@plannotator/core/update-exit-codes";
 import type { FetchReleaseResult } from "@plannotator/shared/update-check";
 
 let dataDir: string;
@@ -103,11 +104,11 @@ describe("plannotator update (seams)", () => {
     expect(err).toContain("Or run the install script yourself: curl -fsSL");
   });
 
-  // Safe updates: after a mismatch (install.sh exit 3) or a failed download
+  // Safe updates: after a mismatch (install.sh's pin check) or a failed download
   // (the wrapper's 75) the old version is kept, and the `curl | bash` line is
   // never offered: it would go through the connection that just failed.
   test("a download that didn't match its checksum: the old version still works, no install command", async () => {
-    expect(await run([], { runInstaller: async () => 3 })).toBe(1);
+    expect(await run([], { runInstaller: async () => UPDATE_EXIT_CHECKSUM_MISMATCH })).toBe(1);
     expect(err).toContain("The update to 0.28.11 stopped: the download didn't match the checksum Plannotator fetched for it.");
     expect(err).toContain("0.28.10 is still installed and works. Try again later, or on another network: plannotator update");
     expect(err).toContain("update.log");
@@ -227,9 +228,12 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
     expect(readFileSync(join(dataDir, "update.log"), "utf-8")).toContain("fake installer ran");
     expect(apiHits).toBe(1);
     // Safe updates: the script ran from the copy Plannotator downloaded, with
-    // both CPU types' checksums, and the staged copy is gone afterwards.
+    // the checksums it fetched (this machine's CPU type first), and the staged
+    // copy is gone afterwards.
     const os = process.platform === "darwin" ? "darwin" : "linux";
-    expect(readFileSync(join(home, "installer-pins"), "utf-8")).toBe(`plannotator-${os}-arm64=${"a".repeat(64)} plannotator-${os}-x64=${"b".repeat(64)}`);
+    const pins = readFileSync(join(home, "installer-pins"), "utf-8").split(" ");
+    expect(pins[0]).toStartWith(`plannotator-${os}-${process.arch === "x64" ? "x64" : "arm64"}=`);
+    expect(pins.toSorted()).toEqual([`plannotator-${os}-arm64=${"a".repeat(64)}`, `plannotator-${os}-x64=${"b".repeat(64)}`]);
     expect(readdirSync(home).filter((n) => n.startsWith("plannotator-update-"))).toEqual([]);
   }, 60_000);
 
@@ -290,5 +294,67 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("Plannotator 9.9.9 is available (you have 0.1.0).");
     expect(existsSync(join(home, "installer-args"))).toBe(false);
+  }, 60_000);
+});
+
+// The update wrapper calls `<binary> update-prepare <version>` and trusts its
+// stdout to be exactly the staged dir. This runs it through the real CLI
+// entrypoint (index.ts, from source), so losing the dispatch, or any stdout
+// printed before it, fails here. (The compiled binary is checked the same way
+// in release.yml's smoke-binaries job.) index.ts imports the built HTML at
+// load, so missing pages are stubbed as in cli.test.ts.
+describe.skipIf(process.platform === "win32")("update-prepare through the CLI entrypoint", () => {
+  const entry = resolve(import.meta.dir, "index.ts");
+
+  test("prints exactly the staged dir; a failed download prints nothing and exits 75", async () => {
+    const { removeStubbedHtml, stubHookDistHtml } = await import("../../../tests/helpers/hook-dist-stub");
+    const stubbed = stubHookDistHtml();
+    const work = mkdtempSync(join(tmpdir(), "plannotator-prepare-entry-"));
+    let sumsUp = true;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/install.sh") return new Response('#!/bin/bash\nREPO="backnotprop/plannotator"\n# PLANNOTATOR_EXPECTED_SHA256\n');
+        if (sumsUp && path.endsWith(".sha256")) return new Response(`${"d".repeat(64)}  x\n`);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const run = async () => {
+        const proc = Bun.spawn(["bun", "run", entry, "update-prepare", "v9.9.9"], {
+          cwd: work,
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            HOME: work,
+            TMPDIR: work,
+            PLANNOTATOR_DATA_DIR: join(work, "data"),
+            PLANNOTATOR_UPDATE_CHECK: "0",
+            PLANNOTATOR_INSTALL_SCRIPT_URL: `http://127.0.0.1:${server.port}/install.sh`,
+            PLANNOTATOR_RELEASE_DOWNLOAD_URL: `http://127.0.0.1:${server.port}/dl`,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+        return { stdout, stderr, code };
+      };
+      const ok = await run();
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(ok.stdout).toMatch(/^\/[^\n]*\/plannotator-update-[^/\n]+\n$/);
+      const dir = ok.stdout.trim();
+      expect(realpathSync(join(dir, ".."))).toBe(realpathSync(work));
+      expect(readFileSync(join(dir, "expected-sha256"), "utf-8")).toContain(`=${"d".repeat(64)}`);
+      sumsUp = false;
+      const bad = await run();
+      expect(bad.code).toBe(75);
+      expect(bad.stdout).toBe("");
+      expect(bad.stderr).toContain("could not download the update");
+    } finally {
+      server.stop(true);
+      rmSync(work, { recursive: true, force: true });
+      removeStubbedHtml(stubbed);
+    }
   }, 60_000);
 });

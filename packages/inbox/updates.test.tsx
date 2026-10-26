@@ -9,6 +9,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxUpdate } from '@plannotator/core/inbox-types';
 import type { UpdateDetails } from './api';
+import { UPDATE_EXIT_CHECKSUM_MISMATCH, UPDATE_EXIT_DOWNLOAD_FAILED } from '@plannotator/core/update-exit-codes';
 
 const hasDom = typeof document !== 'undefined';
 // Updates.tsx draws What's new with ui's Viewer, which reads `window` at module-eval time.
@@ -195,12 +196,12 @@ test.skipIf(!hasDom)('the failure dialog names the exit code and the log, and of
   expect(retried).toBe(1);
 });
 
-// Safe updates (step 1): after a mismatch (install.sh exit 3) or a failed
+// Safe updates (step 1): after a mismatch (install.sh's pin check) or a failed
 // download (the wrapper's 75) the dialog must not hand the person the
 // `curl | bash` line: it would go through the connection that just failed.
 for (const [code, heading] of [
-  [3, 'The update stopped'],
-  [75, "The update didn't install"],
+  [UPDATE_EXIT_CHECKSUM_MISMATCH, 'The update stopped'],
+  [UPDATE_EXIT_DOWNLOAD_FAILED, "The update didn't install"],
 ] as const) {
   test.skipIf(!hasDom)(`exit ${code}: no install-script line, the old version still works, Try Again stays`, () => {
     let retried = 0;

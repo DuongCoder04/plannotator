@@ -6,6 +6,7 @@
  * restart and failure dialogs; the What's new page; Settings → About.
  */
 
+import { UPDATE_EXIT_CHECKSUM_MISMATCH, UPDATE_EXIT_DOWNLOAD_FAILED } from '@plannotator/core/update-exit-codes';
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Viewer } from '@plannotator/ui/components/Viewer';
 import { ImageResolverContext, type ImageResolution } from '@plannotator/ui/components/ImageResolverContext';
@@ -383,11 +384,6 @@ export function RestartDialog({ update, subject, onRestart, onCancel }: { update
   );
 }
 
-/** install.sh's exit when the binary didn't match the checksum Plannotator fetched (packages/server/auto-update.ts). */
-const UPDATE_EXIT_MISMATCH = 3;
-/** The update wrapper's exit when Plannotator couldn't download the update (packages/server/auto-update.ts). */
-const UPDATE_EXIT_DOWNLOAD_FAILED = 75;
-
 /** Failed → press: the plain reason, the log, Try Again. */
 export function FailedDialog({
   update,
@@ -403,11 +399,11 @@ export function FailedDialog({
   onClose: () => void;
 }) {
   const code = details?.failure?.exit_code;
-  // Safe updates (step 1): 3 = the download didn't match the checksum
-  // Plannotator fetched; 75 = Plannotator couldn't download the update.
+  // Safe updates (step 1): the download didn't match the checksum Plannotator
+  // fetched, or Plannotator couldn't download the update.
   // Neither offers the `curl | bash` line: it would go through the same
   // connection that just failed.
-  const mismatch = code === UPDATE_EXIT_MISMATCH;
+  const mismatch = code === UPDATE_EXIT_CHECKSUM_MISMATCH;
   const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
   const sub = mismatch
     ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`

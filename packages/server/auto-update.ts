@@ -29,6 +29,7 @@
  * immediately and every failure ends in a log line, never a thrown error.
  */
 
+import { UPDATE_EXIT_CHECKSUM_MISMATCH, UPDATE_EXIT_DOWNLOAD_FAILED } from "@plannotator/core/update-exit-codes";
 import { spawn } from "node:child_process";
 import {
   closeSync,
@@ -99,9 +100,16 @@ export const AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * changed, try again later (sysexits EX_TEMPFAIL; curl, whose exit codes
  * install.sh can pass on, never uses it).
  */
-export const UPDATE_PREPARE_FAILED = 75;
-/** install.sh's exit code when the binary did not match PLANNOTATOR_EXPECTED_SHA256 (the old binary is kept). */
-export const UPDATE_CHECKSUM_MISMATCH = 3;
+export const UPDATE_PREPARE_FAILED = UPDATE_EXIT_DOWNLOAD_FAILED;
+/**
+ * The recorded result when install.sh stopped because the binary did not
+ * match PLANNOTATOR_EXPECTED_SHA256, before it replaced anything. install.sh
+ * exits with it AND first writes the wrapper's marker file; the wrapper
+ * records it only when that marker exists and turns any other exit with this
+ * number into 1, so "nothing was changed" is never claimed for another error
+ * (install.sh runs under `set -e`; curl's own codes stay below 100).
+ */
+export const UPDATE_CHECKSUM_MISMATCH = UPDATE_EXIT_CHECKSUM_MISMATCH;
 /** Auto-update's wait before retrying a version whose download did not match: 1, 3, then 7 days. */
 export const MISMATCH_BACKOFF_DAYS: readonly number[] = [1, 3, 7];
 /** A lock older than this is from a run that died without cleaning up. */
@@ -197,7 +205,7 @@ export function mismatchBackoffMs(attempts: number): number {
 }
 
 /**
- * Count a finished install whose download did not match (exit 3) into
+ * Count a finished install whose download did not match (UPDATE_CHECKSUM_MISMATCH) into
  * `mismatchBackoff`, once per install attempt (`pending.startedAt`). Returns
  * the back-off as it stands. Pure.
  */
@@ -593,7 +601,7 @@ export function startManualUpdateForThisBinary(currentVersion: string | undefine
  * checksums into a private temp dir, then runs that script for exactly
  * `version` without prompts plus the remembered install flags, with
  * PLANNOTATOR_EXPECTED_SHA256 so the script refuses a binary that does not
- * match (exit 3, before it replaces anything). It records the exit code,
+ * match (UPDATE_CHECKSUM_MISMATCH, before it replaces anything). It records the exit code,
  * removes the temp dir and releases the lock. When the download step fails
  * nothing runs and the result is UPDATE_PREPARE_FAILED (75).
  *
@@ -639,8 +647,14 @@ case "$prepared" in
       esac ;;
 esac
 if [ -n "$update_dir" ] && [ -f "$update_dir/install.sh" ]; then
-  PLANNOTATOR_EXPECTED_SHA256=$(cat "$update_dir/expected-sha256" 2>/dev/null) bash "$update_dir/install.sh" --version "$PLANNOTATOR_UPDATE_VERSION" --non-interactive "$@" </dev/null
+  PLANNOTATOR_EXPECTED_SHA256=$(cat "$update_dir/expected-sha256" 2>/dev/null) PLANNOTATOR_UPDATE_MISMATCH_FILE="$update_dir/checksum-mismatch" bash "$update_dir/install.sh" --version "$PLANNOTATOR_UPDATE_VERSION" --non-interactive "$@" </dev/null
   code=$?
+  # A mismatch is only what install.sh's pin check marked as one.
+  if [ -f "$update_dir/checksum-mismatch" ]; then
+    code=113
+  elif [ "$code" -eq 113 ]; then
+    code=1
+  fi
 else
   code=75
   echo "update: could not download the update; nothing was changed"

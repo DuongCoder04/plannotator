@@ -24,6 +24,7 @@ import {
   UPDATE_CHECKSUM_MISMATCH,
   UPDATE_PREPARE_FAILED,
   candidateAssets,
+  nativeAsset,
   normalizeReleaseTag,
   prepareUpdate,
   releaseDownloadUrl,
@@ -56,11 +57,11 @@ const genuine: Route = (path) => {
   return new Response("not found", { status: 404 });
 };
 const ENV = { PLANNOTATOR_INSTALL_SCRIPT_URL: "http://127.0.0.1:9/install.sh", PLANNOTATOR_RELEASE_DOWNLOAD_URL: "http://127.0.0.1:9/dl" };
-const prepare = (route: Route, version = "1.2.3", platform: NodeJS.Platform = "linux") =>
-  prepareUpdate({ version, platform, env: ENV, tmpRoot: root, fetchImpl: fakeFetch(route) });
+const prepare = (route: Route, version = "1.2.3", platform: NodeJS.Platform = "linux", arch = "arm64") =>
+  prepareUpdate({ version, platform, arch, env: ENV, tmpRoot: root, fetchImpl: fakeFetch(route) });
 
 describe("prepareUpdate", () => {
-  test("stages the script and both CPU types' checksums in a private dir", async () => {
+  test("stages the script and both CPU types' checksums (this one's first) in a private dir", async () => {
     const r = await prepare(genuine);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -81,10 +82,30 @@ describe("prepareUpdate", () => {
     }
   });
 
-  test("the install script picks the CPU type itself, so both are pinned; macOS asks for the darwin pair", () => {
+  test("this machine's CPU type is the one install.sh picks; macOS asks for the darwin pair", async () => {
     expect(candidateAssets("darwin")).toEqual(["plannotator-darwin-arm64", "plannotator-darwin-x64"]);
-    expect(candidateAssets("linux")).toEqual(["plannotator-linux-arm64", "plannotator-linux-x64"]);
+    expect(nativeAsset("darwin", "x64")).toBe("plannotator-darwin-x64");
+    expect(nativeAsset("linux", "arm64")).toBe("plannotator-linux-arm64");
+    expect(nativeAsset("linux", "ia32")).toBeNull();
+    const x64 = await prepare(genuine, "1.2.3", "linux", "x64");
+    expect(x64.ok && x64.expected).toBe(`plannotator-linux-x64=${X64} plannotator-linux-arm64=${ARM}`);
+    expect(await prepare(genuine, "1.2.3", "linux", "ia32")).toMatchObject({ ok: false });
   });
+
+  // A release that stops shipping one CPU type must never stop updates for the other.
+  for (const [name, route] of [
+    ["missing", (p: string) => (p.endsWith("x64.sha256") ? new Response("", { status: 404 }) : genuine(p))],
+    ["unreadable", (p: string) => (p.endsWith("x64.sha256") ? new Response("<html>") : genuine(p))],
+    ["unreachable", (p: string) => (p.endsWith("x64.sha256") ? Promise.reject(new Error("reset")) : genuine(p))],
+  ] as const) {
+    test(`the other CPU type's .sha256 ${name}: staged with this machine's pin only, and a note`, async () => {
+      const r = await prepare(route);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.expected).toBe(`plannotator-linux-arm64=${ARM}`);
+      expect(r.notes.join("\n")).toContain("plannotator-linux-x64.sha256");
+    });
+  }
 
   // Never stuck: each of these is "couldn't download", nothing is staged, and the caller retries later.
   const failures: Array<[string, Route]> = [
@@ -94,7 +115,8 @@ describe("prepareUpdate", () => {
     ["a missing .sha256", (p) => (p.endsWith(".sha256") ? new Response("", { status: 404 }) : genuine(p))],
     ["a .sha256 that is a web page", (p) => (p.endsWith(".sha256") ? new Response("<html>sign in to the wifi</html>") : genuine(p))],
     ["a short .sha256", (p) => (p.endsWith(".sha256") ? new Response("abc123  plannotator\n") : genuine(p))],
-    ["only one CPU type's .sha256", (p) => (p.endsWith("x64.sha256") ? new Response("", { status: 404 }) : genuine(p))],
+    ["this CPU type's .sha256 missing", (p) => (p.endsWith("arm64.sha256") ? new Response("", { status: 404 }) : genuine(p))],
+    ["this CPU type's .sha256 a web page", (p) => (p.endsWith("arm64.sha256") ? new Response("<html>") : genuine(p))],
     ["a captive portal instead of the script", (p) => (p === "/install.sh" ? new Response("<html>login</html>") : genuine(p))],
     ["a script that is not Plannotator's", (p) => (p === "/install.sh" ? new Response("#!/bin/bash\necho hi\n") : genuine(p))],
     ["an oversized script", (p) => (p === "/install.sh" ? new Response(SCRIPT_HEAD + "#".repeat(5 * 1024 * 1024)) : genuine(p))],
@@ -292,6 +314,8 @@ async function runWrapper(box: Box, port: number, extra: Record<string, string> 
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const pins = (arm: string, x64: string) => ({ [`plannotator-${OS}-arm64`]: `${arm}  x\n`, [`plannotator-${OS}-x64`]: `${x64}  x\n` });
+/** The binary install.sh picks here (its `uname -m`), the same one `update-prepare` requires. */
+const NATIVE = `plannotator-${OS}-${process.arch === "x64" ? "x64" : "arm64"}`;
 
 describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe updates)", () => {
   test("never-stuck: offline, nothing runs; 75 recorded, lock released, nothing staged, binary untouched", async () => {
@@ -339,7 +363,7 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
     }
   }, 30_000);
 
-  test("tamper, through the real install.sh: the network swaps the binary and its .sha256; exit 3, old binary kept", async () => {
+  test("tamper, through the real install.sh: the network swaps the binary and its .sha256; a mismatch, old binary kept", async () => {
     // The attacker controls install.sh's own curl (the stub serves an altered
     // binary with a matching .sha256), but not Plannotator's fetch, which got
     // the genuine checksums.
@@ -378,6 +402,32 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
       server.stop(true);
     }
   }, 120_000);
+
+  test("a release missing the other CPU type's .sha256 still updates, through the real install.sh", async () => {
+    const binary = "#!/bin/sh\necho plannotator-new\n";
+    const box = sandbox(binary);
+    const { server } = serve({ script: readFileSync(INSTALL_SH, "utf-8"), sums: { [NATIVE]: `${sha(binary)}  x\n` } });
+    try {
+      const r = await runWrapper(box, server.port!);
+      expect(r.result).toEqual({ version: "v1.2.3", exitCode: 0 });
+      expect(r.out).toContain("Checksum matches the one Plannotator fetched for v1.2.3.");
+      expect(readFileSync(box.installed, "utf-8")).toBe(binary);
+    } finally {
+      server.stop(true);
+    }
+  }, 120_000);
+
+  test("an exit with the mismatch number that install.sh's pin check did not mark is recorded as a plain failure", async () => {
+    const box = sandbox("new");
+    const { server } = serve({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\nexit ${UPDATE_CHECKSUM_MISMATCH}\n`, sums: pins(ARM, X64) });
+    try {
+      const r = await runWrapper(box, server.port!);
+      expect(r.result).toEqual({ version: "v1.2.3", exitCode: 1 });
+      expect(r.lockHeld).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
 
   test("compatibility: an older install.sh (no pin check) runs exactly as before and its exit code is recorded", async () => {
     const box = sandbox("new");
