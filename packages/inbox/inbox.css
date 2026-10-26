@@ -4610,7 +4610,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-tour-also { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 7px; }
 .ib-tour-also li { display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.4; }
 .ib-tour-also li b { color: var(--foreground); font-weight: 600; }
-.ib-tour-also li > span:first-child { grid-row: span 2; text-align: center; font-size: 14px; }
+.ib-tour-also li > span:first-child { grid-row: span 2; text-align: center; font-size: var(--ib-fs-14, 14px); }
 ::highlight(ib-tour-phrase) { background-color: color-mix(in oklch, var(--primary) 22%, transparent); }
 .pn-inbox [data-tour-phrase-host] { scroll-margin: 80px; }
 .ib-tour-filenote { margin: 4px 0 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }

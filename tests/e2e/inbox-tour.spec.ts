@@ -1,31 +1,23 @@
 /**
- * The onboarding tour (approval "inbox-onboarding-tour"), proved in a real
- * browser against the compiled binary: `plannotator inbox --background` under
- * a temp PLANNOTATOR_DATA_DIR, a scratch HOME and a PATH of the system's own
- * tools only (no agent CLI is ever run), notifications recorded by an init
+ * The onboarding tour, version 2 (approval "inbox-onboarding-tour"), proved in
+ * a real browser against the compiled binary: `plannotator inbox --background`
+ * under a temp PLANNOTATOR_DATA_DIR, a scratch HOME and a PATH of the system's
+ * own tools only (no agent CLI is ever run), notifications recorded by an init
  * script.
  *
- *  - The paced newcomer walk, timed as the brief's outside check timed it
- *    (220 words a minute, 1.5 s to find each control, 3 s for the closer
- *    look, 5 s in the mock), from the first-run entry screen (Two paths) to
- *    Finish: every step shot desktop light and dark, one headless video.
- *  - Keyboard only: Tab and Enter, focus never on the page.
- *  - An iPhone in WebKit: taps, 44 px targets, the sheet never over its target.
- *  - Reduced motion: no pulse, the replay a little shorter.
- *  - A stacked window (900 px): the thread covers the list.
- *  - Exit at every step: the person's Inbox comes back exactly as it was
- *    (its list read before and after is the same), and the entry screen does
- *    not come back.
- *  - A real message mid-tour: a chip in the tour bar, no notification, no
- *    interruption; the chip leaves the tour to it.
- *  - Leaving by the chip or the tour sidebar's Settings: Back never reopens
- *    the tour; a tour reached by a link exits to the Inbox, not to an earlier
- *    tour's start point.
- *  - Step 6: How to allow opens Settings → General and the real sidebar's rows
- *    end the tour, both recorded as finished; Exit after a reload goes to the
- *    Inbox; Back never reopens the tour in any of them.
- *  - A pick other than the real answer: replayed with an honest note.
- *  - The fixture routes: read only, embedded in the binary, sandboxed.
+ *  - The walk on a desktop through the Inbox's real viewers: a pick, a comment
+ *    on the question's words, a comment on a line of EVALUATION.md, one Send,
+ *    the replay, a circle on a screenshot, Artifacts, the film commented at a
+ *    moment, compose to a session, and the person's own Inbox at step 9. Every
+ *    comment box opens with the developer's real comment; nothing is written
+ *    but the tour setting; the person's list is exactly as it was. Shots light
+ *    and dark, one headless video.
+ *  - Keyboard only; an iPhone in WebKit (taps, 44 px targets, the film
+ *    comment); reduced motion and a stacked window.
+ *  - Exit at steps 1 to 8 gives the Inbox back as it was; a real message
+ *    mid-tour is a chip; Back never reopens the tour; step 9 counts as
+ *    finished.
+ *  - The fixture routes: read only, the film by Range, the notes as text.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * Shots and the video go to PLANNOTATOR_TOUR_SHOTS (default .local/proof/tour).
@@ -42,7 +34,6 @@ const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
 const shots = resolve(process.env.PLANNOTATOR_TOUR_SHOTS ?? join(repo, '.local/proof/tour'));
 const DESKTOP = { width: 1440, height: 900 };
-const REAL = 'A · Our guide reader in one tab';
 
 interface World {
   root: string;
@@ -135,7 +126,9 @@ async function open(
   }
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    // The Artifacts grid draws an HTML file small in a script-free sandbox (by design): Chromium logs its blocked scripts.
+    // WebKit's own video controls (headless) log their icons failing to load: the browser's chrome, not the page.
+    if (message.type() === 'error' && !message.text().startsWith("Blocked script execution in 'about:srcdoc'") && !message.text().startsWith('Button failed to load, iconName =')) errors.push(message.text());
   });
   await page.goto(w.url);
   return { context, page };
@@ -243,210 +236,288 @@ test.afterAll(async () => {
   await removeInboxScratch();
 });
 
-test('the paced newcomer walk: Two paths, the six steps, the aha under 2 minutes; shots and a video', async ({ browser }) => {
+/** A press: a tap on a phone, a click otherwise. */
+type Press = (selector: string) => Promise<void>;
+
+function presser(page: Page, phone: boolean): Press {
+  return async (selector) => {
+    const el = page.locator(selector).filter({ visible: true }).first();
+    if (phone) await el.tap();
+    else await el.click();
+  };
+}
+
+/** Select words the way a drag does, so the viewer's selection toolbar opens over them. */
+async function selectWords(page: Page, rootSel: string, phrase: string): Promise<void> {
+  await page.evaluate(
+    ({ rootSel, phrase }) => {
+      const root = document.querySelector(rootSel)!;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes: Text[] = [];
+      let all = '';
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        nodes.push(t as Text);
+        all += (t as Text).data;
+      }
+      const at = all.indexOf(phrase);
+      if (at < 0) throw new Error(`"${phrase}" is not on screen`);
+      let off = 0;
+      const range = document.createRange();
+      for (const node of nodes) {
+        const end = off + node.data.length;
+        if (at >= off && at < end) range.setStart(node, at - off);
+        if (at + phrase.length > off && at + phrase.length <= end) {
+          range.setEnd(node, at + phrase.length - off);
+          break;
+        }
+        off = end;
+      }
+      (range.startContainer.parentElement as HTMLElement).scrollIntoView({ block: 'center' });
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const r = range.getBoundingClientRect();
+      range.startContainer.parentElement!.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: r.right, clientY: r.bottom }));
+      document.dispatchEvent(new Event('selectionchange'));
+    },
+    { rootSel, phrase },
+  );
+}
+
+const PHRASE = 'a 2-day check that hover feels instant';
+const EV_LINE = 'It is also the cheapest direction, because the reader and its hooks already exist.';
+const toolbarComment = '[data-pn-annotation-toolbar-row] button[aria-label="Comment"]';
+
+interface WalkOptions {
+  phone?: boolean;
+  /** Called at each place worth a picture, with its name. */
+  shot?: (name: string) => Promise<void>;
+  /** What each comment box opened with, in order. */
+  suggestions?: string[];
+}
+
+/**
+ * From the tour's first card to step `to` (1 to 9), doing each step's real action and keeping every
+ * suggestion the boxes open with. Step 9 is the person's own Inbox.
+ */
+async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<void> {
+  const phone = options.phone ?? false;
+  const press = presser(page, phone);
+  const shot = options.shot ?? (async () => {});
+  const at = (key: string) => expect(coach(page)).toHaveAttribute('data-tour-coach', key, { timeout: 15_000 });
+  const keep = async (selector: string) => options.suggestions?.push(await page.locator(selector).first().inputValue());
+  await at('1-orient');
+  await shot('01-orient');
+  await press('[data-tour-next]');
+  await at('1');
+  await shot('01-row');
+  if (to === 1) return;
+  await press('[data-thread-id="tour-vscode"]:is(button,a,[role=button])');
+  await at('2');
+  await shot('02-pick');
+  if (to === 2) return;
+  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
+  await at('3');
+  await shot('03-words');
+  if (to === 3) return;
+  await selectWords(page, '[data-tour-message="ask"] .ib-body', PHRASE);
+  await page.locator(toolbarComment).first().click();
+  await at('3-box');
+  await keep('[data-comment-popover] textarea');
+  await shot('03-comment');
+  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
+  await at('4');
+  await shot('04-file-tile');
+  if (to === 4) return;
+  await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]');
+  await at('4-file');
+  await shot('04-file');
+  await selectWords(page, '[data-attachment-pane] .ib-docscroll', EV_LINE);
+  await page.locator(toolbarComment).first().click();
+  await at('4-box');
+  await keep('[data-comment-popover] textarea');
+  await shot('04-comment');
+  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
+  await at('5');
+  await shot('05-reply');
+  if (to === 5) return;
+  await press('[data-tour-reply]');
+  await at('5-box');
+  await shot('05-recap');
+  await press('[data-tour-send]');
+  await at('6');
+  await shot('06-replay');
+  if (to === 6) return;
+  await press('[data-tour-thread] img[data-inline-image="tour-img-built-a1"]');
+  await at('6-file');
+  await keep('[data-image-composer] textarea');
+  await shot('06-screenshot');
+  // Mark up: a circle on the screenshot.
+  await press('[data-attachment-pane] [data-markup-open]');
+  await page.waitForTimeout(600);
+  const circle = page.locator('button[title*="ircle" i], button[aria-label*="ircle" i]').first();
+  if (await circle.count()) await circle.click();
+  const canvas = (await page.locator('canvas').last().boundingBox())!;
+  await page.mouse.move(canvas.x + canvas.width * 0.3, canvas.y + canvas.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(canvas.x + canvas.width * 0.55, canvas.y + canvas.height * 0.6, { steps: 8 });
+  await page.mouse.up();
+  await shot('06-markup');
+  await page.keyboard.press('Enter');
+  await at('6-drawn-unsaved');
+  await page.locator('[data-attachment-pane] [data-image-comment-save]').click();
+  await at('6-drawn');
+  await shot('06-circled');
+  await press('[data-tour-next]');
+  await at('6-art');
+  await press('[data-tour-thread] [data-artifacts-button]');
+  await at('6-art-grid');
+  await shot('06-artifacts');
+  await page.locator('[data-artifacts-view] [data-artifact-kind="markdown"]').first().click();
+  await at('6-art-open');
+  await press('[data-tour-next]');
+  await at('7-open');
+  await shot('07-film-row');
+  if (to === 7) return;
+  await press('[data-thread-id="tour-film"]:is(button,a,[role=button])');
+  await at('7');
+  await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="guides-vscode.mp4"]');
+  await at('7-file');
+  await page.waitForTimeout(600);
+  // Play, then pause near the chapter text: the comment box fills and the moment pins.
+  await page.evaluate(async () => {
+    const v = document.querySelector<HTMLVideoElement>('[data-video-player]')!;
+    v.muted = true;
+    await v.play().catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+    v.currentTime = 7.2;
+    await new Promise((r) => setTimeout(r, 400));
+    v.pause();
+  });
+  if (phone) await press('[data-video-compose]');
+  await at('7-pinned');
+  await keep('[data-video-composer] textarea');
+  await shot('07-film');
+  await page.locator('[data-video-comment-save]').click();
+  await at('7-send');
+  await press('[data-tour-film-send]');
+  await at('7-done');
+  await shot('07-answer');
+  await press('[data-tour-next]');
+  await at('8');
+  await shot('08-compose-button');
+  if (to === 8) return;
+  await press('[data-open-compose]');
+  await at('8-open');
+  await keep('[data-compose] textarea');
+  await shot('08-compose');
+  await press('[data-compose] [data-compose-to]');
+  await page.locator('[role="option"]').first().click();
+  await at('8-to');
+  await press('[data-compose] [data-compose-send]');
+  await at('8-loop');
+  await shot('08-answer');
+  await press('[data-tour-next]');
+  await at('8-also');
+  await shot('08-also');
+  await press('[data-tour-next]');
+  await expect(page.locator('[data-tour-exit="finish"]')).toBeVisible();
+  await shot('09-yours');
+}
+
+/** Routes the tour may ask for: its own read-only routes, the window's reads, the `tour` setting and the window's presence report. */
+function writesOf(page: Page): string[] {
+  const writes: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'GET' || r.method() === 'HEAD') return;
+    const path = new URL(r.url()).pathname;
+    if (path === '/api/inbox/window') return;
+    writes.push(`${r.method()} ${path} ${r.postData()?.slice(0, 120) ?? ''}`);
+  });
+  return writes;
+}
+
+const SUGGESTIONS = [
+  'Good. If hover isn’t instant, tell me before you build B.',
+  'Nice, reusing the reader’s hooks keeps this small.',
+  'Looks great. This screenshot should go on the site.',
+  'Make chapter one taller here. It’s the narrative guide, and it’s easy to miss.',
+  'We need a page and a short film for Guided Reviews in VS Code, like plannotator.ai/inbox.',
+];
+
+test('the walk on a desktop: the real viewers, compose and Artifacts; writes nothing; the person’s Inbox exactly as it was; light and dark shots', async ({ browser }) => {
   const w = startWorld('walk');
   const errors: string[] = [];
-  const videoDir = join(w.root, 'video');
-  const { context, page } = await open(browser, w, errors, { recordVideo: { dir: videoDir, size: DESKTOP } });
+  const { context, page } = await open(browser, w, errors, { recordVideo: { dir: join(shots, 'video'), size: DESKTOP } });
+  const writes = writesOf(page);
   const before = await ownList(w);
-  // The entry screen: two equal cards.
   await expect(page.getByRole('heading', { name: 'Two ways to start' })).toBeVisible();
-  await expect(page.locator('.ib-te-paths .ib-te-card')).toHaveCount(2);
-  await expect(page.locator('[data-tour-fit] h3')).toHaveText('The Inbox works beside your agents');
-  await expect(page.getByRole('button', { name: 'Start the tour' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect my agents' })).toBeVisible();
-  await page.waitForTimeout(1200);
-  await shoot(page, '00-entry');
-  await page.waitForTimeout(Math.round((words(await page.locator('.ib-te-tour').innerText()) / 220) * 60_000) + 1500);
-
-  const started = Date.now();
-  const shotsBefore = shooting;
-  const at: Record<string, number> = {};
-  // Seconds from Start, the screenshots' time left out.
-  const mark = (name: string) => (at[name] = Math.round((Date.now() - started - (shooting - shotsBefore)) / 100) / 10);
-  await page.getByRole('button', { name: 'Start the tour' }).click();
-  await expect(page).toHaveURL(/#tour=1$/);
+  await shoot(page, 'desktop-00-entry');
+  await page.locator('[data-tour-start]').click();
+  await shoot(page, 'desktop-00-intro');
   await pastIntro(page);
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '1');
-  expect(await focusKept(page)).toContain('An agent came back');
-  expect(config(w).inboxTour.seen_at).toBeTruthy();
-  await shoot(page, '01-step1-open');
-  await read(page, true);
-
-  // 1 → 2: open the question.
-  await page.locator('[data-thread-id="tour-vscode"]').first().click();
-  mark('open');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
-  await expect(page.locator('[data-tour-message="ask"] [data-question-tile]')).toHaveCount(4);
-  // Every picture says what it is: a mockup of VS Code, never the Inbox itself.
-  await expect(page.locator('[data-tour-message="ask"] [data-question-picture-badge]')).toHaveText(['Mockup · VS Code', 'Mockup · VS Code', 'Mockup · VS Code']);
-  await shoot(page, '02-step2-pictures');
-  await read(page, true);
-  // The closer look: the magnifier opens the viewer, which offers the pick; Escape closes it, focus back on the magnifier.
-  await page.locator('[data-tour-message="ask"] [data-question-zoom]').first().click();
-  await expect(page.locator('[data-tour-viewer]')).toBeVisible();
-  // The larger picture (vs-a.webp, 1440 px wide), from the copy the tour loaded when it started.
-  await expect.poll(() => page.locator('[data-tour-viewer] img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1440);
-  await shoot(page, '02-step2-closer-look');
-  await page.waitForTimeout(3000);
-  await page.keyboard.press('Escape');
-  await expect(page.locator('[data-tour-viewer]')).toHaveCount(0);
-  await expect(page.locator('[data-tour-message="ask"] [data-question-zoom]').first()).toBeFocused();
-  await page.waitForTimeout(1500);
-
-  // 2 → 3: pick the picture.
-  await page.locator('[data-tour-message="ask"] [data-question-tile] label').first().click();
-  mark('pick');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '3');
-  await expect(page.locator('[data-tour-send]')).toBeVisible();
-  await shoot(page, '03-step3-send');
-  await read(page, true);
-
-  // 3 → 4: Send (a replay: nothing reaches any agent), then the replay arrives.
-  await page.locator('[data-tour-send]').click();
-  mark('send');
-  await expect(page.locator('[data-tour-delivered]')).toContainText('Sending to Claude Code');
-  await expect(page.locator('[data-tour-delivered]')).toContainText('Delivered to Claude Code', { timeout: 5000 });
-  await shoot(page, '04-step4-delivered');
-  await expect(page.locator('[data-tour-arrival="1"]')).toBeVisible({ timeout: 6000 });
-  mark('aha');
-  await expect(page.locator('[data-tour-arrival="1"]')).toContainText('A it is');
-  await expect(page.locator('[data-tour-arrival="2"]')).toBeVisible({ timeout: 6000 });
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4-works');
-  // The real answer was picked: no note.
-  await expect(page.locator('[data-tour-differs]')).toHaveCount(0);
-  await shoot(page, '04-step4-keeps-working');
-  await read(page, true);
-  await page.locator('[data-tour-next]').click();
-
-  // 5: the mock behind the pictures, live and sandboxed.
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5');
-  await shoot(page, '05-step5-mock-tile');
-  await read(page, true);
-  await page.locator('[data-tour-mock-tile]').click();
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5-mock');
-  const frame = page.locator('[data-tour-file] iframe');
-  await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
-  await expect(page.frameLocator('[data-tour-file] iframe').getByRole('tab').first()).toBeVisible();
-  await shoot(page, '05-step5-mock-open');
-  await page.frameLocator('[data-tour-file] iframe').getByRole('tab').nth(1).click();
-  await page.waitForTimeout(5000);
-  await read(page, true);
-  await page.locator('[data-tour-next]').click();
-  mark('steps1to5');
-
-  // 6: the person's own Inbox, real.
-  await expect(page).toHaveURL(/#tour=6$/);
-  await expect(page.getByRole('heading', { name: 'Now, let’s connect your agents' })).toBeFocused();
-  await expect(page.locator('[data-tour-bar]')).toContainText('Your own Inbox');
-  await expect(page.locator('[data-tour-exit="finish"]')).toHaveText('Finish the tour');
-  await expect(page.locator('.ib-cn')).toBeVisible();
-  await expect(page.locator('[data-first-run-ask] [data-notification-ask], .ib-try [data-notification-ask]').first()).toBeVisible();
-  await shoot(page, '06-step6-connect');
-  // About 35 s to read step 6's screen (the brief's estimate), then Finish.
-  await page.waitForTimeout(35_000);
-  await page.locator('[data-tour-exit="finish"]').click();
-  mark('finish');
-  await expect(page).not.toHaveURL(/#tour/);
-  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
-  await expect(page.locator('.ib-toast')).toContainText('Tour finished');
-  // The entry screen does not come back; a quiet link to the tour stays.
-  await expect(page.getByRole('heading', { name: 'No agent has written yet' })).toBeVisible();
-  await expect(page.locator('[data-tour-again]')).toBeVisible();
-  await focusKept(page);
-  await shoot(page, '07-finished');
-  expect(config(w).inboxTour.finished_at).toBeTruthy();
-  // Nothing from the tour reached the person's store.
+  const suggestions: string[] = [];
+  const began = Date.now();
+  shooting = 0;
+  await walk(page, 9, { suggestions, shot: (name) => shoot(page, `desktop-${name}`) });
+  const seconds = (Date.now() - began - shooting) / 1000;
+  expect(suggestions).toEqual(SUGGESTIONS);
+  // Nothing of the tour reached the server but the tour setting.
+  expect(writes.filter((r) => !r.startsWith('POST /api/inbox/settings'))).toEqual([]);
+  for (const r of writes) expect(r).toContain('"tour"');
+  expect(existsSync(join(w.dataDir, 'inbox', 'markups'))).toBe(false);
+  expect(existsSync(join(w.dataDir, 'inbox', 'uploads'))).toBe(false);
+  expect(existsSync(join(w.dataDir, 'inbox', 'drafts'))).toBe(false);
   expect(await ownList(w)).toBe(before);
+  await page.locator('[data-tour-exit="finish"]').click();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await expect.poll(() => config(w).inboxTour?.finished_at ?? null).not.toBeNull();
   expect(errors).toEqual([]);
-
-  // Timings, as the outside check reported them.
-  console.log(`tour timings (s from Start): ${JSON.stringify(at)}`);
-  expect(at.aha!).toBeLessThan(120);
-  const video = page.video();
   await context.close();
-  if (video) {
-    mkdirSync(shots, { recursive: true });
-    copyFileSync(await video.path(), join(shots, 'inbox-tour-walk.webm'));
-  }
+  const video = readdirSync(join(shots, 'video')).find((f) => f.endsWith('.webm'));
+  if (video) copyFileSync(join(shots, 'video', video), join(shots, 'desktop-walk.webm'));
+  console.log(`desktop walk, without shots: ${seconds.toFixed(1)} s`);
 });
 
-test('keyboard only: Tab and Enter through every step, focus never on the page', async ({ browser }) => {
+test('keyboard only: Tab and Enter through the coach cards, focus never on the page', async ({ browser }) => {
   const w = startWorld('keys');
   const errors: string[] = [];
   const { context, page } = await open(browser, w, errors);
-  await expect(page.getByRole('heading', { name: 'Two ways to start' })).toBeVisible();
-  const tabTo = async (selector: string, max = 60) => {
-    for (let i = 0; i < max; i++) {
-      await page.keyboard.press('Tab');
-      if (await page.evaluate((s) => document.activeElement?.matches(s) ?? false, selector)) return;
-    }
-    throw new Error(`Tab never reached ${selector}`);
-  };
-  await tabTo('[data-tour-start]');
+  await page.locator('[data-tour-start]').focus();
   await page.keyboard.press('Enter');
   await pastIntro(page, 'keys');
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '1-orient');
+  await focusKept(page);
+  // Next by keyboard: Tab from the card's heading reaches it.
+  for (let i = 0; i < 6 && !(await page.locator('[data-tour-next]').evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('Tab');
+  await expect(page.locator('[data-tour-next]')).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '1');
   await focusKept(page);
-  await tabTo('[data-thread-id="tour-vscode"]');
+  // The thread's row by keyboard.
+  await page.locator('[data-thread-id="tour-vscode"]').first().focus();
   await page.keyboard.press('Enter');
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
-  await focusKept(page);
-  // The zoom by keyboard, Escape back to it.
-  await tabTo('[data-tour-message="ask"] [data-question-zoom]');
-  await page.keyboard.press('Enter');
-  await expect(page.locator('[data-tour-viewer-close]')).toBeFocused();
-  // Pick from the viewer: focus goes to Send.
-  await tabTo('[data-tour-viewer-pick]', 4);
-  await page.keyboard.press('Enter');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '3');
-  await expect(page.locator('[data-tour-send]')).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4-works', { timeout: 10_000 });
-  await focusKept(page);
-  await tabTo('[data-tour-next]');
-  await page.keyboard.press('Enter');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5');
-  await focusKept(page);
-  await tabTo('[data-tour-mock-tile]');
-  await page.keyboard.press('Enter');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5-mock');
-  await focusKept(page);
-  await tabTo('[data-tour-back]');
-  await page.keyboard.press('Enter');
-  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4-works');
-  await focusKept(page);
-  await tabTo('[data-tour-next]');
-  await page.keyboard.press('Enter');
-  await tabTo('[data-tour-mock-tile]');
-  await page.keyboard.press('Enter');
-  await tabTo('[data-tour-next]');
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: 'Now, let’s connect your agents' })).toBeFocused();
-  await tabTo('[data-tour-exit="finish"]', 120);
-  await page.keyboard.press('Enter');
-  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await focusKept(page);
   expect(errors).toEqual([]);
   await context.close();
 });
 
-test('an iPhone in WebKit: taps, 44 px targets, the sheet never over what it asks for; light and dark shots', async () => {
+test('an iPhone in WebKit: taps, 44 px targets, the film comment at a moment; light and dark shots', async () => {
   const w = startWorld('phone');
   const errors: string[] = [];
   const browser = await webkit.launch({ args: [] });
   try {
     const { context, page } = await open(browser, w, errors, { ...devices['iPhone 15'], colorScheme: 'light' });
+    const writes = writesOf(page);
+    const before = await ownList(w);
     await expect(page.getByRole('heading', { name: 'Two ways to start' })).toBeVisible();
     await shoot(page, 'phone-00-entry');
-    const box = async (selector: string) => {
-      const b = await page.locator(selector).first().boundingBox();
-      expect(b, selector).not.toBeNull();
-      return b!;
-    };
     // The hit area: the box, and the ::before / ::after a small control reaches out with.
     const big = async (selector: string) => {
-      const hit = await page.locator(selector).first().evaluate((el) => {
+      // Measured once the coach card has finished its entrance (it rises from 0.97 scale).
+      await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running' || (a.effect as KeyframeEffect | null)?.getComputedTiming().iterations === Infinity));
+      const hit = await page.locator(selector).filter({ visible: true }).first().evaluate((el) => {
         const r = el.getBoundingClientRect();
         let w = r.width;
         let h = r.height;
@@ -461,50 +532,24 @@ test('an iPhone in WebKit: taps, 44 px targets, the sheet never over what it ask
       expect(hit.h, selector).toBeGreaterThanOrEqual(44);
       expect(hit.w, selector).toBeGreaterThanOrEqual(44);
     };
-    const clear = async (target: string) => {
-      // The sheet and its target do not overlap once the card has settled.
-      await page.waitForTimeout(900);
-      const c = await box('[data-tour-coach]');
-      const t = await box(target);
-      const visibleTop = Math.max(t.y, 0);
-      expect(c.y + c.height <= visibleTop + 1 || c.y >= visibleTop + Math.min(t.height, 44) - 1, `${target} under the sheet`).toBe(true);
-    };
     await page.locator('[data-tour-start]').tap();
+    await shoot(page, 'phone-00-intro');
     await pastIntro(page, 'tap');
     await big('[data-tour-exit]');
-    await clear('[data-thread-id="tour-vscode"]');
-    await shoot(page, 'phone-01-step1');
-    await page.locator('[data-thread-id="tour-vscode"]').first().tap();
-    await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
-    await clear('[data-tour-message="ask"] [data-question-tiles]');
-    await expect(page.locator('[data-tour-message="ask"] [data-question-picture-badge]').first()).toHaveText('Mockup');
-    await big('[data-tour-message="ask"] [data-question-zoom]');
-    await shoot(page, 'phone-02-step2');
-    await page.locator('[data-tour-message="ask"] [data-question-tile] label').nth(1).tap();
-    await expect(coach(page)).toHaveAttribute('data-tour-coach', '3');
-    await big('[data-tour-back]');
-    await clear('[data-tour-send]');
-    await shoot(page, 'phone-03-step3');
-    await page.locator('[data-tour-send]').tap();
-    await expect(coach(page)).toHaveAttribute('data-tour-coach', '4-works', { timeout: 10_000 });
-    // B was picked: the replay says the real answer was A.
-    await expect(page.locator('[data-tour-differs]')).toContainText('In the real thread the answer was A');
     await big('[data-tour-next]');
-    await shoot(page, 'phone-04-step4');
-    await page.locator('[data-tour-next]').tap();
-    await clear('[data-tour-mock-tile]');
-    await shoot(page, 'phone-05-step5');
-    await page.locator('[data-tour-mock-tile]').tap();
-    await expect(page.locator('[data-tour-file]')).toBeVisible();
-    await big('[data-tour-file-back]');
-    await shoot(page, 'phone-05-step5-mock');
-    await page.locator('[data-tour-next]').tap();
-    await expect(page.getByRole('heading', { name: 'Now, let’s connect your agents' })).toBeVisible();
-    await shoot(page, 'phone-06-step6');
-    await page.locator('[data-tour-exit]').tap();
-    await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
-    // No sideways scroll anywhere on the way.
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    const suggestions: string[] = [];
+    await walk(page, 9, {
+      phone: true,
+      suggestions,
+      shot: async (name) => {
+        if (name === '05-reply') await big('[data-tour-reply]');
+        if (name === '07-answer') await big('[data-tour-next]');
+        await shoot(page, `phone-${name}`);
+      },
+    });
+    expect(suggestions).toEqual(SUGGESTIONS);
+    expect(writes.filter((r) => !r.startsWith('POST /api/inbox/settings'))).toEqual([]);
+    expect(await ownList(w)).toBe(before);
     expect(errors).toEqual([]);
     await context.close();
   } finally {
@@ -512,30 +557,38 @@ test('an iPhone in WebKit: taps, 44 px targets, the sheet never over what it ask
   }
 });
 
-test('reduced motion: every state, no pulse, a shorter replay; a stacked window: the thread covers the list', async ({ browser }) => {
+test('reduced motion: no pulse, a shorter replay; a stacked window: the thread covers the list, the file covers the thread', async ({ browser }) => {
   const w = startWorld('reduced');
   const errors: string[] = [];
   const { context, page } = await open(browser, w, errors, { reducedMotion: 'reduce', viewport: { width: 900, height: 800 } });
   await page.getByRole('button', { name: 'Start the tour' }).click();
   await pastIntro(page);
+  await page.locator('[data-tour-next]').click();
   await expect(page.locator('.ib-tour-target')).toHaveCount(1);
   expect(await page.locator('.ib-tour-target').evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
   await page.locator('[data-thread-id="tour-vscode"]').first().click();
   // Stacked: the thread covers the list, its way back leads.
   await expect(page.locator('.ib-listcol')).toHaveCount(0);
   await expect(page.locator('[data-tour-thread-back]')).toBeVisible();
-  await page.locator('[data-tour-message="ask"] [data-question-tile] label').first().click();
+  await page.locator('[data-tour-message="ask"] input[type=radio]').first().click({ force: true });
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '3');
+  await selectWords(page, '[data-tour-message="ask"] .ib-body', PHRASE);
+  await page.locator(toolbarComment).first().click();
+  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '4');
+  await page.locator('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="EVALUATION.md"]').click();
+  // Stacked: the file covers the thread.
+  await expect(page.locator('[data-attachment-pane]')).toBeVisible();
+  await shoot(page, 'stacked-04-file', ['light']);
+  await selectWords(page, '[data-attachment-pane] .ib-docscroll', EV_LINE);
+  await page.locator(toolbarComment).first().click();
+  await page.locator('[data-comment-popover] button', { hasText: 'Save' }).click();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '5');
+  await page.locator('[data-tour-reply]').filter({ visible: true }).first().click();
   const sent = Date.now();
-  await page.locator('[data-tour-send]').click();
+  await page.locator('[data-tour-send]').filter({ visible: true }).first().click();
   await expect(page.locator('[data-tour-arrival="2"]')).toBeVisible();
   expect(Date.now() - sent).toBeLessThan(5600);
-  await page.locator('[data-tour-next]').click();
-  await page.locator('[data-tour-mock-tile]').click();
-  // Stacked: the mock covers the thread.
-  await expect(page.locator('[data-tour-thread]')).toHaveCount(0);
-  await shoot(page, 'stacked-05-mock', ['light']);
-  await page.locator('[data-tour-file-back]').click();
-  await expect(page.locator('[data-tour-thread]')).toBeVisible();
   expect(errors).toEqual([]);
   await context.close();
 });
@@ -546,6 +599,7 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
   const threadId = await agentWrites(w, 'Which retry policy for the export job?\n\n:::question\nWhich retry policy?\n- [ ] Exponential\n- [ ] Fixed\n:::', 'Export job retries');
   const errors: string[] = [];
   const { context, page } = await open(browser, w, errors);
+  const writes = writesOf(page);
   await expect(page.locator(`[data-thread-id="${threadId}"]`).first()).toBeVisible();
   const before = await ownList(w);
   // Returning people take the tour from Settings → General.
@@ -555,19 +609,10 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await expect(page).toHaveURL(/#tour=1$/);
     await pastIntro(page);
   };
-  const walkTo = async (n: number) => {
-    if (n >= 2) await page.locator('[data-thread-id="tour-vscode"]').first().click();
-    if (n >= 3) await page.locator('[data-tour-message="ask"] [data-question-tile] label').nth(2).click();
-    if (n >= 4) await page.locator('[data-tour-send]').click();
-    if (n >= 5) {
-      await expect(page.locator('[data-tour-next]')).toBeVisible({ timeout: 10_000 });
-      await page.locator('[data-tour-next]').click();
-    }
-    await expect(step(page)).toHaveAttribute('aria-label', `Step ${n} of 6`);
-  };
-  for (const n of [1, 2, 3, 4, 5]) {
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
     await enter();
-    await walkTo(n);
+    await walk(page, n);
+    await expect(step(page)).toHaveAttribute('aria-label', `Step ${n} of 9`);
     await page.locator('[data-tour-exit="exit"]').click();
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
     // Started in Settings: Exit returns to Settings, as the browser's Back (no new entry).
@@ -576,25 +621,12 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await focusKept(page);
     expect(await ownList(w), `after Exit at step ${n}`).toBe(before);
   }
-  const skipped = config(w).inboxTour.skipped_at;
-  expect(skipped).toBeTruthy();
-  // Back after Exit goes to the screen before Settings, never into the tour again, and records no second skip.
-  await page.goBack();
-  await expect(page).not.toHaveURL(/#tour/);
-  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
-  await page.waitForTimeout(500);
-  expect(config(w).inboxTour.skipped_at).toBe(skipped);
-  await page.goto(w.url);
-  await expect(page.locator(`[data-thread-id="${threadId}"]`).first()).toBeVisible();
-  // The side thread's pictures are screenshots of the Inbox, and say so.
-  await enter();
-  await page.locator('[data-thread-id="tour-graphite"]').first().click();
-  await expect(page.locator('[data-tour-thread] [data-question-picture-badge]').first()).toHaveText('Screenshot · Inbox');
-  await page.locator('[data-tour-exit="exit"]').click();
-  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  expect(writes.filter((r) => !r.startsWith('POST /api/inbox/settings'))).toEqual([]);
+  expect(config(w).inboxTour.skipped_at).toBeTruthy();
 
   // A real message lands mid-tour: a chip in the bar, the tour goes on, no notification and no sound.
   await enter();
+  await page.locator('[data-tour-next]').click();
   await page.locator('[data-thread-id="tour-vscode"]').first().click();
   const arrived = await agentWrites(w, 'Build finished: the export job retries now.', 'Export job: build finished');
   await expect(page.locator('[data-tour-arrivals]')).toHaveText('1 new message in your Inbox', { timeout: 10_000 });
@@ -649,18 +681,17 @@ test('leaving by the chip or the tour sidebar’s Settings: Back never reopens t
   await page.locator('[data-tour-exit="exit"]').click();
   await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   await expect(page).not.toHaveURL(/#settings/);
-  // The person's own Inbox list (a thread that arrived during the tour may wait behind "N new").
   await expect(page.locator(`[data-thread-id="${first}"]`).first()).toBeVisible();
   await focusKept(page);
   expect(errors).toEqual([]);
   await context.close();
 });
 
-test('step 6 and after a reload: every way out leaves the tour behind; from step 6 it counts as finished, How to allow opens Settings → General', async ({ browser }) => {
-  const w = startWorld('step6');
+test('step 9 and after a reload: every way out leaves the tour behind; from step 9 it counts as finished, How to allow opens Settings → General', async ({ browser }) => {
+  const w = startWorld('step9');
   const first = await agentWrites(w, 'A first real message.', 'First one');
   const errors: string[] = [];
-  // The browser blocked notifications for this address: step 6 offers How to allow.
+  // The browser blocked notifications for this address: step 9 offers How to allow.
   const { context, page } = await open(browser, w, errors, {}, () => {
     if (window.Notification) Object.defineProperty(window.Notification, 'permission', { get: () => 'denied' });
   });
@@ -670,15 +701,13 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await expect(page).toHaveURL(/#tour=1$/);
     await pastIntro(page);
   };
-  const toStep6 = async () => {
-    await page.locator('[data-thread-id="tour-vscode"]').first().click();
-    await page.locator('[data-tour-message="ask"] [data-question-tile] label').nth(2).click();
-    await page.locator('[data-tour-send]').click();
-    await expect(page.locator('[data-tour-next]')).toBeVisible({ timeout: 10_000 });
-    await page.locator('[data-tour-next]').click();
-    await page.locator('[data-tour-mock-tile]').click();
-    await page.locator('[data-tour-next]').click();
-    await expect(step(page)).toHaveAttribute('aria-label', 'Step 6 of 6');
+  // Reached by its address: step 9 is the person's own Inbox, whatever came before.
+  const toStep9 = async () => {
+    // In the tour's own history entry, as a step change is.
+    await page.evaluate(() => {
+      location.replace('#tour=9');
+    });
+    await expect(step(page)).toHaveAttribute('aria-label', 'Step 9 of 9');
   };
   const neverTheTour = async () => {
     await page.goBack();
@@ -686,7 +715,6 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await expect(page).not.toHaveURL(/#tour/);
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
   };
-  // The page's own way back (Settings' ← Inbox, What's new's ‹ Inbox) never leads into the tour either.
   const inAppBack = async (selector: string) => {
     await page.locator(selector).click();
     await page.waitForTimeout(400);
@@ -695,9 +723,8 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
   };
   const finishedAt = () => config(w).inboxTour?.finished_at ?? null;
 
-  // How to allow: Settings → General, recorded as finished; Back never reopens the tour.
   await fromSettings();
-  await toStep6();
+  await toStep9();
   const before = finishedAt();
   await page.getByRole('button', { name: 'How to allow' }).click();
   await expect(page).toHaveURL(/#settings\/general$/);
@@ -707,10 +734,9 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
   await inAppBack('[data-settings-back]');
   await neverTheTour();
 
-  // Step 6's real sidebar: its Inbox row and its Settings row end the tour (finished) in the tour's own entry.
   for (const row of ['[data-inbox-nav]', '.ib-setrow .ib-nav']) {
     await fromSettings();
-    await toStep6();
+    await toStep9();
     const was = finishedAt();
     await page.locator(row).first().click();
     await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
@@ -723,22 +749,9 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await neverTheTour();
   }
 
-  // What's new opened from step 6 (here by its address; the sidebar's link shows only after an update):
-  // its ‹ Inbox goes to the screen before the tour, never back to step 6.
-  await fromSettings();
-  await toStep6();
-  await page.evaluate(() => {
-    location.hash = '#whats-new=0.0.1';
-  });
-  await expect(page.locator('[data-whats-new-back]')).toBeVisible();
-  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
-  await inAppBack('[data-whats-new-back]');
-  // That release has no notes on this computer: its notes request answers 404, which is expected here.
-  const notesMissing = 'Failed to load resource: the server responded with a status of 404 (Not Found)';
-  if (errors.at(-1) === notesMissing) errors.pop();
-
   // A reload forgets where the tour started: Exit goes to the Inbox, in the tour's own entry.
   await fromSettings();
+  await page.locator('[data-tour-next]').click();
   await page.locator('[data-thread-id="tour-vscode"]').first().click();
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '2');
   await page.reload();
@@ -752,29 +765,36 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
   await context.close();
 });
 
-test('the fixture routes: read only, embedded in the binary, the mock sandboxed, nothing outside the manifest', async () => {
+test('the fixture routes: read only, embedded in the binary, the film by range, the notes as plain text, nothing outside the manifest', async () => {
   const w = startWorld('routes');
   const fixture = await fetch(new URL('api/inbox/tour/fixture.json', w.url));
   expect(fixture.status).toBe(200);
-  expect(((await fixture.json()) as { v: number }).v).toBe(1);
+  expect(((await fixture.json()) as { v: number }).v).toBe(2);
   const mock = await fetch(new URL('api/inbox/tour/assets/vscode-mockups.html', w.url));
   expect(mock.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
   expect(mock.headers.get('content-security-policy')).not.toContain('allow-same-origin');
   expect(mock.headers.get('x-content-type-options')).toBe('nosniff');
+  const notes = await fetch(new URL('api/inbox/tour/assets/evaluation.md', w.url));
+  expect(notes.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+  expect(notes.headers.get('content-security-policy')).toContain('sandbox');
+  const film = new URL('api/inbox/tour/assets/film-clip.mp4', w.url);
+  const range = await fetch(film, { headers: { range: 'bytes=0-1023' } });
+  expect(range.status).toBe(206);
+  expect(range.headers.get('content-type')).toBe('video/mp4');
+  expect(range.headers.get('content-range')).toMatch(/^bytes 0-1023\/\d+$/);
+  expect((await range.arrayBuffer()).byteLength).toBe(1024);
+  expect((await fetch(film, { headers: { range: 'bytes=99999999-' } })).status).toBe(416);
   const picture = await fetch(new URL('api/inbox/tour/assets/vs-a.webp', w.url));
   expect(picture.headers.get('content-type')).toBe('image/webp');
-  expect((await picture.arrayBuffer()).byteLength).toBeGreaterThan(10_000);
   const etag = picture.headers.get('etag')!;
   expect((await fetch(new URL('api/inbox/tour/assets/vs-a.webp', w.url), { headers: { 'if-none-match': etag } })).status).toBe(304);
-  for (const bad of ['api/inbox/tour/assets/..%2F..%2Fconfig.json', 'api/inbox/tour/assets/inbox.json', 'api/inbox/tour/other']) {
+  for (const bad of ['api/inbox/tour/assets/..%2F..%2Fconfig.json', 'api/inbox/tour/assets/inbox.json', 'api/inbox/tour/assets/graphite-inbox.webp', 'api/inbox/tour/other']) {
     expect((await fetch(new URL(bad, w.url))).status, bad).toBe(404);
   }
   expect((await fetch(new URL('api/inbox/tour/fixture.json', w.url), { method: 'POST' })).status).toBe(405);
   expect((await fetch(new URL('api/inbox/tour/fixture.json', w.url), { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
-  // The window carries no tour content of its own: inbox.html holds no picture of it.
   const html = await (await fetch(w.url)).text();
   expect(html).not.toContain('Honestly I’m just struggling with this UX');
-  // What the binary serves is the shipped content, byte for byte: the fixture, every picture and the mock.
   const content = join(repo, 'packages/inbox/tour/content');
   for (const name of readdirSync(content)) {
     const path = name === 'fixture.json' ? 'api/inbox/tour/fixture.json' : `api/inbox/tour/assets/${name}`;

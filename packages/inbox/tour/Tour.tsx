@@ -448,7 +448,10 @@ export function TourCoach({
     const vh = window.innerHeight;
     const bar = document.querySelector('[data-tour-bar]')?.getBoundingClientRect().bottom ?? 0;
     const m = 12;
-    const r = targetRect(coach.target);
+    const aim = targetRect(coach.target);
+    // Inside compose the card stands beside the dialog, never over the message being written.
+    const dialog = coach.target === 'compose-to' || coach.target === 'compose-send' ? document.querySelector('dialog[data-compose], [data-compose]')?.closest('dialog')?.getBoundingClientRect() : undefined;
+    const r = aim && dialog ? ({ left: dialog.left, right: dialog.right, width: dialog.width, top: aim.top, bottom: aim.bottom, height: aim.height } as DOMRect) : aim;
     if (phone) {
       if (sheetAt.current?.key !== coach.key) {
         // A file's own controls sit at its foot on a phone (the comment row, "Comment at", Send): the sheet goes up.
@@ -460,7 +463,10 @@ export function TourCoach({
     }
     const sides = coach.target ? (SIDES[coach.target] ?? ['corner']) : ['corner'];
     if (!r || sides[0] === 'corner') {
-      setPlace({ left: m, top: Math.max(bar + m, vh - h - 16), at: 'bottom' });
+      // Beside the sidebar, never over it (its Settings row stays in reach).
+      const side = document.querySelector('[data-tour] aside[aria-label="Inbox navigation"], .pn-inbox[data-tour] .ib-side')?.getBoundingClientRect();
+      const left = side && side.width > 0 && side.right + m + w <= vw - m ? side.right + m : m;
+      setPlace({ left, top: Math.max(bar + m, vh - h - 16), at: 'bottom' });
       return;
     }
     for (const side of sides) {
