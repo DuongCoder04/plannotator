@@ -17,7 +17,7 @@ interface HtmlBlockProps {
 function unavailableMedia(doc: Document, label: string, title: string): HTMLSpanElement {
   const placeholder = doc.createElement('span');
   placeholder.className = UNAVAILABLE_IMAGE_CLASS;
-  placeholder.title = title;
+  if (title) placeholder.title = title;
   placeholder.setAttribute('data-image-unavailable', '');
   placeholder.textContent = label;
   return placeholder;

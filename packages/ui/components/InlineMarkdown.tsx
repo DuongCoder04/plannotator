@@ -1065,15 +1065,13 @@ export const InlineMarkdown: React.FC<{
       // null from it, or no resolver, keeps the default resolution.
       const resolvedImage = resolveImage ? resolveImage(src) : null;
       if (resolvedImage?.kind === 'unavailable') {
+        // HostTitle: the native title by default, a component tooltip where the host asked for those.
         parts.push(
-          <span
-            key={key++}
-            className={UNAVAILABLE_IMAGE_CLASS}
-            title={resolvedImage.title}
-            data-image-unavailable=""
-          >
-            {alt || 'Image'}
-          </span>,
+          <HostTitle key={key++} title={resolvedImage.title}>
+            <span className={UNAVAILABLE_IMAGE_CLASS} data-image-unavailable="">
+              {alt || 'Image'}
+            </span>
+          </HostTitle>,
         );
         remaining = remaining.slice(match[0].length);
         previousChar = match[0][match[0].length - 1] || previousChar;
