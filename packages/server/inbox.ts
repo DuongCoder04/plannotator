@@ -53,7 +53,13 @@ import {
   INBOX_TOUR_VERSION,
   type InboxTourChange,
   type InboxTourState,
+  INBOX_CODEX_HOST,
+  INBOX_MCP_WAKING_HOSTS,
+  INBOX_WAKING_HOSTS,
   INBOX_HOST_NAMES,
+  codexThreadOfCall,
+  codexTurnStartedAt,
+  isCodexThreadId,
   isInboxId,
   isInboxSoundVolume,
   isInboxTextSize,
@@ -133,6 +139,7 @@ import { createInboxOpenInRoute, systemOpenInLauncher, type InboxOpenInLauncher 
 import { recordInboxAttachments, sweepStaleInboxSendTemps } from "@plannotator/shared/inbox/attachments";
 import { inboxBodyForAgent, inboxUploadAttachments, removeInboxAttachmentFiles, removeInboxUploads } from "@plannotator/shared/inbox/uploads";
 import { createInboxLiveSessions } from "./inbox-sessions";
+import { createInboxCodexWake, type InboxCodexWake } from "./inbox-codex-wake";
 import {
   claudePluginBehindInbox,
   claudeRestartCommand,
@@ -185,8 +192,8 @@ import {
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
 
-/** The hosts whose own connection polls the bridge and wakes its session with the reply. */
-const BRIDGE_WAKING_HOSTS: ReadonlySet<string> = new Set(["claude-code", "pi", "opencode"]);
+/** The hosts whose own connection polls the bridge and wakes its session with the reply: the waking hosts but Codex, which the Inbox wakes itself. */
+const BRIDGE_WAKING_HOSTS: ReadonlySet<string> = new Set(INBOX_WAKING_HOSTS.filter((host) => !INBOX_MCP_WAKING_HOSTS.includes(host)));
 
 /** Where a request came in: the window's loopback port, or the tailnet-only listener `tailscale serve` points at. */
 type RequestVia = "local" | "tailnet";
@@ -336,6 +343,12 @@ export interface InboxServerOptions {
   agentEnvironment?: AgentEnvironment;
   /** Tests: how the search index slices its build (packages/shared/inbox/search.ts). Default: 5 ms slices that yield. */
   searchIndex?: InboxSearchIndexOptions;
+  /**
+   * The Codex wake (packages/server/inbox-codex-wake.ts): where to look for a
+   * Codex CLI besides `agentEnvironment`'s PATH (default: the ChatGPT app's,
+   * never under the test sandbox), and how often to look for replies to queue.
+   */
+  codexWake?: { extraClis?: readonly string[]; now?: () => number; queueTimeoutMs?: number };
 }
 
 /**
@@ -369,6 +382,8 @@ export interface InboxServer {
   search: InboxSearchIndex;
   /** The background capture of images messages show (inbox-message-images.ts): tests wait on its `idle`. */
   imageCapture: InboxImageCapture;
+  /** The Codex wake (inbox-codex-wake.ts): tests run its sweep. */
+  codexWake: InboxCodexWake;
   stop: () => void;
 }
 
@@ -784,14 +799,26 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         recordAttachments: (paths, project, base) =>
           recordInboxAttachments(store.dir, paths, { base, at: new Date().toISOString() }),
         // An open wait_for_reply keeps its session present (never "ended").
-        presence: { seen: (session) => live.seenOverMcp(session), hold: (session) => live.holdOverMcp(session) },
+        presence: {
+          seen: (session) => live.seenOverMcp(session),
+          hold: (session, threadId) => {
+            const release = live.holdOverMcp(session, threadId);
+            return () => {
+              release();
+              // A Codex thread's wait ended: what it left (a wait cut short) is queued as a turn now.
+              if (codexWake.status(session) !== null) void codexWake.sweep();
+            };
+          },
+        },
         // The agents' read-only search reads the window's own ⌘K index, and finds projects without making one.
         searchIndex: search.index,
         findProjects,
         // A Claude Code, Pi or OpenCode session whose bridge polls now is woken by the reply, whoever sent for it
-        // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID).
-        sessionWakes: async (host, session) =>
-          typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session),
+        // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID). A Codex
+        // thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
+        sessionWakes: async (host, session, meta) =>
+          (typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session)) ||
+          codexWake.wakes(host, session, meta),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
@@ -1055,7 +1082,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // With PLANNOTATOR_INBOX_NOTES=0 only a note already written is listed, so it can still be turned off.
         const status = (INBOX_NOTE_AGENT_IDS as readonly string[]).includes(id) ? noteStatus(id as InboxNoteAgentId, dataDir, agentEnvironment) : null;
         const note = status && (!notesOff || status.state === "added" || status.state === "edited") ? status : null;
-        return { id, label: INBOX_AGENT_LABELS[id], detected, reach, tool, reminder, note, plugin: inboxPluginStatus(id, agentEnvironment) };
+        // Codex through MCP: whether this Inbox can wake it (a Codex CLI with `codex queue`; inbox-codex-wake.ts).
+        // Probed only for a connected one, so reading the agents runs no CLI otherwise.
+        const wakes =
+          INBOX_MCP_WAKING_HOSTS.includes(id) && reach.kind === "mcp" && reach.on ? { wakes: (await codexWake.cli()) !== null } : {};
+        return { id, label: INBOX_AGENT_LABELS[id], detected, reach, tool, reminder, note, plugin: inboxPluginStatus(id, agentEnvironment), ...wakes };
       }),
     );
     return {
@@ -1902,11 +1933,27 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     try {
       const body = (await req.json()) as unknown;
       for (const call of Array.isArray(body) ? body : [body]) {
-        const args = (call as { method?: unknown; params?: { arguments?: { agent_session?: unknown; agent_host?: unknown; agent_name?: unknown } } } | null)?.params
-          ?.arguments;
-        if ((call as { method?: unknown } | null)?.method !== "tools/call" || typeof args?.agent_session !== "string") continue;
+        if ((call as { method?: unknown } | null)?.method !== "tools/call") continue;
+        const params = (call as { params?: { arguments?: Record<string, unknown>; _meta?: unknown } }).params;
+        const args = params?.arguments;
+        const session = typeof args?.agent_session === "string" ? args.agent_session.trim() : null;
         // Who it is, when the call says: an MCP agent the person can tag (inbox-tags.ts).
-        live.seenOverMcp(args.agent_session.trim(), { host: args.agent_host, name: args.agent_name });
+        if (session) live.seenOverMcp(session, { host: args?.agent_host, name: args?.agent_name });
+        // A Codex thread (inbox-codex-wake.ts). Codex names its thread on every call (`_meta.threadId`), so a
+        // tool without a session (search, get_guide_brief) counts too: it is there, and it read what was queued
+        // before this turn started. While this Inbox can wake it (not a `codex exec` run), it is live for New
+        // message, compose and tags. A command its shell runs (host codex, CODEX_THREAD_ID) is presence only.
+        const meta = params?._meta;
+        const thread = codexThreadOfCall(meta);
+        if (thread && (!session || session === thread)) {
+          if (!session) live.seenOverMcp(thread, { host: INBOX_CODEX_HOST });
+          codexWake.noteToolCall(thread, codexTurnStartedAt(meta));
+          if (await codexWake.wakes(INBOX_CODEX_HOST, thread, meta)) {
+            await live.seenWakeOnly(thread, INBOX_CODEX_HOST, args?.project_path);
+          }
+        } else if (session && args?.agent_host === INBOX_CODEX_HOST && isCodexThreadId(session)) {
+          codexWake.noteToolCall(session, null);
+        }
       }
     } catch {
       // Not JSON: the MCP handler answers it.
@@ -1939,6 +1986,22 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     displayFolder: (path) => displayPath(path, agentEnvironment) ?? path,
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),
     autoSendAfterMs: options.autoSendAfterMs ?? INBOX_AUTO_SEND_AFTER_MS,
+    // A Codex thread has no connection that polls: it is there until Codex says its thread is gone.
+    wakeOnlyStatus: (session) => codexWake.status(session),
+    uncertainItemsOf: (session) => codexWake.uncertainItems(session),
+  });
+
+  // The Codex wake: the person's items for a Codex thread go in as a new turn through `codex queue`,
+  // once each (inbox-codex-wake.ts). Worded like any bridge command.
+  const codexWake = createInboxCodexWake({
+    store,
+    environment: agentEnvironment,
+    commandOf: (item, session) => replyCommand(item, false, session),
+    // A thread blocked in wait_for_reply gets the reply from that call, not as another turn as well.
+    waitingOverMcp: (session, threadId) => live.waitingOverMcp(session, threadId),
+    ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
+    ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
+    ...(options.codexWake?.queueTimeoutMs ? { queueTimeoutMs: options.codexWake.queueTimeoutMs } : {}),
   });
 
   // A reply that waited 5 minutes on a busy session goes into its running turn by itself, as if the person
@@ -1984,6 +2047,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   store.setDeliveryPresence({
     connection: live.deliveryConnectionOf,
     askerLive: live.askerLive,
+    // A Codex reply whose `codex queue` ran out of time may not have gone: its row says it is saved, not queued.
+    uncertain: (session, itemId) => codexWake.uncertain(session, itemId),
     autoSendAfterMs: live.autoSendAfterMs,
     waitOf: live.waitOf,
   });
@@ -2886,6 +2951,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     clearInterval(deliveryWatch);
     clearInterval(autoSendWatch);
     unsubscribeWaits();
+    codexWake.stop();
     void mcp.close().catch(() => {});
     server.stop(true);
     // The tailnet mapping and the door listener, the Wi-Fi listener and its
@@ -2897,7 +2963,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     tailnetStopFailedPort = tailscale.stop().failedPort;
   };
 
-  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, stop };
+  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, codexWake, stop };
 }
 
 /** Print where the Inbox is, and open it when a person asked for it. */
