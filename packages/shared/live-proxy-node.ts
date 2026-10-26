@@ -41,8 +41,11 @@ import { Transform, pipeline } from "node:stream";
 import {
   HOP_BY_HOP_HEADERS,
   LIVE_PROXY_BRIDGE_PATH,
+  LIVE_PROXY_PLANNOTATOR_UPSTREAM_MESSAGE,
   LIVE_PROXY_RESERVED_PREFIX,
+  PLANNOTATOR_LIVE_PROXY_HEADER,
   applyHtmlFramingHeaders,
+  assertLiveTargetNotEditor,
   buildFrameAncestorsPolicy,
   createHtmlInjector,
   isAllowedBridgeFetchSite,
@@ -50,6 +53,7 @@ import {
   isAllowedWsUpgradeOrigin,
   isDocumentIntentRequest,
   isHtmlContentType,
+  isPlannotatorUpstreamResponse,
   rewriteLoopbackLocation,
   type HeaderReader,
   type LiveAppProxy,
@@ -121,6 +125,8 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
   if (target.protocol !== "http:") {
     throw new Error("Live app proxy supports http upstreams only.");
   }
+  // Never front the editor's own server (see live-proxy-core).
+  assertLiveTargetNotEditor(opts.targetUrl, opts.editorOrigins);
   const targetHost = target.host;
   const targetHostname = target.hostname;
   const targetPort = Number(target.port || "80");
@@ -179,6 +185,7 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
     upstreamHeaders["host"] = targetHost;
     upstreamHeaders["x-forwarded-host"] = hostHeader ?? "";
     upstreamHeaders["x-forwarded-proto"] = "http";
+    upstreamHeaders[PLANNOTATOR_LIVE_PROXY_HEADER] = "1";
     if (isDocumentIntentRequest(nodeHeaderReader(req.headers))) {
       // HTML must arrive decodable for injection; assets keep encoding.
       upstreamHeaders["accept-encoding"] = "identity";
@@ -193,6 +200,14 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
         headers: upstreamHeaders,
       },
       (upstreamRes) => {
+        // A Plannotator server is never relayed, whatever answers on the
+        // target port now (see isPlannotatorUpstreamResponse in live-proxy-core).
+        if (isPlannotatorUpstreamResponse(nodeHeaderReader(upstreamRes.headers))) {
+          upstreamRes.resume();
+          res.writeHead(502, { "Content-Type": "text/plain", "Cache-Control": "no-store" });
+          res.end(LIVE_PROXY_PLANNOTATOR_UPSTREAM_MESSAGE);
+          return;
+        }
         const responseHeaders = copyWithoutHopByHop(upstreamRes.headers);
 
         const location = firstHeaderValue(upstreamRes.headers.location);
@@ -320,7 +335,10 @@ export async function startLiveAppProxyNode(opts: LiveAppProxyOptions): Promise<
         continue;
       }
       if (lower === "origin") continue;
+      if (lower === PLANNOTATOR_LIVE_PROXY_HEADER) continue;
       handshake += `${name}: ${req.rawHeaders[i + 1]}\r\n`;
+    // The live proxy header makes a Plannotator upstream refuse the upgrade.
+    handshake += `${PLANNOTATOR_LIVE_PROXY_HEADER}: 1\r\n`;
     }
 
     const upstreamSocket = netConnect(targetPort, targetHostname);

@@ -18,6 +18,7 @@ import {
 } from "@plannotator/shared/goal-setup";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import {
@@ -106,7 +107,7 @@ export async function startGoalSetupServer(
 
   const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills long-running requests.
@@ -219,7 +220,7 @@ export async function startGoalSetupServer(
             { status: 500, headers: { "Content-Type": "text/plain" } }
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;
