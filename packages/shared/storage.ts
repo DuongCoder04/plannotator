@@ -480,3 +480,31 @@ export function resolveHistorySlug(
   if (best && best.mtime > 0 && now - best.mtime <= PLAN_HISTORY_CONTINUE_WINDOW_MS) return best.slug;
   return datedSlug;
 }
+
+/**
+ * Pick the history project AND slug a plan appends to, given the projects it
+ * could belong to, best first (#2197). The Claude Code hosts name the
+ * session's root first and the shell's current folder second: a session that
+ * `cd`s into another repository between two submits must keep one chain.
+ *
+ * Each candidate runs `resolveHistorySlug` unchanged. The first candidate
+ * whose resolved chain already holds versions wins, so a chain in the session
+ * root's project always beats one elsewhere, and the current folder's chain
+ * is continued only when the root has none (a plan started before this rule,
+ * or a root that resolves to another project). With no chain anywhere the
+ * first candidate starts a new one. One candidate (every other host) is
+ * exactly `resolveHistorySlug`.
+ */
+export function resolveHistoryChain(
+  projects: readonly string[],
+  datedSlug: string,
+  options: { now?: Date; current?: string } = {},
+): { project: string; slug: string } {
+  const candidates = [...new Set(projects.filter((project) => project))];
+  const primary = candidates[0] ?? "_unknown";
+  for (const project of candidates) {
+    const slug = resolveHistorySlug(project, datedSlug, options);
+    if (getVersionCount(project, slug) > 0) return { project, slug };
+  }
+  return { project: primary, slug: resolveHistorySlug(primary, datedSlug, options) };
+}

@@ -371,13 +371,14 @@ async function currentMod($: Engine): Promise<PlannotatorMod | null> {
       sessionId,
       dataDir: settings.dataDir,
       interactive: true,
+      cwd: async () => String(await $.session.cwd()),
+      // The session's root (where it started; a shell cd does not move it): its
+      // `claude --resume` folder, and the plan history project's folder (#2197).
+      root: async () => String(await $.session.root()),
       ...(inboxTools
         ? {
             inboxTools,
             ...(inboxToolName ? { inboxToolName } : {}),
-            cwd: async () => String(await $.session.cwd()),
-            // The session's root (where it started; a shell cd does not move it): its `claude --resume` folder.
-            root: async () => String(await $.session.root()),
           }
         : {}),
     })

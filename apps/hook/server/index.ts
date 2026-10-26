@@ -2779,6 +2779,8 @@ if (args[0] === "sessions") {
     origin: "claude-code",
     planFilePath: input.planFilePath,
     permissionMode: input.permissionMode,
+    // The session's root names the history project, not the shell's cwd (#2197).
+    historyRoot: input.projectRoot,
     planRevisions: true,
     // The mod delivers an approval's notes (planHostResult composes the
     // approved-with-notes prompt). The classic PermissionRequest hook below
@@ -3065,6 +3067,10 @@ if (args[0] === "sessions") {
     // model, so notes sent with an approval would be lost.
     // Claude Code writes the plan to disk before the hook fires.
     planFilePath: isGemini ? undefined : event.tool_input?.planFilePath,
+    // Claude Code sets CLAUDE_PROJECT_DIR (the session's project root) for
+    // hooks; a shell cd does not move it, so it names the history project
+    // (#2197). Gemini CLI sets the same variable as an alias: left out.
+    historyRoot: !isGemini && detectedOrigin === "claude-code" ? process.env.CLAUDE_PROJECT_DIR : undefined,
     permissionMode,
     sharingEnabled,
     shareBaseUrl,
