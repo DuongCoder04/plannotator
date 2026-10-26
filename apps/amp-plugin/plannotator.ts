@@ -190,7 +190,10 @@ export default function plannotatorAmpPlugin(amp: PluginAPI) {
 /** What /plannotator-inbox shows for the CLI's answer. */
 export function inboxOpenedMessage(result: RunResult): string {
   const url = /https?:\/\/\S+/.exec(result.stdout)?.[0];
-  if (!result.error && result.status === 0 && url) return `Your Plannotator Inbox is open in the browser: ${url}`;
+  if (!result.error && result.status === 0 && url) {
+    // The CLI's stderr says why no browser opened (a remote session, a "none" browser).
+    return `Plannotator Inbox: ${url}${result.stderr.trim() ? `\n${result.stderr.trim()}` : ""}`;
+  }
   const details = [result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n").trim();
   if (/unknown inbox option: --open|unknown command/i.test(details)) {
     return "The plannotator CLI is older than /plannotator-inbox. Update it with `plannotator update`, or run `plannotator inbox` in a terminal.";

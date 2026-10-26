@@ -1607,6 +1607,14 @@ describe('/plannotator-inbox', () => {
     expect(host.runs.filter(isLaunch)).toEqual([])
   })
 
+  test('over SSH the CLI opens no browser and says how to reach the Inbox: the answer passes that on', async () => {
+    const host = fakeHost()
+    host.onRun = () => ({ exitCode: 0, stdout: 'http://localhost:59812/\n', stderr: 'No browser opened: this is a remote session. Forward the port (ssh -L 59812:127.0.0.1:59812 <this host>) and open the URL, or run plannotator inbox --tailscale.\n' })
+    const text = await new PlannotatorMod(host, SESSION).openInbox()
+    expect(text).toContain('http://localhost:59812/')
+    expect(text).toContain('ssh -L 59812:127.0.0.1:59812')
+  })
+
   test('an older CLI without --open is told to update; any other failure says why', async () => {
     const host = fakeHost()
     host.onRun = () => ({ exitCode: 1, stdout: '', stderr: "Unknown inbox option: --open\nRun 'plannotator inbox --help' for usage.\n" })

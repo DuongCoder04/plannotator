@@ -35,7 +35,8 @@ import {
 } from "@plannotator/shared/inbox/registry";
 import { handleInboxServerReady, startInboxServer } from "@plannotator/server/inbox";
 import { exposureWarning, type InboxTailscaleState } from "@plannotator/server/inbox-tailscale";
-import { openBrowser } from "@plannotator/server/browser";
+import { openBrowser, openBrowserDetached } from "@plannotator/server/browser";
+import { isRemoteSession } from "@plannotator/server/remote";
 import { agentSpec, createAgentEnvironment, formatConnectReport, inboxConnectDisabled } from "@plannotator/server/inbox-agents";
 import { addInboxNote, INBOX_NOTE_BODY, inboxNotesDisabled, markNotesAsked } from "@plannotator/server/inbox-agent-notes";
 import { INBOX_AGENT_LABELS, INBOX_AUTO_SEND_AFTER_MS, INBOX_NOTE_AGENT_IDS, type InboxConnectReport, type InboxNoteAgentId } from "@plannotator/core/inbox-types";
@@ -134,6 +135,11 @@ export async function ensureInboxRunning(dataDir: string, options: { tailscale?:
   } finally {
     release?.();
   }
+}
+
+/** `--open` over SSH: no browser opened on the remote host, so say how to reach the Inbox. */
+export function inboxRemoteOpenHint(port: number): string {
+  return `No browser opened: this is a remote session. Forward the port (ssh -L ${port}:127.0.0.1:${port} <this host>) and open the URL, or run plannotator inbox --tailscale.`;
 }
 
 /** Where the Inbox is on the tailnet, or why it is not there; the Inbox runs locally either way. Stderr only. */
@@ -419,8 +425,11 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
       if (tailscale && (before.state === "running" || before.state === "busy")) await publishRunningInbox(entry);
       else reportTailnet(readInboxRegistry(dataDir)?.tailscale ?? entry.tailscale, tailscale);
       // --open: the person asked for the window (the /plannotator-inbox
-      // commands). Opened after the start, so it never blocks the caller.
-      if (open) await openBrowser(entry.url);
+      // commands). The opener is never waited for: a browser it starts may
+      // hold its output open for as long as it runs.
+      if (open && (await openBrowserDetached(entry.url, { isRemote: isRemoteSession() })) === "remote") {
+        process.stderr.write(`${inboxRemoteOpenHint(entry.port)}\n`);
+      }
       process.stdout.write(`${entry.url}\n`);
       process.exit(0);
     } catch (error) {

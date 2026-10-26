@@ -470,7 +470,8 @@ export function inboxOpenArgv(): string[] {
 /** What `/plannotator-inbox` shows for the CLI's answer. */
 export function inboxOpenAnswer(result: { exitCode: number; stdout: string; stderr: string }): string {
   const url = /https?:\/\/\S+/.exec(result.stdout)?.[0]
-  if (result.exitCode === 0 && url) return `Your Plannotator Inbox is open in the browser: ${url}`
+  // The CLI's stderr says why no browser opened (a remote session, a "none" browser).
+  if (result.exitCode === 0 && url) return `Plannotator Inbox: ${url}${result.stderr.trim() ? `\n${result.stderr.trim()}` : ''}`
   const why = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`
   // A CLI older than --open (or than the Inbox itself).
   if (/unknown inbox option: --open|unknown command/i.test(why)) {

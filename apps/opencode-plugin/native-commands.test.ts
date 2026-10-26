@@ -11,6 +11,7 @@ import {
 } from "./native-commands";
 import {
   createV2BridgeClient,
+  formatInboxNotice,
   formatSessionUrlNotice,
   normalizeAgentList,
   readListPayload,
@@ -989,7 +990,11 @@ describe.skipIf(process.platform === "win32")("V2 /plannotator-inbox", () => {
     const calls = stubCli("echo 'http://localhost:61234/'");
     const { synthetic, prompt } = await runInbox();
     expect(readFileSync(calls, "utf8").trim()).toBe("inbox --open");
-    expect(JSON.stringify(synthetic.mock.calls)).toContain("http://localhost:61234/");
+    expect(synthetic).toHaveBeenCalledTimes(1);
+    const notice = synthetic.mock.calls[0]![0] as { description: string; resume: boolean };
+    // Says it is the Inbox, never the review's "session ready" line.
+    expect(notice.description).toBe(formatInboxNotice("http://localhost:61234/"));
+    expect(notice.resume).toBe(false);
     expect(prompt).not.toHaveBeenCalled();
   });
 

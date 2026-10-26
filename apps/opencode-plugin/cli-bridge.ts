@@ -75,6 +75,8 @@ interface OpenCodeClient {
    * transcript notice (`createCommandFailureNotifier` in `v2-client.ts`).
    */
   notifyFailure?: (input: { command: string; message: string }) => unknown;
+  /** OpenCode 2's slash commands: `/plannotator-inbox`'s transcript notice. */
+  notifyInbox?: (input: { url: string; detail?: string }) => unknown;
   session?: {
     messages?: (input: unknown) => Promise<{ data?: any[] }>;
     prompt?: (input: unknown) => Promise<unknown>;
@@ -1096,11 +1098,23 @@ export async function handleCliCommand(input: {
         reportFailure(opened.error);
         return;
       }
-      const text = inboxOpenedText(opened.url);
+      const text = inboxOpenedText(opened.url, opened.note);
       log(input.client, "info", `[Plannotator] ${text}`);
-      // Seen by the person: OpenCode 1's toast, OpenCode 2's transcript notice
-      // (no model turn).
-      toastPlannotatorUrl(input.client, text, new Set());
+      // Seen by the person: OpenCode 2's transcript notice (no model turn),
+      // else OpenCode 1's toast.
+      if (typeof input.client.notifyInbox === "function") {
+        try {
+          await input.client.notifyInbox({ url: opened.url, ...(opened.note ? { detail: opened.note } : {}) });
+        } catch (error) {
+          log(input.client, "info", `[Plannotator] Could not show the Inbox notice: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else {
+        try {
+          await input.client.tui?.showToast?.({ body: { title: "Plannotator", message: text, variant: "info" } });
+        } catch {
+          // The toast is best-effort; the command's own turn below says it too.
+        }
+      }
       // OpenCode 1 runs a model turn for the command's message anyway: let it
       // carry the address (the command turn client records this prompt).
       if (input.commandTurn) {

@@ -13,6 +13,4 @@ disable-model-invocation: true
 
 ## Your task
 
-The output above is the Plannotator Inbox's address, and the Inbox is now open in the person's browser. Tell them the address in one sentence and stop. Do not begin any work.
-
-If the output is an error instead, tell the person what it says. If it says `Unknown inbox option: --open`, their Plannotator is older than this command: they can update with `plannotator update`, or run `plannotator inbox` in a terminal.
+The output above is the Plannotator Inbox's address; it opened in the person's browser unless the output says why not. Tell them the address in one sentence, with that reason when there is one, and stop. Do not begin any work.
