@@ -110,34 +110,65 @@ export function findDshSessionLog(
 
 const ZSTD_FRAME_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
-/**
- * Where a log being appended to can end: the whole file; the file without a
- * 1-3 byte tail, too short to hold the next frame's magic; then each frame
- * start, last first.
- */
-function* dshLogEnds(bytes: Buffer): Generator<number> {
-  yield bytes.length;
-  for (let cut = 1; cut <= 3 && cut < bytes.length; cut++) yield bytes.length - cut;
-  for (let at = bytes.lastIndexOf(ZSTD_FRAME_MAGIC); at > 0; at = bytes.lastIndexOf(ZSTD_FRAME_MAGIC, at - 1)) {
-    yield at;
+/** Decode one run of whole zstd frames; throws when the run is not one. */
+export type DshFrameDecoder = (frames: Uint8Array) => string;
+
+const decodeZstd: DshFrameDecoder = (frames) => Buffer.from(Bun.zstdDecompressSync(frames)).toString("utf-8");
+
+/** Where each frame after the first may start: every later frame magic, in order. */
+function laterFrameStarts(bytes: Buffer): number[] {
+  const starts: number[] = [];
+  for (let at = bytes.indexOf(ZSTD_FRAME_MAGIC, 1); at !== -1; at = bytes.indexOf(ZSTD_FRAME_MAGIC, at + 1)) {
+    starts.push(at);
   }
+  return starts;
 }
 
 /**
- * Decompress a multi-frame log. DSH appends one zstd frame per write, so a
- * read that lands mid-append ends in a truncated frame: cut it off and keep
- * every complete message before it.
+ * Decompress a multi-frame log. DSH appends one zstd frame per write, so the
+ * whole file usually decodes at once. When it does not, walk forward one
+ * frame at a time, so each byte is decoded about twice however long the log:
+ * - a run that fails is joined with the next one when the next does not
+ *   decode alone (a magic number inside compressed data split a frame);
+ * - a run that fails while the next decodes alone is a damaged frame: it is
+ *   skipped and every newer frame is kept;
+ * - the last run may also end in a frame being written (a read racing an
+ *   append) or a 1-3 byte partial magic: the cut tail is tried, else dropped.
+ * Throws when nothing decodes. Exported for tests (`decode` counts calls).
  */
-function decompressDshLog(bytes: Buffer): string {
+export function decompressDshLog(bytes: Buffer, decode: DshFrameDecoder = decodeZstd): string {
   let lastError: unknown;
-  for (const end of dshLogEnds(bytes)) {
+  const tryDecode = (from: number, to: number): string | undefined => {
     try {
-      return Buffer.from(Bun.zstdDecompressSync(bytes.subarray(0, end))).toString("utf-8");
+      return decode(bytes.subarray(from, to));
     } catch (error) {
       lastError = error;
+      return undefined;
     }
+  };
+
+  const whole = tryDecode(0, bytes.length);
+  if (whole !== undefined) return whole;
+
+  const ends = [...laterFrameStarts(bytes), bytes.length];
+  const parts: string[] = [];
+  let from = 0;
+  for (let i = 0; i < ends.length; i++) {
+    const to = ends[i];
+    let text = tryDecode(from, to);
+    if (text === undefined && to === bytes.length) {
+      for (let cut = 1; cut <= 3 && to - cut > from && text === undefined; cut++) text = tryDecode(from, to - cut);
+    }
+    if (text !== undefined) {
+      parts.push(text);
+      from = to;
+      continue;
+    }
+    const next = ends[i + 1];
+    if (next !== undefined && tryDecode(to, next) !== undefined) from = to;
   }
-  throw lastError;
+  if (parts.length === 0) throw lastError;
+  return parts.join("");
 }
 
 /**

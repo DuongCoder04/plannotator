@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  decompressDshLog,
   encodeDshSegment,
   findDshSessionLog,
   getRecentDshMessages,
@@ -135,6 +136,41 @@ describe("getRecentDshMessages", () => {
     ]));
 
     expect(getRecentDshMessages(log, 25).map((m) => m.messageId)).toEqual(["m3", "m1"]);
+  });
+
+  // Catches: one damaged append frame in the middle of a live log dropping
+  // every newer frame, so `last` serves an old answer.
+  test("a damaged frame in the middle keeps the frames on both sides", () => {
+    const home = makeDshHome();
+    const dir = sessionDir(home, "s1");
+    const log = join(dir, "session.v4.jsonl.zstd");
+    writeFileSync(log, Buffer.concat([
+      Bun.zstdCompressSync(Buffer.from(firstBatch)),
+      Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x13, 0x37, 0x42]),
+      Bun.zstdCompressSync(Buffer.from(secondBatch)),
+    ]));
+
+    expect(getRecentDshMessages(log, 25).map((m) => m.messageId)).toEqual(["m3", "m1"]);
+  });
+
+  // Catches: the retry decoding a longer prefix once per frame (quadratic: a
+  // long live session made `last` take seconds once a frame was damaged).
+  test("a damaged frame costs about two decodes per frame, not one per prefix", () => {
+    const frames: Buffer[] = [];
+    for (let i = 0; i < 400; i++) {
+      frames.push(Buffer.from(Bun.zstdCompressSync(Buffer.from(assistantRow(`m${i}`, [text(`answer ${i}`)]) + "\n"))));
+    }
+    frames[200] = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x13, 0x37, 0x42]);
+    let decodes = 0;
+    const out = decompressDshLog(Buffer.concat(frames), (bytes) => {
+      decodes++;
+      return Buffer.from(Bun.zstdDecompressSync(bytes)).toString("utf-8");
+    });
+
+    expect(out).toContain('"m0"');
+    expect(out).toContain('"m399"');
+    expect(out).not.toContain('"m200"');
+    expect(decodes).toBeLessThanOrEqual(2 * frames.length + 4);
   });
 
   // Catches: a corrupt log throwing out of annotate-last instead of reporting

@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import type { PlannotatorConfig } from "@plannotator/shared/config";
 import { composeDshPlanOutput, parseDshPlanInput } from "./dsh-plan";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
+import { NO_BROWSER } from "../../../tests/helpers/no-browser";
 
 const noConfig: PlannotatorConfig = {};
 
@@ -119,6 +120,8 @@ describe("plannotator dsh-plan", () => {
         PLANNOTATOR_PORT: "0",
         PLANNOTATOR_REMOTE: "0",
         PLANNOTATOR_SKIP_BROWSER_OPEN: "1",
+        // Explicit, not only from the preload: this child must never open a browser.
+        PLANNOTATOR_BROWSER: NO_BROWSER,
         PLANNOTATOR_READY_FILE: readyFile,
         PLANNOTATOR_AI: "disabled",
         PLANNOTATOR_SHARE: "disabled",
