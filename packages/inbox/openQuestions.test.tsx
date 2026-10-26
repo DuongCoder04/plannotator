@@ -23,7 +23,7 @@ import { parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
 import type { InboxAuthor, InboxMessageWire, InboxProject, InboxQuestion, InboxThread } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { openQuestionsShown, openQuestionState, placeOf, reaskItemLabel, skipAllCandidates, skipSelection, skipToggledAnswer, threadOpenQuestions } from './openQuestions';
-import { footFitCandidates, onOneLine, openQuestionsFormText, pillHitsButtons } from './footFit';
+import { footFitCandidates, footRowOpenQuestionsForm, footRowTokens, onOneLine, onOneRow, openQuestionsFormText, pillHitsButtons } from './footFit';
 
 const hasDom = typeof document !== 'undefined';
 const { ThreadPane } = (hasDom ? await import('./components/Thread') : {}) as typeof import('./components/Thread');
@@ -172,6 +172,19 @@ describe('fitting the foot on one line (footFit.ts)', () => {
   test('one line: every top within a pixel of the first', () => {
     expect(onOneLine([846, 846.4, 845.6])).toBe(true);
     expect(onOneLine([553, 553, 605])).toBe(false);
+  });
+
+  test('the whole row shortens in the owner\'s order before the status wraps: skip, Edit, the count, the draft words, tight', () => {
+    expect([0, 1, 2, 3, 4, 5].map(footRowTokens)).toEqual(['', 'skip', 'skip edit', 'skip edit oq', 'skip edit oq draft', 'skip edit oq draft tight']);
+    // The open questions button keeps its longest form until the third step, then shows its count.
+    expect([0, 1, 2, 3, 5].map((level) => footRowOpenQuestionsForm(level, 'full'))).toEqual(['full', 'full', 'full', 'count', 'count']);
+    expect(footRowOpenQuestionsForm(0, 'short')).toBe('short');
+  });
+
+  test('one row: the middles of buttons and status parts of different heights line up; a wrapped status does not', () => {
+    // A 32 px button and a 26 px chip on one line share a middle.
+    expect(onOneRow([861, 861.5, 860.8])).toBe(true);
+    expect(onOneRow([861, 861, 824])).toBe(false);
   });
 
   test('the pill lies over a button only when one sits under the middle of the row', () => {

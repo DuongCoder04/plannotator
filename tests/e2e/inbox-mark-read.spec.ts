@@ -292,9 +292,8 @@ test('the foot after a pick: the buttons on the left, the draft status at the ro
   const box = async (sel: string) => (await page.locator(sel).first().boundingBox())!;
   const send = async () => box('.ib-pfoot [data-foot-buttons] .ib-btn.ib-pri');
   const reask = async () => box('.ib-pfoot [data-foot-buttons] [data-open-questions]');
-  // Wide: one line. Send first, the status after the last button ("N open questions", which holds Re-ask), ending at the row's end. Since the "N open questions"
-  // button joined the row (approval "inbox-thread-open-questions"), one line needs a window this wide; at 1440 the
-  // status sits on its own line above, as the approved mock draws it.
+  // Wide: one line. Send first, the status after the last button ("N open questions", which holds Re-ask), ending at the row's end,
+  // in full words at this width (narrower, the row shortens before it wraps: inbox-thread-foot.spec.ts).
   await page.setViewportSize({ width: 1920, height: 1000 });
   await expect.poll(async () => Math.round((await box('.ib-pfoot [data-foot-status]')).y - (await send()).y)).toBeLessThan(10);
   const wide = { row: await box('.ib-pfoot [data-foot-row]'), status: await box('.ib-pfoot [data-foot-status]'), send: await send(), reask: await reask() };
