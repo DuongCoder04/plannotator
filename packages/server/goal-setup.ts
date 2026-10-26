@@ -169,8 +169,8 @@ export async function startGoalSetupServer(
               if (body.conventionalLabels !== undefined) {
                 toSave.conventionalLabels = body.conventionalLabels;
               }
-              if (Object.keys(toSave).length > 0) {
-                saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) {
+                return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               }
               return Response.json({ ok: true });
             } catch {

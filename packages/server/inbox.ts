@@ -399,6 +399,8 @@ const ERROR_STATUS: Record<string, number> = {
   // The project menu: a batch_id already answered another project or action.
   batch_id_reused: 409,
   config_not_saved: 500,
+  // pins.json from a newer Plannotator: kept as it is (packages/shared/inbox/pins.ts).
+  pins_newer: 409,
   // Attachments and annotations (step 2).
   attachment_not_found: 404,
   attachment_missing: 404,
@@ -1200,7 +1202,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return notificationsState();
     saveConfig({ inboxNotifications: next });
     if (JSON.stringify(loadConfig().inboxNotifications) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return notificationsState();
   };
@@ -1255,7 +1257,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return soundState();
     saveConfig({ inboxSound: next });
     if (JSON.stringify(loadConfig().inboxSound) !== JSON.stringify(next)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return soundState();
   };
@@ -1303,7 +1305,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig({ theme: next });
     const saved = themeState();
     if (!saved || Object.entries(next).some(([key, value]) => saved[key as keyof ThemeConfig] !== value)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return saved;
   };
@@ -1322,7 +1324,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (!isInboxTextSize(input)) throw new InboxError("validation_error", "text_size: 12, 13, 14 or 15.", { field: "text_size" });
     if (validateOnly) return textSizeState();
     saveConfig({ inboxTextSize: input });
-    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().inboxTextSize !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
   };
 
@@ -1369,7 +1371,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig({ inboxTour: next });
     const saved = tourState();
     if (saved.seen_at !== next.seen_at || saved.finished_at !== next.finished_at || saved.skipped_at !== next.skipped_at || saved.notify_again !== next.notify_again) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return saved;
   };
@@ -1389,7 +1391,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (validateOnly) return diffStyleState();
     // saveConfig merges diffOptions per field, so code review's other diff options stay.
     saveConfig({ diffOptions: { diffStyle: input } });
-    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (diffStyleState() !== input) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return input;
   };
 
@@ -1445,7 +1447,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     saveConfig(toSave);
     const saved = loadConfig();
     if ((toSave.updateCheck !== undefined && saved.updateCheck !== toSave.updateCheck) || (toSave.autoUpdate !== undefined && saved.autoUpdate !== toSave.autoUpdate)) {
-      throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+      throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     }
     return updatesState();
   };
@@ -1479,7 +1481,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     if (validateOnly) return experimentalState();
     saveConfig({ experimental: { decisionMode: on } });
-    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return experimentalState();
   };
 
@@ -1546,7 +1548,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const saved = loadConfig();
     for (const [host, value] of Object.entries(next)) {
       if (configuredInboxTool(saved, host as InboxToolHost) !== value) {
-        throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+        throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
       }
     }
     return inboxToolState();

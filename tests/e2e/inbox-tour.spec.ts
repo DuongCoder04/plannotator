@@ -142,6 +142,20 @@ async function open(
 }
 
 const coach = (page: Page) => page.locator('[data-tour-coach]');
+/** A tour started from a screen opens on its first card ("a fresh reminder", 0.28.31): Show me goes to step 1. */
+async function pastIntro(page: Page, how: 'click' | 'tap' | 'keys' = 'click') {
+  const go = page.locator('[data-tour-intro-go]');
+  await expect(page.locator('[data-tour-intro] h2')).toHaveText('The Inbox works beside your agents');
+  await expect(page.locator('[data-tour-intro] h2')).toBeFocused();
+  await expect(page.locator('[data-tour-exit]')).toBeVisible();
+  if (how === 'keys') {
+    await page.keyboard.press('Tab');
+    await expect(go).toBeFocused();
+    await page.keyboard.press('Enter');
+  } else if (how === 'tap') await go.tap();
+  else await go.click();
+  await expect(go).toHaveCount(0);
+}
 const step = (page: Page) => page.locator('[data-tour-bar] .ib-tour-steps');
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
 
@@ -237,7 +251,8 @@ test('the paced newcomer walk: Two paths, the six steps, the aha under 2 minutes
   const before = await ownList(w);
   // The entry screen: two equal cards.
   await expect(page.getByRole('heading', { name: 'Two ways to start' })).toBeVisible();
-  await expect(page.locator('.ib-te-card')).toHaveCount(2);
+  await expect(page.locator('.ib-te-paths .ib-te-card')).toHaveCount(2);
+  await expect(page.locator('[data-tour-fit] h3')).toHaveText('The Inbox works beside your agents');
   await expect(page.getByRole('button', { name: 'Start the tour' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Connect my agents' })).toBeVisible();
   await page.waitForTimeout(1200);
@@ -251,6 +266,7 @@ test('the paced newcomer walk: Two paths, the six steps, the aha under 2 minutes
   const mark = (name: string) => (at[name] = Math.round((Date.now() - started - (shooting - shotsBefore)) / 100) / 10);
   await page.getByRole('button', { name: 'Start the tour' }).click();
   await expect(page).toHaveURL(/#tour=1$/);
+  await pastIntro(page);
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '1');
   expect(await focusKept(page)).toContain('An agent came back');
   expect(config(w).inboxTour.seen_at).toBeTruthy();
@@ -269,7 +285,8 @@ test('the paced newcomer walk: Two paths, the six steps, the aha under 2 minutes
   // The closer look: the magnifier opens the viewer, which offers the pick; Escape closes it, focus back on the magnifier.
   await page.locator('[data-tour-message="ask"] [data-question-zoom]').first().click();
   await expect(page.locator('[data-tour-viewer]')).toBeVisible();
-  await expect(page.locator('[data-tour-viewer] img')).toHaveAttribute('src', /vs-a\.webp$/);
+  // The larger picture (vs-a.webp, 1440 px wide), from the copy the tour loaded when it started.
+  await expect.poll(() => page.locator('[data-tour-viewer] img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1440);
   await shoot(page, '02-step2-closer-look');
   await page.waitForTimeout(3000);
   await page.keyboard.press('Escape');
@@ -368,6 +385,7 @@ test('keyboard only: Tab and Enter through every step, focus never on the page',
   };
   await tabTo('[data-tour-start]');
   await page.keyboard.press('Enter');
+  await pastIntro(page, 'keys');
   await expect(coach(page)).toHaveAttribute('data-tour-coach', '1');
   await focusKept(page);
   await tabTo('[data-thread-id="tour-vscode"]');
@@ -452,6 +470,7 @@ test('an iPhone in WebKit: taps, 44 px targets, the sheet never over what it ask
       expect(c.y + c.height <= visibleTop + 1 || c.y >= visibleTop + Math.min(t.height, 44) - 1, `${target} under the sheet`).toBe(true);
     };
     await page.locator('[data-tour-start]').tap();
+    await pastIntro(page, 'tap');
     await big('[data-tour-exit]');
     await clear('[data-thread-id="tour-vscode"]');
     await shoot(page, 'phone-01-step1');
@@ -498,6 +517,7 @@ test('reduced motion: every state, no pulse, a shorter replay; a stacked window:
   const errors: string[] = [];
   const { context, page } = await open(browser, w, errors, { reducedMotion: 'reduce', viewport: { width: 900, height: 800 } });
   await page.getByRole('button', { name: 'Start the tour' }).click();
+  await pastIntro(page);
   await expect(page.locator('.ib-tour-target')).toHaveCount(1);
   expect(await page.locator('.ib-tour-target').evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
   await page.locator('[data-thread-id="tour-vscode"]').first().click();
@@ -533,6 +553,7 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await page.goto(`${w.url}#settings/general`);
     await page.locator('[data-settings-take-tour]').click();
     await expect(page).toHaveURL(/#tour=1$/);
+    await pastIntro(page);
   };
   const walkTo = async (n: number) => {
     if (n >= 2) await page.locator('[data-thread-id="tour-vscode"]').first().click();
@@ -596,6 +617,7 @@ test('leaving by the chip or the tour sidebar’s Settings: Back never reopens t
     await page.goto(`${w.url}#settings/general`);
     await page.locator('[data-settings-take-tour]').click();
     await expect(page).toHaveURL(/#tour=1$/);
+    await pastIntro(page);
   };
   const neverTheTour = async () => {
     await page.goBack();
@@ -646,6 +668,7 @@ test('step 6 and after a reload: every way out leaves the tour behind; from step
     await page.goto(`${w.url}#settings/general`);
     await page.locator('[data-settings-take-tour]').click();
     await expect(page).toHaveURL(/#tour=1$/);
+    await pastIntro(page);
   };
   const toStep6 = async () => {
     await page.locator('[data-thread-id="tour-vscode"]').first().click();
