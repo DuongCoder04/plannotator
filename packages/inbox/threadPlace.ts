@@ -22,6 +22,28 @@ export interface ThreadPlace {
   scrollTop: number;
 }
 
+/** Which layout the thread is in; the place is read and put back each time it changes. */
+export interface PlaceLayout {
+  thread: string;
+  /** No file open, a file beside the thread, or a file over it (full screen, a phone, a stacked window). */
+  file: 'none' | 'side' | 'covered';
+  /** The Artifacts grid stands in for the messages. */
+  grid: boolean;
+  /** A guided review is over the thread. */
+  guide: boolean;
+}
+
+/** The layout as a string, for a hook's dependencies. */
+export const placeLayoutKey = (layout: PlaceLayout): string => [layout.thread, layout.file, layout.grid ? 'grid' : '', layout.guide ? 'guide' : ''].join('|');
+
+export function parsePlaceLayout(key: string): PlaceLayout {
+  const [thread = '', file = 'none', grid = '', guide = ''] = key.split('|');
+  return { thread, file: file === 'side' || file === 'covered' ? file : 'none', grid: grid === 'grid', guide: guide === 'guide' };
+}
+
+/** The messages are on screen (not under a file, the Artifacts grid or a guide). */
+export const placeShown = (layout: PlaceLayout): boolean => layout.file !== 'covered' && !layout.grid && !layout.guide;
+
 /** What may hold a place: message parts in reading order (a message's own box is a last resort, it is long). */
 const PLACE_CANDIDATES = [
   '.ib-subject',
@@ -48,11 +70,19 @@ export function placeSelector(el: HTMLElement): string | null {
   return null;
 }
 
-/** The element a click or a key in the thread was aimed at, if it is something that opens a file. */
+/** The tile, image in the text or link a click or key in the thread was aimed at, if it could open a file. */
 export function openerOf(target: EventTarget | null, body: HTMLElement): HTMLElement | null {
   if (!(target instanceof Element)) return null;
-  const el = target.closest<HTMLElement>('[data-attachment-id], img, a[href], button, [role="button"]');
+  const el = target.closest<HTMLElement>('[data-attachment-id], img[data-inline-image], a[href]');
   return el && body.contains(el) ? el : null;
+}
+
+/** Whether `el` opens the file `fileId`: its tile, its image in a message's text, or a link to it (`file=` in the deep link). */
+export function opensFile(el: HTMLElement, fileId: string): boolean {
+  if (el.getAttribute('data-attachment-id') === fileId || el.getAttribute('data-inline-image') === fileId) return true;
+  const href = el instanceof HTMLAnchorElement ? el.getAttribute('href') : null;
+  const hash = href?.startsWith('#') ? href.slice(1) : null;
+  return hash !== null && new URLSearchParams(hash).get('file') === fileId;
 }
 
 /** The place on screen now, or null when the thread is not laid out (hidden, covered by the Artifacts grid). */
@@ -104,31 +134,51 @@ export const PLACE_HOLD_MS = 1200;
  * Keep the place while the layout settles: the docked sidebar and the list
  * come back with a spring, thumbnails and fonts load, and each of those
  * reflows the messages under the view. Every resize of the view or of its
- * content puts the place back, until the person scrolls (a wheel, a touch, a
- * key, a press in the view) or nothing has moved for PLACE_HOLD_MS. Returns
- * a function that stops it. `onPlaced` hears each time it puts the place back.
+ * content puts the place back, until nothing has moved for PLACE_HOLD_MS, or
+ * anything else scrolls the thread: the person (a wheel, a touch, a key or a
+ * press in the view, and any scroll that leaves the view somewhere the hold
+ * did not put it: PageDown with focus on the page, an overlay scrollbar
+ * dragged) or the app (a search result landing, a jump to a card, `n`, an
+ * arrival followed; those also stop it before they scroll). Returns a
+ * function that stops it. `onPlaced` hears each time it puts the place back.
  */
 export function holdPlace(body: HTMLElement, place: ThreadPlace, onPlaced?: () => void, holdMs = PLACE_HOLD_MS): () => void {
   if (typeof ResizeObserver !== 'function') return () => {};
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** The scrollTop the hold last left the view at; a scroll that finds the view elsewhere is not the hold's. */
+  let heldAt = body.scrollTop;
   const inputs = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
-  const stop = () => {
+  // The browser's scroll anchoring would move the view itself as the layout settles (a window stacking or
+  // unstacking after this effect), and that scroll cannot be told from the person's: off while the hold puts
+  // the place back instead.
+  const anchoring = body.style.overflowAnchor;
+  body.style.overflowAnchor = 'none';
+  const onScroll = () => {
+    if (Math.abs(body.scrollTop - heldAt) > 1) stop();
+  };
+  const observer = new ResizeObserver(() => {
+    if (restorePlace(body, place)) {
+      heldAt = body.scrollTop;
+      onPlaced?.();
+    }
+    arm();
+  });
+  function stop() {
     observer.disconnect();
+    body.style.overflowAnchor = anchoring;
     if (timer) clearTimeout(timer);
     timer = null;
     for (const type of inputs) body.removeEventListener(type, stop, true);
-  };
-  const arm = () => {
+    body.removeEventListener('scroll', onScroll);
+  }
+  function arm() {
     if (timer) clearTimeout(timer);
     timer = setTimeout(stop, holdMs);
-  };
-  const observer = new ResizeObserver(() => {
-    if (restorePlace(body, place)) onPlaced?.();
-    arm();
-  });
+  }
   observer.observe(body);
   for (const child of body.children) observer.observe(child);
   for (const type of inputs) body.addEventListener(type, stop, { capture: true, passive: true });
+  body.addEventListener('scroll', onScroll, { passive: true });
   arm();
   return stop;
 }

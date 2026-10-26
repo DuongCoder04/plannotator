@@ -45,6 +45,7 @@ interface World {
   url: string;
   claude: SimAgent;
   threadId: string;
+  firstId: string;
   lastId: string;
   ids: Record<string, string>;
 }
@@ -79,7 +80,8 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   await maker.close();
 
   const claude = await SimAgent.connect({ binary: builtBinary, env, name: 'Claude', host: 'claude-code' });
-  const first = await claude.send({ project_path: project, subject: 'Checkout: the layouts', body: para(10) });
+  const question = [':::question', 'Which layout ships first?', '', '- [ ] One page', '- [ ] Three steps', ':::'].join('\n');
+  const first = await claude.send({ project_path: project, subject: 'Checkout: the layouts', body: [para(10), '', question].join('\n') });
   const second = await claude.send({ project_path: project, reply_to: first.message_id as string, body: para(10, 11) });
   const last = await claude.send({
     project_path: project,
@@ -87,7 +89,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
     body: [para(8, 21), '', '![Single-page checkout](shots/checkout.png)', '', para(12, 29)].join('\n'),
     attachments: ['site/layout.html', 'docs/rollout.md'],
   });
-  world = { url, claude, threadId: first.thread_id as string, lastId: last.message_id as string, ids: {} };
+  world = { url, claude, threadId: first.thread_id as string, firstId: first.message_id as string, lastId: last.message_id as string, ids: {} };
 });
 
 test.afterAll(async () => {
@@ -256,6 +258,84 @@ test('desktop 1440: opened by keyboard, focus comes back to the tile or the imag
     expect(after.focused, `${opener} ${file}: focus back on what opened it`).toBe(true);
     expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(2);
   }
+  await context.close();
+});
+
+/** Whether `selector` sits inside the thread's view. */
+function inView(p: Page, selector: string) {
+  return p.evaluate(
+    ([bodySel, sel]) => {
+      const body = document.querySelector<HTMLElement>(bodySel)!.getBoundingClientRect();
+      const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
+      return { top: r.top - body.top, inView: r.top >= body.top - 2 && r.top < body.bottom - 20 };
+    },
+    [BODY, selector] as const,
+  );
+}
+
+test("the app's own scrolls are not pulled back by the place held after a file (#2208 review)", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await context.newPage();
+  const firstArticle = `[data-message-article="${world.firstId}"]`;
+
+  // A file beside the thread, then a search result in the same thread (`msg=` drops `file`): the message lands in view.
+  await loadThread(p);
+  const tile = openerSelector('foot', 'rollout.md');
+  await p.locator(tile).scrollIntoViewIfNeeded();
+  await p.locator(tile).click();
+  await expect(pane(p)).toBeVisible();
+  await p.waitForTimeout(300);
+  await p.evaluate(([thread, msg]) => (location.hash = `thread=${thread}&msg=${msg}`), [world.threadId, world.firstId] as const);
+  await expect(pane(p)).toHaveCount(0);
+  await p.waitForTimeout(1500);
+  const landed = await inView(p, firstArticle);
+  expect(landed.inView, `the search result landed at ${landed.top}`).toBe(true);
+
+  // A file closed, then (inside the hold's window) a jump from the open-questions menu: the card lands in view.
+  await loadThread(p);
+  await p.locator(tile).scrollIntoViewIfNeeded();
+  await p.locator(tile).click();
+  await expect(pane(p)).toBeVisible();
+  await p.waitForTimeout(300);
+  await pane(p).getByRole('button', { name: /^Close / }).first().click();
+  await expect(pane(p)).toHaveCount(0);
+  await p.locator('.ib-pfoot [data-open-questions]').click();
+  await p.locator('[data-open-questions-list] .ib-oq-row').first().click();
+  await p.waitForTimeout(1500);
+  const card = await inView(p, `[data-message-id="${world.firstId}"] [data-question-key]`);
+  expect(card.inView, `the card landed at ${card.top}`).toBe(true);
+
+  // A scroll the person makes during the hold (PageDown with focus on the page) is not pulled back.
+  await loadThread(p);
+  await p.locator(tile).scrollIntoViewIfNeeded();
+  await p.locator(tile).click();
+  await expect(pane(p)).toBeVisible();
+  await p.waitForTimeout(300);
+  await pane(p).getByRole('button', { name: /^Close / }).first().click();
+  await expect(pane(p)).toHaveCount(0);
+  const held = await p.evaluate((sel) => document.querySelector<HTMLElement>(sel)!.scrollTop, BODY);
+  await p.evaluate((sel) => (document.querySelector<HTMLElement>(sel)!.scrollTop -= 600), BODY);
+  await p.waitForTimeout(1500);
+  // The list and sidebar still reflow the thread a little as they spring back; the place is never put back over the scroll.
+  const final = await p.evaluate((sel) => document.querySelector<HTMLElement>(sel)!.scrollTop, BODY);
+  expect(held - final, `scrollTop ${held}, scrolled up 600, ended at ${final}`).toBeGreaterThan(450);
+  await context.close();
+});
+
+test('a key pressed on another control a moment before a pointer opens a file does not take focus on the way back', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await context.newPage();
+  await loadThread(p);
+  const count = p.locator(`[data-header-files="${world.lastId}"]`);
+  await count.focus();
+  await p.keyboard.press('Enter');
+  await p.keyboard.press('Enter');
+  await p.locator(openerSelector('foot', 'rollout.md')).click();
+  await expect(pane(p)).toBeVisible();
+  await pane(p).getByRole('button', { name: /^Close / }).first().click();
+  await expect(pane(p)).toHaveCount(0);
+  await p.waitForTimeout(500);
+  await expect(count).not.toBeFocused();
   await context.close();
 });
 
