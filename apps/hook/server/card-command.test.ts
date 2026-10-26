@@ -166,16 +166,15 @@ describe.if(INBOX_CARD_ACTION_ON)("plannotator card", () => {
     expect((await card(box, [])).code).toBe(2);
   }, 30_000);
 
-  test("--help prints its usage; plannotator --help never lists it, and a typo is never pointed at it (unreleased)", async () => {
+  test("--help prints its usage, and plannotator --help lists it (released with the Board page)", async () => {
     const box = sandbox();
     const help = await card(box, ["--help"]);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain("plannotator card create <title>");
-    expect(HIDDEN_SUBCOMMANDS.has("card")).toBe(true);
+    expect(help.stdout).toContain("--ref <issue or PR>");
+    expect(HIDDEN_SUBCOMMANDS.has("card")).toBe(false);
     const top = await plannotator(box, ["--help"]);
-    expect(top.stdout).toContain("plannotator inbox");
-    expect(top.stdout).not.toContain("plannotator card");
-    expect((await plannotator(box, ["cardd"])).stderr).not.toContain("plannotator card");
+    expect(top.stdout).toContain("plannotator card <create|move|say|link|ship|drop|list>");
   }, 30_000);
 });
 

@@ -162,6 +162,7 @@ export function formatTopLevelHelp(): string {
     "  plannotator sessions",
     "  plannotator inbox [--background | --no-open] [--tailscale]",
     "  plannotator inbox mcp",
+    "  plannotator card <create|move|say|link|ship|drop|list> ...",
     "  plannotator update [--check]",
     "  plannotator uninstall [--purge] [--yes] [--dry-run]",
     "  plannotator improve-context",
@@ -192,7 +193,7 @@ export function formatTopLevelHelp(): string {
  * hidden until the Board page ships, and `telemetry`, usage counts for
  * experimental features, hidden until the first counted feature ships.
  */
-export const HIDDEN_SUBCOMMANDS: ReadonlySet<string> = new Set<string>(["t3", "t3-hook", "card", "telemetry"]);
+export const HIDDEN_SUBCOMMANDS: ReadonlySet<string> = new Set<string>(["t3", "t3-hook", "telemetry"]);
 
 /**
  * `plannotator telemetry …` (telemetry-command.ts): usage counts for
@@ -224,7 +225,7 @@ export const TELEMETRY_COMMAND_USAGE = [
 
 /**
  * `plannotator card …` (card-command.ts): the Board's card call from a shell,
- * a thin client over the Inbox's `card` MCP tool. Unreleased (HIDDEN_SUBCOMMANDS).
+ * a thin client over the Inbox's `card` MCP tool.
  */
 export const CARD_COMMAND_USAGE = [
   "Usage:",
@@ -469,7 +470,7 @@ export const SUBCOMMAND_HELP: Record<string, string> = {
     "Purge data is local-only: it is not stored on a Plannotator server and",
     "cannot be recovered after purge. Unrecognized custom files are preserved.",
   ].join("\n"),
-  // Unreleased (HIDDEN_SUBCOMMANDS): the opt-in T3 Code connection, and the Board's cards.
+  // The Board's cards; and, unreleased (HIDDEN_SUBCOMMANDS), the opt-in T3 Code connection and usage counts.
   t3: T3_CLI_USAGE,
   card: CARD_COMMAND_USAGE,
   telemetry: TELEMETRY_COMMAND_USAGE,

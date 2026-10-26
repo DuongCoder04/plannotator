@@ -184,6 +184,14 @@ The Plannotator Inbox is one local window per machine where you leave the person
 - Run `plannotator inbox --help` once and read it before your first use: it is the full guide (tools and arguments, threads, where replies go, question syntax, replacing questions, connecting other agents).
 - Never run `plannotator inbox` just to send: calls start a stopped Inbox in the background, and bare `plannotator inbox` opens the window for the person. `--tailscale` is the person's choice; never add it.
 
+## plannotator card
+
+```bash
+plannotator card <create|move|say|link|ship|drop|list> ...
+```
+
+The Inbox's Board: one card per piece of work that outlasts a reply, in the column of its stage (backlog, designing, your_look, building, your_review, shipped). Use the `card` action of a `plannotator_inbox` tool when you have one; this CLI is the same call from a shell. `plannotator inbox --help` (its card section) and `plannotator card --help` give the arguments. The icebox is the person's only.
+
 ## Other subcommands
 
 ```bash
