@@ -296,6 +296,12 @@ function targetRect(target: TourTarget | null): DOMRect | null {
 
 type Side = 'right' | 'left' | 'below' | 'above' | 'corner';
 
+/** Targets whose controls are at the foot of a phone's screen: the sheet sits at the top for them. */
+const PHONE_SHEET_TOP = new Set<TourTarget>(['film-rail', 'film-composer', 'film-send', 'image-foot', 'markup', 'reply', 'reply-box', 'composer']);
+
+/** Targets the card never scrolls to: a comment box, a drawing's row, the open file (a scroll would close or move them). */
+const NO_SCROLL = new Set<TourTarget>(['file', 'art-grid', 'composer', 'eval-line', 'markup', 'image-foot', 'film-rail', 'film-composer', 'compose-to', 'compose-send']);
+
 const SIDES: Partial<Record<TourTarget, Side[]>> = {
   row: ['below', 'above', 'right'],
   'film-row': ['below', 'above', 'right'],
@@ -304,7 +310,7 @@ const SIDES: Partial<Record<TourTarget, Side[]>> = {
   phrase: ['below', 'above', 'left'],
   composer: ['left', 'right', 'above', 'below'],
   'eval-tile': ['above', 'left', 'right', 'below'],
-  'eval-line': ['left', 'below', 'above'],
+  'eval-line': ['below', 'above', 'left'],
   reply: ['above', 'left', 'right'],
   'reply-box': ['above', 'left'],
   delivered: ['left', 'above', 'below'],
@@ -445,7 +451,8 @@ export function TourCoach({
     const r = targetRect(coach.target);
     if (phone) {
       if (sheetAt.current?.key !== coach.key) {
-        const low = r ? r.top + Math.min(r.height, vh / 2) / 2 > vh * 0.5 : false;
+        // A file's own controls sit at its foot on a phone (the comment row, "Comment at", Send): the sheet goes up.
+        const low = (coach.target !== null && PHONE_SHEET_TOP.has(coach.target)) || (r ? r.top + Math.min(r.height, vh / 2) / 2 > vh * 0.5 : false);
         sheetAt.current = { key: coach.key, at: low ? 'top' : 'bottom' };
       }
       setPlace({ left: 0, top: 0, at: sheetAt.current.at });
@@ -476,7 +483,8 @@ export function TourCoach({
   useLayoutEffect(() => {
     measure();
     const target = tourTargetElement(coach.target);
-    if (target && coach.target !== 'file' && coach.target !== 'art-grid') {
+    // Never scroll under an open comment box or drawing: a scroll closes it. What is already in view stays put.
+    if (target && !NO_SCROLL.has(coach.target!)) {
       if (phone) fitAroundSheet(coach.target === 'choices' ? (target.closest<HTMLElement>('.question-block') ?? target) : target, ref.current, reduced);
       else target.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
     }
@@ -849,17 +857,20 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
   stateRef.current = state;
 
   // The real viewers over the tour's files: a comment saved there goes to the tour's state, never anywhere else.
+  // One source for the tour's life (a viewer reads its file again when the source changes); its callbacks read the latest props.
+  const live = useRef({ dispatch, say });
+  live.current = { dispatch, say };
   const source = useMemo(
     () =>
       tourFileSource(fixture, {
         onSave: (record) => {
-          dispatch({ type: 'comment', record }, { focusCoach: true });
-          say('Comment saved in the tour.');
+          live.current.dispatch({ type: 'comment', record }, { focusCoach: true });
+          live.current.say('Comment saved in the tour.');
         },
-        onRemove: (id) => dispatch({ type: 'uncomment', id }),
+        onRemove: (id) => live.current.dispatch({ type: 'uncomment', id }),
         threadOf: (messageId) => fixture.threads.find((t) => t.messages.some((m) => m.id === messageId))?.id ?? TOUR_THREAD,
       }),
-    [fixture, dispatch, say],
+    [fixture],
   );
 
   // The phrases the coach points at, highlighted while their step shows.
@@ -1298,7 +1309,7 @@ function TourThreadPane({
         )}
       </div>
       {state.artifactsOpen ? (
-        <div className="ib-artbody">
+        <div className="ib-pbody ib-artbody">
           <ArtifactsView
             artifacts={artifacts}
             annotationCounts={counts}

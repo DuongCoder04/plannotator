@@ -24,7 +24,7 @@ import type {
   InboxSectionId,
 } from '@plannotator/core/inbox-types';
 import { INBOX_SECTIONS, readInboxAttachmentKind } from '@plannotator/core/inbox-types';
-import { derivePersonThreadSubject, suggestPersonThreadName } from '@plannotator/core/inbox-thread-subject';
+import { derivePersonThreadSubject, suggestPersonThreadName } from '@plannotator/core/inbox-questions';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { tourAssetLoaded, tourAssetUrl } from './assets';
 
@@ -429,7 +429,7 @@ export function tourStateAt(step: number, realAnswer: string, fixture?: TourFixt
   const replayed = { ...start, route: TOUR_THREAD as TourRoute, looked, picked: realAnswer, comments: sentFirst, sent: true, delivered: true, arrived: 2 };
   if (s === 6) return { ...replayed, step: 6 };
   const shot = comment('screenshot');
-  if (s === 7) return { ...replayed, step: 7, route: TOUR_THREAD, comments: [...sentFirst, ...shot], artifactsTour: 2 };
+  if (s === 7) return { ...replayed, step: 7, route: 'list', comments: [...sentFirst, ...shot], artifactsTour: 2 };
   const film = comment('film').map((r) => ({ ...r, sent_reply_id: TOUR_FILM_REPLY_ID }));
   const filmed = { ...replayed, artifactsTour: 2 as const, route: 'list' as TourRoute, comments: [...sentFirst, ...shot, ...film], filmSent: true, filmDelivered: true, filmArrived: true, looked: { ...looked, film: true } };
   if (s === 8) return { ...filmed, step: 8 };
@@ -473,7 +473,10 @@ export function tourReducer(state: TourState, action: TourAction): TourState {
       const next = { ...state, comments };
       // The step's own action: words (3), a file's line (4).
       if (state.step === 3 && action.record.message && action.record.thread_id === TOUR_THREAD) return { ...next, step: 4 };
-      if (state.step === 4 && !action.record.message && action.record.thread_id === TOUR_THREAD) return { ...next, step: 5 };
+      // Step 5 is the reply in the thread: the file closes, and the reply's Send is in view (a phone shows one screen).
+      if (state.step === 4 && !action.record.message && action.record.thread_id === TOUR_THREAD) return { ...next, step: 5, file: null };
+      // The film's comment rides the film thread's reply: the film closes, and Send is in view.
+      if (state.step === 7 && !state.filmSent && action.record.thread_id === TOUR_FILM_THREAD) return { ...next, file: null };
       return next;
     }
     case 'uncomment':
@@ -511,15 +514,16 @@ export function tourReducer(state: TourState, action: TourAction): TourState {
       return { ...state, compose: action.open ? 'open' : 'closed' };
     case 'composeSend':
       if (state.step !== 8 || state.compose === 'sent') return state;
-      return { ...state, compose: 'sent', route: 'list' };
+      // The thread the person just started opens, as the toast's Open would: its delivery and the answer show there.
+      return { ...state, compose: 'sent', route: TOUR_NEW_THREAD, file: null, replyOpen: false, artifactsOpen: false, looked: { ...state.looked, new: true } };
     case 'newDelivered':
       return state.compose === 'sent' ? { ...state, newDelivered: true } : state;
     case 'newArrive':
-      return state.newDelivered ? { ...state, newArrived: true, looked: { ...state.looked, new: false } } : state;
+      return state.newDelivered ? { ...state, newArrived: true, looked: { ...state.looked, new: state.route === TOUR_NEW_THREAD } } : state;
     case 'next':
       if (state.step === 1 && state.orient) return { ...state, orient: false };
       if (state.step === 6 && tourImageCommented(state) && state.artifactsTour === 0) return { ...state, artifactsTour: 1, file: null };
-      if (state.step === 6 && state.artifactsTour === 2) return { ...state, step: 7, route: TOUR_THREAD, file: null, artifactsOpen: false, replyOpen: false };
+      if (state.step === 6 && state.artifactsTour === 2) return { ...state, step: 7, route: 'list', file: null, artifactsOpen: false, replyOpen: false };
       if (state.step === 7 && state.filmArrived) return { ...state, step: 8, route: 'list', file: null, replyOpen: false };
       if (state.step === 8 && state.newArrived && !state.also) return { ...state, also: true };
       if (state.step === 8 && state.also) return { ...state, step: 9, file: null, route: 'list', replyOpen: false };
@@ -714,9 +718,9 @@ export function tourCoach(state: TourState, names: { developer: string; agent: s
   }
   // Step 8.
   if (state.also) return { key: '8-also', title: 'Also in your Inbox', text: '', items: TOUR_ALSO_ITEMS, next: true, nextLabel: 'Connect my agents', target: null };
-  if (state.newArrived) return { key: '8-loop', title: 'That’s the loop', text: 'Agents ask, you answer when you can, and they keep going.', next: true, target: 'new-row' };
+  if (state.newArrived) return { key: '8-loop', title: 'That’s the loop', text: 'Agents ask, you answer when you can, and they keep going.', next: true, target: state.route === TOUR_NEW_THREAD ? 'arrival' : 'new-row' };
   if (state.compose === 'sent')
-    return { key: state.newDelivered ? '8-delivered' : '8-sending', title: state.newDelivered ? 'Delivered.' : 'Sending…', text: 'It went into that session as its next turn.', wait: true, target: 'new-row' };
+    return { key: state.newDelivered ? '8-delivered' : '8-sending', title: state.newDelivered ? 'Delivered.' : 'Sending…', text: 'It went into that session as its next turn.', wait: true, target: state.route === TOUR_NEW_THREAD ? 'delivered' : 'new-row' };
   if (state.compose === 'open')
     return ui.toChosen
       ? { key: '8-to', title: 'Start a thread yourself', text: 'The words are the developer’s real request; the thread names itself.', action: 'Press Send.', target: 'compose-send' }

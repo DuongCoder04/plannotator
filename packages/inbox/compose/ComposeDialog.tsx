@@ -99,6 +99,12 @@ export interface ComposeDialogProps {
   onDeleted: (draft: DraftView) => void;
   onClose: () => void;
   transport?: ComposeTransport;
+  /**
+   * Drawn inside the dialog, after its own content (the tour's coach card): a
+   * modal dialog is the top layer, so anything meant to show over it lives in
+   * it. Absent: nothing.
+   */
+  aside?: React.ReactNode;
 }
 
 const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -723,6 +729,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
       <div className="ib-sr" aria-live="polite" data-compose-paste-live="">
         {pasteSaid}
       </div>
+      {props.aside}
       {dropping && (
         <div className="ib-cp-drop" aria-hidden="true">
           <Icon name="clip" size={20} />
