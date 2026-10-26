@@ -4067,7 +4067,18 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-act-undo:hover { text-decoration: underline; text-underline-offset: 2px; }
 .pn-inbox .ib-chk-panel { padding: 0 12px 12px 38px; min-width: 0; }
 .pn-inbox .ib-chk-panel[hidden] { display: none; }
-.pn-inbox .ib-chk-why { margin: 0 0 6px; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; color: color-mix(in oklch, var(--muted-foreground) 55%, var(--foreground)); white-space: pre-line; overflow-wrap: anywhere; }
+/* The why, drawn as markdown (ContextMarkdown, as a question's context): kept at the card's size and spacing;
+   a long command, path or URL wraps rather than widening the card on a phone. */
+.pn-inbox .ib-chk-why { margin: 0 0 6px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; color: color-mix(in oklch, var(--muted-foreground) 55%, var(--foreground)); overflow-wrap: anywhere; }
+.pn-inbox .ib-chk-why :is(p, li, blockquote, [data-rich-list-level], [data-rich-list-level] > span) { font-size: inherit; line-height: inherit; color: inherit; }
+.pn-inbox .ib-chk-why article > * { margin-top: 0; margin-bottom: 6px; }
+.pn-inbox .ib-chk-why article > :last-child { margin-bottom: 0; }
+.pn-inbox .ib-chk-why [data-pinpoint-group="list"] { padding-top: 0; padding-bottom: 0; }
+.pn-inbox .ib-chk-why [data-rich-list-level] { margin-top: 2px; margin-bottom: 2px; gap: 8px; }
+.pn-inbox .ib-chk-why :is(a, code) { overflow-wrap: anywhere; word-break: break-word; }
+.pn-inbox .ib-chk-why :not(pre) > code { font-size: 0.92em; padding: 0 4px; }
+.pn-inbox .ib-chk-why pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.pn-inbox .ib-chk-do code { font-size: 0.88em; padding: 0 4px; overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-holds { margin: 0 0 8px; font-size: var(--ib-fs-13, 13px); line-height: 1.45; color: var(--ib-badge-hold-fg, var(--foreground)); overflow-wrap: anywhere; }
 .pn-inbox .ib-chk-holds b { font-weight: 600; }
 .pn-inbox .ib-chk-holds[data-action-stopped] { color: var(--ib-badge-stop-fg, var(--foreground)); }
