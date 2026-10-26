@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { capturePlace, holdPlace, openerOf, placeSelector, restorePlace, type ThreadPlace } from '../threadPlace';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { useRefHoverCards } from '@plannotator/ui/components/RefHoverCard';
 import type { Annotation, Block } from '@plannotator/ui/types';
@@ -1795,7 +1796,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (bodyRef.current) bodyRef.current.scrollTop = threadScroll.current;
     const button = artifactsButtonRef.current;
     if (button) button.focus();
-    else bodyRef.current?.querySelector<HTMLElement>('.ib-subject')?.focus();
+    else bodyRef.current?.querySelector<HTMLElement>('.ib-subject')?.focus({ preventScroll: true });
   }, [artifactsOn]);
   // The thread's scroll, kept while the grid is shown over it.
   useEffect(() => {
@@ -1807,6 +1808,95 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     body.addEventListener('scroll', keep, { passive: true });
     return () => body.removeEventListener('scroll', keep);
   }, [artifactsOn]);
+  // ── Your place in the thread, around a file (threadPlace.ts) ──
+  // Beside a file the thread is a narrow column, under a full-screen file it is covered, and on a phone or a
+  // stacked window it is display:none (WebKit then forgets its scrollTop). Each time that changes, the place
+  // on screen is read in render, while the old layout is still drawn, and put back once the new layout is
+  // laid out: the tile or image the person opened at the same distance from the top, else the first thing that
+  // was in view. A hidden layout keeps the place it was given, so closing the file brings the thread back where
+  // it was. Never the open-time landing (the New divider): that runs once per thread.
+  const placeKey = `${thread.thread_id}|${fileCovers ? 'covered' : file ? 'side' : 'none'}|${artifactsOn ? 'grid' : ''}|${covered ? 'covered' : ''}`;
+  const placeShown = (key: string) => !key.includes('covered') && !key.includes('grid');
+  /** The last tile, image or link a click or key in the thread was aimed at, and whether it came from the keyboard. */
+  const lastOpener = useRef<{ el: HTMLElement; keyboard: boolean; at: number } | null>(null);
+  /** The tile or image a file was opened from by keyboard: focus goes back to it when the file closes. */
+  const returnFocus = useRef<{ el: HTMLElement; selector: string | null } | null>(null);
+  /**
+   * `saved`: the place to put back. `placedTop`: the scrollTop it was put back at; a scroll elsewhere (the person,
+   * `n`, a jump to a card) means the place on screen is the one to read next time, else `saved` is kept as it
+   * was (beside a file the thread is narrower and taller, and reading it there would lose what a clamp cost).
+   */
+  const place = useRef<{ committed: string; read: string | null; saved: ThreadPlace | null; placedTop: number | null }>({ committed: placeKey, read: null, saved: null, placedTop: null });
+  /** Stops holding the place put back last (holdPlace). */
+  const holdRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => holdRef.current?.(), []);
+  if (place.current.committed !== placeKey && place.current.read !== placeKey) {
+    // Read in render, before React commits the new layout: the old one is still on screen.
+    place.current.read = placeKey;
+    const was = place.current.committed;
+    const body = bodyRef.current;
+    const sameThread = was.split('|')[0] === thread.thread_id;
+    const recent = lastOpener.current && performance.now() - lastOpener.current.at < 2000 ? lastOpener.current : null;
+    holdRef.current?.();
+    holdRef.current = null;
+    const untouched = was.split('|')[1] !== 'none' && place.current.saved !== null && place.current.placedTop !== null && body !== null && Math.abs(body.scrollTop - place.current.placedTop) <= 1;
+    if (!sameThread) place.current.saved = null;
+    else if (placeShown(was) && body && !untouched) {
+      place.current.saved = capturePlace(body, recent?.el ?? null);
+      place.current.placedTop = null;
+    }
+    // A file opening from the thread: remember what opened it, for focus on the way back.
+    if (sameThread && was.split('|')[1] === 'none' && file) returnFocus.current = recent?.keyboard ? { el: recent.el, selector: placeSelector(recent.el) } : null;
+  }
+  useLayoutEffect(() => {
+    const was = place.current.committed;
+    place.current.committed = placeKey;
+    place.current.read = null;
+    if (was === placeKey) return;
+    const body = bodyRef.current;
+    const saved = place.current.saved;
+    if (!body || !placeShown(placeKey)) return;
+    if (saved && restorePlace(body, saved)) {
+      const placed = () => {
+        place.current.placedTop = body.scrollTop;
+      };
+      placed();
+      holdRef.current?.();
+      holdRef.current = holdPlace(body, saved, placed);
+    }
+    // The file closed: focus back on what opened it by keyboard, if nothing else has it.
+    if (!file && returnFocus.current) {
+      const { el, selector } = returnFocus.current;
+      returnFocus.current = null;
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) {
+        const target = el.isConnected && body.contains(el) ? el : selector ? body.querySelector<HTMLElement>(selector) : null;
+        target?.focus({ preventScroll: true });
+      }
+    }
+    // Only the layout matters here; `file` is read for the close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placeKey]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const onClick = (event: MouseEvent) => {
+      const el = openerOf(event.target, body);
+      if (el) lastOpener.current = { el, keyboard: event.detail === 0, at: performance.now() };
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const el = openerOf(event.target, body);
+      if (el) lastOpener.current = { el, keyboard: true, at: performance.now() };
+    };
+    body.addEventListener('click', onClick, true);
+    body.addEventListener('keydown', onKey, true);
+    return () => {
+      body.removeEventListener('click', onClick, true);
+      body.removeEventListener('keydown', onKey, true);
+    };
+  }, []);
+
   // A file or a guided review opened from the grid closes: focus back on its tile, unless something took it.
   const gridCovered = file !== null || covered;
   const gridCoveredWas = useRef(gridCovered);

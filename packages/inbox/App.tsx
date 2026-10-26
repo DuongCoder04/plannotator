@@ -419,7 +419,9 @@ function focusFirst(selectors: readonly string[]): void {
   for (const selector of selectors) {
     const el = [...document.querySelectorAll<HTMLElement>(selector)].find((candidate) => candidate.getClientRects().length > 0);
     if (el) {
-      el.focus();
+      // Inside a thread's messages (its subject heading): focus never moves the thread's scroll, the place the
+      // person was in (closing a file with `‹ Inbox` put the thread back at its top).
+      el.focus(el.closest('.ib-pbody') ? { preventScroll: true } : undefined);
       return;
     }
   }
