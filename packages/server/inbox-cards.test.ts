@@ -85,7 +85,7 @@ describe.if(INBOX_CARD_ACTION_ON)("the card tool", () => {
     expect(made.isError).toBeUndefined();
     expect(made._meta?.[INBOX_TEXT_COMPLETE_META_KEY]).toBe(true);
     const id = made.structuredContent.card.id as string;
-    expect(made.structuredContent.card).toMatchObject({ title: "Hero scene timers", column: "asked", said: "lane started", threads: [threadId] });
+    expect(made.structuredContent.card).toMatchObject({ title: "Hero scene timers", column: "backlog", said: "lane started", threads: [threadId] });
     expect(made.structuredContent.card.agent).toEqual({ kind: "agent", host: "claude-code", session: "ses_a", name: "Claude Code" });
     // The connection hands the model the text alone, and it names the card.
     expect(inboxToolResultText(made).text).toContain(id);
@@ -203,10 +203,10 @@ describe("the window's card routes and the event stream", () => {
       fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
     const iced = await post(`/api/inbox/cards/${b.id}`, { op: "icebox" });
     expect(iced.status).toBe(200);
-    expect(((await iced.json()) as { card: object }).card).toMatchObject({ column: "icebox", aside_from: "asked" });
+    expect(((await iced.json()) as { card: object }).card).toMatchObject({ column: "icebox", aside_from: "backlog" });
     // The agent cannot bring it back; the person can.
     expect(() => store.updateCard(b.id, { by: agent, column: "designing" })).toThrow();
-    expect(((await (await post(`/api/inbox/cards/${b.id}`, { op: "restore" })).json()) as { card: { column: string } }).card.column).toBe("asked");
+    expect(((await (await post(`/api/inbox/cards/${b.id}`, { op: "restore" })).json()) as { card: { column: string } }).card.column).toBe("backlog");
     expect(((await (await post(`/api/inbox/cards/${a.id}`, { op: "drop", reason: "not now" })).json()) as { card: { dropped: object } }).card.dropped).toMatchObject({ reason: "not now" });
     expect(((await (await post(`/api/inbox/cards/${a.id}`, { op: "move", column: "your_review" })).json()) as { card: { column: string } }).card.column).toBe("your_review");
 
@@ -231,7 +231,7 @@ describe("the window's card routes and the event stream", () => {
     expect((await post(`/api/inbox/cards/${a.id}`, { op: "icebox" }, { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
     expect((await post(`/api/inbox/cards/${a.id}`, { op: "icebox", serverSession: "another-session" })).status).toBe(409);
     expect((await post("/api/inbox/cards/dropped/seen", { serverSession: "another-session" })).status).toBe(409);
-    expect((await fetch(`${base}/api/inbox/cards`, { method: "POST" })).status).toBe(405);
+    expect((await fetch(`${base}/api/inbox/cards`, { method: "PUT" })).status).toBe(405);
 
     // The event stream carries the card lines after the cursor, on the one counter.
     // A replay gives each record's current line once: a, b and c all changed after the cursor.
@@ -252,6 +252,40 @@ describe("the window's card routes and the event stream", () => {
       expect(event.seq).toBeGreaterThan(cursor);
       expect(event.card.id).toBe(event.id);
     }
+  });
+});
+
+// Step 2's routes: the person's New card and their look at the Board.
+describe("the Board page's routes: New card and the look", () => {
+  test("New card lands in Backlog as the person's (no agent); the look never goes back; an agent's later write is past it and the person's is not", async () => {
+    const { base, server, project } = await world();
+    const { store } = server;
+    const here = store.projectByRoot(project)!;
+    const post = (path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+      fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+
+    const made = await post("/api/inbox/cards", { project: here.id, title: "  Try   a dark sidebar " });
+    expect(made.status).toBe(200);
+    const card = ((await made.json()) as { card: { id: string; column: string; agent: unknown; created_by: { kind: string }; title: string } }).card;
+    expect(card).toMatchObject({ column: "backlog", agent: null, created_by: { kind: "person" }, title: "Try a dark sidebar" });
+    expect((await post("/api/inbox/cards", { project: here.id, title: "" })).status).toBe(422);
+    expect((await post("/api/inbox/cards", { project: "prj_00000000000000000000000000", title: "x" })).status).toBe(404);
+    expect((await post("/api/inbox/cards", { title: "x" })).status).toBe(422);
+    expect((await post("/api/inbox/cards", { project: here.id, title: "x" }, { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    expect((await post("/api/inbox/cards", { project: here.id, title: "x", serverSession: "another-session" })).status).toBe(409);
+
+    const read = async () => (await (await fetch(`${base}/api/inbox/cards`)).json()) as { seen_through: string | null; cards: { id: string; heard_at: string }[] };
+    expect((await read()).seen_through).toBeNull();
+    const through = (await read()).cards[0]!.heard_at;
+    expect(((await (await post("/api/inbox/cards/seen", { through })).json()) as { seen_through: string }).seen_through).toBe(through);
+    // An older look (another tab that read earlier) never moves it back.
+    expect(((await (await post("/api/inbox/cards/seen", { through: "2020-01-01T00:00:00.000Z" })).json()) as { seen_through: string }).seen_through).toBe(through);
+    expect((await read()).seen_through).toBe(through);
+    expect((await post("/api/inbox/cards/seen", { through: "yesterday" })).status).toBe(422);
+    expect((await post("/api/inbox/cards/seen", { through, serverSession: "another-session" })).status).toBe(409);
+    expect((await fetch(`${base}/api/inbox/cards/seen`)).status).toBe(405);
+    // The look outlives a restart (inbox/board.json), outside the event log.
+    expect(readdirSync(join(server.store.dir))).toContain("board.json");
   });
 });
 

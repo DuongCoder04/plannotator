@@ -19,7 +19,7 @@ import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
-import type { InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
+import type { InboxCardWire, InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
 import { DecisionMode } from './decisions/DecisionMode';
 import { DecisionPill, decideEntryShown } from './decisions/entry';
 import {
@@ -102,9 +102,11 @@ import { adoptSavedTextSize, applyRememberedTextSize } from './textSize';
 import { parseSettingsHash, settingsHash, type SettingsSection } from './settingsRoute';
 import { ComposeDialog, type ComposeRequest, type ComposeSent } from './compose/ComposeDialog';
 import { DraftsPage } from './compose/DraftsPage';
+import { BoardPage, type BoardMove } from './board/BoardPage';
+import { boardCounts, boardViewOf, newestHeard, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
-import type { DraftView } from './api';
+import type { CardsModel, DraftView } from './api';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { sidebarUpdateNotice, updateForPage } from './updateNotice';
 
@@ -150,6 +152,8 @@ const SIDEBAR_OPEN_COOKIE = 'plannotator-inbox-sidebar-open';
 const COMPOSE_LAST_COOKIE = 'plannotator-inbox-compose-last';
 /** How often the Drafts page reads its drafts again, so each chip follows its session. */
 const DRAFTS_REFRESH_MS = 10_000;
+/** No cards handled yet (the Board before its first read of a visit). */
+const EMPTY_SET: ReadonlySet<string> = new Set();
 /** How long the refresh icon shows after a click on Inbox: one turn (inbox.css `ib-refresh-turn`, 500 ms), then back to the inbox icon. */
 const REFRESH_SPIN_MS = 600;
 /** Settings → Agents re-reads the agents this often while open, so "Open sessions" follows the sessions as they restart. */
@@ -180,7 +184,9 @@ interface ThreadLoad {
 }
 
 interface Route {
-  page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour';
+  page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour' | 'board';
+  /** The Board's list (`#board`, `#board=shipped`, `#board=icebox`; approval "inbox-board", step 2). */
+  board?: BoardView;
   /** The onboarding tour's step (`#tour=3`, approval "inbox-onboarding-tour"): 1 to 6. */
   step?: number;
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
@@ -224,6 +230,7 @@ function routeOf(fullHash: string): Route {
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
   if (params.has('drafts')) return { page: 'drafts', project: null, thread: null };
+  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')) };
   const thread = params.get('thread');
   const fileId = thread ? params.get('file') : null;
   return {
@@ -243,6 +250,7 @@ function hashOf(route: Route): string {
   if (route.page === 'settings') hash = settingsHash({ section: route.section ?? null, pair: route.pair });
   else if (route.page === 'whats-new') hash = new URLSearchParams({ 'whats-new': route.version ?? '' }).toString();
   else if (route.page === 'drafts') hash = 'drafts';
+  else if (route.page === 'board') hash = route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board';
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
@@ -926,6 +934,90 @@ function Inbox() {
   useEffect(() => {
     void refreshDrafts();
   }, [refreshDrafts]);
+  /**
+   * The Board's cards (approval "inbox-board", step 2): read at load (the
+   * sidebar's Board row counts what is on the person) and again when a card
+   * line arrives on the event stream, so the Board updates in place.
+   */
+  const [cards, setCards] = useState<CardsModel | null>(null);
+  const [cardsError, setCardsError] = useState<string | null>(null);
+  const cardsSeq = useRef(0);
+  const refreshCards = useCallback(async (): Promise<CardsModel | null> => {
+    const mine = ++cardsSeq.current;
+    try {
+      const next = await inboxApi.cards();
+      // An older read never replaces a newer one that landed first.
+      if (mine === cardsSeq.current) {
+        setCards(next);
+        setCardsError(null);
+      }
+      return next;
+    } catch (cause) {
+      if (mine === cardsSeq.current) setCardsError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    void refreshCards();
+  }, [refreshCards]);
+  /**
+   * A visit to the Board: the person's look as it stood when the visit began
+   * (cards an agent wrote to after it are bold for the whole visit, as a
+   * thread keeps "New since you looked"), and the cards they opened or moved
+   * since (no longer bold). Opening the Board records a new look through the
+   * newest card it read, so the next visit is bold only for what came after.
+   */
+  const [boardVisit, setBoardVisit] = useState<{ look: string | null; handled: ReadonlySet<string> } | null>(null);
+  const onBoard = route.page === 'board';
+  useEffect(() => {
+    if (!onBoard) {
+      setBoardVisit(null);
+      return;
+    }
+    let live = true;
+    void refreshCards().then((model) => {
+      if (!live || !model) return;
+      setBoardVisit({ look: model.seen_through ?? null, handled: new Set() });
+      const through = newestHeard(model.cards);
+      // An Inbox before step 2 has no look to record (no `seen_through`): nothing is bold beyond this visit there.
+      if (through && model.seen_through !== undefined) void inboxApi.seeBoard(through).catch(() => {});
+    });
+    return () => {
+      live = false;
+    };
+  }, [onBoard, refreshCards]);
+  const handleCard = (id: string) =>
+    setBoardVisit((visit) => (visit && !visit.handled.has(id) ? { ...visit, handled: new Set([...visit.handled, id]) } : visit));
+  const moveCard = async (card: InboxCardWire, change: BoardMove): Promise<InboxCardWire | null> => {
+    handleCard(card.id);
+    try {
+      const { card: moved } = await inboxApi.moveCard(card.id, change);
+      setCards((model) => (model ? { ...model, cards: model.cards.map((c) => (c.id === moved.id ? moved : c)) } : model));
+      void refreshCards();
+      return moved;
+    } catch {
+      void refreshCards();
+      return null;
+    }
+  };
+  const createCard = async (project: string, title: string): Promise<boolean> => {
+    try {
+      const { card } = await inboxApi.createCard(project, title);
+      handleCard(card.id);
+      setCards((model) => (model ? { ...model, cards: [card, ...model.cards.filter((c) => c.id !== card.id)] } : model));
+      void refreshCards();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const seeDrops = useCallback(() => {
+    void inboxApi
+      .seeDrops()
+      .then(() => refreshCards())
+      .catch(() => {});
+  }, [refreshCards]);
+
   // The Drafts page follows each draft's session (live, ended) while it is open.
   useEffect(() => {
     if (route.page !== 'drafts') return;
@@ -989,6 +1081,7 @@ function Inbox() {
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
+    let cardsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
     prepareInboxEvents();
@@ -1004,6 +1097,12 @@ function Inbox() {
       flushNotifications(first);
       unsubscribe = subscribeInboxEvents(first.cursor, {
         onRecord: (event) => {
+          // A Board card (approval "inbox-board"): only the Board reads it; it never changes the list or a thread.
+          if (event?.kind === 'card') {
+            if (cardsTimer) clearTimeout(cardsTimer);
+            cardsTimer = setTimeout(() => void refreshCards(), 60);
+            return;
+          }
           const now = routeRef.current;
           if (now.page === 'tour' && event?.kind === 'message' && event.first && event.message.author.kind === 'agent') {
             const threadId = event.message.thread_id;
@@ -1065,9 +1164,10 @@ function Inbox() {
       if (timer) clearTimeout(timer);
       if (deliveriesTimer) clearTimeout(deliveriesTimer);
       if (draftsTimer) clearTimeout(draftsTimer);
+      if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
     };
-  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
+  }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
   // Opening a thread: read it, record the look, and update its row in place.
   // While any thread is open the list holds still (settle.ts): the look
@@ -3000,6 +3100,29 @@ function Inbox() {
         }
       />
     );
+  } else if (route.page === 'board') {
+    // A New card goes in the project of the card heard from last, else the first project.
+    const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
+    main = (
+      <BoardPage
+        view={route.board ?? 'lanes'}
+        model={cards}
+        error={cardsError}
+        visitLook={boardVisit ? boardVisit.look : (cards?.seen_through ?? null)}
+        handled={boardVisit?.handled ?? EMPTY_SET}
+        projects={projects}
+        defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
+        phone={phone}
+        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
+        onOpenCard={(card) => {
+          handleCard(card.id);
+          if (card.threads[0]) go({ page: 'inbox', project: null, thread: card.threads[0] });
+        }}
+        onMove={moveCard}
+        onCreate={createCard}
+        onSeeDrops={seeDrops}
+      />
+    );
   } else if (route.page === 'drafts') {
     main = (
       <DraftsPage
@@ -3281,6 +3404,9 @@ function Inbox() {
             onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
+            // The Board (approval "inbox-board"): its count is the cards on the person (Your look, Your review).
+            boardCount={cards ? boardCounts(cards.cards).onYou : 0}
+            onBoard={() => leave({ page: 'board', project: null, thread: null })}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>

@@ -133,7 +133,11 @@ import {
   INBOX_CARD_REASON_MAX,
   INBOX_CARD_TITLE_MAX,
   inboxCardColumnIndex,
-  isInboxCardColumn,
+  inboxCardColumnOf,
+  readInboxCard,
+  normalizeInboxCardNotes,
+  inboxCardHistory,
+  type InboxCardHistoryEntry,
   isInboxCardDropUnseen,
   isInboxCardLiveColumn,
   isInboxCardPersonColumn,
@@ -550,6 +554,8 @@ export class InboxStore {
   private readonly pinListeners = new Set<() => void>();
   /** The Board's cards, by id (approval "inbox-board"). Read by nothing that routes or lists threads. */
   private readonly cards = new Map<string, InboxCard>();
+  /** Every snapshot of each card, oldest first: its history (the opened card, step 2). */
+  private readonly cardLines = new Map<string, InboxCard[]>();
   /** A guided review's files by its snapshot's sha256 (a blob never changes). */
   private readonly guideFileSets = new Map<string, ReadonlyMap<string, DiffFile>>();
   private readonly tornFiles = new Set<string>();
@@ -699,7 +705,14 @@ export class InboxStore {
         break;
       case "card":
         // Cards are their own records: nothing here touches routing or the list.
-        this.cards.set(line.record.id, line.record);
+        // A card stored before Asked became Backlog reads as Backlog (inboxCardColumnOf).
+        {
+          const card = readInboxCard(line.record);
+          this.cards.set(card.id, card);
+          const lines = this.cardLines.get(card.id);
+          if (lines) lines.push(card);
+          else this.cardLines.set(card.id, [card]);
+        }
         break;
     }
   }
@@ -4043,6 +4056,7 @@ export class InboxStore {
     this.annotations.clear();
     this.unsentAnnotations.clear();
     this.cards.clear();
+    this.cardLines.clear();
     this.tornFiles.clear();
     this.load();
     const used = pendingInboxUploadBlobs(this.dir);
@@ -4720,15 +4734,17 @@ export class InboxStore {
   }
 
   private cardColumn(value: unknown): InboxCardColumn {
-    if (!isInboxCardColumn(value)) {
+    // `asked` (the old name of Backlog) is still read, so a caller from before the rename keeps working.
+    const column = inboxCardColumnOf(value);
+    if (column === null) {
       throw new InboxError("validation_error", `column: one of ${Object.keys(INBOX_CARD_COLUMN_LABELS).join(", ")}.`, { field: "column" });
     }
-    return value;
+    return column;
   }
 
   /**
    * A new card in `project_id`. From a thread (`threads`), the title defaults
-   * to the thread's subject. It starts in Asked unless a column is given: a
+   * to the thread's subject. It starts in Backlog unless a column is given: a
    * live column, or Shipped for work already done; the Icebox only by the
    * person, Dropped never. An agent that puts it in Your look or Your review
    * says what the person owes (`you`). The agent that makes a card is the
@@ -4744,6 +4760,7 @@ export class InboxStore {
     threads?: readonly unknown[];
     prs?: readonly unknown[];
     idempotency_key?: unknown;
+    notes?: unknown;
   }): { card: InboxCard; replayed: boolean } {
     const project = this.projectsById.get(input.project_id);
     if (!project) throw new InboxError("project_not_found", `No project ${input.project_id}.`);
@@ -4772,7 +4789,7 @@ export class InboxStore {
         return { card: known, replayed: true };
       }
     }
-    const column = input.column === undefined || input.column === null ? "asked" : this.cardColumn(input.column);
+    const column = input.column === undefined || input.column === null ? "backlog" : this.cardColumn(input.column);
     if (column === "dropped") throw new InboxError("validation_error", "column: a new card starts in a live column (or shipped), never dropped.", { field: "column" });
     if (column === "icebox" && byAgent) throw this.iceboxRefusal();
     const said = input.say === undefined || input.say === null ? null : this.cardText(input.say, "say", INBOX_CARD_LINE_MAX);
@@ -4800,6 +4817,8 @@ export class InboxStore {
       dropped: null,
       aside_from: null,
       idempotency_key: key,
+      notes: this.cardNotes(input.notes),
+      sent: null,
     };
     this.appendCard(card, at);
     return { card, replayed: false };
@@ -4828,6 +4847,7 @@ export class InboxStore {
       prs?: readonly unknown[];
       reason?: unknown;
       restore?: boolean;
+      notes?: unknown;
     },
   ): InboxCard {
     const card = this.cards.get(id);
@@ -4841,6 +4861,7 @@ export class InboxStore {
       !given(input.title) &&
       !(input.threads && input.threads.length > 0) &&
       !(input.prs && input.prs.length > 0) &&
+      input.notes === undefined &&
       !input.restore
     ) {
       throw new InboxError("validation_error", "Nothing to change: pass column, say, you, title, thread_id or pr.");
@@ -4851,7 +4872,7 @@ export class InboxStore {
       if (card.column !== "icebox" && card.column !== "dropped") {
         throw new InboxError("validation_error", `Card ${id} is in ${INBOX_CARD_COLUMN_LABELS[card.column]}, not the Icebox or Dropped: nothing to restore.`);
       }
-      column = card.aside_from ?? "asked";
+      column = card.aside_from ?? "backlog";
     } else if (given(input.column)) {
       column = this.cardColumn(input.column);
     }
@@ -4915,7 +4936,54 @@ export class InboxStore {
       heard_by: input.by,
       dropped,
       aside_from: asideFrom,
+      notes: input.notes === undefined ? card.notes : this.cardNotes(input.notes),
     };
+    this.appendCard(next, at);
+    return next;
+  }
+
+  private cardNotes(value: unknown): string | null {
+    const result = normalizeInboxCardNotes(value);
+    if ("error" in result) throw new InboxError("validation_error", result.error, { field: "notes" });
+    return result.notes;
+  }
+
+  /** What happened to a card, newest first (the opened card's History). */
+  cardHistory(id: string): InboxCardHistoryEntry[] {
+    return inboxCardHistory(this.cardLines.get(id) ?? []);
+  }
+
+  /**
+   * The person sent a card to an agent (step 2): `thread_id` is the thread
+   * they just started for it (compose's Send, its body the card's notes),
+   * addressed to one session. The card links the thread and becomes that
+   * agent's (`agent`, so the agent's `card list` shows it as its own), and
+   * keeps `sent` so the Board says "Sent to <agent>" until the card moves.
+   * Only the person sends, only a card in Backlog, only into a thread of the
+   * card's own project that the person started.
+   */
+  sendCard(id: string, input: { thread_id: unknown }): InboxCard {
+    const card = this.cards.get(id);
+    if (!card) throw new InboxError("card_not_found", `No card ${id}.`);
+    if (card.column !== "backlog") {
+      throw new InboxError("validation_error", `Card ${id} is in ${INBOX_CARD_COLUMN_LABELS[card.column]}: only a Backlog card is sent to an agent.`, { field: "op" });
+    }
+    const [thread] = this.cardThreads([input.thread_id], card.project_id);
+    const root = this.messages.get(thread!);
+    if (!root || root.author.kind !== "person" || !root.started_by_person || !root.to) {
+      throw new InboxError("validation_error", "thread_id: a thread the person started for this card, addressed to one agent session.", { field: "thread_id" });
+    }
+    const to: InboxAuthor = { kind: "agent", host: root.to.host, session: root.to.session, name: INBOX_HOST_NAMES[root.to.host] ?? null };
+    const at = this.stamp();
+    const next: InboxCard = {
+      ...card,
+      threads: card.threads.includes(thread!) ? card.threads : [...card.threads, thread!],
+      agent: to,
+      heard_at: at,
+      heard_by: { kind: "person" },
+      sent: { at, to, thread_id: thread! },
+    };
+    this.checkLinkCounts(next.threads.length, next.prs.length);
     this.appendCard(next, at);
     return next;
   }

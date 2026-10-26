@@ -113,7 +113,7 @@ describe.if(INBOX_CARD_ACTION_ON)("plannotator card", () => {
     expect(made.stderr).toBe("");
     expect(made.code).toBe(0);
     const created = JSON.parse(made.stdout) as { card: { id: string; agent: unknown } };
-    expect(created.card).toMatchObject({ column: "asked", said: "lane started" });
+    expect(created.card).toMatchObject({ column: "backlog", said: "lane started" });
     // Outside an agent session, the card is nobody's in particular.
     expect(created.card.agent).toMatchObject({ kind: "agent", session: null });
     expect(existsSync(box.browserMarker)).toBe(false);

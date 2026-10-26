@@ -34,6 +34,7 @@ import type {
   InboxAgentId,
   InboxAgentsModel,
   InboxAnnotationRecord,
+  InboxCardColumn,
   InboxCardWire,
   InboxAttachmentState,
   InboxMessageWire,
@@ -72,6 +73,15 @@ export interface ProjectBatchAnswer<B> {
   replayed: boolean;
   /** The batch stopped partway: `batch` names what it changed (Undo covers those); the rest did not change. */
   error?: { code: string; message: string };
+}
+
+/** `GET /api/inbox/cards`: the Board. `seen_through` is absent from an Inbox before step 2. */
+export interface CardsModel {
+  serverSession: string;
+  cursor: number;
+  cards: InboxCardWire[];
+  dropped_unseen: number;
+  seen_through?: string | null;
 }
 
 export interface ListModel {
@@ -784,6 +794,17 @@ export const inboxApi = {
     }),
   // Pins (approval "inbox-pinned-threads"): the sidebar's pinned threads.
   /** Pin a thread (at the bottom of Pinned) or unpin it. */
+  /** The Board's cards (approval "inbox-board", step 2): every card, the agents' unseen drops, the person's last look. */
+  cards: () => get<CardsModel>('/api/inbox/cards'),
+  /** The person's New card: a title in a project, in Backlog. */
+  createCard: (project: string, title: string) => post<{ card: InboxCardWire }>('/api/inbox/cards', { project, title }),
+  /** The person's move: `move` to a column, `icebox`, `drop` (reason optional), `restore`. */
+  moveCard: (id: string, change: { op: 'move'; column: InboxCardColumn } | { op: 'icebox' } | { op: 'drop'; reason?: string | null } | { op: 'restore' }) =>
+    post<{ card: InboxCardWire }>(`/api/inbox/cards/${encodeURIComponent(id)}`, change),
+  /** The person opened the Board: the look runs through the newest `heard_at` it showed. */
+  seeBoard: (through: string) => post<{ seen_through: string }>('/api/inbox/cards/seen', { through }),
+  /** The person looked at Dropped: an agent's drops there are seen. */
+  seeDrops: () => post<{ cards: InboxCardWire[] }>('/api/inbox/cards/dropped/seen', {}),
   pin: (threadId: string, pinned: boolean) =>
     post<{ pins: { thread_id: string; pinned_at: string }[] }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/pin`, { pinned }),
   /** Put the pins in this order (Move up, Move down): pins it does not name keep their place after them; a named thread not pinned now is skipped. */

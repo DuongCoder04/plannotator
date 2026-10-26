@@ -45,7 +45,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import {
   INBOX_APP_ID,
   INBOX_CARD_COLUMNS,
-  isInboxCardColumn,
+  inboxCardColumnOf,
   isInboxCardDropUnseen,
   type InboxCardColumn,
   INBOX_SOUND_DEFAULT_VOLUME,
@@ -135,6 +135,7 @@ import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, C
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
+import { isInboxBoardTime, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import type { PairingProbes } from "./inbox-pairing-checks";
@@ -894,14 +895,16 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (raw !== null && raw !== "") {
       columns = new Set();
       for (const value of raw.split(",")) {
-        if (!isInboxCardColumn(value)) throw new InboxError("validation_error", `column: one or more of ${INBOX_CARD_COLUMNS.join(", ")}, comma-separated.`, { field: "column" });
-        columns.add(value);
+        const column = inboxCardColumnOf(value);
+        if (column === null) throw new InboxError("validation_error", `column: one or more of ${INBOX_CARD_COLUMNS.join(", ")}, comma-separated.`, { field: "column" });
+        columns.add(column);
       }
     }
     const cards = store.listCards({ projectIds: project ? new Set([project]) : null, columns }).map((card) => store.cardWire(card));
     // An agent's drops the person has not seen, in the project (or everywhere): the Board's "N dropped by an agent".
     const droppedUnseen = store.listCards({ projectIds: project ? new Set([project]) : null, columns: new Set(["dropped"]) }).filter(isInboxCardDropUnseen).length;
-    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen };
+    // `seen_through` (additive): the person's last look at the Board; a card an agent wrote to after it is unread (isInboxCardUnread).
+    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen, seen_through: readInboxBoardSeen(store.dir) };
   };
 
   /**
@@ -2351,8 +2354,23 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
       // The Board's cards (approval "inbox-board", step 1): the person's read and moves.
       if (path === "/api/inbox/cards") {
-        if (req.method !== "GET") return json({ error: "Use GET." }, 405);
-        return json(cardsModel(url));
+        if (req.method === "GET") return json(cardsModel(url));
+        if (req.method !== "POST") return json({ error: "Use GET or POST." }, 405);
+        // The person's New card (step 2): a title in a project, in Backlog (not sent to any agent).
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        if (!isInboxId("prj", body.project)) throw new InboxError("validation_error", "project: a prj_ id.", { field: "project" });
+        if (!store.project(body.project)) throw new InboxError("project_not_found", `No project ${body.project}.`);
+        const made = store.createCard({ project_id: body.project, by: { kind: "person" }, title: body.title, column: "backlog" });
+        return json({ card: store.cardWire(made.card) });
+      }
+      // The person opened the Board: the look runs through the newest `heard_at` it showed (never back).
+      if (path === "/api/inbox/cards/seen") {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        if (!isInboxBoardTime(body.through)) throw new InboxError("validation_error", "through: the newest heard_at the Board showed (an ISO time).", { field: "through" });
+        return json({ seen_through: writeInboxBoardSeen(store.dir, body.through) });
       }
       // The person looked at Dropped: an agent's drops there are seen (in `project`, or everywhere).
       if (path === "/api/inbox/cards/dropped/seen") {
