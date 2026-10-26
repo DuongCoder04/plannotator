@@ -322,6 +322,63 @@ test("the app's own scrolls are not pulled back by the place held after a file (
   await context.close();
 });
 
+test("a comment opened from the reply box's list right after a file closes lands its passage in view", async ({ browser }) => {
+  // The list and sidebar spring back as the file closes (a resize every frame) while the list's scroll starts.
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await context.newPage();
+  await loadThread(p);
+  // A comment on the first words of the last message (open, far above the foot tiles), saved as the window saves one.
+  const id = 'scroll-return-comment';
+  const saved = await p.evaluate(
+    async ([message, annotation]) => (await fetch(`/api/inbox/messages/${message}/annotations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ annotation }) })).status,
+    [world.lastId, { id, blockId: '', startOffset: 0, endOffset: 0, type: 'COMMENT', text: 'Say how long the receipt takes.', originalText: 'Paragraph 21. The checkout keeps the basket', createdA: Date.now() }] as const,
+  );
+  expect(saved).toBe(200);
+  await loadThread(p);
+  // The reply box open first, so nothing scrolls the thread between the close and the comment.
+  await p.locator('section.ib-pane .ib-pfoot').getByRole('button', { name: /^(Reply|Edit draft)$/ }).first().click();
+  await expect(p.locator('[data-annotations-chip]')).toBeVisible();
+  const tile = openerSelector('foot', 'rollout.md');
+  await p.locator(tile).scrollIntoViewIfNeeded();
+  await p.waitForTimeout(300);
+  await p.locator(tile).click();
+  await expect(pane(p)).toBeVisible();
+  await p.waitForTimeout(300);
+  // The file's ×, then (frames later, while the list and sidebar spring back) the list in the foot and the comment.
+  await p.evaluate(async (comment) => {
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+    const until = async (find: () => HTMLElement | null) => {
+      for (let i = 0; i < 60; i++) {
+        const el = find();
+        if (el) return el;
+        await frame();
+      }
+      throw new Error('not found');
+    };
+    document.querySelector<HTMLElement>('[data-attachment-pane] button[aria-label^="Close "]')!.click();
+    await until(() => (document.querySelector('[data-attachment-pane]') ? null : document.body));
+    await frame();
+    (await until(() => document.querySelector<HTMLElement>('[data-annotations-chip]'))).click();
+    const row = await until(() => document.querySelector<HTMLElement>(`.ib-annpop [data-annotation-row="${comment}"] button.ib-af`));
+    row.click();
+  }, id);
+  await expect(pane(p)).toHaveCount(0);
+  await p.waitForTimeout(1500);
+  // The passage the list brings into view: its highlight.
+  const passage = `[data-message-id="${world.lastId}"] [data-bind-id="${id}"], [data-message-id="${world.lastId}"] [data-highlight-id="${id}"]`;
+  await expect(p.locator(passage).first()).toBeAttached();
+  const where = await p.evaluate(
+    ([bodySel, sel]) => {
+      const body = document.querySelector<HTMLElement>(bodySel)!.getBoundingClientRect();
+      const r = document.querySelector<HTMLElement>(sel)!.getBoundingClientRect();
+      return { top: r.top - body.top, inView: r.top >= body.top - 2 && r.bottom <= body.bottom + 2 };
+    },
+    [BODY, passage] as const,
+  );
+  expect(where.inView, `the passage landed at ${where.top}`).toBe(true);
+  await context.close();
+});
+
 test('a control pressed by keyboard a moment before a file opens some other way does not take focus on the way back', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await context.newPage();

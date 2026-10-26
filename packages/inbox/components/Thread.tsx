@@ -1629,7 +1629,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     }
     // A comment on a message's text: that message, its passage brought into view and rung.
     if (record.message) {
+      // A place held after a file must not pull the thread back over the passage (show() scrolls inside rAF).
+      stopHold();
       const show = () => {
+        stopHold();
         const mark = bodyRef.current?.querySelector<HTMLElement>(
           `[data-message-id="${CSS.escape(record.message_id)}"] [data-bind-id="${CSS.escape(record.id)}"], [data-message-id="${CSS.escape(record.message_id)}"] [data-highlight-id="${CSS.escape(record.id)}"]`,
         );
@@ -1880,7 +1883,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     else if (saved && restorePlace(body, saved)) {
       placed();
       stopHold();
-      holdRef.current = holdPlace(body, saved, placed);
+      holdRef.current = holdPlace(body, saved, placed, undefined, sectionRef.current ?? body);
     }
     // Focus back on what opened the file by keyboard, if nothing else has it.
     if (focusBack) {

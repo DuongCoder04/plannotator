@@ -136,13 +136,14 @@ export const PLACE_HOLD_MS = 1200;
  * reflows the messages under the view. Every resize of the view or of its
  * content puts the place back, until nothing has moved for PLACE_HOLD_MS, or
  * anything else scrolls the thread: the person (a wheel, a touch, a key or a
- * press in the view, and any scroll that leaves the view somewhere the hold
+ * press anywhere in `inputRoot`, the thread's whole pane: its foot and header
+ * act on the thread too, and any scroll that leaves the view somewhere the hold
  * did not put it: PageDown with focus on the page, an overlay scrollbar
  * dragged) or the app (a search result landing, a jump to a card, `n`, an
  * arrival followed; those also stop it before they scroll). Returns a
  * function that stops it. `onPlaced` hears each time it puts the place back.
  */
-export function holdPlace(body: HTMLElement, place: ThreadPlace, onPlaced?: () => void, holdMs = PLACE_HOLD_MS): () => void {
+export function holdPlace(body: HTMLElement, place: ThreadPlace, onPlaced?: () => void, holdMs = PLACE_HOLD_MS, inputRoot: HTMLElement = body): () => void {
   if (typeof ResizeObserver !== 'function') return () => {};
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** The scrollTop the hold last left the view at; a scroll that finds the view elsewhere is not the hold's. */
@@ -168,7 +169,7 @@ export function holdPlace(body: HTMLElement, place: ThreadPlace, onPlaced?: () =
     body.style.overflowAnchor = anchoring;
     if (timer) clearTimeout(timer);
     timer = null;
-    for (const type of inputs) body.removeEventListener(type, stop, true);
+    for (const type of inputs) inputRoot.removeEventListener(type, stop, true);
     body.removeEventListener('scroll', onScroll);
   }
   function arm() {
@@ -177,7 +178,7 @@ export function holdPlace(body: HTMLElement, place: ThreadPlace, onPlaced?: () =
   }
   observer.observe(body);
   for (const child of body.children) observer.observe(child);
-  for (const type of inputs) body.addEventListener(type, stop, { capture: true, passive: true });
+  for (const type of inputs) inputRoot.addEventListener(type, stop, { capture: true, passive: true });
   body.addEventListener('scroll', onScroll, { passive: true });
   arm();
   return stop;
