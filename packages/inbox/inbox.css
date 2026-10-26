@@ -4578,6 +4578,17 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .pn-inbox .ib-tc-back { height: 30px; padding: 0 8px; border-radius: 7px; color: var(--muted-foreground); font-weight: 500; }
 .pn-inbox .ib-tc-back:hover { color: var(--foreground); background: var(--muted); }
 .pn-inbox .ib-tc-next { height: 30px; padding: 0 12px; border-radius: 8px; background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+/* "Your turn" (the owner, 2026-10-25): a card that asks the person to act says so at its top, in the primary colour. */
+.ib-tour-coach .ib-tc-eb { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ib-tc-turn { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 8px 0 6px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: var(--ib-fs-11-5, 11.5px); font-weight: 650; letter-spacing: 0; white-space: nowrap; }
+.ib-tour-coach[data-your-turn] { box-shadow: 0 0 0 2px var(--primary), var(--ib-float-shadow, 0 16px 40px -12px rgb(0 0 0 / 0.45)); }
+/* Fast-forward: quiet, at the card's foot, always there when the card asks or waits. */
+.pn-inbox .ib-tc-ff { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); font-weight: 550; font-size: var(--ib-fs-12-5, 12.5px); }
+.pn-inbox .ib-tc-ff:hover { color: var(--foreground); background: var(--muted); }
+/* The tour's answer to a click it cannot use: one short line on the card. */
+.ib-tour-coach .ib-tc-nudge { margin: 8px 0 0; padding: 6px 9px; border-radius: 8px; background: color-mix(in oklch, var(--primary) 10%, var(--popover)); color: var(--foreground); font-size: var(--ib-fs-12-5, 12.5px); line-height: 1.4; }
+/* A click on the card shows its target again. */
+.pn-inbox .ib-tour-again { outline: 3px solid var(--primary) !important; outline-offset: 3px; }
 .ib-tc-do { font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary); font-weight: 600; display: inline-flex; gap: 5px; align-items: center; }
 .ib-tc-wait { display: inline-flex; align-items: center; gap: 8px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-tc-wait::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklch, var(--primary) 30%, transparent); border-top-color: var(--primary); }
@@ -4588,6 +4599,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   @keyframes ib-tour-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 45%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
   .ib-tour-coach { animation: ib-pm-in 160ms ease-out; }
   .ib-tc-wait::before { animation: ib-spin 0.9s linear infinite; }
+  .pn-inbox .ib-tour-again { animation: ib-tour-pulse 0.8s ease-out 2; }
 }
 
 /* The replay's marks: what is a replay of the real thread says so. */
@@ -4752,6 +4764,53 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The tour thread's controls that do nothing in the tour (Mark read, Archive, Reply): drawn quiet, still focusable, their tooltip says why. */
 .pn-inbox [data-tour-thread] button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 .pn-inbox [data-tour-thread] button[aria-disabled="true"]:hover { background: none; }
+
+/* ── Tour v2: the opener's picture, the closing card's list, the phrase it points at, replies' lines ── */
+.ib-tour-coach.ib-tc-wide { width: 380px; }
+.ib-tour-orient { display: grid; grid-template-columns: 92px minmax(0, 1fr); grid-template-rows: auto auto; gap: 6px; margin-top: 10px; padding: 8px; border-radius: 10px; background: var(--muted); font-size: var(--ib-fs-11-5, 11.5px); line-height: 1.3; }
+.ib-tour-orient .ib-to-side { grid-row: span 2; display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: 7px; background: var(--card); }
+.ib-tour-orient .ib-to-lbl { color: var(--muted-foreground); font-weight: 600; }
+.ib-tour-orient .ib-to-proj { display: flex; align-items: center; gap: 4px; padding: 3px 5px; border-radius: 5px; background: color-mix(in oklch, var(--primary) 12%, transparent); color: var(--foreground); font-weight: 550; }
+.ib-tour-orient .ib-to-list { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 5px; border-radius: 7px; background: var(--card); }
+.ib-tour-orient .ib-to-row { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 3px 5px; border-radius: 5px; }
+.ib-tour-orient .ib-to-row[data-on] { background: color-mix(in oklch, var(--primary) 10%, transparent); }
+.ib-tour-orient .ib-to-chip { flex: none; padding: 0 5px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
+.ib-tour-orient .ib-to-subj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); font-weight: 550; }
+.ib-tour-orient .ib-to-mail { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: 7px; background: var(--card); }
+.ib-tour-orient .ib-to-from { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.ib-tour-orient .ib-to-from .ib-mut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-tour-orient .ib-to-line { height: 5px; border-radius: 3px; background: color-mix(in oklch, var(--muted-foreground) 30%, transparent); }
+.ib-tour-orient .ib-to-line.ib-short { width: 62%; }
+.ib-tour-orient .ib-to-tiles { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.ib-tour-orient .ib-to-tile { max-width: 100%; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 3px; padding: 2px 5px; border-radius: 5px; border: 1px solid var(--border); color: var(--foreground); }
+.ib-tour-also { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 7px; }
+.ib-tour-also li { display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.4; }
+.ib-tour-also li b { color: var(--foreground); font-weight: 600; }
+.ib-tour-also li > span:first-child { grid-row: span 2; text-align: center; font-size: var(--ib-fs-14, 14px); }
+::highlight(ib-tour-phrase) { background-color: color-mix(in oklch, var(--primary) 22%, transparent); }
+.pn-inbox [data-tour-phrase-host] { scroll-margin: 80px; }
+.ib-tour-filenote { margin: 4px 0 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tour-sentcomments { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.ib-tour-moment { padding: 0 7px; border-radius: 999px; background: var(--muted); color: var(--foreground); }
+.pn-inbox .ib-tour-rbox .ib-rtext { width: 100%; box-sizing: border-box; border: 0; background: transparent; resize: none; padding: 10px 12px; color: var(--foreground); font: inherit; }
+.pn-inbox .ib-tour-rbox .ib-rtext:focus { outline: none; }
+.ib-tour-in-dialog { z-index: 5; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .ib-tour-coach.ib-tc-wide { width: auto; }
+  .pn-inbox .ib-tour-coach .ib-tc-next { min-height: 44px; padding: 0 16px; }
+  .pn-inbox .ib-tour-coach .ib-tc-ff { min-height: 44px; padding: 0 12px; }
+}
+/* Full screen in the tour starts under the tour bar, so Exit tour and the file's own toolbar both stay in reach. */
+.pn-inbox[data-tour] .ib-view.ib-full { top: var(--ib-tour-bar-h, 45px); }
+
+/* Compose in the tour: the dialog is modal (the page under it is inert), so it carries its own copy of the tour bar
+   at the top of the window, and on a phone the sheet starts under it (the tour bar stays in view, Exit in reach). */
+.ib-tour-bar.ib-tour-bar-over { position: fixed; top: 0; left: 0; right: 0; z-index: 3; margin: 0; }
+/* The dialog's entrance moves it with a transform, which would carry the fixed bar (and the coach) with it: none in the tour. */
+.pn-inbox[data-tour] dialog.ib-cp[open] { animation: none; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox[data-tour] dialog.ib-cp[data-phone] { top: var(--ib-tour-bar-h, 52px); height: calc(var(--ib-vvh, 100%) - var(--ib-tour-bar-h, 52px)); padding-top: 0; }
+}
 
 /* Settings → Prompts (design of record .product/approved/inbox-prompts-page/, #2194): the Inbox reminder, shared and per agent, then the plan, review and annotate prompts folded, read-only. */
 .pm-shared { padding: 14px 16px; }

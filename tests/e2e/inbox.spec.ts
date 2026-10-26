@@ -238,7 +238,7 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   const command = `codex mcp add plannotator-inbox -- ${binary} inbox mcp`;
   const panel = page.getByRole('tabpanel', { name: 'Codex' });
   await expect(panel.locator('pre')).toHaveText(command);
-  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after.']);
+  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after. With Codex 0.149 or later, your replies come back into the Codex thread by themselves.']);
   await expect(panel.getByText('Another way', { exact: false })).toBeVisible();
   await expect(panel.getByText('Codex', { exact: true })).toHaveCount(0);
   await shot('1.3-first-run-codex');
