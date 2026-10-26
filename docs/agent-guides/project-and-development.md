@@ -216,6 +216,8 @@ bun run --cwd apps/review build && bun run build:hook && \
 
 These are the flags `.github/workflows/release.yml` compiles with; without the `__CLI_VERSION__` define `plannotator --version` falls back to `plannotator dev` and the binary cannot be told apart from any other local build. On macOS build with bun >= 1.3.14 (CI pins 1.4.4): 1.3.12 loses the linker signature and the compiled binary is SIGKILLed on launch with no error (#541).
 
+**Patched dependency.** `patches/@opencode-ai%2Fsdk@1.19.3.patch` (root `patchedDependencies`) makes the SDK's SSE abort handler catch `reader.cancel()`. On Bun 1.4 that promise rejects once the aborted fetch has errored the body, and the unhandled rejection ends the process: every OpenCode Ask AI answer or Stop aborts the event stream. `packages/ai/providers/opencode-sdk.test.ts` ("through the real client") fails without it. A new SDK version needs the patch carried over (`bun patch @opencode-ai/sdk`) until upstream catches the promise.
+
 Running only `build:opencode` will copy stale HTML files.
 
 ## Marketing Site

@@ -451,6 +451,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@opencode-ai/sdk@1.19.3": "patches/@opencode-ai%2Fsdk@1.19.3.patch",
+  },
   "overrides": {
     "dompurify": "^3.4.17",
     "lodash-es": "4.18.1",

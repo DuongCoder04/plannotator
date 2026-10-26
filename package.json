@@ -65,5 +65,8 @@
     "sharp": "0.35.5",
     "source-map-js": "1.2.2",
     "proxy-addr": "2.0.8"
+  },
+  "patchedDependencies": {
+    "@opencode-ai/sdk@1.19.3": "patches/@opencode-ai%2Fsdk@1.19.3.patch"
   }
 }
