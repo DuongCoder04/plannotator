@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { InboxQuestion } from "@plannotator/core/inbox-types";
 import { inboxStatus, isPidAlive, readInboxRegistry, writeInboxRegistry } from "@plannotator/shared/inbox/registry";
 import { startInboxServer } from "@plannotator/server/inbox";
-import { INBOX_SERVED_TOOLS } from "@plannotator/server/inbox-mcp";
+import { INBOX_DEFAULT_SERVED_TOOLS } from "@plannotator/server/inbox-mcp";
 import { GUIDE_BRIEF_EXAMPLE } from "../../../packages/server/inbox-guides";
 import { runPlannotatorUninstall } from "@plannotator/server/uninstall";
 import { INBOX_MAX_REQUEST_BYTES } from "@plannotator/shared/inbox/connection";
@@ -270,7 +270,7 @@ describe("plannotator inbox mcp (the stdio shim)", () => {
     expect((await inboxStatus(box.dataDir)).state).toBe("running");
     expect(existsSync(box.browserMarker)).toBe(false);
 
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...INBOX_SERVED_TOOLS].sort());
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual([...INBOX_DEFAULT_SERVED_TOOLS].sort());
     const sent = (
       await client.callTool({
         name: "send_message",
@@ -681,6 +681,90 @@ describe("plannotator inbox (a person)", () => {
     proc.kill("SIGTERM");
     expect(await proc.exited).toBe(143);
   }, 60_000);
+});
+
+/** The URL the fake browser got: --open never waits for the browser, so it may land a moment after the command exits. */
+async function browserOpened(box: Sandbox): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(box.browserMarker) && Date.now() < deadline) await Bun.sleep(25);
+  return existsSync(box.browserMarker) ? readFileSync(box.browserMarker, "utf8").trim() : "";
+}
+
+describe("plannotator inbox --open (the /plannotator-inbox commands)", () => {
+  test("starts a stopped Inbox detached, opens the browser on it, prints the URL and returns", async () => {
+    const box = sandbox();
+    const opened = await cli(box, ["inbox", "--open"]);
+    track(box);
+    expect(opened.code).toBe(0);
+    const registry = readInboxRegistry(box.dataDir)!;
+    expect(opened.stdout).toBe(`${registry.url}\n`);
+    // Detached: the command exited and the Inbox it started lives on.
+    expect(registry.pid).not.toBe(opened.pid);
+    expect(isPidAlive(registry.pid)).toBe(true);
+    expect(await browserOpened(box)).toBe(registry.url);
+
+    // Running already: opens the same Inbox again and starts nothing.
+    rmSync(box.browserMarker);
+    const again = await cli(box, ["inbox", "--open"]);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toBe(`${registry.url}\n`);
+    expect(await browserOpened(box)).toBe(registry.url);
+    expect(readInboxRegistry(box.dataDir)!.pid).toBe(registry.pid);
+  }, 60_000);
+
+  // A browser the opener starts can keep the opener's output open for as long
+  // as it runs (xdg-open starting a fresh Firefox): --open must not wait for it.
+  test("returns at once when the browser it starts keeps running", async () => {
+    const box = sandbox();
+    await background(box);
+    const registry = readInboxRegistry(box.dataDir)!;
+    const lingering = join(box.root, "lingering-browser.sh");
+    writeFileSync(lingering, `#!/bin/sh\necho "$1" >> '${box.browserMarker}'\nsleep 5 &\nexit 0\n`);
+    chmodSync(lingering, 0o755);
+    box.env.PLANNOTATOR_BROWSER = lingering;
+    box.env.BROWSER = lingering;
+    const startedAt = Date.now();
+    const opened = await cli(box, ["inbox", "--open"]);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(opened.code).toBe(0);
+    expect(opened.stdout).toBe(`${registry.url}\n`);
+    expect(await browserOpened(box)).toBe(registry.url);
+  }, 60_000);
+
+  test("over SSH with no browser set, runs no opener on the remote host and says how to reach the Inbox", async () => {
+    const box = sandbox();
+    await background(box);
+    const registry = readInboxRegistry(box.dataDir)!;
+    // Stand-ins for the system openers, first on PATH: neither may run.
+    const bin = join(box.root, "openers");
+    mkdirSync(bin);
+    for (const name of ["open", "xdg-open"]) {
+      writeFileSync(join(bin, name), `#!/bin/sh\necho "$1" >> '${box.browserMarker}'\n`);
+      chmodSync(join(bin, name), 0o755);
+    }
+    box.env.PATH = `${bin}:${box.env.PATH}`;
+    delete box.env.PLANNOTATOR_BROWSER;
+    delete box.env.BROWSER;
+    box.env.PLANNOTATOR_REMOTE = "1";
+    const opened = await cli(box, ["inbox", "--open"]);
+    expect(opened.code).toBe(0);
+    expect(opened.stdout).toBe(`${registry.url}\n`);
+    expect(opened.stderr).toContain(`ssh -L ${registry.port}:127.0.0.1:${registry.port}`);
+    expect(opened.stderr).toContain("--tailscale");
+    expect(existsSync(box.browserMarker)).toBe(false);
+  }, 60_000);
+
+  test("refuses --background and --no-open beside it, starting nothing", async () => {
+    const box = sandbox();
+    for (const other of ["--background", "--no-open"]) {
+      const result = await cli(box, ["inbox", "--open", other]);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(other);
+    }
+    expect(readInboxRegistry(box.dataDir)).toBeNull();
+    expect(existsSync(box.browserMarker)).toBe(false);
+  }, 30_000);
 });
 
 describe("uninstall --purge and the Inbox", () => {
