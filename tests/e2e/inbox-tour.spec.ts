@@ -384,12 +384,16 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
   await press('[data-tour-thread] .ib-attachments:not(.ib-hatts-tiles) [data-attachment-name="guides-vscode.mp4"]');
   await at('7-file');
   await page.waitForTimeout(600);
-  // Play, then pause near the chapter text: the comment box fills and the moment pins.
+  // The film really plays (from the asset route, by Range): its clock moves.
   await page.evaluate(async () => {
     const v = document.querySelector<HTMLVideoElement>('[data-video-player]')!;
     v.muted = true;
-    await v.play().catch(() => {});
-    await new Promise((r) => setTimeout(r, 400));
+    await v.play();
+  });
+  await expect.poll(() => page.locator('[data-video-player]').evaluate((v: HTMLVideoElement) => v.currentTime), { timeout: 10_000 }).toBeGreaterThan(0.5);
+  // Then a pause near the chapter text: the comment box fills and the moment pins.
+  await page.evaluate(async () => {
+    const v = document.querySelector<HTMLVideoElement>('[data-video-player]')!;
     v.currentTime = 7.2;
     await new Promise((r) => setTimeout(r, 400));
     v.pause();
@@ -409,6 +413,18 @@ async function walk(page: Page, to: number, options: WalkOptions = {}): Promise<
   if (to === 8) return;
   await press('[data-open-compose]');
   await at('8-open');
+  // Compose is modal, but the tour bar stays in view above it and its Exit is pressable.
+  await expect(page.locator('[data-tour-bar-over] [data-tour-exit]')).toBeVisible();
+  const barBox = (await page.locator('[data-tour-bar-over]').boundingBox())!;
+  expect(barBox.y).toBe(0);
+  if (phone) expect((await page.locator('dialog[data-compose]').boundingBox())!.y).toBeGreaterThanOrEqual(barBox.height - 1);
+  expect(
+    await page.evaluate(() => {
+      const exit = document.querySelector<HTMLElement>('[data-tour-bar-over] [data-tour-exit]')!;
+      const r = exit.getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === exit;
+    }),
+  ).toBe(true);
   await keep('[data-compose] textarea');
   await shot('08-compose');
   await press('[data-compose] [data-compose-to]');
@@ -621,6 +637,17 @@ test('Exit at every step gives the person’s Inbox back exactly as it was; a re
     await focusKept(page);
     expect(await ownList(w), `after Exit at step ${n}`).toBe(before);
   }
+  // Exit with compose open (a modal dialog): the bar's copy over it ends the tour and closes compose.
+  await enter();
+  await walk(page, 8);
+  await page.locator('[data-open-compose]').first().click();
+  await expect(coach(page)).toHaveAttribute('data-tour-coach', '8-open');
+  await page.locator('[data-tour-bar-over] [data-tour-exit="exit"]').click();
+  await expect(page.locator('[data-tour-bar]')).toHaveCount(0);
+  await expect(page.locator('dialog[data-compose]')).toHaveCount(0);
+  await expect(page).toHaveURL(/#settings\/general$/);
+  await focusKept(page);
+  expect(await ownList(w), 'after Exit from compose').toBe(before);
   expect(writes.filter((r) => !r.startsWith('POST /api/inbox/settings'))).toEqual([]);
   expect(config(w).inboxTour.skipped_at).toBeTruthy();
 

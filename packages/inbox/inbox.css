@@ -4625,3 +4625,12 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 }
 /* Full screen in the tour starts under the tour bar, so Exit tour and the file's own toolbar both stay in reach. */
 .pn-inbox[data-tour] .ib-view.ib-full { top: var(--ib-tour-bar-h, 45px); }
+
+/* Compose in the tour: the dialog is modal (the page under it is inert), so it carries its own copy of the tour bar
+   at the top of the window, and on a phone the sheet starts under it (the tour bar stays in view, Exit in reach). */
+.ib-tour-bar.ib-tour-bar-over { position: fixed; top: 0; left: 0; right: 0; z-index: 3; margin: 0; }
+/* The dialog's entrance moves it with a transform, which would carry the fixed bar (and the coach) with it: none in the tour. */
+.pn-inbox[data-tour] dialog.ib-cp[open] { animation: none; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox[data-tour] dialog.ib-cp[data-phone] { top: var(--ib-tour-bar-h, 52px); height: calc(var(--ib-vvh, 100%) - var(--ib-tour-bar-h, 52px)); padding-top: 0; }
+}

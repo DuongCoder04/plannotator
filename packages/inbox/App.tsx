@@ -3427,21 +3427,32 @@ function Inbox() {
             requestAnimationFrame(() => (opener?.isConnected ? opener.focus() : setCoachFocus((n) => n + 1)));
           }}
           aside={
-            tourCoachCard ? (
-              <div className="ib-tour-layer ib-tour-in-dialog">
-                <TourCoach
-                  fixture={tourFixture}
-                  coach={tourCoachCard}
-                  step={tourState.step}
-                  canBack={false}
-                  phone={phone}
-                  reduced={reducedMotion}
-                  focusTick={0}
-                  onBack={() => {}}
-                  onNext={() => dispatchTour({ type: 'next' }, { focusCoach: true })}
-                />
-              </div>
-            ) : null
+            <>
+              {/* Compose is a modal dialog: the page under it, the tour bar included, is inert. Its own copy keeps Exit in reach. */}
+              <TourBar
+                over
+                step={tourState.step}
+                phone={phone}
+                arrivals={tourArrivals.count}
+                onArrivals={() => endTour('exit', { page: 'inbox', project: null, thread: tourArrivals.thread })}
+                onExit={() => endTour('exit')}
+              />
+              {tourCoachCard ? (
+                <div className="ib-tour-layer ib-tour-in-dialog">
+                  <TourCoach
+                    fixture={tourFixture}
+                    coach={tourCoachCard}
+                    step={tourState.step}
+                    canBack={false}
+                    phone={phone}
+                    reduced={reducedMotion}
+                    focusTick={0}
+                    onBack={() => {}}
+                    onNext={() => dispatchTour({ type: 'next' }, { focusCoach: true })}
+                  />
+                </div>
+              ) : null}
+            </>
           }
         />
       )}

@@ -200,10 +200,25 @@ export function useTourReplay(state: TourState, dispatch: (action: TourAction) =
 
 // ─────────────────────────── The tour bar ───────────────────────────
 
-export function TourBar({ step, phone, arrivals, onArrivals, onExit }: { step: number; phone: boolean; arrivals: number; onArrivals: () => void; onExit: () => void }) {
+export function TourBar({
+  step,
+  phone,
+  arrivals,
+  onArrivals,
+  onExit,
+  over = false,
+}: {
+  step: number;
+  phone: boolean;
+  arrivals: number;
+  onArrivals: () => void;
+  onExit: () => void;
+  /** Drawn inside a modal dialog (compose), which makes the page under it inert: the same bar, Exit kept pressable. */
+  over?: boolean;
+}) {
   const real = step === TOUR_STEPS;
   return (
-    <div className="ib-tour-bar" role="region" aria-label="Tour" data-tour-bar="">
+    <div className={over ? 'ib-tour-bar ib-tour-bar-over' : 'ib-tour-bar'} role="region" aria-label="Tour" data-tour-bar={over ? undefined : ''} data-tour-bar-over={over ? '' : undefined}>
       <span className="ib-tour-tag">
         <Icon name="map" size={13} />
         Tour
