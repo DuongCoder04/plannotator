@@ -43,6 +43,10 @@ export const CARD_DESCRIPTION =
 export const CARD_COLUMN_DESCRIPTION =
   "backlog (not started yet) · designing (not code) · your_look (a non-code thing waits on the person; give `you`) · building (code, an open PR) · your_review (code or a release waits on the person; give `you`) · shipped (merged or live) · dropped (give `reason`). Waiting on the person wins. icebox: the person's only. asked: the old name of backlog.";
 
+/** What a `card` call gets while the Board is off (approval "inbox-board", 2026-10-26): nothing is written. */
+export const INBOX_BOARD_OFF_TEXT =
+  "board_off: The person's Board is off, so cards are not kept and nothing was written. They turn it on in the Plannotator Inbox's Settings → General; agents get the card action in their next session.";
+
 const AGENT_SESSION_DESCRIPTION = "Your session id; the `plannotator inbox mcp` shim fills it. The cards you make are yours: list shows them.";
 
 /** One card as one line of text: every fact an agent acts on. */
@@ -131,6 +135,8 @@ export async function runCardCall(context: InboxMcpContext, input: CardCallInput
       throw new InboxError("validation_error", `${field}: op ${input.op} does not take it (it takes ${INBOX_CARD_OP_FIELDS[input.op].join(", ")}).`, { field });
     }
   }
+  // The Board turned off after this session listed the tool: refused, nothing written (checked before anything else is read).
+  if (context.boardOn && !context.boardOn()) throw new InboxError("board_off", INBOX_BOARD_OFF_TEXT.replace(/^board_off: /, ""));
   if (!input.project_path) throw new InboxError("validation_error", "project_path: required (the connection fills it).", { field: "project_path" });
   const { project, projectIds, unresolved } = await cardScope(context, input.project_path);
   if (unresolved) {

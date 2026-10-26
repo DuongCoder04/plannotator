@@ -122,7 +122,7 @@ import { openBrowser } from "./browser";
 import { isAddressInUseError } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { markPlannotatorResponse, withPlannotatorServerHeader } from "./plannotator-server-marker";
-import { createInboxMcpServer } from "./inbox-mcp";
+import { createInboxMcpServer, INBOX_BOARD_OFF_TEXT } from "./inbox-mcp";
 import { inboxGuideRoute } from "./inbox-guides";
 import { createInboxRepoCache } from "./inbox-repos";
 import { createRefCards, type RefRunner } from "./ref-cards";
@@ -173,6 +173,7 @@ import {
   INBOX_AGENT_IDS,
   INBOX_AGENT_LABELS,
   INBOX_AUTO_SEND_AFTER_MS,
+  INBOX_CARD_ACTION_ON,
   INBOX_NOTE_AGENT_IDS,
   type InboxAgentId,
   type InboxConnectReport,
@@ -291,6 +292,8 @@ export interface InboxServerOptions {
    * nothing listens, connects, spawns or makes a certificate.
    */
   phones?: boolean;
+  /** The Board, decided here instead of config.json `inboxBoard` (tests). Absent: config.json decides on every request. */
+  board?: boolean;
   /**
    * `plannotator inbox --tailscale`: publish over the tailnet for this run
    * whatever PLANNOTATOR_INBOX_TAILSCALE / config.json `inboxTailscale` say
@@ -788,6 +791,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID).
         sessionWakes: async (host, session) =>
           typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session),
+        // The Board: the card tool is listed and served only while the person has it on.
+        boardOn,
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
@@ -916,7 +921,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // An agent's drops the person has not seen, in the project (or everywhere): the Board's "N dropped by an agent".
     const droppedUnseen = store.listCards({ projectIds: project ? new Set([project]) : null, columns: new Set(["dropped"]) }).filter(isInboxCardDropUnseen).length;
     // `seen_seq` (additive): the person's last look at the Board (a store seq); a card an agent wrote to in a later line is unread (isInboxCardUnread).
-    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen, seen_seq: readInboxBoardSeen(store.dir) };
+    // `threads` (additive): each linked thread's list row, archived ones included (the window's list leaves
+    // them out), so the opened card names a shipped card's thread; a deleted thread is not linked at all.
+    const threads: Record<string, ReturnType<typeof store.listRow>> = {};
+    for (const card of cards) for (const id of card.threads) if (!(id in threads)) threads[id] = store.listRow(id);
+    return { serverSession, cursor: store.cursor(), cards, dropped_unseen: droppedUnseen, seen_seq: readInboxBoardSeen(store.dir), threads };
   };
 
   /**
@@ -1483,6 +1492,24 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    * request, so a switch applies at once.
    */
   const decisionModeOn = () => resolveExperimental(loadConfig(), "decision-mode");
+  /**
+   * The Board (approval "inbox-board", 2026-10-26): on only when the person
+   * turned it on (config.json `inboxBoard`), and only in a build that has the
+   * card action at all (INBOX_CARD_ACTION_ON). Read on every request, never
+   * cached: turning it off takes effect at the next request, with no timer
+   * and no lock. Cards are never deleted by it.
+   */
+  const boardOn = () => INBOX_CARD_ACTION_ON && (options.board ?? loadConfig().inboxBoard === true);
+  const saveBoard = (input: unknown, validateOnly = false) => {
+    if (!input || typeof input !== "object" || Array.isArray(input) || typeof (input as { on?: unknown }).on !== "boolean" || Object.keys(input).some((key) => key !== "on")) {
+      throw new InboxError("validation_error", "board: { on: boolean }.", { field: "board" });
+    }
+    const on = (input as { on: boolean }).on;
+    if (validateOnly) return { on: boardOn() };
+    saveConfig({ inboxBoard: on });
+    if ((loadConfig().inboxBoard === true) !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
+    return { on: boardOn() };
+  };
   const experimentalState = () => ({
     decision_mode: { on: decisionModeOn(), env: parseExperimentalEnv("decision-mode") ?? null },
   });
@@ -1560,6 +1587,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     diff_style: diffStyleState(),
     /** Experimental features, each off unless switched on (Settings → General → Experimental). */
     experimental: experimentalState(),
+    /** The Board (config.json `inboxBoard`): off unless the person turned it on. */
+    board: { on: boardOn() },
     /** The onboarding tour: started, finished or skipped, and whether the first real thread offers notifications once more. */
     tour: tourState(),
     /** Settings → Prompts: the Inbox reminder (editable on this computer) and the plan, review and annotate prompts. */
@@ -1903,6 +1932,26 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
 
   /** The agent sessions a `/mcp` POST's tool calls name (a batch included), as MCP presence. */
+  /**
+   * A `card` call while the Board is off (a session listed the tool while it
+   * was on; its tool list is fixed for the session): answered here with the
+   * tool result `board_off`, before the MCP server (which no longer has the
+   * tool) would say "unknown tool". Anything else, or a body that does not
+   * read, goes on to the MCP server unchanged.
+   */
+  const boardOffCardCall = async (req: Request): Promise<Response | null> => {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return null;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    const call = body as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: { name?: unknown } };
+    if (call.method !== "tools/call" || call.params?.name !== "card" || call.id === undefined) return null;
+    return json({ jsonrpc: "2.0", id: call.id, result: { content: [{ type: "text", text: INBOX_BOARD_OFF_TEXT }], isError: true } });
+  };
+
   const noteMcpPresence = async (req: Request): Promise<void> => {
     try {
       const body = (await req.json()) as unknown;
@@ -2110,6 +2159,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // A tool call naming an agent_session is presence: that session is
       // not "ended" while it talks to the Inbox, connection or not.
       if (req.method === "POST") void noteMcpPresence(req.clone());
+      // The Board off: `card` is not listed, and a session that listed it while it was on gets
+      // board_off (a tool result, as any refusal) instead of "unknown tool". Nothing is written.
+      if (req.method === "POST" && !boardOn()) {
+        const refused = await boardOffCardCall(req.clone());
+        if (refused) return refused;
+      }
       return mcp.fetch(req);
     }
 
@@ -2340,10 +2395,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.experimental === undefined &&
           body.tour === undefined &&
           body.prompts === undefined &&
+          body.board === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, board, update_check or auto_update is required.");
         }
+        // The Board changes what agents on this computer are offered (the card tool): changed only here.
+        if (body.board !== undefined && via === "tailnet") return localOnly();
         // Updating changes this computer: never from a page that came through the tailnet.
         if (updateSwitches && via === "tailnet") return localOnly();
         // The reminder goes to every agent session on this computer: changed only here, like Settings → Agents.
@@ -2378,6 +2436,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.diff_style !== undefined) saveDiffStyle(body.diff_style, true);
         if (body.experimental !== undefined) saveExperimental(body.experimental, true);
         if (body.tour !== undefined) saveTour(body.tour, true);
+        if (body.board !== undefined) saveBoard(body.board, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
@@ -2389,8 +2448,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const diffStyle = body.diff_style === undefined ? diffStyleState() : saveDiffStyle(body.diff_style);
         const experimental = body.experimental === undefined ? experimentalState() : saveExperimental(body.experimental);
         const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
+        const board = body.board === undefined ? { on: boardOn() } : saveBoard(body.board);
         if (promptsChange) saveInboxPromptsChange(promptsChange);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, prompts: promptsState(via) });
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, board, prompts: promptsState(via) });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
@@ -2408,7 +2468,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        if (via !== "local" || loadConfig().inboxBoardIntro?.shownAt) return json({ show: false });
+        // Only once the Board is on: the dialog introduces a page the person can see.
+        if (via !== "local" || !boardOn() || loadConfig().inboxBoardIntro?.shownAt) return json({ show: false });
         const at = new Date().toISOString();
         saveConfig({ inboxBoardIntro: { shownAt: at } });
         // Not written (a read-only data dir): showing it anyway would show it on every visit.
@@ -2487,7 +2548,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           if (!store.project(body.project)) throw new InboxError("project_not_found", `No project ${body.project}.`);
           projectIds = new Set([body.project]);
         }
-        return json({ cards: store.markCardDropsSeen(projectIds).map((card) => store.cardWire(card)) });
+        // The drops the window showed the person: a drop that landed after the page drew is not seen.
+        const ids = body.cards;
+        if (!Array.isArray(ids) || ids.length > 1000 || ids.some((id) => !isInboxId("crd", id))) {
+          throw new InboxError("validation_error", "cards: the crd_ ids of the drops the person was shown (at most 1000).", { field: "cards" });
+        }
+        return json({ cards: store.markCardDropsSeen(projectIds, new Set(ids as string[])).map((card) => store.cardWire(card)) });
       }
       // The opened card's links, resolved now (read only; each source's resolver, inbox-card-refs.ts).
       // Never on the device door, like /api/inbox/ref.

@@ -74,7 +74,7 @@ async function world() {
     calls.push({ cli, args });
     return ok(merged(12, "vite 8 for the review app"));
   };
-  const server = await startInboxServer({ dataDir, binaryPath: null, refRunner: run, phones: false });
+  const server = await startInboxServer({ dataDir, binaryPath: null, refRunner: run, phones: false, board: true });
   servers.push(server);
   const base = `http://127.0.0.1:${server.port}`;
   const project = server.store.ensureProject({ name: "web", root: join(root, "web") });

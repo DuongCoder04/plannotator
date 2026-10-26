@@ -68,7 +68,7 @@ describe("the guide against what it describes", () => {
     const savedTailscale = process.env.PLANNOTATOR_INBOX_TAILSCALE;
     process.env.PATH = `${trapBin}:${savedPath ?? ""}`;
     delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
-    const server = await startInboxServer({ dataDir: join(root, "served-data") });
+    const server = await startInboxServer({ dataDir: join(root, "served-data"), board: true });
     const client = new Client({ name: "inbox-help-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));

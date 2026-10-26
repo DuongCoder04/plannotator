@@ -20,7 +20,7 @@ test('every op and argument the prompt names is one the card action takes', () =
   const named = [...prompt.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]);
   expect(named.length).toBeGreaterThan(10);
   for (const word of named) {
-    const known = fields.has(word) || ops.has(word) || word === 'card' || word === 'plannotator_inbox';
+    const known = fields.has(word) || ops.has(word) || word === 'card' || word === 'plannotator_inbox' || word === 'board_off';
     expect(known, `\`${word}\` is not an op or argument of the card action`).toBe(true);
   }
   // "op `list`" and friends name ops.

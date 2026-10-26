@@ -4641,7 +4641,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-blanes { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 0 12px 12px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
 .ib-lane { flex: 1 1 0; min-width: 188px; min-height: 0; display: flex; flex-direction: column; border-radius: var(--ib-lr-lg, 10px); background: var(--ib-lane-bg); transition: background-color 120ms ease-out, box-shadow 120ms ease-out; }
 /* A card open: the lanes are as wide as the whole lanes that fit (BoardPage measures), and stop at a lane, never a sliver of one. */
-.ib-blanes[data-fit] { scroll-snap-type: x mandatory; scroll-padding-inline: 12px 0; }
+.ib-blanes[data-fit] { scroll-snap-type: x mandatory; padding-left: 0; margin-left: 12px; }
 .ib-blanes[data-fit] > .ib-lane { flex: 0 0 calc((100% - (var(--ib-lanes-fit) - 1) * 10px) / var(--ib-lanes-fit)); scroll-snap-align: start; }
 .ib-lane[data-drop] { box-shadow: inset 0 0 0 2px color-mix(in oklch, var(--primary) 45%, transparent); }
 .ib-lane[data-over] { background: color-mix(in oklab, var(--primary) 9%, var(--ib-lane-bg)); box-shadow: inset 0 0 0 2px var(--primary); }
@@ -4742,6 +4742,12 @@ a.ib-bc-main { cursor: pointer; }
 .ib-babout:hover { color: var(--foreground); background: var(--ib-hover); }
 .ib-bempty { position: absolute; left: 0; right: 0; top: 42%; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); pointer-events: none; }
 .ib-bempty .ib-btn { pointer-events: auto; }
+/* The Board off (a #board link): what it is, and Turn it on. */
+.ib-boff { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px 24px 15vh; text-align: center; }
+.ib-boff-icon { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: var(--ib-lr-md, 9px); background: var(--ib-lane-bg); color: var(--muted-foreground); }
+.ib-boff h2 { margin: 0; font-size: var(--ib-fs-18, 18px); font-weight: 600; }
+.ib-boff p { margin: 0; max-width: 460px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); line-height: 1.55; }
+.ib-boff .ib-btn { margin-top: 4px; }
 
 /* The opened card: a panel beside the Board (a full screen on a phone). */
 .ib-crdp { flex: 0 0 min(560px, 44%); min-width: 0; display: flex; flex-direction: column; border-radius: var(--ib-lr-lg, 10px); background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklch, var(--border) 60%, transparent); overflow: hidden; }
@@ -4762,6 +4768,7 @@ a.ib-bc-main { cursor: pointer; }
 .ib-crdp-ask { margin-left: auto; border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-14, 14px); padding: 4px 6px; border-radius: 6px; cursor: pointer; }
 .ib-crdp-ask:hover:not(:disabled) { color: var(--foreground); background: var(--ib-hover); }
 .ib-crdp-ask:disabled { opacity: 0.55; cursor: default; }
+.ib-crdp-asknote { flex-basis: 100%; text-align: right; color: var(--muted-foreground); font-size: var(--ib-fs-12, 12px); }
 .ib-crdp-you { margin: 0; padding: 12px 16px; border-radius: var(--ib-lr-md, 9px); background: color-mix(in oklab, var(--warning, oklch(0.75 0.15 85)) 15%, var(--card)); font-size: var(--ib-fs-15, 15px); overflow-wrap: anywhere; }
 .ib-crdp-you b { color: var(--ib-onyou-fg); }
 .ib-crdp-dropped { margin: 0; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); }

@@ -107,6 +107,19 @@ async function blur(page: Page) {
   await page.mouse.move(700, 880);
 }
 
+/** With a card open, the lanes beside it are whole: none is cut at either edge of the lanes' box. */
+async function expectWholeLanes(page: Page) {
+  await page.waitForTimeout(300);
+  const lanesBox = await page.locator('.ib-blanes').evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    const rects = [...el.querySelectorAll<HTMLElement>('[data-lane]')].map((lane) => lane.getBoundingClientRect());
+    const cut = rects.filter((r) => r.right > box.left + 1 && r.left < box.right - 1).some((r) => r.left < box.left - 1 || r.right > box.right + 1);
+    return { cut, box: [box.left, box.right], lanes: rects.map((r) => [Math.round(r.left), Math.round(r.right)]), fit: el.getAttribute('data-fit') };
+  });
+  expect(lanesBox.cut, JSON.stringify(lanesBox)).toBe(false);
+  expect(lanesBox.fit).not.toBeNull();
+}
+
 async function make(agent: SimAgent, project: string, title: string, fields: Record<string, unknown> = {}): Promise<string> {
   const made = await agent.card({ op: 'create', project_path: project, title, ...fields });
   return (made.card as { id: string }).id;
@@ -149,6 +162,41 @@ test.afterAll(async () => {
   } finally {
     await removeInboxScratch();
   }
+});
+
+test('off by default: no Board row, a #board link says it is off, an agent is refused; Settings turns it on', async () => {
+  const { page, claude, projects } = world;
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto(world.url);
+  await expect(page.locator('[data-settings-nav], .ib-setrow').first()).toBeVisible();
+  await expect(page.locator('[data-board-nav]')).toHaveCount(0);
+  // An agent's card call while it is off: refused, nothing written.
+  await expect(make(claude, projects.plannotator, 'Too early')).rejects.toThrow(/board_off: /);
+  // A #board link while off: the page says so, with the way on. No first-visit dialog yet.
+  await page.goto(`${world.url}#board`);
+  const off = page.locator('[data-board-off]');
+  await expect(off).toBeVisible();
+  await expect(off.locator('h2')).toHaveText('The Board is off');
+  await expect(page.locator('[data-dialog="board-intro"]')).toHaveCount(0);
+  await blur(page);
+  await both(page, 'board-off-1440');
+  // Settings → General: the switch, saying agents get it from their next session.
+  await page.goto(`${world.url}#settings/general`);
+  const group = page.locator('[data-settings-board]');
+  await expect(group).toBeVisible();
+  await expect(group).toContainText('next session');
+  const toggle = group.locator('[role="switch"]');
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await group.scrollIntoViewIfNeeded();
+  await blur(page);
+  await both(page, 'settings-board-off-1440');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[data-board-nav]').first()).toBeAttached();
+  await blur(page);
+  await both(page, 'settings-board-on-1440');
+  // Nothing was written while it was off.
+  expect(((await claude.card({ op: 'list', project_path: projects.plannotator })).cards as unknown[]).length).toBe(0);
 });
 
 test('the first visit shows "Your Board" once; Copy prompt copies the Board prompt; an empty Board says so', async () => {
@@ -267,15 +315,7 @@ test('the opened card: the panel beside the lanes, its links read once it opens,
   // History reads the mock's short ref.
   await expect(panel.locator('section[aria-label="History"]')).toContainText('Linked #11');
   // Whole lanes beside the panel: none is cut at either edge of the lanes' box.
-  await page.waitForTimeout(300);
-  const cut = await page.locator('.ib-blanes').evaluate((el) => {
-    const box = el.getBoundingClientRect();
-    return [...el.querySelectorAll<HTMLElement>('[data-lane]')]
-      .map((lane) => lane.getBoundingClientRect())
-      .filter((r) => r.right > box.left + 1 && r.left < box.right - 1)
-      .some((r) => r.left < box.left - 1 || r.right > box.right + 1);
-  });
-  expect(cut).toBe(false);
+  await expectWholeLanes(page);
   await both(page, 'open-1440');
   // The column menu: Your review.
   await panel.locator('[data-card-column]').click();
@@ -372,6 +412,7 @@ test('New card: into Backlog with notes, and into Icebox', async () => {
   await expect(roadmap).not.toHaveAttribute('data-unread', '');
   await roadmap.locator('[data-card-open]').click();
   await expect(page.locator('[data-card-notes]')).toContainText('Maybe one page that lists what is next');
+  await expectWholeLanes(page);
   await both(page, 'open-backlog-1440');
   await page.keyboard.press('Escape');
   // Icebox.
@@ -402,6 +443,7 @@ test('1280: the lanes fit, and an opened card keeps its lane in view', async () 
   const panelBox = await panel.boundingBox();
   expect(laneBox!.x + laneBox!.width).toBeLessThanOrEqual(panelBox!.x + 1);
   expect(laneBox!.x).toBeGreaterThanOrEqual(0);
+  await expectWholeLanes(page);
   await both(page, 'open-1280');
   // A thread of the card opens in the Inbox view with a way back to the card.
   await panel.locator('[data-card-thread]').first().click();
@@ -426,6 +468,31 @@ test('a thread opened from a card on the Shipped page goes back to the Shipped p
   await expect(page.locator('[data-board-view="shipped"]')).toBeVisible();
   await expect(page.locator(`[data-card-panel="${ids.old}"]`)).toBeVisible();
   await page.goto(`${world.url}#board`);
+});
+
+test('turned off again: the row goes, an agent mid-session is refused and nothing written, every card kept; on again, as they were', async () => {
+  const { page, claude, projects } = world;
+  await page.goto(`${world.url}#board`);
+  await expect(page.locator('.ib-bcard').first()).toBeVisible();
+  const before = await page.locator('.ib-bcard').count();
+  const listed = (await claude.card({ op: 'list', project_path: projects.plannotator })).cards as { id: string; said: string | null }[];
+  expect(listed.length).toBeGreaterThan(0);
+  const mine = listed[0]!;
+  await page.goto(`${world.url}#settings/general`);
+  const toggle = page.locator('[data-settings-board] [role="switch"]');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(page.locator('[data-board-nav]')).toHaveCount(0);
+  // This agent's session read its tools while the Board was on: its call is refused, nothing written.
+  await expect(claude.card({ op: 'say', card_id: mine.id, say: 'still going', project_path: projects.plannotator })).rejects.toThrow(/board_off: /);
+  await page.goto(`${world.url}#board`);
+  await expect(page.locator('[data-board-off]')).toBeVisible();
+  await page.locator('[data-board-turn-on]').click();
+  await expect(page.locator('[data-board-page][data-board-view="lanes"]')).toBeVisible();
+  await expect(page.locator('[data-board-nav]').first()).toBeAttached();
+  await expect(page.locator('.ib-bcard')).toHaveCount(before);
+  const after = (await claude.card({ op: 'list', project_path: projects.plannotator })).cards as { id: string; said: string | null }[];
+  expect(after.find((c) => c.id === mine.id)?.said).toBe(mine.said);
 });
 
 test.describe('iPhone 15 (WebKit)', () => {

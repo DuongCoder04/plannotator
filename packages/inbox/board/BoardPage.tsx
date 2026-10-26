@@ -7,9 +7,11 @@ import { AuthorMark, Icon } from '../icons';
 import { Tip } from '../components/Tip';
 import { DeliveryTick } from '../components/DeliveryTick';
 import { SidebarTrigger } from '../shell/sidebar';
+import { pageInFront } from '../sound';
 import { useComposeSessions } from '../compose/useComposeSessions';
 import { findTarget, hostLabel } from '../compose/model';
 import { CardPanel } from './CardPanel';
+import { OnceButton } from './OnceButton';
 import { NewCardDialog, type NewCardInput } from './NewCardDialog';
 import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
 import {
@@ -64,7 +66,8 @@ export interface BoardPageProps {
   /** A card was made or edited here: read the cards again (the event stream does too). */
   onChanged: (card?: InboxCardWire) => void;
   /** The person looked at the agents' drops ("Got it", or the Icebox page's Dropped). */
-  onSeeDrops: () => void;
+  /** The person looked at these agents' drops ("Got it", or the Icebox page while it is in front): only those are marked seen. */
+  onSeeDrops: (ids: readonly string[]) => void;
   /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
   onOpenThread: (card: InboxCardWire, threadId: string) => void;
 }
@@ -109,6 +112,21 @@ export function BoardPage(props: BoardPageProps) {
   const live = sessions ? sessions.projects.flatMap((g) => g.sessions) : null;
   const open = props.openCard ? (cards.find((c) => c.id === props.openCard) ?? null) : null;
   const projectOf = (card: InboxCardWire) => props.projects.find((p) => p.id === card.project_id) ?? null;
+
+  // When the opened card closes, focus that the panel took with it goes back to the card, in whatever
+  // lane it now sits (a move from its menu included), else to the Board's heading; never the page.
+  const lastOpen = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const was = lastOpen.current;
+    lastOpen.current = props.openCard;
+    if (!was || props.openCard) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const heading = document.getElementById(titleId);
+    const root = heading?.closest('.ib-bpage') ?? document;
+    const button = root.querySelector<HTMLElement>(`[data-card-id="${CSS.escape(was)}"] [data-card-open]`);
+    (button ?? heading)?.focus();
+  }, [props.openCard]);
 
   const move = async (card: InboxCardWire, change: BoardMove) => {
     setFailed(null);
@@ -214,10 +232,10 @@ export function BoardPage(props: BoardPageProps) {
 
   let body: ReactNode;
   if (!model) body = props.error ? <div className="ib-error">{props.error}</div> : <div className="ib-bload" aria-busy="true" />;
-  else if (phone) body = <PhoneBoard cards={cards} counts={counts} {...common} onRestore={(card) => void move(card, { op: 'restore' })} />;
+  else if (phone) body = <PhoneBoard cards={cards} counts={counts} {...common} onRestore={(card) => move(card, { op: 'restore' })} />;
   else if (view === 'shipped') body = <CardList title="Shipped" empty="Nothing shipped yet. A card goes here when its work is merged or live." cards={cards.filter((c) => c.column === 'shipped')} {...common} />;
   else if (view === 'icebox')
-    body = <IceboxPage cards={cards} {...common} onRestore={(card) => void move(card, { op: 'restore' })} onSeeDrops={props.onSeeDrops} unseen={drops.length} />;
+    body = <IceboxPage cards={cards} {...common} onRestore={(card) => move(card, { op: 'restore' })} onSeeDrops={props.onSeeDrops} unseen={drops} />;
   else body = <Lanes cards={cards} {...common} openColumn={open?.column ?? null} onMove={(card, column) => void move(card, { op: 'move', column })} />;
 
   const titleId = useId();
@@ -233,7 +251,7 @@ export function BoardPage(props: BoardPageProps) {
       now={now}
       rowOf={props.rowOf}
       onClose={() => props.onOpenCard(null)}
-      onMove={(change) => void move(open, change)}
+      onMove={(change) => move(open, change)}
       onSend={() => openSend(open)}
       onChanged={props.onChanged}
       onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
@@ -305,7 +323,7 @@ export function BoardPage(props: BoardPageProps) {
         {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => openCreate('backlog')} />}
       </div>
       {model && drops.length > 0 && view !== 'icebox' && (
-        <DroppedNotice drops={drops} onRestore={(card) => void move(card, { op: 'restore' })} onSeen={props.onSeeDrops} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
+        <DroppedNotice drops={drops} onRestore={(card) => move(card, { op: 'restore' })} onSeen={() => props.onSeeDrops(drops.map((card) => card.id))} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
       )}
       {failed && (
         <div className="ib-error ib-bfail" role="alert">
@@ -606,7 +624,7 @@ function DroppedNotice({
   onOpenIcebox,
 }: {
   drops: readonly InboxCardWire[];
-  onRestore: (card: InboxCardWire) => void;
+  onRestore: (card: InboxCardWire) => unknown;
   onSeen: () => void;
   onOpenIcebox: (() => void) | null;
 }) {
@@ -637,9 +655,9 @@ function DroppedNotice({
               {card.dropped?.by.kind === 'agent' ? cardOwnerName({ ...card, agent: card.dropped.by }) : 'An agent'}
               {card.dropped?.reason ? `: ${card.dropped.reason}` : ''}
             </span>
-            <button type="button" className="ib-btn ib-sm" data-card-restore={card.id} onClick={() => onRestore(card)} aria-label={`Restore “${card.title}”`}>
+            <OnceButton className="ib-btn ib-sm" data-card-restore={card.id} onClick={() => onRestore(card)} aria-label={`Restore “${card.title}”`}>
               Restore
-            </button>
+            </OnceButton>
           </li>
         ))}
       </ul>
@@ -679,10 +697,30 @@ function IceboxPage({
   onSeeDrops,
   unseen,
   ...common
-}: CardCommon & { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => void; onSeeDrops: () => void; unseen: number }) {
+}: CardCommon & { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => unknown; onSeeDrops: (ids: readonly string[]) => void; unseen: readonly InboxCardWire[] }) {
+  // Opening Dropped is looking at it: the drops this page drew are marked seen, but only while the
+  // page is in front (a tab in the background, or a window without focus, waits until it is).
+  const unseenKey = unseen.map((card) => card.id).join(' ');
   useEffect(() => {
-    if (unseen > 0) onSeeDrops();
-  }, [unseen, onSeeDrops]);
+    if (!unseenKey) return;
+    const ids = unseenKey.split(' ');
+    const look = () => {
+      if (!pageInFront()) return false;
+      onSeeDrops(ids);
+      return true;
+    };
+    if (look()) return;
+    const retry = () => {
+      if (look()) stop();
+    };
+    const stop = () => {
+      document.removeEventListener('visibilitychange', retry);
+      window.removeEventListener('focus', retry);
+    };
+    document.addEventListener('visibilitychange', retry);
+    window.addEventListener('focus', retry);
+    return stop;
+  }, [unseenKey, onSeeDrops]);
   const iced = cards.filter((c) => c.column === 'icebox');
   const dropped = cards.filter((c) => c.column === 'dropped').sort((a, b) => (b.dropped?.at ?? b.moved_at).localeCompare(a.dropped?.at ?? a.moved_at));
   return (
@@ -693,7 +731,7 @@ function IceboxPage({
   );
 }
 
-function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => void }) {
+function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => unknown }) {
   const id = useId();
   return (
     <section className="ib-blist" aria-labelledby={id} data-dropped-list="">
@@ -715,9 +753,9 @@ function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; on
                     {card.dropped?.reason ? `: ${card.dropped.reason}` : ''}
                   </span>
                 </span>
-                <button type="button" className="ib-btn ib-sm" data-card-restore={card.id} onClick={() => onRestore(card)} aria-label={`Restore “${card.title}” to ${INBOX_CARD_COLUMN_LABELS[card.aside_from ?? 'backlog']}`}>
+                <OnceButton className="ib-btn ib-sm" data-card-restore={card.id} onClick={() => onRestore(card)} aria-label={`Restore “${card.title}” to ${INBOX_CARD_COLUMN_LABELS[card.aside_from ?? 'backlog']}`}>
                   Restore
-                </button>
+                </OnceButton>
               </li>
             );
           })}
@@ -739,7 +777,7 @@ function PhoneBoard({
   counts,
   onRestore,
   ...common
-}: CardCommon & { cards: readonly InboxCardWire[]; counts: ReturnType<typeof boardCounts>; onRestore: (card: InboxCardWire) => void }) {
+}: CardCommon & { cards: readonly InboxCardWire[]; counts: ReturnType<typeof boardCounts>; onRestore: (card: InboxCardWire) => unknown }) {
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set(['shipped', 'icebox']));
   const toggle = (key: string) =>
     setFolded((current) => {
@@ -832,7 +870,7 @@ function OpenedCard({
   now: number;
   rowOf: (threadId: string) => InboxListRow | null;
   onClose: () => void;
-  onMove: (move: BoardMove) => void;
+  onMove: (move: BoardMove) => Promise<void>;
   onSend: () => void;
   onChanged: (card?: InboxCardWire) => void;
   onOpenThread: (threadId: string) => void;
@@ -904,6 +942,11 @@ function OpenedCard({
       projectName={projectName}
       state={agentState(agentSession, live)}
       canAsk={askTarget !== null}
+      askNote={
+        askTarget && agentSession && askTarget.session !== agentSession
+          ? `Its agent's session ended; this asks another ${hostLabel(askTarget.host)} session in ${askTarget.project.name}.`
+          : null
+      }
       rowOf={rowOf}
       phone={phone}
       now={now}

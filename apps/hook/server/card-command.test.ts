@@ -59,6 +59,9 @@ function sandbox() {
     GIT_CONFIG_NOSYSTEM: "1",
     PLANNOTATOR_INBOX_CONNECT: "0",
   };
+  // The Board is something the person turns on (config.json `inboxBoard`, off by default): on here.
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxBoard: true }));
   return { root, dataDir, project, browserMarker, env };
 }
 
@@ -164,6 +167,18 @@ describe.if(INBOX_CARD_ACTION_ON)("plannotator card", () => {
     expect((await card(box, ["frob"])).code).toBe(2);
     expect((await card(box, ["create", "--frob"])).code).toBe(2);
     expect((await card(box, [])).code).toBe(2);
+  }, 30_000);
+
+  test("with the Board off, a card command exits 1 with board_off and writes nothing", async () => {
+    const box = sandbox();
+    await seed(box);
+    writeFileSync(join(box.dataDir, "config.json"), JSON.stringify({ inboxBoard: false }));
+    const made = await card(box, ["create", "While off"]);
+    expect(made.code).toBe(1);
+    expect(made.stdout).toBe("");
+    expect(made.stderr).toStartWith("board_off: ");
+    writeFileSync(join(box.dataDir, "config.json"), JSON.stringify({ inboxBoard: true }));
+    expect((await card(box, ["list", "--anyone"])).stdout).toContain("All 0 cards");
   }, 30_000);
 
   test("--help prints its usage, and plannotator --help lists it (released with the Board page)", async () => {

@@ -148,6 +148,20 @@ Watching: the deployment; I go on by myself once it is Ready
 
 Agents are told to write an action item only for a true blocker: something you must go and do outside the conversation, that they cannot do themselves. Never for a decision or a question (that is a `:::question`), for anything the agent can do, or as a checklist or a status update. `plannotator inbox --help` and the `send_message` tool's `body` field teach it, and its `done` field lets the agent close an action item it saw happen.
 
+## The Board
+
+The Board shows work in flight, by stage, as cards: one card per piece of work that outlasts the message it was asked in (a feature started, a pull request opened, "I'll send you the numbers"). Agents keep their cards current; you move them too.
+
+**It is off until you turn it on**, in **Settings → General → Board** (or with **Turn it on** on the Board's own page). Off, there is no Board in the sidebar, and agents are not offered cards. On, agents get the `card` action from their next session: a session already running keeps the tools it started with (it can still use `plannotator card` in its shell). Turning it off again keeps every card: an agent that still tries gets "the Board is off" and nothing is written, and turning it back on shows the cards as they were. The switch changes nothing else in the Inbox.
+
+- **The lanes.** **Backlog** (work asked for and not started, or a card you wrote), **Designing**, **Your look**, **Building** and **Your review**. In Your look and Your review a card says what you owe ("You: approve the copy"). A card shows the agent, the title, the agent's last word and how long ago it heard. A card an agent wrote to since you last opened the Board is bold until you leave. The header counts what is in flight and what is on you; **Shipped** and **Icebox** are links to their own lists.
+- **A card.** Click one to open it beside the lanes: move it (the Move menu, or drag it to another lane), the agent and whether it is working, **Ask where this is** (a short message to its agent, or to another session in the project when its agent has ended), your notes, its threads (a click opens the thread, with a way back to the card), its links (pull requests and issues, with their live state read when you open the card), and its history. **Start** asks the card's agent to begin; **Send to an agent** gives a card nobody was asked about to a running session. **Ship**, **Icebox** and **Drop…** are at its foot.
+- **The Icebox.** Cards you put aside. Nothing happens to them and no agent moves one out; **Restore** puts it back where it was. Cards that were dropped are listed there too, with who dropped them and why. When an agent drops a card, a note above the lanes says so until you look.
+- **New card.** A title, notes, links and the project; **Add to Backlog**, **Send to an agent** (a new thread to a running session, naming the card), or **Add to Icebox**.
+- **The first visit.** The first time you open the Board after turning it on, a short dialog offers a prompt to copy into your agent, asking it to make cards for the work it already has. The **?** in the header shows it again.
+
+On a phone the Board is one list, a fold per lane, and a card opens full screen.
+
 ## Connecting your agent
 
 Before any agent has written, the Inbox window shows one next step for this computer: Plannotator's own connections first (Claude Code, Pi and OpenCode 2, where your reply arrives in the session as a new turn on its own), then agents that reach it through MCP, which see your reply the next time they check the Inbox. A tool that is off turns on with one click. A plugin that is missing shows its install command to copy; the window never installs anything, and it moves on by itself once you have. Below the step, a short list says which agents are already connected and what is left.
@@ -160,7 +174,7 @@ The mod is off in `claude -p`, in SDK runs and on Windows. There the tool is not
 
 ### Pi
 
-Install the [Pi extension](/docs/getting-started/installation/#pi), then run `plannotator inbox`: it turns the inbox tool on for Pi when it finds the extension. The tool is off by default on Pi, because Pi sends every tool's full definition with each request: the inbox tool adds about 9 KB to every request, roughly 2,500 tokens depending on the model. To turn it on yourself:
+Install the [Pi extension](/docs/getting-started/installation/#pi), then run `plannotator inbox`: it turns the inbox tool on for Pi when it finds the extension. The tool is off by default on Pi, because Pi sends every tool's full definition with each request: the inbox tool adds about 9 KB to every request, roughly 2,500 tokens depending on the model (about 10 KB, roughly 2,900 tokens, with the Board on). To turn it on yourself:
 
 ```bash
 export PLANNOTATOR_INBOX_TOOL=1
@@ -278,6 +292,7 @@ The stdio command fills in the project (its working folder) and a session id for
 | `resolve_message` | Resolve (archive) or reopen a thread |
 | `get_guide_brief` | Get the brief for writing a guided review, with an example that works as it is |
 | `submit_guide` | Send a guided review: a guide plus its patch, or a snapshot |
+| `card` | Only while the Board is on (see [The Board](#the-board)). Make, move and keep its cards current: `create`, `move`, `say` (its last word, and what you owe in Your look or Your review), `link` (a thread, a pull request or an issue), `ship`, `drop` (with a reason) and `list`. Only you put a card in the Icebox or restore one |
 
 No tool answers, approves or sends anything for you.
 
@@ -317,7 +332,7 @@ Everything lives under `~/.plannotator/inbox/` (or `$PLANNOTATOR_DATA_DIR/inbox/
 |------|---------------|
 | `inbox.json` | The registry: port, URL, version, process id, and a token that changes at every start. Owner-only |
 | `inbox.log` | The output of an Inbox started with `--background` |
-| `projects/<name>-<hash>/` | One folder per project: `project.json`, plus `messages.jsonl`, `questions.jsonl` and `annotations.jsonl`, which grow by appending lines (a `decisions.jsonl` an older Inbox wrote, when it kept decisions, stays as it was; it is kept only so sequence numbers are never reused, and its decisions are never shown) |
+| `projects/<name>-<hash>/` | One folder per project: `project.json`, plus `messages.jsonl`, `questions.jsonl`, `annotations.jsonl` and `cards.jsonl` (the Board's cards, kept when you turn the Board off), which grow by appending lines (a `decisions.jsonl` an older Inbox wrote, when it kept decisions, stays as it was; it is kept only so sequence numbers are never reused, and its decisions are never shown) |
 | `blobs/<sha256>` | The version of each attached file as it was sent, a copy of each image a message shows, and each guided review |
 | `markups/<sha256>.png` | The images you marked up when commenting on an image attachment, and the frames your video comments carry (`.jpg`) |
 | `seq.json` | The highest event number ever written, kept across deletions |
@@ -325,11 +340,12 @@ Everything lives under `~/.plannotator/inbox/` (or `$PLANNOTATOR_DATA_DIR/inbox/
 | `drafts/` | Messages you started and did not send, one file each. They never reach an agent, a phone or search |
 | `reply-drafts/` | The words typed in a thread's reply box and not sent, one file per thread. They never reach an agent or search; a phone can read them |
 | `uploads/` | Files you attached to a message you started or pasted into a reply: those not sent yet (forgotten after a day unless a draft keeps them), and read-only copies of those you sent, which the agent opens |
+| `board.json` | When you last looked at the Board, so the cards written since show bold |
 | `pins.json` | The threads pinned to the sidebar, in their order. Never seen by an agent or search; a phone reads them with the list |
 | `recent-searches.json` | Your last six searches, written only when you open a result. **Clear** in the search box empties it |
 | `claims/`, `leases/` and `connection-tools.json` | Bookkeeping for the Pi and OpenCode connections |
 
-The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxTailscale`, `inboxTailscaleAllow`).
+The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`).
 
 ## Uninstall
 

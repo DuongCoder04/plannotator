@@ -104,6 +104,7 @@ import { parseSettingsHash, settingsHash, type SettingsSection } from './setting
 import { ComposeDialog, type ComposeRequest, type ComposeSent } from './compose/ComposeDialog';
 import { DraftsPage } from './compose/DraftsPage';
 import { BoardPage, type BoardMove } from './board/BoardPage';
+import { BoardOff } from './board/BoardOff';
 import { CardChip } from './board/CardChip';
 import { boardViewOf, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
@@ -984,7 +985,13 @@ function Inbox() {
    * newest card it read, so the next visit is bold only for what came after.
    */
   const [boardVisit, setBoardVisit] = useState<{ look: number | null; handled: ReadonlySet<string> } | null>(null);
-  const onBoard = route.page === 'board';
+  /**
+   * The Board is something the person turns on (config.json `inboxBoard`,
+   * approval "inbox-board" 2026-10-26): null until the settings are read; an
+   * Inbox that predates the switch always has it.
+   */
+  const boardEnabled = settings ? (settings.board ? settings.board.on : true) : null;
+  const onBoard = route.page === 'board' && boardEnabled === true;
   useEffect(() => {
     if (!onBoard) {
       setBoardVisit(null);
@@ -1016,9 +1023,10 @@ function Inbox() {
       return null;
     }
   };
-  const seeDrops = useCallback(() => {
+  const seeDrops = useCallback((ids: readonly string[]) => {
+    if (ids.length === 0) return;
     void inboxApi
-      .seeDrops()
+      .seeDrops(ids)
       .then(() => refreshCards())
       .catch(() => {});
   }, [refreshCards]);
@@ -2329,6 +2337,19 @@ function Inbox() {
   };
 
   // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
+  const toggleBoard = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current ? { ...current, board: { on: next } } : current));
+    try {
+      const saved = await inboxApi.saveBoard(next);
+      setSettings((current) => (current ? { ...current, board: saved.board } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   const toggleExperimental = async (next: boolean) => {
     setSettingsError(null);
     setSettings((current) => (current ? { ...current, experimental: { decision_mode: { on: next, env: current.experimental?.decision_mode.env ?? null } } } : current));
@@ -3042,6 +3063,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        onToggleBoard={(next) => void toggleBoard(next)}
         agents={agents}
         onAgents={setAgents}
         onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
@@ -3110,11 +3132,18 @@ function Inbox() {
         }
       />
     );
+  } else if (route.page === 'board' && boardEnabled === false) {
+    // The Board is off: a #board link says so, with the one way to turn it on (nothing else of it shows).
+    main = <BoardOff via={settings?.via ?? 'local'} onTurnOn={() => void toggleBoard(true)} error={settingsError} />;
+  } else if (route.page === 'board' && boardEnabled === null) {
+    main = <section className="ib-bpage" aria-busy="true" data-board-page="" />;
   } else if (route.page === 'board') {
     // The opened card's threads and a sent card's ticks read the list's rows (pins included).
     const rowById = new Map<string, InboxListRow>();
     for (const section of latestSections) for (const row of section.threads) rowById.set(row.thread_id, row);
     for (const row of latest?.pins ?? []) if (!rowById.has(row.thread_id)) rowById.set(row.thread_id, row);
+    // The cards' own answer names threads the list leaves out (archived): the opened card still names them.
+    for (const [id, row] of Object.entries(cards?.threads ?? {})) if (row && !rowById.has(id)) rowById.set(id, row);
     // A New card goes in the project of the card heard from last, else the first project.
     const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
     main = (
@@ -3436,8 +3465,8 @@ function Inbox() {
             onPinAction={(row, action) => void pinAction(row, action)}
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
-            // The Board (approval "inbox-board"): its count is the cards on the person (Your look, Your review).
-            onBoard={() => leave({ page: 'board', project: null, thread: null })}
+            // The Board (approval "inbox-board"): a row only while the person has it on; no count (the header has it).
+            onBoard={boardEnabled ? () => leave({ page: 'board', project: null, thread: null }) : undefined}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>

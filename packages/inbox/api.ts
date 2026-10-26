@@ -87,6 +87,8 @@ export interface CardsModel {
   cards: InboxCardWire[];
   dropped_unseen: number;
   seen_seq?: number | null;
+  /** Each linked thread's list row (archived ones too), for the opened card. Absent from an older Inbox. */
+  threads?: Record<string, InboxListRow | null>;
 }
 
 export interface ListModel {
@@ -243,6 +245,8 @@ export interface SettingsModel {
   diff_style?: InboxDiffStyle | null;
   /** Experimental features, each off unless switched on (`env`: PLANNOTATOR_EXPERIMENTAL decides). Absent from an older Inbox. */
   experimental?: InboxExperimentalSettings;
+  /** The Board (config.json `inboxBoard`): off unless the person turned it on. Absent from an Inbox before the switch (the Board is then always there). */
+  board?: { on: boolean };
   /** The onboarding tour (config.json `inboxTour`): started, finished, skipped. Absent from an Inbox that predates it. */
   tour?: InboxTourState;
   /** Settings → Prompts: the Inbox reminder and the plan, review and annotate prompts. Absent from an older Inbox. */
@@ -614,6 +618,8 @@ export const inboxApi = {
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
+  /** The Board on or off (Settings → General): agents get the card action from their next session. */
+  saveBoard: (on: boolean) => post<{ board: { on: boolean } }>('/api/inbox/settings', { board: { on } }),
   /**
    * The person looked at the thread. `throughSeq`: the seq of the newest
    * message the window showed; the look stops there, so a message that landed
@@ -826,7 +832,7 @@ export const inboxApi = {
   /** The Board's first-visit dialog: the first page on this computer to ask gets `show: true`, once per machine. */
   claimBoardIntro: () => post<{ show: boolean }>('/api/inbox/board/intro', {}),
   /** The person looked at Dropped: an agent's drops there are seen. */
-  seeDrops: () => post<{ cards: InboxCardWire[] }>('/api/inbox/cards/dropped/seen', {}),
+  seeDrops: (ids: readonly string[]) => post<{ cards: InboxCardWire[] }>('/api/inbox/cards/dropped/seen', { cards: [...ids] }),
   pin: (threadId: string, pinned: boolean) =>
     post<{ pins: { thread_id: string; pinned_at: string }[] }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/pin`, { pinned }),
   /** Put the pins in this order (Move up, Move down): pins it does not name keep their place after them; a named thread not pinned now is skipped. */

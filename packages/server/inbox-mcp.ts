@@ -30,6 +30,7 @@ import { registerInboxGuideTools } from "./inbox-guides";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, questionWords, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
+export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { fail, guarded, ok, okComplete, PROJECT_PATH_DESCRIPTION, TEXT_COMPLETE_META, type ToolResult } from "./inbox-mcp-result";
 
 // The result helpers live in inbox-mcp-result.ts (no import cycle for the tool modules); re-exported for older importers.
@@ -43,8 +44,19 @@ export const INBOX_WAIT_MAX_SECONDS = 50;
 
 export const INBOX_MCP_TOOLS = ["send_message", "read_thread", "search", "resolve_message", "wait_for_reply", "get_guide_brief", "submit_guide", "card"] as const;
 
-/** The tools this Inbox serves: every one, except `card` while INBOX_CARD_ACTION_ON holds it back. */
+/**
+ * The tools this Inbox serves with the Board on: every one, except `card`
+ * while INBOX_CARD_ACTION_ON holds it back in the code.
+ */
 export const INBOX_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = INBOX_MCP_TOOLS.filter((name) => name !== "card" || INBOX_CARD_ACTION_ON);
+
+/**
+ * The tools an Inbox serves by default: the Board is off until the person
+ * turns it on (config.json `inboxBoard`, approval "inbox-board" 2026-10-26),
+ * so `card` is not in its tools/list.
+ */
+export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = INBOX_SERVED_TOOLS.filter((name) => name !== "card");
+
 
 /** Under Claude Code's 2,048-character cap on server instructions. */
 export const INBOX_MCP_INSTRUCTIONS = [
@@ -233,6 +245,13 @@ export interface InboxMcpContext {
    * Absent: only a caller's own connection wakes it (`callerWakes`).
    */
   sessionWakes?: (host: unknown, session: unknown) => Promise<boolean>;
+  /**
+   * Whether the Board is on (config.json `inboxBoard`, read on every
+   * request). Off: `card` is not in tools/list, and a call (from a session
+   * that listed it while it was on) gets `board_off` with nothing written.
+   * Absent: on, as before the switch.
+   */
+  boardOn?: () => boolean;
 }
 
 
@@ -1214,8 +1233,9 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
   // Guided reviews (step 5): packages/server/inbox-guides.ts.
   registerInboxGuideTools(server, context);
 
-  // The Board's cards (approval "inbox-board"): packages/server/inbox-mcp-cards.ts. Held back with INBOX_CARD_ACTION_ON.
-  if (INBOX_CARD_ACTION_ON) registerInboxCardTool(server, context);
+  // The Board's cards (approval "inbox-board"): packages/server/inbox-mcp-cards.ts. Held back in the code with
+  // INBOX_CARD_ACTION_ON, and served only while the person has the Board on (the server is made per request).
+  if (INBOX_CARD_ACTION_ON && (context.boardOn?.() ?? true)) registerInboxCardTool(server, context);
 
   return server;
 }

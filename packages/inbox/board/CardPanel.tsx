@@ -19,6 +19,7 @@ import { checksText } from '@plannotator/ui/components/RefHoverCard';
 import { fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
 import { Tip } from '../components/Tip';
+import { OnceButton } from './OnceButton';
 import { cardAge, cardFoot, columnChoices, historyWords, refState, sentTo } from './model';
 
 export interface CardPanelProps {
@@ -31,6 +32,8 @@ export interface CardPanelProps {
   state: 'working' | 'idle' | 'ended' | null;
   /** Whether "Ask where this is" has a live session to go to (the card's agent, else one in its project). */
   canAsk: boolean;
+  /** Said under "Ask where this is" when it goes to another session (the card's own agent ended). */
+  askNote?: string | null;
   rowOf: (threadId: string) => InboxListRow | null;
   phone: boolean;
   now: number;
@@ -38,7 +41,7 @@ export interface CardPanelProps {
   onColumn: (column: InboxCardColumn) => void;
   onShip: () => void;
   onIcebox: () => void;
-  onRestore: () => void;
+  onRestore: () => unknown;
   onDrop: (reason: string | null) => void;
   onSend: () => void;
   /** Start: tell the card's agent (or a live session in its project) to begin; an error to say, or null. */
@@ -142,6 +145,11 @@ export function CardPanel(props: CardPanelProps) {
                 setSaid(failed ?? `Asked ${agent ? inboxAgentName(agent) : 'an agent'} where “${card.title}” is.`);
               }}
             />
+          )}
+          {props.askNote && props.canAsk && card.column !== 'dropped' && card.column !== 'icebox' && card.column !== 'shipped' && (
+            <span className="ib-crdp-asknote" data-card-ask-other="">
+              {props.askNote}
+            </span>
           )}
         </div>
         {isInboxCardPersonColumn(card.column) && card.you && (
@@ -276,10 +284,10 @@ export function CardPanel(props: CardPanelProps) {
             </button>
           )}
           {foot.primary === 'restore' && (
-            <button type="button" className="ib-btn ib-soft" onClick={props.onRestore} data-card-restore={card.id}>
+            <OnceButton className="ib-btn ib-soft" onClick={props.onRestore} data-card-restore={card.id}>
               <Icon name="replay" size={15} />
               Restore to {INBOX_CARD_COLUMN_LABELS[card.aside_from ?? 'backlog']}
-            </button>
+            </OnceButton>
           )}
           <span className="ib-bsp" />
           {foot.icebox && (
