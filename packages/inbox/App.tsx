@@ -3044,6 +3044,7 @@ function Inbox() {
         onToggleExperimental={(next) => void toggleExperimental(next)}
         agents={agents}
         onAgents={setAgents}
+        onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
         tailscaleBusy={tailscaleBusy}
         permission={notifications.permission}
@@ -3216,6 +3217,8 @@ function Inbox() {
           }
           // The title refreshes the list it names, the thread beside it staying open (the list adopts, as Show does).
           onRefresh={() => void refreshInbox(route.project, false)}
+          // A phone's pull down from the list's top does the same, its ↻ spinning until the read lands (pullRefresh.ts).
+          onPullRefresh={() => refreshInbox(route.project, false)}
           refreshSpin={refreshSpin && refreshSpin.scope === route.project ? refreshSpin.key : null}
           onShowNew={() => {
             // Show's line goes away with the press: after a key, focus goes to the first row it brought in.
