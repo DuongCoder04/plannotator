@@ -383,6 +383,11 @@ export function RestartDialog({ update, subject, onRestart, onCancel }: { update
   );
 }
 
+/** install.sh's exit when the binary didn't match the checksum Plannotator fetched (packages/server/auto-update.ts). */
+const UPDATE_EXIT_MISMATCH = 3;
+/** The update wrapper's exit when Plannotator couldn't download the update (packages/server/auto-update.ts). */
+const UPDATE_EXIT_DOWNLOAD_FAILED = 75;
+
 /** Failed → press: the plain reason, the log, Try Again. */
 export function FailedDialog({
   update,
@@ -398,18 +403,31 @@ export function FailedDialog({
   onClose: () => void;
 }) {
   const code = details?.failure?.exit_code;
+  // Safe updates (step 1): 3 = the download didn't match the checksum
+  // Plannotator fetched; 75 = Plannotator couldn't download the update.
+  // Neither offers the `curl | bash` line: it would go through the same
+  // connection that just failed.
+  const mismatch = code === UPDATE_EXIT_MISMATCH;
+  const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
+  const sub = mismatch
+    ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
+    : couldNotDownload
+      ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
+      : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
   return (
-    <Modal label="The update didn't install" onClose={onClose} testId="failed">
-      <h2>The update didn&apos;t install</h2>
-      <p className="ib-sub">
-        Plannotator is still {update.current}.{code !== undefined ? ` The install script exited with code ${code}.` : ''}
-      </p>
+    <Modal label={mismatch ? 'The update stopped' : "The update didn't install"} onClose={onClose} testId="failed">
+      <h2>{mismatch ? 'The update stopped' : <>The update didn&apos;t install</>}</h2>
+      <p className="ib-sub">{sub}</p>
       {details && (
         <>
-          <p className="ib-sum">The log says what went wrong:</p>
+          <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
-          <p className="ib-sum">Or run the install script yourself:</p>
-          <CommandRow text={details.command} />
+          {!mismatch && !couldNotDownload && (
+            <>
+              <p className="ib-sum">Or run the install script yourself:</p>
+              <CommandRow text={details.command} />
+            </>
+          )}
         </>
       )}
       <div className="ib-acts-row">

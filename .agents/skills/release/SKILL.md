@@ -267,6 +267,7 @@ Before tagging, verify:
 - [ ] The PR-safe `release-security` job generated a schema-valid, sentinel-complete SBOM and accepted the Grype policy with a fresh database
 - [ ] No scanner binary, database, generated SBOM/report, credential, or `DO_NOT_COMMIT` content is staged
 - [ ] For the first SBOM-enabled release, the canonical Mintlify install/verification page contains the README's SBOM scope, policy, checksum, SLSA, and CycloneDX commands (do not edit the deprecated Astro docs instead)
+- [ ] If `scripts/install.sh` (or `install.ps1` / `install.cmd`) changed since the last release, the owner syncs it to S3 by hand so `https://plannotator.ai/install.sh` serves the new copy. Safe updates (from 0.28.33) depend on it: an update checks the binary against the checksums Plannotator fetched only when plannotator.ai serves an `install.sh` that reads `PLANNOTATOR_EXPECTED_SHA256`. Until it does, updates still work exactly as before (an older script ignores the variable), but without that check. Confirm with `curl -fsSL https://plannotator.ai/install.sh | grep -c PLANNOTATOR_EXPECTED_SHA256` (non-zero).
 
 After tagging, verify:
 - [ ] Release workflow completed with `release-security`, `attest`, `release`, and `npm-publish` green

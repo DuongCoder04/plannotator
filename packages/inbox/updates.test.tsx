@@ -194,3 +194,46 @@ test.skipIf(!hasDom)('the failure dialog names the exit code and the log, and of
   act(() => retry.click());
   expect(retried).toBe(1);
 });
+
+// Safe updates (step 1): after a mismatch (install.sh exit 3) or a failed
+// download (the wrapper's 75) the dialog must not hand the person the
+// `curl | bash` line: it would go through the connection that just failed.
+for (const [code, heading] of [
+  [3, 'The update stopped'],
+  [75, "The update didn't install"],
+] as const) {
+  test.skipIf(!hasDom)(`exit ${code}: no install-script line, the old version still works, Try Again stays`, () => {
+    let retried = 0;
+    const el = render(
+      <FailedDialog
+        update={update('failed')}
+        details={details({ failure: { exit_code: code, log: '/home/u/.plannotator/update.log' } })}
+        home="/home/u"
+        onRetry={() => retried++}
+        onClose={() => {}}
+      />,
+    );
+    expect(el.querySelector('h2')?.textContent).toBe(heading);
+    expect(el.textContent).not.toContain('curl -fsSL');
+    expect(el.textContent).not.toContain('Or run the install script yourself');
+    expect(el.textContent).not.toContain('exited with code');
+    expect(el.textContent).toContain('Plannotator 0.28.10 still works');
+    expect(el.textContent).toContain('~/.plannotator/update.log');
+    const retry = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Try Again') as HTMLButtonElement;
+    act(() => retry.click());
+    expect(retried).toBe(1);
+  });
+}
+
+test.skipIf(!hasDom)('any other failure still offers the install script to run by hand', () => {
+  const el = render(
+    <FailedDialog
+      update={update('failed')}
+      details={details({ failure: { exit_code: 1, log: '/home/u/.plannotator/update.log' } })}
+      home="/home/u"
+      onRetry={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  expect(el.textContent).toContain('curl -fsSL https://plannotator.ai/install.sh | bash -s -- --skip-gemini');
+});

@@ -5,7 +5,7 @@
  * reaches GitHub or runs the real install script.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -96,10 +96,30 @@ describe("plannotator update (seams)", () => {
     expect(err).toContain("HTTP 429");
   });
 
-  test("a failed install says so, with the log (exit 1)", async () => {
-    expect(await run([], { runInstaller: async () => 3 })).toBe(1);
-    expect(err).toContain("exited with code 3");
+  test("a failed install says so, with the log and the install command (exit 1)", async () => {
+    expect(await run([], { runInstaller: async () => 5 })).toBe(1);
+    expect(err).toContain("exited with code 5");
     expect(err).toContain("update.log");
+    expect(err).toContain("Or run the install script yourself: curl -fsSL");
+  });
+
+  // Safe updates: after a mismatch (install.sh exit 3) or a failed download
+  // (the wrapper's 75) the old version is kept, and the `curl | bash` line is
+  // never offered: it would go through the connection that just failed.
+  test("a download that didn't match its checksum: the old version still works, no install command", async () => {
+    expect(await run([], { runInstaller: async () => 3 })).toBe(1);
+    expect(err).toContain("The update to 0.28.11 stopped: the download didn't match the checksum Plannotator fetched for it.");
+    expect(err).toContain("0.28.10 is still installed and works. Try again later, or on another network: plannotator update");
+    expect(err).toContain("update.log");
+    expect(err).not.toContain("curl");
+    expect(err).not.toContain("exited with code");
+  });
+
+  test("an update that couldn't be downloaded: the old version still works, no install command", async () => {
+    expect(await run([], { runInstaller: async () => 75 })).toBe(1);
+    expect(err).toContain("Couldn't download the update. 0.28.10 is still installed and works. Try again later: plannotator update");
+    expect(err).toContain("update.log");
+    expect(err).not.toContain("curl");
   });
 
   test("another update holding the lock: exit 1, no second install", async () => {
@@ -119,12 +139,13 @@ describe("plannotator update (seams)", () => {
 // index.ts dispatches, without the built HTML the full entry imports), made a
 // "release" with --define and made "managed" by a temp HOME whose
 // ~/.local/bin/plannotator links to this bun.
-describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator update (process)", () => {
+describe.skipIf(process.platform === "win32")("plannotator update (process)", () => {
   const entry = resolve(import.meta.dir, "update-command-entry.ts");
   let home: string;
   let server: ReturnType<typeof Bun.serve>;
   let installerExit = 0;
   let installerSleeps = false;
+  let sumsBroken = false;
   let apiHits = 0;
 
   beforeEach(() => {
@@ -134,6 +155,7 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator
     apiHits = 0;
     installerExit = 0;
     installerSleeps = false;
+    sumsBroken = false;
     server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -144,13 +166,19 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator
           return Response.json({ tag_name: "v9.9.9", published_at: "2026-10-10T00:00:00Z", body: "## What's New in v9.9.9\n\nThings." });
         }
         if (path === "/install.sh") {
-          // The fake installer: records its argv and HOME, exits as told.
+          // The fake installer: records its argv, HOME and the pinned
+          // checksums, exits as told. The first two lines are what
+          // update-prepare requires of any script it saves.
           return new Response(
-            installerSleeps
-              ? `echo "fake installer started"\nsleep 30\n`
-              : `printf '%s\\n' "$@" > "$HOME/installer-args"\necho "fake installer ran"\nexit ${installerExit}\n`,
+            '#!/bin/bash\nREPO="backnotprop/plannotator"\n' +
+              (installerSleeps
+                ? `echo "fake installer started"\nsleep 30\n`
+                : `printf '%s\\n' "$@" > "$HOME/installer-args"\nprintf '%s' "$PLANNOTATOR_EXPECTED_SHA256" > "$HOME/installer-pins"\necho "fake installer ran"\nexit ${installerExit}\n`),
           );
         }
+        const sum = /^\/download\/v9\.9\.9\/(plannotator-(?:darwin|linux)-(?:arm64|x64))\.sha256$/.exec(path);
+        if (sum && sumsBroken) return new Response("<html>captive portal</html>");
+        if (sum) return new Response(`${sum[1]!.endsWith("arm64") ? "a".repeat(64) : "b".repeat(64)}  ${sum[1]}\n`);
         return new Response("not found", { status: 404 });
       },
     });
@@ -171,6 +199,7 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator
         PLANNOTATOR_DATA_DIR: dataDir,
         PLANNOTATOR_UPDATE_API_URL: `http://127.0.0.1:${server.port}/releases/latest`,
         PLANNOTATOR_INSTALL_SCRIPT_URL: `http://127.0.0.1:${server.port}/install.sh`,
+        PLANNOTATOR_RELEASE_DOWNLOAD_URL: `http://127.0.0.1:${server.port}/download`,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -197,6 +226,24 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator
     expect(JSON.parse(readFileSync(join(dataDir, "update-result.json"), "utf-8"))).toEqual({ version: "v9.9.9", exitCode: 0 });
     expect(readFileSync(join(dataDir, "update.log"), "utf-8")).toContain("fake installer ran");
     expect(apiHits).toBe(1);
+    // Safe updates: the script ran from the copy Plannotator downloaded, with
+    // both CPU types' checksums, and the staged copy is gone afterwards.
+    const os = process.platform === "darwin" ? "darwin" : "linux";
+    expect(readFileSync(join(home, "installer-pins"), "utf-8")).toBe(`plannotator-${os}-arm64=${"a".repeat(64)} plannotator-${os}-x64=${"b".repeat(64)}`);
+    expect(readdirSync(home).filter((n) => n.startsWith("plannotator-update-"))).toEqual([]);
+  }, 60_000);
+
+  test("a checksum Plannotator can't read means nothing runs: exit 1, the old version kept, no install command", async () => {
+    sumsBroken = true;
+    const r = await cli();
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Couldn't download the update. 0.1.0 is still installed and works.");
+    expect(r.stderr).not.toContain("curl");
+    expect(existsSync(join(home, "installer-args"))).toBe(false);
+    expect(existsSync(join(dataDir, "update.lock"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dataDir, "update-result.json"), "utf-8"))).toEqual({ version: "v9.9.9", exitCode: 75 });
+    expect(readFileSync(join(dataDir, "update.log"), "utf-8")).toContain("not a SHA-256 checksum");
+    expect(readdirSync(home).filter((n) => n.startsWith("plannotator-update-"))).toEqual([]);
   }, 60_000);
 
   test("a failing install script exits 1 and says where the log is", async () => {
@@ -218,6 +265,7 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("plannotator
         PLANNOTATOR_DATA_DIR: dataDir,
         PLANNOTATOR_UPDATE_API_URL: `http://127.0.0.1:${server.port}/releases/latest`,
         PLANNOTATOR_INSTALL_SCRIPT_URL: `http://127.0.0.1:${server.port}/install.sh`,
+        PLANNOTATOR_RELEASE_DOWNLOAD_URL: `http://127.0.0.1:${server.port}/download`,
       },
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],

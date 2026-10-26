@@ -11,7 +11,8 @@
  * update checks are off (PLANNOTATOR_UPDATE_CHECK=0); it says so.
  *
  * Exit codes: 0 up to date, updated, or `--check`; 1 the update could not run
- * or failed; 2 usage.
+ * or failed (including a download that did not match its checksum, or one
+ * that could not be downloaded: the old binary is kept either way); 2 usage.
  */
 
 import { homedir } from "node:os";
@@ -37,6 +38,8 @@ import {
   isManagedBinary,
   managedBinaryPath,
   runInstallerForeground,
+  UPDATE_CHECKSUM_MISMATCH,
+  UPDATE_PREPARE_FAILED,
   type InstallerLaunch,
 } from "@plannotator/server/auto-update";
 import { UPDATE_COMMAND_USAGE } from "./cli";
@@ -156,6 +159,23 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
       `The update was interrupted. Plannotator is still ${current}; the lock is released, so run plannotator update again when you like.\n`,
     );
     return 130;
+  }
+  // Safe updates: never the `curl | bash` line here. After a mismatch it
+  // would send the person through the very connection that just failed.
+  if (code === UPDATE_CHECKSUM_MISMATCH) {
+    err(
+      `The update to ${latest} stopped: the download didn't match the checksum Plannotator fetched for it.\n` +
+        `${current} is still installed and works. Try again later, or on another network: plannotator update\n` +
+        `Details: ${autoUpdatePaths(dataDir).log}\n`,
+    );
+    return 1;
+  }
+  if (code === UPDATE_PREPARE_FAILED) {
+    err(
+      `Couldn't download the update. ${current} is still installed and works. Try again later: plannotator update\n` +
+        `Details: ${autoUpdatePaths(dataDir).log}\n`,
+    );
+    return 1;
   }
   if (code !== 0) {
     err(
