@@ -151,6 +151,43 @@ test("a picked label's markdown (a link, code, bold) reads as its words on the l
   expect(plainLabel('snake_case and 2 * 3')).toBe('snake_case and 2 * 3');
 });
 
+test('a picked label keeps <…> text, as the live card shows it; a prompt still drops tags', () => {
+  expect(plainLabel('Array<string> type')).toBe('Array<string> type');
+  expect(plainLabel('Use <Button> component')).toBe('Use <Button> component');
+  expect(plainLabel('Return Result<T, E>')).toBe('Return Result<T, E>');
+  expect(plainLabel('x<y>z')).toBe('x<y>z');
+  expect(cleanInline('Ship <b>now</b>?')).toBe('Ship now?');
+  // An autolink reads as its address.
+  expect(plainLabel('Mail <ops@example.com>')).toBe('Mail ops@example.com');
+  expect(plainLabel('See <https://example.com/a>')).toBe('See https://example.com/a');
+});
+
+test('a picked label reads a backslash escape as its character, as the live card does', () => {
+  expect(plainLabel('\\*literal stars\\*')).toBe('*literal stars*');
+  expect(plainLabel('C\\+\\+')).toBe('C++');
+  expect(plainLabel('a \\_b\\_ c')).toBe('a _b_ c');
+});
+
+test('a picked label that links to an address with parentheses reads as its link text', () => {
+  expect(plainLabel('[Wiki](https://en.wikipedia.org/wiki/Foo_(bar))')).toBe('Wiki');
+  expect(plainLabel('![Mock](shots/mock_(dark).png)')).toBe('Mock');
+});
+
+test('a picked label: a link with brackets in its text, and a picture with no alt text', () => {
+  expect(plainLabel('[a [nested] label](x.html)')).toBe('a [nested] label');
+  expect(plainLabel('![](shots/dark.png)')).toBe('dark.png');
+});
+
+test('a picked label keeps names and arithmetic whole', () => {
+  expect(plainLabel('snake_case')).toBe('snake_case');
+  expect(plainLabel('`__init__.py`')).toBe('__init__.py');
+  expect(plainLabel('__init__.py')).toBe('__init__.py');
+  expect(plainLabel('2*3*4')).toBe('2*3*4');
+  expect(plainLabel('`*args` and `**kwargs`')).toBe('*args and **kwargs');
+  expect(plainLabel('*args and **kwargs')).toBe('*args and **kwargs');
+  expect(plainLabel('Inline `a\\*b` code')).toBe('Inline a\\*b code');
+});
+
 test("a reply of skips or of answers and skips: the store's first line is dropped too", () => {
   expect(replyWords('Skipped 3 questions.\n\nRedo the design.')).toBe('Redo the design.');
   expect(replyWords('Answered 1 question, skipped 2.\n\nRedo the design.')).toBe('Redo the design.');

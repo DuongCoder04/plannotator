@@ -445,6 +445,11 @@ export function swipeChoices(question: InboxQuestion): [string, string] | null {
   return [question.choices[0]!.label, question.choices[1]!.label];
 }
 
+/** The swipe's hint under the card, the labels as their words; a swipe still commits the label as written. */
+export function swipeHint(choices: readonly [string, string]): string {
+  return `Swipe right for ${plainLabel(choices[0])}, left for ${plainLabel(choices[1])}.`;
+}
+
 /**
  * Whether an answer to a `Reversible: no` question asks once more before it counts (approval
  * "inbox-decision-mode", agent contract lines; contract-compare.html, pair 2): every answer that chooses

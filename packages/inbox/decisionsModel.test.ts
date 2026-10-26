@@ -30,6 +30,7 @@ import {
   putOff,
   skipAnswer,
   swipeChoices,
+  swipeHint,
   answerNeedsConfirm,
   confirmLabel,
 } from './decisions/model';
@@ -239,6 +240,13 @@ describe('answers', () => {
     expect(answer.selected).toEqual(['[15% off](forecast-15.html)']);
     expect(answerWords(answer)).toBe('15% off');
     expect(answerWords({ ...answer, selected: ['**20%** for members', '`FLAT10` code'] })).toBe('20% for members, FLAT10 code');
+  });
+
+  test("the swipe hint says the labels' words; the swipe commits the label as written", () => {
+    const linked = { ...A1.question, choices: [{ label: '[Yes](a.html)' }, { label: '`No`' }] } as InboxQuestion;
+    const choices = swipeChoices(linked)!;
+    expect(choices).toEqual(['[Yes](a.html)', '`No`']);
+    expect(swipeHint(choices)).toBe('Swipe right for Yes, left for No.');
   });
 });
 

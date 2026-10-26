@@ -236,19 +236,28 @@ export function snippetText(snippet: FoldSnippet): string {
  * tags out, and paired emphasis marks (`**x**`, `__x__`, `~~x~~`, `*x*`,
  * `_x_`) dropped only where they open and close at word boundaries, so
  * `snake_case` and `2 * 3` keep their characters. Inline code keeps its text
- * (only the backticks go).
+ * (only the backticks go). A backslash escape (`\*`, `\+`) reads as its
+ * character, as the inline renderer draws it. A link's destination may hold
+ * one level of parentheses (`…/Foo_(bar)`). `keepTags` keeps `<…>` text (a
+ * choice label: the card draws `Array<string>` literally).
  */
-export function cleanInline(text: string): string {
+export function cleanInline(text: string, options: { keepTags?: boolean } = {}): string {
   const code: string[] = [];
   let out = text.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (_m, _ticks: string, inner: string) => {
     code.push(inner.trim());
     return `\u0000${code.length - 1}\u0000`;
   });
+  // Escaped characters are set aside so no rule below reads them as marks.
+  const escaped: string[] = [];
+  out = out.replace(ESCAPED, (_m, ch: string) => {
+    escaped.push(ch);
+    return `\u0001${escaped.length - 1}\u0001`;
+  });
   out = out
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_m, target: string, label?: string) => label ?? target)
-    .replace(/<\/?[A-Za-z][^>]*>/g, '');
+    .replace(new RegExp(`!\\[[^\\]]*\\]${LINK_DESTINATION}`, 'g'), '')
+    .replace(new RegExp(`\\[((?:[^\\[\\]]|\\[[^\\[\\]]*\\])*)\\]${LINK_DESTINATION}`, 'g'), '$1')
+    .replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_m, target: string, label?: string) => label ?? target);
+  if (!options.keepTags) out = out.replace(/<\/?[A-Za-z][^>]*>/g, '');
   // A closing mark ends a word: whitespace, the end, or punctuation that does
   // not run into another word (`__init__.py` is a name, not emphasis).
   const close = `(?=$|\\s|[,;:!?)\\]"'’]|\\.(?!\\w))`;
@@ -256,20 +265,36 @@ export function cleanInline(text: string): string {
     const pair = new RegExp(`(^|[^\\w*~])${mark}(?=\\S)([\\s\\S]*?\\S)${mark}${close}`, 'g');
     out = out.replace(pair, '$1$2');
   }
-  return out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => code[Number(i)] ?? '');
+  return out.replace(/\u0001(\d+)\u0001/g, (_m, i: string) => escaped[Number(i)] ?? '').replace(/\u0000(\d+)\u0000/g, (_m, i: string) => code[Number(i)] ?? '');
 }
+
+/** The characters a backslash escapes, as the inline renderer reads them (ui's InlineMarkdown). */
+const ESCAPED = /\\([\\*_`[\]~!.()\-#>+|{}&$])/g;
+/** A link's `(destination)`: one level of balanced parentheses inside. */
+const LINK_DESTINATION = '\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)';
 
 /**
  * A picked choice's label as plain words. A label is the agent's inline
  * markdown (a link, code, bold): a line or row that draws it as text shows
  * "15% off", never `[15% off](forecast-15.html)`. Display only: the stored
  * answer and the reply the agent reads keep the label exactly as written, so
- * the agent matches it to its choice. A label that is only an image reads as
- * its alt text, so the pick never shows as nothing.
+ * the agent matches it to its choice. The words are the ones the live card
+ * shows: `<…>` text stays (`Array<string>`), an autolink reads as its
+ * address, an escape as its character. A label that is only an image reads
+ * as its alt text, else its file name, so the pick never shows as nothing.
  */
 export function plainLabel(label: string): string {
-  const plain = (text: string) => cleanInline(text).replace(/\s+/g, ' ').trim();
-  return plain(label) || plain(label.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')) || label.trim();
+  const plain = (text: string) =>
+    cleanInline(text.replace(/<(https?:\/\/[^>]+)>/g, '$1').replace(/<([^@>\s]+@[^>\s]+)>/g, '$1'), { keepTags: true })
+      .replace(/\s+/g, ' ')
+      .trim();
+  const image = new RegExp(`!\\[([^\\]]*)\\]\\(\\s*<?([^\\s)>]*)`, 'g');
+  return (
+    plain(label) ||
+    plain(label.replace(new RegExp(`!\\[([^\\]]*)\\]${LINK_DESTINATION}`, 'g'), '$1')) ||
+    [...label.matchAll(image)].map((m) => m[2]!.split(/[\\/]/).pop()!.replace(/[?#].*$/, '')).filter(Boolean).join(', ') ||
+    label.trim()
+  );
 }
 
 /**
