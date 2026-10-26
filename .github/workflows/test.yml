@@ -140,6 +140,7 @@ jobs:
           packages/ui/components/HostTitle.dom.test.tsx
           packages/inbox/images.test.tsx
           packages/inbox/inlineImages.test.tsx
+          packages/inbox/refusedImages.test.tsx
           packages/inbox/codeAttachment.test.tsx
           packages/inbox/fileViewClean.test.tsx
           packages/inbox/links.test.tsx
@@ -265,6 +266,7 @@ jobs:
           packages/review-editor/App.agentTool.test.tsx
           packages/review-editor/App.guideViewed.test.tsx
           packages/review-editor/App.commitsJj.test.tsx
+          packages/review-editor/App.emptyDiffSwitch.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
           packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
           packages/review-editor/components/FileHeader.edit.test.tsx

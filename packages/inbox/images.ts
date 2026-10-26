@@ -14,6 +14,7 @@
  * written: the window's CSP (`img-src 'self' data: blob:`) does not load them.
  */
 import type { ImageSrcResolver } from '@plannotator/ui/configure';
+import { tourAssetUrl } from './tour/assets';
 
 const MESSAGE_BASE_PREFIX = 'inbox-message:';
 /** The onboarding tour's messages (tour/): their images are the tour's own assets, by file name only. */
@@ -62,7 +63,7 @@ export const inboxImageSrcResolver: ImageSrcResolver = (path, base) => {
   if (markup) return `/api/inbox/markups/${markup[1]}`;
   if (base === TOUR_IMAGE_BASE) {
     // A tour picture loads from the tour's read-only asset route; anything else in a tour message loads nothing.
-    return TOUR_ASSET_RE.test(path) ? `/api/inbox/tour/assets/${encodeURIComponent(path)}` : `/api/inbox/tour/assets/none`;
+    return TOUR_ASSET_RE.test(path) ? tourAssetUrl(path) : `/api/inbox/tour/assets/none`;
   }
   if (base?.startsWith(MESSAGE_BASE_PREFIX)) {
     const id = base.slice(MESSAGE_BASE_PREFIX.length);

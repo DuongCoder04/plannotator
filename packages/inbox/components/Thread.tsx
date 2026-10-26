@@ -4,6 +4,8 @@ import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
+import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
@@ -338,6 +340,18 @@ export function MessageBody({
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false }), [shown]);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false }) : []), [restShown]);
   const refRepo = useRefRepo(repo);
+  // The body's images go through a host resolver that names the same URL ui's
+  // default would (the window's resolver, `inboxImageSrcResolver`), only so ui
+  // draws an image the Inbox refuses (403 image_hidden, 404) as its alt text in
+  // a quiet chip instead of a broken-image icon: markdown images, `<img>` in
+  // raw-HTML blocks and question cards' pictures alike. Remote, `data:` and
+  // `blob:` sources keep their URL (HtmlBlock's default test: `https:host/a.png`
+  // is remote too).
+  const imageBaseDir = imageBase ?? inboxMessageImageBase(message.id);
+  const resolveImage = useCallback<ImageResolver>(
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    [imageBaseDir],
+  );
   // A tall screenshot in the body shows its top, cropped like the gallery's
   // (inbox.css); a click still opens it whole.
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -604,6 +618,7 @@ export function MessageBody({
   );
 
   return (
+    <ImageResolverContext.Provider value={resolveImage}>
     <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef}>
       {(!replyParts || shown !== '') && (
       <Viewer
@@ -622,7 +637,7 @@ export function MessageBody({
         maxWidth={null}
         stickyActions={false}
         disableCodePathValidation
-        imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
+        imageBaseDir={imageBaseDir}
         onImageClick={onImageClick}
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
@@ -660,7 +675,7 @@ export function MessageBody({
           maxWidth={null}
           stickyActions={false}
           disableCodePathValidation
-          imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
+          imageBaseDir={imageBaseDir}
           onImageClick={onImageClick}
           resolveLocalLink={resolveLocalLink}
           refRepo={refRepo}
@@ -682,6 +697,7 @@ export function MessageBody({
       )}
       {fallback && createPortal(<ImageLightbox src={fallback.src} alt={fallback.alt} onClose={() => setFallback(null)} />, document.body)}
     </div>
+    </ImageResolverContext.Provider>
   );
 }
 
