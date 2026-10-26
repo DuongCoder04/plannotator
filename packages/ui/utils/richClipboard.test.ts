@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test, mock } from 'bun:test';
 import {
+  copyRichSelection,
   copyRichTextToClipboard,
-  MAX_RICH_CLIPBOARD_HTML_LENGTH,
+  isHtmlAssetRoutePath,
+  isLoopbackHostname,
+  MAX_RICH_CLIPBOARD_OUTPUT_LENGTH,
+  richCopySourceFromRange,
   sanitizeRichHtml,
   selectionRangeToHtml,
 } from './richClipboard';
@@ -29,12 +33,24 @@ afterEach(() => {
 });
 
 describe('selectionRangeToHtml', () => {
-  test.skipIf(!hasDom)('rejects selected text beyond the HTML budget', () => {
-    document.body.innerHTML = `<p>${'x'.repeat(MAX_RICH_CLIPBOARD_HTML_LENGTH + 1)}</p>`;
+  test.skipIf(!hasDom)('marks a selection past the output cap too large for rich text', () => {
+    document.body.innerHTML = `<p>${'x'.repeat(MAX_RICH_CLIPBOARD_OUTPUT_LENGTH + 1)}</p>`;
     const range = document.createRange();
     range.selectNode(document.querySelector('p')!);
 
-    expect(selectionRangeToHtml(range)).toBe('');
+    expect(selectionRangeToHtml(range)).toBeNull();
+    expect(richCopySourceFromRange(range, 'quote')).toEqual({ tooLarge: true, text: 'quote' });
+  });
+
+  test.skipIf(!hasDom)('marks sanitized HTML past the output cap too large, even when the text fits', () => {
+    // Long link targets: the text is ten characters, the markup is not.
+    const href = `https://example.test/${'x'.repeat(60_000)}`;
+    document.body.innerHTML = `<p>${`<a href="${href}">y</a>`.repeat(10)}</p>`;
+    const range = document.createRange();
+    range.selectNode(document.querySelector('p')!);
+
+    expect(range.toString().length).toBeLessThan(MAX_RICH_CLIPBOARD_OUTPUT_LENGTH);
+    expect(selectionRangeToHtml(range)).toBeNull();
   });
 
   test.skipIf(!hasDom)('keeps exactly selected inline markup', () => {
@@ -67,6 +83,62 @@ describe('selectionRangeToHtml', () => {
     expect(selectionRangeToHtml(range)).toBe(
       '<p><a>local</a> <a href="https://example.test/api/html-assets/public/docs">external</a></p>',
     );
+  });
+
+  test.skipIf(!hasDom)('drops asset-route links on every loopback spelling and port, however the path is written', () => {
+    document.head.innerHTML = '<base href="http://localhost:4100/">';
+    const tokenLinks = [
+      'http://127.0.0.1:4100/api/html-assets/tok/x.png',
+      'http://127.0.0.1:9999/api/html-assets/tok/x.png',
+      'http://127.1/api/html-assets/tok/x',
+      'http://2130706433/api/html-assets/tok/x',
+      'http://127.255.0.9/api/html-assets/tok/x',
+      'http://[::1]:4100/api/html-assets/tok/x',
+      'http://[::ffff:127.0.0.1]/api/html-assets/tok/x',
+      'http://localhost:5000/API/HTML-ASSETS/tok/x',
+      'http://LOCALHOST./api/html-assets/tok/x',
+      'http://app.localhost:4100/api/html-assets/tok/x',
+      'https://localhost/api/html-assets/tok/x',
+      'http://localhost:5000/api%2Fhtml-assets%2Ftok/x',
+      'http://localhost:5000/api%252Fhtml-assets/tok/x',
+      'http://localhost:5000/docs/../api/html-assets/tok/x',
+      'http://localhost:5000/docs/%2e%2e/api/html-assets/tok/x',
+      'http://localhost:5000/docs/..%2Fapi/html-assets/tok/x',
+      'http://localhost:5000\\api\\html-assets\\tok\\x',
+      'http://localhost:5000//api//html-assets/tok/x',
+      'http://localhost:5000/api/html-assets',
+      '/api/html-assets/tok/x',
+    ];
+    const keptLinks = [
+      'https://example.test/api/html-assets/tok/x',
+      'http://192.168.1.4:4100/docs/api/html-assets/tok/x',
+      'http://localhost:4100/api/html-assets-guide',
+      'http://localhost:4100/docs/readme',
+    ];
+    document.body.innerHTML = `<p>${[...tokenLinks, ...keptLinks]
+      .map((href, index) => `<a href="${href}">l${index}</a>`).join(' ')}</p>`;
+    const range = document.createRange();
+    range.selectNode(document.querySelector('p')!);
+    const html = selectionRangeToHtml(range)!;
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const hrefs = Array.from(parsed.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    expect(hrefs).toHaveLength(tokenLinks.length + keptLinks.length);
+    expect(hrefs.slice(0, tokenLinks.length)).toEqual(tokenLinks.map(() => null));
+    expect(hrefs.slice(tokenLinks.length).every((href) => href !== null)).toBe(true);
+  });
+
+  test('loopback hosts and asset-route paths are recognized in their spellings', () => {
+    for (const host of ['localhost', 'localhost.', 'a.b.localhost', '127.0.0.1', '127.9.8.7', '[::1]', '[::ffff:7f00:1]', '0.0.0.0']) {
+      expect(isLoopbackHostname(host)).toBe(true);
+    }
+    for (const host of ['example.test', 'localhost.example.test', '128.0.0.1', '[::2]', 'mylocalhost']) {
+      expect(isLoopbackHostname(host)).toBe(false);
+    }
+    expect(isHtmlAssetRoutePath('/a/b/../../api/html-assets/t')).toBe(true);
+    expect(isHtmlAssetRoutePath('/Api/Html-Assets')).toBe(true);
+    expect(isHtmlAssetRoutePath('/api%5Chtml-assets/t')).toBe(true);
+    expect(isHtmlAssetRoutePath('/api/html-assetsx/t')).toBe(false);
+    expect(isHtmlAssetRoutePath('/docs/api/html-assets/t')).toBe(false);
   });
 
   test.skipIf(!hasDom)('strips review metadata, theme styles, annotation marks and unsafe content', () => {
@@ -122,7 +194,7 @@ describe('sanitizeRichHtml', () => {
 });
 
 describe('copyRichTextToClipboard', () => {
-  test.skipIf(!hasDom)('uses plain text when HTML exceeds the clipboard budget', async () => {
+  test.skipIf(!hasDom)('copies plain text, reported too large, when HTML exceeds the output cap', async () => {
     const write = mock(async () => {});
     const writeText = mock(async (_text: string) => {});
     class TestClipboardItem {
@@ -131,8 +203,8 @@ describe('copyRichTextToClipboard', () => {
     override(globalThis, 'ClipboardItem', TestClipboardItem);
     override(navigator, 'clipboard', { write, writeText });
 
-    await expect(copyRichTextToClipboard('x'.repeat(MAX_RICH_CLIPBOARD_HTML_LENGTH + 1), 'plain'))
-      .resolves.toBe('plain');
+    await expect(copyRichTextToClipboard('x'.repeat(MAX_RICH_CLIPBOARD_OUTPUT_LENGTH + 1), 'plain'))
+      .resolves.toBe('too-large');
     expect(write).not.toHaveBeenCalled();
     expect(writeText).toHaveBeenCalledWith('plain');
   });
@@ -273,5 +345,49 @@ describe('copyRichTextToClipboard', () => {
     expect(selection.toString()).toBe('selected');
     expect(document.activeElement).toBe(focusOwner);
     expect(execCommand).toHaveBeenCalledTimes(1);
+  });
+
+  test.skipIf(!hasDom)('an asynchronous source is handed to the clipboard as a promise within the click', async () => {
+    let items: Record<string, Promise<Blob>> | undefined;
+    class TestClipboardItem {
+      constructor(value: Record<string, Promise<Blob>>) { items = value; }
+    }
+    const write = mock(async () => {
+      await items!['text/html'];
+    });
+    override(globalThis, 'ClipboardItem', TestClipboardItem);
+    override(navigator, 'clipboard', { write, writeText: mock(async () => {}) });
+    let answer!: (source: { html: string; text: string }) => void;
+    const pending = copyRichSelection(() => new Promise((resolve) => { answer = resolve; }), 'quote');
+    // The write started before the markup arrived (it keeps the user gesture).
+    expect(write).toHaveBeenCalledTimes(1);
+    answer({ html: '<p><b>rich</b></p>', text: 'rich' });
+    await expect(pending).resolves.toBe('rich');
+    expect(await (await items!['text/html']).text()).toBe('<p><b>rich</b></p>');
+    expect(await (await items!['text/plain']).text()).toBe('rich');
+  });
+
+  test.skipIf(!hasDom)('an asynchronous source too large for rich text falls back to plain text', async () => {
+    let items: Record<string, Promise<Blob>> | undefined;
+    class TestClipboardItem {
+      constructor(value: Record<string, Promise<Blob>>) { items = value; }
+    }
+    const write = mock(async () => { await items!['text/html']; });
+    const writeText = mock(async (_text: string) => {});
+    override(globalThis, 'ClipboardItem', TestClipboardItem);
+    override(navigator, 'clipboard', { write, writeText });
+
+    await expect(copyRichSelection(async () => ({ tooLarge: true, text: 'whole text' }), 'quote'))
+      .resolves.toBe('too-large');
+    expect(writeText).toHaveBeenCalledWith('whole text');
+    await expect(copyRichSelection(async () => null, 'quote')).resolves.toBe('plain');
+    expect(writeText).toHaveBeenLastCalledWith('quote');
+  });
+
+  test.skipIf(!hasDom)('a builder that throws copies the fallback text as plain', async () => {
+    const writeText = mock(async (_text: string) => {});
+    override(navigator, 'clipboard', { writeText });
+    await expect(copyRichSelection(() => { throw new Error('boom'); }, 'quote')).resolves.toBe('plain');
+    expect(writeText).toHaveBeenCalledWith('quote');
   });
 });

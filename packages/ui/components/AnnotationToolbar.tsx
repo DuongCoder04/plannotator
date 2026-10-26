@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useDismissOnOutsideAndEscape } from "../hooks/useDismissOnOutsideAndEscape";
 import { type QuickLabel, getQuickLabels, quickLabelIndexForDigit, THUMBS_UP_LABEL } from "../utils/quickLabels";
 import { copyTextToClipboard } from "../utils/clipboard";
-import { copyRichTextToClipboard } from "../utils/richClipboard";
+import { copyRichSelection, type RichClipboardResult, type RichCopySource } from "../utils/richClipboard";
 import { acquireTypeToCommentCapture } from "../shortcuts/plan-review/annotationMode.shortcuts";
 import { FloatingQuickLabelPicker } from "./FloatingQuickLabelPicker";
 import { FloatingSelectionActionsPicker } from "./SelectionActionsDropdown";
@@ -31,12 +31,11 @@ interface AnnotationToolbarProps {
   onQuickLabel?: (label: QuickLabel) => void;
   /** Text to copy when the button is clicked */
   copyText?: string;
-  /** Sanitized HTML of the captured text selection. When present the toolbar
-   *  shows a "Copy as rich text" button (text/html plus text/plain), also when
+  /** Builds the captured text selection's sanitized HTML and plain text when
+   *  the "Copy as rich text" button is pressed (never before). When present
+   *  the toolbar shows that button (text/html plus text/plain), also when
    *  hideCopyButton hides the plain Copy button. Button only: no shortcut. */
-  richCopyHtml?: string;
-  /** Full plain fallback when annotation text was capped or normalized. */
-  richCopyText?: string;
+  getRichCopy?: () => RichCopySource | Promise<RichCopySource>;
   /** Comment-only surfaces (HTML / live-app viewer): hide the Delete action,
    *  the quick-label picker, and the Alt+digit label shortcuts. A provided
    *  onQuickLabel then renders ONLY the hardcoded 👍 "Looks good" button —
@@ -86,8 +85,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
   selectionActionsIcon,
   quickLabels: quickLabelsEnabled = true,
   copyText,
-  richCopyHtml,
-  richCopyText = copyText ?? '',
+  getRichCopy,
   commentOnly = false,
   hideCopyButton = false,
   closeOnScrollOut = false,
@@ -97,10 +95,10 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 }) => {
   const [position, setPosition] = useState<{ top: number; left?: number; right?: number } | null>(null);
   const [copied, setCopied] = useState(false);
-  const [richCopied, setRichCopied] = useState<'rich' | 'plain' | false>(false);
+  const [richCopied, setRichCopied] = useState<RichClipboardResult>(false);
   const richCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const richCopySelectionRef = useRef({ element, richCopyText, richCopyHtml });
-  richCopySelectionRef.current = { element, richCopyText, richCopyHtml };
+  const richCopySelectionRef = useRef({ element, getRichCopy });
+  richCopySelectionRef.current = { element, getRichCopy };
   const [showQuickLabels, setShowQuickLabels] = useState(false);
   const [showSelectionActions, setShowSelectionActions] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -128,7 +126,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
     setRichCopied(false);
     if (richCopyTimeoutRef.current !== null) clearTimeout(richCopyTimeoutRef.current);
     richCopyTimeoutRef.current = null;
-  }, [element, richCopyText, richCopyHtml]);
+  }, [element, getRichCopy]);
   useEffect(() => () => {
     if (richCopyTimeoutRef.current !== null) clearTimeout(richCopyTimeoutRef.current);
   }, []);
@@ -147,12 +145,11 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 
   const handleRichCopy = async () => {
     setRichCopied(false);
-    const html = richCopyHtml;
-    if (!html) return;
-    const text = richCopyText;
-    const result = await copyRichTextToClipboard(html, text);
+    const build = getRichCopy;
+    if (!build) return;
+    const result = await copyRichSelection(build, copyText ?? '');
     const current = richCopySelectionRef.current;
-    if (current.element !== element || current.richCopyHtml !== html || current.richCopyText !== text) return;
+    if (current.element !== element || current.getRichCopy !== build) return;
     if (result) {
       setRichCopied(result);
       if (richCopyTimeoutRef.current !== null) clearTimeout(richCopyTimeoutRef.current);
@@ -294,7 +291,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
         }
       `}</style>
       <div data-pn-annotation-toolbar-row="true" className="flex items-center p-1 gap-0.5">
-        {(!hideCopyButton || richCopyHtml) && (
+        {(!hideCopyButton || getRichCopy) && (
           <>
             {!hideCopyButton && (
               <ToolbarButton
@@ -304,15 +301,16 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
                 className={copied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
               />
             )}
-            {richCopyHtml && (
+            {getRichCopy && (
               <ToolbarButton
                 onClick={handleRichCopy}
                 icon={richCopied ? <CheckIcon /> : <RichCopyIcon />}
-                label={richCopied === 'plain'
-                  ? "Copied as plain text (rich clipboard unavailable)"
-                  : richCopied === 'rich'
-                    ? "Copied as rich text"
-                    : "Copy as rich text"}
+                label={
+                  richCopied === 'plain' ? "Copied as plain text (rich clipboard unavailable)"
+                  : richCopied === 'too-large' ? "Copied as plain text (too large for rich text)"
+                  : richCopied === 'rich' ? "Copied as rich text"
+                  : "Copy as rich text"
+                }
                 className={richCopied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
               />
             )}

@@ -9,7 +9,7 @@ import type {
   UseAnnotationHighlighterReturn,
 } from "../../hooks/useAnnotationHighlighter";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridge-script";
-import { MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml } from "../../utils/richClipboard";
+import { MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml, type RichCopySource } from "../../utils/richClipboard";
 import {
   parseHtmlElementContext,
   MAX_ELEMENT_CONTEXT_BYTES,
@@ -91,11 +91,22 @@ interface BridgeSelectionMessage {
   targetLabel?: string;
   /** Agent-facing element description (pinpoint clicks) — validated, size-capped. */
   context?: HtmlElementContext;
-  /** Cloned selection markup, sanitized again by the trusted parent. */
-  html?: string;
-  /** Exact range text for clipboard use, not the capped annotation quote. */
-  clipboardText?: string;
+  /** The bridge answers `rich-copy-request` for this text selection. */
+  richCopy?: boolean;
 }
+
+/** The bridge's answer to `rich-copy-request`: the pending range's markup
+ *  (sanitized again here) and its uncapped text, or too large for rich text. */
+interface BridgeRichCopyMessage {
+  type: `${typeof PREFIX}rich-copy`;
+  id: string;
+  html: string;
+  text: string;
+  tooLarge: boolean;
+}
+
+/** How long Copy as rich text waits for the bridge before copying plain text. */
+const RICH_COPY_TIMEOUT_MS = 1500;
 
 /** One draft target in an in-flight multi-select comment. Index 0 is primary. */
 export interface HtmlDraftTarget {
@@ -124,6 +135,7 @@ interface BridgeRect {
 
 type BridgeMessage =
   | BridgeSelectionMessage
+  | BridgeRichCopyMessage
   | BridgeMultiTargetAddedMessage
   | { type: `${typeof PREFIX}multi-target-removed`; key: string }
   | { type: `${typeof PREFIX}pointer`; x: number; y: number; shift: boolean }
@@ -366,24 +378,10 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
     case `${PREFIX}selection`: {
       const rect = parseBridgeRect(value.rect);
       if (typeof value.text !== "string" || !rect) return null;
-      // Rich-copy markup is optional: a malformed or oversized field is
-      // dropped (the toolbar then offers no rich copy), never the selection.
-      const richHtml = typeof value.html === "string"
-        && value.html.length > 0
-        && value.html.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
-        ? value.html
-        : null;
-      const richCopy = richHtml === null ? {} : {
-        html: richHtml,
-        ...(typeof value.clipboardText === "string"
-          && value.clipboardText.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
-          ? { clipboardText: value.clipboardText }
-          : {}),
-      };
       return {
         type: value.type,
         text: capSelectionText(value.text),
-        ...richCopy,
+        ...(value.richCopy === true ? { richCopy: true } : {}),
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
         anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
@@ -416,6 +414,15 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         : null;
     case `${PREFIX}selection-clear`:
       return { type: value.type };
+    case `${PREFIX}rich-copy`: {
+      // Oversized or malformed markup reads as none (plain text is copied).
+      if (typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64) return null;
+      const text = typeof value.text === "string" && value.text.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
+        ? value.text : "";
+      const html = typeof value.html === "string" && value.html.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
+        ? value.html : "";
+      return { type: value.type, id: value.id, html, text, tooLarge: value.tooLarge === true };
+    }
     case `${PREFIX}pin-visibility`:
       return typeof value.visible === 'boolean' ? { type: value.type, visible: value.visible } : null;
     case `${PREFIX}selection-rect`: {
@@ -593,6 +600,8 @@ export function useHtmlAnnotation({
   hostCapRef.current = maxAdditionalTargets !== undefined;
 
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  /** Copy as rich text requests waiting for the bridge's markup, by id. */
+  const richCopyRequestsRef = useRef(new Map<string, (source: RichCopySource) => void>());
 
   /** Post into the iframe with the live token + targetOrigin when a live
    *  session is active; srcdoc posts keep targetOrigin "*" and no token. */
@@ -705,6 +714,19 @@ export function useHtmlAnnotation({
         return;
       }
 
+      if (type === `${PREFIX}rich-copy`) {
+        const resolve = richCopyRequestsRef.current.get(message.id);
+        if (!resolve) return;
+        richCopyRequestsRef.current.delete(message.id);
+        if (message.tooLarge) {
+          resolve({ tooLarge: true, text: message.text });
+          return;
+        }
+        const html = message.html ? sanitizeRichHtml(message.html) : null;
+        resolve(html ? { html, text: message.text } : message.text ? { html: "", text: message.text } : null);
+        return;
+      }
+
       if (type === `${PREFIX}pin-visibility`) {
         setPinVisible(message.visible);
         if (!message.visible && commentPopoverRef.current) setComposerWasHidden(true);
@@ -803,16 +825,22 @@ export function useHtmlAnnotation({
             });
           }
         } else {
-          const richCopyHtml = message.html
-            ? sanitizeRichHtml(message.html)
-            : null;
           setToolbarState({
             element: anchor,
             source: null,
             selectionText: message.text,
-            ...(richCopyHtml ? {
-              richCopyHtml,
-              richCopyText: message.clipboardText ?? message.text,
+            // The markup is built only when Copy as rich text is pressed: ask
+            // the bridge for the pending range's HTML and wait a moment.
+            ...(message.richCopy ? {
+              getRichCopy: () => new Promise<RichCopySource>((resolve) => {
+                const id = `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                const requests = richCopyRequestsRef.current;
+                requests.set(id, resolve);
+                window.setTimeout(() => {
+                  if (requests.delete(id)) resolve(null);
+                }, RICH_COPY_TIMEOUT_MS);
+                post({ type: `${PREFIX}rich-copy-request`, id });
+              }),
             } : {}),
           });
         }

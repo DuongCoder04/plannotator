@@ -571,8 +571,7 @@ export const BRIDGE_SCRIPT = `(function() {
     }
     skipNextClear = false; // a real text selection happened
     var range = sel.getRangeAt(0);
-    var clipboardText = sel.toString();
-    var text = capSelectionText(clipboardText.trim());
+    var text = capSelectionText(sel.toString().trim());
     if (!text) return false;
 
     // A draft now owns the surface: kill the click-to-select hover
@@ -580,10 +579,6 @@ export const BRIDGE_SCRIPT = `(function() {
     clearHoverHighlight();
 
     var rect = range.getBoundingClientRect();
-    // Markup for the toolbar's Copy as rich text button (text selections only).
-    // Optional and additive: the parent sanitizes it again and shows the
-    // button only when it arrives, so no protocol version bump.
-    var richHtml = extras && extras.pinpoint ? '' : htmlForRange(range);
     pendingRange = range;
     pendingSelection = {
       text: text,
@@ -593,7 +588,7 @@ export const BRIDGE_SCRIPT = `(function() {
       endOffset: range.endOffset
     };
 
-    var selectionMessage = {
+    postToParent({
       type: PREFIX + 'selection',
       text: text,
       modeOverride: modeOverride || undefined,
@@ -602,13 +597,12 @@ export const BRIDGE_SCRIPT = `(function() {
       targetKey: (extras && extras.targetKey) || undefined,
       targetLabel: (extras && extras.targetLabel) || undefined,
       context: (extras && extras.context) || undefined,
+      // This bridge answers rich-copy-request for a text selection (the
+      // toolbar's Copy as rich text). Optional and additive: an older bridge
+      // omits it and the parent shows no button, so no protocol version bump.
+      richCopy: (extras && extras.pinpoint) ? undefined : true,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
-    };
-    if (richHtml && richHtml.length <= 262144 && clipboardText.length <= 262144) {
-      selectionMessage.html = richHtml;
-      selectionMessage.clipboardText = clipboardText;
-    }
-    postToParent(selectionMessage);
+    });
     renderAnnotationOverlay(); // draft selection highlight (overlay-projected)
     return true;
   }
@@ -654,6 +648,35 @@ export const BRIDGE_SCRIPT = `(function() {
     if (LIVE && (!isEditorOrigin(e.origin) || !e.data || e.data.token !== LIVE.token)) return;
     if (!e.data || !e.data.type) return;
     var type = e.data.type;
+
+    // Copy as rich text was pressed in the parent: build the pending text
+    // range's markup now (never on selection). A throw or an oversized range
+    // answers without markup, so the parent copies plain text.
+    if (type === PREFIX + 'rich-copy-request') {
+      var copyHtml = '';
+      var copyText = '';
+      var copyTooLarge = false;
+      try {
+        if (pendingRange && pendingSelection && pendingSelection.startContainerPath) {
+          copyText = pendingRange.toString();
+          if (copyText.length > 262144) copyTooLarge = true;
+          else {
+            copyHtml = htmlForRange(pendingRange);
+            if (copyHtml.length > 262144) copyTooLarge = true;
+          }
+        }
+      } catch (err) {
+        copyHtml = '';
+      }
+      postToParent({
+        type: PREFIX + 'rich-copy',
+        id: typeof e.data.id === 'string' ? e.data.id : '',
+        html: copyTooLarge ? '' : copyHtml,
+        text: copyText.length > 262144 ? '' : copyText,
+        tooLarge: copyTooLarge
+      });
+      return;
+    }
 
     if (type === PREFIX + 'create-mark') {
       var id = e.data.id;
@@ -5418,9 +5441,10 @@ export const BRIDGE_SCRIPT = `(function() {
     if (document.body) document.body.removeAttribute('data-plannotator-vim-focus-owner');
   }
 
-  // Selected markup for the parent's Copy as rich text button. Keeps the
-  // enclosing formatting that cloneContents omits for text endpoints (the same
-  // semantic ancestors selectionRangeToHtml keeps) and absolutizes links.
+  // Selected markup for the parent's Copy as rich text button, built only when
+  // the button is pressed (rich-copy-request). Keeps the enclosing formatting
+  // that cloneContents omits for text endpoints (the same semantic ancestors
+  // selectionRangeToHtml keeps) and absolutizes links.
   function htmlForRange(range) {
     var holder = document.createElement('div');
     var fragment = range.cloneContents();

@@ -20,6 +20,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import type { QuickLabel } from '../utils/quickLabels';
 import type { SelectionAction, SelectionActionContext } from '../utils/selectionActions';
+import type { RichCopySource } from '../utils/richClipboard';
 
 const hasDom = typeof document !== 'undefined';
 let root: Root | null = null;
@@ -43,7 +44,9 @@ interface MountOptions {
   onQuickLabel?: (label: QuickLabel) => void;
   onClose?: () => void;
   copyText?: string;
+  /** Shorthand: a builder that returns this HTML with copyText. */
   richCopyHtml?: string;
+  getRichCopy?: () => RichCopySource | Promise<RichCopySource>;
   hideCopyButton?: boolean;
 }
 
@@ -71,7 +74,10 @@ async function mount(options: MountOptions = {}) {
           options.withQuickLabelHandler === false ? undefined : options.onQuickLabel ?? (() => {})
         }
         copyText={options.copyText ?? 'SELECTED'}
-        richCopyHtml={options.richCopyHtml}
+        getRichCopy={options.getRichCopy ?? (options.richCopyHtml === undefined ? undefined : () => ({
+          html: options.richCopyHtml!,
+          text: options.copyText ?? 'SELECTED',
+        }))}
         hideCopyButton={options.hideCopyButton}
         selectionActions={options.selectionActions}
         selectionActionsIcon={options.selectionActionsIcon}
@@ -176,6 +182,44 @@ describe.if(hasDom)('AnnotationToolbar host seams', () => {
     }
   });
 
+  test('the rich HTML is built only when the button is pressed, never for the selection itself', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = mock(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const build = mock(() => ({ html: '<p>SELECTED</p>', text: 'SELECTED' }));
+    try {
+      await mount({ getRichCopy: build });
+      await press('a');
+      expect(build).not.toHaveBeenCalled();
+      const richCopy = Array.from(toolbar().querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.title === 'Copy as rich text')!;
+      await click(richCopy);
+      expect(build).toHaveBeenCalledTimes(1);
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
+  test('a selection too large for rich text copies plain text and says why', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = mock(async (_text: string) => {});
+    const write = mock(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText, write } });
+    try {
+      await mount({ getRichCopy: () => ({ tooLarge: true, text: 'the whole selection' }) });
+      const richCopy = Array.from(toolbar().querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.title === 'Copy as rich text')!;
+      await click(richCopy);
+      expect(write).not.toHaveBeenCalled();
+      expect(writeText).toHaveBeenCalledWith('the whole selection');
+      expect(buttonTitles()).toContain('Copied as plain text (too large for rich text)');
+    } finally {
+      if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
   test('reports plain fallback without claiming why rich copy was unavailable', async () => {
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     const writeText = mock(async (_text: string) => {});
@@ -250,7 +294,7 @@ describe.if(hasDom)('AnnotationToolbar host seams', () => {
           onRequestComment={() => {}}
           onQuickLabel={() => {}}
           copyText="SECOND"
-          richCopyHtml="<p>SECOND</p>"
+          getRichCopy={() => ({ html: '<p>SECOND</p>', text: 'SECOND' })}
         />,
       ));
       await act(async () => {

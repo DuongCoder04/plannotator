@@ -3024,6 +3024,76 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
     document.body.replaceChildren();
   });
 
+  test("rich copy: the selection only flags support; the markup is built when the parent asks", async () => {
+    document.body.innerHTML = '<p>Plain <strong>bold <a href="/docs">link</a></strong> tail</p>';
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    const received: Record<string, unknown>[] = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data && /^plannotator-bridge-(selection|rich-copy)$/.test(String(data.type))) received.push(data);
+    };
+    window.addEventListener("message", collect);
+    try {
+      const strong = document.querySelector("strong")!;
+      const range = document.createRange();
+      range.selectNodeContents(strong);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      strong.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25)); // handleSelection debounce
+
+      const selection = received.find((m) => m.type === "plannotator-bridge-selection")!;
+      expect(selection.richCopy).toBe(true);
+      expect(selection).not.toHaveProperty("html");
+
+      postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-test" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const answer = received.find((m) => m.type === "plannotator-bridge-rich-copy")!;
+      expect(answer.id).toBe("rc-test");
+      expect(answer.text).toBe("bold link");
+      expect(answer.tooLarge).toBe(false);
+      expect(String(answer.html)).toContain("<strong>bold <a href=");
+    } finally {
+      window.removeEventListener("message", collect);
+      postBridge({ type: "plannotator-bridge-cancel-selection" });
+      document.body.replaceChildren();
+    }
+  });
+
+  test("rich copy: a throw while building the markup still answers, without markup", async () => {
+    document.body.innerHTML = "<p>Throwing target</p>";
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    const received: Record<string, unknown>[] = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data && data.type === "plannotator-bridge-rich-copy") received.push(data);
+    };
+    window.addEventListener("message", collect);
+    const realClone = Range.prototype.cloneContents;
+    try {
+      const p = document.querySelector("p")!;
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      Range.prototype.cloneContents = () => { throw new Error("boom"); };
+      postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-throw" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(received).toEqual([
+        { type: "plannotator-bridge-rich-copy", id: "rc-throw", html: "", text: "Throwing target", tooLarge: false },
+      ]);
+    } finally {
+      Range.prototype.cloneContents = realClone;
+      window.removeEventListener("message", collect);
+      postBridge({ type: "plannotator-bridge-cancel-selection" });
+      document.body.replaceChildren();
+    }
+  });
+
   test("hit-testing for new selections yields placed markers to reach the page beneath", async () => {
     document.body.innerHTML = '<p id="beneath">Beneath text</p><div data-testid="hit">H</div>';
     postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
