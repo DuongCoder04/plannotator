@@ -394,7 +394,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await pane.getByText('Yes', { exact: true }).click();
   await expect(pane.getByText(/^Picked .* · in your draft$/)).toHaveCount(2);
   // "Draft" replaces "Not sent" (approval "inbox-reply-drafts").
-  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft 2 picks');
+  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
   // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
