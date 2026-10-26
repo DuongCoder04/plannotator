@@ -3111,14 +3111,19 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
       window.getSelection()!.removeAllRanges();
       window.getSelection()!.addRange(range);
       p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      const selection = received.find((m) => m.type === "plannotator-bridge-selection")!;
+      // A 300,000-character selection takes longer than the 25 ms debounce under load.
+      const until = async (type: string) => {
+        for (let i = 0; i < 200 && !received.some((m) => m.type === type); i++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return received.find((m) => m.type === type)!;
+      };
+      const selection = await until("plannotator-bridge-selection");
       expect(selection.textCut).toBe(true);
       expect(String(selection.text)).toHaveLength(10_000);
 
       postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-long" });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      const answer = received.find((m) => m.type === "plannotator-bridge-rich-copy")!;
+      const answer = await until("plannotator-bridge-rich-copy");
       expect(String(answer.text)).toHaveLength(262_144);
       expect(answer).toMatchObject({ id: "rc-long", html: "", truncated: true, tooLarge: true });
     } finally {
