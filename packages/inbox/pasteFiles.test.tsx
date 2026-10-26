@@ -13,7 +13,10 @@
  * the picture Chromium adds beside it; Cancel forgets the reply box's files;
  * a file pasted while a Send is in flight stays for the next one; a retry
  * whose contents changed is a new reply, never the earlier one replayed; and
- * each attach by paste is said in a polite live region.
+ * each attach by paste is said in a polite live region. On a phone (iOS
+ * offers no Paste for a picture in a plain text field) the reply box has an
+ * attach button whose file goes the same way; a desktop has none; and an
+ * image copied from a page with only its link as the text attaches.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
  */
@@ -27,6 +30,7 @@ import { join, resolve } from 'node:path';
 import type { InboxMessage } from '@plannotator/core/inbox-types';
 
 import { NO_BROWSER } from '../../tests/helpers/no-browser';
+import { PHONE_QUERY } from './phone';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -116,7 +120,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '7'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '8'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}`, PLANNOTATOR_INBOX_CONNECT: '0', PLANNOTATOR_BROWSER: NO_BROWSER },
     stdout: 'pipe',
     stderr: 'inherit',
@@ -196,7 +200,7 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-async function renderApp(hash = '') {
+async function renderApp(hash = '', ready = '.ib-side [data-open-compose]') {
   window.location.hash = hash;
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -204,7 +208,7 @@ async function renderApp(hash = '') {
     root = createRoot(host!);
     root.render(<InboxApp />);
   });
-  await until(() => !!host!.querySelector('.ib-side [data-open-compose]'), 'the window');
+  await until(() => !!host!.querySelector(ready), 'the window');
   return host;
 }
 
@@ -294,6 +298,8 @@ test.skipIf(!hasDom)('the reply box: two pasted images make two tiles (the secon
   await until(() => replyBox(el) !== null, 'the reply box');
   const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
 
+  // A desktop is paste-only: no attach button in the reply box.
+  expect(el.querySelector('[data-reply-attach]')).toBeNull();
   // Text alone (a dictation app's synthetic paste included): never prevented, nothing attached.
   expect(paste(text, { text: 'some words' })).toBe(false);
   expect(el.querySelector('[data-reply-files]')).toBeNull();
@@ -435,4 +441,56 @@ test.skipIf(!hasDom)('a Send the Inbox never got, then a file pasted and the sam
   expect(mine).toHaveLength(1);
   expect(mine[0]!.body.startsWith('Here is the screen.')).toBe(true);
   expect(mine[0]!.attachments).toHaveLength(1);
+}, 30_000);
+
+test.skipIf(!hasDom)('a phone: the reply box has an attach button; a chosen image uploads and rides the Send, and an image pasted with only its link as text attaches', async () => {
+  const savedMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query === PHONE_QUERY,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  try {
+    // A phone draws one screen at a time: the thread, no sidebar.
+    const el = await renderApp(`#thread=${world.waiting}`, 'fieldset[data-question-key]');
+    act(() => button(el, 'Reply').click());
+    await until(() => replyBox(el) !== null, 'the reply box');
+    const input = el.querySelector<HTMLInputElement>('input[type="file"][data-reply-attach]')!;
+    expect(input).not.toBeNull();
+    // The picker offers the photo library and Files; the button is named, with no native title.
+    expect(input.accept).toBe('image/*,*/*');
+    const label = input.closest('label')!;
+    expect(label.getAttribute('aria-label')).toBe('Attach files');
+    expect(label.hasAttribute('title')).toBe(false);
+    Object.defineProperty(input, 'files', { configurable: true, value: [image('header.png')] });
+    act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await until(() => tiles(replyBox(el)!)[0]?.getAttribute('data-compose-file') === 'done', 'the chosen file\'s upload');
+    expect(tiles(replyBox(el)!)[0]!.getAttribute('data-compose-file-name')).toBe('header.png');
+    await until(() => el.querySelector('[data-fold-live]')?.textContent === 'Attached header.png', 'the announcement');
+
+    // An image copied from a page on a phone: the picture and its link as the plain text. The picture
+    // attaches and the link is not pasted into the words.
+    const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
+    expect(paste(text, { files: [image()], text: 'https://example.com/board/header.png' })).toBe(true);
+    await until(() => tiles(replyBox(el)!).length === 2 && tiles(replyBox(el)!).every((t) => t.getAttribute('data-compose-file') === 'done'), 'the pasted picture');
+
+    type(text, 'The header on my phone.');
+    act(() => button(el, 'Send').click());
+    await until(() => el.querySelector('.ib-rbox') === null, 'the Send');
+    const replies = posted.filter((p) => p.path.endsWith('/reply'));
+    expect(replies).toHaveLength(1);
+    expect((replies[0]!.body.uploads as string[]).length).toBe(2);
+    const model = JSON.parse((await loopback(`/api/inbox/threads/${world.waiting}`)).text) as { thread: { messages: InboxMessage[] } };
+    expect(model.thread.messages.at(-1)!.attachments!.map((a) => a.name)[0]).toBe('header.png');
+    expect(model.thread.messages.at(-1)!.attachments).toHaveLength(2);
+  } finally {
+    window.matchMedia = savedMatchMedia;
+  }
 }, 30_000);

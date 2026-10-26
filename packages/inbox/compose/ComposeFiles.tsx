@@ -4,7 +4,7 @@ import { InboxApiError, uploadFile } from '../api';
 import { formatBytes } from '../format';
 import { Icon, type IconName } from '../icons';
 import { FileName } from '../components/FileName';
-import { clipboardHasText, pastedFiles } from './paste';
+import { chosenFiles, clipboardHasText, clipboardTextIsJustALink, pastedFiles } from './paste';
 
 /**
  * Compose's files, and the reply box's: each one the person picked, dropped
@@ -119,11 +119,27 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
       const data = event.clipboardData;
       const list = pastedFiles(data, namesRef.current);
       if (list.length === 0) return false;
-      if (!clipboardHasText(data)) event.preventDefault();
+      // Text the person meant (not just the picture's own link, see paste.ts) still pastes natively.
+      if (!clipboardHasText(data) || clipboardTextIsJustALink(data)) event.preventDefault();
       namesRef.current = [...namesRef.current, ...list.map((file) => file.name)];
       add(list);
       onPasted.current?.(list.map((file) => file.name));
       return true;
+    },
+    [add],
+  );
+
+  /**
+   * Files chosen with the attach button (a phone's: iOS offers no Paste for a
+   * picture in a plain text field), named and announced as a paste is.
+   */
+  const attach = useCallback(
+    (list: Iterable<File>) => {
+      const named = chosenFiles(list, namesRef.current);
+      if (named.length === 0) return;
+      namesRef.current = [...namesRef.current, ...named.map((file) => file.name)];
+      add(named);
+      onPasted.current?.(named.map((file) => file.name));
     },
     [add],
   );
@@ -139,7 +155,7 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
 
   const uploaded = files.filter((file) => file.state === 'done' && file.upload).map((file) => file.upload!);
   const uploading = files.some((file) => file.state === 'uploading');
-  return { files, add, remove, forget, reset, current, paste, uploaded, uploading };
+  return { files, add, attach, remove, forget, reset, current, paste, uploaded, uploading };
 }
 
 function iconFor(upload: Pick<InboxUpload, 'kind'> | null): IconName {

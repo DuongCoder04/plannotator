@@ -101,15 +101,48 @@ function plainText(data: Partial<Pick<DataTransfer, 'getData'>> | null): string 
  * Pages carries a rendering of itself, which Chromium hands over as a file
  * named `image.png`. When the clipboard has plain text, only files with a
  * real name attach (a file copied in Finder brings its name as the text); a
- * screenshot or Chrome's "Copy image" carries no plain text and attaches.
+ * screenshot or Chrome's "Copy image" carries no plain text and attaches, and
+ * an image copied from a page on a phone, whose text is only its address
+ * (clipboardTextIsJustALink), attaches too.
  */
+/**
+ * The clipboard's plain text is only a link: an image copied from a page (iOS
+ * Safari, Chrome on Android) carries its address as the text beside the
+ * picture. That is the picture's own address, not words the person meant to
+ * paste, so the picture attaches and the address is not inserted.
+ */
+export function clipboardTextIsJustALink(data: Partial<Pick<DataTransfer, 'getData'>> | null): boolean {
+  return /^(?:https?|file):\/\/\S+$/i.test(plainText(data).trim());
+}
+
+/**
+ * Files a person chose with the attach button, named as a paste names them: a
+ * photo the library hands over as `image.jpg` (iOS) gets `pasted-image-<stamp>.jpg`,
+ * a real name is kept. `taken`: the names already attached to this message.
+ */
+export function chosenFiles(list: Iterable<File>, taken: Iterable<string>, at = new Date()): File[] {
+  const files = [...list];
+  const names = chosenFileNames(files, taken, at);
+  return files.map((file, i) => (names[i] === file.name ? file : new File([file], names[i]!, { type: file.type, lastModified: file.lastModified })));
+}
+
+/** The names chosenFiles gives, in order. */
+export function chosenFileNames(files: readonly Pick<File, 'name' | 'type'>[], taken: Iterable<string>, at = new Date()): string[] {
+  const names = new Set(taken);
+  return files.map((file) => {
+    const name = pastedFileName(file, at, names);
+    names.add(name);
+    return name;
+  });
+}
+
 export function pastedFiles(
   data: (Pick<DataTransfer, 'files' | 'items'> & Partial<Pick<DataTransfer, 'getData'>>) | null,
   taken: Iterable<string>,
   at = new Date(),
 ): File[] {
   let files = clipboardFiles(data);
-  if (files.length > 0 && plainText(data).trim() !== '') files = files.filter((file) => !isGenericPasteName(file.name));
+  if (files.length > 0 && plainText(data).trim() !== '' && !clipboardTextIsJustALink(data)) files = files.filter((file) => !isGenericPasteName(file.name));
   if (files.length === 0) return [];
   const names = new Set(taken);
   return files.map((file) => {

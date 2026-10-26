@@ -3,7 +3,7 @@
  * the browser's text paste alone, and the name a clipboard image gets.
  */
 import { describe, expect, test } from 'bun:test';
-import { clipboardFiles, clipboardHasText, pastedFileName, pastedFiles, pasteStamp } from './compose/paste';
+import { chosenFileNames, clipboardFiles, clipboardHasText, clipboardTextIsJustALink, pastedFileName, pastedFiles, pasteStamp } from './compose/paste';
 
 const at = new Date(2026, 9, 16, 9, 12, 40);
 const file = (name: string, type: string) => new File(['x'], name, { type });
@@ -65,5 +65,25 @@ describe('what a paste carries', () => {
     expect(clipboardFiles(fromPage)).toHaveLength(1);
     expect(clipboardHasText(fromPage)).toBe(true);
     expect(clipboardHasText(null)).toBe(false);
+  });
+
+  test('an image copied from a page on a phone (its address as the text) attaches; a sentence that holds a link stays text', () => {
+    const picture = { kind: 'file', type: 'image/png', file: file('image.png', 'image/png') };
+    const text = { kind: 'string', type: 'text/plain' };
+    const link = data([text, picture], ' https://example.com/board/header.png\n');
+    expect(clipboardTextIsJustALink(link)).toBe(true);
+    expect(pastedFiles(link, [], at)).toHaveLength(1);
+    const sentence = data([text, picture], 'See https://example.com/board/header.png');
+    expect(clipboardTextIsJustALink(sentence)).toBe(false);
+    expect(pastedFiles(sentence, [], at)).toEqual([]);
+    expect(clipboardTextIsJustALink(data([text], 'javascript:alert(1)'))).toBe(false);
+    expect(clipboardTextIsJustALink(null)).toBe(false);
+  });
+});
+
+describe('files chosen with the attach button', () => {
+  test('a photo the library names image.jpg gets a dated name, a second one kept apart; a real name is kept', () => {
+    const named = chosenFileNames([file('image.jpg', 'image/jpeg'), file('image.jpg', 'image/jpeg'), file('IMG_2041.HEIC', 'image/heic')], ['pasted-image-2026-10-16-0912.jpg'], at);
+    expect(named).toEqual(['pasted-image-2026-10-16-0912-2.jpg', 'pasted-image-2026-10-16-0912-3.jpg', 'IMG_2041.HEIC']);
   });
 });
