@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { useDismissOnOutsideAndEscape } from "../hooks/useDismissOnOutsideAndEscape";
 import { type QuickLabel, getQuickLabels, quickLabelIndexForDigit, THUMBS_UP_LABEL } from "../utils/quickLabels";
 import { copyTextToClipboard } from "../utils/clipboard";
-import { copyRichSelection, type RichClipboardResult, type RichCopySource } from "../utils/richClipboard";
+import { copyRichSelection, richCopyOutcomeLabel, type RichCopyOutcome, type RichCopySource } from "../utils/richClipboard";
 import { acquireTypeToCommentCapture } from "../shortcuts/plan-review/annotationMode.shortcuts";
 import { FloatingQuickLabelPicker } from "./FloatingQuickLabelPicker";
 import { FloatingSelectionActionsPicker } from "./SelectionActionsDropdown";
@@ -95,7 +95,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 }) => {
   const [position, setPosition] = useState<{ top: number; left?: number; right?: number } | null>(null);
   const [copied, setCopied] = useState(false);
-  const [richCopied, setRichCopied] = useState<RichClipboardResult>(false);
+  const [richCopied, setRichCopied] = useState<RichCopyOutcome | false>(false);
   const richCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const richCopySelectionRef = useRef({ element, getRichCopy });
   richCopySelectionRef.current = { element, getRichCopy };
@@ -305,12 +305,7 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
               <ToolbarButton
                 onClick={handleRichCopy}
                 icon={richCopied ? <CheckIcon /> : <RichCopyIcon />}
-                label={
-                  richCopied === 'plain' ? "Copied as plain text (rich clipboard unavailable)"
-                  : richCopied === 'too-large' ? "Copied as plain text (too large for rich text)"
-                  : richCopied === 'rich' ? "Copied as rich text"
-                  : "Copy as rich text"
-                }
+                label={richCopied ? richCopyOutcomeLabel(richCopied) : "Copy as rich text"}
                 className={richCopied ? "text-success" : "text-muted-foreground hover:bg-muted hover:text-foreground"}
               />
             )}

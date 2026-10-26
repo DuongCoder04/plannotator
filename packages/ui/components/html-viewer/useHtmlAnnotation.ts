@@ -9,7 +9,12 @@ import type {
   UseAnnotationHighlighterReturn,
 } from "../../hooks/useAnnotationHighlighter";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridge-script";
-import { MAX_RICH_CLIPBOARD_HTML_LENGTH, sanitizeRichHtml, type RichCopySource } from "../../utils/richClipboard";
+import {
+  MAX_RICH_CLIPBOARD_HTML_LENGTH,
+  MAX_RICH_CLIPBOARD_OUTPUT_LENGTH,
+  sanitizeRichHtml,
+  type RichCopySource,
+} from "../../utils/richClipboard";
 import {
   parseHtmlElementContext,
   MAX_ELEMENT_CONTEXT_BYTES,
@@ -93,20 +98,24 @@ interface BridgeSelectionMessage {
   context?: HtmlElementContext;
   /** The bridge answers `rich-copy-request` for this text selection. */
   richCopy?: boolean;
+  /** `text` was cut to MAX_SELECTION_TEXT_LENGTH (the page's selection is longer). */
+  textCut?: boolean;
 }
 
 /** The bridge's answer to `rich-copy-request`: the pending range's markup
- *  (sanitized again here) and its uncapped text, or too large for rich text. */
+ *  (sanitized again here) and its text up to 256 KiB (`truncated` past it),
+ *  or too large for rich text. */
 interface BridgeRichCopyMessage {
   type: `${typeof PREFIX}rich-copy`;
   id: string;
   html: string;
   text: string;
+  truncated: boolean;
   tooLarge: boolean;
 }
 
-/** How long Copy as rich text waits for the bridge before copying plain text. */
-const RICH_COPY_TIMEOUT_MS = 1500;
+/** How long Copy as rich text waits for the bridge before copying the quote as plain text. */
+export const RICH_COPY_TIMEOUT_MS = 1500;
 
 /** One draft target in an in-flight multi-select comment. Index 0 is primary. */
 export interface HtmlDraftTarget {
@@ -382,6 +391,7 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         type: value.type,
         text: capSelectionText(value.text),
         ...(value.richCopy === true ? { richCopy: true } : {}),
+        ...(value.textCut === true ? { textCut: true } : {}),
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
         anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
@@ -421,7 +431,14 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         ? value.text : "";
       const html = typeof value.html === "string" && value.html.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
         ? value.html : "";
-      return { type: value.type, id: value.id, html, text, tooLarge: value.tooLarge === true };
+      return {
+        type: value.type,
+        id: value.id,
+        html,
+        text,
+        truncated: value.truncated === true,
+        tooLarge: value.tooLarge === true,
+      };
     }
     case `${PREFIX}pin-visibility`:
       return typeof value.visible === 'boolean' ? { type: value.type, visible: value.visible } : null;
@@ -600,8 +617,9 @@ export function useHtmlAnnotation({
   hostCapRef.current = maxAdditionalTargets !== undefined;
 
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  /** Copy as rich text requests waiting for the bridge's markup, by id. */
-  const richCopyRequestsRef = useRef(new Map<string, (source: RichCopySource) => void>());
+  /** Copy as rich text requests waiting for the bridge's markup, by id. An
+   *  answer with an id not in here (unsolicited, or after its timeout) is ignored. */
+  const richCopyRequestsRef = useRef(new Map<string, (answer: BridgeRichCopyMessage) => void>());
 
   /** Post into the iframe with the live token + targetOrigin when a live
    *  session is active; srcdoc posts keep targetOrigin "*" and no token. */
@@ -715,15 +733,10 @@ export function useHtmlAnnotation({
       }
 
       if (type === `${PREFIX}rich-copy`) {
-        const resolve = richCopyRequestsRef.current.get(message.id);
-        if (!resolve) return;
+        const answer = richCopyRequestsRef.current.get(message.id);
+        if (!answer) return;
         richCopyRequestsRef.current.delete(message.id);
-        if (message.tooLarge) {
-          resolve({ tooLarge: true, text: message.text });
-          return;
-        }
-        const html = message.html ? sanitizeRichHtml(message.html) : null;
-        resolve(html ? { html, text: message.text } : message.text ? { html: "", text: message.text } : null);
+        answer(message);
         return;
       }
 
@@ -835,9 +848,25 @@ export function useHtmlAnnotation({
               getRichCopy: () => new Promise<RichCopySource>((resolve) => {
                 const id = `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
                 const requests = richCopyRequestsRef.current;
-                requests.set(id, resolve);
+                // Without an answer only the quote is here: plain text, marked
+                // as cut when the bridge cut it.
+                const quote = { html: "", text: message.text, truncated: message.textCut === true };
+                requests.set(id, (answer) => {
+                  const text = answer.text || quote.text;
+                  const truncated = answer.text ? answer.truncated : quote.truncated;
+                  if (answer.tooLarge) {
+                    resolve({ tooLarge: true, text, truncated });
+                    return;
+                  }
+                  const html = answer.html ? sanitizeRichHtml(answer.html) : null;
+                  if (html && html.length > MAX_RICH_CLIPBOARD_OUTPUT_LENGTH) {
+                    resolve({ tooLarge: true, text, truncated });
+                    return;
+                  }
+                  resolve({ html: html ?? "", text, truncated });
+                });
                 window.setTimeout(() => {
-                  if (requests.delete(id)) resolve(null);
+                  if (requests.delete(id)) resolve(quote);
                 }, RICH_COPY_TIMEOUT_MS);
                 post({ type: `${PREFIX}rich-copy-request`, id });
               }),

@@ -124,6 +124,8 @@ configurePlannotatorUI({
   componentTooltips: true,
   // A digit-only #186379 in a message is a PR or issue of the project's repo, not a colour (#1932).
   digitHexIssueRefs: true,
+  // "Copy as rich text" in the selection toolbar of messages and attached files (#1972).
+  richCopy: true,
   // Images in a message load from the Inbox's per-message route (#1813).
   imageSrcResolver: inboxImageSrcResolver,
   webmcp: { enabled: false, namePrefix: 'plannotator.' },

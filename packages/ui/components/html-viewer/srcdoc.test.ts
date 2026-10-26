@@ -3084,10 +3084,44 @@ describe.if(hasDom)("bridge theme handler (DOM)", () => {
       postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-throw" });
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(received).toEqual([
-        { type: "plannotator-bridge-rich-copy", id: "rc-throw", html: "", text: "Throwing target", tooLarge: false },
+        { type: "plannotator-bridge-rich-copy", id: "rc-throw", html: "", text: "Throwing target", truncated: false, tooLarge: false },
       ]);
     } finally {
       Range.prototype.cloneContents = realClone;
+      window.removeEventListener("message", collect);
+      postBridge({ type: "plannotator-bridge-cancel-selection" });
+      document.body.replaceChildren();
+    }
+  });
+
+  test("rich copy: past 256 KiB the bridge sends the text cut and marked, and no markup", async () => {
+    document.body.innerHTML = `<p>${"y".repeat(300_000)}</p>`;
+    postBridge({ type: "plannotator-bridge-set-vim-mode", enabled: false });
+    postBridge({ type: "plannotator-bridge-set-input-method", method: "drag" });
+    const received: Record<string, unknown>[] = [];
+    const collect = (event: MessageEvent) => {
+      const data = bridgeMessageData(event);
+      if (data && /^plannotator-bridge-(selection|rich-copy)$/.test(String(data.type))) received.push(data);
+    };
+    window.addEventListener("message", collect);
+    try {
+      const p = document.querySelector("p")!;
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const selection = received.find((m) => m.type === "plannotator-bridge-selection")!;
+      expect(selection.textCut).toBe(true);
+      expect(String(selection.text)).toHaveLength(10_000);
+
+      postBridge({ type: "plannotator-bridge-rich-copy-request", id: "rc-long" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const answer = received.find((m) => m.type === "plannotator-bridge-rich-copy")!;
+      expect(String(answer.text)).toHaveLength(262_144);
+      expect(answer).toMatchObject({ id: "rc-long", html: "", truncated: true, tooLarge: true });
+    } finally {
       window.removeEventListener("message", collect);
       postBridge({ type: "plannotator-bridge-cancel-selection" });
       document.body.replaceChildren();

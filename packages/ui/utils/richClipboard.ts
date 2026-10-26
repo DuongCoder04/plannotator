@@ -8,14 +8,40 @@ export const MAX_RICH_CLIPBOARD_OUTPUT_LENGTH = 512 * 1024;
 
 /**
  * What the toolbar's Copy as rich text button copies, built when it is
- * pressed: sanitized HTML plus its plain text, the selection marked too large
- * for rich text (plain text is copied and the button says why), or null when
- * no markup is available (plain text, "rich clipboard unavailable").
+ * pressed: sanitized HTML plus its plain text (`html: ''` when no markup came
+ * back), the selection marked too large for rich text, or null when nothing
+ * could be built. `truncated` marks `text` as not the whole selection.
  */
 export type RichCopySource =
-  | { html: string; text: string }
-  | { tooLarge: true; text: string }
+  | { html: string; text: string; truncated?: boolean }
+  | { tooLarge: true; text: string; truncated?: boolean }
   | null;
+
+/** What the button actually put on the clipboard, for its tooltip. */
+export interface RichCopyOutcome {
+  copied: 'rich' | 'plain';
+  /** Why plain: no rich clipboard here, too large for rich text, or no markup came back. */
+  reason?: 'unavailable' | 'too-large' | 'no-markup';
+  /** Set when the copied text is cut: its length in characters. */
+  truncatedTo?: number;
+}
+
+/** The button's tooltip after a copy: says exactly what went on the clipboard. */
+export function richCopyOutcomeLabel(outcome: RichCopyOutcome): string {
+  const notes: string[] = [];
+  if (outcome.copied === 'plain') {
+    notes.push(
+      outcome.reason === 'too-large' ? 'too large for rich text'
+      : outcome.reason === 'no-markup' ? 'formatting not available'
+      : 'rich clipboard unavailable',
+    );
+  }
+  if (outcome.truncatedTo !== undefined) {
+    notes.push(`first ${outcome.truncatedTo.toLocaleString('en-US')} characters only`);
+  }
+  const base = outcome.copied === 'rich' ? 'Copied as rich text' : 'Copied as plain text';
+  return notes.length > 0 ? `${base} (${notes.join('; ')})` : base;
+}
 
 const ALLOWED_TAGS = new Set([
   'a', 'b', 'blockquote', 'br', 'code', 'del', 'div', 'em', 'h1', 'h2', 'h3',
@@ -53,33 +79,9 @@ export function isLoopbackHostname(hostname: string): boolean {
     || host === '0.0.0.0'
     || host === '[::1]'
     || host === '[::]'
-    // IPv4-mapped loopback, as the URL parser serializes it ([::ffff:7f00:1]).
-    || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host);
-}
-
-/**
- * Whether a URL path leads to the tokenized `/api/html-assets/` route after
- * the server's own normalization: percent-decoding (repeated, so `%252F`
- * counts), backslashes as slashes, dot segments, repeated slashes and case.
- */
-export function isHtmlAssetRoutePath(pathname: string): boolean {
-  let path = pathname;
-  for (let round = 0; round < 4; round++) {
-    let decoded = path;
-    try { decoded = decodeURIComponent(path); } catch { /* keep the raw path */ }
-    decoded = decoded.replace(/\\/g, '/');
-    if (!decoded.startsWith('/')) decoded = `/${decoded}`;
-    let normalized: string;
-    try {
-      normalized = new URL(`http://host${decoded}`).pathname;
-    } catch {
-      normalized = decoded;
-    }
-    if (normalized === path) break;
-    path = normalized;
-  }
-  path = path.replace(/\/{2,}/g, '/').toLowerCase();
-  return /^\/api\/html-assets(\/|$)/.test(path);
+    // IPv4-mapped and IPv4-compatible loopback, as the URL parser serializes
+    // them ([::ffff:7f00:1], [::7f00:1]).
+    || /^\[::(ffff:)?7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host);
 }
 
 function safeLinkHref(href: string): string | null {
@@ -87,13 +89,13 @@ function safeLinkHref(href: string): string | null {
     const baseUrl = new URL(document.baseURI);
     const url = new URL(href, baseUrl);
     if (!['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol)) return null;
-    // Local HTML asset links carry a per-document access token in their path.
-    // Do not export that session URL to another app's clipboard: dropped on
-    // this page's origin and on every loopback spelling, any port.
+    // A link to this session's own server or to this machine is dead once the
+    // session ends, and some carry a per-document access token
+    // (/api/html-assets/<token>/) or a local path: never exported. The link
+    // text stays.
     if (
       (url.protocol === 'http:' || url.protocol === 'https:')
       && (url.origin === baseUrl.origin || isLoopbackHostname(url.hostname))
-      && isHtmlAssetRoutePath(url.pathname)
     ) return null;
     url.username = '';
     url.password = '';
@@ -123,10 +125,6 @@ function appendSanitizedNode(source: Node, target: Node): void {
     const href = element.getAttribute('href');
     const safeHref = href ? safeLinkHref(href) : null;
     if (safeHref) clean.setAttribute('href', safeHref);
-  }
-  if (tag === 'a' || tag === 'th' || tag === 'td') {
-    const title = element.getAttribute('title');
-    if (title) clean.setAttribute('title', title);
   }
   if (tag === 'ol') {
     const start = safeIntegerAttribute(element, 'start', -2147483648);
@@ -294,56 +292,89 @@ export async function copyRichTextToClipboard(html: string, text: string): Promi
   return false;
 }
 
-async function copyResolvedSource(source: RichCopySource, fallbackText: string): Promise<RichClipboardResult> {
-  if (!source) {
-    return await copyTextToClipboard(fallbackText) ? 'plain' : false;
+/** What one copy writes: rich HTML (or none) and the plain text, plus why. */
+interface CopyPlan {
+  html: string | null;
+  text: string;
+  reason?: 'too-large' | 'no-markup';
+  truncatedTo?: number;
+}
+
+function planCopy(source: RichCopySource, fallbackText: string): CopyPlan {
+  if (!source) return { html: null, text: fallbackText, reason: 'no-markup' };
+  const text = source.text || fallbackText;
+  const truncatedTo = source.truncated ? text.length : undefined;
+  if ('tooLarge' in source) return { html: null, text, reason: 'too-large', truncatedTo };
+  if (!source.html) return { html: null, text, reason: 'no-markup', truncatedTo };
+  if (source.html.length > MAX_RICH_CLIPBOARD_OUTPUT_LENGTH) {
+    return { html: null, text, reason: 'too-large', truncatedTo };
   }
-  if ('tooLarge' in source) {
-    return await copyTextToClipboard(source.text || fallbackText) ? 'too-large' : false;
+  return { html: source.html, text, truncatedTo };
+}
+
+/** Plain text as clipboard HTML: escaped, in a <pre>, so the html part of a
+ *  promised clipboard item can always resolve. */
+export function plainTextClipboardHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return `<pre>${escaped}</pre>`;
+}
+
+async function copyPlanned(plan: CopyPlan): Promise<RichCopyOutcome | false> {
+  if (plan.html === null) {
+    return await copyTextToClipboard(plan.text)
+      ? { copied: 'plain', reason: plan.reason, truncatedTo: plan.truncatedTo }
+      : false;
   }
-  if (!source.html) {
-    return await copyTextToClipboard(source.text || fallbackText) ? 'plain' : false;
-  }
-  return copyRichTextToClipboard(source.html, source.text || fallbackText);
+  const result = await copyRichTextToClipboard(plan.html, plan.text);
+  if (result === 'rich') return { copied: 'rich', truncatedTo: plan.truncatedTo };
+  if (result === 'plain') return { copied: 'plain', reason: 'unavailable', truncatedTo: plan.truncatedTo };
+  if (result === 'too-large') return { copied: 'plain', reason: 'too-large', truncatedTo: plan.truncatedTo };
+  return false;
 }
 
 /**
  * The toolbar button's copy: builds the rich HTML only now, through `build`
  * (synchronous for the markdown Viewer, a bridge round trip on HTML surfaces).
- * An asynchronous source is handed to the clipboard as a promise inside the
- * click, so browsers that need the write to start in the gesture keep it.
+ * An asynchronous source is handed to the clipboard as ONE item with promised
+ * blobs inside the click, so browsers that need the write to start in the
+ * gesture (Safari, WKWebView) keep it. Neither promise ever rejects: with no
+ * rich markup (too large, none came back, a timeout) the html part is the
+ * plain text, escaped, and the outcome says plain.
  */
 export async function copyRichSelection(
   build: () => RichCopySource | Promise<RichCopySource>,
   fallbackText: string,
-): Promise<RichClipboardResult> {
+): Promise<RichCopyOutcome | false> {
   let source: RichCopySource | Promise<RichCopySource>;
   try {
     source = build();
   } catch {
     source = null;
   }
-  if (!(source instanceof Promise)) return copyResolvedSource(source, fallbackText);
+  if (!(source instanceof Promise)) return copyPlanned(planCopy(source, fallbackText));
 
-  const settled = source.then((value) => value, () => null);
+  const plan = source.then(
+    (value) => planCopy(value, fallbackText),
+    () => planCopy(null, fallbackText),
+  );
   if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
     try {
       const item = new ClipboardItem({
-        'text/html': settled.then((value) => {
-          if (!value || 'tooLarge' in value || !value.html
-            || value.html.length > MAX_RICH_CLIPBOARD_OUTPUT_LENGTH) {
-            throw new Error('no rich HTML for this selection');
-          }
-          return new Blob([value.html], { type: 'text/html' });
-        }),
-        'text/plain': settled.then((value) =>
-          new Blob([value?.text || fallbackText], { type: 'text/plain' })),
+        'text/html': plan.then((p) =>
+          new Blob([p.html ?? plainTextClipboardHtml(p.text)], { type: 'text/html' })),
+        'text/plain': plan.then((p) => new Blob([p.text], { type: 'text/plain' })),
       });
       await navigator.clipboard.write([item]);
-      return 'rich';
+      const done = await plan;
+      return done.html !== null
+        ? { copied: 'rich', truncatedTo: done.truncatedTo }
+        : { copied: 'plain', reason: done.reason, truncatedTo: done.truncatedTo };
     } catch {
-      // Too large, no markup, or a refused write: the plain paths below.
+      // The write itself was refused: the plain paths below (best effort).
     }
   }
-  return copyResolvedSource(await settled, fallbackText);
+  return copyPlanned(await plan);
 }

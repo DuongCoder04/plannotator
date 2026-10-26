@@ -18,6 +18,7 @@ import { configStore } from './config';
 import type { ServerSyncFn } from './config/configStore';
 import type { ExternalAnnotationEvent, VaultNode } from './types';
 import { setComponentTooltips } from './components/HostTitle';
+import { setRichCopyEnabled } from './utils/richCopyPolicy';
 import { setDigitHexIssueRefs } from './components/InlineMarkdown';
 
 // One-stop type barrel: every seam contract a host implements is importable
@@ -135,6 +136,13 @@ export interface PlannotatorUIConfig {
    * before. The Plannotator Inbox passes true (#1932).
    */
   digitHexIssueRefs?: boolean;
+  /**
+   * Offer "Copy as rich text" (text/html plus text/plain) in the selection
+   * toolbar of the Viewer and HtmlViewer. Default: false, the toolbar exactly
+   * as before. Plannotator's plan review, annotate, code review and Inbox pass
+   * true (#1972, `utils/richCopyPolicy`).
+   */
+  richCopy?: boolean;
   /** Re-hydrate settings from the installed (SYNCHRONOUS) storageBackend after install. */
   loadSettingsFromBackend?: boolean;
 }
@@ -161,6 +169,7 @@ export function configurePlannotatorUI(config: PlannotatorUIConfig): void {
   if (config.fenceTheme) setFenceThemeResolver(config.fenceTheme);
   if (config.componentTooltips !== undefined) setComponentTooltips(config.componentTooltips);
   if (config.digitHexIssueRefs !== undefined) setDigitHexIssueRefs(config.digitHexIssueRefs);
+  if (config.richCopy !== undefined) setRichCopyEnabled(config.richCopy);
   // Re-hydrate AFTER storageBackend is installed (load-bearing order — gated last).
   if (config.loadSettingsFromBackend) configStore.loadFromBackend();
 }

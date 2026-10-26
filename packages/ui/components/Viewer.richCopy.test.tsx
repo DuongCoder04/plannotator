@@ -15,6 +15,7 @@ import { createRoot, type Root } from 'react-dom/client';
 const hasDom = typeof document !== 'undefined';
 const viewerModule = hasDom ? await import('./Viewer') : null;
 const parserModule = hasDom ? await import('../utils/parser') : null;
+const policy = hasDom ? await import('../utils/richCopyPolicy') : null;
 
 const MARKDOWN = 'The backoff is **two, four and eight** seconds.\n';
 
@@ -37,6 +38,7 @@ afterEach(async () => {
   host?.remove();
   host = null;
   while (restorers.length > 0) restorers.pop()!();
+  policy?.resetRichCopyEnabled();
   if (hasDom) {
     document.body.replaceChildren();
     window.getSelection()?.removeAllRanges();
@@ -102,7 +104,14 @@ function fakeClipboard() {
   return { items, write, writeText };
 }
 
+test.skipIf(!hasDom)('a @plannotator/ui host that does not opt in keeps the toolbar as it was: no rich-copy button', async () => {
+  await mountAndSelect('four and eight');
+  expect(document.querySelector('.annotation-toolbar')).not.toBeNull();
+  expect(toolbarButton('Copy as rich text')).toBeUndefined();
+});
+
 test.skipIf(!hasDom)('the toolbar button copies the selection as text/html plus text/plain, without review markup', async () => {
+  policy!.setRichCopyEnabled(true);
   await mountAndSelect('four and eight');
   const clipboard = fakeClipboard();
   const button = toolbarButton('Copy as rich text');
@@ -122,6 +131,7 @@ test.skipIf(!hasDom)('the toolbar button copies the selection as text/html plus 
 });
 
 test.skipIf(!hasDom)('Ctrl+C / Cmd+C are unchanged: plain text through the copy event only, no clipboard API call', async () => {
+  policy!.setRichCopyEnabled(true);
   await mountAndSelect('four and eight');
   const clipboard = fakeClipboard();
   expect(toolbarButton('Copy as rich text')).toBeDefined();

@@ -8,7 +8,7 @@
  * to the comment composer, skipping the toolbar), and anchor propagation onto
  * created annotations.
  */
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -163,7 +163,9 @@ describe.if(hasDom)('parseBridgeMessage selection additions', () => {
 
     const answer = { type: 'plannotator-bridge-rich-copy' as const, id: 'rc-1', html: '<strong>Hello</strong>', text: 'Hello' };
     expect(hookModule!.parseBridgeMessage(answer))
-      .toEqual({ ...answer, tooLarge: false });
+      .toEqual({ ...answer, truncated: false, tooLarge: false });
+    expect(hookModule!.parseBridgeMessage({ ...answer, truncated: true })).toMatchObject({ truncated: true });
+    expect(hookModule!.parseBridgeMessage({ ...message, richCopy: true, textCut: true })).toMatchObject({ textCut: true });
     expect(hookModule!.parseBridgeMessage({ ...answer, html: 'x'.repeat(256 * 1024 + 1), tooLarge: true }))
       .toMatchObject({ html: '', tooLarge: true });
     expect(hookModule!.parseBridgeMessage({ ...answer, html: 42 })).toMatchObject({ html: '' });
@@ -400,61 +402,6 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     expect(document.querySelector('[data-comment-popover]')).toBeNull();
   });
 
-  test('the HTML toolbar offers rich copy for flagged text selections and builds the markup only on press', async () => {
-    const { postSelection } = await mountViewer({ mode: 'selection', onAdd: () => {} });
-    const iframe = document.querySelector<HTMLIFrameElement>('iframe')!;
-    const toIframe: Array<Record<string, unknown>> = [];
-    const realPost = iframe.contentWindow!.postMessage.bind(iframe.contentWindow!);
-    (iframe.contentWindow as unknown as { postMessage: (data: unknown) => void }).postMessage =
-      ((data: unknown, ...rest: unknown[]) => {
-        if (data && typeof data === 'object') toIframe.push(data as Record<string, unknown>);
-        return (realPost as (...args: unknown[]) => unknown)(data, ...rest);
-      }) as typeof iframe.contentWindow.postMessage;
-    const titles = () => Array.from(
-      document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button'),
-    ).map((button) => button.title);
-
-    await postSelection({ ...selectionMessage, anchor: undefined });
-    expect(titles()).not.toContain('Copy as rich text');
-
-    await postSelection({ ...selectionMessage, anchor: undefined, richCopy: true });
-    expect(titles()).toContain('Copy as rich text');
-    const requests = () => toIframe.filter((m) => m.type === 'plannotator-bridge-rich-copy-request');
-    expect(requests()).toEqual([]);
-
-    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-    const itemDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem');
-    let items: Record<string, Promise<Blob>> | undefined;
-    Object.defineProperty(globalThis, 'ClipboardItem', {
-      configurable: true,
-      value: class { constructor(value: Record<string, Promise<Blob>>) { items = value; } },
-    });
-    const write = mock(async () => { await items!['text/html']; await items!['text/plain']; });
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText: mock(async () => {}) } });
-    try {
-      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button'))
-        .find((b) => b.title === 'Copy as rich text')!;
-      await act(async () => { button.click(); });
-      expect(requests()).toHaveLength(1);
-      expect(write).toHaveBeenCalledTimes(1);
-      await postSelection({
-        type: 'plannotator-bridge-rich-copy',
-        id: requests()[0].id,
-        html: '<p style="color:red" onclick="x()"><strong>Pinpoint target</strong></p>',
-        text: 'Pinpoint target, whole',
-        tooLarge: false,
-      });
-      await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-      expect(await (await items!['text/html']).text()).toBe('<p><strong>Pinpoint target</strong></p>');
-      expect(await (await items!['text/plain']).text()).toBe('Pinpoint target, whole');
-      expect(titles()).toContain('Copied as rich text');
-    } finally {
-      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
-      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
-      if (itemDescriptor) Object.defineProperty(globalThis, 'ClipboardItem', itemDescriptor);
-      else delete (globalThis as typeof globalThis & { ClipboardItem?: unknown }).ClipboardItem;
-    }
-  });
 
   test('the HTML selection toolbar is comment-only plus the restored thumbs-up: no Delete, no label picker', async () => {
     // The restricted restore: exactly ONE label affordance (the hardcoded

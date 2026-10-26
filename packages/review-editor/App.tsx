@@ -231,6 +231,7 @@ import { DEMO_GUIDE_ID } from './demoGuide';
 import { buildPRArtifacts } from './utils/prArtifacts';
 import { useMarkdownPreview, useMarkdownPreviewKeys } from './hooks/useMarkdownPreview';
 import { setExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtensions';
+import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import {
   submitPlatformReviewTargets,
 } from './utils/platformReviewSubmission';
@@ -243,6 +244,10 @@ import {
 } from './utils/reviewSubmissionRecovery';
 
 declare const __APP_VERSION__: string;
+
+// Plannotator's own code review offers "Copy as rich text" in the selection
+// toolbar; @plannotator/ui hosts keep it off unless they opt in.
+configurePlannotatorUI({ richCopy: true });
 
 function getReviewRecoveryStorage(): ReviewRecoveryStorage | null {
   try {
