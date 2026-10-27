@@ -42,7 +42,8 @@ export function focusKept(active: Element | null, to: BackFocusRoute, from: Back
   if (to.page !== 'inbox') return false;
   if (!to.thread) return !!active.closest('.ib-main .ib-lbody');
   // Within one thread (a file opened or closed), the thread puts focus back itself: where O was pressed.
-  if (from.page === 'inbox' && from.thread === to.thread && active.closest('section.ib-pane')) return true;
+  // So does a file's own Back (full screen back beside the thread puts focus on Side by side, fullScreenOrigin.ts).
+  if (from.page === 'inbox' && from.thread === to.thread && active.closest('section.ib-pane, [data-attachment-pane]')) return true;
   return active.matches(row(to.thread));
 }
 

@@ -774,7 +774,8 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   await at('F', { focus: pane(), address: addr(checkout, { view: 'full' }), view: 'full' });
   expect(await fileName()).toBe(stepped);
   await press('f');
-  await at('F again', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  // Back beside the thread as Escape comes back (#2245): focus on the file's Side by side.
+  await at('F again', { focus: pane().locator('[data-view-side]'), address: addr(checkout, { view: 'side' }), view: 'side' });
   expect(await fileName()).toBe(stepped);
 
   await escapeFile();
