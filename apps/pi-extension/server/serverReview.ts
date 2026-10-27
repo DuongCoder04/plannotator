@@ -2013,7 +2013,7 @@ export async function startReviewServer(options: {
 	});
 
 	const reviewAlreadyDecided = (res: import("node:http").ServerResponse) =>
-		json(res, { error: "This review session has already been decided." }, 409);
+		json(res, { error: "This review session has already been decided.", code: "already_decided" }, 409);
 
 	// Host-only session control: mirrors packages/server/review.ts. Closing is
 	// the reviewer's Close, marked closedBy "agent", WITHOUT settling the draft
