@@ -182,7 +182,8 @@ export interface UpdateDetails {
   plugin_command: string | null;
   sessions: { mode: string; project: string; label: string; started_at: string }[];
   /** `tls` (exit 75 only): the download failed at TLS. Absent from an older Inbox. */
-  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked' } | null;
+  /** `release_first` (macOS, `untrusted` only): the release page before the install command. */
+  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked'; release_first?: true } | null;
   log: string;
   snoozed_until: string | null;
 }

@@ -193,14 +193,27 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
     }
     // A failed download can be a lasting local condition (a proxy, a network
     // that inspects HTTPS), so the way out is always shown.
+    const extraCa =
+      "If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate:\n" +
+      "  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n";
+    if (tls === "untrusted" && platform === "darwin") {
+      // macOS curl still trusts emSign G3: should a network that holds a
+      // leaked key get "untrusted" instead of "revoked", the release page
+      // (the browser's own trust) comes before the `curl | bash` line.
+      err(
+        `Couldn't download the update. ${current} is still installed and works. Try again later: plannotator update\n` +
+          extraCa +
+          `If this keeps happening, download it from ${releaseUrlFor(latest)}\n` +
+          `or install it yourself:\n  ${command}\n` +
+          `Details: ${autoUpdatePaths(dataDir).log}\n`,
+      );
+      return 1;
+    }
     err(
       `Couldn't download the update. ${current} is still installed and works. Try again later: plannotator update\n` +
         `If this keeps happening, install it yourself:\n  ${command}\n` +
         `or download it from ${releaseUrlFor(latest)}\n` +
-        (tls === "untrusted"
-          ? "If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate:\n" +
-            "  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n"
-          : "") +
+        (tls === "untrusted" ? extraCa : "") +
         `Details: ${autoUpdatePaths(dataDir).log}\n`,
     );
     return 1;

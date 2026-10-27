@@ -117,29 +117,125 @@ function isRevokedError(err: unknown): boolean {
   return errorCode(err) === "CERT_REVOKED" || (err instanceof Error && /certificate revoked/i.test(err.message));
 }
 
+/** A CA file read for the retry is at most this big (a full system bundle is about 220 KB). */
+const MAX_CA_FILE_BYTES = 4 * 1024 * 1024;
+/** All the files of a `capath` directory together are read up to this. */
+const MAX_CA_DIR_BYTES = 16 * 1024 * 1024;
+const MAX_CURLRC_BYTES = 64 * 1024;
+const PEM_CERT_RE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g;
+
+/** The certificates in a PEM file; [] when it is missing, unreadable, not a file, or over `cap`. */
+function readPemFile(path: string, cap: number = MAX_CA_FILE_BYTES): string[] {
+  try {
+    const st = statSync(path);
+    if (!st.isFile() || st.size > cap) return [];
+    return readFileSync(path, "utf-8").match(PEM_CERT_RE) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function readPemDir(path: string): string[] {
+  const out: string[] = [];
+  let budget = MAX_CA_DIR_BYTES;
+  let names: string[];
+  try {
+    names = readdirSync(path);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    const file = join(path, name);
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      continue;
+    }
+    if (size > budget) break;
+    budget -= size;
+    out.push(...readPemFile(file));
+  }
+  return out;
+}
+
+/**
+ * The `cacert` and `capath` of the .curlrc curl reads ($CURL_HOME, then
+ * $XDG_CONFIG_HOME, then $HOME; the first that exists), the last of each.
+ * Only absolute paths (a leading `~/` is the home dir).
+ */
+function curlrcCaPaths(env: NodeJS.ProcessEnv): { cacert?: string; capath?: string } {
+  for (const dir of [env.CURL_HOME, env.XDG_CONFIG_HOME, env.HOME]) {
+    if (!dir) continue;
+    const rc = join(dir, ".curlrc");
+    let text: string;
+    try {
+      const st = statSync(rc);
+      if (!st.isFile() || st.size > MAX_CURLRC_BYTES) return {};
+      text = readFileSync(rc, "utf-8");
+    } catch {
+      continue;
+    }
+    const found: { cacert?: string; capath?: string } = {};
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*(?:--)?(cacert|capath)(?:\s*[=:]\s*|\s+)(.+?)\s*$/.exec(line);
+      if (!m) continue;
+      let value = m[2]!;
+      if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1).replace(/\\(.)/g, "$1");
+      if (value.startsWith("~/") && env.HOME) value = join(env.HOME, value.slice(2));
+      if (value.startsWith("/")) found[m[1] as "cacert" | "capath"] = value;
+    }
+    return found;
+  }
+  return {};
+}
+
+/**
+ * The certificates only curl read on main: $CURL_CA_BUNDLE, and `cacert` /
+ * `capath` in ~/.curlrc. A machine whose company root lives only there
+ * updated through curl before; the retry reads them too.
+ */
+export function curlCaCertificates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const rc = curlrcCaPaths(env);
+  const bundle = env.CURL_CA_BUNDLE?.trim();
+  return [
+    ...(bundle ? readPemFile(bundle) : []),
+    ...(rc.cacert ? readPemFile(rc.cacert) : []),
+    ...(rc.capath ? readPemDir(rc.capath) : []),
+  ];
+}
+
+function notG3(pem: string): boolean {
+  try {
+    return new X509Certificate(pem).fingerprint256 !== EMSIGN_ECC_G3_SHA256;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The roots for the retry after a certificate error: Bun's own (with
  * NODE_EXTRA_CA_CERTS) plus this computer's. On macOS those are the
  * keychains' trusted certificates, where a company's management profile puts
  * its root; on Linux, /etc/ssl/certs, which update-ca-certificates fills.
- * Never emSign ECC Root CA - G3. Null when this computer adds nothing.
+ * Plus what only curl read (curlCaCertificates). Never emSign ECC Root CA -
+ * G3. Null when nothing is added. Read only on that retry, never on the
+ * normal path.
  */
 export function systemTrustedCa(
   get: ((kind: string) => string[]) | undefined = (tls as { getCACertificates?: (kind: string) => string[] }).getCACertificates,
+  env: NodeJS.ProcessEnv = process.env,
 ): string[] | null {
-  if (typeof get !== "function") return null;
-  try {
-    const system = get("system").filter((pem) => {
-      try {
-        return new X509Certificate(pem).fingerprint256 !== EMSIGN_ECC_G3_SHA256;
-      } catch {
-        return false;
-      }
-    });
-    return system.length > 0 ? [...get("default"), ...system] : null;
-  } catch {
-    return null;
+  let base: string[] = [...tls.rootCertificates];
+  let system: string[] = [];
+  if (typeof get === "function") {
+    try {
+      system = get("system");
+      base = get("default");
+    } catch {}
   }
+  const added = [...system, ...curlCaCertificates(env)].filter(notG3);
+  return added.length > 0 ? [...base, ...added] : null;
 }
 
 /** "0.28.33", "v0.28.33" -> "v0.28.33"; anything else (a pre-release, junk) -> null. */
@@ -247,7 +343,7 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
   const base = releaseDownloadUrl(env);
   // Read once, and only when a certificate error asks for it.
   let roots: string[] | null | undefined;
-  const systemCa = () => (roots === undefined ? (roots = (deps.systemCa ?? systemTrustedCa)()) : roots);
+  const systemCa = () => (roots === undefined ? (roots = deps.systemCa ? deps.systemCa() : systemTrustedCa(undefined, env)) : roots);
   const [script, ...sums] = await Promise.all([
     fetchText(installScriptUrl(deps.platform, env), f, timeoutMs, systemCa),
     ...assets.map((a) => fetchText(`${base}/${tag}/${a}.sha256`, f, timeoutMs, systemCa)),

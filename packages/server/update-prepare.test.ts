@@ -28,6 +28,7 @@ import {
   UPDATE_PREPARE_FAILED,
   UPDATE_TLS_HINT,
   candidateAssets,
+  curlCaCertificates,
   lastRunTlsFailure,
   nativeAsset,
   normalizeReleaseTag,
@@ -616,11 +617,74 @@ describe.skipIf(process.platform === "win32")("certificate errors", () => {
 
   test("the retry never takes emSign ECC Root CA - G3 back from this computer's store", () => {
     const store = (system: string[]) => (kind: string) => (kind === "system" ? system : [...tls.rootCertificates]);
-    expect(systemTrustedCa(store([EMSIGN_ECC_G3_PEM]))).toBeNull();
-    const roots = systemTrustedCa(store([EMSIGN_ECC_G3_PEM, tlsFiles.caPem]))!;
+    expect(systemTrustedCa(store([EMSIGN_ECC_G3_PEM]), {})).toBeNull();
+    const roots = systemTrustedCa(store([EMSIGN_ECC_G3_PEM, tlsFiles.caPem]), {})!;
     expect(roots).toContain(tlsFiles.caPem);
     expect(roots.some((pem) => new X509Certificate(pem).fingerprint256 === new X509Certificate(EMSIGN_ECC_G3_PEM).fingerprint256)).toBe(false);
-    expect(systemTrustedCa(store([]))).toBeNull();
+    expect(systemTrustedCa(store([]), {})).toBeNull();
+    // Nor from what only curl reads.
+    const g3File = join(root, "g3.pem");
+    writeFileSync(g3File, EMSIGN_ECC_G3_PEM);
+    expect(systemTrustedCa(store([]), { CURL_CA_BUNDLE: g3File })).toBeNull();
+  });
+
+  // On main, curl also read $CURL_CA_BUNDLE and `cacert` / `capath` in
+  // ~/.curlrc: a company root only there must still get the update through.
+  // Every test here gives its own HOME; the real ~/.curlrc is never read.
+  describe("a root only curl read", () => {
+    const pem = () => tlsFiles.caPem.trim();
+    const home = () => {
+      const h = join(root, "home-curl");
+      mkdirSync(h, { recursive: true });
+      return h;
+    };
+
+    test("$CURL_CA_BUNDLE: read; missing, a directory or oversized: skipped without a word", () => {
+      expect(curlCaCertificates({ CURL_CA_BUNDLE: tlsFiles.caFile })).toEqual([pem()]);
+      expect(curlCaCertificates({ CURL_CA_BUNDLE: join(root, "missing.pem") })).toEqual([]);
+      expect(curlCaCertificates({ CURL_CA_BUNDLE: root })).toEqual([]);
+      const big = join(root, "big.pem");
+      writeFileSync(big, `${tlsFiles.caPem}${"#".repeat(5 * 1024 * 1024)}\n`);
+      expect(curlCaCertificates({ CURL_CA_BUNDLE: big })).toEqual([]);
+    });
+
+    test("~/.curlrc cacert and capath, in curl's spellings; relative paths and other options ignored", () => {
+      const h = home();
+      const dir = join(root, "capath");
+      mkdirSync(dir);
+      writeFileSync(join(dir, "corp.pem"), tlsFiles.caPem);
+      writeFileSync(join(dir, "README"), "not a certificate\n");
+      writeFileSync(join(h, ".curlrc"), `# company\nsilent\ncacert = "${tlsFiles.caFile}"\n--capath ${dir}\ncacert: relative.pem\n`);
+      expect(curlCaCertificates({ HOME: h })).toEqual([pem(), pem()]);
+      writeFileSync(join(h, ".curlrc"), `cacert=~/certs/ca.pem\n`);
+      mkdirSync(join(h, "certs"));
+      writeFileSync(join(h, "certs", "ca.pem"), tlsFiles.caPem);
+      expect(curlCaCertificates({ HOME: h })).toEqual([pem()]);
+      // curl reads the first .curlrc that exists: $CURL_HOME before $HOME.
+      const curlHome = join(root, "curl-home");
+      mkdirSync(curlHome);
+      writeFileSync(join(curlHome, ".curlrc"), "verbose\n");
+      expect(curlCaCertificates({ HOME: h, CURL_HOME: curlHome })).toEqual([]);
+      // An unreadable or missing one: nothing, no error.
+      expect(curlCaCertificates({ HOME: join(root, "no-such-home") })).toEqual([]);
+    });
+
+    for (const [name, setup] of [
+      ["$CURL_CA_BUNDLE", (h: string) => ({ HOME: h, CURL_CA_BUNDLE: tlsFiles.caFile })],
+      ["cacert in ~/.curlrc", (h: string) => (writeFileSync(join(h, ".curlrc"), `cacert ${tlsFiles.caFile}\n`), { HOME: h })],
+    ] as const) {
+      test(`the retry downloads the release when the network's root is only in ${name}`, async () => {
+        const site = serveHttps({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\n`, sums: pins(ARM, X64) });
+        try {
+          const env = { ...site.env, ...setup(home()) };
+          // The default retry roots: this computer's store (read-only) plus what curl read.
+          const r = await prepareUpdate({ version: "1.2.3", platform: process.platform, env, tmpRoot: root });
+          expect(r.ok, r.ok ? "" : r.error).toBe(true);
+        } finally {
+          site.stop();
+        }
+      });
+    }
   });
 
   test("end to end through the wrapper and the real install.sh: refused without the root, installed with NODE_EXTRA_CA_CERTS", async () => {

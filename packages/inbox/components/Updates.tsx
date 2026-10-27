@@ -432,14 +432,32 @@ export function FailedDialog({
                   <CommandRow text="NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update" />
                 </>
               )}
-              <p className="ib-sum">
-                If this keeps happening, install it yourself, or download it from{' '}
-                <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
-                  the release page
-                </a>
-                :
-              </p>
-              <CommandRow text={details.command} />
+              {details.failure?.release_first ? (
+                // macOS curl still trusts emSign G3: should a network holding a
+                // leaked key read as "untrusted", the release page comes first.
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    .
+                  </p>
+                  <p className="ib-sum">Or run the install script yourself:</p>
+                  <CommandRow text={details.command} />
+                </>
+              ) : (
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, install it yourself, or download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    :
+                  </p>
+                  <CommandRow text={details.command} />
+                </>
+              )}
             </>
           )}
           {!mismatch && !couldNotDownload && (

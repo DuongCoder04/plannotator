@@ -136,6 +136,22 @@ describe("plannotator update (seams)", () => {
     expect(err).toContain("If this keeps happening, install it yourself:\n  curl -fsSL");
   });
 
+  // macOS curl still trusts emSign G3: there, an untrusted certificate puts
+  // the release page before the `curl | bash` line. Elsewhere the order stays.
+  test("an untrusted certificate on macOS: the release page comes before the install command", async () => {
+    const runInstaller = async (_: unknown, write: (t: string) => void) => (write(`${UPDATE_TLS_HINT.untrusted}\n`), 75);
+    expect(await run([], { runInstaller, platform: "darwin" })).toBe(1);
+    const release = err.indexOf("download it from https://github.com/backnotprop/plannotator/releases/tag/v0.28.11");
+    const curl = err.indexOf("curl -fsSL https://plannotator.ai/install.sh");
+    expect(release).toBeGreaterThan(-1);
+    expect(curl).toBeGreaterThan(release);
+    expect(err).toContain("NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update");
+    err = "";
+    rmSync(join(dataDir, "update.lock"), { force: true });
+    expect(await run([], { runInstaller, platform: "linux" })).toBe(1);
+    expect(err.indexOf("curl -fsSL")).toBeLessThan(err.indexOf("download it from"));
+  });
+
   test("a revoked certificate: never the install command, try another network", async () => {
     const runInstaller = async (_: unknown, write: (t: string) => void) => (write(`${UPDATE_TLS_HINT.revoked}\n`), 75);
     expect(await run([], { runInstaller })).toBe(1);
@@ -300,8 +316,15 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
       expect(refused.exitCode).toBe(1);
       expect(existsSync(join(home, "installer-args"))).toBe(false);
       expect(JSON.parse(readFileSync(join(dataDir, "update-result.json"), "utf-8"))).toEqual({ version: "v9.9.9", exitCode: 75 });
-      expect(refused.stderr).toContain("If this keeps happening, install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n");
-      expect(refused.stderr).toContain("or download it from https://github.com/backnotprop/plannotator/releases/tag/v9.9.9\n");
+      // macOS puts the release page first for an untrusted certificate (its curl still trusts emSign G3).
+      if (process.platform === "darwin") {
+        expect(refused.stderr).toContain(
+          "If this keeps happening, download it from https://github.com/backnotprop/plannotator/releases/tag/v9.9.9\nor install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n",
+        );
+      } else {
+        expect(refused.stderr).toContain("If this keeps happening, install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n");
+        expect(refused.stderr).toContain("or download it from https://github.com/backnotprop/plannotator/releases/tag/v9.9.9\n");
+      }
       expect(refused.stderr).toContain("  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n");
       expect(existsSync(join(dataDir, "update.lock"))).toBe(false);
 

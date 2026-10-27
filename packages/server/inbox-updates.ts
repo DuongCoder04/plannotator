@@ -72,9 +72,13 @@ import { fetchReleaseImagesFor, storedReleaseImageSources } from "./inbox-whats-
 export const INBOX_UPDATING_TICK_MS = 2_000;
 
 /** The failure dialog's facts; a failed download also says whether it failed at TLS (update.log). */
-export function failureDetails(exitCode: number, log: string): NonNullable<InboxUpdateDetails["failure"]> {
+export function failureDetails(
+  exitCode: number,
+  log: string,
+  platform: NodeJS.Platform = process.platform,
+): NonNullable<InboxUpdateDetails["failure"]> {
   const tls = exitCode === UPDATE_PREPARE_FAILED ? lastRunTlsFailure(log) : null;
-  return { exit_code: exitCode, log, ...(tls && { tls }) };
+  return { exit_code: exitCode, log, ...(tls && { tls }), ...(tls === "untrusted" && platform === "darwin" && { release_first: true as const }) };
 }
 
 export type { InboxUpdate };
@@ -119,9 +123,11 @@ export interface InboxUpdateDetails {
    * `tls` (additive, exit 75 only): the download failed at TLS, as
    * update-prepare reported in update.log. `untrusted`: point
    * NODE_EXTRA_CA_CERTS at the network's root. `revoked`: a blocked key, so
-   * never the install command over this network.
+   * never the install command over this network. `release_first` (additive,
+   * `untrusted` on macOS only): the release page comes before the install
+   * command, since macOS curl still trusts emSign G3.
    */
-  failure: { exit_code: number; log: string; tls?: UpdateTlsFailure } | null;
+  failure: { exit_code: number; log: string; tls?: UpdateTlsFailure; release_first?: true } | null;
   log: string;
   snoozed_until: string | null;
 }

@@ -14,7 +14,7 @@ import { loadConfig, saveConfig } from "@plannotator/shared/config";
 import { readUpdateState, writeReleaseNotes, writeUpdateState, type FetchReleaseResult } from "@plannotator/shared/update-check";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxUsedBefore, startInboxServer, type InboxServer } from "./inbox";
-import { deriveInboxUpdate } from "./inbox-updates";
+import { deriveInboxUpdate, failureDetails } from "./inbox-updates";
 import type { InstallerLaunch } from "./auto-update";
 import { UPDATE_TLS_HINT } from "./update-prepare";
 
@@ -310,6 +310,15 @@ describe("Update now", () => {
     expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "failed" });
     const details = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/update`)).json();
     expect(details.failure).toMatchObject({ exit_code: 75, tls: "untrusted" });
+  });
+
+  test("an untrusted certificate puts the release page first on macOS only", () => {
+    const log = join(dataDir, "update.log");
+    writeFileSync(log, `${UPDATE_TLS_HINT.untrusted}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "darwin")).toEqual({ exit_code: 75, log, tls: "untrusted", release_first: true });
+    expect(failureDetails(75, log, "linux")).toEqual({ exit_code: 75, log, tls: "untrusted" });
+    writeFileSync(log, `${UPDATE_TLS_HINT.revoked}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "darwin")).toEqual({ exit_code: 75, log, tls: "revoked" });
   });
 });
 
