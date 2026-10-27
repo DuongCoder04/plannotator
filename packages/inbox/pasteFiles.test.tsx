@@ -13,7 +13,10 @@
  * the picture Chromium adds beside it; Cancel forgets the reply box's files;
  * a file pasted while a Send is in flight stays for the next one; a retry
  * whose contents changed is a new reply, never the earlier one replayed; and
- * each attach by paste is said in a polite live region.
+ * each attach by paste is said in a polite live region. On a phone (iOS
+ * offers no Paste for a picture in a plain text field) the reply box has an
+ * attach button whose file goes the same way; a desktop has none; and an
+ * image copied from a page with only its link as the text attaches.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
  */
@@ -27,6 +30,7 @@ import { join, resolve } from 'node:path';
 import type { InboxMessage } from '@plannotator/core/inbox-types';
 
 import { NO_BROWSER } from '../../tests/helpers/no-browser';
+import { PHONE_QUERY } from './phone';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -51,6 +55,8 @@ let posted: { path: string; body: Record<string, unknown> }[] = [];
 let replyGate: Promise<void> | null = null;
 /** Set: the next reply POST reaches the server, and the window is told it failed (it went through). */
 let replyFailsAfter = false;
+/** The Inbox is down: a reply and a thread read fail before reaching it. */
+let inboxDown = false;
 
 function loopback(path: string, method = 'GET', body?: string | Buffer, headers: Record<string, string> = {}): Promise<{ status: number; text: string }> {
   return new Promise((done, fail) => {
@@ -114,7 +120,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '6'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '8'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}`, PLANNOTATOR_INBOX_CONNECT: '0', PLANNOTATOR_BROWSER: NO_BROWSER },
     stdout: 'pipe',
     stderr: 'inherit',
@@ -151,6 +157,7 @@ beforeEach(() => {
     const body = init?.body ? String(init.body) : undefined;
     if (method === 'POST') posted.push({ path, body: body ? JSON.parse(body) : {} });
     const isReply = method === 'POST' && path.endsWith('/reply');
+    if (inboxDown && (isReply || /\/api\/inbox\/threads\/[^/?]+$/.test(path))) throw new TypeError('Failed to fetch');
     if (isReply && replyGate) await replyGate;
     const answer = await loopback(path, method, body);
     if (isReply && replyFailsAfter) {
@@ -172,6 +179,8 @@ beforeEach(() => {
 
 afterEach(() => {
   if (!hasDom) return;
+  inboxDown = false;
+  replyFailsAfter = false;
   act(() => root?.unmount());
   host?.remove();
   root = null;
@@ -191,7 +200,7 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-async function renderApp(hash = '') {
+async function renderApp(hash = '', ready = '.ib-side [data-open-compose]') {
   window.location.hash = hash;
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -199,7 +208,7 @@ async function renderApp(hash = '') {
     root = createRoot(host!);
     root.render(<InboxApp />);
   });
-  await until(() => !!host!.querySelector('.ib-side [data-open-compose]'), 'the window');
+  await until(() => !!host!.querySelector(ready), 'the window');
   return host;
 }
 
@@ -231,7 +240,7 @@ function paste(target: HTMLElement, content: { files?: File[]; text?: string; ht
     ...files.map((file) => ({ kind: 'file', type: file.type, getAsFile: () => file })),
   ];
   const event = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(event, 'clipboardData', { value: { files, items, types: items.map((i) => i.type), getData: () => content.text ?? '' } });
+  Object.defineProperty(event, 'clipboardData', { value: { files, items, types: items.map((i) => i.type), getData: (type: string) => (type === 'text/html' ? (content.html ?? '') : type === 'text/plain' ? (content.text ?? '') : '') } });
   act(() => {
     target.dispatchEvent(event);
   });
@@ -248,7 +257,12 @@ test.skipIf(!hasDom)('compose: a pasted image makes a tile with a dated name, up
   const el = await renderApp();
   act(() => (el.querySelector('.ib-side [data-open-compose]') as HTMLButtonElement).click());
   const dialog = () => document.querySelector('dialog[data-compose]') as HTMLDialogElement;
-  await until(() => !!dialog()?.querySelector('[data-compose-to="ses-paste"]'), 'To prefilled');
+  // A plain New message opens with To empty: pick the session, as a person does.
+  await until(() => !!dialog()?.querySelector('button[data-compose-to="choose"]:not([data-loading])'), 'To loaded');
+  act(() => (dialog().querySelector('button[data-compose-to]') as HTMLButtonElement).click());
+  await until(() => !!dialog().querySelector('[role="option"][data-compose-session="ses-paste"]'), 'the picker');
+  act(() => (dialog().querySelector('[role="option"][data-compose-session="ses-paste"]') as HTMLElement).click());
+  await until(() => !!dialog()?.querySelector('[data-compose-to="ses-paste"]'), 'To picked');
   const text = dialog().querySelector('textarea') as HTMLTextAreaElement;
 
   expect(paste(text, { text: 'just words' })).toBe(false);
@@ -284,6 +298,14 @@ test.skipIf(!hasDom)('the reply box: two pasted images make two tiles (the secon
   await until(() => replyBox(el) !== null, 'the reply box');
   const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
 
+  // A desktop is paste-only: no attach button in the reply box.
+  expect(el.querySelector('[data-reply-attach]')).toBeNull();
+  // A spreadsheet cell whose value is a URL (its text, an HTML table, a picture of the cell): text, as before.
+  const cellUrl = 'https://example.com/q3';
+  expect(paste(text, { text: cellUrl, html: `<table><tr><td>${cellUrl}</td></tr></table>`, files: [image()] })).toBe(false);
+  // Even an <img> of that very link: a desktop keeps today's rule (text with an unnamed picture is text).
+  expect(paste(text, { text: cellUrl, html: `<img src="${cellUrl}">`, files: [image()] })).toBe(false);
+  expect(el.querySelector('[data-reply-files]')).toBeNull();
   // Text alone (a dictation app's synthetic paste included): never prevented, nothing attached.
   expect(paste(text, { text: 'some words' })).toBe(false);
   expect(el.querySelector('[data-reply-files]')).toBeNull();
@@ -337,7 +359,8 @@ test.skipIf(!hasDom)('the reply box: a pasted image alone is sent as a words-onl
   await until(() => el.querySelector('.ib-rbox') === null, 'the Send');
   const replies = posted.filter((p) => p.path.endsWith('/reply'));
   expect(replies).toHaveLength(1);
-  expect(replies[0]!.body).toMatchObject({ words: '', questions: [], skip_unanswered: false });
+  expect(replies[0]!.body).toMatchObject({ words: '', questions: [] });
+  expect(replies[0]!.body.skip).toBeUndefined();
   expect((replies[0]!.body.uploads as string[]).length).toBe(1);
   const model = JSON.parse((await loopback(`/api/inbox/threads/${world.waiting}`)).text) as { thread: { messages: (InboxMessage & { questions?: { state: string }[] })[] } };
   expect(model.thread.messages[0]!.questions!.map((q) => q.state)).toEqual(['open']);
@@ -385,7 +408,7 @@ test.skipIf(!hasDom)('a file pasted while a Send is in flight stays in the box f
   }
 }, 30_000);
 
-test.skipIf(!hasDom)('a Send that went through but answered an error: a retry with the same contents replays it; changed contents are a new reply, never dropped as the old one', async () => {
+test.skipIf(!hasDom)('a Send that went through but answered an error is read back: the box closes, and the reply is in the thread once', async () => {
   const el = await renderApp(`#thread=${world.waiting}`);
   await until(() => el.querySelectorAll('fieldset[data-question-key]').length === 1, 'the question');
   act(() => button(el, 'Reply').click());
@@ -394,26 +417,90 @@ test.skipIf(!hasDom)('a Send that went through but answered an error: a retry wi
   type(text, 'Looks off.');
   replyFailsAfter = true;
   act(() => button(el, 'Send').click());
-  await until(() => !!el.querySelector('.ib-error'), 'the error');
-  const keys = () => posted.filter((p) => p.path.endsWith('/reply')).map((p) => p.body.idempotency_key as string);
-  // The same contents again: the same key, answered as the reply that went through.
-  replyFailsAfter = true;
-  act(() => button(el, 'Send').click());
-  await until(() => keys().length === 2, 'the retry');
-  await until(() => !!el.querySelector('.ib-error'), 'the error again');
-  expect(keys()[1]).toBe(keys()[0]);
+  // The reply went (its key is in the thread): finished as if the answer had come.
+  await until(() => el.querySelector('.ib-rbox') === null, 'the box closed');
+  expect(el.querySelector('.ib-error')).toBeNull();
+  const model = JSON.parse((await loopback(`/api/inbox/threads/${world.waiting}`)).text) as { thread: { messages: InboxMessage[] } };
+  expect(model.thread.messages.filter((m) => m.author.kind === 'person')).toHaveLength(1);
+}, 30_000);
 
-  // Now a screenshot is pasted and words added: a new key, a new reply carrying them.
+test.skipIf(!hasDom)('a Send the Inbox never got, then a file pasted and the same words sent again: the file rides the new reply, never lost', async () => {
+  const el = await renderApp(`#thread=${world.waiting}`);
+  await until(() => el.querySelectorAll('fieldset[data-question-key]').length === 1, 'the question');
+  act(() => button(el, 'Reply').click());
+  await until(() => replyBox(el) !== null, 'the reply box');
+  const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
+  type(text, 'Here is the screen.');
+  inboxDown = true;
+  act(() => button(el, 'Send').click());
+  await until(() => !!el.querySelector('.ib-error'), 'the error');
+  inboxDown = false;
+  // The person pastes the screenshot they meant to send, and sends the same words again.
   expect(paste(text, { files: [image()] })).toBe(true);
   await until(() => tiles(replyBox(el)!)[0]?.getAttribute('data-compose-file') === 'done', 'the upload');
-  type(text, 'Looks off. Here is the screen.');
   act(() => button(el, 'Send').click());
   await until(() => el.querySelector('.ib-rbox') === null, 'the Send');
-  expect(keys()).toHaveLength(3);
-  expect(keys()[2]).not.toBe(keys()[0]);
+  const reply = posted.filter((p) => p.path.endsWith('/reply')).at(-1)!;
+  expect((reply.body.uploads as string[]).length).toBe(1);
   const model = JSON.parse((await loopback(`/api/inbox/threads/${world.waiting}`)).text) as { thread: { messages: InboxMessage[] } };
   const mine = model.thread.messages.filter((m) => m.author.kind === 'person');
-  expect(mine).toHaveLength(2);
-  expect(mine[1]!.body.startsWith('Looks off. Here is the screen.')).toBe(true);
-  expect(mine[1]!.attachments).toHaveLength(1);
+  expect(mine).toHaveLength(1);
+  expect(mine[0]!.body.startsWith('Here is the screen.')).toBe(true);
+  expect(mine[0]!.attachments).toHaveLength(1);
+}, 30_000);
+
+test.skipIf(!hasDom)('a phone: the reply box has an attach button; a chosen image uploads and rides the Send; an image copied from a page attaches, a spreadsheet cell holding a URL stays text', async () => {
+  const savedMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query === PHONE_QUERY,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  try {
+    // A phone draws one screen at a time: the thread, no sidebar.
+    const el = await renderApp(`#thread=${world.waiting}`, 'fieldset[data-question-key]');
+    act(() => button(el, 'Reply').click());
+    await until(() => replyBox(el) !== null, 'the reply box');
+    const input = el.querySelector<HTMLInputElement>('input[type="file"][data-reply-attach]')!;
+    expect(input).not.toBeNull();
+    // The picker offers the photo library and Files; the button is named, with no native title.
+    expect(input.accept).toBe('image/*,*/*');
+    const label = input.closest('label')!;
+    expect(label.getAttribute('aria-label')).toBe('Attach files');
+    expect(label.hasAttribute('title')).toBe(false);
+    Object.defineProperty(input, 'files', { configurable: true, value: [image('header.png')] });
+    act(() => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await until(() => tiles(replyBox(el)!)[0]?.getAttribute('data-compose-file') === 'done', 'the chosen file\'s upload');
+    expect(tiles(replyBox(el)!)[0]!.getAttribute('data-compose-file-name')).toBe('header.png');
+    await until(() => el.querySelector('[data-fold-live]')?.textContent === 'Attached header.png', 'the announcement');
+
+    const text = replyBox(el)!.querySelector('textarea') as HTMLTextAreaElement;
+    // A spreadsheet cell whose value is a URL: text on a phone too; nothing attaches.
+    const link = 'https://example.com/board/header.png';
+    expect(paste(text, { text: link, html: `<table><tr><td>${link}</td></tr></table>`, files: [image()] })).toBe(false);
+    expect(tiles(replyBox(el)!)).toHaveLength(1);
+    // An image copied from a page on a phone: the picture, its link as the plain text and an <img> of that link.
+    // The picture attaches and the link is not pasted into the words.
+    expect(paste(text, { files: [image()], text: link, html: `<img src="${link}">` })).toBe(true);
+    await until(() => tiles(replyBox(el)!).length === 2 && tiles(replyBox(el)!).every((t) => t.getAttribute('data-compose-file') === 'done'), 'the pasted picture');
+
+    type(text, 'The header on my phone.');
+    act(() => button(el, 'Send').click());
+    await until(() => el.querySelector('.ib-rbox') === null, 'the Send');
+    const replies = posted.filter((p) => p.path.endsWith('/reply'));
+    expect(replies).toHaveLength(1);
+    expect((replies[0]!.body.uploads as string[]).length).toBe(2);
+    const model = JSON.parse((await loopback(`/api/inbox/threads/${world.waiting}`)).text) as { thread: { messages: InboxMessage[] } };
+    expect(model.thread.messages.at(-1)!.attachments!.map((a) => a.name)[0]).toBe('header.png');
+    expect(model.thread.messages.at(-1)!.attachments).toHaveLength(2);
+  } finally {
+    window.matchMedia = savedMatchMedia;
+  }
 }, 30_000);

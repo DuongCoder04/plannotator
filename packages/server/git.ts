@@ -5,6 +5,8 @@
  * Used by both Claude Code hook and OpenCode plugin.
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
+import { resolveRepoWorkingTreeEntry } from "@plannotator/shared/repo-file";
 import { lstat, open, readlink, realpath } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
@@ -89,7 +91,7 @@ async function runGit(
   const proc = Bun.spawn(["git", ...command.args], {
     cwd: options?.cwd,
     detached: command.isolateProcessGroup,
-    env: command.env,
+    env: command.env ?? childEnv(),
     stdin: options?.stdin === undefined
       ? "ignore"
       : new TextEncoder().encode(options.stdin),
@@ -116,7 +118,7 @@ async function runGit(
       if (command.isolateProcessGroup && process.platform === "win32") {
         const killed = Bun.spawnSync(
           ["taskkill.exe", "/pid", String(proc.pid), "/t", "/f"],
-          { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true },
+          { env: childEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true },
         );
         if (killed.exitCode === 0) return;
       }
@@ -189,7 +191,7 @@ async function runGitBytes(
   const command = prepareGitCommand(args, options, process.env);
   const proc = Bun.spawn(["git", ...command.args], {
     cwd: options?.cwd,
-    env: command.env,
+    env: command.env ?? childEnv(),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -235,6 +237,9 @@ export async function readFileBytesCapped(path: string, maxBytes: number): Promi
 /** Bun-based git runtime. Exported for use with shared utilities (worktree, etc.) */
 export const runtime: ReviewGitRuntime = {
   runGit,
+  async checkWorkingTreeEntry(root, path) {
+    return resolveRepoWorkingTreeEntry(root, path);
+  },
   runGitBytes,
   readFileBytes: readFileBytesCapped,
   async realPath(path: string): Promise<string | null> {

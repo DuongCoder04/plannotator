@@ -91,15 +91,17 @@ test('a link to an attached file opens it beside the thread; an unattached one i
     // Focus moved into the pane.
     expect(await pane.evaluate((el) => el === document.activeElement)).toBe(true);
 
-    // HTML opens full screen straight into full view (approval "inbox-full-view"): the eye brings the header back.
+    // HTML opens full screen (approval "inbox-one-fullscreen"): Side by side puts it beside the thread, with its header.
     await expect(pane).toHaveAttribute('data-full-view', '');
-    await page.locator('[data-full-view-eye]').click();
-    // Close it, then Enter on the focused link opens it again (with the tools now: the eye's choice is remembered).
+    await page.getByRole('button', { name: 'Side by side' }).click();
+    await expect(pane).not.toHaveAttribute('data-full-view', '');
+    // Close it, then Enter on the focused link opens it again: side by side, the view just chosen.
     await page.getByRole('button', { name: 'Close mock.html' }).click();
     await expect(pane).toHaveCount(0);
     await mock.focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('[data-attachment-pane]')).toBeVisible();
+    await expect(page.locator('[data-attachment-pane]')).not.toHaveAttribute('data-full-view', '');
     await page.getByRole('button', { name: 'Close mock.html' }).click();
 
     // Not attached: inert text with its reason, never requested.

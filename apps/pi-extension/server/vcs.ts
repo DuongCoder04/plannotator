@@ -16,6 +16,7 @@ import {
 	prepareGitCommand,
 	runGitDiff as runGitDiffCore,
 } from "../generated/review-core.ts";
+import { resolveRepoWorkingTreeEntry } from "../generated/repo-file.ts";
 import {
 	JJ_COLOR_FREE_ARGS,
 	type ReviewJjRuntime,
@@ -134,7 +135,7 @@ function runCommandBytes(
 					const killed = spawnSync(
 						"taskkill.exe",
 						["/pid", String(proc.pid), "/t", "/f"],
-						{ stdio: "ignore", windowsHide: true },
+						{ env: process.env, stdio: "ignore", windowsHide: true },
 					);
 					if (killed.status === 0) return;
 				}
@@ -189,6 +190,21 @@ function runCommandBytes(
 	});
 }
 
+/**
+ * `reviewRuntime` with `extraEnv` added to every git child's environment
+ * (after the process env, so it wins). A GitHub PR checkout uses it to run
+ * its fetches as the gh account chosen for that PR (#2157), so git through
+ * gh's credential helper gets that account's token; nothing else does.
+ */
+export function reviewRuntimeWithEnv(extraEnv: Record<string, string>): ReviewGitRuntime {
+	const run = (args: string[], options?: GitCommandOptions): Promise<GitCommandResult> => {
+		const environment = { ...process.env, ...extraEnv };
+		const command = prepareGitCommand(args, options, environment);
+		return runCommand("git", command.args, "git not found", options, command, environment);
+	};
+	return { ...reviewRuntime, runGit: run };
+}
+
 export const reviewRuntime: ReviewGitRuntime = {
 	runGit(
 		args: string[],
@@ -196,6 +212,10 @@ export const reviewRuntime: ReviewGitRuntime = {
 	): Promise<GitCommandResult> {
 		const command = prepareGitCommand(args, options, process.env);
 		return runCommand("git", command.args, "git not found", options, command);
+	},
+
+	async checkWorkingTreeEntry(root, path) {
+		return resolveRepoWorkingTreeEntry(root, path);
 	},
 
 	runGitBytes(

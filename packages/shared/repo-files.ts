@@ -93,7 +93,26 @@ export interface RepoFileResponse {
 }
 
 /** What a server's reader returns: bytes from a VCS, or text from a platform API. */
-export type RepoFileRead = FileBytesRead | { kind: "text"; content: string | null };
+export type RepoFileRead =
+  | FileBytesRead
+  | { kind: "text"; content: string | null }
+  | { kind: "binary" };
+
+/**
+ * Where one listed path is a file on disk, or null when it is read from a VCS
+ * object or a platform API. A working-tree listing reads from its root; a
+ * multi-repo workspace from the child repository whose folder holds the path.
+ */
+export function repoFileDiskLocation(listing: RepoFileListing, path: string): { root: string; path: string } | null {
+  if (listing.diskRoots) {
+    let best: { prefix: string; root: string } | null = null;
+    for (const entry of listing.diskRoots) {
+      if (path.startsWith(entry.prefix) && (!best || entry.prefix.length > best.prefix.length)) best = entry;
+    }
+    return best ? { root: best.root, path: path.slice(best.prefix.length) } : null;
+  }
+  return listing.live && listing.root ? { root: listing.root, path } : null;
+}
 
 export interface HandlerResult {
   status: number;
@@ -354,8 +373,15 @@ export interface RepoFileRequestInput {
   unavailable: RepoFilesUnavailable | null;
   isCurrentSnapshot: (snapshot: string) => boolean;
   loadListing: () => Promise<RepoFileListing | null>;
-  /** Read one listed path at the listing's revision. */
+  /** Read one listed path at the listing's revision (VCS objects, platform APIs). */
   read: (path: string, maxBytes: number) => Promise<RepoFileRead>;
+  /**
+   * Read one working-tree file from disk. Required so neither runtime can
+   * skip it: both pass `readRepoWorkingTreeFile` (repo-files-node.ts), which
+   * goes through the shared guard in repo-file.ts (realpath containment,
+   * regular files only, the 5 MB cap, no FIFO).
+   */
+  readWorkingTree: (root: string, path: string, maxBytes: number) => RepoFileRead | Promise<RepoFileRead>;
 }
 
 /**
@@ -376,7 +402,10 @@ export async function handleRepoFileRequest(input: RepoFileRequestInput): Promis
     return { status: 404, body: { error: "Not a file of this revision", reason: "not-listed" } };
   }
 
-  const read = await input.read(path, MAX_REPO_FILE_BYTES).catch((): RepoFileRead => ({ kind: "missing" }));
+  const disk = repoFileDiskLocation(listing, path);
+  const read = await Promise.resolve()
+    .then(() => (disk ? input.readWorkingTree(disk.root, disk.path, MAX_REPO_FILE_BYTES) : input.read(path, MAX_REPO_FILE_BYTES)))
+    .catch((): RepoFileRead => ({ kind: "missing" }));
   const answer = (rest: Pick<RepoFileResponse, "content" | "reason" | "size">): HandlerResult => ({
     status: 200,
     body: { path, revision: listing.revision, ...rest } satisfies RepoFileResponse,
@@ -388,6 +417,8 @@ export async function handleRepoFileRequest(input: RepoFileRequestInput): Promis
       const decoded = decodeRepoFileBytes(read.bytes);
       return "content" in decoded ? answer({ content: decoded.content }) : answer({ content: null, reason: "binary" });
     }
+    case "binary":
+      return answer({ content: null, reason: "binary" });
     case "too-large":
       return answer({ content: null, reason: "too-large", size: read.size });
     case "missing":

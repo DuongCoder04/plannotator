@@ -27,8 +27,9 @@ import { createRequestHostGuard } from "./request-host-guard.ts";
 import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { getPlanVersion, getVersionCount, listVersions } from "../generated/storage.ts";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "../generated/annotate-history.ts";
+import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "../generated/annotate-live-version.ts";
 import { htmlDiff } from "../generated/html-diff.ts";
-import { agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -113,6 +114,8 @@ import { createAnnotateDecisionSettler, isNothingToSendFeedbackBody } from "../g
 
 export interface AnnotateServerResult {
 	port: number;
+	/** The live proxy port, when annotating a running app. */
+	liveProxyPort?: number;
 	portSource: "env" | "remote-default" | "random";
 	url: string;
 	waitForDecision: () => Promise<{ feedback: string; annotations: unknown[]; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages"; closedBy?: "agent"; unsentAnnotations?: number }>;
@@ -376,7 +379,7 @@ export async function startAnnotateServer(options: {
 	// with 409 session_mismatch before anything settles. Missing is accepted.
 	const serverSession = createServerSessionNonce();
 	const sendAlreadyDecided = (res: import("node:http").ServerResponse): void => {
-		json(res, { error: "This review session has already been decided." }, 409);
+		json(res, { error: "This review session has already been decided.", code: "already_decided" }, 409);
 	};
 
 	// Last-client abandonment lease: once the tab's client-lease stream
@@ -781,6 +784,13 @@ export async function startAnnotateServer(options: {
 			? initialSingleFileSourceSave.path
 			: resolveUserPath(options.filePath)
 		: null;
+	// The file a live version save (#2037) reads and keys history by: the same
+	// resolved path the open-time save used, so both land in one history.
+	const liveVersionFilePath = annotateLiveVersionFilePath({
+		sourceSaveEligible: singleFileSourceSaveEligible && singleFileLocalAnnotate,
+		resolvedFilePath: resolvePath(options.filePath),
+		realFilePath: initialSingleFileSourcePath,
+	});
 	// A review of several files: Edit Mode may write exactly the bundle's own
 	// files (real paths, captured now, as a single-file session captures its
 	// one file), never a document they link to.
@@ -984,6 +994,9 @@ export async function startAnnotateServer(options: {
 							diffCurrent: servedIsSnapshot || !servedHtml ? annotateHistory.diffCurrent : servedHtml,
 					  }
 					: {}),
+				// The editor may save a disk change as a version (#2037); absent
+				// when history is off or the file is not Markdown/text.
+				...(liveVersionFilePath && annotateHistoryEnabled ? { liveVersions: true } : {}),
 				sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,
@@ -1087,6 +1100,17 @@ export async function startAnnotateServer(options: {
 				slug: annotateHistory.slug,
 				versions: listVersions(annotateProjectName, annotateHistory.slug),
 			});
+		} else if (url.pathname === ANNOTATE_LIVE_VERSION_PATH && req.method === "POST") {
+			// Save the file as it is on disk now as a version (#2037); mirrors
+			// the Bun annotate server (annotate-live-version.ts decides).
+			const outcome = saveAnnotateLiveVersion(await parseBody(req), {
+				serverSession,
+				historyEnabled: annotateHistoryEnabled,
+				resolvedFilePath: liveVersionFilePath,
+				project: annotateProjectName,
+			});
+			if (outcome.status === 200) annotateHistory = outcome.history;
+			json(res, outcome.body, outcome.status);
 		} else if (url.pathname === "/api/share-html" && req.method === "GET") {
 			handleShareHtml(res, url);
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
@@ -1095,8 +1119,12 @@ export async function startAnnotateServer(options: {
 				return;
 			}
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
+				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
 				const toSave: Record<string, unknown> = {};
+				// OpenCode's agent switch (#1390): a known shape or nothing is saved.
+				const agentSwitch = agentSwitchConfigToSave(body);
+				if (agentSwitch === null) return json(res, { error: "Invalid agentSwitch" }, 400);
+				if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.theme !== undefined) toSave.theme = body.theme;
@@ -1108,7 +1136,7 @@ export async function startAnnotateServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
 				if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
-				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
 				json(res, { ok: true });
 			} catch {
@@ -1502,6 +1530,7 @@ export async function startAnnotateServer(options: {
 
 	return {
 		port,
+		liveProxyPort: liveProxy?.port,
 		portSource,
 		url: buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,
@@ -1539,6 +1568,8 @@ export async function startAnnotateServer(options: {
 					}
 				}
 			} finally {
+				// Before closeAllConnections, or a session-closed just sent is lost.
+				externalAnnotations.endStreams();
 				server.close();
 				// close() only stops the listener; drain browser keep-alive sockets so a
 				// stopped session's connections die immediately instead of at the

@@ -380,6 +380,34 @@ export function trimUrlTail(url: string): string {
   return url;
 }
 
+// Index of the first bare `http(s)://` URL that starts after index 0 and
+// before `end` at a word boundary AND runs past `end`, or -1. Only such a
+// URL needs the chunk split: one that ends inside the chunk is linked by
+// emitPlainTextWithBareUrls in the same pass, exactly as before, so a
+// paragraph of many URLs stays one pass instead of a loop turn (and a
+// rescan of the rest of the text) per URL. Index 0 is left to the caller's
+// own bare-URL check, which already ran for it.
+const BARE_URL_SCHEME = /https?:\/\//g;
+const BARE_URL_AT = /https?:\/\/[^\s<>"']+/y;
+function bareUrlRunningPast(text: string, end: number): number {
+  // Only a scheme that starts before `end` counts, so read no further than
+  // `end` plus the longest scheme ("https://" less its first character).
+  const window = text.slice(0, end + 7);
+  BARE_URL_SCHEME.lastIndex = 1;
+  let m: RegExpExecArray | null;
+  while ((m = BARE_URL_SCHEME.exec(window)) !== null && m.index < end) {
+    if (/\w/.test(window[m.index - 1])) continue;
+    BARE_URL_AT.lastIndex = m.index;
+    const url = BARE_URL_AT.exec(text);
+    if (!url) continue;
+    const urlEnd = m.index + trimUrlTail(url[0]).length;
+    if (urlEnd > end) return m.index;
+    // The URL ends inside the chunk; look for the next one after it.
+    BARE_URL_SCHEME.lastIndex = Math.max(urlEnd, m.index + 1);
+  }
+  return -1;
+}
+
 // Scan a plain-text chunk for bare https?:// URLs and bare code file paths
 // at word boundaries, emitting them as interactive nodes. Surrounding text
 // passes through transformPlainText for emoji shortcodes + smart punctuation.
@@ -474,34 +502,72 @@ function emitPlainTextWithBareUrls(
   }
 }
 
-/** An image a host resolver chose; a load failure shows the placeholder. */
+/**
+ * An image a host resolver chose; a load failure shows the placeholder.
+ *
+ * The `<img>` element itself never leaves the document: on failure the
+ * placeholder is inserted BEFORE it (React's reference node is then the
+ * `<img>`, which it owns) and the `<img>` is hidden. Replacing the `<img>`
+ * would make React insert before the node that follows it, and when that is
+ * a text node the annotation highlighter already moved into a `<mark>` (a
+ * restored comment starting right after the image), `insertBefore` throws
+ * and the whole document unmounts. A loaded image's DOM is unchanged.
+ */
 const HostResolvedImage: React.FC<{
   src: string;
   alt: string;
+  /** The src as written in the markdown (`data-image-src`, read by the image viewer's region comments). */
+  writtenSrc?: string;
   onImageClick?: (src: string, alt: string) => void;
-}> = ({ src, alt, onImageClick }) => {
+}> = ({ src, alt, writtenSrc, onImageClick }) => {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  if (failedSrc === src) {
-    return (
-      <span className={UNAVAILABLE_IMAGE_CLASS} title="Image could not be loaded" data-image-unavailable="">
-        {alt || 'Image'}
-      </span>
-    );
-  }
+  const failed = failedSrc === src;
   return (
-    <img
-      src={src}
-      alt={alt}
-      className="max-w-full rounded my-2 cursor-zoom-in"
-      loading="lazy"
-      onError={() => setFailedSrc(src)}
-      onClick={(e) => {
-        e.stopPropagation();
-        onImageClick?.(src, alt);
-      }}
-    />
+    <>
+      {failed && (
+        <span key="unavailable" className={`${UNAVAILABLE_IMAGE_CLASS} annotation-exclude`} title="Image could not be loaded" data-image-unavailable="">
+          {alt || 'Image'}
+        </span>
+      )}
+      <img
+        key="image"
+        src={src}
+        alt={failed ? '' : alt}
+        data-image-src={writtenSrc}
+        data-image-failed={failed ? '' : undefined}
+        hidden={failed || undefined}
+        aria-hidden={failed || undefined}
+        className={failed ? undefined : 'max-w-full rounded my-2 cursor-zoom-in'}
+        loading="lazy"
+        onError={() => setFailedSrc(src)}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!failed) onImageClick?.(src, alt);
+        }}
+      />
+    </>
   );
 };
+
+/**
+ * Whether a digit-only 6/8-digit `#123456` is an issue ref (when a ref link can
+ * be built) rather than a hex swatch. Off by default: every host renders such
+ * values as colours. The Plannotator Inbox turns it on through
+ * `configurePlannotatorUI({ digitHexIssueRefs: true })` (#1932).
+ */
+let digitHexIssueRefs = false;
+
+export function setDigitHexIssueRefs(on: boolean): void {
+  digitHexIssueRefs = on;
+}
+
+export function resetDigitHexIssueRefs(): void {
+  digitHexIssueRefs = false;
+}
+
+export function getDigitHexIssueRefs(): boolean {
+  return digitHexIssueRefs;
+}
 
 /**
  * Scanner that walks a text string and emits React nodes for inline markdown:
@@ -846,9 +912,19 @@ export const InlineMarkdown: React.FC<{
     }
 
     // Hex color swatch — 3/4-digit forms need an a-f letter to avoid matching issue refs like #123.
+    // 6/8-digit forms with no letter (#186379) are ambiguous. By default they
+    // stay swatches (greys like #333333 are common in docs; six-digit issues are
+    // rare). A host that opts in with `configurePlannotatorUI({ digitHexIssueRefs:
+    // true })` (the Plannotator Inbox, #1932) gets an issue ref instead, but only
+    // when a ref link can actually be built (`refLinks`: a repo path on a known
+    // forge) and the ref branch below would take it: a word boundary and no
+    // leading zero (issue numbers never start with 0, so #000000 stays a colour).
     match = remaining.match(
       /^(#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{4}|(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{3}))(?![0-9a-fA-F\w])/,
     );
+    if (match && digitHexIssueRefs && refLinks && /^#[1-9]\d*$/.test(match[1]) && !/\w/.test(previousChar)) {
+      match = null;
+    }
     if (match) {
       const hex = match[1];
       parts.push(
@@ -872,8 +948,8 @@ export const InlineMarkdown: React.FC<{
     }
 
     // Issue / PR reference: #123 — only at word boundary, digits only.
-    // Hex-swatch branch above already consumed #fff / #123abc etc., so a bare
-    // #\d+ here is safe to treat as an issue ref.
+    // Hex-swatch branch above already consumed #fff / #123abc etc. (and digit-only
+    // #123456 / #12345678 unless the host opted in), so a bare #\d+ here is an issue ref.
     if (!/\w/.test(previousChar)) {
       match = remaining.match(/^#(\d+)(?!\w)/);
       if (match) {
@@ -1027,12 +1103,13 @@ export const InlineMarkdown: React.FC<{
         resolveImage ? (
           // With a host resolver, an image that fails to load becomes the
           // same placeholder instead of a broken-image icon.
-          <HostResolvedImage key={key++} src={imgSrc} alt={alt} onImageClick={onImageClick} />
+          <HostResolvedImage key={key++} src={imgSrc} alt={alt} writtenSrc={src} onImageClick={onImageClick} />
         ) : (
           <img
             key={key++}
             src={imgSrc}
             alt={alt}
+            data-image-src={src}
             className="max-w-full rounded my-2 cursor-zoom-in"
             loading="lazy"
             onClick={(e) => {
@@ -1272,6 +1349,19 @@ export const InlineMarkdown: React.FC<{
     // multi-char patterns like emoji shortcodes. Bare URLs are instead
     // detected inline via emitPlainTextWithBareUrls() below.
     const nextSpecial = remaining.slice(1).search(/[\*_`\[!~\\<#@$]/);
+    // A bare URL that starts inside this plain-text chunk and runs past its
+    // end would be cut there, and `_`, `~`, `#`, `@`, `$` and `!` all end a
+    // chunk (`…/w/ws_01…` rendered a link to `…/w/ws`). Stop the chunk where
+    // that URL starts instead, so the bare-URL branch above takes it whole.
+    const chunkEnd = nextSpecial === -1 ? remaining.length : nextSpecial + 1;
+    const urlStart = bareUrlRunningPast(remaining, chunkEnd);
+    if (urlStart !== -1) {
+      const before = remaining.slice(0, urlStart);
+      emitPlainTextWithBareUrls(before, previousChar, parts, () => key++, onOpenCodeFile, validation, imageBaseDir);
+      previousChar = before[before.length - 1] || previousChar;
+      remaining = remaining.slice(urlStart);
+      continue;
+    }
     const plainText = nextSpecial === -1 ? remaining : remaining.slice(0, nextSpecial + 1);
     emitPlainTextWithBareUrls(plainText, previousChar, parts, () => key++, onOpenCodeFile, validation, imageBaseDir);
     previousChar = plainText[plainText.length - 1] || previousChar;

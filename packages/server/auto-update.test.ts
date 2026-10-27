@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   AUTO_UPDATE_INTERVAL_MS,
   autoUpdatePaths,
+  autoUpdateCanInstall,
   compareStableVersions,
   deriveAutoUpdateNotice,
   installerCommand,
@@ -23,6 +24,7 @@ import {
   type AutoUpdateDeps,
   type InstallerLaunch,
 } from "./auto-update";
+import { RELEASE_API_FALLBACK_INTERVAL_MS, RELEASE_CHECK_RETRY_MS } from "@plannotator/shared/update-check";
 import type { SessionInfo } from "./sessions";
 
 const NOW = 1_800_000_000_000;
@@ -483,16 +485,32 @@ describe("Update now (the person asked)", () => {
 });
 
 describe("a failed fetch gives the install window back", () => {
-  test("no release: lastCheckAt is restored, so the next start retries once the 6h backoff allows", async () => {
+  test("no release: lastCheckAt is restored, so the next start retries once the release check's backoff allows", async () => {
     const d = deps({ fetchLatestTag: async () => (fetches++, null) });
     expect(await runAutoUpdateCheck(d)).toBe("no-release");
     expect(readAutoUpdateState(dataDir).lastCheckAt).toBeUndefined();
-    // Inside the release check's 6h backoff: no second request yet.
+    // Inside the release check's backoff: no second request yet.
     expect(await runAutoUpdateCheck(deps({ now: () => NOW + 60_000, fetchLatestTag: async () => (fetches++, "v0.28.0") }))).toBe("no-release");
     expect(fetches).toBe(1);
-    // After it: the install window was not spent, so it asks and installs.
-    expect(await runAutoUpdateCheck(deps({ now: () => NOW + 6 * 60 * 60 * 1000 }))).toBe("launched");
+    // After it (only the API answers here, as behind a mirror: its hourly
+    // back-off): the install window was not spent, so it asks and installs.
+    expect(await runAutoUpdateCheck(deps({ now: () => NOW + RELEASE_CHECK_RETRY_MS }))).toBe("no-release");
+    expect(fetches).toBe(1);
+    expect(await runAutoUpdateCheck(deps({ now: () => NOW + RELEASE_API_FALLBACK_INTERVAL_MS }))).toBe("launched");
     expect(fetches).toBe(2);
+  });
+});
+
+describe("the toast steps aside for auto-update only when it can install", () => {
+  test("an install running; or its 24 h window open and no other session. Otherwise the toast must show", () => {
+    const can = (lockHeld: boolean, windowOpen: boolean, sessions: SessionInfo[]) => autoUpdateCanInstall({ lockHeld, windowOpen, sessions, ownPid: 100 });
+    expect(can(false, true, [session(100)])).toBe(true);
+    // Another session open: auto-update skips this start.
+    expect(can(false, true, [session(100), session(200)])).toBe(false);
+    // Its window was spent today: it will not install for up to a day.
+    expect(can(false, false, [session(100)])).toBe(false);
+    // An install runs: the post-update toast speaks.
+    expect(can(true, false, [session(100), session(200)])).toBe(true);
   });
 });
 
@@ -502,7 +520,12 @@ describe.skipIf(process.platform === "win32" || !Bun.which("curl"))("interrupted
   }
 
   test("a group SIGINT (Ctrl-C) to the wrapper records 130 and removes update.lock", async () => {
-    const server = fakeServer('echo "fake installer started"\nsleep 30\n');
+    // `exec`: the line is printed by the process that then becomes the sleep, so
+    // the group SIGINT finds either the shell or the sleep, never a child between
+    // fork and exec. With a plain `sleep 30` a SIGINT landing in that window left
+    // the sleep running, holding stdout, and `close` waited its 30 s (the wrapper
+    // had already recorded 130 and removed the lock).
+    const server = fakeServer('echo "fake installer started"\nexec sleep 30\n');
     const paths = autoUpdatePaths(dataDir);
     writeFileSync(paths.lock, "1");
     try {
