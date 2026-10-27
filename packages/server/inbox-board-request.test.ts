@@ -163,7 +163,7 @@ describe("Board request", () => {
 
   // Review of #2249: any session may read the thread again (after compaction, or one the thread moved to).
   // What regresses: a second reader told to create cards while one already links the thread.
-  test.if(INBOX_CARD_ACTION_ON)("a second reader of the thread is told which card already links it, so it makes no other", async () => {
+  test.if(INBOX_CARD_ACTION_ON)("a second reader of the thread is told which card in flight already links it, so it makes no other; a shipped one is not named", async () => {
     const { server, client, project } = await setup(true);
     await poll(server, "ses-a", project);
     const sent = await send(server, { body: WORDS, idempotency_key: "k1", board_request: true });
@@ -177,6 +177,11 @@ describe("Board request", () => {
     const second = await readThreadText(client, threadId, "ses-b");
     expect(count(second, INBOX_BOARD_REQUEST_OPEN)).toBe(1);
     expect(second).toContain(`Already on the Board for this thread: ${cardId} (Fuzzy settings search)`);
+    // Shipped, the card is done: new work in the thread gets a new card, so the line no longer names it.
+    await client.callTool({ name: "card", arguments: { op: "ship", card_id: cardId, project_path: project, agent_session: "ses-a", agent_host: "claude-code" } });
+    const after = await readThreadText(client, threadId, "ses-b");
+    expect(count(after, INBOX_BOARD_REQUEST_OPEN)).toBe(1);
+    expect(after).not.toContain("Already on the Board");
   });
 
   test("Codex's queue cuts a long message's words, never the block after them", async () => {

@@ -95,7 +95,7 @@ export const INBOX_BOARD_REQUEST_CLOSE = "</plannotator-board-request>";
 export function inboxBoardRequestBlock(threadId: string): string {
   return [
     INBOX_BOARD_REQUEST_OPEN,
-    `The person turned on Board tracking for this thread (thread_id ${threadId}). If no Board card links it yet (card op list, asked_by anyone, shows them), create card(s) for the work they asked for and link each to it; if one does, keep that one current instead of making another. Keep them current as the work moves. How: your Inbox card tool, or \`plannotator card --help\`.`,
+    `The person turned on Board tracking for this thread (thread_id ${threadId}). If no Board card links it yet (card op list, asked_by anyone, shows them), create card(s) for the work they asked for and link each to it; if one does, keep that one current instead of making another. How: your Inbox card tool, or \`plannotator card --help\`.`,
     INBOX_BOARD_REQUEST_CLOSE,
   ].join("\n");
 }
