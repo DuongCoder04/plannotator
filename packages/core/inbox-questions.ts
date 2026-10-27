@@ -56,6 +56,7 @@ import {
   type QuestionKind,
   type ParsedQuestion,
   questionLabelWithoutImage,
+  questionChoiceWithoutRecommendedMarker,
   parseQuestionChoiceText,
 } from "./question-block";
 import { readInboxQuestionKind } from "./inbox-types";
@@ -279,6 +280,11 @@ function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionCho
       const rebuilt = parseQuestionChoiceText(`${choice.label} — ${choice.description}`).label;
       if (rebuilt && rebuilt !== choice.label && !out.includes(rebuilt)) out.push(rebuilt);
     }
+    // A label stored with a recommended marker in it (a record from before
+    // the parser read `Foo (Recommended)` as the recommendation) also
+    // answers to the label without it, which the card reads today.
+    const unmarked = questionChoiceWithoutRecommendedMarker({ label: choice.label })?.label;
+    if (unmarked && unmarked !== choice.label && !out.includes(unmarked)) out.push(unmarked);
     return out;
   });
   const headOwners = new Map<string, Set<number>>();
