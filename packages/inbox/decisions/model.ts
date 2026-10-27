@@ -391,7 +391,15 @@ export function sessionChips(state: QueueState): SessionChip[] {
     chip.dots.push({ id, state: id === state.current ? 'current' : isHandled(state, id) ? 'done' : state.later.has(id) ? 'later' : 'open' });
     chips.set(key, chip);
   }
-  return [...chips.values()];
+  // Two sessions of one agent would read the same: the first keeps the name, the later ones say
+  // "(another session)", then "(another session 3)", as the reply route's tags name them (tags.ts).
+  const seen = new Map<string, number>();
+  return [...chips.values()].map((chip) => {
+    const count = (seen.get(chip.name) ?? 0) + 1;
+    seen.set(chip.name, count);
+    if (count === 1) return chip;
+    return { ...chip, name: count === 2 ? `${chip.name} (another session)` : `${chip.name} (another session ${count})` };
+  });
 }
 
 // ─────────────────────────────── Answers ───────────────────────────────

@@ -83,7 +83,7 @@ async function agentSends(send: Record<string, unknown>): Promise<string> {
 }
 
 /** One seeded world per test (and one to spare): raise it with each test added. */
-const TESTS = 31;
+const TESTS = 33;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -503,6 +503,59 @@ test.skipIf(!hasDom)("a card's Open the thread closes the dialog and lands the t
     expect(window.location.hash).toContain(`thread=${world.decide.a}`);
   } finally {
     Element.prototype.scrollIntoView = saved;
+  }
+}, 30_000);
+
+test.skipIf(!hasDom)("an action item's Open the thread lands on its checklist row, focus on the row's task", async () => {
+  const action = await agentSends({
+    project: world.project,
+    session: world.decide.sessionB,
+    host: 'codex',
+    reply_to: world.decide.b,
+    body: [':::action', 'Approve the staging deploy', ':::'].join('\n'),
+  });
+  const scrolled: Element[] = [];
+  const saved = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this);
+  };
+  try {
+    const el = await renderApp();
+    await openDecide(el);
+    await goTo('Approve the staging deploy');
+    const key = (await questionsOf(action))[0]!.key;
+    act(() => (dialog()!.querySelector('[data-decision-open-thread]') as HTMLButtonElement).click());
+    await until(() => dialog()?.open === false, 'the dialog to close');
+    const row = () => el.querySelector<HTMLElement>(`section.ib-pane [data-message-id="${action}"] [data-action-card="${key}"]`);
+    await until(() => row() !== null && document.activeElement === row()!.querySelector('[data-action-toggle]'), "focus on the row's task");
+    // The row, not the whole message, is what scrolled into view.
+    expect(scrolled).toContain(row()!);
+    expect(scrolled.some((s) => s.hasAttribute('data-message-article'))).toBe(false);
+  } finally {
+    Element.prototype.scrollIntoView = saved;
+  }
+}, 30_000);
+
+test.skipIf(!hasDom)("the Resume pill names the sitting's thread while another thread is on screen, and not in its own", async () => {
+  const elsewhere = await otherThread(`ses_pill_${world.decide.sessionB}`, ['Rotate the webhook secret?']);
+  try {
+    const el = await renderApp();
+    await openDecide(el);
+    act(() => (dialog()!.querySelector('[data-decision-open-thread]') as HTMLButtonElement).click());
+    await until(() => el.querySelector('[data-decision-pill]') !== null, 'the pill');
+    // In its own thread: the pill names no thread.
+    await until(() => !window.location.hash.includes('msg='), 'the landing');
+    expect(el.querySelector('[data-decision-pill-thread]')).toBeNull();
+    // Another thread on screen: the pill says whose decisions it holds.
+    const subject = (await api<{ thread: InboxThread }>(`/api/inbox/threads/${world.decide.a}`)).thread.subject!;
+    act(() => {
+      window.location.hash = `#thread=${elsewhere}`;
+    });
+    await until(() => el.querySelector('[data-decision-pill-thread]') !== null, "the pill's thread");
+    expect(el.querySelector('[data-decision-pill-thread]')!.textContent).toBe(subject);
+    expect(el.querySelector('[data-decision-pill]')!.textContent).toContain('3 left');
+  } finally {
+    await apiPost(`/api/inbox/messages/${elsewhere}/resolve`, { resolved: true });
   }
 }, 30_000);
 

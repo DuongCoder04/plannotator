@@ -1364,13 +1364,22 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onLandedRef.current?.();
         return;
       }
-      const card = target.questionKey ? body.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(target.messageId)}"] [data-question-key="${CSS.escape(target.questionKey)}"]`) : null;
-      const element = card ?? article;
+      const inMessage = `[data-message-id="${CSS.escape(target.messageId)}"]`;
+      const key = target.questionKey ? CSS.escape(target.questionKey) : null;
+      const card = key ? body.querySelector<HTMLElement>(`${inMessage} [data-question-key="${key}"]`) : null;
+      // An action item is a row of its message's checklist (ActionChecklist), not a question card.
+      const actionRow = key && !card ? body.querySelector<HTMLElement>(`${inMessage} [data-action-card="${key}"]`) : null;
+      const element = card ?? actionRow ?? article;
       stopHold();
       element.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
-      // The card's prompt is what names it (its aria-labelledby): focus it there when asked, else the card.
+      // The card's prompt is what names it (its aria-labelledby): focus it there when asked, else the card. An
+      // action row's prompt is its task, the row's toggle.
       const promptId = target.focus === 'prompt' ? card?.getAttribute('aria-labelledby') : null;
-      const prompt = promptId ? card!.querySelector<HTMLElement>(`#${CSS.escape(promptId)}`) : null;
+      const prompt = promptId
+        ? card!.querySelector<HTMLElement>(`#${CSS.escape(promptId)}`)
+        : target.focus === 'prompt' && actionRow
+          ? actionRow.querySelector<HTMLElement>('[data-action-toggle]')
+          : null;
       const focused = prompt ?? element;
       if (!focused.hasAttribute('tabindex')) focused.setAttribute('tabindex', '-1');
       focused.focus({ preventScroll: true });

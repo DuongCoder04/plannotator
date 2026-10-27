@@ -3263,7 +3263,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-cp-savedline svg { color: var(--success, oklch(0.72 0.17 150)); }
 .pn-inbox .ib-cp-del { border: 0; background: none; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); padding: 4px 6px; border-radius: 6px; }
 .pn-inbox .ib-cp-del:hover { color: var(--destructive); background: color-mix(in oklch, var(--destructive) 8%, transparent); }
-.ib-cp-status { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); text-align: right; min-width: 0; flex: 0 100 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-cp-status { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); text-align: right; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-cp-foot { flex-wrap: nowrap; }
 .ib-cp-foot > .ib-btn { flex: none; }
 .pn-inbox .ib-cp-foot .ib-btn.ib-pri .ib-kbd { color: inherit; border: 0; padding: 0; font-family: inherit; font-size: var(--ib-fs-12-5, 12.5px); opacity: 0.8; letter-spacing: 0.04em; }
@@ -4539,6 +4539,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .pn-inbox .ib-dm-pill { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 42; translate: -50% 0; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 16px; border-radius: 999px; background: var(--popover); box-shadow: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); }
 .ib-dm-pill b { font-weight: 650; }
 .ib-dm-pill > span { white-space: nowrap; }
+/* The sitting's thread, while another is on screen: cut so the pill keeps its Resume in view. */
+.ib-dm-pill-thread { display: inline-block; max-width: min(28ch, 40vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 /* While the pill floats over a thread, the thread's last lines can still scroll clear of it. */
 .pn-inbox:has(.ib-dm-pill) section.ib-pane .ib-pbody { padding-bottom: 64px; }
 .pn-inbox .ib-dm-pill .ib-btn { height: 30px; border-radius: 999px; }
