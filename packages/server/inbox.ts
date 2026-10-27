@@ -2167,6 +2167,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     resolveProject,
     readBody: (req) => readBody(req),
     json,
+    boardOn,
   });
   compose.sweep();
   // Reply drafts: the words typed in a thread's reply box, kept per thread (packages/server/inbox-reply-drafts.ts).

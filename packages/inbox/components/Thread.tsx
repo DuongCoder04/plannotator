@@ -3514,6 +3514,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   {sentTags.map((t) => tagName(t, ownerOfSent && 'host' in ownerOfSent ? ownerOfSent.host : null, ownerOfSent && 'session' in ownerOfSent ? ownerOfSent.session : null)).join(', ')}
                 </span>
               )}
+              {/* Sent with compose's Board chip on (approval "inbox-compose-board-chip"): a quiet mark, never the agent's block. */}
+              {!isAgent && message.board_request === true && (
+                <span className="ib-m-board" data-board-request="">
+                  <span className="ib-to-sep">·</span>
+                  <Icon name="board" />
+                  <span aria-hidden="true">Board</span>
+                  <span className="ib-sr">Board tracking asked</span>
+                </span>
+              )}
             </>
           );
           const foldLabel = `${name}, ${time}${isNew ? ', new' : ''}. Fold this message`;
