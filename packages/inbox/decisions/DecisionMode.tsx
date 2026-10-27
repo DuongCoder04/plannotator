@@ -93,8 +93,13 @@ export interface DecisionModeProps {
   refresh: () => void;
   /** The event stream's question lines (a replaced question swaps on screen). */
   subscribeQuestions: (listener: (question: InboxQuestion) => void) => () => void;
-  /** Open the thread behind the dialog: decision mode tucks into a pill. */
-  onTuck: (threadId: string, fileId?: string) => void;
+  /**
+   * Open the thread behind the dialog: decision mode tucks into a pill. A
+   * card's "Open the thread" names its question (`<message id>`, `key`): the
+   * thread scrolls to that question's card and puts focus on its prompt
+   * (thread only, approval "inbox-decide-thread-only").
+   */
+  onTuck: (threadId: string, fileId?: string, question?: { messageId: string; key: string }) => void;
   /** The sitting ends. */
   onClose: () => void;
   /** Tells the pill how many are left. */
@@ -956,7 +961,7 @@ export function DecisionMode(props: DecisionModeProps) {
               onAnswer={(value) => answer(current.id, value)}
               onAction={(mark) => act(current.id, mark)}
               onLater={() => later(current.id)}
-              onOpenThread={(fileId) => props.onTuck(current.thread.id, fileId)}
+              onOpenThread={(fileId) => props.onTuck(current.thread.id, fileId, fileId ? undefined : { messageId: current.message.id, key: current.question.key })}
               onImage={(pictures, index) => setLightbox({ pictures, index })}
             />
             <div className="ib-dm-nav">

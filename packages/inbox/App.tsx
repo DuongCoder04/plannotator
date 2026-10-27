@@ -645,6 +645,8 @@ function Inbox() {
   const searchOpener = useRef<HTMLElement | null>(null);
   /** The landing a search result asked for: the query's words to highlight in that message, a question's card to focus. */
   const searchLanding = useRef<SearchLanding | null>(null);
+  /** Decision mode's "Open the thread" (thread only): the question to land on, its prompt focused. */
+  const decideLanding = useRef<{ messageId: string; questionKey: string } | null>(null);
   /**
    * Compose (a new message to a connected agent): open with what it starts
    * from (a draft, a session), and the drafts not sent (the sidebar's Drafts
@@ -1625,6 +1627,7 @@ function Inbox() {
   /** The thread landed on the message `msg=` named: drop it from the hash, so a reload does not jump again. */
   const landed = () => {
     searchLanding.current = null;
+    decideLanding.current = null;
     if (routeRef.current.msg) writeRoute({ ...routeRef.current, msg: null }, { replace: true });
   };
 
@@ -3458,7 +3461,9 @@ function Inbox() {
             // sitting is tucked into its pill (the pill's Resume is the way back to it).
             decide={decideInThread(thread.thread_id)}
             landing={
-              route.msg
+              route.msg && decideLanding.current?.messageId === route.msg
+                ? { messageId: route.msg, terms: [], questionKey: decideLanding.current.questionKey, focus: 'prompt' }
+                : route.msg
                 ? {
                     messageId: route.msg,
                     terms: searchLanding.current?.messageId === route.msg ? searchLanding.current.terms : [],
@@ -3783,8 +3788,19 @@ function Inbox() {
           subscribeQuestions={subscribeQuestions}
           onLeft={setDecideLeft}
           onPaused={setDecidePaused}
-          onTuck={(threadId, fileId) => {
+          onTuck={(threadId, fileId, question) => {
             setDecide((current) => (current ? { ...current, tucked: true } : current));
+            if (question && !fileId) {
+              // A card's "Open the thread" (approval "inbox-decide-thread-only"): the dialog closes into its pill and
+              // the thread (already behind it) lands on that question, its prompt focused. The same thread replaces
+              // the entry, as a search result's landing does, so Back never stops on the same thread twice.
+              decideLanding.current = { messageId: question.messageId, questionKey: question.key };
+              searchLanding.current = null;
+              const now = routeRef.current;
+              const same = now.page === 'inbox' && now.thread === threadId && !now.file && !now.guide;
+              writeRoute({ page: 'inbox', project: same ? now.project : null, thread: threadId, msg: question.messageId }, same ? { replace: true } : {});
+              return;
+            }
             writeRoute({ page: 'inbox', project: null, thread: threadId, file: fileId ? { id: fileId, version: 'current', focus: null } : null });
           }}
           onClose={closeDecide}

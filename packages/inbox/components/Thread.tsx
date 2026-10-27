@@ -835,9 +835,11 @@ export interface ThreadPaneProps {
    * if folded or hidden in the middle fold, scrolled to the centre, focused
    * and ringed (a question's card when the match was in a question), and the
    * query's words are highlighted in it until the first click or key in the
-   * thread. `onLanded` then drops `msg=` from the hash.
+   * thread. `onLanded` then drops `msg=` from the hash. `focus: 'prompt'`
+   * (decision mode's "Open the thread", approval "inbox-decide-thread-only"):
+   * focus goes to the question's prompt, not the card.
    */
-  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null } | null;
+  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null; focus?: 'prompt' } | null;
   onLanded?: () => void;
   /**
    * The Artifacts view is on (approval "inbox-thread-artifacts", `#thread=…&artifacts`):
@@ -1366,8 +1368,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       const element = card ?? article;
       stopHold();
       element.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
-      if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
-      element.focus({ preventScroll: true });
+      // The card's prompt is what names it (its aria-labelledby): focus it there when asked, else the card.
+      const promptId = target.focus === 'prompt' ? card?.getAttribute('aria-labelledby') : null;
+      const prompt = promptId ? card!.querySelector<HTMLElement>(`#${CSS.escape(promptId)}`) : null;
+      const focused = prompt ?? element;
+      if (!focused.hasAttribute('tabindex')) focused.setAttribute('tabindex', '-1');
+      focused.focus({ preventScroll: true });
       element.classList.remove('ib-q-target-out');
       element.classList.add('ib-q-target');
       setTimeout(() => {

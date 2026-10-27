@@ -83,7 +83,7 @@ async function agentSends(send: Record<string, unknown>): Promise<string> {
 }
 
 /** One seeded world per test (and one to spare): raise it with each test added. */
-const TESTS = 30;
+const TESTS = 31;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -475,6 +475,35 @@ test.skipIf(!hasDom)('Open the thread tucks decision mode into a pill; Resume br
   await settle();
   expect(dialog()!.open).toBe(true);
   expect(prompt()).toBe('Which way should the worker go on a Stripe 409?');
+}, 30_000);
+
+test.skipIf(!hasDom)("a card's Open the thread closes the dialog and lands the thread on that question, its prompt focused", async () => {
+  const scrolled: Element[] = [];
+  const saved = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this);
+  };
+  try {
+    const el = await renderApp();
+    await openDecide(el);
+    // Codex's card: the second agent's question, further down the thread.
+    await goTo('Ship the new flag off by default?');
+    const key = (await questionsOf(world.decide.b))[0]!.key;
+    act(() => (dialog()!.querySelector('[data-decision-open-thread]') as HTMLButtonElement).click());
+    await until(() => dialog()?.open === false, 'the dialog to close');
+    const card = () => el.querySelector<HTMLElement>(`section.ib-pane [data-message-id="${world.decide.b}"] [data-question-key="${key}"]`);
+    await until(() => card() !== null && document.activeElement?.id === card()!.getAttribute('aria-labelledby'), "focus on the question's prompt");
+    // Its prompt, inside its card, and the card scrolled into view.
+    expect(card()!.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement!.textContent).toContain('Ship the new flag off by default?');
+    expect(scrolled).toContain(card()!);
+    // The sitting is kept in its pill (a Hold never goes unseen), and the address drops the landing.
+    expect(el.querySelector('[data-decision-pill]')).not.toBeNull();
+    await until(() => !window.location.hash.includes('msg='), 'the landing dropped from the address');
+    expect(window.location.hash).toContain(`thread=${world.decide.a}`);
+  } finally {
+    Element.prototype.scrollIntoView = saved;
+  }
 }, 30_000);
 
 // ─────────────────────────────── Review round ───────────────────────────────
