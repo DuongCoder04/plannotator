@@ -4869,15 +4869,15 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The bottom right (owner, 2026-10-27): the link mark, the agent as a small round mark, the age. The title and its line take the whole width. */
 .ib-bc-meta { flex: none; display: inline-flex; align-items: center; gap: 6px; align-self: center; margin-left: auto; }
 .ib-bc-who { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in oklch, var(--muted) 90%, var(--foreground) 4%); }
-.ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: 11px; height: 11px; }
+.ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: var(--ib-mark-16-g); height: var(--ib-mark-16-g); }
 .ib-bc-who[data-host="you"] { background: none; }
 /* "Title row" (approval board-lane-card, r1): the marks and the age float at the right of the title's first
    line and the title wraps under them; the line under it ("You: …", "Sent to …") gets the card's whole width;
    the You link's arrow only on hover or focus. */
 .ib-bpage .ib-bcard { gap: 3px; padding: 9px 12px; }
-/* At most three lines: a sentence-long title is cut (its tooltip has it all). */
+/* At most three lines: a sentence-long title is cut; its tooltip has it all (BoardPage measures this button, `titleCut`). */
 .ib-bpage .ib-bcard .ib-bc-main { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; flex: 1 1 auto; text-align: left; line-height: 1.4; overflow: hidden; }
-.ib-bpage .ib-bcard .ib-bc-t { display: inline; white-space: normal; overflow: visible; overflow-wrap: normal; line-height: 1.4; }
+.ib-bpage .ib-bcard .ib-bc-t { display: inline; white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.4; }
 /* WebKit lays a -webkit-box out as a box, so the float would sit on top: a plain block cut at three lines there. */
 @supports (font: -apple-system-body) {
   .ib-bpage .ib-bcard .ib-bc-main { display: block; max-height: calc(1.4em * 3); }

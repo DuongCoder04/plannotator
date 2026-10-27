@@ -1648,7 +1648,16 @@ function Inbox() {
       onUndo: () => {
         dismissToast();
         void inboxApi
-          .saveDraft(draft.id, { body: draft.body, to: draft.to, project: draft.project, files: draft.files.map((f) => f.upload_id), base: null })
+          // Everything the draft kept: its typed thread name and the Board card it was started for (Create thread).
+          .saveDraft(draft.id, {
+            body: draft.body,
+            to: draft.to,
+            project: draft.project,
+            files: draft.files.map((f) => f.upload_id),
+            base: null,
+            ...(draft.thread_name ? { thread_name: draft.thread_name } : {}),
+            ...(draft.card ? { card: draft.card } : {}),
+          })
           .then(() => refreshDrafts())
           .then(() => say('Draft restored.'))
           .catch(() => showToast({ icon: 'warn', lead: 'The draft could not be restored.', wrap: true }));

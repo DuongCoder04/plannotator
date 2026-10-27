@@ -18,6 +18,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAuthor, InboxCardWire, InboxListRow } from '@plannotator/core/inbox-types';
 import type { BoardMove, BoardPageProps } from './board/BoardPage';
+import { sized, tooltipOf, unhover } from './testing/tooltip';
 
 const hasDom = typeof document !== 'undefined';
 const { BoardPage } = (hasDom ? await import('./board/BoardPage') : {}) as typeof import('./board/BoardPage');
@@ -232,6 +233,24 @@ test.if(hasDom)('a second line only when the person owes something or a send is 
   // The opened card has it.
   await settle();
   expect($('[data-card-panel="crd_said"]')!.textContent).toContain('Option 3 of 6 rendered');
+});
+
+// Review of #2248: the title is inline, so its own box never reads as cut; the clamp is on the title button.
+// What regresses: a title cut at three lines (or a long word cut at the edge) with no way to read it whole.
+test.if(hasDom)('a lane card title cut by its clamp opens the full title in a tooltip; one that fits opens none', async () => {
+  scriptFetch();
+  draw({ model: { serverSession: 's', cursor: 1, cards: LINE_CARDS, dropped_unseen: 0, seen_seq: LOOK } });
+  await settle();
+  const title = (id: string) => cardEl(id)!.querySelector<HTMLElement>('.ib-bc-t')!;
+  const main = (id: string) => cardEl(id)!.querySelector<HTMLElement>('.ib-bc-main')!;
+  // Clamped: the button's content is taller than the button.
+  Object.defineProperty(main('crd_said'), 'scrollHeight', { configurable: true, get: () => 66 });
+  Object.defineProperty(main('crd_said'), 'clientHeight', { configurable: true, get: () => 59 });
+  expect(await tooltipOf(title('crd_said'))).toBe('Hero scene timers');
+  unhover(title('crd_said'));
+  await settle();
+  sized(main('crd_owe'), 180, 180);
+  expect(await tooltipOf(title('crd_owe'))).toBeNull();
 });
 
 test.if(hasDom)('"You: …" opens the thread where the person makes the call, a target apart from opening the card', async () => {
