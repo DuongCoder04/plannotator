@@ -42,6 +42,7 @@ import { join, resolve } from "node:path";
 import tls from "node:tls";
 import { isAllowedOverrideUrl } from "@plannotator/shared/update-check";
 import { AUTO_UPDATE_LOCK_STALE_MS, UPDATE_PREPARE_FAILED, installScriptUrl } from "./auto-update";
+import { UPDATE_OLD_SCRIPT_NOTE, UPDATE_STAGING_PREFIX, UPDATE_TLS_HINT, type UpdateTlsFailure } from "./update-log";
 
 export { UPDATE_CHECKSUM_MISMATCH, UPDATE_PREPARE_FAILED } from "./auto-update";
 
@@ -55,52 +56,17 @@ const DEFAULT_RELEASE_DOWNLOAD_URL = "https://github.com/backnotprop/plannotator
 /** emSign ECC Root CA - G3 (SHA-256). Bun 1.4.4 dropped it; the certificate retry never takes it back from this computer's store. */
 const EMSIGN_ECC_G3_SHA256 = "86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B";
 
-/**
- * Why a download failed at TLS. `untrusted`: neither Bun's roots nor this
- * computer's trust the certificate (a network that inspects HTTPS with a root
- * this computer does not have either). `revoked`: the chain holds a key Bun
- * blocks (the leaked eMudhra keys), so nothing may be installed over this
- * network, by curl least of all.
- */
-export type UpdateTlsFailure = "untrusted" | "revoked";
-
-/**
- * The line `update-prepare` prints for each, on stderr (the terminal of
- * `plannotator update`, and update.log). `plannotator update` and the Inbox
- * read it back (tlsFailureIn, lastRunTlsFailure) to choose the way out.
- */
-export const UPDATE_TLS_HINT: Record<UpdateTlsFailure, string> = {
-  untrusted:
-    "update: neither Plannotator nor this computer trusts the certificate that connection presented. If your network inspects HTTPS with its own certificate, run: NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update",
-  revoked:
-    "update: that connection presented a revoked certificate, so nothing was downloaded. Do not install Plannotator over this network; try again on another network.",
-};
-
-/** The TLS failure `update-prepare` reported in this output (a run's terminal text, or its part of update.log). */
-export function tlsFailureIn(text: string): UpdateTlsFailure | null {
-  if (text.includes(UPDATE_TLS_HINT.revoked)) return "revoked";
-  if (text.includes(UPDATE_TLS_HINT.untrusted)) return "untrusted";
-  return null;
-}
-
-/**
- * The TLS failure the last finished update run in update.log reported: the
- * text from the end of the run before it to this run's end (the wrapper's
- * "update: install.sh exited" line). Reads the last 64 KB only.
- */
-export function lastRunTlsFailure(logPath: string): UpdateTlsFailure | null {
-  let text: string;
-  try {
-    text = readFileSync(logPath, "utf-8").slice(-65_536);
-  } catch {
-    return null;
-  }
-  const END = "] update: install.sh exited";
-  const last = text.lastIndexOf(END);
-  if (last === -1) return null;
-  const previous = last === 0 ? -1 : text.lastIndexOf(END, last - 1);
-  return tlsFailureIn(text.slice(previous === -1 ? 0 : previous + END.length, last));
-}
+export {
+  UPDATE_OLD_SCRIPT_NOTE,
+  UPDATE_STAGING_PREFIX,
+  UPDATE_TLS_HINT,
+  lastRunLog,
+  lastRunTlsFailure,
+  stagingFailureIn,
+  tlsFailureIn,
+  withoutLogOnlyLines,
+  type UpdateTlsFailure,
+} from "./update-log";
 
 function errorCode(err: unknown): string | undefined {
   const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
@@ -270,7 +236,8 @@ export function releaseDownloadUrl(env: NodeJS.ProcessEnv = process.env): string
 export type PrepareResult =
   /** `notes`: the other CPU type's checksum, when it could not be read (optional; never a failure). */
   | { ok: true; dir: string; expected: string; scriptChecksPin: boolean; notes: string[] }
-  | { ok: false; error: string; tls?: UpdateTlsFailure };
+  /** `staging`: downloaded, but the temp folder could not hold it (full, read-only); `error` says so in plain words. */
+  | { ok: false; error: string; tls?: UpdateTlsFailure; staging?: true };
 
 export interface PrepareDeps {
   version: string;
@@ -283,11 +250,28 @@ export interface PrepareDeps {
   timeoutMs?: number;
   /** The roots for the retry after a certificate error (default systemTrustedCa; null: no retry). */
   systemCa?: () => string[] | null;
+  /** How long the other CPU type's checksum may lag once the required downloads are in (default OPTIONAL_CHECKSUM_GRACE_MS). */
+  optionalGraceMs?: number;
+  /** Bun's certificate lists (tests): default `tls.getCACertificates`. */
+  caStore?: (kind: string) => string[];
 }
+
+/**
+ * The other CPU type's `.sha256` is optional: once install.sh and this
+ * machine's `.sha256` are in, it gets this long, then it is skipped (a note),
+ * so a stall there never holds up the update.
+ */
+export const OPTIONAL_CHECKSUM_GRACE_MS = 2_000;
 
 type Fetched = { ok: true; text: string } | { ok: false; error: string; tls?: UpdateTlsFailure };
 
-async function fetchText(url: string, f: typeof fetch, timeoutMs: number, systemCa: () => string[] | null): Promise<Fetched> {
+async function fetchText(
+  url: string,
+  f: typeof fetch,
+  timeoutMs: number,
+  systemCa: () => string[] | null,
+  stop?: AbortSignal,
+): Promise<Fetched> {
   let host = url;
   try {
     host = new URL(url).host;
@@ -296,7 +280,7 @@ async function fetchText(url: string, f: typeof fetch, timeoutMs: number, system
     const res = await f(url, {
       redirect: "follow",
       headers: { "user-agent": "plannotator-update" },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: stop ? AbortSignal.any([AbortSignal.timeout(timeoutMs), stop]) : AbortSignal.timeout(timeoutMs),
       ...(ca && { tls: { ca } }),
     } as RequestInit);
     // Bun 1.3.14 hands back a refusing proxy's 502 as a response, 1.4.4 throws; both end here.
@@ -313,7 +297,7 @@ async function fetchText(url: string, f: typeof fetch, timeoutMs: number, system
   } catch (err) {
     // A revoked chain is refused whatever the roots, and any other error is not about roots.
     if (!isCertificateError(err) || isRevokedError(err)) return failed(err);
-    const ca = systemCa();
+    const ca = stop?.aborted ? null : systemCa();
     if (!ca) return failed(err);
     try {
       return await attempt(ca);
@@ -344,10 +328,25 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
   // Read once, and only when a certificate error asks for it.
   let roots: string[] | null | undefined;
   const systemCa = () => (roots === undefined ? (roots = deps.systemCa ? deps.systemCa() : systemTrustedCa(undefined, env)) : roots);
-  const [script, ...sums] = await Promise.all([
+  const sumUrl = (asset: string) => `${base}/${tag}/${asset}.sha256`;
+  const stopOptional = new AbortController();
+  const optional = assets.slice(1).map((a) => fetchText(sumUrl(a), f, timeoutMs, systemCa, stopOptional.signal));
+  const [script, nativeSum] = await Promise.all([
     fetchText(installScriptUrl(deps.platform, env), f, timeoutMs, systemCa),
-    ...assets.map((a) => fetchText(`${base}/${tag}/${a}.sha256`, f, timeoutMs, systemCa)),
+    fetchText(sumUrl(native), f, timeoutMs, systemCa),
   ]);
+  // The required downloads are in (or failed): the optional checksum gets a
+  // short grace, then is skipped, so it never holds up the update.
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const graceOver = new Promise<void>((done) => {
+    graceTimer = setTimeout(done, script.ok && nativeSum.ok ? (deps.optionalGraceMs ?? OPTIONAL_CHECKSUM_GRACE_MS) : 0);
+  });
+  await Promise.race([Promise.all(optional), graceOver]);
+  clearTimeout(graceTimer);
+  stopOptional.abort();
+  const late = (r: Fetched): Fetched =>
+    !r.ok && stopOptional.signal.aborted && /abort/i.test(r.error) ? { ok: false, error: "no answer in time" } : r;
+  const sums = [nativeSum, ...(await Promise.all(optional)).map(late)];
   if (!script!.ok) return { ok: false, error: `install script: ${script!.error}`, ...(script!.tls && { tls: script!.tls }) };
   const body = script!.text;
   if (!body.startsWith("#!") || !body.includes(SCRIPT_MARKER) || body.length > MAX_SCRIPT_BYTES) {
@@ -367,18 +366,79 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
     notes.push(`${reason} (not this machine's CPU type; skipped)`);
   }
 
+  // Absolute even under a relative TMPDIR: the wrapper only uses an absolute dir.
+  const root = resolve(deps.tmpRoot ?? tmpdir());
   let dir: string | null = null;
   try {
-    // Absolute even under a relative TMPDIR: the wrapper only uses an absolute dir.
-    dir = mkdtempSync(join(resolve(deps.tmpRoot ?? tmpdir()), UPDATE_DIR_PREFIX));
+    dir = mkdtempSync(join(root, UPDATE_DIR_PREFIX));
     chmodSync(dir, 0o700);
     writeFileSync(join(dir, "install.sh"), body, { mode: 0o600 });
     writeFileSync(join(dir, "expected-sha256"), pairs.join(" "), { mode: 0o600 });
+    const bundle = curlBundleWithExtraCa(env, deps.caStore);
+    if (bundle) writeFileSync(join(dir, CURL_BUNDLE_FILE), bundle, { mode: 0o600 });
     return { ok: true, dir, expected: pairs.join(" "), scriptChecksPin: body.includes("PLANNOTATOR_EXPECTED_SHA256"), notes };
   } catch (err) {
     if (dir) rmSync(dir, { recursive: true, force: true });
-    return { ok: false, error: `could not stage the update: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, staging: true, error: stagingReason(err, root) };
   }
+}
+
+/** Plain words for a temp folder the update could not be saved in. */
+function stagingReason(err: unknown, root: string): string {
+  const code = errorCode(err);
+  if (code === "ENOSPC" || code === "EDQUOT") return `the temp folder ${root} is full (${code})`;
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS") return `the temp folder ${root} can't be written (${code})`;
+  if (code === "ENOENT" || code === "ENOTDIR") return `the temp folder ${root} does not exist (${code})`;
+  return `could not write to the temp folder ${root} (${(err instanceof Error ? err.message : String(err)).slice(0, 120)})`;
+}
+
+/**
+ * The file in the staged dir the wrapper passes to install.sh as
+ * CURL_CA_BUNDLE (auto-update.ts), so install.sh's curl trusts what
+ * Plannotator's fetch trusted when the person followed the
+ * NODE_EXTRA_CA_CERTS hint.
+ */
+export const CURL_BUNDLE_FILE = "curl-ca-bundle.pem";
+
+/** curl's default bundle, by distro (the first that exists); macOS curl's LibreSSL file last. */
+const CURL_DEFAULT_BUNDLES = [
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt",
+  "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+  "/etc/ssl/ca-bundle.pem",
+  "/etc/ssl/cert.pem",
+];
+
+/**
+ * Only when NODE_EXTRA_CA_CERTS names a readable certificate: a bundle of
+ * every root install.sh's curl trusted before (its default bundle, plus what
+ * it reads from $SSL_CERT_FILE, $CURL_CA_BUNDLE and ~/.curlrc), Bun's roots,
+ * this computer's, and that certificate. Never emSign ECC Root CA - G3. A
+ * bundle replaces curl's own roots, so it only ever adds to them (and drops
+ * G3). Null otherwise: then the wrapper leaves curl exactly as it was.
+ */
+export function curlBundleWithExtraCa(
+  env: NodeJS.ProcessEnv,
+  get: ((kind: string) => string[]) | undefined = (tls as { getCACertificates?: (kind: string) => string[] }).getCACertificates,
+): string | null {
+  const extraPath = env.NODE_EXTRA_CA_CERTS?.trim();
+  if (!extraPath) return null;
+  const extra = readPemFile(extraPath).filter(notG3);
+  if (extra.length === 0) return null;
+  const sslCertFile = env.SSL_CERT_FILE?.trim();
+  const curlDefault = CURL_DEFAULT_BUNDLES.map((p) => readPemFile(p)).find((certs) => certs.length > 0) ?? [];
+  let bun: string[] = [...tls.rootCertificates];
+  let system: string[] = [];
+  if (typeof get === "function") {
+    try {
+      bun = get("bundled");
+      system = get("system");
+    } catch {}
+  }
+  const all = [...curlDefault, ...(sslCertFile ? readPemFile(sslCertFile) : []), ...bun, ...system, ...curlCaCertificates(env), ...extra]
+    .map((pem) => pem.trim())
+    .filter(notG3);
+  return `${[...new Set(all)].join("\n")}\n`;
 }
 
 /**
@@ -429,14 +489,16 @@ export async function runUpdatePrepareCommand(args: string[], deps: UpdatePrepar
   sweepStaleUpdateDirs(resolve(deps.tmpRoot ?? tmpdir()), (deps.now ?? Date.now)());
   const result = await prepareUpdate({ ...deps, version });
   if (!result.ok) {
+    if (result.staging) {
+      err(`${UPDATE_STAGING_PREFIX}${result.error}; nothing was changed\n`);
+      return UPDATE_PREPARE_FAILED;
+    }
     err(`update: could not download the update (${result.error}); nothing was changed\n`);
     if (result.tls) err(`${UPDATE_TLS_HINT[result.tls]}\n`);
     return UPDATE_PREPARE_FAILED;
   }
   for (const note of result.notes) err(`update: ${note}\n`);
-  if (!result.scriptChecksPin) {
-    err("update: this install script does not check the pinned checksum yet; it runs as before\n");
-  }
+  if (!result.scriptChecksPin) err(`${UPDATE_OLD_SCRIPT_NOTE}\n`);
   out(`${result.dir}\n`);
   return 0;
 }

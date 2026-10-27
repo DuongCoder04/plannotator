@@ -42,7 +42,7 @@ import {
   UPDATE_PREPARE_FAILED,
   type InstallerLaunch,
 } from "@plannotator/server/auto-update";
-import { tlsFailureIn } from "@plannotator/server/update-prepare";
+import { stagingFailureIn, tlsFailureIn, withoutLogOnlyLines } from "@plannotator/server/update-log";
 import { UPDATE_COMMAND_USAGE } from "./cli";
 
 export interface UpdateCommandDeps {
@@ -162,7 +162,9 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
   let printed = "";
   const code = await run(begun.launch, (text) => {
     printed += text;
-    out(text);
+    // Notes meant for update.log only (the tee still writes them there).
+    const shown = withoutLogOnlyLines(text);
+    if (shown) out(shown);
   });
   if (code === 130) {
     err(
@@ -181,6 +183,16 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
     return 1;
   }
   if (code === UPDATE_PREPARE_FAILED) {
+    const staging = stagingFailureIn(printed);
+    if (staging) {
+      // Downloaded, but the temp folder could not hold it: not a network problem.
+      err(
+        `Couldn't prepare the update: ${staging}. ${current} is still installed and works.\n` +
+          "Free some space there (or set TMPDIR to another folder), then: plannotator update\n" +
+          `Details: ${autoUpdatePaths(dataDir).log}\n`,
+      );
+      return 1;
+    }
     const tls = tlsFailureIn(printed);
     if (tls === "revoked") {
       // A blocked key: the network is the problem, and curl would trust it.

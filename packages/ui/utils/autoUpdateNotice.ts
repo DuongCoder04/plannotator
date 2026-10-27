@@ -17,8 +17,11 @@ export interface AutoUpdateNotice {
   version: string;
   releaseUrl: string;
   logPath?: string;
-  /** `mismatch`: the download did not match its checksum; `download`: it could not be downloaded. The old version is kept either way. */
-  reason?: 'mismatch' | 'download';
+  /**
+   * `mismatch`: the download did not match its checksum; `download`: it could not be downloaded;
+   * `prepare`: it was downloaded but the temp folder could not hold it. The old version is kept in each case.
+   */
+  reason?: 'mismatch' | 'download' | 'prepare';
 }
 
 const SEEN_KEY = 'plannotator-auto-update-notice-seen';
@@ -36,7 +39,7 @@ export function parseAutoUpdateNotice(value: unknown): AutoUpdateNotice | undefi
     version: v.version,
     releaseUrl: v.releaseUrl,
     ...(typeof v.logPath === 'string' && { logPath: v.logPath }),
-    ...((v.reason === 'mismatch' || v.reason === 'download') && { reason: v.reason }),
+    ...((v.reason === 'mismatch' || v.reason === 'download' || v.reason === 'prepare') && { reason: v.reason }),
   };
 }
 
@@ -59,6 +62,12 @@ export function describeAutoUpdateNotice(notice: AutoUpdateNotice): { title: str
     return {
       title: `Update to v${notice.version} stopped`,
       description: "The download didn't match the checksum Plannotator fetched for it. Nothing was changed; it tries again later.",
+    };
+  }
+  if (notice.reason === 'prepare') {
+    return {
+      title: "Couldn't prepare the update",
+      description: 'The temp folder is full or can’t be written. Nothing was changed. Free some space, then: plannotator update',
     };
   }
   if (notice.reason === 'download') {

@@ -38,7 +38,15 @@ describe('safe-update failure reasons', () => {
   test('a known reason is kept; an unknown one is dropped (the generic toast)', () => {
     expect(parseAutoUpdateNotice({ ...failed, reason: 'mismatch' })?.reason).toBe('mismatch');
     expect(parseAutoUpdateNotice({ ...failed, reason: 'download' })?.reason).toBe('download');
+    expect(parseAutoUpdateNotice({ ...failed, reason: 'prepare' })?.reason).toBe('prepare');
     expect(parseAutoUpdateNotice({ ...failed, reason: 'other' })?.reason).toBeUndefined();
+  });
+
+  test('a temp folder that could not hold the update is not called a download failure', () => {
+    const text = describeAutoUpdateNotice(parseAutoUpdateNotice({ ...failed, reason: 'prepare' })!);
+    expect(text.title).toBe("Couldn't prepare the update");
+    expect(text.description).toContain('temp folder');
+    expect(text.description).not.toContain('download');
   });
 
   test('a mismatch says nothing changed and offers no install command', () => {

@@ -409,13 +409,17 @@ export function FailedDialog({
   const mismatch = code === UPDATE_EXIT_CHECKSUM_MISMATCH;
   const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
   const revoked = couldNotDownload && tls === 'revoked';
-  const sub = mismatch
-    ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
-    : revoked
-      ? `The connection presented a revoked certificate, so Plannotator downloaded nothing. Plannotator ${update.current} still works. Don't install Plannotator over this network; try again on another network.`
-      : couldNotDownload
-        ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
-        : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
+  // Downloaded, but the temp folder could not hold it: not a network problem, so no way out by curl either.
+  const prepare = couldNotDownload ? details?.failure?.prepare : undefined;
+  const sub = prepare
+    ? `Plannotator couldn't prepare the update: ${prepare}. Nothing was changed; Plannotator ${update.current} still works. Free some space there, then try again.`
+    : mismatch
+      ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
+      : revoked
+        ? `The connection presented a revoked certificate, so Plannotator downloaded nothing. Plannotator ${update.current} still works. Don't install Plannotator over this network; try again on another network.`
+        : couldNotDownload
+          ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
+          : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
   return (
     <Modal label={mismatch ? 'The update stopped' : "The update didn't install"} onClose={onClose} testId="failed">
       <h2>{mismatch ? 'The update stopped' : <>The update didn&apos;t install</>}</h2>
@@ -424,7 +428,7 @@ export function FailedDialog({
         <>
           <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
-          {couldNotDownload && !revoked && (
+          {couldNotDownload && !revoked && !prepare && (
             <>
               {tls === 'untrusted' && (
                 <>

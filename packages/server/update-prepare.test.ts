@@ -26,8 +26,11 @@ import { autoUpdatePaths, installerCommand } from "./auto-update";
 import {
   UPDATE_CHECKSUM_MISMATCH,
   UPDATE_PREPARE_FAILED,
+  UPDATE_STAGING_PREFIX,
   UPDATE_TLS_HINT,
   candidateAssets,
+  curlBundleWithExtraCa,
+  stagingFailureIn,
   curlCaCertificates,
   lastRunTlsFailure,
   nativeAsset,
@@ -142,6 +145,44 @@ describe("prepareUpdate", () => {
       new Promise((_r, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("timed out"))))) as typeof fetch;
     const r = await prepareUpdate({ version: "1.2.3", platform: "linux", env: ENV, tmpRoot: root, fetchImpl: hang, timeoutMs: 50 });
     expect(r).toMatchObject({ ok: false });
+  });
+
+  // The other CPU type's checksum is optional: a stall there must not hold
+  // up the update (main never fetched it at all).
+  test("the other CPU type's .sha256 stalling: staged after a short grace, with a note", async () => {
+    const stallOther: typeof fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith("x64.sha256")
+        ? new Promise((_r, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))))
+        : Promise.resolve(genuine(new URL(String(input)).pathname))) as typeof fetch;
+    const started = Date.now();
+    const r = await prepareUpdate({ version: "1.2.3", platform: "linux", arch: "arm64", env: ENV, tmpRoot: root, fetchImpl: stallOther, optionalGraceMs: 100 });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.expected).toBe(`plannotator-linux-arm64=${ARM}`);
+    expect(r.notes.join("\n")).toContain("plannotator-linux-x64.sha256: no answer in time (not this machine's CPU type; skipped)");
+  });
+
+  test("an optional .sha256 that answers within the grace is still pinned", async () => {
+    const slowOther: typeof fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("x64.sha256")) await Bun.sleep(50);
+      return genuine(new URL(String(input)).pathname);
+    }) as typeof fetch;
+    const r = await prepareUpdate({ version: "1.2.3", platform: "linux", arch: "arm64", env: ENV, tmpRoot: root, fetchImpl: slowOther, optionalGraceMs: 2_000 });
+    expect(r.ok && r.expected).toBe(`plannotator-linux-arm64=${ARM} plannotator-linux-x64=${X64}`);
+  });
+
+  // A temp folder that can't hold the update is not a download failure: its own words.
+  test("a temp folder that can't be written: a staging failure in plain words, nothing staged", async () => {
+    const missing = join(root, "no-such-tmp");
+    const r = await prepareUpdate({ version: "1.2.3", platform: "linux", arch: "arm64", env: ENV, tmpRoot: missing, fetchImpl: fakeFetch(genuine) });
+    expect(r).toMatchObject({ ok: false, staging: true, error: `the temp folder ${missing} does not exist (ENOENT)` });
+    let err = "";
+    const code = await runUpdatePrepareCommand(["1.2.3"], { platform: "linux", arch: "arm64", env: ENV, tmpRoot: missing, fetchImpl: fakeFetch(genuine), out: () => {}, err: (t) => (err += t) });
+    expect(code).toBe(UPDATE_PREPARE_FAILED);
+    expect(err).toBe(`${UPDATE_STAGING_PREFIX}the temp folder ${missing} does not exist (ENOENT); nothing was changed\n`);
+    expect(stagingFailureIn(err)).toBe(`the temp folder ${missing} does not exist (ENOENT)`);
+    expect(err).not.toContain("could not download");
   });
 
   test("the download base can only move to https or loopback", () => {
@@ -427,6 +468,34 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
     }
   }, 120_000);
 
+  test("the other CPU type's .sha256 never answering: the update still runs within the default grace", async () => {
+    const box = sandbox("new");
+    const marker = join(box.home, "script-ran");
+    const other = `plannotator-${OS}-${process.arch === "x64" ? "arm64" : "x64"}`;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/install.sh") return new Response(`${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\ntouch "${marker}"\n`);
+        if (path.endsWith(`/${other}.sha256`)) return new Promise<Response>(() => {});
+        if (path.endsWith(`/${NATIVE}.sha256`)) return new Response(`${ARM}  x\n`);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const started = Date.now();
+      const r = await runWrapper(box, server.port!);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(r.result).toEqual({ version: "v1.2.3", exitCode: 0 });
+      expect(existsSync(marker)).toBe(true);
+      expect(r.out).toContain(`${other}.sha256: no answer in time (not this machine's CPU type; skipped)`);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
   test("an exit with the mismatch number that install.sh's pin check did not mark is recorded as a plain failure", async () => {
     const box = sandbox("new");
     const { server } = serve({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\nexit ${UPDATE_CHECKSUM_MISMATCH}\n`, sums: pins(ARM, X64) });
@@ -627,6 +696,53 @@ describe.skipIf(process.platform === "win32")("certificate errors", () => {
     writeFileSync(g3File, EMSIGN_ECC_G3_PEM);
     expect(systemTrustedCa(store([]), { CURL_CA_BUNDLE: g3File })).toBeNull();
   });
+
+  // The NODE_EXTRA_CA_CERTS hint must be complete: Plannotator's fetch trusts
+  // that root, so install.sh's curl (which downloads the binary) must too,
+  // without losing any root it trusted before.
+  test("NODE_EXTRA_CA_CERTS: a curl bundle of every root curl had plus that one, never G3; nothing without it", () => {
+    const store = (kind: string) => (kind === "system" ? [] : [...tls.rootCertificates]);
+    expect(curlBundleWithExtraCa({}, store)).toBeNull();
+    expect(curlBundleWithExtraCa({ NODE_EXTRA_CA_CERTS: join(root, "missing.pem") }, store)).toBeNull();
+    const bundle = curlBundleWithExtraCa({ NODE_EXTRA_CA_CERTS: tlsFiles.caFile }, store)!;
+    expect(bundle).toContain(tlsFiles.caPem.trim());
+    for (const pem of tls.rootCertificates) expect(bundle).toContain(pem.trim());
+    const withG3 = join(root, "extra-with-g3.pem");
+    writeFileSync(withG3, `${EMSIGN_ECC_G3_PEM}\n${tlsFiles.caPem}`);
+    const filtered = curlBundleWithExtraCa({ NODE_EXTRA_CA_CERTS: withG3 }, (kind) => (kind === "system" ? [EMSIGN_ECC_G3_PEM] : [...tls.rootCertificates]))!;
+    const g3 = new X509Certificate(EMSIGN_ECC_G3_PEM).fingerprint256;
+    const pems = filtered.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g)!;
+    expect(pems.some((pem) => new X509Certificate(pem).fingerprint256 === g3)).toBe(false);
+    expect(filtered).toContain(tlsFiles.caPem.trim());
+  });
+
+  test("end to end: following the hint, install.sh's own curl reaches the inspected host too; without it curl is untouched", async () => {
+    const box = sandbox("new");
+    const site = serveHttps({ script: "", sums: pins(ARM, X64) });
+    // The served install.sh does what the real one does next: curl over the same network.
+    const script = `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\nprintf '%s' "\${CURL_CA_BUNDLE-unset}" > "$HOME/ca-env"\n/usr/bin/curl -fsS -o /dev/null "https://127.0.0.1:${site.port}/dl/v1.2.3/${NATIVE}.sha256"\n`;
+    const scriptServer = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: { cert: tlsFiles.cert, key: tlsFiles.key }, fetch: () => new Response(script) });
+    const env = { ...site.env, PLANNOTATOR_INSTALL_SCRIPT_URL: `https://127.0.0.1:${scriptServer.port}/install.sh` };
+    try {
+      const through = await runWrapper(box, site.port, { ...env, NODE_EXTRA_CA_CERTS: tlsFiles.caFile });
+      expect(through.result, through.out).toEqual({ version: "v1.2.3", exitCode: 0 });
+      expect(readFileSync(join(box.home, "ca-env"), "utf-8")).toEndWith("/curl-ca-bundle.pem");
+      expect(staged(box.tmp)).toEqual([]);
+
+      // Nothing set: the wrapper never touches curl's trust.
+      const plain = serve({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\nprintf '%s' "\${CURL_CA_BUNDLE-unset}" > "$HOME/ca-env"\n`, sums: pins(ARM, X64) });
+      try {
+        const r = await runWrapper(box, plain.server.port!);
+        expect(r.result).toEqual({ version: "v1.2.3", exitCode: 0 });
+        expect(readFileSync(join(box.home, "ca-env"), "utf-8")).toBe("unset");
+      } finally {
+        plain.server.stop(true);
+      }
+    } finally {
+      scriptServer.stop(true);
+      site.stop();
+    }
+  }, 60_000);
 
   // On main, curl also read $CURL_CA_BUNDLE and `cacert` / `capath` in
   // ~/.curlrc: a company root only there must still get the update through.

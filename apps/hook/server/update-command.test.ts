@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runUpdateCommand, type UpdateCommandDeps } from "./update-command";
 import { UPDATE_EXIT_CHECKSUM_MISMATCH } from "@plannotator/core/update-exit-codes";
-import { UPDATE_TLS_HINT } from "@plannotator/server/update-prepare";
+import { UPDATE_OLD_SCRIPT_NOTE, UPDATE_STAGING_PREFIX, UPDATE_TLS_HINT } from "@plannotator/server/update-log";
 import type { FetchReleaseResult } from "@plannotator/shared/update-check";
 
 let dataDir: string;
@@ -150,6 +150,25 @@ describe("plannotator update (seams)", () => {
     rmSync(join(dataDir, "update.lock"), { force: true });
     expect(await run([], { runInstaller, platform: "linux" })).toBe(1);
     expect(err.indexOf("curl -fsSL")).toBeLessThan(err.indexOf("download it from"));
+  });
+
+  test("a temp folder that can't hold the update: its own words, not \"couldn't download\", no install command", async () => {
+    const runInstaller = async (_: unknown, write: (t: string) => void) => (
+      write(`${UPDATE_STAGING_PREFIX}the temp folder /tmp/x is full (ENOSPC); nothing was changed\n`), 75
+    );
+    expect(await run([], { runInstaller })).toBe(1);
+    expect(err).toContain("Couldn't prepare the update: the temp folder /tmp/x is full (ENOSPC). 0.28.10 is still installed and works.");
+    expect(err).toContain("Free some space there (or set TMPDIR to another folder), then: plannotator update");
+    expect(err).not.toContain("Couldn't download");
+    expect(err).not.toContain("curl");
+  });
+
+  // Before the S3 sync every update printed this; it belongs in update.log only.
+  test("the old install script's note stays off the terminal", async () => {
+    const runInstaller = async (_: unknown, write: (t: string) => void) => (write(`${UPDATE_OLD_SCRIPT_NOTE}\n`), write("  installer output\n"), 0);
+    expect(await run([], { runInstaller })).toBe(0);
+    expect(out).toContain("installer output");
+    expect(out + err).not.toContain("does not check the pinned checksum yet");
   });
 
   test("a revoked certificate: never the install command, try another network", async () => {

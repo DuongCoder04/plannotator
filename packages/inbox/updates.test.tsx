@@ -269,6 +269,24 @@ test.skipIf(!hasDom)('exit 75, untrusted on macOS: the release page comes before
   expect(el.querySelector('[data-failed-release]')?.getAttribute('href')).toBe('https://github.com/backnotprop/plannotator/releases/tag/v0.28.12');
 });
 
+test.skipIf(!hasDom)('exit 75 that could not stage the update: the plain reason, no download wording, no install command', () => {
+  const el = render(
+    <FailedDialog
+      update={update('failed')}
+      details={details({ failure: { exit_code: UPDATE_EXIT_DOWNLOAD_FAILED, log: '/home/u/.plannotator/update.log', prepare: 'the temp folder /tmp is full (ENOSPC)' } })}
+      home="/home/u"
+      onRetry={() => {}}
+      onClose={() => {}}
+    />,
+  );
+  const text = el.textContent ?? '';
+  expect(text).toContain("Plannotator couldn't prepare the update: the temp folder /tmp is full (ENOSPC).");
+  expect(text).toContain('Plannotator 0.28.10 still works');
+  expect(text).not.toContain("couldn't download");
+  expect(text).not.toContain('curl -fsSL');
+  expect(el.querySelector('[data-failed-release]')).toBeNull();
+});
+
 test.skipIf(!hasDom)('any other failure still offers the install script to run by hand', () => {
   const el = render(
     <FailedDialog

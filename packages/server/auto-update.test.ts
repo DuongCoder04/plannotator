@@ -30,6 +30,7 @@ import {
 } from "./auto-update";
 import { RELEASE_API_FALLBACK_INTERVAL_MS, RELEASE_CHECK_RETRY_MS } from "@plannotator/shared/update-check";
 import { sweepStaleUpdateDirs } from "./update-prepare";
+import { UPDATE_STAGING_PREFIX } from "./update-log";
 import { UPDATE_EXIT_CHECKSUM_MISMATCH as MISMATCH } from "@plannotator/core/update-exit-codes";
 import type { SessionInfo } from "./sessions";
 
@@ -246,6 +247,19 @@ describe("safe-update failures in the notice", () => {
       kind: "failed",
       reason: "download",
     });
+  });
+
+  // Downloaded, but the temp folder could not hold it: not "couldn't download".
+  test("a person's 75 whose run could not stage the update is `prepare`, read from that run's log lines", () => {
+    const log = join(dataDir, "update.log");
+    writeFileSync(
+      log,
+      `update: could not download the update (offline); nothing was changed\n[t] update: install.sh exited 75\n` +
+        `${UPDATE_STAGING_PREFIX}the temp folder /tmp is full (ENOSPC); nothing was changed\n[t] update: install.sh exited 75\n`,
+    );
+    expect(deriveAutoUpdateNotice({ pending: person }, { version: "v0.28.0", exitCode: 75 }, "0.27.22", log)).toMatchObject({ reason: "prepare" });
+    writeFileSync(log, `${UPDATE_STAGING_PREFIX}the temp folder /tmp is full (ENOSPC); nothing was changed\n[t] update: install.sh exited 75\nupdate: could not download the update (offline); nothing was changed\n[t] update: install.sh exited 75\n`);
+    expect(deriveAutoUpdateNotice({ pending: person }, { version: "v0.28.0", exitCode: 75 }, "0.27.22", log)).toMatchObject({ reason: "download" });
   });
 });
 

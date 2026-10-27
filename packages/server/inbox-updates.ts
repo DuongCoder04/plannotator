@@ -65,7 +65,7 @@ import {
   UPDATE_PREPARE_FAILED,
 } from "./auto-update";
 import { listSessions as defaultListSessions, type SessionInfo } from "./sessions";
-import { lastRunTlsFailure, type UpdateTlsFailure } from "./update-prepare";
+import { lastRunLog, stagingFailureIn, tlsFailureIn, type UpdateTlsFailure } from "./update-log";
 import { fetchReleaseImagesFor, storedReleaseImageSources } from "./inbox-whats-new-images";
 
 /** While an install runs, the binary is probed this often (the design's 2 s). */
@@ -77,7 +77,10 @@ export function failureDetails(
   log: string,
   platform: NodeJS.Platform = process.platform,
 ): NonNullable<InboxUpdateDetails["failure"]> {
-  const tls = exitCode === UPDATE_PREPARE_FAILED ? lastRunTlsFailure(log) : null;
+  const run = exitCode === UPDATE_PREPARE_FAILED ? lastRunLog(log) : "";
+  const prepare = stagingFailureIn(run);
+  if (prepare) return { exit_code: exitCode, log, prepare };
+  const tls = tlsFailureIn(run);
   return { exit_code: exitCode, log, ...(tls && { tls }), ...(tls === "untrusted" && platform === "darwin" && { release_first: true as const }) };
 }
 
@@ -125,9 +128,11 @@ export interface InboxUpdateDetails {
    * NODE_EXTRA_CA_CERTS at the network's root. `revoked`: a blocked key, so
    * never the install command over this network. `release_first` (additive,
    * `untrusted` on macOS only): the release page comes before the install
-   * command, since macOS curl still trusts emSign G3.
+   * command, since macOS curl still trusts emSign G3. `prepare` (additive,
+   * exit 75 only): the update was downloaded but the temp folder could not
+   * hold it; the plain reason ("the temp folder /tmp is full (ENOSPC)").
    */
-  failure: { exit_code: number; log: string; tls?: UpdateTlsFailure; release_first?: true } | null;
+  failure: { exit_code: number; log: string; tls?: UpdateTlsFailure; release_first?: true; prepare?: string } | null;
   log: string;
   snoozed_until: string | null;
 }

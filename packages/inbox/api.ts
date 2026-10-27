@@ -182,8 +182,11 @@ export interface UpdateDetails {
   plugin_command: string | null;
   sessions: { mode: string; project: string; label: string; started_at: string }[];
   /** `tls` (exit 75 only): the download failed at TLS. Absent from an older Inbox. */
-  /** `release_first` (macOS, `untrusted` only): the release page before the install command. */
-  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked'; release_first?: true } | null;
+  /**
+   * `release_first` (macOS, `untrusted` only): the release page before the install command.
+   * `prepare` (exit 75): downloaded, but the temp folder could not hold it; the plain reason.
+   */
+  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked'; release_first?: true; prepare?: string } | null;
   log: string;
   snoozed_until: string | null;
 }

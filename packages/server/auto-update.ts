@@ -30,6 +30,7 @@
  */
 
 import { UPDATE_EXIT_CHECKSUM_MISMATCH, UPDATE_EXIT_DOWNLOAD_FAILED } from "@plannotator/core/update-exit-codes";
+import { lastRunLog, stagingFailureIn } from "./update-log";
 import { spawn } from "node:child_process";
 import {
   closeSync,
@@ -142,9 +143,10 @@ export interface AutoUpdateNotice {
   /**
    * Why a failed install failed, when it is one of the safe-update outcomes:
    * `mismatch` (the download did not match the checksum Plannotator fetched)
-   * or `download` (Plannotator could not download the update). Additive.
+   * or `download` (Plannotator could not download the update), or `prepare`
+   * (downloaded, but the temp folder could not hold it). Additive.
    */
-  reason?: "mismatch" | "download";
+  reason?: "mismatch" | "download" | "prepare";
 }
 
 export function autoUpdatePaths(dataDir: string = getPlannotatorDataDir()) {
@@ -192,8 +194,16 @@ export function deriveAutoUpdateNotice(
     // A background run that could not download anything changed nothing:
     // update.log only, and the next window tries again. Never a notice.
     if (result.exitCode === UPDATE_PREPARE_FAILED && pending.by !== "person") return undefined;
+    // A 75 whose download worked but whose temp folder could not hold it
+    // (update-prepare's staging line in this run's log) is `prepare`.
     const reason =
-      result.exitCode === UPDATE_CHECKSUM_MISMATCH ? "mismatch" : result.exitCode === UPDATE_PREPARE_FAILED ? "download" : undefined;
+      result.exitCode === UPDATE_CHECKSUM_MISMATCH
+        ? "mismatch"
+        : result.exitCode === UPDATE_PREPARE_FAILED
+          ? stagingFailureIn(lastRunLog(logPath))
+            ? "prepare"
+            : "download"
+          : undefined;
     return {
       // A mismatch shows once per version, however many retries the back-off makes.
       id: reason === "mismatch" ? `${version}@mismatch` : id,
@@ -814,6 +824,11 @@ case "$prepared" in
       esac ;;
 esac
 if [ -n "$update_dir" ] && [ -f "$update_dir/install.sh" ]; then
+  # Written only when NODE_EXTRA_CA_CERTS is set: curl's own roots plus that
+  # certificate, so install.sh's curl trusts what Plannotator's fetch did.
+  if [ -f "$update_dir/curl-ca-bundle.pem" ]; then
+    export CURL_CA_BUNDLE="$update_dir/curl-ca-bundle.pem"
+  fi
   PLANNOTATOR_EXPECTED_SHA256=$(cat "$update_dir/expected-sha256" 2>/dev/null) PLANNOTATOR_UPDATE_MISMATCH_FILE="$update_dir/checksum-mismatch" bash "$update_dir/install.sh" --version "$PLANNOTATOR_UPDATE_VERSION" --non-interactive "$@" </dev/null
   code=$?
   # A mismatch is only what install.sh's pin check marked as one.

@@ -28,6 +28,7 @@
     "./sessions": "./sessions.ts",
     "./auto-update": "./auto-update.ts",
     "./update-prepare": "./update-prepare.ts",
+    "./update-log": "./update-log.ts",
     "./project": "./project.ts",
     "./pr": "./pr.ts",
     "./html-assets": "./html-assets.ts",

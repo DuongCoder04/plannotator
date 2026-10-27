@@ -16,7 +16,7 @@ import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxUsedBefore, startInboxServer, type InboxServer } from "./inbox";
 import { deriveInboxUpdate, failureDetails } from "./inbox-updates";
 import type { InstallerLaunch } from "./auto-update";
-import { UPDATE_TLS_HINT } from "./update-prepare";
+import { UPDATE_STAGING_PREFIX, UPDATE_TLS_HINT } from "./update-log";
 
 const NOW = Date.now();
 const BODY = [
@@ -319,6 +319,13 @@ describe("Update now", () => {
     expect(failureDetails(75, log, "linux")).toEqual({ exit_code: 75, log, tls: "untrusted" });
     writeFileSync(log, `${UPDATE_TLS_HINT.revoked}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`);
     expect(failureDetails(75, log, "darwin")).toEqual({ exit_code: 75, log, tls: "revoked" });
+  });
+
+  test("a 75 whose run could not stage the update carries the plain reason, not a download failure", () => {
+    const log = join(dataDir, "update.log");
+    writeFileSync(log, `${UPDATE_STAGING_PREFIX}the temp folder /tmp is full (ENOSPC); nothing was changed\n[t] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "linux")).toEqual({ exit_code: 75, log, prepare: "the temp folder /tmp is full (ENOSPC)" });
+    expect(failureDetails(1, log, "linux")).toEqual({ exit_code: 1, log });
   });
 });
 
