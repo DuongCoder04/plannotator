@@ -232,10 +232,10 @@ test.skipIf(!hasDom)('the ways in show from two decisions; with the gate off not
     expect(off.querySelector('[data-decide-nav]')).toBeNull();
     expect(off.querySelector('[data-decide-head]')).toBeNull();
     expect(document.querySelector('[data-decision-mode]')).toBeNull();
-    // Settings → General shows the switch, off.
+    // Settings → Capabilities → Experimental shows the switch, off.
     act(() => root?.unmount());
     host?.remove();
-    const settings = await renderApp('#settings/general');
+    const settings = await renderApp('#settings/capabilities');
     await until(() => settings.querySelector('[data-settings-experimental]') !== null, 'the Experimental group');
     const sw = settings.querySelector('[data-settings-experimental] [role="switch"]') as HTMLButtonElement;
     expect(sw.getAttribute('aria-checked')).toBe('false');

@@ -249,7 +249,7 @@ export const CARD_COMMAND_USAGE = [
   "Keeps a card on the person's Board in the Plannotator Inbox for work that outlasts a reply.",
   "A title is 2–5 words naming the work (\"Pi update fix\"), never a sentence; status goes in --say.",
   "When a card waits on the person, link the Inbox thread where they make the call (--thread), so \"You: …\" opens it.",
-  "Works only while the person has the Board on (Inbox Settings → General); off, it exits 1 with board_off.",
+  "Works only while the person has the Board on (Inbox Settings → Capabilities); off, it exits 1 with board_off.",
   "Run 'plannotator inbox --help' for the full guide (its card section, shown while the Board is on).",
 ].join("\n");
 

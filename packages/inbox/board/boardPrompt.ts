@@ -16,7 +16,7 @@ export function boardPrompt(mcpCommand: readonly string[] | null | undefined): s
   const p = connectCommand(mcpCommand) ?? 'plannotator';
   return `Fill my Plannotator Board with the work in flight that you know about.
 
-The Board is a page in my Plannotator Inbox: one card per piece of work that outlasts a single reply, in the column of its stage. Make cards with the \`card\` action of your \`plannotator_inbox\` tool. Without that tool, or when it has no card action (I turned the Board on after your session began), use the CLI: \`${p} card --help\`. If a call answers \`board_off\`, my Board is off: tell me to turn it on in the Inbox's Settings → General, and stop.
+The Board is a page in my Plannotator Inbox: one card per piece of work that outlasts a single reply, in the column of its stage. Make cards with the \`card\` action of your \`plannotator_inbox\` tool. Without that tool, or when it has no card action (I turned the Board on after your session began), use the CLI: \`${p} card --help\`. If a call answers \`board_off\`, my Board is off: tell me to turn it on in the Inbox's Settings → Capabilities, and stop.
 
 Columns (where the work stands now; if it waits on me, that wins):
 - backlog: work you were asked to do and have not started.
