@@ -3779,6 +3779,7 @@ function Inbox() {
           current={composeCurrent}
           lastSent={lastSent}
           home={settings?.home ?? null}
+          board={boardEnabled === true}
           onSent={(sent) => {
             rememberSent(sent.session);
             composeSent(sent);

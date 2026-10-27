@@ -29,7 +29,7 @@
  * text alone; an older one appends this trimmed JSON as well.
  */
 
-import { INBOX_HOST_NAMES, inboxAgentName, isInboxNote, type InboxMessageWire, type InboxQuestion } from "@plannotator/core/inbox-types";
+import { INBOX_HOST_NAMES, inboxAgentName, inboxBoardRequestBlock, isInboxNote, type InboxMessageWire, type InboxQuestion } from "@plannotator/core/inbox-types";
 import { inboxAnswersSectionEnd } from "@plannotator/core/inbox-questions";
 import { QUESTION_ANSWERS_HEADING, type QuestionAnswer } from "@plannotator/core/question-block";
 import { InboxError } from "@plannotator/shared/inbox/schema";
@@ -122,6 +122,13 @@ export interface AgentMessage {
   to?: AgentAddressee;
   /** On a person's reply that tags agents (approval "inbox-tag-agents"): the sessions it tags, and whether one is the reader (`you`). */
   tagged?: AgentTagged[];
+  /**
+   * The person sent it with compose's Board chip on (approval
+   * "inbox-compose-board-chip"): the agent tracks the work on the Board.
+   * `messageText` puts `inboxBoardRequestBlock` after the body; `body` stays
+   * the person's words.
+   */
+  board_request?: true;
 }
 
 /** One agent session a person's reply tags, as an agent reads it. */
@@ -153,6 +160,7 @@ export interface AgentMessageLine {
   ack?: true;
   to?: AgentAddressee;
   tagged?: AgentTagged[];
+  board_request?: true;
 }
 
 export interface ThreadReadInput {
@@ -407,6 +415,7 @@ export function agentMessage(message: InboxMessageWire, form: AgentMessageForm =
     ...(message.guide ? { guide: { title: message.guide.title } } : {}),
     ...(message.to ? { to: addressee(message, caller) } : {}),
     ...(taggedOf(message, caller) ? { tagged: taggedOf(message, caller) } : {}),
+    ...(message.board_request === true ? { board_request: true as const } : {}),
   };
 }
 
@@ -434,6 +443,7 @@ export function agentMessageLine(message: InboxMessageWire, caller: string | nul
     ...(message.ack ? { ack: true as const } : {}),
     ...(message.to ? { to: addressee(message, caller) } : {}),
     ...(taggedOf(message, caller) ? { tagged: taggedOf(message, caller) } : {}),
+    ...(message.board_request === true ? { board_request: true as const } : {}),
   };
 }
 
@@ -625,6 +635,8 @@ export function messageLineText(line: AgentMessageLine, context: TranscriptConte
   if (line.attachments?.length) parts.push(`files: ${line.attachments.join(", ")}`);
   if (line.guide) parts.push(`guided review: ${line.guide}`);
   if (line.ack) parts.push("👍");
+  // Shown in full only: the line says it is there, so a reader that sees just the line expands it.
+  if (line.board_request) parts.push(`Board request (read_thread expand: ["${line.id}"] shows it)`);
   return parts.join(" · ");
 }
 
@@ -636,6 +648,8 @@ export function messageText(message: AgentMessage, context: TranscriptContext): 
   const tagged = taggedWords(message.tagged);
   if (tagged) head.push(tagged);
   const lines = [`[${head.join(" · ")}]`, message.body.trimEnd()];
+  // Compose's Board chip: the request, once, right after the person's words.
+  if (message.board_request) lines.push("", inboxBoardRequestBlock(message.id));
   if (message.questions?.length) lines.push(`Questions: ${message.questions.map((q) => questionWords(q)).join("; ")}`);
   if (message.attachments?.length) {
     lines.push(`Files: ${message.attachments.map((a) => `${a.name} (${a.kind}, ${sizeText(a.size)}): ${a.path}`).join("; ")}`);
