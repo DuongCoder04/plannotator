@@ -69,7 +69,16 @@
  * replied to; the world adds `restart: { thread, session, installPath }`. A
  * stdin line `{ "poll": { session, body } }` is that session's connection
  * polling the bridge with `body`'s fields (`plugin`, `busy`, `send_now`...);
- * the server answers `{ "polled": true }`.
+ * the server answers `{ "polled": true, commands }` (what the poll handed it). A
+ * stdin line `{ "card": { project, session, title, say?, thread? } }` is that
+ * agent making a card (in Backlog, linked to its thread); the server answers
+ * `{ "carded": <card id> }`.
+ * With `reload-hosts` (owner approval "reload-hosts"): the same Inbox 0.28.25
+ * and scratch registry as `restart`, and each project also gets three threads
+ * a waking Pi (`ses_pi<i>`), Oh My Pi (`ses_omp<i>`, host `pi`) and OpenCode
+ * (`ses_oc<i>`) session asked in and the person replied to; the world adds
+ * `hosts: { pi, omp, opencode }`, each `{ thread, session }`. A `poll` line's
+ * `body.host` names the host the connection polls as.
  *
  * With `guide` (approval "inbox-guide-diff-style"), each project also gets a
  * thread whose agent sent a guided review of two sections (two files each
@@ -89,7 +98,8 @@
  * config.json turns decision mode on, and each project gets only this seed in
  * place of the one above: Claude Code (`ses_da<i>`) asks two questions in one
  * message (a Stopped pick-one of three, recommended, then a two-way), and
- * Codex (`ses_db<i>`) asks one two-way question in a thread of its own. The
+ * Codex (`ses_db<i>`) asks one two-way question in the same thread (`reply_to`
+ * a: decision mode is thread only, so the thread holds both agents). The
  * world is `{ project, root, decide: { a, b, sessionA, sessionB } }`. A `send`
  * line on stdin may carry `supersedes` (and `host`).
  *
@@ -120,6 +130,7 @@ import { startInboxServer } from "../../packages/server/inbox";
 import type { InboxOpenInLauncher } from "../../packages/server/inbox-open-in";
 import { recordInboxAttachments } from "../../packages/shared/inbox/attachments";
 import { writeUpdateState } from "../../packages/shared/update-check";
+import { parseInboxBridgeCommands } from "../../packages/shared/inbox/connection";
 import { createAgentEnvironmentFor } from "../../packages/server/inbox-agents";
 import { isScratchDataDir, refuseRealDataDir } from "./real-data-dir";
 import { seedTagWorld, TAG_SESSIONS } from "./inbox-tag-world";
@@ -146,6 +157,9 @@ process.env.HOME = scratchHome;
 process.env.CLAUDE_CONFIG_DIR = join(scratchHome, ".claude");
 process.env.CODEX_HOME = join(scratchHome, ".codex");
 process.env.XDG_CONFIG_HOME = join(scratchHome, ".config");
+// OpenCode 2's config (its plugin spec): the scratch one under XDG_CONFIG_HOME, never a real OPENCODE_CONFIG_DIR or OPENCODE_CONFIG.
+delete process.env.OPENCODE_CONFIG_DIR;
+delete process.env.OPENCODE_CONFIG;
 
 const STOPPED = [
   "Before I build the invoice list:",
@@ -244,7 +258,8 @@ if (decisionsMode) {
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { decisionMode: true } }));
 }
-const restartMode = extra === "restart";
+const reloadHostsMode = extra === "reload-hosts";
+const restartMode = extra === "restart" || reloadHostsMode;
 const claudeDir = join(dataDir, "claude");
 const pluginFolder = (version: string) => join(claudeDir, "plugins", "cache", "plannotator", "plannotator", version);
 if (restartMode) {
@@ -324,6 +339,7 @@ type World = {
   openIn?: { thread: string; ids: Record<string, string> };
   htmlLinks?: { thread: string; ids: Record<string, string> };
   restart?: { thread: string; session: string; project: string; installPath: string; oldPath: string };
+  hosts?: Record<"pi" | "omp" | "opencode", { thread: string; session: string }>;
   leaked?: string;
   guide?: { thread: string; message: string };
   artifacts?: { thread: string; ids: Record<string, string>; guide: string };
@@ -412,6 +428,8 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
       project_id: project.id,
       author: { kind: "agent", host: "codex", session: sessionB, name: "Codex" },
       body: [":::question", "Ship the new flag off by default?", "", "- [ ] Yes", "- [ ] No", ":::"].join("\n"),
+      // In Claude Code's thread: decision mode is thread only, so one thread holds two agents' decisions.
+      reply_to: a.id,
     }).message;
     worlds.push({ project: project.id, root, decide: { a: a.id, b: b.id, sessionA, sessionB } } as unknown as World);
     continue;
@@ -560,6 +578,16 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
     store.sendReply(asked.id, { idempotency_key: `restart-${i}`, words: "Queue it. Cap retries at 5 and dead-letter after." });
     restart = { thread: asked.id, session, project: root, installPath: pluginFolder("0.28.25"), oldPath: pluginFolder("0.28.23") };
   }
+  let hosts: World["hosts"];
+  if (reloadHostsMode) {
+    const ask = (key: string, host: string, name: string) => {
+      const session = `ses_${key}${i}`;
+      const asked = store.sendMessage({ project_id: project.id, author: { kind: "agent", host, session, name }, body: `${name}: the export runs nightly now. Anything else?`, wakes: true }).message;
+      store.sendReply(asked.id, { idempotency_key: `reload-${key}-${i}`, words: "Add a dry run flag." });
+      return { thread: asked.id, session };
+    };
+    hosts = { pi: ask("pi", "pi", "Pi"), omp: ask("omp", "pi", "Oh My Pi"), opencode: ask("oc", "opencode", "OpenCode") };
+  }
   let guide: World["guide"];
   if (extra === "guide") {
     const client = new Client({ name: "inbox-dom-server", version: "1.0.0" });
@@ -621,6 +649,7 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
     ...(guide ? { guide } : {}),
     ...(htmlLinks ? { htmlLinks } : {}),
     ...(restart ? { restart } : {}),
+    ...(hosts ? { hosts } : {}),
     ...(leakedIds[i] ? { leaked: leakedIds[i] } : {}),
     ...(openIn ? { openIn } : {}),
     ...(files ? { files } : {}),
@@ -663,6 +692,7 @@ void (async () => {
       wait?: { thread: string; session: string };
       poll?: { session: string; body: Record<string, unknown> };
       first?: { root: string; session: string; body: string };
+      card?: { project: string; session: string; title: string; say?: string; thread?: string };
     };
     if (command.first) {
       // An agent's first message: its folder becomes the Inbox's first project.
@@ -673,13 +703,26 @@ void (async () => {
       continue;
     }
     if (command.poll) {
-      // That session's connection polling now: it is live, with what it loaded.
-      await fetch(`http://127.0.0.1:${server.port}/api/inbox/bridge/poll`, {
+      // That session's connection polling now: it is live, with what it loaded. `commands` is what
+      // the poll handed it (its wake: replies and messages the person sent it), never delivered here.
+      const polled = await fetch(`http://127.0.0.1:${server.port}/api/inbox/bridge/poll`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${server.token}` },
         body: JSON.stringify({ session: command.poll.session, host: "claude-code", waitMs: 0, ...command.poll.body }),
       });
-      process.stdout.write(`${JSON.stringify({ polled: true })}\n`);
+      process.stdout.write(`${JSON.stringify({ polled: true, commands: parseInboxBridgeCommands(await polled.text()) })}\n`);
+      continue;
+    }
+    if (command.card) {
+      // An agent making a card through the store (the card action's rules), linked to its thread.
+      const made = store.createCard({
+        project_id: command.card.project,
+        by: { kind: "agent", host: "claude-code", session: command.card.session, name: "Claude Code" },
+        title: command.card.title,
+        say: command.card.say,
+        threads: command.card.thread ? [command.card.thread] : [],
+      });
+      process.stdout.write(`${JSON.stringify({ carded: made.card.id })}\n`);
       continue;
     }
     if (command.wait) {
