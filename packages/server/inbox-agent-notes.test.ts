@@ -294,6 +294,24 @@ describe("the marked section", () => {
     expect(read(path)).toBe(`# Mine\n\n${INBOX_NOTE_BLOCK}\nAfter.\n`);
   });
 
+  test("updating a v1 note in a file two agents share (Pi's AGENTS.md a link to Codex's): the other agent's note stays on, not 'edited'", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `Shared.\n\n${V1_BLOCK}\n`);
+    mkdirSync(file(".pi", "agent"), { recursive: true });
+    symlinkSync(path, file(".pi", "agent", "AGENTS.md"));
+    const record = { path: realpathSync(path), created: false, version: 1, block_sha256: sha(V1_BLOCK), at: "2026-10-01T00:00:00.000Z" };
+    mkdirSync(join(dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(dataDir, "inbox", "agent-notes.json"), JSON.stringify({ v: 1, notes: { codex: record, pi: record } }));
+    expect(addInboxNote("codex", dataDir, e)).toMatchObject({ ok: true, action: "updated" });
+    expect(read(path)).toBe(`Shared.\n\n${INBOX_NOTE_BLOCK}\n`);
+    expect(noteStatus("pi", dataDir, e).state).toBe("added");
+    expect(readInboxAgentNotes(dataDir).notes.pi).toMatchObject({ version: 2, block_sha256: sha(INBOX_NOTE_BLOCK) });
+    // And Off for both gives the file back as the person had it.
+    expect(removeInboxNote("codex", dataDir, e)).toMatchObject({ ok: true, action: "kept-shared" });
+    expect(removeInboxNote("pi", dataDir, e)).toMatchObject({ ok: true, action: "removed" });
+    expect(read(path)).toBe("Shared.\n");
+  });
+
   test("a v1 note the person edited stays theirs after the update: never rewritten", () => {
     const path = file(".codex", "AGENTS.md");
     const edited = V1_BLOCK.replace("Then keep working.", "Then keep working. Never at night.");

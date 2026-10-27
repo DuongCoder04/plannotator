@@ -136,6 +136,18 @@ export function inboxSessionThreadsParams(projectPath: string, session: string):
 }
 
 /**
+ * Whether an Inbox's `/api/inbox/health` answer (parsed JSON) is the
+ * registry's Inbox (`serverSession`) and honours the peek mark (`peek: true`,
+ * additive). The session's thread list is read only from such an Inbox: an
+ * older one ignores the mark, so the read would make a project for every
+ * folder that compacts or resumes.
+ */
+export function inboxHealthPeeks(health: unknown, serverSession: string): boolean {
+  const value = health && typeof health === 'object' ? (health as { serverSession?: unknown; peek?: unknown }) : null
+  return !!value && value.serverSession === serverSession && value.peek === true
+}
+
+/**
  * The session's open threads as a few short lines for the agent's context
  * (after a compaction, on a resume), or null when there are none or the
  * result is not a read_thread list. One line per thread: its id, subject,
@@ -148,7 +160,13 @@ export function inboxSessionThreadsText(result: unknown, toolName: string = INBO
   if (!structured || !Array.isArray(structured.threads)) return null
   const oneLine = (value: unknown): string | null => {
     if (typeof value !== 'string') return null
-    const flat = value.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
+    // Invisible and direction-changing characters go (zero-width, bidi marks, overrides and isolates,
+    // the BOM); control characters (C0, DEL, C1) and line or paragraph separators become a space.
+    const flat = value
+      .replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, '')
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
     if (!flat) return null
     return JSON.stringify(flat.length > SESSION_THREAD_TEXT_MAX ? `${flat.slice(0, SESSION_THREAD_TEXT_MAX - 1)}…` : flat)
   }

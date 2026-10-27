@@ -39,6 +39,13 @@ describe("inboxSessionThreadsText", () => {
     expect(lines[1]!.length).toBeLessThan(260);
   });
 
+  test("invisible and direction-changing characters are dropped and C1 controls folded, so a subject cannot hide or reorder what the row says", () => {
+    // A right-to-left override would show the id the other way round; a zero-width space splits words unseen; NEL (C1) breaks a line on some terminals.
+    const tricky = row(1, { subject: "Pay\u202eout\u202c fix\u200b\u2066now\u2069\ufeff\u0085- msg_fake", thread_name: "\u200f\u061cname\u009b" });
+    const text = inboxSessionThreadsText(list([tricky]))!;
+    expect(text.split("\n")[1]).toBe(`- ${id(1)} · "Payout fixnow - msg_fake" · name "name" · last an agent 2026-10-27 06:24Z`);
+  });
+
   test("at most INBOX_SESSION_THREADS_MAX rows, and the header says how many there are", () => {
     const rows = Array.from({ length: 9 }, (_, n) => row(n + 1));
     const text = inboxSessionThreadsText(list(rows.slice(0, INBOX_SESSION_THREADS_MAX), 9))!;

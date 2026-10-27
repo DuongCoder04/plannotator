@@ -27,7 +27,7 @@ import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow, InboxQuestion } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
-import { noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
+import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, questionWords, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
@@ -972,9 +972,11 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);
         const sent = await sendAgentMessage(context, project, input, undefined, wakes);
-        // Joined a thread this session has not looked at for hours (or ever): one line naming its subject.
-        // Never on a replay (the first answer stands), and it never blocks the send.
-        const stale = sent.replayed ? null : staleThreadOf(store, String(sent.structured.message_id), input.agent_session, clock());
+        // Named a thread (reply_to, or a thread name) this session has not looked at for hours (or ever):
+        // one line naming its subject. Not for a message routed to the session's own thread by default,
+        // never on a replay (the first answer stands), and it never blocks the send.
+        const named = !!input.reply_to?.trim() || !!input.thread?.trim();
+        const stale = sent.replayed || !named ? null : staleThreadOf(store, String(sent.structured.message_id), input.agent_session, clock());
         const asked =
           (sent.questions > 0 ? ` asking ${sent.questions} question${sent.questions === 1 ? "" : "s"}` : "") +
           (sent.attachments > 0 ? ` with ${sent.attachments} attachment${sent.attachments === 1 ? "" : "s"}` : "") +
@@ -983,7 +985,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           (sent.done > 0 ? `, marking ${sent.done} action item${sent.done === 1 ? "" : "s"} done` : "");
         return ok(
           `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}${stale ? `\n${staleThreadText(stale, shortTime)}` : ""}`,
-          stale ? { ...sent.structured, not_read_since: stale.last_read_at } : sent.structured,
+          stale ? { ...sent.structured, not_read_since: lastContactOf(stale) } : sent.structured,
         );
       }),
   );

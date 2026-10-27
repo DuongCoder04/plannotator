@@ -389,8 +389,11 @@ export function addInboxNote(agent: InboxNoteAgentId, dataDir: string, e: AgentE
   const owner = notes[agent] ?? INBOX_NOTE_AGENT_IDS.map((id) => notes[id]).find((r) => r?.path === real);
   let next: string;
   let action: "added" | "created" | "updated" | "unchanged" | "shared";
+  /** The block's hash before this add (null: there was none), for the other records naming the same file. */
+  let before: string | null = null;
   if (found.kind === "one") {
     const hash = sha256(found.block);
+    before = hash;
     if (hash === sha256(INBOX_NOTE_BLOCK)) {
       next = original;
       action = notes[agent] || !owner ? "unchanged" : "shared";
@@ -413,14 +416,28 @@ export function addInboxNote(agent: InboxNoteAgentId, dataDir: string, e: AgentE
       return { ok: false, agent, reason: `${shown} can't be written (${describeFsError(error)})`, path: shown };
     }
   }
-  recordNote(dataDir, agent, {
+  const file = readInboxAgentNotes(dataDir);
+  const at = resolved(read.target);
+  const current = sha256(INBOX_NOTE_BLOCK);
+  file.notes[agent] = {
     // The resolved path, so switching off and uninstall find the very file this wrote (a linked folder on the way).
-    path: resolved(read.target),
+    path: at,
     created: action === "created" || notes[agent]?.created === true || (action === "shared" && owner?.created === true),
     version: INBOX_NOTE_VERSION,
-    block_sha256: sha256(INBOX_NOTE_BLOCK),
+    block_sha256: current,
     at: now.toISOString(),
-  });
+  };
+  // The same file is another agent's note too (Pi's AGENTS.md a link to Codex's): the block they
+  // recorded is the one just brought up to date, so their records follow, or that agent would read
+  // Plannotator's own update as the person's edit.
+  for (const id of INBOX_NOTE_AGENT_IDS) {
+    const other = file.notes[id];
+    if (id === agent || !other || other.path !== at || other.block_sha256 === current) continue;
+    if (other.block_sha256 === before || EARLIER_BLOCK_HASHES.has(other.block_sha256)) {
+      file.notes[id] = { ...other, version: INBOX_NOTE_VERSION, block_sha256: current };
+    }
+  }
+  writeInboxAgentNotes(dataDir, file);
   return { ok: true, agent, action, path: shown! };
 }
 

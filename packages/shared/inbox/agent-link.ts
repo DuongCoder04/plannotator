@@ -43,6 +43,7 @@ import {
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
   INBOX_TOOL_NAME,
+  inboxHealthPeeks,
   inboxSessionThreadsParams,
   inboxSessionThreadsText,
   inboxToolCall,
@@ -267,8 +268,9 @@ export class InboxAgentConnection {
   /**
    * The session's open threads as a few short lines (`inboxSessionThreadsText`),
    * or null: no Inbox has run here, it is not running (it is never started
-   * for this), it did not answer within `timeoutMs`, or there is no open
-   * thread. Read with the peek mark, so the Inbox makes no project and the
+   * for this), it did not answer within `timeoutMs`, there is no open
+   * thread, or the Inbox is older than the peek mark (no `peek: true` in its
+   * health: it would make a project for the folder). Read with the peek mark, so the Inbox makes no project and the
    * rows do not count as the session having read them. Never throws.
    */
   async sessionThreads(at: { sessionId: string; cwd: string }, toolName: string = INBOX_TOOL_NAME, timeoutMs = INBOX_SESSION_THREADS_TIMEOUT_MS): Promise<string | null> {
@@ -277,7 +279,7 @@ export class InboxAgentConnection {
     const signal = AbortSignal.timeout(timeoutMs);
     try {
       const health = await fetch(`http://127.0.0.1:${registry.port}/api/inbox/health`, { signal });
-      if (health.status !== 200 || ((await health.json()) as { serverSession?: unknown }).serverSession !== registry.serverSession) return null;
+      if (health.status !== 200 || !inboxHealthPeeks(await health.json(), registry.serverSession)) return null;
       const answer = await mcpCall(registry.port, "tools/call", inboxSessionThreadsParams(at.cwd, at.sessionId), signal);
       if (!answer || !("result" in answer)) return null;
       const result = answer.result as { isError?: unknown } | undefined;

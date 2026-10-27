@@ -67,6 +67,10 @@ describe("send_message: the line naming a thread the session has not read", () =
     expect(misfiled.structuredContent.thread_id).toBe(root.structuredContent.thread_id);
     expect(text(misfiled)).toContain('You have not read this thread in this session; its subject is "the context layer" (thread name "Landing").');
     expect(misfiled.structuredContent.not_read_since).toBeNull();
+    // Joining it by its name names the thread too.
+    const byName = await send(client, project, "ses-c", { body: "Another fix.", thread: "Landing" });
+    expect(byName.structuredContent.thread_id).toBe(root.structuredContent.thread_id);
+    expect(text(byName)).toMatch(WARNING);
   });
 
   test("the session's own thread: no line while it wrote there recently, the line once it has been away for hours", async () => {
@@ -77,8 +81,14 @@ describe("send_message: the line naming a thread the session has not read", () =
     // A default-routed follow-up (no reply_to) into the session's open thread: no line either.
     expect(text(await send(client, project, "ses-a", { body: "And the changelog." }))).not.toMatch(WARNING);
     later(INBOX_THREAD_STALE_MS + HOURS);
+    // Routed by default (no reply_to, no thread): it goes where the session's own messages went, so no line.
+    expect(text(await send(client, project, "ses-a", { body: "Back after lunch." }))).not.toMatch(/its subject is/);
+    later(INBOX_THREAD_STALE_MS + HOURS);
+    // Named by reply_to: the line, worded for the thread's starter, never "you have not read".
     const stale = await send(client, project, "ses-a", { body: "A journey fix.", reply_to: root.structuredContent.message_id });
-    expect(text(stale)).toContain('its subject is "Retry fix"');
+    expect(text(stale)).toMatch(/You last wrote in this thread at \d{4}-\d\d-\d\d \d\d:\d\dZ; its subject is "Retry fix"\./);
+    expect(text(stale)).not.toMatch(WARNING);
+    expect(typeof stale.structuredContent.not_read_since).toBe("string");
   });
 
   test("read_thread, a list that showed the row, and wait_for_reply count as reads; the line then says since when", async () => {
@@ -88,8 +98,10 @@ describe("send_message: the line naming a thread the session has not read", () =
 
     await call(client, "read_thread", { thread_id: threadId, agent_session: "ses-b" });
     expect(text(await send(client, project, "ses-b", { body: "Columns: todo, doing, done.", reply_to: threadId }))).not.toMatch(WARNING);
+    // A session that only read the thread, hours ago: the line says since when.
+    await call(client, "read_thread", { thread_id: threadId, agent_session: "ses-d" });
     later(INBOX_THREAD_STALE_MS + HOURS);
-    const stale = await send(client, project, "ses-b", { body: "Another note.", reply_to: threadId });
+    const stale = await send(client, project, "ses-d", { body: "Another note.", reply_to: threadId });
     expect(text(stale)).toMatch(/You have not read this thread since \d{4}-\d\d-\d\d \d\d:\d\dZ; its subject is "Board columns"\./);
     expect(typeof stale.structuredContent.not_read_since).toBe("string");
 
@@ -152,6 +164,12 @@ describe("send_message: the line naming a thread the session has not read", () =
 });
 
 describe("the connections' peek (the session's thread list)", () => {
+  test("health says this Inbox honours the peek mark (connections read the list only from one that does)", async () => {
+    const { server } = await setup();
+    const health = (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/health`)).json()) as Record<string, unknown>;
+    expect(health.peek).toBe(true);
+  });
+
   test("lists the session's open threads as the list would, but does not count as a read", async () => {
     const { client, project } = await setup();
     const root = await send(client, project, "ses-a", { body: "Plan.", subject: "Plan", thread: "Plan" });

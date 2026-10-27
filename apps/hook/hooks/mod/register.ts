@@ -328,6 +328,23 @@ async function reminderGateDecided($: Engine): Promise<boolean | null> {
 /** The longest a resume waits for its thread list, session.start's decision included. */
 const SESSION_THREADS_RESUME_MS = 1_500
 
+/**
+ * PLANNOTATOR_INBOX_REMINDER holds the reminder plus the thread list (ids and
+ * subjects), set for one compaction's SessionStart `compact` command hook: the
+ * plain reminder it was, once that has run. Every child process (a Bash call)
+ * inherits the session's environment, and thread ids and subjects have no
+ * business there longer than the hook needs them.
+ */
+let reminderWithThreadsSet = false
+
+/** Back to the plain reminder after a compaction's list (the hook has printed it by the next main-loop step or turn). */
+async function plainReminderAgain($: Engine): Promise<void> {
+  if (!reminderWithThreadsSet) return
+  reminderWithThreadsSet = false
+  if (!allowed) return
+  await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName, allowed.inboxReminderCustom))).catch(() => undefined)
+}
+
 /** `work`'s answer, or null once `ms` passed first (the bounding sleep is aborted when `work` settles). */
 async function withinMs<T>($: Engine, ms: number, work: () => Promise<T>): Promise<T | null> {
   const controller = new AbortController()
@@ -601,7 +618,11 @@ export function register(on: On) {
   // through here again) nor a subagent's compaction. A guard plugin that skips
   // prompt.context and classic.* leaves this event to the mod, so its users
   // get the list too. Bounded (INBOX_SESSION_THREADS_TIMEOUT_MS); never
-  // starts the Inbox; never fails the compaction.
+  // starts the Inbox; never fails the compaction. The list leaves the
+  // environment at the next main-loop step or turn (plainReminderAgain): the
+  // hook runs as the compaction installs, before either. Read before next(e),
+  // not alongside it: whether the command hook runs inside next(e) is the
+  // engine's, and a reused precomputed summary installs at once.
   on('session.compact', async ($: Engine, e: any, next: Next) => {
     if (e?.trigger !== 'precompute' && !e?.agentId && reminderOn() && allowed && inboxToolName) {
       try {
@@ -615,6 +636,7 @@ export function register(on: On) {
             inboxToolName,
           )
           await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderWithThreads(reminder, threads))).catch(() => undefined)
+          reminderWithThreadsSet = threads !== null
         }
       } catch {
         // The reminder session.start set stays.
@@ -630,9 +652,12 @@ export function register(on: On) {
   // (the person's switch, an Inbox that has run here); nothing when there is
   // no open thread or the Inbox is not running. Bounded by
   // SESSION_THREADS_RESUME_MS in all (session.start's decision included), so a
-  // resume is never held up for long. A guard plugin that skips classic.*
-  // skips this too (a known gap; its users get the list after a compaction).
-  on('classic.SessionStart', async ($: Engine, e: any, next: Next) => {
+  // resume is never held up for long. Matched on `resume`, so the engine
+  // raises it for nothing else (under a guard that skips classic.*, an
+  // unmatched hook would log "skipped" at every startup, /clear and
+  // compaction, #2159). That guard skips this too (a known gap; its users get
+  // the list after a compaction).
+  on('classic.SessionStart', { source: 'resume' }, async ($: Engine, e: any, next: Next) => {
     const result = await next(e)
     if (e?.source !== 'resume') return result
     try {
@@ -643,7 +668,9 @@ export function register(on: On) {
         return readSessionThreads(hostOf($, allowed.debugPath), allowed.dataDir, sessionId, cwd, inboxToolName)
       })
       if (!threads) return result
-      const context = Array.isArray(result?.additionalContext) ? result.additionalContext : []
+      // Another handler's context stays, a list or one string.
+      const given = result?.additionalContext
+      const context = Array.isArray(given) ? given : typeof given === 'string' && given ? [given] : []
       return { ...(result ?? {}), additionalContext: [...context, threads] }
     } catch {
       return result
@@ -783,6 +810,7 @@ export function register(on: On) {
   })
 
   on('turn.start', async ($: Engine, e: any, next: Next) => {
+    if (!e.agentId) await plainReminderAgain($)
     if (allowed && typeof e.turnId === 'string') {
       const instance = await currentMod($).catch(() => null)
       // A subagent's start carries its id: the controller counts only the main loop's turns.
@@ -792,6 +820,7 @@ export function register(on: On) {
   })
 
   on('turn.step', async function* ($: Engine, e: any, next: Next) {
+    if (!e.agentId) await plainReminderAgain($)
     const instance = allowed ? mod : null
     // A main-loop model request is going out: a reply Send now put into the turn is in it (inbox.ts).
     if (instance && !instance.isDisposed && !e.agentId && typeof e.turnId === 'string') instance.onMainStep(e.turnId)

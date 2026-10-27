@@ -4,7 +4,9 @@
  * for a few hours (or ever) is told the thread's subject, so a thread id it
  * remembered across a context compaction does not file its message in the
  * wrong thread unnoticed (the owner's ask after the misfiled-thread AAR,
- * 2026-10-27). Never blocks a send.
+ * 2026-10-27). Never blocks a send. Only for a message that names its thread
+ * (`reply_to`, or a `thread` name): a message routed to the session's own
+ * thread by default goes where the session's earlier messages went.
  *
  * "This session" is the call's `agent_session`, which every connection fills
  * with the host's own session id (the Claude Code mod, Pi, OpenCode, the stdio
@@ -21,7 +23,9 @@
  *    Codex queue), read from the store's delivery records;
  *  - the session's own earlier message in the thread (it wrote there, so it
  *    knew the thread then). Without this a session's own follow-ups into the
- *    thread it started would warn every time.
+ *    thread it started would warn every time. When writing there is the
+ *    session's latest contact, the line says so ("You last wrote in this
+ *    thread at …"), never that it has not read the thread.
  *
  * Reads are kept in memory, per store (a restart forgets them; deliveries and
  * the session's own messages are in the store and survive it). So after an
@@ -83,8 +87,17 @@ function lastRead(store: InboxStore, session: string, messages: readonly InboxMe
 export interface StaleThread {
   /** When the session last read the thread (ISO), or null: never, as far as this Inbox knows. */
   last_read_at: string | null;
+  /** When the session last wrote in the thread before this message (ISO), or null: never. */
+  last_wrote_at: string | null;
   subject: string | null;
   thread_name: string | null;
+}
+
+/** The session's latest contact with the thread (ISO): a read or its own message, or null for none. */
+export function lastContactOf(stale: StaleThread): string | null {
+  if (!stale.last_read_at) return stale.last_wrote_at;
+  if (!stale.last_wrote_at) return stale.last_read_at;
+  return stale.last_wrote_at > stale.last_read_at ? stale.last_wrote_at : stale.last_read_at;
 }
 
 /**
@@ -101,14 +114,16 @@ export function staleThreadOf(store: InboxStore, messageId: string, session: str
   const threadId = message.thread_id;
   const messages = store.thread(threadId)?.messages ?? [];
   const read = lastRead(store, who, messages, threadId);
-  let contact = read;
+  let wrote: number | null = null;
   for (const other of messages) {
     if (other.id === message.id || other.author.kind !== "agent" || other.author.session !== who) continue;
-    contact = later(contact, msOf(other.created_at));
+    wrote = later(wrote, msOf(other.created_at));
   }
+  const contact = later(read, wrote);
   if (contact !== null && now - contact <= INBOX_THREAD_STALE_MS) return null;
   return {
     last_read_at: read === null ? null : new Date(read).toISOString(),
+    last_wrote_at: wrote === null ? null : new Date(wrote).toISOString(),
     subject: store.threadSubject(threadId),
     thread_name: store.message(threadId)?.thread_name ?? null,
   };
@@ -117,10 +132,17 @@ export function staleThreadOf(store: InboxStore, messageId: string, session: str
 /**
  * The warning line: "You have not read this thread since <time>; its subject
  * is <subject>." (the owner's words), the time as read_thread prints times.
+ * When the session's latest contact was its own message: "You last wrote in
+ * this thread at <time>; its subject is <subject>.", so the thread's starter
+ * is never told it has not read its own thread.
  */
 export function staleThreadText(stale: StaleThread, time: (iso: string) => string): string {
-  const since = stale.last_read_at ? `since ${time(stale.last_read_at)}` : "in this session";
   const subject = stale.subject ? JSON.stringify(stale.subject) : "(none)";
   const name = stale.thread_name ? ` (thread name ${JSON.stringify(stale.thread_name)})` : "";
-  return `You have not read this thread ${since}; its subject is ${subject}${name}.`;
+  const contact = lastContactOf(stale);
+  const lead =
+    contact && contact === stale.last_wrote_at
+      ? `You last wrote in this thread at ${time(contact)}`
+      : `You have not read this thread ${stale.last_read_at ? `since ${time(stale.last_read_at)}` : "in this session"}`;
+  return `${lead}; its subject is ${subject}${name}.`;
 }

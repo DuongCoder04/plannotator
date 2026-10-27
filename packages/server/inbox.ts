@@ -854,6 +854,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     notify_reach: windows.reach(notificationsState().enabled),
     // Additive: event streams open now (windows' and the phone door's). Inbox tabs of one origin share one.
     event_streams: openEventStreams,
+    // Additive: read_thread honours the peek mark (the session's thread list after a compaction or resume).
+    peek: true,
   });
 
   /**

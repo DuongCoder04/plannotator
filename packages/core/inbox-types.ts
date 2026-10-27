@@ -1309,6 +1309,14 @@ export interface InboxHealth {
    * Inbox tabs of one browser origin share one stream (packages/inbox/sharedEvents.ts).
    */
   event_streams?: number;
+  /**
+   * This Inbox honours the peek mark on a read_thread list
+   * (`INBOX_PEEK_META_KEY`): no project made for a folder it does not know,
+   * the rows not counted as read (additive). A connection reads the session's
+   * threads only from an Inbox that says so; an older one would make a
+   * project for every folder that compacts or resumes.
+   */
+  peek?: true;
 }
 
 /** What an Inbox window reports about its browser's notification permission for its own origin. */

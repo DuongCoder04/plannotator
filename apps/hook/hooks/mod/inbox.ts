@@ -59,6 +59,7 @@ import {
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
   inboxSentNowFollowUpText,
+  inboxHealthPeeks,
   inboxSessionThreadsParams,
   inboxSessionThreadsText,
   inboxWakeText,
@@ -229,9 +230,11 @@ export const INBOX_SESSION_THREADS_TIMEOUT_MS = 1_500
  * The session's open Inbox threads as a few short lines
  * (`inboxSessionThreadsText`), or null: no Inbox has run here, it is not
  * running (it is never started for this), it did not answer within
- * INBOX_SESSION_THREADS_TIMEOUT_MS, or the session has no open thread. Read
- * with the peek mark, so the Inbox makes no project and the rows do not count
- * as the session having read the threads. Never throws.
+ * INBOX_SESSION_THREADS_TIMEOUT_MS, the session has no open thread, or the
+ * Inbox is older than the peek mark (its health has no `peek: true`: it would
+ * make a project for the folder). Read with the peek mark, so the Inbox makes
+ * no project and the rows do not count as the session having read the
+ * threads. Never throws.
  */
 export async function readSessionThreads(host: Host, dataDir: string, sessionId: string, cwd: string, toolName: string): Promise<string | null> {
   if (!sessionId || !cwd.startsWith('/')) return null
@@ -240,11 +243,12 @@ export async function readSessionThreads(host: Host, dataDir: string, sessionId:
     if (!(await host.exists(path))) return null
     const registry = parseInboxRegistry(await host.readFile(path).catch(() => null))
     if (!registry) return null
-    // Only the Inbox the registry names (its serverSession), never whatever else holds the port now.
+    // Only the Inbox the registry names (its serverSession), never whatever else holds the port now,
+    // and only one that honours the peek mark.
     const health = await host.fetch(`http://127.0.0.1:${registry.port}/api/inbox/health`, { method: 'GET', headers: {} }).catch(() => null)
     if (!health || health.status !== 200) return null
     try {
-      if ((JSON.parse(health.text) as { serverSession?: unknown }).serverSession !== registry.serverSession) return null
+      if (!inboxHealthPeeks(JSON.parse(health.text), registry.serverSession)) return null
     } catch {
       return null
     }

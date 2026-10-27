@@ -51,11 +51,23 @@ describe('readSessionThreads', () => {
     expect(urls).toEqual(['http://127.0.0.1:4100/api/inbox/health'])
   })
 
+  test("an Inbox from before the peek mark (its health has no peek): no list, and its /mcp is never called (it would make a project)", async () => {
+    const host = hostWithRealSleep()
+    host.files.set(inboxRegistryPathOf(DATA), REGISTRY)
+    const urls: string[] = []
+    host.onFetch = (url) => {
+      urls.push(url)
+      return { status: 200, ok: true, text: JSON.stringify({ ok: true, app: 'plannotator-inbox', serverSession: 'srv', version: '0.28.32' }) }
+    }
+    expect(await readSessionThreads(host, DATA, 'sess-1', '/work', TOOL)).toBeNull()
+    expect(urls).toEqual(['http://127.0.0.1:4100/api/inbox/health'])
+  })
+
   test('an Inbox that never answers: no list, within the bound', async () => {
     const host = hostWithRealSleep()
     host.files.set(inboxRegistryPathOf(DATA), REGISTRY)
     host.onFetch = (url) =>
-      url.endsWith('/api/inbox/health') ? { status: 200, ok: true, text: JSON.stringify({ serverSession: 'srv' }) } : new Promise(() => undefined)
+      url.endsWith('/api/inbox/health') ? { status: 200, ok: true, text: JSON.stringify({ serverSession: 'srv', peek: true }) } : new Promise(() => undefined)
     const started = Date.now()
     expect(await readSessionThreads(host, DATA, 'sess-1', '/work', TOOL)).toBeNull()
     expect(Date.now() - started).toBeLessThan(INBOX_SESSION_THREADS_TIMEOUT_MS + 500)
