@@ -118,9 +118,14 @@ export function ImageAttachmentView({
   const [markup, setMarkup] = useState<ImageAttachment | null>(null);
   // The drawing the ✓ just added to the reply: its comment's id, for a note, a redraw or ×.
   const [kept, setKept] = useState<{ id: string; image: ImageAttachment } | null>(null);
-  // A drawing on its way into the reply: a second ✓ or Enter meanwhile adds nothing (ui calls onAccept again).
-  const adding = useRef(false);
+  // One drawing per opening of the drawing screen: set as it opens, taken by the first ✓ or Enter. ui calls
+  // onAccept once per press, each after its own encode, so a later press (even one landing after the first
+  // drawing is in the reply) adds nothing.
+  const acceptable = useRef(false);
   const [annotating, setAnnotating] = useState(false);
+  useEffect(() => {
+    if (annotating) acceptable.current = true;
+  }, [annotating]);
   const [saving, setSaving] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const zoomRef = useRef<ImageZoomStageHandle>(null);
@@ -434,15 +439,13 @@ export function ImageAttachmentView({
           }}
           onAccept={async (blob, hasDrawings) => {
             // Nothing drawn: nothing to keep; the comment box stays as it was.
-            if (!hasDrawings || adding.current) return;
-            adding.current = true;
+            if (!hasDrawings || !acceptable.current) return;
+            acceptable.current = false;
             try {
               const keptFile = await source.keepMarkup(blob);
               await addDrawing({ path: keptFile.path, name: `${stem(attachment.name)}, marked up` });
             } catch (cause) {
               onError(cause instanceof InboxApiError ? cause.message : 'The drawing was not kept.');
-            } finally {
-              adding.current = false;
             }
           }}
         />

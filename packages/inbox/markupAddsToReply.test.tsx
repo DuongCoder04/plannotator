@@ -40,16 +40,27 @@ type Post = { url: string; body: Record<string, unknown> | null };
 let posts: Post[] = [];
 /** How long the markups route takes to answer (a slow upload). */
 let uploadMs = 0;
+/** How long each canvas encode takes, one entry per call (none left: at once). */
+let encodeMs: number[] = [];
+/** Saving an annotation fails (the server refuses it). */
+let failSaves = false;
 
 beforeEach(() => {
   posts = [];
   uploadMs = 0;
+  encodeMs = [];
+  failSaves = false;
   if (!hasDom) return;
   // A 2D context that draws nothing; a canvas that hands back a small PNG or JPEG.
   const ctx = new Proxy({}, { get: () => () => {} });
   stub(HTMLCanvasElement.prototype, 'getContext', { value: () => ctx, writable: true });
   stub(HTMLCanvasElement.prototype, 'toBlob', {
-    value: (cb: (blob: Blob) => void, type = 'image/png') => cb(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type })),
+    value: (cb: (blob: Blob) => void, type = 'image/png') => {
+      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type });
+      const ms = encodeMs.shift();
+      if (ms === undefined) cb(blob);
+      else setTimeout(() => cb(blob), ms);
+    },
     writable: true,
   });
   stub(Element.prototype, 'setPointerCapture', { value: () => {}, writable: true });
@@ -71,6 +82,7 @@ beforeEach(() => {
       return Response.json({ path, name: path.split('/').pop(), url: '/api/inbox/markups/x' });
     }
     if (url === '/api/inbox/annotations') {
+      if (failSaves) return Response.json({ error: { code: 'internal', message: 'Not saved.' } }, { status: 500 });
       const body = JSON.parse(String(init?.body));
       posts.push({ url, body });
       return Response.json({ annotation: record(body.annotation, body.annotation.id, body.attachment_id ?? shot.id) });
@@ -513,3 +525,76 @@ test.skipIf(!hasDom)("on a video too, a note keeps the panel's words and the mom
   await settle();
   expect(saved()[1]).toMatchObject({ id, text: 'Panel words\n\nBox note', inboxVideo: { time: 102.4 } });
 });
+
+/** Two ✓ presses whose encodes finish far apart: the second lands after the first drawing is already in the reply. */
+async function twoLateChecks() {
+  encodeMs = [5, 120];
+  uploadMs = 20;
+  const check = $<HTMLButtonElement>('[data-pn-image-annotator-toolbar] button[title^="Save"]')!;
+  await act(async () => check.click());
+  await act(async () => check.click());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
+}
+
+test.skipIf(!hasDom)('one drawing per opening: a ✓ whose encode lands after the first drawing is in the reply adds nothing', async () => {
+  await render(<Harness attachment={shot} />);
+  await openAndDraw();
+  await twoLateChecks();
+  expect(saved()).toHaveLength(1);
+  expect(toasts).toHaveLength(1);
+  // The next opening takes its drawing (a redraw of the same comment).
+  await act(async () => $<HTMLButtonElement>('[data-markup-kept] [data-markup-redraw]')!.click());
+  await settle();
+  await act(async () => $('[data-pn-image-annotator-stage] img')!.dispatchEvent(new Event('load')));
+  const canvas = $('[data-pn-image-annotator-stage] canvas')!;
+  for (const [type, x] of [['pointerdown', 5], ['pointermove', 40], ['pointerup', 40]] as const) {
+    await act(async () => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: x, pointerId: 1 })));
+  }
+  await press('Enter');
+  await settle();
+  expect(saved()).toHaveLength(2);
+  expect(saved()[1]!.id).toBe(saved()[0]!.id);
+});
+
+test.skipIf(!hasDom)('on a video too, one drawing per opening, however late the second ✓', async () => {
+  await renderFilm();
+  await openAndDraw();
+  await twoLateChecks();
+  expect(saved()).toHaveLength(1);
+  expect(toasts).toHaveLength(1);
+});
+
+test.skipIf(!hasDom)('playing on never drops a redraw that is waiting to be saved', async () => {
+  await renderFilm();
+  await openAndDraw();
+  await press('Enter');
+  await settle();
+  expect(saved()).toHaveLength(1);
+  // A redraw the server refuses: it waits in the row, to go with the note.
+  failSaves = true;
+  await act(async () => $<HTMLButtonElement>('[data-video-composer] [data-markup-redraw]')!.click());
+  await settle();
+  await openAndDrawAgain();
+  await press('Enter');
+  await settle();
+  failSaves = false;
+  const video = $<HTMLVideoElement>('video[data-video-player]')!;
+  await act(async () => video.dispatchEvent(new Event('play')));
+  // (Booleans: bun cannot print a happy-dom element in a failure.)
+  expect($('[data-video-composer] [data-markup-kept]') !== null).toBe(true);
+  expect($<HTMLButtonElement>('[data-video-comment-save]')!.disabled).toBe(false);
+  await act(async () => $<HTMLButtonElement>('[data-video-comment-save]')!.click());
+  await settle();
+  const last = saved().at(-1)!;
+  expect(last.id).toBe(saved()[0]!.id);
+  expect((last.images as { name: string }[])[0]!.name).toMatch(/marked up$/);
+});
+
+/** Draw on the drawing screen already open (a redraw). */
+async function openAndDrawAgain() {
+  await act(async () => $('[data-pn-image-annotator-stage] img')!.dispatchEvent(new Event('load')));
+  const canvas = $('[data-pn-image-annotator-stage] canvas')!;
+  for (const [type, x] of [['pointerdown', 5], ['pointermove', 40], ['pointerup', 40]] as const) {
+    await act(async () => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: x, pointerId: 1 })));
+  }
+}

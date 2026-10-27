@@ -117,14 +117,19 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
   const [markup, setMarkup] = useState<ImageAttachment | null>(null);
   // The drawing the ✓ just added to the reply: its comment, for a note, a redraw or ×.
   const [kept, setKept] = useState<{ id: string; image: ImageAttachment; time: number } | null>(null);
-  // A drawing on its way into the reply: a second ✓ or Enter meanwhile adds nothing (ui calls onAccept again).
-  const adding = useRef(false);
+  // One drawing per opening of the drawing screen: set as it opens, taken by the first ✓ or Enter. ui calls
+  // onAccept once per press, each after its own encode, so a later press (even one landing after the first
+  // drawing is in the reply) adds nothing.
+  const acceptable = useRef(false);
   // The kept drawing's comment as it reads now; gone once removed (the panel, Undo) or sent, and the row lets it go.
   const keptNow = kept ? annotations.find((a) => a.id === kept.id) ?? null : null;
   useEffect(() => {
     if (kept && !keptNow) setKept(null);
   }, [kept, keptNow]);
   const [annotating, setAnnotating] = useState(false);
+  useEffect(() => {
+    if (annotating) acceptable.current = true;
+  }, [annotating]);
   const [saving, setSaving] = useState(false);
   /** A phone opens the row from "Comment at 1:42". */
   const [composing, setComposing] = useState(false);
@@ -418,8 +423,9 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
             }}
             onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
             onPlay={() => {
-              // Playing on after a drawing went into the reply: the row follows the film again (the comment stays).
-              if (kept && text.trim() === '') reset();
+              // Playing on after a drawing went into the reply: the row follows the film again (the comment stays);
+              // never while a redraw that failed to save waits in the row.
+              if (kept && text.trim() === '' && !markup) reset();
             }}
             onPause={() => {
               // The first pause, with nothing written yet: the suggestion fills the box, and the moment pins.
@@ -536,15 +542,13 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
           }}
           onAccept={async (blob, hasDrawings) => {
             // Nothing drawn: the plain frame still rides the comment.
-            if (!hasDrawings || adding.current) return;
-            adding.current = true;
+            if (!hasDrawings || !acceptable.current) return;
+            acceptable.current = false;
             try {
               const keptFile = await source.keepMarkup(blob);
               await addDrawing({ path: keptFile.path, name: `${videoFrameName(attachment.name, kept?.time ?? pinned ?? current)}, marked up` });
             } catch (cause) {
               onError(cause instanceof InboxApiError ? cause.message : 'The drawing was not kept.');
-            } finally {
-              adding.current = false;
             }
           }}
         />
