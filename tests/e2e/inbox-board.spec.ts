@@ -275,7 +275,9 @@ test("an agent's cards appear live as it makes and moves them, bold until opened
   // The agent moves Delivery ticks to Your review.
   await claude.card({ op: 'move', card_id: ids.ticks, column: 'your_review', you: 'Look at the screenshots, then merge #14', project_path: projects.plannotator });
   await expect(lane(page, 'your_review').locator(`[data-card-id="${ids.ticks}"]`)).toBeVisible();
-  await expect(card(page, ids.herdr).locator('.ib-bc-line')).toHaveText('Triage the open PRs first');
+  // The agent's last word is not on the lane card (approval board-lane-card, r1): its title row alone.
+  await expect(card(page, ids.herdr).locator('.ib-bc-line')).toHaveCount(0);
+  await expect(card(page, ids.herdr)).not.toContainText('Triage the open PRs first');
   await expect(page.locator('[data-board-summary]')).toHaveText('12 in flight · 5 on you');
   await expect(page.locator('[data-board-link="shipped"]')).toHaveText('Shipped 1');
   // No "on you" pill on a lane, no counts on a card.

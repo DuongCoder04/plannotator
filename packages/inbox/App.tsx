@@ -1626,7 +1626,16 @@ function Inbox() {
       onUndo: () => {
         dismissToast();
         void inboxApi
-          .saveDraft(draft.id, { body: draft.body, to: draft.to, project: draft.project, files: draft.files.map((f) => f.upload_id), base: null })
+          // Everything the draft kept: its typed thread name and the Board card it was started for (Create thread).
+          .saveDraft(draft.id, {
+            body: draft.body,
+            to: draft.to,
+            project: draft.project,
+            files: draft.files.map((f) => f.upload_id),
+            base: null,
+            ...(draft.thread_name ? { thread_name: draft.thread_name } : {}),
+            ...(draft.card ? { card: draft.card } : {}),
+          })
           .then(() => refreshDrafts())
           .then(() => say('Draft restored.'))
           .catch(() => showToast({ icon: 'warn', lead: 'The draft could not be restored.', wrap: true }));
@@ -3295,6 +3304,7 @@ function Inbox() {
         }}
         onSeeDrops={seeDrops}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
         marks={settings !== null && settings.via !== 'tailnet'}
       />
@@ -3783,6 +3793,13 @@ function Inbox() {
           onSent={(sent) => {
             rememberSent(sent.session);
             composeSent(sent);
+            // Create thread from a Board card: the new thread is linked to the card, so its Open thread goes there.
+            if (sent.cardId) {
+              void inboxApi
+                .editCard(sent.cardId, { op: 'link', thread_id: sent.threadId })
+                .then(() => refreshCards())
+                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
+            }
           }}
           onSaved={composeSaved}
           onDeleted={(draft) => {

@@ -4,7 +4,7 @@ import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
-import { Tip } from '../components/Tip';
+import { Tip, isTextCut } from '../components/Tip';
 import { DeliveryTick } from '../components/DeliveryTick';
 import { SidebarTrigger } from '../shell/sidebar';
 import { pageInFront } from '../sound';
@@ -73,6 +73,8 @@ export interface BoardPageProps {
   onSeeDrops: (ids: readonly string[]) => void;
   /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
   onOpenThread: (card: InboxCardWire, threadId: string) => void;
+  /** Create thread (an opened card with no thread): compose to `session` (the card's agent, else a live session in its project), linked to the card on Send. */
+  onCreateThread: (card: InboxCardWire, session: string | null, opener: HTMLElement) => void;
   /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
   marks?: boolean;
 }
@@ -349,6 +351,7 @@ export function BoardPage(props: BoardPageProps) {
       onSend={() => openSend(open)}
       onChanged={props.onChanged}
       onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
+      onCreateThread={(session, opener) => props.onCreateThread(open, session, opener)}
     />
   ) : null;
 
@@ -629,14 +632,21 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
   your_review: 'Nothing waits on your review.',
 };
 
+/** A lane card's title is cut (clamped at three lines, or a word cut at the edge): its button overflows. */
+const titleCut = (trigger: Element) => isTextCut(trigger.closest('.ib-bc-main'));
+
 /**
- * One card, variant C "Lean": the agent's mark and the title; then "You: …"
- * (the person's columns), "Sent to <agent>" with the delivery tick (a card
- * the person sent, until it moves), or the agent's last word; and how long
- * ago anyone last wrote to it. Bold while unread. The title is the button that
- * opens the card (a click anywhere else on the card does too); "You: …" is its
- * own button, to the thread where the person makes the call (`youThread`);
- * with no thread linked it is plain words, and a click on it opens the card.
+ * One card, "Title row" (approval board-lane-card, r1, 2026-10-27): the
+ * title, with the linked PR's or issue's mark, the agent's small round mark (a
+ * dashed ring for the person's card) and how long ago anyone last wrote to it
+ * at the right of its first line. A second line only when the person owes
+ * something ("You: …", in the person's columns) or a send is pending ("Sent to
+ * <agent>" with the delivery tick, until it moves). The agent's last word is
+ * not on the lane card: the opened card has it. Bold while unread. The title
+ * is the button that opens the card (a click anywhere else on the card does
+ * too); "You: …" is its own button, to the thread where the person makes the
+ * call (`youThread`); with no thread linked it is plain words, and a click on
+ * it opens the card.
  */
 function BoardCard({
   card,
@@ -662,13 +672,23 @@ function BoardCard({
   const mark = markOf(card);
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
   const thread = line?.you ? youThread(card, rowOf) : null;
-  // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
-  // on): one line, the age beside the title, never an empty second line.
-  const oneLine = !sent && !line && !mark;
-  const ageTip = (
-    <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
-      <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
-    </Tip>
+  // "Title row" (approval board-lane-card, r1): a card is its title row, the marks and the age at its right.
+  // A second line only when the person owes something ("You: …") or a send is pending ("Sent to …"); the
+  // agent's last word is left off the lane card and stays in the opened card. Never an empty second line.
+  const oneLine = !sent && !line?.you;
+  const owner = cardOwnerName(card);
+  const meta = (
+    <span className="ib-bc-meta">
+      {mark && <RefMark mark={mark} />}
+      <Tip content={owner === 'You' ? 'Your card' : owner}>
+        <span className="ib-bc-who" data-host={card.agent?.kind === 'agent' ? card.agent.host : 'you'}>
+          {card.agent ? <AuthorMark author={card.agent} /> : <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" aria-hidden="true" />}
+        </span>
+      </Tip>
+      <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
+        <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
+      </Tip>
+    </span>
   );
   return (
     <li
@@ -694,21 +714,15 @@ function BoardCard({
       onDragEnd={onDragEnd}
     >
       <span className="ib-bc-top">
-        {card.agent ? (
-          <AuthorMark author={card.agent} />
-        ) : (
-          <span className="ib-mk ib-bc-you" aria-hidden="true">
-            <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
-          </span>
-        )}
         <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
-          <Tip content={card.title} cut>
+          {meta}
+          {/* The clamp (three lines) is on the button, not on the inline title: measure the button. */}
+          <Tip content={card.title} when={titleCut}>
             <span className="ib-bc-t" dir="auto">
               {card.title}
             </span>
           </Tip>
         </button>
-        {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
       </span>
       {!oneLine && (
         <span className="ib-bc-bot">
@@ -718,24 +732,18 @@ function BoardCard({
                 {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
                 <span className="ib-bc-sentt">Sent to {sent}</span>
               </span>
-            ) : line ? (
-              line.you && thread ? (
-                <button type="button" className="ib-bc-youlink" data-card-you-link={thread} aria-label={youLinkLabel(line.text)} onClick={() => onOpenThread(card, thread)}>
-                  <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
-                  <Icon name="arrowUpRight" size={12} />
-                </button>
-              ) : line.you ? (
-                // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
-                <>
-                  <b className="ib-bc-youw">You:</b> {line.text}
-                </>
-              ) : (
-                line.text
-              )
-            ) : null}
+            ) : line?.you && thread ? (
+              <button type="button" className="ib-bc-youlink" data-card-you-link={thread} aria-label={youLinkLabel(line.text)} onClick={() => onOpenThread(card, thread)}>
+                <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
+                <Icon name="arrowUpRight" size={12} />
+              </button>
+            ) : (
+              // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
+              <>
+                <b className="ib-bc-youw">You:</b> {line?.text}
+              </>
+            )}
           </span>
-          {mark && <RefMark mark={mark} />}
-          {ageTip}
         </span>
       )}
     </li>
@@ -986,6 +994,7 @@ function OpenedCard({
   onSend,
   onChanged,
   onOpenThread,
+  onCreateThread,
 }: {
   card: InboxCardWire;
   projectName: string;
@@ -1000,6 +1009,7 @@ function OpenedCard({
   onSend: () => void;
   onChanged: (card?: InboxCardWire) => void;
   onOpenThread: (threadId: string) => void;
+  onCreateThread: (session: string | null, opener: HTMLElement) => void;
 }) {
   const [history, setHistory] = useState<InboxCardHistoryEntry[] | null>(null);
   const [refs, setRefs] = useState<{ ref: InboxCardRef; result: ForgeRefCardResult }[] | null>(null);
@@ -1030,7 +1040,7 @@ function OpenedCard({
     };
   }, [card.id, refKey]);
   const agentSession = card.agent?.kind === 'agent' ? card.agent.session : null;
-  // "Ask where this is": the card's agent while it is live, else a live session in the card's project.
+  // "Ask for an update" and "Create thread": the card's agent while it is live, else a live session in the card's project.
   const askTarget = (() => {
     if (!sessions) return null;
     const own = findTarget(sessions.projects, agentSession);
@@ -1123,6 +1133,7 @@ function OpenedCard({
         }
       }}
       onOpenThread={onOpenThread}
+      onCreateThread={(opener) => onCreateThread(askTarget?.session ?? null, opener)}
     />
   );
 }
