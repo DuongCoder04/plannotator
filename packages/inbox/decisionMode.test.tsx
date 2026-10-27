@@ -277,10 +277,10 @@ test.skipIf(!hasDom)('no global way in: no sidebar row, no list-header button, w
     expect(list.querySelectorAll('[data-open-question]')).toHaveLength(3);
     expect(list.querySelector('[data-thread-decide]')).toBeNull();
     expect(document.querySelector('[data-decision-mode]')).toBeNull();
-    // Settings → General shows the switch, off.
+    // Settings → Capabilities → Experimental shows the switch, off.
     act(() => root?.unmount());
     host?.remove();
-    const settings = await renderApp('#settings/general');
+    const settings = await renderApp('#settings/capabilities');
     await until(() => settings.querySelector('[data-settings-experimental]') !== null, 'the Experimental group');
     const sw = settings.querySelector('[data-settings-experimental] [role="switch"]') as HTMLButtonElement;
     expect(sw.getAttribute('aria-checked')).toBe('false');

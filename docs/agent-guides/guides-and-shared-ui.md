@@ -270,6 +270,8 @@ Known limitation: share links intentionally do not carry HTML element anchors or
 
 Uses cookies (not localStorage) because each hook invocation runs on a random port. Settings include identity, plan saving (enabled/custom path), and agent switching (OpenCode only).
 
+**Experimental tab** (the owner, 2026-10-27: "its own page on settings"): experimental settings live in their own tab, the last one in `packages/ui/components/Settings.tsx` (`ExperimentalTab`, `data-settings-experimental`), below the Integrations group on desktop and last in the phone's tab bar, never inside another tab. It shows only where it holds a setting: today code review's "Edit Code to Suggest" (`editSuggestions`, cookie `plannotator-experimental-edit-suggestions`, unchanged), so plan review and annotate have no Experimental tab. The Inbox has the same idea as its own Settings section (see `inbox-window.md`, Settings → Experimental).
+
 ## Syntax Highlighting
 
 There is **one** highlighter in the app: the Shiki instance `@pierre/diffs` already runs for the code-review diff pane, driven by Shiki's **JavaScript regex engine** (`preferredHighlighter: 'shiki-js'`). `highlight.js` is gone. The wrapper is `packages/ui/utils/codeHighlight.ts`:

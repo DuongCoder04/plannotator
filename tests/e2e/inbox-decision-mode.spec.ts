@@ -6,7 +6,7 @@
  * mcp` (scripts/inbox-sim.ts), one shim per agent session.
  *
  * Desktop (Chromium, 1440 by 900): nothing of decision mode shows until
- * Settings → General → Experimental turns it on; then still no global way in
+ * Settings → Capabilities → Experimental turns it on; then still no global way in
  * (no sidebar row, no list-header button): decision mode is thread only, and
  * its one way in is "Decide these N" in a thread's open-questions list. In one
  * thread, Claude Code asks two questions in one message (one Stopped), Codex
@@ -158,7 +158,7 @@ test.afterAll(async () => {
   }
 });
 
-test('off by default: nothing of decision mode until Settings → General → Experimental turns it on', async () => {
+test('off by default: nothing of decision mode until Settings → Capabilities → Experimental turns it on', async () => {
   const { page, url, claude, codex, pi } = world;
   // One thread, three agents (decision mode is thread only): Codex and Pi write in Claude Code's thread.
   const asked = await claude.send(
@@ -179,7 +179,7 @@ test('off by default: nothing of decision mode until Settings → General → Ex
   await expect(page.locator('[data-decide-head]')).toHaveCount(0);
   expect((await fetch(`http://127.0.0.1:${port()}/api/inbox/decisions`)).status).toBe(404);
 
-  await page.goto(`${url}#settings/general`);
+  await page.goto(`${url}#settings/capabilities`);
   const group = page.locator('[data-settings-experimental]');
   await expect(group).toBeVisible();
   await expect(group).toContainText('Decision mode');
