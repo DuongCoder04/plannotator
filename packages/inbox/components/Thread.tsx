@@ -77,7 +77,7 @@ import { ActionChecklist, type ActionMark } from './ActionChecklist';
 import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
-import { OpenQuestionsButton } from './OpenQuestions';
+import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { selectionToolbarShowing } from '../selectionToolbar';
@@ -835,9 +835,11 @@ export interface ThreadPaneProps {
    * if folded or hidden in the middle fold, scrolled to the centre, focused
    * and ringed (a question's card when the match was in a question), and the
    * query's words are highlighted in it until the first click or key in the
-   * thread. `onLanded` then drops `msg=` from the hash.
+   * thread. `onLanded` then drops `msg=` from the hash. `focus: 'prompt'`
+   * (decision mode's "Open the thread", approval "inbox-decide-thread-only"):
+   * focus goes to the question's prompt, not the card.
    */
-  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null } | null;
+  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null; focus?: 'prompt' } | null;
   onLanded?: () => void;
   /**
    * The Artifacts view is on (approval "inbox-thread-artifacts", `#thread=…&artifacts`):
@@ -846,6 +848,12 @@ export interface ThreadPaneProps {
   artifacts?: boolean;
   /** Turn the Artifacts view on or off (the header's button, "Back to the thread"). Absent: no Artifacts button. */
   onArtifacts?: (open: boolean) => void;
+  /**
+   * Decision mode (experimental, thread only): "Decide these N" at the top of
+   * the open-questions list, which opens the dialog scoped to this thread.
+   * The window passes it only while two or more of the thread's decisions wait.
+   */
+  decide?: OpenQuestionsDecide | null;
 }
 
 /** The thread's attachments as they are now and the annotations waiting for a Send, kept fresh. */
@@ -1003,7 +1011,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -1356,12 +1364,25 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onLandedRef.current?.();
         return;
       }
-      const card = target.questionKey ? body.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(target.messageId)}"] [data-question-key="${CSS.escape(target.questionKey)}"]`) : null;
-      const element = card ?? article;
+      const inMessage = `[data-message-id="${CSS.escape(target.messageId)}"]`;
+      const key = target.questionKey ? CSS.escape(target.questionKey) : null;
+      const card = key ? body.querySelector<HTMLElement>(`${inMessage} [data-question-key="${key}"]`) : null;
+      // An action item is a row of its message's checklist (ActionChecklist), not a question card.
+      const actionRow = key && !card ? body.querySelector<HTMLElement>(`${inMessage} [data-action-card="${key}"]`) : null;
+      const element = card ?? actionRow ?? article;
       stopHold();
       element.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
-      if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
-      element.focus({ preventScroll: true });
+      // The card's prompt is what names it (its aria-labelledby): focus it there when asked, else the card. An
+      // action row's prompt is its task, the row's toggle.
+      const promptId = target.focus === 'prompt' ? card?.getAttribute('aria-labelledby') : null;
+      const prompt = promptId
+        ? card!.querySelector<HTMLElement>(`#${CSS.escape(promptId)}`)
+        : target.focus === 'prompt' && actionRow
+          ? actionRow.querySelector<HTMLElement>('[data-action-toggle]')
+          : null;
+      const focused = prompt ?? element;
+      if (!focused.hasAttribute('tabindex')) focused.setAttribute('tabindex', '-1');
+      focused.focus({ preventScroll: true });
       element.classList.remove('ib-q-target-out');
       element.classList.add('ib-q-target');
       setTimeout(() => {
@@ -2769,8 +2790,16 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           });
   // No Send now because that session runs an older plugin than a restart loads (the "Steps" line,
   // owner approval "restart-warning"): only while the reply waits for a working session.
-  const restartName = lastTo ? hostName(lastTo.host) : repliedTo?.author.kind === 'agent' && repliedTo.author.host ? hostName(repliedTo.author.host) : asker;
   const restart = delivered?.state === 'queued' && !last.deliver_now_at ? restartNote(recipientConnection) : null;
+  // Oh My Pi polls as host `pi`: its runtime names it (owner approval "reload-hosts").
+  const restartName =
+    restart?.runtime === 'oh-my-pi'
+      ? 'Oh My Pi'
+      : lastTo
+        ? hostName(lastTo.host)
+        : repliedTo?.author.kind === 'agent' && repliedTo.author.host
+          ? hostName(repliedTo.author.host)
+          : asker;
   // The name the waiting band uses ("Claude Code", "Claude Code (another session)").
   const ownerLineName = lastTo
     ? last.to
@@ -3954,6 +3983,28 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   Cancel
                 </button>
                 <span className="ib-sp" />
+                {/* A phone has no way to paste a picture into the reply (iOS offers no Paste for an image in a plain
+                    text field), so it gets an attach button: the photo library or Files, into the same tiles,
+                    upload path and names as a paste. A desktop stays paste-only (the owner's choice). */}
+                {phone && (
+                  <Tip content="Attach files">
+                    <label className="ib-rattach" aria-label="Attach files">
+                      <Icon name="clip" size={19} />
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*,*/*"
+                        className="ib-sr"
+                        data-reply-attach=""
+                        onChange={(event) => {
+                          if (event.target.files) replyFiles.attach(event.target.files);
+                          event.target.value = '';
+                          setError(null);
+                        }}
+                      />
+                    </label>
+                  </Tip>
+                )}
                 {/* The in-thread New message button is off (approval "inbox-acknowledge"); its route and code stay. */}
                 {SHOW_NEW_MESSAGE_BUTTON && !archived && <NewMessageButton live={live} mode={newMessage} onClick={() => void pressNewMessage()} />}
               </div>
@@ -4006,6 +4057,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                       ? { label: reaskItemLabel(reaskOpen), tooltip: reaskTooltip(reaskList), busy: reasking, onReask: () => void sendReask() }
                       : null
                   }
+                  decide={decide}
                   triggerRef={reaskRef}
                   phone={phone}
                   measure={measureOpenQuestions}
