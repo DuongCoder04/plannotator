@@ -1260,6 +1260,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-sgroup > h2 { font-size: var(--ib-fs-13-5, 13.5px); font-weight: 600; margin: 0 0 3px; }
 .ib-sgroup > p { margin: 0 0 10px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.5; }
 .ib-sgroup > h2 + .ib-card { margin-top: 8px; }
+/* Capabilities → Experimental's heading takes focus when `#settings/experimental` lands there, like a section's h1. */
+.pn-inbox .ib-sgroup > h2[tabindex]:focus, .pn-inbox .ib-sgroup > h2[tabindex]:focus-visible { outline: none; }
 .ib-sgroup > .ib-callout { margin-bottom: 10px; }
 .ib-spg > .ib-callout { margin-top: 16px; }
 .ib-card { border: 1px solid var(--ib-line); border-radius: 10px; overflow: hidden; background: var(--card); }
@@ -4881,6 +4883,23 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-bc-who { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in oklch, var(--muted) 90%, var(--foreground) 4%); }
 .ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: 11px; height: 11px; }
 .ib-bc-who[data-host="you"] { background: none; }
+/* "Title row" (approval board-lane-card, r1): the marks and the age float at the right of the title's first
+   line and the title wraps under them; the line under it ("You: …", "Sent to …") gets the card's whole width;
+   the You link's arrow only on hover or focus. */
+.ib-bpage .ib-bcard { gap: 3px; padding: 9px 12px; }
+/* At most three lines: a sentence-long title is cut (its tooltip has it all). */
+.ib-bpage .ib-bcard .ib-bc-main { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; flex: 1 1 auto; text-align: left; line-height: 1.4; overflow: hidden; }
+.ib-bpage .ib-bcard .ib-bc-t { display: inline; white-space: normal; overflow: visible; overflow-wrap: normal; line-height: 1.4; }
+/* WebKit lays a -webkit-box out as a box, so the float would sit on top: a plain block cut at three lines there. */
+@supports (font: -apple-system-body) {
+  .ib-bpage .ib-bcard .ib-bc-main { display: block; max-height: calc(1.4em * 3); }
+}
+.ib-bpage .ib-bcard .ib-bc-meta { float: right; display: inline-flex; height: calc(var(--ib-fs-14, 14px) * 1.4); margin: 0 0 0 8px; gap: 5px; }
+.ib-bpage .ib-bcard .ib-bc-age { font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); }
+@media (hover: hover) and (pointer: fine) {
+  .ib-bpage .ib-bcard .ib-bc-youlink > svg { display: none; }
+  .ib-bpage .ib-bcard .ib-bc-youlink:is(:hover, :focus-visible) > svg { display: inline; }
+}
 .ib-bc-who > .ib-bc-yourdot { width: 13px; height: 13px; }
 /* A linked PR's or issue's state (inbox-card-marks): GitHub's Octicon shapes and colours, the dark
    values first and the light ones below; unknown is the same shape, quiet. */
@@ -4983,6 +5002,9 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-boff h2 { margin: 0; font-size: var(--ib-fs-18, 18px); font-weight: 600; }
 .ib-boff p { margin: 0; max-width: 460px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); line-height: 1.55; }
 .ib-boff .ib-btn { margin-top: 4px; }
+/* "The same switch is in Settings → Capabilities": a link like the ones in a settings row's description. */
+.ib-boff-note a { color: var(--primary); text-decoration: none; }
+.ib-boff-note a:hover { text-decoration: underline; }
 
 /* The opened card: a panel beside the Board (a full screen on a phone). */
 .ib-crdp { flex: 0 0 min(560px, 44%); min-width: 0; display: flex; flex-direction: column; border-radius: var(--ib-lr-lg, 10px); background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklch, var(--border) 60%, transparent); overflow: hidden; }

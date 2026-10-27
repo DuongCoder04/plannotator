@@ -189,8 +189,8 @@ test('off by default: no Board row, a #board link says it is off, an agent is re
   await both(page, 'board-off-1440');
   expect(cardReads).toEqual([]);
   page.off('request', watch);
-  // Settings → General: the switch, saying agents get it from their next session.
-  await page.goto(`${world.url}#settings/general`);
+  // Settings → Capabilities (moved out of General): the switch, saying agents get it from their next session.
+  await page.goto(`${world.url}#settings/capabilities`);
   const group = page.locator('[data-settings-board]');
   await expect(group).toBeVisible();
   await expect(group).toContainText('next session');
@@ -275,7 +275,9 @@ test("an agent's cards appear live as it makes and moves them, bold until opened
   // The agent moves Delivery ticks to Your review.
   await claude.card({ op: 'move', card_id: ids.ticks, column: 'your_review', you: 'Look at the screenshots, then merge #14', project_path: projects.plannotator });
   await expect(lane(page, 'your_review').locator(`[data-card-id="${ids.ticks}"]`)).toBeVisible();
-  await expect(card(page, ids.herdr).locator('.ib-bc-line')).toHaveText('Triage the open PRs first');
+  // The agent's last word is not on the lane card (approval board-lane-card, r1): its title row alone.
+  await expect(card(page, ids.herdr).locator('.ib-bc-line')).toHaveCount(0);
+  await expect(card(page, ids.herdr)).not.toContainText('Triage the open PRs first');
   await expect(page.locator('[data-board-summary]')).toHaveText('12 in flight · 5 on you');
   await expect(page.locator('[data-board-link="shipped"]')).toHaveText('Shipped 1');
   // No "on you" pill on a lane, no counts on a card.
@@ -546,7 +548,7 @@ test('turned off again: the row goes, an agent mid-session is refused and nothin
   const listed = (await claude.card({ op: 'list', project_path: projects.plannotator })).cards as { id: string; said: string | null }[];
   expect(listed.length).toBeGreaterThan(0);
   const mine = listed[0]!;
-  await page.goto(`${world.url}#settings/general`);
+  await page.goto(`${world.url}#settings/capabilities`);
   const toggle = page.locator('[data-settings-board] [role="switch"]');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked', 'false');

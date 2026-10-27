@@ -74,6 +74,12 @@ const YOU_CARDS: InboxCardWire[] = [
   card('crd_two', { title: 'Caret anywhere', column: 'your_review', you: 'Merge #15', threads: ['msg_new', 'msg_old'] }),
   card('crd_none', { title: 'Settings search', column: 'your_look', you: 'Choose fuzzy or prefix' }),
 ];
+// The lane card's second line (approval board-lane-card, r1): only "You: …" or a pending "Sent to …", never the agent's last word.
+const LINE_CARDS: InboxCardWire[] = [
+  card('crd_said', { title: 'Hero scene timers', column: 'building', said: 'Option 3 of 6 rendered' }),
+  card('crd_owe', { title: 'Pricing page', column: 'your_look', you: 'Read the copy, then say go', said: 'Copy drafted' }),
+  card('crd_wait', { title: 'Auto-update', column: 'backlog', agent: null, said: 'Not started', sent: { at: NEW, to: CODEX, thread_id: 'msg_wait' } }),
+];
 const YOU_LAST: Record<string, string> = { msg_new: '2026-10-21T09:00:00.000Z', msg_old: '2026-10-20T09:00:00.000Z', msg_sent: '2026-10-19T09:00:00.000Z' };
 const youRow = (id: string) => (YOU_LAST[id] ? ({ thread_id: id, subject: id, project: { id: 'prj_1', name: 'web' }, last_at: YOU_LAST[id] } as unknown as InboxListRow) : null);
 
@@ -111,7 +117,11 @@ function scriptFetch(sessions: unknown[] = []) {
     const refs = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)\/refs$/);
     if (refs) return json({ refs: [] });
     const one = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)$/);
-    if (one && method === 'GET') return json({ card: [...CARDS, ...YOU_CARDS].find((c) => c.id === one[1]), history: [{ kind: 'created', at: OLD, by: CLAUDE }] });
+    if (one && method === 'GET') {
+      const found = [...CARDS, ...YOU_CARDS, ...LINE_CARDS].find((c) => c.id === one[1]);
+      // The agent's last word is in the opened card's history.
+      return json({ card: found, history: [...(found?.said ? [{ kind: 'said', at: NEW, by: CLAUDE, text: found.said }] : []), { kind: 'created', at: OLD, by: CLAUDE }] });
+    }
     if (one && method === 'POST') return json({ card: { ...[...CARDS, ...YOU_CARDS].find((c) => c.id === one[1])!, sent: body?.op === 'send' ? { at: NEW, to: CLAUDE, thread_id: body.thread_id } : null } });
     if (url.pathname === '/api/inbox/cards') return json({ card: card('crd_new', { title: String(body?.title), agent: null, notes: (body?.notes as string) ?? null }) });
     if (/^\/api\/inbox\/threads\/[^/]+\/message$/.test(url.pathname)) return json({ message: { id: 'msg_start' }, replayed: false });
@@ -185,7 +195,7 @@ const $ = (selector: string) => document.querySelector<HTMLElement>(selector);
 const $$ = (selector: string) => [...document.querySelectorAll<HTMLElement>(selector)];
 const cardEl = (id: string) => $(`.ib-bcard[data-card-id="${id}"]`);
 
-test.if(hasDom)('the lanes in order, a card’s two lines, bold while unread, no "on you" pill', async () => {
+test.if(hasDom)('the lanes in order, the title row, bold while unread, no "on you" pill', async () => {
   scriptFetch();
   draw();
   await settle();
@@ -194,10 +204,9 @@ test.if(hasDom)('the lanes in order, a card’s two lines, bold while unread, no
   expect($('[data-board-link="shipped"]')!.textContent).toBe('Shipped 1');
   expect($('[data-board-link="icebox"]')!.textContent).toBe('Icebox 1');
   expect(cardEl('crd_price')!.querySelector('.ib-bc-line')!.textContent).toBe('You: Read the copy, then say go');
-  expect(cardEl('crd_hero')!.querySelector('.ib-bc-line')!.textContent).toBe('Option 3 of 6 rendered');
-  // The title has the whole width: the agent is a small mark at the bottom right, just before the age.
-  expect(cardEl('crd_hero')!.querySelector('.ib-bc-top .ib-mk')).toBeNull();
-  expect([...cardEl('crd_vite')!.querySelectorAll('.ib-bc-bot .ib-bc-meta > *')].map((el) => el.className.split(' ')[0])).toEqual(['ib-bc-mark', 'ib-bc-who', 'ib-bc-age']);
+  // The marks and the age sit in the title row, in this order; a card with nothing owed or pending is that row alone.
+  expect([...cardEl('crd_vite')!.querySelectorAll('.ib-bc-top .ib-bc-meta > *')].map((el) => el.className.split(' ')[0])).toEqual(['ib-bc-mark', 'ib-bc-who', 'ib-bc-age']);
+  expect(cardEl('crd_vite')!.querySelector('.ib-bc-bot')).toBeNull();
   // Heard after the look: bold. Before it: not.
   expect(cardEl('crd_auto')!.hasAttribute('data-unread')).toBe(true);
   expect(cardEl('crd_hero')!.hasAttribute('data-unread')).toBe(false);
@@ -208,6 +217,21 @@ test.if(hasDom)('the lanes in order, a card’s two lines, bold while unread, no
   expect(open.getAttribute('aria-label')).toContain('Auto-update for users');
   act(() => open.click());
   expect(calls.some((c) => c.path.startsWith('/api/inbox/cards/'))).toBe(false);
+});
+
+test.if(hasDom)('a second line only when the person owes something or a send is pending; the agent’s last word only in the opened card', async () => {
+  scriptFetch();
+  draw({ model: { serverSession: 's', cursor: 1, cards: LINE_CARDS, dropped_unseen: 0, seen_seq: LOOK }, openCard: 'crd_said' });
+  await settle();
+  const second = (id: string) => cardEl(id)!.querySelector('.ib-bc-bot .ib-bc-line')?.textContent ?? null;
+  expect(second('crd_owe')).toBe('You: Read the copy, then say go');
+  expect(second('crd_wait')).toBe('Sent to Codex');
+  expect(second('crd_said')).toBeNull();
+  // Never the agent's word on a lane card, whether or not it has a second line.
+  for (const c of LINE_CARDS) expect(cardEl(c.id)!.textContent).not.toContain(c.said!);
+  // The opened card has it.
+  await settle();
+  expect($('[data-card-panel="crd_said"]')!.textContent).toContain('Option 3 of 6 rendered');
 });
 
 test.if(hasDom)('"You: …" opens the thread where the person makes the call, a target apart from opening the card', async () => {
