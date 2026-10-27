@@ -4275,6 +4275,12 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-reask[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); }
 .ib-oq-reask:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .ib-oq-reask[data-disabled] { opacity: 0.55; }
+/* Decision mode's one way in (experimental, thread only): "Decide these N", the list's first row, quiet like Re-ask. */
+.ib-oq-decide { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 8px; border-radius: var(--ib-lr-sm, 8px); font-size: var(--ib-fs-13, 13px); font-weight: 500; color: var(--foreground); cursor: default; outline: none; user-select: none; flex: none; }
+.ib-oq-decide > svg { color: var(--muted-foreground); flex: none; }
+.ib-oq-decide > span { flex: 1 1 auto; min-width: 0; }
+.ib-oq-decide[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); }
+.ib-oq-decide:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 /* A phone: a sheet from the bottom edge, over a scrim, with 44 px targets (56 px rows). */
 .ib-oq-scrim { position: fixed; inset: 0; z-index: 79; background: rgb(0 0 0 / 0.4); }
 .ib-oq-pos[data-phone] { position: fixed !important; left: 0 !important; right: 0 !important; top: auto !important; bottom: 0 !important; transform: none !important; width: auto !important; }
@@ -4285,7 +4291,7 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-pos[data-phone] .ib-oq-row { min-height: 56px; padding: 9px 8px; }
 .ib-oq-pos[data-phone] .ib-oq-p { font-size: var(--ib-fs-15, 15px); }
 .ib-oq-pos[data-phone] .ib-oq-meta { font-size: var(--ib-fs-13, 13px); }
-.ib-oq-pos[data-phone] .ib-oq-reask { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
+.ib-oq-pos[data-phone] .ib-oq-reask, .ib-oq-pos[data-phone] .ib-oq-decide { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
 .ib-oq-pos[data-phone] .ib-oq-n, .ib-oq-pos[data-phone] .ib-oq-ck { width: 24px; height: 24px; margin-top: 0; }
 .ib-oq-pos[data-phone] .ib-oq-row { grid-template-columns: 24px minmax(0, 1fr) 16px; gap: 0 12px; }
 .ib-oq-pos[data-phone] .ib-oq-skipmode { min-height: 44px; padding: 6px 10px; font-size: var(--ib-fs-15, 15px); }
@@ -4389,6 +4395,8 @@ dialog.ib-dm[open] { display: flex; }
 dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-head { display: flex; align-items: baseline; gap: 12px; padding: 18px 22px 6px; flex: none; }
 .ib-dm-head h1 { margin: 0; font-size: var(--ib-fs-18, 18px); font-weight: 650; }
+/* The thread the sitting is scoped to (thread only): its subject, cut to the head's room before the count is. */
+.ib-dm-scope { font-size: var(--ib-fs-14, 14px); font-weight: 550; color: var(--foreground); min-width: 0; flex: 0 100 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-dm-count { color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-dm-headacts { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .pn-inbox .ib-dm-x { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--muted-foreground); }
@@ -4545,16 +4553,16 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-confirm p { margin: 6px 0 14px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); }
 .ib-dm-confirm-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 /* The pill a tucked decision mode leaves above the open thread. */
-.pn-inbox .ib-dm-pill { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 42; translate: -50% 0; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 16px; border-radius: 999px; background: var(--popover); box-shadow: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); }
+.pn-inbox .ib-dm-pill { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 42; translate: -50% 0; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 16px; border-radius: 999px; background: var(--popover); box-shadow: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); max-width: calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
 .ib-dm-pill b { font-weight: 650; }
-.ib-dm-pill > span { white-space: nowrap; }
+/* A row whose only shrinking part is the thread's subject: on a narrow screen the subject gives way, never the count or Resume. */
+.ib-dm-pill > span { display: flex; align-items: baseline; min-width: 0; white-space: pre; }
+.pn-inbox .ib-dm-pill > .ib-btn { flex: none; }
+/* The sitting's thread, while another is on screen: cut so the pill keeps its Resume in view. */
+.ib-dm-pill-thread { display: inline-block; flex: 0 1 auto; min-width: 0; max-width: min(28ch, 40vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 /* While the pill floats over a thread, the thread's last lines can still scroll clear of it. */
 .pn-inbox:has(.ib-dm-pill) section.ib-pane .ib-pbody { padding-bottom: 64px; }
 .pn-inbox .ib-dm-pill .ib-btn { height: 30px; border-radius: 999px; }
-/* The sidebar's "Decide N" row and the list header's button. */
-.pn-inbox .ib-lhead-decide { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; margin-left: auto; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 600; flex: none; }
-.pn-inbox .ib-lhead-decide + .ib-lhead-compose { margin-left: 4px; }
-.pn-inbox .ib-lhead-decide:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .ib-dm-card, .ib-dm-card[data-stamped], .ib-dm-stamp, .ib-dm-endmark { animation: none; }
   .ib-dm-dots i, .ib-dm-choice { transition: none; }
@@ -4562,6 +4570,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   dialog.ib-dm { width: 100vw; height: 100dvh; border-radius: 0; }
   .ib-dm-head { padding: max(14px, env(safe-area-inset-top)) 16px 4px; }
+  /* No room beside the count on a phone; the card names the thread under it. */
+  .ib-dm-scope { display: none; }
   .pn-inbox .ib-dm-x { width: 44px; height: 44px; }
   .ib-dm-strip { padding: 4px 16px 10px; }
   .ib-dm-stage { padding: 0 8px max(8px, env(safe-area-inset-bottom)); }
@@ -4881,15 +4891,15 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The bottom right (owner, 2026-10-27): the link mark, the agent as a small round mark, the age. The title and its line take the whole width. */
 .ib-bc-meta { flex: none; display: inline-flex; align-items: center; gap: 6px; align-self: center; margin-left: auto; }
 .ib-bc-who { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in oklch, var(--muted) 90%, var(--foreground) 4%); }
-.ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: 11px; height: 11px; }
+.ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: var(--ib-mark-16-g); height: var(--ib-mark-16-g); }
 .ib-bc-who[data-host="you"] { background: none; }
 /* "Title row" (approval board-lane-card, r1): the marks and the age float at the right of the title's first
    line and the title wraps under them; the line under it ("You: …", "Sent to …") gets the card's whole width;
    the You link's arrow only on hover or focus. */
 .ib-bpage .ib-bcard { gap: 3px; padding: 9px 12px; }
-/* At most three lines: a sentence-long title is cut (its tooltip has it all). */
+/* At most three lines: a sentence-long title is cut; its tooltip has it all (BoardPage measures this button, `titleCut`). */
 .ib-bpage .ib-bcard .ib-bc-main { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; flex: 1 1 auto; text-align: left; line-height: 1.4; overflow: hidden; }
-.ib-bpage .ib-bcard .ib-bc-t { display: inline; white-space: normal; overflow: visible; overflow-wrap: normal; line-height: 1.4; }
+.ib-bpage .ib-bcard .ib-bc-t { display: inline; white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.4; }
 /* WebKit lays a -webkit-box out as a box, so the float would sit on top: a plain block cut at three lines there. */
 @supports (font: -apple-system-body) {
   .ib-bpage .ib-bcard .ib-bc-main { display: block; max-height: calc(1.4em * 3); }

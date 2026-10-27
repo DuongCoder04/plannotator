@@ -4,7 +4,7 @@ import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
-import { Tip } from '../components/Tip';
+import { Tip, isTextCut } from '../components/Tip';
 import { DeliveryTick } from '../components/DeliveryTick';
 import { SidebarTrigger } from '../shell/sidebar';
 import { pageInFront } from '../sound';
@@ -632,6 +632,9 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
   your_review: 'Nothing waits on your review.',
 };
 
+/** A lane card's title is cut (clamped at three lines, or a word cut at the edge): its button overflows. */
+const titleCut = (trigger: Element) => isTextCut(trigger.closest('.ib-bc-main'));
+
 /**
  * One card, "Title row" (approval board-lane-card, r1, 2026-10-27): the
  * title, with the linked PR's or issue's mark, the agent's small round mark (a
@@ -713,7 +716,8 @@ function BoardCard({
       <span className="ib-bc-top">
         <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
           {meta}
-          <Tip content={card.title} cut>
+          {/* The clamp (three lines) is on the button, not on the inline title: measure the button. */}
+          <Tip content={card.title} when={titleCut}>
             <span className="ib-bc-t" dir="auto">
               {card.title}
             </span>

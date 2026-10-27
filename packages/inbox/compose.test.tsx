@@ -771,9 +771,17 @@ test.skipIf(!hasDom)('Create thread kept as a draft: the draft keeps the card; s
   // Nothing sent yet: the card still has no thread.
   expect((JSON.parse((await loopback(`/api/inbox/cards/${made.card.id}`)).text) as { card: { threads: string[] } }).card.threads).toEqual([]);
 
-  // Later, from Drafts: the draft reopens naming the card, and its Send links the thread.
+  // Deleted from Drafts and brought back with Undo: it still names the card (review of #2248).
   act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
   await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) !== null, 'the draft row');
+  act(() => (el.querySelector(`[data-draft-id="${kept.id}"] [data-draft-delete]`) as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) === null, 'the row gone');
+  act(() => (document.querySelector('[data-toast-undo]') as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) !== null, 'the draft back');
+  const restored = (await drafts()).find((d) => d.id === kept.id) as unknown as { card?: { id: string; title: string } };
+  expect(restored.card).toEqual({ id: made.card.id, title: 'Draft card link' });
+
+  // Later, from Drafts: the draft reopens naming the card, and its Send links the thread.
   act(() => (el.querySelector(`[data-draft-id="${kept.id}"] .ib-draft-open`) as HTMLButtonElement).click());
   await until(() => dialog()?.querySelector(`[data-compose-card="${made.card.id}"]`) != null, 'the draft names the card');
   await until(() => dialog()!.querySelector('[data-compose-to="ses_draft_card"]') !== null, 'To keeps the session');
