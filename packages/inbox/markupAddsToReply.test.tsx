@@ -96,6 +96,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The CSS check runs in the plain pass too, where there is no document.
+  if (!hasDom) return;
   act(() => root?.unmount());
   host?.remove();
   root = null;
