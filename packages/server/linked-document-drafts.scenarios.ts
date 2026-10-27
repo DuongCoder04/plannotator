@@ -15,18 +15,27 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export interface LinkedDraftServer {
   url: string;
   stop: () => void | Promise<void>;
+  /** The host status's `unsentAnnotations` (what the agent is told on close). */
+  unsent: () => number;
 }
 
 export interface LinkedDraftRuntime {
-  startPlan: (options: { plan: string }) => Promise<LinkedDraftServer>;
+  startPlan: (options: { plan: string; planFilePath?: string }) => Promise<LinkedDraftServer>;
   startLastMessage: (options: { markdown: string }) => Promise<LinkedDraftServer>;
+  startUrl: (options: { markdown: string; url: string }) => Promise<LinkedDraftServer>;
+  /**
+   * The plan server serves (and so saves copies for) the documents the plan
+   * file links beside itself (Bun's `isPlanLinkedDocPath`; Pi serves only
+   * project files).
+   */
+  planFileDocuments?: boolean;
 }
 
 const ENV_KEYS = [
@@ -211,25 +220,154 @@ export function defineLinkedDocumentDraftScenarios(runtime: string, start: Linke
       expect((await fetch(`${server.url}/api/draft/document?path=${encodeURIComponent(design)}`)).status).toBe(404);
     });
 
-    test("a decision clears every linked document's copy and refuses later writes", async () => {
-      const plan = planText();
-      const server = await openPlan(plan);
-      await post(server, "/api/draft", draftBody(1, ["on-plan"]));
-      await saveDocuments(server, [
-        { path: design, annotations: [comment("on-design")] },
-        { path: notes, annotations: [comment("on-notes")] },
-      ]);
-      const deny = await post(server, "/api/deny", { feedback: "Changes", planSave: { enabled: false }, draftGeneration: 2 });
-      expect(deny.status).toBe(200);
-      expect((await saveDocuments(server, [{ path: design, annotations: [comment("late")] }])).status).toBe(409);
-      await close(server);
+    const planDecisions = {
+      approve: { path: "/api/approve", body: { planSave: { enabled: false }, draftGeneration: 2 } },
+      deny: { path: "/api/deny", body: { feedback: "Changes", planSave: { enabled: false }, draftGeneration: 2 } },
+    } as const;
 
-      const reopened = await openPlan(plan);
-      expect((await loadDraft(reopened)).status).toBe(404);
-      for (const path of [design, notes]) {
-        expect((await fetch(`${reopened.url}/api/draft/document?path=${encodeURIComponent(path)}`)).status).toBe(404);
+    for (const [name, decision] of Object.entries(planDecisions)) {
+      test(`${name} clears every linked document's copy and refuses later writes`, async () => {
+        const plan = planText();
+        const server = await openPlan(plan);
+        await post(server, "/api/draft", draftBody(1, ["on-plan"]));
+        await saveDocuments(server, [
+          { path: design, annotations: [comment("on-design")] },
+          { path: notes, annotations: [comment("on-notes")] },
+        ]);
+        expect((await post(server, decision.path, decision.body)).status).toBe(200);
+        expect((await saveDocuments(server, [{ path: design, annotations: [comment("late")] }])).status).toBe(409);
+        await close(server);
+
+        const reopened = await openPlan(plan);
+        expect((await loadDraft(reopened)).status).toBe(404);
+        for (const path of [design, notes]) {
+          expect((await fetch(`${reopened.url}/api/draft/document?path=${encodeURIComponent(path)}`)).status).toBe(404);
+        }
+      });
+    }
+
+    /**
+     * The index key comes from the root's text only, so the same plan (or
+     * message, or page) reviewed in two working folders (worktrees running
+     * one plan) shares an index. A decision in folder B must neither count
+     * nor clear the copies folder A listed and left unsent.
+     */
+    const rootlessKinds: {
+      kind: string;
+      open: (text: string) => Promise<LinkedDraftServer>;
+      decisions: Record<string, { path: string; body: unknown }>;
+    }[] = [
+      { kind: "plan", open: (text) => openPlan(text), decisions: planDecisions },
+      {
+        kind: "last-message",
+        open: async (text) => {
+          const server = await start.startLastMessage({ markdown: text });
+          servers.push(server);
+          return server;
+        },
+        decisions: {
+          approve: { path: "/api/approve", body: { draftGeneration: 2 } },
+          feedback: { path: "/api/feedback", body: { feedback: "Thanks", annotations: [], draftGeneration: 2 } },
+        },
+      },
+      {
+        kind: "URL",
+        open: async (text) => {
+          const server = await start.startUrl({ markdown: text, url: "https://example.invalid/page" });
+          servers.push(server);
+          return server;
+        },
+        decisions: {
+          approve: { path: "/api/approve", body: { draftGeneration: 2 } },
+          feedback: { path: "/api/feedback", body: { feedback: "Thanks", annotations: [], draftGeneration: 2 } },
+        },
+      },
+    ];
+
+    for (const { kind, open, decisions } of rootlessKinds) {
+      for (const [name, decision] of Object.entries(decisions)) {
+        test(`${kind}: ${name} in one working folder keeps the same text's unsent copies in another`, async () => {
+          const text = planText();
+          const projectB = join(root, "project-b");
+          mkdirSync(join(projectB, "docs"), { recursive: true });
+          const designB = join(projectB, "docs", "design.md");
+          writeFileSync(designB, "# Design B\n\nBody of the design.\n");
+
+          // Folder A: a comment on A's design, then the session ends undecided.
+          const a = await open(text);
+          await saveDocuments(a, [{ path: design, annotations: [comment("a-design")] }]);
+          await close(a);
+
+          // Folder B: the same text. A's copy is not offered, counted or cleared.
+          process.chdir(projectB);
+          const b = await open(text);
+          expect((await loadDraft(b)).body.documents).toBeUndefined();
+          await saveDocuments(b, [{ path: designB, annotations: [comment("b-design")] }]);
+          expect(b.unsent()).toBe(1);
+          expect((await post(b, decision.path, decision.body)).status).toBe(200);
+          expect((await fetch(`${b.url}/api/draft/document?path=${encodeURIComponent(designB)}`)).status).toBe(404);
+          await close(b);
+
+          // Back in folder A: A's comments are still offered on a reload.
+          process.chdir(project);
+          const again = await open(text);
+          expect((await loadDraft(again)).body.documents?.map((d) => [d.path, idsOf(d.annotations)])).toEqual([
+            [design, ["a-design"]],
+          ]);
+          expect(again.unsent()).toBe(1);
+        });
       }
-    });
+    }
+
+    for (const { kind, open } of rootlessKinds) {
+      // A read lists the copy in the session's index, and a decision then
+      // clears it: another site (an <img> pointed at the port) must not.
+      test(`${kind}: a cross-site read of a document's copy is refused and does not list it`, async () => {
+        const first = await open(planText());
+        await saveDocuments(first, [{ path: notes, annotations: [comment("earlier")] }]);
+        await close(first);
+
+        const second = await open(planText());
+        const read = await fetch(`${second.url}/api/draft/document?path=${encodeURIComponent(notes)}`, {
+          headers: { "Sec-Fetch-Site": "cross-site" },
+        });
+        expect(read.status).toBe(403);
+        expect((await loadDraft(second)).status).toBe(404);
+        expect(second.unsent()).toBe(0);
+      });
+    }
+
+    if (start.planFileDocuments) {
+      test("a plan file's linked documents beside it get copies; nothing else beside it does", async () => {
+        const plans = join(root, "plans");
+        mkdirSync(plans);
+        const beside = join(plans, "beside.md");
+        const sibling = join(plans, "other-plan.md");
+        const outside = join(root, "outside.md");
+        const linkOut = join(plans, "link-out.md");
+        writeFileSync(beside, "# Beside\n");
+        writeFileSync(sibling, "# Another plan\n");
+        writeFileSync(outside, "# Outside\n");
+        symlinkSync(outside, linkOut);
+        const plan = "# Plan\n\nSee [beside](beside.md), [out](link-out.md) and [up](../outside.md).\n";
+        const planFilePath = join(plans, "plan.md");
+        writeFileSync(planFilePath, plan);
+        const server = await start.startPlan({ plan, planFilePath });
+        servers.push(server);
+
+        const traversal = `${plans}/../outside.md`;
+        const refused = [sibling, linkOut, traversal, outside, "beside.md"];
+        const res = await saveDocuments(server, [beside, ...refused].map((path) => ({ path, annotations: [comment("c")] })));
+        expect(res.status).toBe(200);
+        expect((await res.json()).rejected).toEqual(refused);
+
+        const read = (path: string) => fetch(`${server.url}/api/draft/document?path=${encodeURIComponent(path)}`);
+        expect((await read(beside)).status).toBe(200);
+        for (const path of [sibling, linkOut, traversal, outside]) expect((await read(path)).status).toBe(403);
+        expect((await read("beside.md")).status).toBe(400);
+        expect((await loadDraft(server)).body.documents?.map((d) => d.path)).toEqual([beside]);
+      });
+    }
 
     test("a document outside the project is refused and never offered", async () => {
       const outside = join(root, "outside.md");

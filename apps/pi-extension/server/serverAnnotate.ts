@@ -1,5 +1,5 @@
 import { piUpdateAdvert } from "./update-advert.ts";
-import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
+import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { createServer } from "node:http";
@@ -1193,6 +1193,13 @@ export async function startAnnotateServer(options: {
 			}
 		} else if (url.pathname === "/api/draft/document") {
 			if (req.method === "GET") {
+				// A read marks the copy as this session's (and lists it in a
+				// rootless session's index): a decision then clears it, so it
+				// gets the writes' cross-site guard.
+				if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
+					json(res, crossOriginRefusalBody(), 403);
+					return;
+				}
 				const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {

@@ -670,6 +670,11 @@ export async function startPlannotatorServer(
           if (url.pathname === "/api/draft/document") {
             if (!planDocumentDrafts) return Response.json({ error: "Not available" }, { status: 404 });
             if (req.method === "GET") {
+              // A read lists the copy in the plan's index (a decision then
+              // clears it), so it gets the writes' cross-site guard.
+              if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+                return Response.json(crossOriginRefusalBody(), { status: 403 });
+              }
               const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
               return Response.json(result.body, { status: result.status });
             }

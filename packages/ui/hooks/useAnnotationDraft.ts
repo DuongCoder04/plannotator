@@ -333,10 +333,22 @@ interface RestoredDraft {
   documents: DraftDocumentCopy[];
 }
 
+/** What the Draft Recovered banner says it found. */
+export interface DraftBanner {
+  count: number;
+  timeAgo: string;
+  hasEdits: boolean;
+  /** How many other documents hold comments (absent: the root's alone). */
+  documents?: number;
+  /** How many of `count` are on those other documents. */
+  documentComments?: number;
+}
+
 interface UseAnnotationDraftResult {
   /** `count` includes the other documents' comments; `documents` is how many
-      other documents hold some (absent when the draft is the root's alone). */
-  draftBanner: { count: number; timeAgo: string; hasEdits: boolean; documents?: number } | null;
+      other documents hold some and `documentComments` how many of `count`
+      they hold (both absent when the draft is the root's alone). */
+  draftBanner: DraftBanner | null;
   restoreDraft: () => RestoredDraft;
   /** Debounced save trigger for changes the reactive deps can't see
       (editor keystrokes, edit commit/discard). Stable identity. */
@@ -364,7 +376,7 @@ export function useAnnotationDraft({
   isSharedSession,
   submitted,
 }: UseAnnotationDraftOptions): UseAnnotationDraftResult {
-  const [draftBanner, setDraftBanner] = useState<{ count: number; timeAgo: string; hasEdits: boolean; documents?: number } | null>(null);
+  const [draftBanner, setDraftBanner] = useState<DraftBanner | null>(null);
   const draftDataRef = useRef<RestoredDraft | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasMountedRef = useRef(false);
@@ -457,7 +469,9 @@ export function useAnnotationDraft({
             count: totalCount,
             timeAgo: formatTimeAgo(data.ts || 0),
             hasEdits: restoredEdited !== null || restoredEditedDocuments.length > 0 || restoredSavedFileChanges.length > 0,
-            ...(restoredDocuments.length > 0 ? { documents: restoredDocuments.length } : {}),
+            ...(restoredDocuments.length > 0
+              ? { documents: restoredDocuments.length, documentComments: countDraftDocuments(restoredDocuments) }
+              : {}),
           });
         }
         hasMountedRef.current = true;

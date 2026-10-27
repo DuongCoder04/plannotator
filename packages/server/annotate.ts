@@ -11,7 +11,7 @@
  *   PLANNOTATOR_PORT   - Fixed port or inclusive range (default: random locally, 19432 for remote)
  */
 
-import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
+import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
@@ -1393,6 +1393,12 @@ export async function startAnnotateServer(
           // document's saved comments; POST the session's documents.
           if (url.pathname === "/api/draft/document") {
             if (req.method === "GET") {
+              // A read marks the copy as this session's (and lists it in a
+              // rootless session's index): a decision then clears it, so it
+              // gets the writes' cross-site guard.
+              if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+                return Response.json(crossOriginRefusalBody(), { status: 403 });
+              }
               const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
               return Response.json(result.body, { status: result.status });
             }

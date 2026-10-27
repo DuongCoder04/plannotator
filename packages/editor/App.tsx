@@ -445,10 +445,16 @@ const buildMessageAnnotationCounts = (
   return counts;
 };
 
-const draftBannerMessage = (banner: { count: number; timeAgo: string; hasEdits: boolean; documents?: number }): string => {
-  const onDocuments = banner.documents
-    ? ` (including comments on ${banner.documents} linked document${banner.documents !== 1 ? 's' : ''})`
+const draftBannerMessage = (banner: { count: number; timeAgo: string; hasEdits: boolean; documents?: number; documentComments?: number }): string => {
+  const linked = banner.documents
+    ? `${banner.documents} linked document${banner.documents !== 1 ? 's' : ''}`
     : '';
+  // Every comment on the linked documents (none on the root): "on", not "including".
+  const onDocuments = !linked
+    ? ''
+    : banner.documentComments === banner.count
+      ? ` on ${linked}`
+      : ` (including comments on ${linked})`;
   const parts = [
     banner.count > 0 ? `${banner.count} annotation${banner.count !== 1 ? 's' : ''}${onDocuments}` : '',
     banner.hasEdits ? 'unsent direct edits' : '',

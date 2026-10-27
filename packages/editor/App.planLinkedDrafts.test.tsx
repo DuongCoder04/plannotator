@@ -229,6 +229,19 @@ describe.if(hasDom)("plan review: linked documents in a recovered draft", () => 
     expect(documentWrites(since)).toEqual([]);
   });
 
+  test("a draft with comments only on a linked document does not claim the plan has some", async () => {
+    sessionDraft = {
+      annotations: [],
+      globalAttachments: [],
+      documents: [{ path: DESIGN_PATH, annotations: [DESIGN_COMMENT], globalAttachments: [] }],
+      draftGeneration: 3,
+      ts: Date.now(),
+    };
+    await mount();
+    expect(document.body.textContent).toContain("Found 1 annotation on 1 linked document");
+    expect(document.body.textContent).not.toContain("including");
+  });
+
   test("opening a linked document with no comments never deletes the plan's draft", async () => {
     sessionDraft = { annotations: [PLAN_COMMENT], globalAttachments: [], draftGeneration: 1, ts: Date.now() };
     await mount();

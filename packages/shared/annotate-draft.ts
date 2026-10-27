@@ -26,8 +26,9 @@
  *    listed document's comments by path (#1545). Draft Recovered then brings
  *    back every document's comments, each on its own document.
  *  - A decision (`settle`) clears the session's own keys plus the path key of
- *    every document it covered or lists. After that, document writes are
- *    refused.
+ *    every document it covered or lists and may serve. After that, document
+ *    writes are refused. The index key comes from the root's text alone, so
+ *    an entry another project listed under the same text is kept.
  *
  * Generations and the `patchKey` / `patchKeys` stamps are server-side: a
  * client cannot forge them (saveReviewDraft strips them from every body, and
@@ -174,6 +175,17 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
     return { path };
   };
 
+  /**
+   * Whether an index entry is one this session may serve. The index key comes
+   * from the root's text alone, so two sessions on the same text in different
+   * projects (worktrees running one plan) share an index: an entry the other
+   * session listed is not this session's to offer, count or clear.
+   */
+  const servable = (canonical: string): boolean =>
+    canonicalDocumentPath(canonical) === canonical &&
+    !(rootPath && canonical === rootPath) &&
+    options.isAllowed(canonical);
+
   const clearDocumentCopy = (path: string) => {
     const key = annotateFileDraftKey(path);
     const known = getDraftGeneration(key);
@@ -239,8 +251,7 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
           pruned = true;
           continue;
         }
-        const current = canonicalDocumentPath(canonical);
-        if (current !== canonical || (rootPath && current === rootPath) || !options.isAllowed(canonical)) continue;
+        if (!servable(canonical)) continue;
         if (!settled) coveredDocuments.add(canonical);
         documents.push({ path: clientPath, annotations: content.annotations, globalAttachments: content.globalAttachments });
         ts = Math.max(ts, content.ts);
@@ -335,20 +346,29 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
       return { status: 200, body: { ok: true, written, ...(rejected.length > 0 ? { rejected } : {}) } };
     },
 
-    /** The reviewer decided: clear every copy this session covered or lists, then refuse writes. */
+    /**
+     * The reviewer decided: clear every copy this session covered or lists
+     * (and may serve), then refuse writes. Entries this session cannot serve
+     * (another project's copies under the same root text) stay in the index;
+     * the index is deleted only when none remain.
+     */
     settle(): void {
       const paths = new Set(coveredDocuments);
-      for (const canonical of readIndex().keys()) paths.add(canonical);
-      for (const path of paths) clearDocumentCopy(path);
-      if (indexKey) deleteDraft(indexKey);
+      const index = readIndex();
+      for (const canonical of index.keys()) if (servable(canonical)) paths.add(canonical);
+      for (const path of paths) {
+        clearDocumentCopy(path);
+        index.delete(path);
+      }
+      writeIndex(index);
       coveredDocuments.clear();
       settled = true;
     },
 
-    /** Unsent comments in every copy this session covered or lists. */
+    /** Unsent comments in every copy this session covered or lists (and may serve). */
     countUnsent(count: (draft: unknown) => number): number {
       const paths = new Set(coveredDocuments);
-      for (const canonical of readIndex().keys()) paths.add(canonical);
+      for (const canonical of readIndex().keys()) if (servable(canonical)) paths.add(canonical);
       let total = 0;
       for (const path of paths) total += count(loadDraft(annotateFileDraftKey(path)));
       return total;

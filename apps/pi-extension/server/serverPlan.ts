@@ -499,6 +499,12 @@ export async function startPlanReviewServer(options: {
 			if (!planDocumentDrafts) {
 				json(res, { error: "Not available" }, 404);
 			} else if (req.method === "GET") {
+				// A read lists the copy in the plan's index (a decision then
+				// clears it), so it gets the writes' cross-site guard.
+				if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
+					json(res, crossOriginRefusalBody(), 403);
+					return;
+				}
 				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
