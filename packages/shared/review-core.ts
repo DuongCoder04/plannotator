@@ -16,7 +16,7 @@ import {
   OVERSIZED_REVIEW_STUB_MARKER,
 } from "./diff-paths";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
-import type { RepoFileFailure, RepoWorkingTreeEntry } from "./repo-file";
+import type { RepoFileFailure, RepoWorkingTreeEntry, RepoWorkingTreeReadOptions } from "./repo-file";
 
 import {
   BARE_HEX_SHA_RE,
@@ -277,17 +277,20 @@ export interface ReviewGitRuntime {
   /** Canonical path with every symlink resolved (null on any error). */
   realPath?: (path: string) => Promise<string | null>;
   /**
-   * Check one working-tree path for diff context expansion: every directory
+   * Read one working-tree path for diff context expansion: every directory
    * on the way resolves inside `root`, a final symlink comes back as its
    * target string, and anything else must be a regular file under the 5 MB
-   * cap. Every server runtime (Bun, Pi, VS Code) implements it with
-   * `resolveRepoWorkingTreeEntry` from repo-file.ts; it is optional only
-   * because this module also reaches the browser bundle, which cannot import
-   * node:fs. Without it, expansion falls back to the `getFileInfo` checks.
+   * cap, read from the checked descriptor. Every server runtime (Bun, Pi,
+   * VS Code) implements it with `readRepoWorkingTreeEntry` from repo-file.ts
+   * and its own decoder, so its text output (BOM handling) is unchanged; it is
+   * optional only because this module also reaches the browser bundle, which
+   * cannot import node:fs. Without it, expansion falls back to the
+   * `getFileInfo` checks. `options` carries only test hooks and a cap.
    */
-  checkWorkingTreeEntry?: (
+  readWorkingTreeEntry?: (
     root: string,
     path: string,
+    options?: RepoWorkingTreeReadOptions,
   ) => Promise<RepoWorkingTreeEntry | RepoFileFailure>;
 }
 
@@ -2375,13 +2378,13 @@ export async function readDiffSideText(
   // sibling is immune: ref paths are root-relative regardless of cwd.)
   const baseDir = await resolveRepoToplevel(runtime, cwd);
   try {
-    if (runtime.checkWorkingTreeEntry) {
+    if (runtime.readWorkingTreeEntry) {
       // Shared guard (repo-file.ts): a path through a symlinked directory
-      // that points out of the repository reads as null.
-      const entry = await runtime.checkWorkingTreeEntry(baseDir ?? ".", source.path);
+      // that points out of the repository reads as null, and the bytes come
+      // from the checked descriptor, never from reopening the path.
+      const entry = await runtime.readWorkingTreeEntry(baseDir ?? ".", source.path);
       if (!entry.ok) return null;
-      if (entry.kind === "symlink") return entry.linkTarget;
-      return runtime.readTextFile(entry.absolutePath);
+      return entry.kind === "symlink" ? entry.linkTarget : entry.content;
     }
     const fileInfo = await runtime.getFileInfo(baseDir, source.path);
     if (!fileInfo) return null;

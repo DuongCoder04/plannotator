@@ -28,7 +28,7 @@ import {
   runBoundedTrackedDiff,
   validateFilePath,
 } from "./review-core";
-import { resolveRepoWorkingTreeEntry } from "./repo-file";
+import { readRepoWorkingTreeEntry } from "./repo-file";
 
 /** Oldest GitButler CLI release whose status contract this integration supports. */
 export const GITBUTLER_MIN_VERSION = "0.21.0";
@@ -769,11 +769,15 @@ async function readWorkingTreeFile(
   path: string,
 ): Promise<string | null> {
   // Same guard as Git diff expansion (repo-file.ts): containment by realpath,
-  // a final symlink read as its target string, regular files under 5 MB.
-  const entry = resolveRepoWorkingTreeEntry(root, path, { maxBytes: MAX_REVIEW_FILE_CONTENT_BYTES });
+  // a final symlink read as its target string, regular files under 5 MB read
+  // from the checked descriptor. The runtime's own reader keeps its decoder
+  // (Bun strips a BOM, Node keeps it); every server runtime has one.
+  const options = { maxBytes: MAX_REVIEW_FILE_CONTENT_BYTES };
+  const entry = runtime.readWorkingTreeEntry
+    ? await runtime.readWorkingTreeEntry(root, path, options)
+    : await readRepoWorkingTreeEntry(root, path, options);
   if (!entry.ok) return null;
-  if (entry.kind === "symlink") return entry.linkTarget;
-  return runtime.readTextFile(entry.absolutePath);
+  return entry.kind === "symlink" ? entry.linkTarget : entry.content;
 }
 
 /**

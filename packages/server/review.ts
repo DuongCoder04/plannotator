@@ -181,6 +181,7 @@ import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { resolveWorkspaceFilePath, type LocalWorkspaceReview, type WorkspaceDiffType } from "./review-workspace";
 import { handleCodeNavResolve, handleCodeNavHover, extractChangedFiles } from "./code-nav";
 import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "@plannotator/shared/repo-file";
+import { decodeBunText } from "./git";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "./review-skill-loader";
 import { readGuideInstructions, writeGuideInstructions } from "@plannotator/shared/guide-instructions-store";
 import {
@@ -3823,7 +3824,8 @@ export async function startReviewServer(
             }
             // Realpath containment, regular files only, and the 5 MB cap
             // (packages/shared/repo-file.ts; the Pi server uses the same).
-            const read = readRepoFile(navCwd, url.searchParams.get("path"));
+            // decodeBunText keeps the old Bun.file().text() output (a BOM is stripped).
+            const read = await readRepoFile(navCwd, url.searchParams.get("path"), { decode: decodeBunText });
             if (!read.ok) {
               return Response.json(repoFileErrorBody(read), { status: REPO_FILE_ERROR_STATUS[read.reason] });
             }
