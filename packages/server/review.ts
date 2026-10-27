@@ -198,6 +198,7 @@ import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { resolveWorkspaceFilePath, type LocalWorkspaceReview, type WorkspaceDiffType } from "./review-workspace";
 import { handleCodeNavResolve, handleCodeNavHover, extractChangedFiles } from "./code-nav";
 import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "@plannotator/shared/repo-file";
+import { readRepoWorkingTreeFile } from "@plannotator/shared/repo-files-node";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "./review-skill-loader";
 import { readGuideInstructions, writeGuideInstructions } from "@plannotator/shared/guide-instructions-store";
 import {
@@ -3750,7 +3751,7 @@ export async function startReviewServer(
               return listVcsFiles(currentDiffType as DiffType, currentBase, gitContext?.cwd);
             });
           };
-          const readRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
+          const readListedRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
             if (workspace) return workspace.getFileBytes(path, undefined, "new", maxBytes);
             if (isPRMode && prMetadata) {
               const prCwd = await prListingCwd();
@@ -3810,7 +3811,8 @@ export async function startReviewServer(
               unavailable: repoFilesUnavailable(),
               isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
               loadListing: loadRepoListing,
-              read: readRepoFile,
+              read: readListedRepoFile,
+              readWorkingTree: readRepoWorkingTreeFile,
             });
             return Response.json(result.body, { status: result.status });
           }

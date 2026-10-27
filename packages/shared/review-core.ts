@@ -2377,6 +2377,13 @@ export interface RepoFileListing {
   live: boolean;
   /** Repository root the paths are relative to (live watching); absent for remote listings. */
   root?: string;
+  /**
+   * Where listed paths are files on disk (the working tree): a path under
+   * `prefix` is `root` joined with the rest. Absent: a single working-tree
+   * listing reads from `root` when `live`. A multi-repo workspace names each
+   * child that lists its working tree, so a child at a commit never reads disk.
+   */
+  diskRoots?: Array<{ prefix: string; root: string }>;
   /** The listing is known to be incomplete (a platform API truncated it). */
   truncated?: boolean;
 }

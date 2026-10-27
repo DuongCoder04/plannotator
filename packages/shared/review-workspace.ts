@@ -525,6 +525,7 @@ export class WorkspaceReviewSession implements WorkspaceReviewState {
     const list = this.runtime.listVcsFiles;
     if (!list) return null;
     const paths: string[] = [];
+    const diskRoots: Array<{ prefix: string; root: string }> = [];
     let live = false;
     let listed = 0;
     for (const repo of this.repos) {
@@ -536,6 +537,7 @@ export class WorkspaceReviewSession implements WorkspaceReviewState {
       listed += 1;
       live ||= result.live;
       const prefix = `${normalizeWorkspacePath(repo.label)}/`;
+      if (result.live && result.root) diskRoots.push({ prefix, root: result.root });
       for (const path of result.paths) paths.push(prefix + path);
     }
     if (listed === 0) return null;
@@ -546,6 +548,7 @@ export class WorkspaceReviewSession implements WorkspaceReviewState {
       revision: allWorktree ? { kind: "worktree", label: "working tree" } : { kind: "commit", label: "the workspace" },
       live,
       root: this.root,
+      diskRoots,
     };
   }
 

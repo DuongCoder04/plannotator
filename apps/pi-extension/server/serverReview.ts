@@ -235,6 +235,7 @@ import {
 	extractChangedFiles,
 } from "../generated/code-nav.ts";
 import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "../generated/repo-file.ts";
+import { readRepoWorkingTreeFile } from "../generated/repo-files-node.ts";
 import {
 	createDefaultSemanticDiffRuntime,
 	getSemanticDiffAvailability,
@@ -1982,7 +1983,7 @@ export async function startReviewServer(options: {
 			return listVcsFiles(currentDiffType as DiffType, currentBase, options.gitContext?.cwd);
 		});
 	};
-	const readRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
+	const readListedRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
 		if (workspace) return workspace.getFileBytes(path, undefined, "new", maxBytes);
 		if (isPRMode && prMeta) {
 			const prCwd = await prListingCwd();
@@ -3733,7 +3734,8 @@ export async function startReviewServer(options: {
 				unavailable: repoFilesUnavailable(),
 				isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
 				loadListing: loadRepoListing,
-				read: readRepoFile,
+				read: readListedRepoFile,
+				readWorkingTree: readRepoWorkingTreeFile,
 			});
 			json(res, result.body, result.status);
 		} else if (url.pathname === "/api/file-content" && req.method === "GET") {

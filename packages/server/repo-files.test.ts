@@ -8,6 +8,9 @@
  *    tree for a committed diff, ignored files, files deleted on disk);
  *  - `/api/repo-file` reading a path outside the listing (an ignored `.env`,
  *    `..`), or the working tree when the diff reads a commit;
+ *  - a working-tree read escaping the repo-file guard (repo-file.ts): a
+ *    listed symlink pointing out of the repository, a FIFO that would block
+ *    the server, a file over the 5 MB cap read into memory;
  *  - the `repoFilesSupported` advert missing, or present on a static patch;
  *  - big listings sent whole instead of one folder at a time;
  *  - files changed on disk after the diff was taken not reported, and the
@@ -15,7 +18,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -23,6 +26,7 @@ import { join } from "node:path";
 import { startReviewServer as startBunReviewServer } from "./review";
 import { startReviewServer as startPiReviewServer } from "../../apps/pi-extension/server";
 import { getVcsContext, runVcsDiff } from "./vcs";
+import { MAX_REPO_FILE_BYTES } from "@plannotator/shared/repo-files";
 
 const MINIMAL_HTML = "<html><body>Plannotator</body></html>";
 
@@ -191,6 +195,35 @@ for (const [runtime, startServer] of [
         for (const path of ["../outside.txt", "src/../.env", "/etc/hosts", "src//app.ts"]) {
           expect((await file(path)).status).toBe(400);
         }
+      } finally {
+        server.stop();
+      }
+    }, 30_000);
+
+    test.skipIf(process.platform === "win32")("working-tree reads go through the repo-file guard: no symlink out, no FIFO, the cap", async () => {
+      const repo = buildRepo();
+      const outside = makeTempDir("plannotator-repo-files-outside-");
+      writeFileSync(join(outside, "secret.txt"), "outside secret\n");
+      const { server, files, file } = await start(repo, "uncommitted");
+      try {
+        // Untracked, so listed by `ls-files --others`: one link out, one in.
+        symlinkSync(join(outside, "secret.txt"), join(repo, "src/leak.txt"));
+        symlinkSync(join(repo, "README.md"), join(repo, "src/readme-link.md"));
+        write(repo, "big.txt", "x".repeat(MAX_REPO_FILE_BYTES + 1));
+        const listed = await files();
+        expect(listed.body.paths).toEqual(expect.arrayContaining(["src/leak.txt", "src/readme-link.md", "big.txt", "src/util.ts"]));
+        // A listed file swapped for a FIFO after the listing: reading it must not hang.
+        rmSync(join(repo, "src/util.ts"));
+        const fifo = spawnSync("mkfifo", [join(repo, "src/util.ts")]);
+        expect(fifo.status).toBe(0);
+
+        const leak = await file("src/leak.txt");
+        expect(leak.status).toBe(200);
+        expect(leak.body.content).toBeNull();
+        expect(JSON.stringify(leak.body)).not.toContain("outside secret");
+        expect((await file("src/readme-link.md")).body.content).toBe("# Repo\n");
+        expect((await file("src/util.ts")).body).toMatchObject({ content: null, reason: "unavailable" });
+        expect((await file("big.txt")).body).toMatchObject({ content: null, reason: "too-large", size: MAX_REPO_FILE_BYTES + 1 });
       } finally {
         server.stop();
       }
