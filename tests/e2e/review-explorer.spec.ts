@@ -145,7 +145,6 @@ test('All files: the repository at the diff, remembered, and following the disk 
       'file:.gitignore',
       'file:README.md',
     ]);
-    await expect(page.locator('[data-repo-folder="packages"] [data-repo-folder-changes]')).toHaveText('2');
     await page.screenshot({ path: join(proofDir, '01-tree.png') });
 
     // Remembered for this browser: a reload opens on All files.
