@@ -143,10 +143,11 @@ test('"You: …" goes to the thread where the person makes the call: the sent th
   expect(youThread(card('b', { threads: ['msg_new', 'msg_old'] }), rowOf)).toBe('msg_new');
   // Threads the list does not hold: the later-linked one.
   expect(youThread(card('c', { threads: ['msg_x', 'msg_y'] }), rowOf)).toBe('msg_y');
-  // A sent thread that is gone (not linked, not in the list) is passed over.
+  // A sent thread that is no longer linked (the wire drops a thread that is gone) is passed over, even when the list still holds it.
   expect(youThread(card('d', { threads: ['msg_old'], sent: { ...sent, thread_id: 'msg_gone' } }), rowOf)).toBe('msg_old');
+  expect(youThread(card('d2', { threads: ['msg_old'], sent: { ...sent, thread_id: 'msg_new' } }), rowOf)).toBe('msg_old');
   // No thread: none (the card opens instead).
   expect(youThread(card('e'), rowOf)).toBeNull();
-  expect(youLinkLabel('Merge #14', 'msg_1')).toBe('Open the thread to merge #14');
-  expect(youLinkLabel('PR #14: look', null)).toBe('Open the card to PR #14: look');
+  // The link's name holds its visible words as shown, case and all (WCAG 2.5.3: a voice user says what they see).
+  for (const you of ['Merge #14', 'PR #14: look', 'Pick one of three dialogs']) expect(youLinkLabel(you).startsWith(`You: ${you}`)).toBe(true);
 });
