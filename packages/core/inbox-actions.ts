@@ -275,12 +275,13 @@ export interface InboxActionsReportGroup {
 }
 
 /**
- * The outcome a report counts for an item: the person's, or "done" when the agent's own `done` settled it
- * (Q3): it is done, whatever the person had marked in their draft; their Can't do it reason still goes, as
- * "Their reason:".
+ * The person's own mark on a reported item, for the reply's first sentence: an item the agent's own `done`
+ * settled (Q3) counts as the person had marked it in their draft, so a Can't do it they marked reads
+ * "Couldn't do 1 action item." over "You saw it done" and their reason, never "Did 1 action item.". The
+ * "x of y done." line still counts it done: it is.
  */
-function reportedOutcome(result: InboxActionResult): "done" | "cant" {
-  return result.by === "agent" ? "done" : result.outcome;
+function personOutcome(result: InboxActionResult): "done" | "cant" {
+  return result.by === "agent" ? (result.person?.outcome ?? "done") : result.outcome;
 }
 
 /** A note or reason inside one item's lines: blank lines closed up, so the item stays one paragraph. */
@@ -324,14 +325,19 @@ function doneLine(group: InboxActionsReportGroup, reported: readonly ReportedAct
  * card, with "Done, 3:12 PM." and the note, or "Can't do it: <reason>" (an item
  * the agent saw done itself while the person's mark waited in their draft:
  * "You saw it done, 3:14 PM." and the person's note). One message: "x of y
- * done." then its items. Several (one reply answers one session's messages):
- * a "### Your message <id>" sub-heading each, as the answers section does.
- * Then the still-open line (#2059). Empty when nothing is reported.
+ * done." then its items. Several (one reply answers one session's messages),
+ * or one that is not the message the reply answers (`replyTo`): a
+ * "### Your message <id>" sub-heading each, as the answers section does, so
+ * "A1" never names two items. Then the still-open line (#2059), where an item
+ * of another message than `replyTo` is named with its message. Empty when
+ * nothing is reported.
  */
 export function composeInboxActionsSection(input: {
   groups: readonly InboxActionsReportGroup[];
   /** The asking session's questions and action items still waiting on the person, for the last line (#2059). */
   stillOpen?: readonly InboxStillOpenItem[];
+  /** The message the reply answers (its `reply_to`): its items need no message named. Absent: one message, nothing named. */
+  replyTo?: string;
   timeZone?: string;
 }): string {
   const groups = input.groups
@@ -339,13 +345,14 @@ export function composeInboxActionsSection(input: {
     .filter((g) => g.reported.length > 0);
   if (groups.length === 0) return "";
   const all = groups.flatMap((g) => g.reported);
-  const done = all.filter((r) => reportedOutcome(r.action_result!) === "done").length;
+  const done = all.filter((r) => personOutcome(r.action_result!) === "done").length;
   const cant = all.length - done;
   const sentence =
     done > 0 && cant > 0 ? `Did ${actionsWord(done)}, couldn't do ${cant}.` : done > 0 ? `Did ${actionsWord(done)}.` : `Couldn't do ${actionsWord(cant)}.`;
-  const open = inboxActionsStillOpenLine(input.stillOpen ?? []);
+  const open = inboxActionsStillOpenLine(input.stillOpen ?? [], input.replyTo);
+  const labelled = groups.length > 1 || (input.replyTo !== undefined && groups[0]!.group.message_id !== input.replyTo);
   const body =
-    groups.length === 1
+    !labelled
       ? [doneLine(groups[0]!.group, groups[0]!.reported), ...groups[0]!.reported.map((r) => reportedItem(r, "###", input.timeZone))]
       : groups.flatMap(({ group, reported }) => [
           `### Your message ${group.message_id}`,
@@ -419,6 +426,8 @@ export interface InboxStillOpenItem {
   /** 0-based, as the record's `position`: Q1 / A1 is 0. */
   position: number;
   prompt: string;
+  /** The message that asks it: named in the line when it is not the message the reply answers. */
+  message_id?: string;
 }
 
 /**
@@ -427,10 +436,12 @@ export interface InboxStillOpenItem {
  * "Still open: A2. Approve the 2FA prompt for the npm org — the person will
  * do it in the Inbox; don't ask again." Empty when nothing is open.
  */
-export function inboxActionsStillOpenLine(items: readonly InboxStillOpenItem[]): string {
+export function inboxActionsStillOpenLine(items: readonly InboxStillOpenItem[], replyTo?: string): string {
   if (items.length === 0) return "";
-  const sorted = [...items].sort((a, b) => (a.kind === b.kind ? a.position - b.position : a.kind === "question" ? -1 : 1));
-  const names = sorted.map((i) => `${i.kind === "action" ? "A" : "Q"}${i.position + 1}. ${i.prompt.replace(/\s+/g, " ").trim()}`);
+  // The replied-to message's items first, then each other message's, in the order given.
+  const other = (i: InboxStillOpenItem) => replyTo !== undefined && i.message_id !== undefined && i.message_id !== replyTo;
+  const sorted = [...items].sort((a, b) => Number(other(a)) - Number(other(b)) || (a.kind === b.kind ? a.position - b.position : a.kind === "question" ? -1 : 1));
+  const names = sorted.map((i) => `${i.kind === "action" ? "A" : "Q"}${i.position + 1}${other(i) ? ` (your message ${i.message_id})` : ""}. ${i.prompt.replace(/\s+/g, " ").trim()}`);
   const one = items.length === 1;
   const actions = items.some((i) => i.kind === "action");
   const questions = items.some((i) => i.kind === "question");

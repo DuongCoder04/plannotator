@@ -374,7 +374,45 @@ test.skipIf(!hasDom)('the note under a Done in the draft saves quietly as it is 
   type(reason, '');
   act(() => reason.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
   await settle();
+  // An emptied reason is never saved, and the field never shows less than what goes: the saved reason comes back.
   expect(marks).toHaveLength(count);
+  expect(reason.value).toBe('No access.');
+});
+
+test.skipIf(!hasDom)('a note still inside its typing pause goes as the page goes (a reload, a closed tab): one keepalive request, as a note save', async () => {
+  const marks: unknown[] = [];
+  const at = '2026-10-21T15:12:00.000Z';
+  const sent: { url: string; init: RequestInit }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    sent.push({ url: String(url), init });
+    return new Response('{}');
+  }) as typeof fetch;
+  try {
+    const el = mount(
+      <ActionChecklist actions={[record(0, { state: 'picked', revision: 1, action_result: { outcome: 'done', note: null, at, by: 'person', staged: true } })]} agent="Claude Code" onMark={async (_a, mark) => (marks.push(mark), true)} />,
+    );
+    const area = el.querySelector<HTMLTextAreaElement>('[data-action-draft-note]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(area, 'Rotated the old one too.');
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => window.dispatchEvent(new Event('pagehide')));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toMatch(/\/api\/inbox\/messages\/[^/]+\/actions\/a-/);
+    expect(sent[0]!.init.keepalive).toBe(true);
+    expect(JSON.parse(String(sent[0]!.init.body))).toMatchObject({ outcome: 'done', note: 'Rotated the old one too.', note_only: true, staged: true });
+    // Sent once: the pause's timer is gone, and the row going away has nothing left to save.
+    act(() => window.dispatchEvent(new Event('pagehide')));
+    act(() => root!.render(<></>));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650));
+    });
+    expect(sent).toHaveLength(1);
+    expect(marks).toEqual([]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test.skipIf(!hasDom)('a note still inside its typing pause is saved when its row goes away (the pane closed), never dropped', async () => {

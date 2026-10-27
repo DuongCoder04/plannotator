@@ -4,7 +4,10 @@
  * draft is saved after a typing pause, so a Send pressed inside that pause
  * must save it first and wait for the save before it posts the reply.
  * Failures to catch: the reply posted before the note's save (the agent gets
- * the Done without the note), or the note never saved at all.
+ * the Done without the note), or the note never saved at all. And the reply
+ * box's list of what goes with the reply ("Your 2 action items go with this
+ * reply"): an item missing from it, or its note or reason; a sent list that
+ * says "You did" for a Can't do it the agent then saw done.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
  */
@@ -16,6 +19,7 @@ import { parseInboxActionBlocks } from '@plannotator/core/inbox-actions';
 
 const hasDom = typeof document !== 'undefined';
 const { ThreadPane } = (hasDom ? await import('./components/Thread') : {}) as typeof import('./components/Thread');
+const { ReplyActions } = (hasDom ? await import('./components/ReplyAnswers') : {}) as typeof import('./components/ReplyAnswers');
 
 const PROJECT: InboxProject = { id: 'prj_1', key: 'web-abcdef', name: 'web', root: '/work/web', created_at: '2026-10-26T10:00:00.000Z' };
 const ASKED = 'msg_01M5F3B7KD2WQ9XN4C8VJTR6YE';
@@ -151,4 +155,54 @@ test.skipIf(!hasDom)('a Send pressed inside the note\'s typing pause saves the n
   });
   await settle();
   expect(events).toEqual(['mark posted: Promoted from the CLI.', 'mark saved', `reply posted: ${JSON.stringify([{ key: PARSED.key }])}`]);
+});
+
+test.skipIf(!hasDom)("the reply box lists what goes with the reply: each action item waiting in the draft, its Done and note or its reason", async () => {
+  const body = [BODY, '', ':::action', 'Rotate the npm token', ':::'].join('\n');
+  const second = parseInboxActionBlocks(body)[1]!;
+  const t = thread();
+  const asked = t.messages[0]! as InboxMessageWire & { actions: InboxQuestion[] };
+  asked.body = body;
+  asked.actions = [
+    action('Promoted at 3:12.'),
+    { ...action(null), key: second.key, position: 1, prompt: second.prompt, stopped: null, action_result: { outcome: 'cant', note: 'No access to the npm org.', at: '2026-10-26T15:13:00.000Z', by: 'person', staged: true } } as unknown as InboxQuestion,
+  ];
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  act(() => {
+    root = createRoot(host!);
+    root.render(
+      <div className="pn-inbox">
+        <ThreadPane thread={t} sent={null} onQuestions={() => {}} onChanged={async () => {}} onClose={() => {}} file={null} onOpenFile={() => {}} onOpenGuide={() => {}} />
+      </div>,
+    );
+  });
+  await settle();
+  // The box is closed: no list yet (the foot counts them).
+  expect(host.querySelector('[data-reply-actions="draft"]')).toBeNull();
+  act(() => host!.querySelector<HTMLButtonElement>('[data-reply-button]')!.click());
+  await settle();
+  const list = host.querySelector<HTMLElement>('[data-reply-actions="draft"]')!;
+  expect(list).not.toBeNull();
+  expect(list.querySelector('.ib-ranswers-h')!.textContent).toBe('Your 2 action items go with this reply');
+  const rows = [...list.querySelectorAll('.ib-ranswer')].map((r) => r.getAttribute('aria-label'));
+  expect(rows).toEqual([
+    'A1, Approve the production deploy on Vercel: Done · Note: Promoted at 3:12.. Show the action item.',
+    "A2, Rotate the npm token: Can't do it: No access to the npm org.. Show the action item.",
+  ]);
+});
+
+test.skipIf(!hasDom)("a sent reply's list counts a Can't do it the agent then saw done by the person's mark: \"You couldn't do\", never \"You did\"", () => {
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  const row = { id: `${ASKED}/${PARSED.key}`, messageId: ASKED, number: 1, prompt: PARSED.prompt, outcome: 'cant' as const, note: 'No access.', seen: true };
+  act(() => {
+    root = createRoot(host!);
+    root.render(<ReplyActions actions={[row]} sent />);
+  });
+  const sent = host.querySelector<HTMLElement>('[data-reply-actions="sent"]')!;
+  expect(sent.querySelector('.ib-ranswers-h')!.textContent).toBe("You couldn't do 1 action item");
+  expect(sent.querySelector('.ib-ranswer-a')!.textContent).toBe('Seen done · Your reason: No access.');
+  act(() => root!.render(<ReplyActions actions={[row, { ...row, id: 'x', number: 2, outcome: 'done', note: null, seen: false }]} sent />));
+  expect(sent.querySelector('.ib-ranswers-h')!.textContent).toBe("You did 1 action item, couldn't do 1");
 });

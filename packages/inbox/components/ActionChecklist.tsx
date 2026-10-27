@@ -27,6 +27,7 @@ import { actionCardState, type ActionCardState } from '../actions';
 import { clockTime } from '../format';
 import { Icon } from '../icons';
 import { registerActionFlush, trackActionSave } from '../actionSaves';
+import { inboxApi } from '../api';
 
 /** A Done or Can't do it as the window marks it: always into the reply draft (`staged` on the wire). */
 export interface ActionMark {
@@ -364,6 +365,7 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
           agent={agent}
           readOnly={readOnly}
           onSave={(next) => trackActionSave(onMark(next, 'tick'))}
+          onLeave={(next) => inboxApi.markActionOnLeave(action.message_id, action.key, next)}
         />
       )}
       <div className="ib-chk-panel" id={panelId} hidden={!open} data-action-panel="">
@@ -471,8 +473,11 @@ function ActionRow({ action, state, agent, readOnly, open, onToggle, toggleRef, 
  * "inbox-action-items-in-reply"): the note for the agent, saved as it is
  * typed (and on leaving the field, so a Send right after carries it), then
  * "Done 3:12 PM · in your draft", the question card's own words for a pick.
- * Can't do it's note is its reason, so it never empties. `seen`: the agent saw
- * the item done itself, and the note is what still goes (Q3).
+ * Can't do it's note is its reason, so it never empties: emptied, it is not
+ * saved, and leaving the field puts the saved reason back, so the field never
+ * shows less than what goes. `seen`: the agent saw the item done itself, and
+ * the note is what still goes (Q3). A reload or a closed tab inside the typing
+ * pause sends the note as the page goes (`onLeave`, a keepalive request).
  */
 function DraftNote({
   mark,
@@ -480,12 +485,15 @@ function DraftNote({
   agent,
   readOnly,
   onSave,
+  onLeave,
 }: {
   mark: { outcome: 'done' | 'cant'; note: string | null; at: string };
   seen: boolean;
   agent: string;
   readOnly: boolean;
   onSave: (mark: ActionMark | null) => Promise<boolean>;
+  /** The page is going (pagehide) with words inside their typing pause: sent so the request outlives the page. */
+  onLeave: (mark: ActionMark | null) => void;
 }) {
   const [text, setText] = useState(mark.note ?? '');
   const saved = useRef(mark.note ?? '');
@@ -495,14 +503,19 @@ function DraftNote({
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const noteId = useId();
   const cant = mark.outcome === 'cant';
-  const save = (value: string) => {
+  /** What saving `value` sends, now counted as saved; undefined when there is nothing to save. */
+  const toSave = (value: string): ActionMark | null | undefined => {
     if (timer.current !== null) window.clearTimeout(timer.current);
     timer.current = null;
     const note = value.trim();
-    if (note === saved.current.trim() || (cant && note === '')) return;
+    if (note === saved.current.trim() || (cant && note === '')) return undefined;
     saved.current = note;
     // The agent saw it done: an emptied note leaves nothing of the person's to send.
-    void onSave(seen && note === '' ? null : { outcome: mark.outcome, note: note || null, quiet: true });
+    return seen && note === '' ? null : { outcome: mark.outcome, note: note || null, quiet: true };
+  };
+  const save = (value: string) => {
+    const next = toSave(value);
+    if (next !== undefined) void onSave(next);
   };
   // Grows with its words: one line until there are more.
   useEffect(() => {
@@ -515,12 +528,26 @@ function DraftNote({
   // (the pane closed, the thread changed, the mark sent), never dropped.
   const saveRef = useRef(save);
   saveRef.current = save;
+  const leaveRef = useRef(() => {
+    const next = toSave(typed.current);
+    if (next !== undefined) onLeave(next);
+  });
+  leaveRef.current = () => {
+    const next = toSave(typed.current);
+    if (next !== undefined) onLeave(next);
+  };
   useEffect(() => {
     const flush = () => {
       if (timer.current !== null) saveRef.current(typed.current);
     };
     const unregister = registerActionFlush(flush);
+    // A reload or a closed tab inside the typing pause: the unmount flush never runs then.
+    const onHide = () => {
+      if (timer.current !== null) leaveRef.current();
+    };
+    window.addEventListener('pagehide', onHide);
     return () => {
+      window.removeEventListener('pagehide', onHide);
       unregister();
       flush();
     };
@@ -547,7 +574,14 @@ function DraftNote({
           if (timer.current !== null) window.clearTimeout(timer.current);
           timer.current = window.setTimeout(() => save(value), 600);
         }}
-        onBlur={() => save(text)}
+        onBlur={() => {
+          save(text);
+          // An emptied reason is not saved: the field shows again the one that goes.
+          if (cant && text.trim() === '') {
+            typed.current = saved.current;
+            setText(saved.current);
+          }
+        }}
       />
       <p className="ib-chk-dline" data-action-draft-line="">
         {seen ? (cant ? 'Your reason' : 'Your note') : cant ? "Can't do it" : 'Done'}

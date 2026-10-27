@@ -312,6 +312,15 @@ test('Send carries the Done and its note with the answer: one first line, the se
   await pane.locator('[data-question-option]').filter({ hasText: 'next first' }).first().click();
   await expect(pane.locator('[data-foot-status] [data-draft-foot]')).toContainText('1 pick, 1 done');
   await shot(page, '05-draft-foot', ['light']);
+  // The reply box lists what goes with the reply (approved A-03): the item, its Done and its note.
+  await pane.locator('[data-reply-button]').click();
+  const going = pane.locator('[data-reply-actions="draft"]');
+  await expect(going).toContainText('Your action item goes with this reply');
+  await expect(going.locator('.ib-ranswer')).toHaveCount(1);
+  await expect(going.locator('.ib-ranswer')).toContainText('A1');
+  await expect(going.locator('.ib-ranswer')).toContainText('Sign in to npm in your terminal');
+  await expect(going.locator('.ib-ranswer-a')).toHaveText('Done · Note: Signed in with the YubiKey; the token is good for 30 days.');
+  await shot(page, '05b-reply-box');
   await pane.locator('.ib-pfoot').getByRole('button', { name: 'Send' }).click();
   const answer = await claude.waitForReply(threads.npm, 40);
   expect(answer.status).toBe('replied');

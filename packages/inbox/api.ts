@@ -485,6 +485,16 @@ async function getWithin<T>(path: string, timeoutMs: number): Promise<T> {
   }
 }
 
+/** An action item mark as the window sends it; `quiet`: a note typed under the marked row. */
+type ActionMarkBody = { outcome: 'done' | 'cant'; note?: string | null; quiet?: boolean };
+
+function actionMarkBody(mark: ActionMarkBody | null, staged: boolean): Record<string, unknown> {
+  return {
+    ...(mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}), ...(mark.quiet ? { note_only: true } : {}) } : { outcome: null }),
+    ...(staged ? { staged: true } : {}),
+  };
+}
+
 /** The serverSession every POST carries; set from the first list read. */
 let pageSession: string | null = null;
 
@@ -683,16 +693,27 @@ export const inboxApi = {
    * or taking it back (`null`). `staged` (the thread's checklist; approval
    * "inbox-action-items-in-reply"): it waits in the reply draft and goes with the
    * Send (`reply`'s `actions`). Without it (decision mode): sent to the agent once
-   * the Undo window passes. Answers the message's action items.
+   * the Undo window passes. A `quiet` mark (a note typed under the marked row)
+   * goes as `note_only`: it never marks again an item taken back meanwhile.
+   * Answers the message's action items.
    */
-  markAction: (messageId: string, key: string, mark: { outcome: 'done' | 'cant'; note?: string | null } | null, staged = false) =>
-    post<{ questions: InboxQuestion[] }>(
-      `/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`,
-      {
-        ...(mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}) } : { outcome: null }),
-        ...(staged ? { staged: true } : {}),
-      },
-    ).then((result) => ({ actions: result.questions.filter(isActionRecord) })),
+  markAction: (messageId: string, key: string, mark: ActionMarkBody | null, staged = false) =>
+    post<{ questions: InboxQuestion[] }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`, actionMarkBody(mark, staged)).then(
+      (result) => ({ actions: result.questions.filter(isActionRecord) }),
+    ),
+  /**
+   * A staged mark's note as the page goes (a reload, a closed tab) inside its
+   * typing pause: a keepalive request, as reply drafts do, so the note is not lost.
+   */
+  markActionOnLeave: (messageId: string, key: string, mark: ActionMarkBody | null) => {
+    const body = actionMarkBody(mark, true);
+    void fetch(`/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pageSession ? { ...body, serverSession: pageSession } : body),
+    }).catch(() => {});
+  },
   reply: (
     messageId: string,
     input: {

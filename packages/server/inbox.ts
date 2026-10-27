@@ -2776,13 +2776,14 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // (with a reason). `staged: true` (the window; approval
       // "inbox-action-items-in-reply") puts it in the reply draft, sent with the
       // person's Send; without it (approval "inbox-next-actions") it is sent once
-      // the Undo window passes. `{ outcome: null }` takes it back.
+      // the Undo window passes. `{ outcome: null }` takes it back. `note_only`
+      // (a note typed under the marked row) never marks an item taken back.
       const actionMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/actions\/(a-[0-9a-f]{8}(?:-\d{1,3})?)$/.exec(path);
       if (actionMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note, staged: body.staged });
+        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note, staged: body.staged, note_only: body.note_only });
         // A staged mark waits for the person's Send: no timer.
         if (body.outcome !== null && body.staged !== true) scheduleActionSettle();
         return json({ questions });

@@ -2122,18 +2122,26 @@ export class InboxStore {
    * window passes; `null` inside the window is the Undo, and a second mark
    * starts the window again.
    *
+   * `note_only: true` (a note typed under the marked row): it changes the
+   * note of a mark that still waits and never marks an item again: on an
+   * item taken back meanwhile it changes nothing, so a late note save never
+   * puts back a mark the person took out of their draft.
+   *
    * Refused once sent (`action_already_sent`), on an action item that is
    * closed, replaced or that the agent saw done with nothing of the person's
    * waiting (`action_closed`), on a question (`validation_error`), and on a
    * message the archive closed.
    */
-  markAction(messageId: string, key: string, input: { outcome?: unknown; note?: unknown; staged?: unknown }): InboxQuestion[] {
+  markAction(messageId: string, key: string, input: { outcome?: unknown; note?: unknown; staged?: unknown; note_only?: unknown }): InboxQuestion[] {
     const message = this.targetMessage(messageId);
     const record = this.questionRecords(message.id).find((r) => r.key === key);
     if (!record) throw new InboxError("question_not_found", `No action item ${key} on message ${message.id}.`, { key, message_id: message.id });
     if (record.kind !== "action") throw new InboxError("validation_error", `${key} is a question, not an action item; answer it on its card.`, { field: "key", key });
     if (input.staged !== undefined && input.staged !== null && typeof input.staged !== "boolean") {
       throw new InboxError("validation_error", "staged: a boolean.", { field: "staged" });
+    }
+    if (input.note_only !== undefined && input.note_only !== null && typeof input.note_only !== "boolean") {
+      throw new InboxError("validation_error", "note_only: a boolean.", { field: "note_only" });
     }
     const staged = input.staged === true;
     const checked = checkInboxActionResult(input);
@@ -2149,6 +2157,8 @@ export class InboxStore {
       return this.questionsOf(messageId);
     }
     if (state === "sent") throw new InboxError("action_already_sent", `Action item ${key} was already sent to the agent.`, { key });
+    // A note save that lands after the mark was taken back (two requests, unordered): the take-back wins.
+    if (input.note_only === true && state === "open") return this.questionsOf(messageId);
     if (state !== "open" && state !== "picked") throw new InboxError("action_closed", `Action item ${key} is ${state}: it can no longer be marked.`, { key, state });
     if (checked.outcome === null) {
       // Taken back (out of the draft, or inside the Undo window): nothing was sent. Nothing to take back on an open action item.
@@ -3353,7 +3363,7 @@ export class InboxStore {
       words,
       stillOpen,
     });
-    const body = [withInboxActionsSection(replyBody, this.stagedActionsSection(message.thread_id, actionsSent, stillOpen)), feedback]
+    const body = [withInboxActionsSection(replyBody, this.stagedActionsSection(message, actionsSent, stillOpen)), feedback]
       .filter((part) => part !== "")
       .join("\n\n");
 
@@ -3423,10 +3433,10 @@ export class InboxStore {
   }
 
   /** The reply's "Action items you asked for" for the action items it sends, one group per asking message, in thread order. */
-  private stagedActionsSection(threadId: string, sent: readonly InboxQuestionRecord[], stillOpen: readonly InboxQuestionRecord[]): string {
+  private stagedActionsSection(message: InboxMessage, sent: readonly InboxQuestionRecord[], stillOpen: readonly InboxQuestionRecord[]): string {
     if (sent.length === 0) return "";
     const sentIds = new Set(sent.map((r) => r.id));
-    const order = this.threadMessages(threadId).map((m) => m.id);
+    const order = this.threadMessages(message.thread_id).map((m) => m.id);
     const groups = order
       .filter((id) => sent.some((r) => r.message_id === id))
       .map((id) => ({
@@ -3434,11 +3444,12 @@ export class InboxStore {
         reported: sent.filter((r) => r.message_id === id),
         all: this.questionRecords(id).filter((r) => r.kind === "action").map((r) => sent.find((x) => x.id === r.id) ?? r),
       }));
-    // The asking session's action items still open (its questions' still-open line is the reply's own).
+    // The asking session's action items still open (its questions' still-open line is the reply's own), each
+    // named with its message when that is not the one the reply answers: A1 is per message, so never two items.
     const open = stillOpen
       .filter((r) => r.kind === "action" && !sentIds.has(r.id) && inboxQuestionState(r, false) === "open")
-      .map((r) => ({ kind: "action" as const, position: r.position, prompt: r.prompt }));
-    return composeInboxActionsSection({ groups, stillOpen: open });
+      .map((r) => ({ kind: "action" as const, position: r.position, prompt: r.prompt, ...(r.message_id ? { message_id: r.message_id } : {}) }));
+    return composeInboxActionsSection({ groups, stillOpen: open, replyTo: message.id });
   }
 
   /**

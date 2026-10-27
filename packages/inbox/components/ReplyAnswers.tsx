@@ -169,7 +169,7 @@ export function SentAnswers({ groups, onJump }: { groups: readonly SentAnswerGro
  * sent message ("You did 1 action item"); else the reply box ("Your action
  * item goes with this reply"). One the agent saw done itself carries the
  * person's note: "Seen done · Note: …" (a Can't do it they had marked: "Seen
- * done · Your reason: …"); it counts as done.
+ * done · Your reason: …"); the heading counts it by the person's mark.
  */
 export interface ActionRow {
   id: string;
@@ -192,7 +192,8 @@ export function actionRowWords(a: Pick<ActionRow, 'outcome' | 'note' | 'seen'>):
 export function ReplyActions({ actions, sent = false, onJump }: { actions: readonly ActionRow[]; sent?: boolean; onJump?: (target: JumpTarget) => void }) {
   const headingId = useId();
   if (actions.length === 0) return null;
-  const done = actions.filter((a) => a.outcome === 'done' || a.seen).length;
+  // Counted by the person's own mark: a Can't do it the agent then saw done is one they couldn't do.
+  const done = actions.filter((a) => a.outcome === 'done').length;
   const cant = actions.length - done;
   const heading = sent
     ? done > 0 && cant > 0

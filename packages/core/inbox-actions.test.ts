@@ -292,6 +292,28 @@ describe("in the person's reply (approval \"inbox-action-items-in-reply\")", () 
     );
   });
 
+  test("one group of another message than the replied-to one is labelled; a still-open item of another message is named with it", () => {
+    const a = record({ revision: 1, action_result: { outcome: "done", note: null, at: AT, by: "person", staged: true } });
+    const stillOpen = [
+      { kind: "action" as const, position: 0, prompt: "Sign in to npm", message_id: "msg_9" },
+      { kind: "action" as const, position: 1, prompt: "Merge", message_id: "msg_1" },
+    ];
+    const other = composeInboxActionsSection({ groups: [{ message_id: "msg_1", reported: [a], all: [a] }], stillOpen, replyTo: "msg_2", timeZone: "UTC" });
+    expect(other.split("\n\n").slice(1, 4)).toEqual(["## Action items you asked for", "### Your message msg_1", "1 of 1 done."]);
+    expect(other.endsWith("Still open: A1 (your message msg_9). Sign in to npm; A2 (your message msg_1). Merge — the person will do them in the Inbox; don't ask again.")).toBe(true);
+    // The replied-to message: no label, its items first and unqualified.
+    const own = composeInboxActionsSection({ groups: [{ message_id: "msg_1", reported: [a], all: [a] }], stillOpen, replyTo: "msg_1", timeZone: "UTC" });
+    expect(own).not.toContain("### Your message");
+    expect(own.endsWith("Still open: A2. Merge; A1 (your message msg_9). Sign in to npm — the person will do them in the Inbox; don't ask again.")).toBe(true);
+  });
+
+  test("a Can't do it the agent then saw done opens with the person's mark, not \"Did\"; it counts done in x of y", () => {
+    const seen = record({ revision: 2, action_result: { outcome: "done", note: null, at: AT, by: "agent", message_id: "msg_3", person: { outcome: "cant", note: "No access.", at: AT } } });
+    const body = composeInboxActionsSection({ groups: [{ message_id: "msg_1", reported: [seen], all: [seen] }], timeZone: "UTC" });
+    expect(body.split("\n\n").slice(0, 3)).toEqual(["Couldn't do 1 action item.", "## Action items you asked for", "1 of 1 done."]);
+    expect(body).toContain("You saw it done, 3:12 PM.\nTheir reason: No access.");
+  });
+
   test("the window draws a sent reply without the agent-facing action sentence and section; everything else stays", () => {
     const done = record({ revision: 1, action_result: { outcome: "done", note: "Approved.", at: AT, by: "person", staged: true } });
     const section = composeInboxActionsSection({ groups: [{ message_id: "m1", reported: [done], all: [done] }], stillOpen: [{ kind: "action", position: 1, prompt: "Merge" }], timeZone: "UTC" });

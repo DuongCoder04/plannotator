@@ -322,18 +322,67 @@ describe("in the reply draft (approval \"inbox-action-items-in-reply\")", () => 
     expect(actionOf(store, asked.id).sent_reply_id).toBeNull();
   });
 
-  test("a staged Can't do it the agent then saw done counts done everywhere, its reason labelled as theirs", () => {
+  test("a staged Can't do it the agent then saw done counts done, its reason labelled as theirs; the first sentence keeps their mark", () => {
     const { store, project, asked, action } = setup();
     store.markAction(asked.id, action.key, { outcome: "cant", note: "No access to the Vercel team.", staged: true });
     const seen = store.sendMessage({ project_id: project.id, author: AGENT, body: "Dana promoted it.", reply_to: asked.id, done: [`${asked.id}/${action.key}`] });
     expect(rowOf(store, asked.thread_id).unsent).toMatchObject({ done: 1 });
     expect(rowOf(store, asked.thread_id).unsent?.cant ?? 0).toBe(0);
     const { reply } = store.sendReply(seen.message.id, { idempotency_key: "k1", words: "", actions: [{ message_id: asked.id, key: action.key }] });
-    expect(reply.body.startsWith("Did 1 action item.\n\n")).toBe(true);
+    // The person could not do it: never "Did 1 action item."; the item is done all the same.
+    expect(reply.body.startsWith("Couldn't do 1 action item.\n\n")).toBe(true);
+    expect(reply.body).not.toContain("Did 1 action item");
     expect(reply.body).toContain("1 of 1 done.");
     expect(reply.body).toContain("You saw it done, ");
     expect(reply.body).toContain("\nTheir reason: No access to the Vercel team.");
-    expect(reply.body).not.toContain("Couldn't");
+  });
+
+  test("A1 never names two items: a group of another message than the replied-to one is labelled, and an open item of another message is named with it", () => {
+    const { store } = open();
+    const p = store.ensureProject({ name: "web", root: "/work/web" });
+    const msg1 = store.sendMessage({ project_id: p.id, author: AGENT, body: ":::action\nApprove deploy\nStopped: the release\n:::" }).message;
+    const msg2Body = "Next:\n\n:::action\nSign in to npm\nStopped: the publish\n:::\n\n:::question\nShip it?\n\n- [ ] Yes\n- [ ] No\n:::";
+    const msg2 = store.sendMessage({ project_id: p.id, author: AGENT, body: msg2Body, reply_to: msg1.id }).message;
+    expect(msg2.thread_id).toBe(msg1.thread_id);
+    const a1 = actionOf(store, msg1.id);
+    store.markAction(msg1.id, a1.key, { outcome: "done", staged: true });
+    const q = store.questionsOf(msg2.id).find((x) => x.kind !== "action")!;
+    pickYes(store, msg2.id, q);
+    const { reply } = store.sendReply(msg2.id, {
+      idempotency_key: "k1",
+      words: "",
+      questions: [{ key: q.key, revision: store.questionsOf(msg2.id).find((x) => x.key === q.key)!.revision }],
+      actions: [{ message_id: msg1.id, key: a1.key }],
+    });
+    const section = reply.body.slice(reply.body.indexOf(`## ${INBOX_ACTIONS_HEADING}`));
+    // msg1's A1 under its message; msg2's own A1 (the replied-to message) still open, unqualified.
+    expect(section.startsWith(`## ${INBOX_ACTIONS_HEADING}\n\n### Your message ${msg1.id}\n\n1 of 1 done.\n\n#### A1. Approve deploy\nDone, `)).toBe(true);
+    expect(section.endsWith("\n\nStill open: A1. Sign in to npm — the person will do it in the Inbox; don't ask again.")).toBe(true);
+
+    // The other way round: the reply answers msg1 and msg2's A1 is still open: named with msg2.
+    const b = open();
+    const pb = b.store.ensureProject({ name: "web", root: "/work/web" });
+    const m1 = b.store.sendMessage({ project_id: pb.id, author: AGENT, body: ":::action\nApprove deploy\nStopped: the release\n:::" }).message;
+    const m2 = b.store.sendMessage({ project_id: pb.id, author: AGENT, body: ":::action\nSign in to npm\nStopped: the publish\n:::", reply_to: m1.id }).message;
+    const b1 = actionOf(b.store, m1.id);
+    b.store.markAction(m1.id, b1.key, { outcome: "done", staged: true });
+    const other = b.store.sendReply(m1.id, { idempotency_key: "k1", words: "", actions: [{ key: b1.key }] }).reply;
+    expect(other.body).toContain(`## ${INBOX_ACTIONS_HEADING}\n\n1 of 1 done.\n\n### A1. Approve deploy\nDone, `);
+    expect(other.body).not.toContain("### Your message");
+    expect(other.body.endsWith(`\n\nStill open: A1 (your message ${m2.id}). Sign in to npm — the person will do it in the Inbox; don't ask again.`)).toBe(true);
+  });
+
+  test("a note save landing after the take-back never puts the mark back; on a mark still waiting it changes the note", () => {
+    const { store, asked, action } = setup();
+    store.markAction(asked.id, action.key, { outcome: "done", staged: true });
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Promoted.", staged: true, note_only: true });
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "picked", action_result: { outcome: "done", note: "Promoted.", staged: true } });
+    // The tick's take-back and the field's blur save race: the take-back lands first.
+    store.markAction(asked.id, action.key, { outcome: null, staged: true });
+    store.markAction(asked.id, action.key, { outcome: "done", note: "Promoted at 3:12.", staged: true, note_only: true });
+    expect(actionOf(store, asked.id)).toMatchObject({ state: "open", action_result: null });
+    expect(rowOf(store, asked.thread_id).unsent?.done ?? 0).toBe(0);
+    expect(() => store.markAction(asked.id, action.key, { outcome: "done", staged: true, note_only: "yes" })).toThrow(/note_only/);
   });
 
   test("Mark read leaves a staged Done in the draft", () => {

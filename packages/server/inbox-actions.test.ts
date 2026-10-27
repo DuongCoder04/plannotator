@@ -255,6 +255,15 @@ describe("the window's Done goes with the person's reply (approval \"inbox-actio
     await sleep(DELAY + 250);
     expect((await poll(server)).map((c) => c.id)).toEqual([commands[0]!.id]);
   });
+
+  test("the route passes note_only: a note save landing after the take-back does not stage the item again", async () => {
+    const { server, sent } = await setup();
+    const key = sent.actions![0]!.key;
+    expect((await mark(server, sent.message_id, key, { outcome: "done", staged: true })).status).toBe(200);
+    expect((await mark(server, sent.message_id, key, { outcome: null, staged: true })).status).toBe(200);
+    expect((await mark(server, sent.message_id, key, { outcome: "done", note: "Late.", staged: true, note_only: true })).status).toBe(200);
+    expect(await actionOf(server, sent.thread_id, sent.message_id)).toMatchObject({ state: "open", action_result: null });
+  });
 });
 
 describe("archive holds a pending Done back; Unarchive sends it", () => {
