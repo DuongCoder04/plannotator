@@ -35,6 +35,7 @@ import { deflateSync } from 'node:zlib';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, removeInboxScratch } from './inbox-scratch';
 import { NO_BROWSER } from '../helpers/no-browser';
+import { agentCliCalls, writeAgentCliStubs } from './agent-cli-stubs';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -89,6 +90,8 @@ function mockPng(width = 240, height = 360, accent: [number, number, number] = [
 interface World {
   root: string;
   dataDir: string;
+  /** Agent CLI stubs first on the Inbox's PATH: each call is recorded. */
+  stubs: string;
   env: Record<string, string>;
   url: string;
   claude: SimAgent;
@@ -127,7 +130,11 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   mkdirSync(proofDir, { recursive: true });
   const root = inboxScratch('plannotator-inbox-decide-e2e-');
   const dataDir = join(root, 'data');
-  const env = { PATH: process.env.PATH ?? '', HOME: root, PLANNOTATOR_DATA_DIR: dataDir, PLANNOTATOR_BROWSER: NO_BROWSER, PLANNOTATOR_INBOX_CONNECT: '0' };
+  // Codex sends with a wake, so the person's reply to it is queued through `codex queue`: under the test sandbox
+  // the Inbox looks for no codex (an empty agent PATH, never the apps' own CLIs), and the stubs first on PATH
+  // record any lookup that gets past it (the last test). Never the codex on the runner's PATH.
+  const stubs = writeAgentCliStubs(join(root, 'agent-clis'));
+  const env = { PATH: `${stubs}:${process.env.PATH ?? ''}`, HOME: root, PLANNOTATOR_DATA_DIR: dataDir, PLANNOTATOR_BROWSER: NO_BROWSER, PLANNOTATOR_INBOX_CONNECT: '0', PLANNOTATOR_TEST_SANDBOX: root };
   const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
   expect(started.status, started.stderr).toBe(0);
   const url = started.stdout.trim();
@@ -144,7 +151,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const claude = await SimAgent.connect({ binary, env, name: 'Claude Code', host: 'claude-code' });
   const codex = await SimAgent.connect({ binary, env, name: 'Codex', host: 'codex' });
   const pi = await SimAgent.connect({ binary, env, name: 'Pi', host: 'pi' });
-  world = { root, dataDir, env, url, claude, codex, pi, billing, web, context, page, errors };
+  world = { root, dataDir, stubs, env, url, claude, codex, pi, billing, web, context, page, errors };
   await fetch(`http://127.0.0.1:${port()}/api/inbox/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notifications: { dismissed: true } }) });
 });
 
@@ -525,4 +532,10 @@ test('the contract lines: picture tiles (the picture answers, its zoom never doe
   if (await keep.isVisible().catch(() => false)) await keep.click();
   await expect(dialog).toBeHidden();
   expect(world.errors).toEqual([]);
+});
+
+test('the Codex session it answered is never woken through a codex CLI: none is looked up or run', async () => {
+  // Test 2 answers Codex's question; its session sent with a wake. Without the sandbox the Inbox ran
+  // `codex --version` and `codex queue` from PATH: here, the stubs in front of the runner's own codex.
+  expect(agentCliCalls(world.stubs)).toEqual([]);
 });
