@@ -437,7 +437,7 @@ function CapabilitiesSection({
                 <span className="ib-desc">
                   {experimental.decision_mode.env !== null
                     ? `PLANNOTATOR_EXPERIMENTAL turns it ${experimental.decision_mode.env ? 'on' : 'off'}.`
-                    : 'Answer what agents ask across threads, one decision at a time; each agent gets one reply per thread.'}
+                    : 'Answer what agents ask in a thread one decision at a time, from its open questions; each agent gets one reply.'}
                 </span>
               </span>
               <span className="ib-ctl">
