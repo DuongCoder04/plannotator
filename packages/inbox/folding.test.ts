@@ -6,7 +6,8 @@
 import { expect, test } from 'bun:test';
 import type { InboxAuthor, InboxMessageWire, InboxThread } from '@plannotator/core/inbox-types';
 import { QUESTION_ANSWERS_HEADING } from '@plannotator/core/question-block';
-import { SNIPPET_PROMPT_MAX, cleanInline, cutAtWord, firstWords, foldSnippet, lookBoundary, newSinceLook, plainLabel, planFolds, replyWords, snippetText } from './folding';
+import { parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
+import { SNIPPET_PROMPT_MAX, answerWords, cleanInline, cutAtWord, firstWords, foldSnippet, lookBoundary, newSinceLook, plainLabel, planFolds, replyWords, snippetText } from './folding';
 
 const AGENT: InboxAuthor = { kind: 'agent', host: 'claude-code', session: 'ses_a', name: null };
 const PERSON: InboxAuthor = { kind: 'person' };
@@ -186,6 +187,18 @@ test('a picked label keeps names and arithmetic whole', () => {
   expect(plainLabel('`*args` and `**kwargs`')).toBe('*args and **kwargs');
   expect(plainLabel('*args and **kwargs')).toBe('*args and **kwargs');
   expect(plainLabel('Inline `a\\*b` code')).toBe('Inline a\\*b code');
+});
+
+test('a markdown label written with a (Recommended) marker answers as its plain words, with no marker', () => {
+  // The parser takes the marker out of the label it stores; the folded line shows that label's words.
+  for (const choice of ['[Pagefind](x.html) (Recommended)', '[Recommended] [Pagefind](x.html)']) {
+    for (const line of ['', '\nRecommended: Pagefind\n']) {
+      const body = `:::question\nWhich search?\n\n- [ ] ${choice}\n- [ ] [Algolia](y.html)\n${line}:::`;
+      const stored = parseInboxQuestionBlocks(body)[0]!.parsed.choices[0]!.label;
+      expect(stored).toBe('[Pagefind](x.html)');
+      expect(answerWords({ v: 1, key: 'q-1', kind: 'single', prompt: 'Which search?', selected: [stored] })).toBe('Pagefind');
+    }
+  }
 });
 
 test("a reply of skips or of answers and skips: the store's first line is dropped too", () => {
