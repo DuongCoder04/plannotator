@@ -98,7 +98,8 @@
  * config.json turns decision mode on, and each project gets only this seed in
  * place of the one above: Claude Code (`ses_da<i>`) asks two questions in one
  * message (a Stopped pick-one of three, recommended, then a two-way), and
- * Codex (`ses_db<i>`) asks one two-way question in a thread of its own. The
+ * Codex (`ses_db<i>`) asks one two-way question in the same thread (`reply_to`
+ * a: decision mode is thread only, so the thread holds both agents). The
  * world is `{ project, root, decide: { a, b, sessionA, sessionB } }`. A `send`
  * line on stdin may carry `supersedes` (and `host`).
  *
@@ -427,6 +428,8 @@ for (let i = 0; i < (firstRunMode ? 0 : count); i++) {
       project_id: project.id,
       author: { kind: "agent", host: "codex", session: sessionB, name: "Codex" },
       body: [":::question", "Ship the new flag off by default?", "", "- [ ] Yes", "- [ ] No", ":::"].join("\n"),
+      // In Claude Code's thread: decision mode is thread only, so one thread holds two agents' decisions.
+      reply_to: a.id,
     }).message;
     worlds.push({ project: project.id, root, decide: { a: a.id, b: b.id, sessionA, sessionB } } as unknown as World);
     continue;

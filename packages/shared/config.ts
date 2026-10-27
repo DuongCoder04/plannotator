@@ -396,7 +396,7 @@ export interface PlannotatorConfig {
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;
    * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
-   * Settings → General → Experimental through POST /api/inbox/settings
+   * Settings → Capabilities → Experimental through POST /api/inbox/settings
    * `{ experimental: { decision_mode } }`.
    */
   experimental?: { decisionMode?: boolean };
@@ -410,7 +410,7 @@ export interface PlannotatorConfig {
    * The Board (approval "inbox-board", 2026-10-26 amendment): something the
    * person turns on, off by default. On: the sidebar's Board row and page,
    * and the Inbox serves the agents' `card` tool. Off: neither, every card
-   * kept. Written by the Inbox's Settings → General (`POST
+   * kept. Written by the Inbox's Settings → Capabilities (`POST
    * /api/inbox/settings` `{ board: { on } }`), read on every request.
    */
   inboxBoard?: boolean;

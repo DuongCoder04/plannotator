@@ -2020,7 +2020,7 @@ export async function startReviewServer(
   });
 
   const reviewAlreadyDecided = () =>
-    Response.json({ error: "This review session has already been decided." }, { status: 409 });
+    Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
 
   // Host-only session control (packages/shared/host-control.ts). Closing is
   // the reviewer's Close, marked closedBy "agent", WITHOUT settling the draft

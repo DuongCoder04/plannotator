@@ -286,7 +286,7 @@ export interface SettingsModel {
   };
 }
 
-/** Settings → General → Experimental: each feature's switch, and whether the env var decides it. */
+/** Settings → Capabilities → Experimental: each feature's switch, and whether the env var decides it. */
 export interface InboxExperimentalSettings {
   decision_mode: { on: boolean; env: boolean | null };
 }
@@ -640,7 +640,7 @@ export const inboxApi = {
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
-  /** The Board on or off (Settings → General): agents get the card action from their next session. */
+  /** The Board on or off (Settings → Capabilities): agents get the card action from their next session. */
   saveBoard: (on: boolean) => post<{ board: { on: boolean } }>('/api/inbox/settings', { board: { on } }),
   /**
    * The person looked at the thread. `throughSeq`: the seq of the newest
@@ -865,7 +865,7 @@ export const inboxApi = {
   pinRestore: (restore: { thread_id: string; index: number; pinned_at: string }) =>
     post<{ pins: { thread_id: string; pinned_at: string }[] }>('/api/inbox/pins', { restore }),
   discardReplyDraft: (threadId: string) => post<{ ok: true; deleted: boolean }>(`/api/inbox/threads/${encodeURIComponent(threadId)}/draft/delete`, {}),
-  saveDraft: (id: string, input: { body: string; to: InboxDraft['to']; project: InboxDraft['project']; files: string[]; base: string | null; thread_name?: string }) =>
+  saveDraft: (id: string, input: { body: string; to: InboxDraft['to']; project: InboxDraft['project']; files: string[]; base: string | null; thread_name?: string; card?: InboxDraft['card'] }) =>
     post<{ draft: DraftView }>(`/api/inbox/drafts/${encodeURIComponent(id)}`, { ...input }),
   deleteDraft: (id: string) => post<{ ok: true; deleted: boolean }>(`/api/inbox/drafts/${encodeURIComponent(id)}/delete`, {}),
   sessions: (threadId: string, asker?: string | null, recipients: readonly string[] = []) => {

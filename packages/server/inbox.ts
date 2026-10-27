@@ -189,7 +189,7 @@ import {
   writeInboxAgents,
   type AgentEnvironment,
 } from "./inbox-agents";
-import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, removeInboxNote } from "./inbox-agent-notes";
+import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import {
   displayInboxSubject,
   INBOX_AGENT_IDS,
@@ -293,6 +293,8 @@ export interface InboxServerOptions {
   htmlContent?: string;
   /** Tests: how long a window's record outlives its last event stream (default `WINDOW_GRACE_MS`). */
   windowGraceMs?: number;
+  /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
+  mcpNow?: () => number;
   /**
    * The argv that runs this CLI (the compiled binary's absolute path, or bun
    * plus the entry script), so the window's connect snippets name a command
@@ -493,7 +495,7 @@ const ERROR_STATUS: Record<string, number> = {
   card_person_only: 403,
   // Over your tailnet (packages/server/inbox-tailscale.ts).
   tailscale_env_decides: 409,
-  // Settings → General → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
+  // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
   tailscale_unavailable: 409,
   local_only: 403,
@@ -837,6 +839,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           codexWake.wakes(host, session, meta),
         // The Board: the card tool is listed and served only while the person has it on.
         boardOn,
+        ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
@@ -851,6 +854,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     notify_reach: windows.reach(notificationsState().enabled),
     // Additive: event streams open now (windows' and the phone door's). Inbox tabs of one origin share one.
     event_streams: openEventStreams,
+    // Additive: read_thread honours the peek mark (the session's thread list after a compaction or resume).
+    peek: true,
   });
 
   /**
@@ -1073,6 +1078,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     (process.env.PLANNOTATOR_TEST_SANDBOX
       ? createAgentEnvironmentFor({ platform: process.platform, homeDir: join(dataDir, "agents-home"), env: { HOME: join(dataDir, "agents-home"), PATH: "" } })
       : createAgentEnvironment());
+  // The notes the person installed, brought up to this version while untouched (an update reaches
+  // them when the Inbox restarts onto it); an edited, damaged, read-only or busy file is left alone.
+  try {
+    refreshInboxNotes(dataDir, agentEnvironment);
+  } catch {
+    // Never holds up a start.
+  }
   let connecting: Promise<InboxConnectReport> | null = null;
   // The Inbox's stop ends a run still going: its agent CLIs are killed, never left running.
   const connectStop = new AbortController();
@@ -1637,7 +1649,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     text_size: textSizeState(),
     /** The guided review's diff layout (config.json `diffOptions.diffStyle`), shared with code review; null when never chosen. */
     diff_style: diffStyleState(),
-    /** Experimental features, each off unless switched on (Settings → General → Experimental). */
+    /** Experimental features, each off unless switched on (Settings → Capabilities → Experimental). */
     experimental: experimentalState(),
     /** The Board (config.json `inboxBoard`): off unless the person turned it on. */
     board: { on: boardOn() },

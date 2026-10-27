@@ -4452,7 +4452,9 @@ function setupPiSandbox(sc: PiScenario) {
     }
   };
   const settingsText = () => (existsSync(settings) ? readFileSync(settings, "utf-8") : null);
-  return { sandbox, env, calls, version, settingsText, pkg };
+  const npmLog = env.FAKE_NPM_LOG!;
+  const npmViews = () => (existsSync(npmLog) ? readFileSync(npmLog, "utf-8").split("\n").filter(Boolean) : []);
+  return { sandbox, env, calls, version, settingsText, pkg, npmViews };
 }
 
 type PiRunner = "install.sh" | "install.ps1" | "install.cmd";
@@ -4570,6 +4572,10 @@ function piStepTests(runner: PiRunner) {
     expect(r.out).toContain(
       `Pi extension: still ${PI_OLDER} (${PI_RELEASE} is not on your npm registry yet). Run this later: pi update ${PI_SOURCE}\n`,
     );
+    // A registry that never answers must not hold the install for minutes: one try, 10 s.
+    expect(s.npmViews()).toEqual([
+      `view @plannotator/pi-extension@${PI_RELEASE} version --fetch-timeout=10000 --fetch-retries=0`,
+    ]);
     expect(r.out).not.toContain("Pi extension updated");
     expect(r.out).not.toContain("already up to date");
   }, timeout);

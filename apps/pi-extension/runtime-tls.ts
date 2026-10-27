@@ -41,19 +41,34 @@ function nodeFixed(v: Triple): boolean {
 }
 
 /**
+ * Whether this process is a Bun-compiled program (Pi's standalone binary)
+ * rather than the `bun` executable running Pi: a compiled program's execPath
+ * is the program itself. Its Bun comes with it, so the fix is a newer Pi.
+ */
+function bunCompiled(execPath: string): boolean {
+	const name = execPath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+	return !/^bun(-debug)?(\.exe)?$/.test(name);
+}
+
+/**
  * The warning for this runtime, or null when it has the fixes (or its version
  * can't be read). Bun is checked first: it reports a Node-compatible
  * `process.versions.node` but brings its own TLS and root store.
  */
-export function runtimeTlsWarning(versions: Partial<Record<string, string>> = process.versions): string | null {
+export function runtimeTlsWarning(
+	versions: Partial<Record<string, string>> = process.versions,
+	execPath: string = process.execPath,
+): string | null {
 	if (versions.bun) {
 		const bun = parse(versions.bun);
 		if (!bun || atLeast(bun, BUN_FIXED)) return null;
-		return `Plannotator: your Bun v${versions.bun} is missing the October 2026 TLS fixes (a compromised certificate authority); update Bun to 1.4.4 or later.`;
+		return bunCompiled(execPath)
+			? `Plannotator: this Pi build runs on Bun v${versions.bun}, which is missing the October 2026 TLS fixes (a compromised certificate authority); update Pi to a build with Bun 1.4.4 or later.`
+			: `Plannotator: your Bun v${versions.bun} is missing the October 2026 TLS fixes (a compromised certificate authority); update Bun to 1.4.4 or later.`;
 	}
 	const node = parse(versions.node);
 	if (!node || nodeFixed(node)) return null;
-	return `Plannotator: your Node v${versions.node} is missing the Oct 21 TLS fixes (a compromised certificate authority); update to 22.23.4, 24.22.1 or 26.12.1 or later.`;
+	return `Plannotator: your Node v${versions.node} is missing the October 2026 TLS fixes (a compromised certificate authority); update to 22.23.4, 24.22.1 or 26.12.1 or later.`;
 }
 
 const WARNED = Symbol.for("plannotator.pi.runtimeTlsWarned");
@@ -66,10 +81,11 @@ const WARNED = Symbol.for("plannotator.pi.runtimeTlsWarned");
 export function warnRuntimeTlsOnce(
 	notify: (message: string) => void,
 	versions: Partial<Record<string, string>> = process.versions,
+	execPath: string = process.execPath,
 ): boolean {
 	const store = globalThis as Record<symbol, unknown>;
 	if (store[WARNED]) return false;
-	const warning = runtimeTlsWarning(versions);
+	const warning = runtimeTlsWarning(versions, execPath);
 	if (!warning) return false;
 	store[WARNED] = true;
 	notify(warning);
