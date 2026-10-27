@@ -270,7 +270,7 @@ export const INBOX_TOOL_HELP_NOTE = "Every field and the full question syntax: `
  * Board exists, and `plannotator card --help`). With the Board on, the card
  * action's own line says it and this one is left out.
  */
-export const INBOX_TOOL_BOARD_OFF_NOTE = "The Board (cards for work that outlasts a reply) is off until the person turns it on: `plannotator card --help`."
+export const INBOX_TOOL_BOARD_OFF_NOTE = "The Board (cards for work that outlasts a reply) is off until the person turns it on; see `plannotator card --help`."
 
 /**
  * The agent tool's own line for an action whose Inbox lead is long (the

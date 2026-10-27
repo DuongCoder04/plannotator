@@ -1787,11 +1787,11 @@ export type InboxToolCostHost = "pi" | "opencode";
  * branch's 457, estimated).
  * Then the Board-off line (INBOX_TOOL_BOARD_OFF_NOTE, the owner's answer of
  * 2026-10-27: with the Board off, one short line that it exists and
- * `plannotator card --help`): measured on Pi, 9,412 bytes (+114; about +25
+ * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9412, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 9416, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
 export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
