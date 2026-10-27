@@ -126,6 +126,15 @@ describe.if(hasDom)('InboxAnnouncementDialog', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  test('a film the browser cannot decode says so too', async () => {
+    await mount();
+    await act(async () => {
+      film().dispatchEvent(new Event('error'));
+    });
+    expect(document.querySelector(`${DIALOG} [data-inbox-film-unavailable]`)).not.toBeNull();
+    expect(document.querySelector(`${DIALOG} [data-inbox-film-play]`)).toBeNull();
+  });
+
   test('opens with focus on Close, and Escape closes it without reaching the page', async () => {
     const onDismiss = mock(() => {});
     const pageKeys: string[] = [];

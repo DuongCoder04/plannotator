@@ -76,6 +76,9 @@ function Film() {
         playsInline
         preload="none"
         aria-label="The Plannotator Inbox film"
+        // A source that cannot be fetched errors on <source>; a file that was
+        // fetched but cannot be decoded errors on the element itself.
+        onError={() => setFailed(true)}
         className="absolute inset-0 h-full w-full bg-muted object-contain"
       >
         <source src={INBOX_FILM.mp4} type="video/mp4" onError={() => setFailed(true)} />
