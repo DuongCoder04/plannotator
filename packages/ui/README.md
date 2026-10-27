@@ -512,6 +512,8 @@ npm install @plannotator/ui @plannotator/core
 4. Import components: `import { Viewer } from "@plannotator/ui/components/Viewer";`
 5. Build with a bundler that compiles TS/TSX (Vite + React 19 + Tailwind v4). The packages ship **source**, so your bundler compiles them — set `moduleResolution: "bundler"`, `allowImportingTsExtensions`, `jsx: "react-jsx"`.
 
+**Upgrade note: the plan look defaults to Clean.** `gridEnabled` (storage key `plannotator-grid-enabled`) now defaults to `false`, and a stored value counts only when the Grid/Clean choice is marked as made: `plannotator-plan-look-choice-resolved` is `'true'` (or the legacy `plannotator-look-feel-announcement-seen` is `'2'`). Plannotator's first-run chooser and its Settings switch write that marker. A host with no chooser (the share portal, Workspaces) will therefore move every user to Clean on upgrade, even users whose stored value is `'true'`. To keep stored values, call `markLookAndFeelChoiceResolved()` from `@plannotator/ui/utils/lookAndFeelAnnouncement` before the first settings read, or seed `plannotator-plan-look-choice-resolved = 'true'` in your `storageBackend`. A host that writes `gridEnabled` from its own UI should mark the choice in the same way.
+
 ## Packages & publishing
 
 - `@plannotator/core` — pure utils + types, zero deps, browser-safe (CI enforces no `node:` imports). Published.

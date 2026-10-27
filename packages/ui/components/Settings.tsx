@@ -2017,7 +2017,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         <div className="text-sm font-medium">Grid Background</div>
                         <div className="text-xs text-muted-foreground">Show the plan as a floating card on a grid</div>
                       </div>
-                      <button role="switch" aria-checked={gridEnabled}
+                      <button role="switch" aria-checked={gridEnabled} aria-label="Grid Background"
                         onClick={() => {
                           configStore.set('gridEnabled', !gridEnabled);
                           // A Settings flip is a real choice: keep it across reloads.

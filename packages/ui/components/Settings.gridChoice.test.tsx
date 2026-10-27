@@ -39,12 +39,12 @@ async function mountDisplayTab() {
 }
 
 function gridSwitch(): HTMLButtonElement {
-  const label = Array.from(document.querySelectorAll('div'))
-    .find((d) => d.textContent?.trim() === 'Grid Background');
-  const button = label?.parentElement?.parentElement?.querySelector<HTMLButtonElement>('button[role="switch"]');
+  const button = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Grid Background"]');
   if (!button) throw new Error('Grid Background switch not found');
   return button;
 }
+
+let priorGrid: boolean | null = null;
 
 describe.if(hasDom)('Settings → Grid Background', () => {
   afterEach(async () => {
@@ -53,12 +53,16 @@ describe.if(hasDom)('Settings → Grid Background', () => {
     root = null;
     host?.remove();
     host = null;
-    configStore.set('gridEnabled', false);
+    // Put the shared store back as it was, through the test's backend, before
+    // the real backend returns.
+    if (priorGrid !== null) configStore.set('gridEnabled', priorGrid);
+    priorGrid = null;
     resetStorageBackend();
     document.body.replaceChildren();
   });
 
   test('turning Grid on survives a reload', async () => {
+    priorGrid = configStore.get('gridEnabled');
     installBackend();
     configStore.set('gridEnabled', false);
     await mountDisplayTab();
