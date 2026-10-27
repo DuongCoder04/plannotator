@@ -1745,10 +1745,16 @@ export type InboxToolCostHost = "pi" | "opencode";
  * lists `card` only while it is on, so what a user gets by default is the
  * entry WITHOUT `card`, and that is the stated cost. With the Board on it is
  * the 10,171 bytes above.
+ * The title rule (approval "inbox-board-amendments-2026-10-27": "2–5 words
+ * naming the work, never a sentence", and link the thread where the person
+ * decides) in the card description and its `title` and `thread_id`
+ * arguments: measured on Pi with the cost test and the Board on, 10,171 →
+ * 10,303 bytes (+132; about +35 tokens, so the rounded, high token figure
+ * stands).
  */
 const INBOX_TOOL_COST_NOW = { bytes: 8841, tokens: 2500 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10171, tokens: 2900 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10303, tokens: 2900 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
@@ -1872,6 +1878,12 @@ export interface InboxDraft {
    * out again from the body when the draft opens).
    */
   thread_name?: string;
+  /**
+   * The Board card it was started for (the opened card's Create thread): the
+   * Send that sends the draft links the new thread to this card. Absent for
+   * any other draft.
+   */
+  card?: { id: string; title: string };
 }
 
 /** A draft's chip: its chosen session is live, has ended, or none was chosen. */

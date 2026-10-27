@@ -446,7 +446,9 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
 
   test("Ctrl-C mid-install: 130 recorded, lock released, the staged copy removed", async () => {
     const box = sandbox("new");
-    const { server } = serve({ script: `${SCRIPT_HEAD}echo "fake installer started"\nsleep 30\n`, sums: pins(ARM, X64) });
+    // `exec`, as in auto-update.test.ts: a group SIGINT never lands on a child
+    // between fork and exec, which would leave the sleep holding stdout.
+    const { server } = serve({ script: `${SCRIPT_HEAD}echo "fake installer started"\nexec sleep 30\n`, sums: pins(ARM, X64) });
     try {
       const { paths, env } = wrapperEnv(box, server.port!);
       writeFileSync(paths.lock, "1");
