@@ -278,7 +278,8 @@ import {
 	vcsSupportsSnapshot,
 } from "./vcs.ts";
 
-const piCodeNavRuntime: CodeNavRuntime = {
+/** Exported for tests: `readFile` is the hover's definition read. */
+export const piCodeNavRuntime: CodeNavRuntime = {
 	runCommand(command, args, options) {
 		return new Promise((resolve) => {
 			const proc = spawn(command, args, {
@@ -311,7 +312,7 @@ const piCodeNavRuntime: CodeNavRuntime = {
 	async readFile(path, options) {
 		// Same guard as /api/code-nav/file, capped at what rg searches (1 MB).
 		if (!options?.cwd) return null;
-		const read = readRepoFile(options.cwd, path, { maxBytes: CODE_NAV_MAX_FILE_BYTES });
+		const read = await readRepoFile(options.cwd, path, { maxBytes: CODE_NAV_MAX_FILE_BYTES });
 		return read.ok ? read.content : null;
 	},
 };
@@ -3904,7 +3905,7 @@ export async function startReviewServer(options: {
 			}
 			// Realpath containment, regular files only, and the 5 MB cap
 			// (generated/repo-file.ts; the Bun server uses the same).
-			const read = readRepoFile(resolveAgentCwd(), url.searchParams.get("path"));
+			const read = await readRepoFile(resolveAgentCwd(), url.searchParams.get("path"));
 			if (!read.ok) {
 				json(res, repoFileErrorBody(read), REPO_FILE_ERROR_STATUS[read.reason]);
 				return;

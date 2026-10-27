@@ -24,10 +24,16 @@ function formatMegabytes(bytes: number): string {
 /** The plain sentence the preview shows when the server refuses a file. */
 export function codeNavPreviewErrorMessage(body: CodeNavFileError | null): string {
   switch (body?.reason) {
-    case 'too-large':
-      return body.size != null && body.maxBytes != null
-        ? `This file is too large to preview (${formatMegabytes(body.size)}; the limit is ${formatMegabytes(body.maxBytes)}).`
-        : 'This file is too large to preview.';
+    case 'too-large': {
+      if (body.size == null || body.maxBytes == null) return 'This file is too large to preview.';
+      const size = formatMegabytes(body.size);
+      const limit = formatMegabytes(body.maxBytes);
+      // A file just over the limit rounds to the limit itself ("5 MB; the
+      // limit is 5 MB"), so say "just over" instead of two equal numbers.
+      return size === limit
+        ? `This file is too large to preview (just over the ${limit} limit).`
+        : `This file is too large to preview (${size}; the limit is ${limit}).`;
+    }
     case 'outside-root':
       return 'This file is outside the repository, so it is not shown.';
     case 'not-a-file':
