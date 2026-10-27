@@ -714,3 +714,35 @@ test.skipIf(!hasDom)('dictation or a paste into the chip that cannot be a name i
   expect(paste('this is a sentence the person said out loud').defaultPrevented).toBe(true);
   expect(paste('Short').defaultPrevented).toBe(false);
 });
+
+// Create thread (owner, 2026-10-27: a card with no thread offers "Create thread": "create, create, create is
+// the idea"). What regresses: the thread not linked to the card after the Send (Open thread never appears),
+// compose addressed to nobody, or a card's title the person did not change counted as words to keep.
+test.skipIf(!hasDom)('Create thread on a card with no thread: compose to a live session in its project, starting with the title; the Send links the thread to the card', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: true } }))).status).toBe(200);
+  // The first-visit dialog is claimed here, so it never covers the card.
+  await loopback('/api/inbox/board/intro', 'POST', '{}');
+  const project = (JSON.parse((await loopback('/api/inbox/projects')).text) as { projects: { id: string; root: string }[] }).projects[0]!;
+  const made = JSON.parse((await loopback('/api/inbox/cards', 'POST', JSON.stringify({ project: project.id, title: 'Settings search' }))).text) as { card: { id: string; threads: string[] } };
+  expect(made.card.threads).toEqual([]);
+  await poll('ses_create_thread', 'claude-code', project.root);
+  const el = await renderApp(`#board&card=${made.card.id}`);
+  await until(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]:not(:disabled)') !== null, 'Create thread');
+  expect(el.querySelector('[data-card-open-thread]')).toBeNull();
+  act(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]')!.click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_create_thread"]') != null, 'compose to the live session');
+  expect(dialog()!.querySelector('[data-compose-card]')!.textContent).toContain('Settings search');
+  expect((dialog()!.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Settings search\n\n');
+  // Untouched, it is nothing to keep: Escape closes without asking.
+  key('Escape');
+  await until(() => dialog() === null, 'closed without asking');
+  act(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]')!.click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_create_thread"]') != null, 'compose again');
+  type('Settings search\n\nFuzzy or prefix matching? Say which and why.');
+  act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'sent');
+  const thread = await threadIdOf('Settings search');
+  await until(async () => (JSON.parse((await loopback(`/api/inbox/cards/${made.card.id}`)).text) as { card: { threads: string[] } }).card.threads.includes(thread), 'the thread linked to the card');
+  await until(() => el.querySelector(`[data-card-open-thread="${thread}"]`) !== null, 'Open thread on the card');
+  expect(el.querySelector('[data-card-create-thread]')).toBeNull();
+});

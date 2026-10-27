@@ -61,6 +61,12 @@ export interface ComposeRequest {
   body?: string;
   /** A session to put in To (the palette's "Message <host> in <project>"). */
   session?: string | null;
+  /**
+   * A Board card with no thread (its opened card's "Create thread"): the
+   * message starts with the card's title, so the thread's subject is the
+   * title, and the window links the sent thread to the card (`ComposeSent.card`).
+   */
+  card?: { id: string; title: string } | null;
 }
 
 export interface ComposeSent {
@@ -70,6 +76,8 @@ export interface ComposeSent {
   projectName: string;
   /** The draft it was sent from (it is deleted with the Send), or null. */
   draftId: string | null;
+  /** The Board card the thread was created for (`ComposeRequest.card`): link the thread to it. */
+  cardId?: string | null;
 }
 
 /**
@@ -122,7 +130,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const statusId = `ib-cp-status-${uid}`;
 
   const [draft, setDraft] = useState<DraftView | null>(request.draft ?? null);
-  const [body, setBody] = useState(request.draft?.body ?? request.body ?? '');
+  const [body, setBody] = useState(request.draft?.body ?? request.body ?? (request.card ? `${request.card.title}\n\n` : ''));
   // The thread's name (its chip): follows the message until the person types in it (ThreadNameChip).
   const [nameState, setNameState] = useState<ThreadNameState>(() => threadNameStateOf(request.draft));
   const [chosen, setChosen] = useState<string | null>(opening.chosen);
@@ -188,9 +196,12 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const draftId = useRef(request.draft?.id ?? inboxId('drf'));
 
   // Nothing written: no words, no files, no typed thread name. An empty compose is never kept as a draft.
-  const empty = body.trim() === '' && files.files.length === 0 && threadName.trim() === '';
+  // A Board card's Create thread starts with the card's title: left as it was, that is nothing written either.
+  const cardStart = request.card && !request.draft ? `${request.card.title}\n\n` : null;
+  const untouched = cardStart !== null && body === cardStart && files.files.length === 0 && threadName.trim() === '';
+  const empty = untouched || (body.trim() === '' && files.files.length === 0 && threadName.trim() === '');
   const saved = draftSnapshot(draft);
-  const dirty = isDirty({ body, session: chosen, files: uploadIds, threadName }, saved, draft !== null) || files.uploading;
+  const dirty = !untouched && (isDirty({ body, session: chosen, files: uploadIds, threadName }, saved, draft !== null) || files.uploading);
   const projectName = current?.name ?? null;
 
   // ── the dialog ──
@@ -272,7 +283,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         ...named,
         ...(draft ? { draft_id: draft.id } : {}),
       });
-      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null });
+      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null, cardId: request.card?.id ?? null });
     } catch (cause) {
       if (cause instanceof InboxApiError && cause.code === 'session_not_live') {
         void load();
@@ -522,6 +533,13 @@ export function ComposeDialog(props: ComposeDialogProps) {
         </h2>
       )}
       {toRow}
+      {request.card && (
+        <p className="ib-cp-card" data-compose-card={request.card.id}>
+          <span>
+            A thread for the Board card <b dir="auto">{request.card.title}</b>. Sending links it to the card.
+          </span>
+        </p>
+      )}
       {picker && (
         <ToPicker
           groups={groups}

@@ -163,6 +163,7 @@ function draw(over: Partial<BoardPageProps> = {}): Drawn {
       drawn.seen += 1;
     },
     onOpenThread: () => {},
+    onCreateThread: () => {},
     ...over,
   };
   const render = () => act(() => root!.render(<SidebarProvider><BoardPage {...props} /></SidebarProvider>));
@@ -242,25 +243,37 @@ test.if(hasDom)('"You: …" opens the thread where the person makes the call, a 
   expect(threads.length).toBe(2);
 });
 
-test.if(hasDom)('the opened card puts Open thread at the top when the person owes something, to the same thread', async () => {
-  scriptFetch();
+test.if(hasDom)('the opened card: Open thread at the top to the same thread; with no thread, Create thread to the card’s live agent', async () => {
+  scriptFetch([{ project: { id: 'prj_1', name: 'web', root: '/Users/ada/src/web' }, sessions: [{ session: 'ses_claude', host: 'claude-code', started_at: OLD, last_seen_at: NEW, busy: false, idle_since: NEW, last_thread: null }] }]);
   const threads: { card: string; thread: string }[] = [];
+  const created: { card: string; session: string | null }[] = [];
   const drawn = draw({
     model: { serverSession: 's', cursor: 1, cards: YOU_CARDS, dropped_unseen: 0, seen_seq: LOOK },
     rowOf: youRow,
     openCard: 'crd_two',
     onOpenThread: (target, thread) => threads.push({ card: target.id, thread }),
+    onCreateThread: (target, session) => created.push({ card: target.id, session }),
   });
   await settle();
-  const open = $('[data-card-panel] [data-card-you] [data-card-open-thread]') as HTMLButtonElement;
+  const open = $('[data-card-panel] .ib-crdp-top [data-card-open-thread]') as HTMLButtonElement;
   expect(open.textContent).toBe('Open thread');
+  expect(open.getAttribute('aria-label')).toBe('Open the thread to merge #15');
+  expect($('[data-card-create-thread]')).toBeNull();
   act(() => open.click());
   expect(threads).toEqual([{ card: 'crd_two', thread: 'msg_new' }]);
-  // No thread to go to: no button.
+  // Ask for an update: by History, never beside the agent.
+  expect($('[data-card-panel] .ib-crdp-hhead [data-card-ask]')!.textContent).toBe('Ask for an update');
+  expect($('[data-card-panel] .ib-crdp-who [data-card-ask]')).toBeNull();
+  // No thread linked: no Open thread; Create thread goes to the card’s live agent.
   drawn.rerender({ openCard: 'crd_none' });
   await settle();
-  expect($('[data-card-panel] [data-card-you]')!.textContent).toContain('Choose fuzzy or prefix');
   expect($('[data-card-open-thread]')).toBeNull();
+  const create = $('[data-card-panel] .ib-crdp-top [data-card-create-thread]') as HTMLButtonElement;
+  expect(create.textContent).toBe('Create thread');
+  expect(create.disabled).toBe(false);
+  act(() => create.click());
+  expect(created).toEqual([{ card: 'crd_none', session: 'ses_claude' }]);
+  expect(threads.length).toBe(1);
 });
 
 test.if(hasDom)('the agents’ drops show above the lanes with their reason; Got it says the person looked', async () => {

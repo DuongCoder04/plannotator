@@ -258,7 +258,7 @@ export function messageKey(key: string, session: string, body: string): string {
   return `${key}:${session}:${hash.toString(36)}`;
 }
 
-/** "Where is this?": the message "Ask where this is" sends to the card's agent. */
+/** "Where is this?": the message "Ask for an update" sends to the card's agent. */
 export function askWhereBody(card: Pick<InboxCardWire, 'id' | 'title'>): string {
   return `Where is “${card.title}”? (Board card ${card.id}) Move the card, or say where it stands with the card action.`;
 }

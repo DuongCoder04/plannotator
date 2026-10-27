@@ -73,6 +73,8 @@ export interface BoardPageProps {
   onSeeDrops: (ids: readonly string[]) => void;
   /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
   onOpenThread: (card: InboxCardWire, threadId: string) => void;
+  /** Create thread (an opened card with no thread): compose to `session` (the card's agent, else a live session in its project), linked to the card on Send. */
+  onCreateThread: (card: InboxCardWire, session: string | null, opener: HTMLElement) => void;
   /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
   marks?: boolean;
 }
@@ -349,6 +351,7 @@ export function BoardPage(props: BoardPageProps) {
       onSend={() => openSend(open)}
       onChanged={props.onChanged}
       onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
+      onCreateThread={(session, opener) => props.onCreateThread(open, session, opener)}
     />
   ) : null;
 
@@ -989,6 +992,7 @@ function OpenedCard({
   onSend,
   onChanged,
   onOpenThread,
+  onCreateThread,
 }: {
   card: InboxCardWire;
   projectName: string;
@@ -1003,6 +1007,7 @@ function OpenedCard({
   onSend: () => void;
   onChanged: (card?: InboxCardWire) => void;
   onOpenThread: (threadId: string) => void;
+  onCreateThread: (session: string | null, opener: HTMLElement) => void;
 }) {
   const [history, setHistory] = useState<InboxCardHistoryEntry[] | null>(null);
   const [refs, setRefs] = useState<{ ref: InboxCardRef; result: ForgeRefCardResult }[] | null>(null);
@@ -1033,7 +1038,7 @@ function OpenedCard({
     };
   }, [card.id, refKey]);
   const agentSession = card.agent?.kind === 'agent' ? card.agent.session : null;
-  // "Ask where this is": the card's agent while it is live, else a live session in the card's project.
+  // "Ask for an update" and "Create thread": the card's agent while it is live, else a live session in the card's project.
   const askTarget = (() => {
     if (!sessions) return null;
     const own = findTarget(sessions.projects, agentSession);
@@ -1126,6 +1131,7 @@ function OpenedCard({
         }
       }}
       onOpenThread={onOpenThread}
+      onCreateThread={(opener) => onCreateThread(askTarget?.session ?? null, opener)}
     />
   );
 }
