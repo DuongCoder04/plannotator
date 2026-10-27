@@ -518,7 +518,9 @@ test.skipIf(!hasDom)('on a phone: #settings is the list of sections; a section o
   expect(switchNamed(el, 'Decision mode')).not.toBeNull();
   act(() => (el.querySelector('.ib-sphead .ib-pback') as HTMLAnchorElement).click());
   await until(() => el.querySelector('[data-settings-list]') !== null, 'the list after Experimental');
-  act(() => links.find((a) => a.getAttribute('data-settings-link') === 'devices')!.click());
+  // Focus returns to the Experimental row, in its own group at the bottom.
+  await until(() => document.activeElement === el.querySelector('[data-settings-list] [data-settings-link="experimental"]'), 'focus on the Experimental row');
+  act(() => el.querySelector<HTMLAnchorElement>('[data-settings-list] [data-settings-link="devices"]')!.click());
   await until(() => heading(el) === 'Devices', 'Devices');
   expect(window.location.hash).toBe('#settings/devices');
   const back = el.querySelector('.ib-sphead .ib-pback') as HTMLAnchorElement;
