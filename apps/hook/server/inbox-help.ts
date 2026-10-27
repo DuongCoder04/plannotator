@@ -31,7 +31,7 @@ import { INBOX_CONTRACT_EXAMPLE, INBOX_DEFAULT_SERVED_TOOLS, INBOX_MCP_TOOLS, IN
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
-import { INBOX_FILLED_ARGUMENTS, INBOX_TAGGED_INSTRUCTION, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
+import { INBOX_FILLED_ARGUMENTS, INBOX_REPLY_TO_CHECK, INBOX_TAGGED_INSTRUCTION, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
 import { INBOX_COMMAND_USAGE } from "./cli";
 import { createAgentEnvironment, displayPath, type AgentEnvironment } from "@plannotator/server/inbox-agents";
 import { noteTarget } from "@plannotator/server/inbox-agent-notes";
@@ -285,7 +285,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "- A blocker: say what stops you (a `Stopped:` line, below). When you can go on with other work, leave `Stopped:` out and name what waits in `Holds up:`; a question that stops you can carry both.",
     "- A true blocker only the person can clear, outside this conversation (approve a deploy, sign in, touch a security key, merge a pull request you cannot merge): one `:::action` action item (see \"Action items only the person can do\").",
     "- Long work you finished: one short summary, with the files to look at in `attachments`.",
-    "- A decision that needs pictures or files, even while the person is in the chat.",
+    "- A decision that needs pictures or files, even while the person writes in the chat.",
     "- A plan, document, HTML prototype or diagram the person should read and annotate (`attachments`).",
     "- A guided review of a finished code change (get_guide_brief, then submit_guide).",
     ...(board ? ["- Work that outlasts your reply (a lane, a PR, something you promised to send): a card on the person's Board (card), kept current as it moves. Only while the person has the Board on."] : []),
@@ -299,7 +299,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "## Chat or Inbox",
     "",
-    "Whether the person is watching the chat is not a test you can make. A decision you sent to the Inbox stays there. When they come back to the chat, say there what is waiting (a short summary and the thread's link); saying it in both places is fine. Never also ask that decision in the chat with a blocking question tool (Claude Code's AskUserQuestion or any agent's question prompt): it blocks the chat and splits the answer across two places. Ask in the chat only about something new the person raised there that needs no pictures or files, or when they ask you to.",
+    "Whether the person is watching the chat is not a test you can make. A decision you sent to the Inbox stays there. When they come back to the chat, say there what is waiting (a short summary and the thread's link); saying it in both places is fine. Never also ask it in the chat with a blocking question tool (AskUserQuestion or similar): it blocks the chat and splits the answer across two places. Ask in the chat only about something new the person raised there that needs no pictures or files, or when they ask you to.",
     "",
     "## How to reach it",
     "",
@@ -337,7 +337,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     "Where send_message (and submit_guide) puts a message; the first rule that applies wins:",
     "",
-    "1. `reply_to` (a message id): that message's thread, as a reply.",
+    "1. `reply_to` (a message id): that message's thread, as a reply. Take the id from the Inbox (the wake's `(<reply id>)`, a read_thread or wait_for_reply result), never from memory or an earlier summary. " + INBOX_REPLY_TO_CHECK,
     `2. \`thread\` (a name, 1 to ${INBOX_THREAD_NAME_MAX} characters, one line): the newest open thread of that name in this project, from any session. With none open, a new thread under that name. Names compare without case, spacing or invisible characters.`,
     "3. Neither: your session's own thread, the newest unnamed thread your session started in this project while it is open, else a new one. Without a session id, every message starts a thread.",
     "",

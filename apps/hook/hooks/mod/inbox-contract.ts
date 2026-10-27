@@ -234,13 +234,13 @@ function leadOf(description: string): string {
  * session's thread list, the note and `plannotator inbox --help` say the same.
  */
 export const INBOX_CHANNEL_RULE =
-  "A decision in the Inbox stays there: when the person is in the chat, say what waits and link its thread, but never also ask it in the chat (no AskUserQuestion or other blocking question). Ask in the chat only about something new they raised there that needs no pictures or files, or when they ask."
+  "A decision in the Inbox stays there: when the person writes in the chat, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Ask in the chat only about something new they raised there that needs no pictures or files, or when they ask."
 
 /**
  * The session's thread list says it too (after a compaction, on a resume):
  * the decisions in these threads stay there.
  */
-export const INBOX_SESSION_THREADS_CHANNEL = "Their decisions stay in these threads: in the chat, say what waits and link the thread, but never also ask it there with a blocking question tool."
+export const INBOX_SESSION_THREADS_CHANNEL = "Their decisions stay in these threads: when the person writes in the chat, say what waits and link the thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar)."
 
 /** What the agent tool says, before the per-action lines. Fixed text. */
 export const INBOX_TOOL_LEAD =
@@ -328,14 +328,14 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
  * (the reply comes back as a turn).
  */
 export const INBOX_REMINDER_TEXT =
-  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run `plannotator inbox --help` for how it works."
+  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run `plannotator inbox --help` for how it works."
 
 /**
  * The same line for a host without the wake (OpenCode 1): the reply does not
  * come back by itself there, so it names wait_for_reply instead.
  */
 export const INBOX_REMINDER_TEXT_NO_WAKE =
-  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run `plannotator inbox --help` for how it works."
+  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run `plannotator inbox --help` for how it works."
 
 /**
  * The reminder naming the tool as the host registered it. Claude Code defers

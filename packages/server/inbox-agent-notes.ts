@@ -40,7 +40,6 @@ import {
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
 import { loadConfig, saveConfig } from "@plannotator/shared/config";
-import { INBOX_REPLY_TO_CHECK } from "@plannotator/shared/inbox/connection";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { describeFsError, readAgentFile, stripJsonComments, withBom, writeAgentFileAtomic } from "./agent-files";
 import {
@@ -59,12 +58,16 @@ import {
 } from "./inbox-agents";
 
 /**
- * v2 (2026-10-27, the misfiled-thread AAR): two lines after v1's, the check
- * before a reply_to into a thread not read in this context window, and where
- * a question's recommendation goes. A v1 block Plannotator wrote is brought up
- * to date at the Inbox's next start (refreshInboxNotes) or when the note is
- * added again (`--notes`, the Settings switch); a block the person edited
- * never is.
+ * v3 (2026-10-27): v1's presence lines ("when the person isn't here", "When
+ * they are here, ask in this chat instead") replaced by the chat-or-Inbox rule,
+ * plus the check before a reply_to into a thread not read in this context
+ * window and where a question's recommendation goes (v2, never released, had
+ * those two lines after v1's). An earlier block Plannotator wrote is brought
+ * up to date at the Inbox's next start (refreshInboxNotes) or when the note
+ * is added again (`--notes`, the Settings switch); a block the person edited
+ * never is. Every version's text is frozen as literals and its block's hash
+ * pinned (inbox-agent-notes-refresh.test.ts): a released note's bytes never
+ * change without a new version, or the notes on disk would read as edited.
  */
 export const INBOX_NOTE_VERSION = 3;
 const noteStart = (version: number) =>
@@ -80,10 +83,6 @@ const INBOX_NOTE_BODY_V1 = [
   "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` when the person isn't here to answer in this chat: to ask a decision only they can make (as a `:::question` block), or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`. When they are here, ask in this chat instead.",
 ].join("\n");
-
-/** The recommendation line v2 added, kept in v3. */
-const INBOX_NOTE_RECOMMENDED_LINE =
-  'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.';
 
 /** v2's body, exactly as builds before v3 wrote it (never released; frozen as literals so such a block still reads as Plannotator's own). */
 const INBOX_NOTE_BODY_V2 = [
@@ -105,15 +104,15 @@ export const INBOX_NOTE_BODY = [
   "The person keeps a Plannotator Inbox on this computer: a window where they read what agents send and answer when they can.",
   "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` to ask a decision only they can make (as a `:::question` block) or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`.",
-  "A decision you sent to the Inbox stays there. When the person is in this chat, say what is waiting there (a short summary and the thread's link), but never also ask it here with a blocking question tool (AskUserQuestion or the like): that blocks the chat and splits the answer. Ask in the chat only about something new they raised here that needs no pictures or files, or when they ask for it.",
-  INBOX_REPLY_TO_CHECK,
-  INBOX_NOTE_RECOMMENDED_LINE,
+  "A decision you sent to the Inbox stays there. When the person writes in this chat, say what is waiting there (a short summary and the thread's link), but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar): that blocks the chat and splits the answer. Ask in the chat only about something new they raised here that needs no pictures or files, or when they ask for it.",
+  "Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
+  'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
 ].join("\n");
 
 export const INBOX_NOTE_BLOCK = `${INBOX_NOTE_START}\n${INBOX_NOTE_BODY}\n${INBOX_NOTE_END}`;
 
 /** Every block an earlier Plannotator wrote, untouched (LF): read as Plannotator's own when no record names it. */
-const INBOX_NOTE_EARLIER_BLOCKS = [
+export const INBOX_NOTE_EARLIER_BLOCKS: readonly string[] = [
   `${noteStart(1)}\n${INBOX_NOTE_BODY_V1}\n${INBOX_NOTE_END}`,
   `${noteStart(2)}\n${INBOX_NOTE_BODY_V2}\n${INBOX_NOTE_END}`,
 ];
@@ -478,10 +477,12 @@ export interface NoteRefresh {
    * alone); `none`: no block (the person removed it; never put back);
    * `damaged`: markers other than exactly one start line before exactly one
    * end line; `missing`: no file; `read-only`: the file has no write
-   * permission for its owner; `changed`: the file changed after it was read
-   * (left for the next start); `refused`: not readable or writable.
+   * permission for its owner; `hard-linked`: the file has other hard links
+   * (a dotfiles repo's copy: a write by rename would split them); `changed`:
+   * the file changed after it was read (left for the next start); `refused`:
+   * not readable or writable, or agent-notes.json could not be written.
    */
-  result: "refreshed" | "shared" | "current" | "edited" | "none" | "damaged" | "missing" | "read-only" | "changed" | "refused";
+  result: "refreshed" | "shared" | "current" | "edited" | "none" | "damaged" | "missing" | "read-only" | "hard-linked" | "changed" | "refused";
 }
 
 export interface RefreshInboxNotesOptions {
@@ -500,14 +501,18 @@ export interface RefreshInboxNotesOptions {
  *    an earlier Plannotator wrote AND the one its record names (the hash):
  *    a block the person edited is never touched, nor a file without a record;
  *  - a note the person removed (no block) is never put back;
- *  - a read-only file (no owner write bit) is left alone;
+ *  - a read-only file (no owner write bit) is left alone, and so is a file
+ *    with other hard links (the atomic rename would split them);
  *  - the file is read again right before the write and left alone when it
  *    changed since it was read (another writer: never clobbered);
  *  - every byte outside the block, the block's own line ending (CRLF stays
  *    CRLF), the BOM and the mode are kept; a symlink is written at its target
  *    and stays a link; the write is atomic (a temp file, then a rename);
  *  - a file several agents' records name (Pi's AGENTS.md a link to Codex's)
- *    is written once, and every record naming it follows.
+ *    is written once, and every record naming it follows;
+ *  - the records are written before the file and put back if the file's
+ *    write fails, so the two never disagree for long: a record left behind
+ *    would read Plannotator's own block as the person's edit.
  * Never throws for one file: the rest still run. Off with PLANNOTATOR_INBOX_NOTES=0.
  */
 export function refreshInboxNotes(dataDir: string, e: AgentEnvironment, options: RefreshInboxNotesOptions = {}): NoteRefresh[] {
@@ -520,31 +525,61 @@ export function refreshInboxNotes(dataDir: string, e: AgentEnvironment, options:
     if (record) byPath.set(record.path, [...(byPath.get(record.path) ?? []), agent]);
   }
   const results: NoteRefresh[] = [];
-  let recordsChanged = false;
+  // A record naming an earlier block follows the file to this version.
+  const follow = (agents: InboxNoteAgentId[]): boolean => {
+    let changed = false;
+    for (const agent of agents) {
+      const record = file.notes[agent]!;
+      if (record.block_sha256 !== current && EARLIER_BLOCK_HASHES.has(record.block_sha256)) {
+        file.notes[agent] = { ...record, version: INBOX_NOTE_VERSION, block_sha256: current };
+        changed = true;
+      }
+    }
+    return changed;
+  };
+  let staleRecords = false;
   for (const [path, agents] of byPath) {
     const recorded = new Set(agents.map((agent) => file.notes[agent]!.block_sha256));
+    // Right before the file's write: the records first (throws, writing nothing, when they cannot be
+    // written), with a way back if the file's write then fails.
+    const commitRecords = (): (() => void) => {
+      const saved = { ...file.notes };
+      if (!follow(agents)) return () => {};
+      try {
+        writeInboxAgentNotes(dataDir, file);
+      } catch (error) {
+        file.notes = saved;
+        throw error;
+      }
+      return () => {
+        file.notes = saved;
+        // Best effort: when this write fails too, the record names this version over the earlier block,
+        // which then reads as edited until the note is added again.
+        writeInboxAgentNotes(dataDir, file);
+      };
+    };
     let result: NoteRefresh["result"];
     try {
-      result = refreshNoteFile(path, recorded, options);
+      result = refreshNoteFile(path, recorded, options, commitRecords);
     } catch {
       result = "refused";
     }
-    agents.forEach((agent, index) => {
-      results.push({ agent, path, result: result === "refreshed" && index > 0 ? "shared" : result });
-      const record = file.notes[agent]!;
-      // The file now holds this version's block exactly: a record that named an earlier one follows.
-      if ((result === "refreshed" || result === "current") && record.block_sha256 !== current && EARLIER_BLOCK_HASHES.has(record.block_sha256)) {
-        file.notes[agent] = { ...record, version: INBOX_NOTE_VERSION, block_sha256: current };
-        recordsChanged = true;
-      }
-    });
+    // Already this version (written by an add whose record write failed, or another agent's link): the record follows.
+    if (result === "current" && follow(agents)) staleRecords = true;
+    agents.forEach((agent, index) => results.push({ agent, path, result: result === "refreshed" && index > 0 ? "shared" : result }));
   }
-  if (recordsChanged) writeInboxAgentNotes(dataDir, file);
+  if (staleRecords) {
+    try {
+      writeInboxAgentNotes(dataDir, file);
+    } catch {
+      // The next start tries again.
+    }
+  }
   return results;
 }
 
 /** One file of refreshInboxNotes: its outcome, the file written only for `refreshed`. */
-function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: RefreshInboxNotesOptions): NoteRefresh["result"] {
+function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: RefreshInboxNotesOptions, commitRecords: () => () => void): NoteRefresh["result"] {
   const read = readAgentFile(path);
   if (read.kind === "missing") return "missing";
   if (read.kind === "refused") return "refused";
@@ -555,6 +590,7 @@ function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: R
   if (hash === sha256(INBOX_NOTE_BLOCK)) return "current";
   if (!EARLIER_BLOCK_HASHES.has(hash) || !recorded.has(hash)) return "edited";
   if ((read.mode & 0o200) === 0) return "read-only";
+  if (statSync(read.target).nlink > 1) return "hard-linked";
   // The block's own line ending, so the bytes around it never change their ending.
   const nl = found.block.includes("\r\n") ? "\r\n" : "\n";
   const next = read.text.slice(0, found.start) + blockIn(nl) + read.text.slice(found.end);
@@ -569,9 +605,20 @@ function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: R
     return "changed";
   }
   if (!now.equals(before)) return "changed";
+  let rollback: () => void;
+  try {
+    rollback = commitRecords();
+  } catch {
+    return "refused";
+  }
   try {
     writeAgentFileAtomic(read.target, withBom(next, read.bom), read.mode, false);
   } catch {
+    try {
+      rollback();
+    } catch {
+      // See commitRecords.
+    }
     return "refused";
   }
   return "refreshed";

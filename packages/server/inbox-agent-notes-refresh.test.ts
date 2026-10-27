@@ -9,10 +9,10 @@
  * Every case runs in a scratch home (tests/helpers/fake-agents.ts).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
-import { INBOX_NOTE_BLOCK, INBOX_NOTE_VERSION, noteStatus, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
+import { INBOX_NOTE_BLOCK, INBOX_NOTE_EARLIER_BLOCKS, INBOX_NOTE_VERSION, noteStatus, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import { createAgentEnvironmentFor, type AgentEnvironment } from "./inbox-agents";
 import { startInboxServer } from "./inbox";
 
@@ -59,6 +59,18 @@ function v1Records(entries: Record<string, string>): void {
 }
 
 const results = (options?: Parameters<typeof refreshInboxNotes>[2]) => refreshInboxNotes(dataDir, e, options).map((r) => `${r.agent}:${r.result}`);
+
+test("every version's block is frozen: a released note's bytes never change without a new version", () => {
+  // v1 (0.28.x, on users' disks), v2 (never released), v3. A change here means notes on disk would read as
+  // the person's edit and never be refreshed again: add a version instead (INBOX_NOTE_VERSION, the old block
+  // into INBOX_NOTE_EARLIER_BLOCKS).
+  expect([...INBOX_NOTE_EARLIER_BLOCKS, INBOX_NOTE_BLOCK].map(sha)).toEqual([
+    "d148fe3c13935975729d19c64323b2ad75c1b2b76b7f22d62178695b8faab628",
+    "af390369f084bb0a400a204dcb0d0492d566ece20a74c9c2f69ec543cfb9604a",
+    "a37140d273d9e835a2c82de5dc920d79913e87e3b93d019986ceeaced1064e4e",
+  ]);
+  expect(INBOX_NOTE_EARLIER_BLOCKS[0]).toBe(V1_BLOCK);
+});
 
 describe("refreshInboxNotes: each case of the file, decided by the markers and the hash alone", () => {
   test("one untouched earlier note: replaced by this version in place, every other byte, the mode and the record kept current; a second run writes nothing", () => {
@@ -171,6 +183,49 @@ describe("refreshInboxNotes: each case of the file, decided by the markers and t
     expect(results()).toEqual(["codex:read-only"]);
     expect(read(path)).toBe(`${V1_BLOCK}\n`);
     expect(statSync(path).mode & 0o777).toBe(0o444);
+  });
+
+  test("a file with other hard links (a dotfiles copy): left alone, the link kept", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `${V1_BLOCK}\n`);
+    mkdirSync(file("dotfiles"), { recursive: true });
+    linkSync(path, file("dotfiles", "AGENTS.md"));
+    v1Records({ codex: path });
+    expect(results()).toEqual(["codex:hard-linked"]);
+    expect(read(path)).toBe(`${V1_BLOCK}\n`);
+    expect(statSync(path).nlink).toBe(2);
+    expect(statSync(path).ino).toBe(statSync(file("dotfiles", "AGENTS.md")).ino);
+  });
+
+  test("agent-notes.json cannot be written: the note is not written either, so the two never disagree", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `${V1_BLOCK}\n`);
+    v1Records({ codex: path });
+    chmodSync(join(dataDir, "inbox"), 0o555);
+    try {
+      expect(results()).toEqual(["codex:refused"]);
+    } finally {
+      chmodSync(join(dataDir, "inbox"), 0o755);
+    }
+    expect(read(path)).toBe(`${V1_BLOCK}\n`);
+    expect(readInboxAgentNotes(dataDir).notes.codex?.version).toBe(1);
+    expect(noteStatus("codex", dataDir, e).state).toBe("added");
+  });
+
+  test("the mode changed between the read and the write: not written", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `${V1_BLOCK}\n`);
+    v1Records({ codex: path });
+    expect(results({ beforeWrite: (target) => chmodSync(target, 0o600) })).toEqual(["codex:changed"]);
+    expect(read(path)).toBe(`${V1_BLOCK}\n`);
+  });
+
+  test("the record names v1 but the file holds a v2 block: another writer's, left alone", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `${INBOX_NOTE_EARLIER_BLOCKS[1]}\n`);
+    v1Records({ codex: path });
+    expect(results()).toEqual(["codex:edited"]);
+    expect(read(path)).toBe(`${INBOX_NOTE_EARLIER_BLOCKS[1]}\n`);
   });
 
   test("a file changed between the read and the write: not clobbered; the next start refreshes it with that change kept", () => {

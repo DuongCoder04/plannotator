@@ -1766,11 +1766,13 @@ export type InboxToolCostHost = "pi" | "opencode";
  * Board on 10,557 (10,294 + 263, estimated).
  * Then the chat-or-Inbox rule in the lead (the owner, 2026-10-27), with the
  * wake note and get_guide_brief's lead shortened to fit: measured on Pi,
- * 9,283 bytes (+56). With the Board on 10,613 (estimated).
+ * 9,283 bytes (+56); its one wording ("when the person writes in the chat",
+ * "with a blocking question tool (AskUserQuestion or similar)"): 9,298 bytes
+ * (+15). With the Board on 10,628 (estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9283, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 9298, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10613, tokens: 3000 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10628, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
