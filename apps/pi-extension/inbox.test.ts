@@ -404,7 +404,7 @@ describe.skipIf(!piRuns)("Pi ↔ Plannotator Inbox (the real Pi in RPC mode, a r
 		startInbox(w);
 		const reminderOf = (request: ScriptedRequest, text: string) => request.messages.filter((message) => messageText(message.content) === text);
 		const MAIN =
-			"Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with plannotator_inbox send_message and keep going. Their reply comes back here. Run `plannotator inbox --help` for how it works.";
+			"Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run `plannotator inbox --help` for how it works.";
 
 		// Other prompts set, but no usable prompts.inbox: the very same message.
 		writeFileSync(join(w.dataDir, "config.json"), JSON.stringify({ inboxTool: { pi: true }, prompts: { review: { denied: "Check." }, inbox: { reminder: "  " } } }));

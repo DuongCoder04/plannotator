@@ -12,9 +12,9 @@ import { INBOX_REMINDER_BLOCK, inboxReminderEnvValue, withInboxReminder } from '
 import { inboxReminderFor, inboxReminderText } from './inbox-contract'
 
 const TOOL = 'mcp__plugin_plannotator_tools__plannotator_inbox'
-/** The block as it shipped before #2194, with the engine's tool name. */
+/** The built-in block (the #2194 line with the channel rule, 2026-10-27), with the engine's tool name. */
 const MAIN_BLOCK =
-  `Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with ${TOOL} send_message and keep going. Their reply comes back here. Run \`plannotator inbox --help\` for how it works.`
+  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with ${TOOL} send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run \`plannotator inbox --help\` for how it works.`
 
 const UNSET_TEXTS: Array<string | null | undefined> = [
   undefined,

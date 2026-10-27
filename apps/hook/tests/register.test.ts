@@ -589,7 +589,7 @@ describe('register', () => {
     const again = await $.prompt.context({ blocks: base })
     expect(first.blocks.map((b: any) => b.name)).toEqual(['currentDate', 'plannotatorInbox'])
     // The tool by the full name the engine registered: tool search finds the deferred tool by it.
-    expect(first.blocks[1].text).toBe(`Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. Run \`plannotator inbox --help\` for how it works.`)
+    expect(first.blocks[1].text).toBe(`Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run \`plannotator inbox --help\` for how it works.`)
     expect(again).toEqual(first)
     expect(w.tools.some((t) => t.name === 'plannotator_inbox')).toBe(true)
   })
@@ -610,7 +610,7 @@ describe('register', () => {
     const w = world(on, { files, fetch: inbox(TOOLS, []) })
     on('prompt.context', ($: any, e: any) => ({ blocks: e.blocks }))
     await $.session.start(SESSION)
-    const today = `Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. Run \`plannotator inbox --help\` for how it works.`
+    const today = `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run \`plannotator inbox --help\` for how it works.`
     expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([{ name: 'plannotatorInbox', text: today }])
     expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(today)
   })
@@ -674,7 +674,7 @@ describe('register', () => {
       on('classic.*', ($: any, e: any, next: any) => next.to(e, 'append'))
     },
   }
-  const REMINDER = `Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. Run \`plannotator inbox --help\` for how it works.`
+  const REMINDER = `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with ${INBOX_TOOL} send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run \`plannotator inbox --help\` for how it works.`
   const firstTurn = { answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' as const }
 
   test('standard, prompt.context known to work: the block as today, no prompt.submit copy, the variable set', async ($: any, on: any) => {
@@ -909,7 +909,7 @@ describe('register', () => {
       total: 1,
     },
   }
-  const THREADS = `Your open Plannotator Inbox threads in this project (1). Before reply_to into a thread you have not read in this context window, call ${INBOX_TOOL} read_thread with no id and match the subject.\n- ${THREAD_ID} · "ML team journey" · 2 open questions · the person wrote something you have not read · last the person 2026-10-27 06:24Z\nMore: read_thread with no id lists every thread (asked_by "anyone", include_resolved); search finds older ones by words (all_projects).`
+  const THREADS = `Your open Plannotator Inbox threads in this project (1). Before reply_to into a thread you have not read in this context window, call ${INBOX_TOOL} read_thread with no id and match the subject. Their decisions stay in these threads: in the chat, say what waits and link the thread, but never also ask it there with a blocking question tool.\n- ${THREAD_ID} · "ML team journey" · 2 open questions · the person wrote something you have not read · last the person 2026-10-27 06:24Z\nMore: read_thread with no id lists every thread (asked_by "anyone", include_resolved); search finds older ones by words (all_projects).`
   /**
    * The Inbox of `inbox()`, whose read_thread list answers LIST (once `listed`
    * is true) and records the peeks; `old`: an Inbox from before the peek mark

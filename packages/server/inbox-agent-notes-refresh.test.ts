@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
-import { INBOX_NOTE_BLOCK, noteStatus, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
+import { INBOX_NOTE_BLOCK, INBOX_NOTE_VERSION, noteStatus, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import { createAgentEnvironmentFor, type AgentEnvironment } from "./inbox-agents";
 import { startInboxServer } from "./inbox";
 
@@ -69,11 +69,26 @@ describe("refreshInboxNotes: each case of the file, decided by the markers and t
     expect(results()).toEqual(["codex:refreshed"]);
     expect(read(path)).toBe(`# Mine\n\nKeep tests green.\n\n${INBOX_NOTE_BLOCK}\nAfter the note.\n`);
     expect(statSync(path).mode & 0o777).toBe(0o640);
-    expect(readInboxAgentNotes(dataDir).notes.codex).toMatchObject({ version: 2, block_sha256: sha(INBOX_NOTE_BLOCK) });
+    expect(readInboxAgentNotes(dataDir).notes.codex).toMatchObject({ version: INBOX_NOTE_VERSION, block_sha256: sha(INBOX_NOTE_BLOCK) });
     expect(noteStatus("codex", dataDir, e).state).toBe("added");
     const ino = statSync(path).ino;
     expect(results()).toEqual(["codex:current"]);
     expect(statSync(path).ino).toBe(ino);
+  });
+
+  test("a v2 block (written by builds before v3, never released) is Plannotator's own too: refreshed to this version", () => {
+    const path = file(".codex", "AGENTS.md");
+    const v2 = [
+      V1_BLOCK.replace("start v1 ·", "start v2 ·").replace("\n<!-- plannotator-inbox:end -->", ""),
+      "Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
+      'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
+      "<!-- plannotator-inbox:end -->",
+    ].join("\n");
+    write(path, `${v2}\n`);
+    mkdirSync(join(dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(dataDir, "inbox", "agent-notes.json"), JSON.stringify({ v: 1, notes: { codex: { path: realpathSync(path), created: false, version: 2, block_sha256: sha(v2), at: "2026-10-27T00:00:00.000Z" } } }));
+    expect(results()).toEqual(["codex:refreshed"]);
+    expect(read(path)).toBe(`${INBOX_NOTE_BLOCK}\n`);
   });
 
   test("no block (the person removed the note): never put back", () => {

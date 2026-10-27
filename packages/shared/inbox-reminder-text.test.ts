@@ -23,11 +23,11 @@ import {
   inboxReminderText,
 } from "./inbox/connection";
 
-/** The lines as they shipped before #2194. */
+/** The built-in lines: the #2194 ones with the channel rule (the owner, 2026-10-27) in place of "the person isn't here". */
 const MAIN_WAKE =
-  "Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with plannotator_inbox send_message and keep going. Their reply comes back here. Run `plannotator inbox --help` for how it works.";
+  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run `plannotator inbox --help` for how it works.";
 const MAIN_NO_WAKE =
-  "Plannotator Inbox is on: when you finish long work, or need a decision the person isn't here to give, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. Run `plannotator inbox --help` for how it works.";
+  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: in the chat, say what waits and link its thread, but never also ask it there with a blocking question tool. Run `plannotator inbox --help` for how it works.";
 const MOD_TOOL = "mcp__plugin_plannotator_plannotator__plannotator_inbox";
 
 /** Every config.json that sets no usable `prompts.inbox`. */
