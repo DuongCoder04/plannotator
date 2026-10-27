@@ -32,8 +32,9 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, rememberInboxOf, removeInboxScratch } from './inbox-scratch';
+import { forgetFileViewChoice } from './file-view';
 import { NO_BROWSER } from '../helpers/no-browser';
-import { FORCE_PLAIN_TEXT_PASTE_FLAG } from '../../packages/ui/utils/pasteInsert';
+import { chromiumPasteBugAffected, FORCE_PLAIN_TEXT_PASTE_FLAG } from '../../packages/ui/utils/pasteInsert';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -84,6 +85,9 @@ test.beforeAll(async ({ browser }) => {
   page = await context.newPage();
 });
 
+/** A view pressed in a test is remembered in the shared context: forgotten after each (file-view.ts). */
+test.afterEach(async () => forgetFileViewChoice(context));
+
 test.afterAll(async () => {
   try {
     await claude?.close().catch(() => {});
@@ -122,6 +126,26 @@ async function wordRect(on: Page, text: string, word: string): Promise<{ x: numb
   return point;
 }
 
+/**
+ * Open the thread's reply box. The words typed in earlier tests are kept as the
+ * thread's reply draft (approval "inbox-reply-drafts"), which reopens the box by
+ * itself once the draft is read; otherwise the foot offers Reply, or Edit draft
+ * while picks wait. The draft's read can land between the check and the click,
+ * so a click that finds no button is tried again. A restored box does not take
+ * focus (the person may only be reading), so the box is focused here, as a
+ * click on Reply does.
+ */
+async function openReply(on: Page): Promise<Locator> {
+  const box = on.locator('section.ib-pane .ib-rbox textarea');
+  const button = on.locator('.ib-pfoot').getByRole('button', { name: /^(Reply|Edit draft)$/ });
+  for (let attempt = 0; attempt < 10 && !(await box.isVisible()); attempt += 1) {
+    await button.click({ timeout: 1_000 }).catch(() => {});
+  }
+  await expect(box).toBeVisible();
+  await box.focus();
+  return box;
+}
+
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function expectLanded(field: Locator, words: string): Promise<void> {
@@ -135,13 +159,13 @@ const allValues = (on: Page) =>
 
 test('the reply box: after a pick, after a click on the message, after a chip', async () => {
   await page.goto(`${url}#thread=${threadId}`);
-  await page.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+  await openReply(page);
   const box = page.locator('section.ib-pane .ib-rbox textarea');
   await expect(box).toBeFocused();
   await dictate(page, 'Focused dictation. ');
   await expectLanded(box, 'Focused dictation.');
 
-  await page.getByText('Retry with the same idempotency key').click();
+  await page.locator('fieldset[data-question-key]').getByText('Retry with the same idempotency key').click();
   await expect(box).not.toBeFocused();
   await dictate(page, 'After a pick. ');
   await expectLanded(box, 'After a pick.');
@@ -201,17 +225,23 @@ test('a word double-clicked in the message (selected, nothing to comment on) doe
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await box.fill('Reading first. ');
     // A double-click on a word of the agent's message selects it, as people do while reading.
     const word = await wordRect(p, 'I checked the 409 row.', 'checked');
     await p.mouse.dblclick(word.x, word.y);
-    expect(await p.evaluate(() => document.getSelection()?.toString().trim() ?? '')).not.toBe('');
+    // The word is drawn as the comment toolbar's pending highlight (approval "inbox-message-comments"):
+    // the toolbar is an offer, so the dictation still follows the reply box.
+    await expect(p.locator('section.ib-pane .ib-body mark.annotation-highlight')).toHaveText('checked');
+    await expect(p.locator('.annotation-toolbar')).toBeVisible();
     await expect(box).not.toBeFocused();
     await dictate(p, 'Then this.');
     await expect(box).toHaveValue('Reading first. Then this.');
     await expect(box).toBeFocused();
+    // The words were left for the field: their pending highlight and toolbar went with them.
+    await expect(p.locator('.annotation-toolbar')).toHaveCount(0);
+    await expect(p.locator('section.ib-pane .ib-body mark.annotation-highlight')).toHaveCount(0);
   } finally {
     await p.close();
   }
@@ -220,10 +250,10 @@ test('a word double-clicked in the message (selected, nothing to comment on) doe
 test('a range selected in the reply box before a pick is not replaced: the dictation goes after it', async () => {
   await page.goto(`${url}#thread=${threadId}`);
   const box = page.locator('section.ib-pane .ib-rbox textarea');
-  if (!(await box.isVisible())) await page.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+  await openReply(page);
   await box.fill('Keep these words.');
   await box.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(5, 10)); // "these", selected
-  await page.getByText('Fail the job').click();
+  await page.locator('fieldset[data-question-key]').getByText('Fail the job').click();
   await expect(box).not.toBeFocused();
   await dictate(page, ' Dictated.');
   await expect(box).toHaveValue('Keep these Dictated. words.');
@@ -246,7 +276,7 @@ test('a question card note: after a pick on the same card', async () => {
 test('a paste aimed at another field stays in it: the reply box keeps its words', async () => {
   await page.goto(`${url}#thread=${threadId}`);
   const box = page.locator('section.ib-pane .ib-rbox textarea');
-  if (!(await box.isVisible())) await page.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+  await openReply(page);
   await box.fill('My reply.');
   const card = page.locator('section.ib-pane fieldset[data-question-key]').nth(1);
   const note = card.getByPlaceholder('Context for the agent…');
@@ -291,7 +321,7 @@ test('a file full screen over the thread: the reply box hidden under it takes no
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${filesThreadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await box.fill('Under the file.');
     await p.locator('section.ib-pane .ib-atts [data-attachment-id]').first().click();
@@ -334,14 +364,14 @@ test('search opened and closed between: the paste still goes to the reply box', 
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await box.fill('Start. ');
     await p.locator('[data-open-search]').first().click();
     await expect(p.locator('dialog[data-search-palette][open]')).toBeVisible();
     await p.keyboard.press('Escape');
     await expect(p.locator('dialog[data-search-palette][open]')).toHaveCount(0);
-    await p.getByText('Fail the job').click();
+    await p.locator('fieldset[data-question-key]').getByText('Fail the job').click();
     await expect(box).not.toBeFocused();
     await dictate(p, 'After search.');
     await expect(box).toHaveValue('Start. After search.');
@@ -354,12 +384,14 @@ test('text selected in a file to comment on: the paste is not taken to the reply
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${filesThreadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await box.fill('My reply.');
     await p.locator('section.ib-pane .ib-atts [data-attachment-id]').first().click();
     const text = p.locator('.ib-view').getByText('Retry with the same key');
     await expect(text).toBeVisible();
+    // The pane may still be sliding in: measure once it stands still.
+    await p.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => undefined))));
     // Drag across the words, as a person selects text to comment on (the rect of the words themselves).
     const rect = await p.evaluate(() => {
       const walker = document.createTreeWalker(document.querySelector('.ib-view')!, NodeFilter.SHOW_TEXT);
@@ -439,7 +471,7 @@ test('Chrome 155-156 dropping the paste: the reply box, search and compose still
     await p.evaluate(() => document.getElementById('native-control')?.remove());
 
     // The reply box (a React-controlled textarea under the skill-reference mirror).
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await expect(box).toBeFocused();
     await box.fill(''); // a pick saved by an earlier test seeds the box
@@ -450,7 +482,7 @@ test('Chrome 155-156 dropping the paste: the reply box, search and compose still
     await expect(box).toHaveValue('First dictation. Second dictation. ');
     expect(await pasteInputs(p)).toEqual(['input:insertText', 'input:insertText']);
     // After a pick, the dictation follows the field (pasteTarget.ts) and is inserted by the page.
-    await p.getByText('Retry with the same idempotency key').click();
+    await p.locator('fieldset[data-question-key]').getByText('Retry with the same idempotency key').click();
     await expect(box).not.toBeFocused();
     await dictate(p, 'After a pick.');
     await expect(box).toHaveValue('First dictation. Second dictation. After a pick.');
@@ -487,7 +519,7 @@ test('the workaround on, the bug not hit: a dictation is inserted exactly once (
   try {
     await recordPasteInputs(p, { drop: false, force: true });
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await expect(box).toBeFocused();
     await box.fill('');
@@ -505,9 +537,19 @@ test('the workaround on, the bug not hit: a dictation is inserted exactly once (
 test('an engine without the bug (this Chromium is neither 155 nor 156): the browser pastes, the page does not', async () => {
   const p = await context.newPage();
   try {
+    // Playwright 1.64 ships Chromium 156: on macOS that engine HAS the bug, so
+    // the workaround is on and this premise does not hold. Linux (CI) and any
+    // other version keep the native path. The gate is the app's own.
+    const affected = chromiumPasteBugAffected(
+      await p.evaluate(() => {
+        const nav = navigator as Navigator & { userAgentData?: { brands?: { brand: string; version: string }[]; platform?: string } };
+        return { userAgent: nav.userAgent, platform: nav.platform, userAgentData: nav.userAgentData ? { brands: nav.userAgentData.brands, platform: nav.userAgentData.platform } : null };
+      }),
+    );
+    test.skip(affected, 'this Chromium is 155 or 156 on macOS, where the workaround is on by design');
     await recordPasteInputs(p, { drop: false, force: false });
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await expect(box).toBeFocused();
     await box.fill('');
@@ -527,11 +569,11 @@ test('with image paste (#1953): an image pasted after a pick attaches once to th
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const rbox = p.locator('section.ib-pane .ib-rbox');
     const box = rbox.locator('textarea');
     await box.fill('With a screenshot.');
-    await p.getByText('Fail the job').click();
+    await p.locator('fieldset[data-question-key]').getByText('Fail the job').click();
     await expect(box).not.toBeFocused();
     // The real clipboard holds an image only, and the browser's own paste runs (no event made by hand).
     await p.evaluate(async (b64) => {
@@ -545,7 +587,7 @@ test('with image paste (#1953): an image pasted after a pick attaches once to th
     await expect(rbox.locator('[data-compose-file]')).toHaveCount(1);
     await expect(box).toHaveValue('With a screenshot.');
     // Then text after another pick: inserted once, and the image stays the one attached.
-    await p.getByText('Retry with the same idempotency key').click();
+    await p.locator('fieldset[data-question-key]').getByText('Retry with the same idempotency key').click();
     await dictate(p, ' And words.');
     await expect(box).toHaveValue('With a screenshot. And words.');
     await expect(rbox.locator('[data-compose-file]')).toHaveCount(1);
@@ -566,10 +608,10 @@ test('WebKit: after a pick, the paste goes back to the reply box', async () => {
     const wk = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const p = await wk.newPage();
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    await openReply(p);
     const box = p.locator('section.ib-pane .ib-rbox textarea');
     await box.fill('Typed. ');
-    await p.getByText('Retry with the same idempotency key').click();
+    await p.locator('fieldset[data-question-key]').getByText('Retry with the same idempotency key').click();
     await expect(box).not.toBeFocused();
     // WebKit gives the page no clipboard permission to set, so this proves the half that is ours:
     // the ⌘V keydown puts focus back in the reply box, caret at its end, before the browser pastes.

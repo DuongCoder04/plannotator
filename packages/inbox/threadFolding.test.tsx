@@ -94,7 +94,7 @@ function questionsOf(messageId: string, body: string): InboxQuestion[] {
 }
 
 function sentAs(q: InboxQuestion, selected: string[], replyId: string): InboxQuestion {
-  return { ...q, state: 'sent', revision: 1, sent_revision: 1, sent_reply_id: replyId, answer: { v: 1, key: q.key, kind: q.kind, prompt: q.prompt, selected } };
+  return { ...q, state: 'sent', revision: 1, sent_revision: 1, sent_reply_id: replyId, answer: { v: 1, key: q.key, kind: q.kind as 'single', prompt: q.prompt, selected } };
 }
 
 function message(id: string, author: InboxAuthor, seq: number, body: string, extra: Partial<InboxMessageWire> = {}): InboxMessageWire {
@@ -182,6 +182,20 @@ async function settle() {
   });
 }
 
+/**
+ * Let `ms` pass inside act. The live region and a jump land from timers the
+ * pane sets (the announcement 30 ms after the click, the jump on the next
+ * frame); inside act their state updates are flushed before act returns. A
+ * plain wait outside act only works when the runner keeps up: under load both
+ * timers fire in one turn and the test reads the DOM before React renders the
+ * update the first one queued.
+ */
+async function waitInAct(ms: number) {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  });
+}
+
 function pane(thread: InboxThread, lookSeq?: number | null) {
   return (
     <div className="pn-inbox">
@@ -229,7 +243,7 @@ test.skipIf(!hasDom)('read messages fold to lines; the new, the last and one hol
   expect(article(el, 'msg_A4')!.querySelector('.ib-newtag')!.textContent).toBe('New');
   expect(el.querySelector('[data-thread-meta]')!.textContent).toContain('7 messages');
   expect(el.querySelector('[data-thread-meta]')!.textContent).toContain('1 new since you looked');
-  expect(el.querySelector('[data-expand-all]')!.textContent).toBe('Expand all');
+  expect(el.querySelector('[data-expand-all]')!.getAttribute('aria-label')).toBe('Expand all messages');
   // Every folded line and every open header is a button that says whether it is open.
   expect(article(el, 'msg_A1')!.querySelector('[data-fold-head]')!.getAttribute('aria-expanded')).toBe('false');
   expect(article(el, 'msg_A4')!.querySelector('[data-fold-head]')!.getAttribute('aria-expanded')).toBe('true');
@@ -238,7 +252,7 @@ test.skipIf(!hasDom)('read messages fold to lines; the new, the last and one hol
   const thread = seven();
   const a3 = thread.messages[4]!;
   const [q] = questionsOf('msg_A3', ONE_OPEN);
-  thread.messages[4] = { ...a3, body: ONE_OPEN, questions: [{ ...q!, message_id: 'msg_A3', state: 'picked', answer: { v: 1, key: q!.key, kind: q!.kind, prompt: q!.prompt, selected: ['Cmd K only'] }, picked_at: '2026-10-10T13:00:00.000Z' }] };
+  thread.messages[4] = { ...a3, body: ONE_OPEN, questions: [{ ...q!, message_id: 'msg_A3', state: 'picked', answer: { v: 1, key: q!.key, kind: q!.kind as 'single', prompt: q!.prompt, selected: ['Cmd K only'] }, picked_at: '2026-10-10T13:00:00.000Z' }] };
   act(() => root!.unmount());
   host!.remove();
   const again = await render(thread);
@@ -247,7 +261,7 @@ test.skipIf(!hasDom)('read messages fold to lines; the new, the last and one hol
   expect(again.querySelector('[data-middle-fold]')!.textContent).toBe('1 earlier message');
   // Folded by hand, its line says the pick is not sent.
   act(() => (article(again, 'msg_A3')!.querySelector('[data-fold-head]') as HTMLButtonElement).click());
-  expect(holdings(again, 'msg_A3')).toEqual(['picks=1 pick, not sent']);
+  expect(holdings(again, 'msg_A3')).toEqual(['picks=1 pick in your draft']);
 });
 
 test.skipIf(!hasDom)("a folded line's snippet is the person's answers when every question is answered, else the message's first words; and it says what the message holds", async () => {
@@ -287,17 +301,17 @@ test.skipIf(!hasDom)('the middle fold opens to lines and focuses the first; Expa
   expect(shown(el)).toEqual(['msg_A1:line', 'msg_P1:line', 'msg_A2:line', 'msg_P2:line', 'msg_A3:line', 'msg_P3:line', 'divider', 'msg_A4:open']);
   expect(focusedArticle()?.getAttribute('data-message-article')).toBe('msg_P1');
   await settle();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await waitInAct(40);
   expect(el.querySelector('[data-fold-live]')!.textContent).toBe('3 earlier messages shown');
 
   act(() => (el.querySelector('[data-expand-all]') as HTMLButtonElement).click());
   expect(shown(el)).toEqual(['msg_A1:open', 'msg_P1:open', 'msg_A2:open', 'msg_P2:open', 'msg_A3:open', 'msg_P3:open', 'divider', 'msg_A4:open']);
-  expect(el.querySelector('[data-expand-all]')!.textContent).toBe('Fold all');
+  expect(el.querySelector('[data-expand-all]')!.getAttribute('aria-label')).toBe('Fold the earlier messages');
   expect(article(el, 'msg_A1')!.querySelector('[data-message-id="msg_A1"]')).not.toBeNull();
 
   act(() => (el.querySelector('[data-expand-all]') as HTMLButtonElement).click());
   expect(shown(el)).toEqual(['msg_A1:line', 'fold', 'msg_A3:line', 'msg_P3:line', 'divider', 'msg_A4:open']);
-  expect(el.querySelector('[data-expand-all]')!.textContent).toBe('Expand all');
+  expect(el.querySelector('[data-expand-all]')!.getAttribute('aria-label')).toBe('Expand all messages');
 });
 
 test.skipIf(!hasDom)('opening a line keeps it where it was: the scroll moves by however much the thread above it changed', async () => {
@@ -487,7 +501,7 @@ test.skipIf(!hasDom)('a link to a replaced card in a folded message opens the me
   const link = article(el, 'msg_A4')!.querySelector<HTMLButtonElement>('[data-replaces-line] .ib-q-link')!;
   act(() => link.click());
   await settle();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await waitInAct(40);
   expect(article(el, ROOT)!.hasAttribute('data-open')).toBe(true);
   expect(document.activeElement?.getAttribute('data-question-key')).toBe(index!.key);
 });
@@ -508,7 +522,7 @@ test.skipIf(!hasDom)('a reply the person sends during the visit is a look: every
   // Folded, the lines above the reply are not drawn as unread either.
   act(() => (el.querySelector('[data-expand-all]') as HTMLButtonElement).click());
   act(() => (el.querySelector('[data-expand-all]') as HTMLButtonElement).click());
-  expect(el.querySelector('[data-expand-all]')!.textContent).toBe('Expand all');
+  expect(el.querySelector('[data-expand-all]')!.getAttribute('aria-label')).toBe('Expand all messages');
   expect(el.querySelector('.ib-fl-unread')).toBeNull();
   expect(el.querySelector('.ib-newtag')).toBeNull();
   // The agent writes again after the reply: that one is new.

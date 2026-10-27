@@ -1,16 +1,17 @@
 /**
  * The window's one toast (design record "inbox-toast", approved 2026-10-14):
  * its approved words (pure, always run), and under DOM_TESTS=1 (happy-dom,
- * from the test.yml DOM list) its shape, its actions, its place (centered on
- * the window, above the open pane's foot or near the list's bottom), and the
- * phone's short form.
+ * from the test.yml DOM list) its shape, its actions, that a desktop toast
+ * never moves for what is open (its place, the window's bottom center, is
+ * CSS and is measured in tests/e2e/inbox-mark-read.spec.ts), and the phone's
+ * short form.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxListRow } from '@plannotator/core/inbox-types';
 import { markReadToast } from './markRead';
-import { InboxToast, TOAST_FOOT_GAP, TOAST_LIST_GAP, TOAST_PANE_WAIT_MS, toastSpeech, type InboxToastModel } from './components/Toast';
+import { InboxToast, toastSpeech, type InboxToastModel } from './components/Toast';
 
 const hasDom = typeof document !== 'undefined';
 
@@ -55,6 +56,8 @@ test('toastSpeech: the live region reads the lead and the detail as sentences, a
   const undo = () => {};
   expect(toastSpeech({ lead: 'Marked read', detail: 'Moves to Quiet', onUndo: undo })).toBe('Marked read. Moves to Quiet. Press Z to undo.');
   expect(toastSpeech({ lead: 'Archived', onUndo: undo }, true)).toBe('Archived. Undo is available.');
+  // A toast kept short for one line can say more to a screen reader.
+  expect(toastSpeech({ lead: 'Sent to Pi', detail: 'in ledger', speech: 'Sent to Pi in ledger. It takes it as its next turn.' })).toBe('Sent to Pi in ledger. It takes it as its next turn.');
 });
 
 let root: Root | null = null;
@@ -100,7 +103,7 @@ function windowWith(thread: boolean): HTMLElement {
   return host;
 }
 
-function show(toast: Omit<InboxToastModel, 'id'>, phone = false, into?: HTMLElement, threadRouted = false): HTMLElement {
+function show(toast: Omit<InboxToastModel, 'id'>, phone = false, into?: HTMLElement, onDismiss?: () => void, onHold?: (held: boolean) => void): HTMLElement {
   const target = into ?? (() => {
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -109,7 +112,7 @@ function show(toast: Omit<InboxToastModel, 'id'>, phone = false, into?: HTMLElem
   const mount = document.createElement('div');
   target.appendChild(mount);
   root = createRoot(mount);
-  act(() => root!.render(<InboxToast toast={{ id: 1, ...toast }} phone={phone} threadRouted={threadRouted} />));
+  act(() => root!.render(<InboxToast toast={{ id: 1, ...toast }} phone={phone} onDismiss={onDismiss} onHold={onHold} />));
   return target.querySelector('[data-inbox-toast]') as HTMLElement;
 }
 
@@ -129,40 +132,130 @@ const nextFrame = () => act(async () => new Promise((resolve) => requestAnimatio
 
 const buttons = (toast: HTMLElement) => [...toast.querySelectorAll('button')].map((b) => b.textContent);
 
-test.skipIf(!hasDom)('desktop warning: one line (icon, lead, detail), Reply and Undo with its Z hint, no close', () => {
+test.skipIf(!hasDom)('desktop warning: one line (icon, lead, detail), Reply and Undo with its Z hint, then the × at the end', () => {
   let undone = 0;
   let replied = 0;
+  let dismissed = 0;
   const { warn, ...copy } = markReadToast(row({ questions: questions({ stopped: true }) }), 'open');
   expect(warn).toBe(true);
-  const toast = show({ ...copy, icon: 'warn', onUndo: () => undone++, onReply: () => replied++ });
+  const toast = show({ ...copy, icon: 'warn', onUndo: () => undone++, onReply: () => replied++ }, false, undefined, () => dismissed++);
   expect(toast.classList.contains('ib-toast-warn')).toBe(true);
   expect(toast.classList.contains('ib-toast-wrap')).toBe(false);
   expect(toast.querySelector('.ib-tlead')?.textContent).toBe('Marked read');
   expect(toast.querySelector('.ib-tdetail')?.textContent).toBe('Claude Code was stopped');
-  // Reply and Undo, nothing else: the × is gone (the toast leaves on its own).
-  expect(buttons(toast)).toEqual(['Reply', 'UndoZ']);
-  expect(toast.querySelector('[aria-label="Dismiss"]')).toBeNull();
+  // Reply, Undo, and the × last (owner, 2026-10-20: a toast can be closed early).
+  expect(buttons(toast)).toEqual(['Reply', 'UndoZ', '']);
+  expect([...toast.querySelectorAll('button')].at(-1)?.getAttribute('aria-label')).toBe('Dismiss');
   // The Z hint is for the eye; the button's name stays "Undo" and it says its key.
   const undo = toast.querySelector('[data-toast-undo]') as HTMLButtonElement;
   expect(undo.querySelector('kbd')?.getAttribute('aria-hidden')).toBe('true');
   expect(undo.getAttribute('aria-keyshortcuts')).toBe('Z');
   act(() => undo.click());
   act(() => (toast.querySelector('[data-toast-reply]') as HTMLButtonElement).click());
-  expect([undone, replied]).toEqual([1, 1]);
+  expect([undone, replied, dismissed]).toEqual([1, 1, 0]);
+  // The × dismisses, and never undoes.
+  act(() => (toast.querySelector('[data-toast-dismiss]') as HTMLButtonElement).click());
+  expect([undone, replied, dismissed]).toEqual([1, 1, 1]);
 });
 
-test.skipIf(!hasDom)('with a thread open beside the list it sits centered on the window (not the pane), 12 px above the pane\'s foot', () => {
-  const win = windowWith(true);
-  const toast = show({ icon: 'check', lead: 'Marked read', detail: 'Moves to Quiet', onUndo: () => {} }, false, win);
-  // The window is 1400 wide: center 700, not the pane's 1010. Foot top 820 in a 900 px window: 80 + 12 from the bottom.
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${80 + TOAST_FOOT_GAP}px`);
-  // 520 px at most, and 16 px from each edge of the window.
-  expect(toast.style.maxWidth).toBe('min(520px, 1368px)');
+/** A touch pointer event at (x, y) at time `t` (happy-dom ignores a `timeStamp` init, so it is set on the event). */
+function pointer(type: string, x: number, y: number, pointerId: number, t: number): PointerEvent {
+  const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId, pointerType: 'touch', isPrimary: true, button: 0, clientX: x, clientY: y });
+  Object.defineProperty(event, 'timeStamp', { value: t });
+  return event;
+}
+
+/** A pointer at (x, y) on `el`: down, the moves, then up (or a cancel, as when the page takes a vertical pan). */
+function drag(el: HTMLElement, path: [number, number][], end: 'pointerup' | 'pointercancel' = 'pointerup', start = el) {
+  const at = (type: string, [x, y]: [number, number], target: Element, t: number) => target.dispatchEvent(pointer(type, x, y, 7, 1000 + t));
+  act(() => {
+    at('pointerdown', path[0], start, 0);
+  });
+  path.slice(1).forEach((point, i) =>
+    act(() => {
+      at('pointermove', point, el, (i + 1) * 40);
+    }),
+  );
+  act(() => {
+    at(end, path.at(-1)!, el, path.length * 40);
+  });
+}
+
+describe.skipIf(!hasDom)('swipe a toast away (owner, 2026-10-20)', () => {
+  const swipeable = (phone = false) => {
+    let dismissed = 0;
+    let undone = 0;
+    const holds: boolean[] = [];
+    const toast = show({ icon: 'check', lead: 'Marked read', detail: 'Moves to Quiet', onUndo: () => undone++ }, phone, undefined, () => dismissed++, (held) => holds.push(held));
+    boxAt(toast, 460, 840, 400, 40);
+    return { toast, holds, count: () => ({ dismissed, undone }) };
+  };
+
+  for (const phone of [false, true]) {
+    const where = phone ? 'a phone' : 'a desktop';
+    test(`${where}: a drag past 40% of the width dismisses it, and never undoes; its timer was held from the drag's start`, () => {
+      const { toast, holds, count } = swipeable(phone);
+      // Slow (no flick), 200 px of a 400 px toast: half its width.
+      drag(toast, [[600, 860], [610, 861], [680, 862], [740, 862], [800, 862]]);
+      expect(count()).toEqual({ dismissed: 1, undone: 0 });
+      expect(holds).toEqual([true]);
+    });
+
+    test(`${where}: a short drag springs back and keeps it; its timer resumes, and the entrance does not replay`, () => {
+      const { toast, holds, count } = swipeable(phone);
+      drag(toast, [[600, 860], [610, 860], [625, 860], [640, 860], [655, 860], [670, 860]]);
+      expect(count()).toEqual({ dismissed: 0, undone: 0 });
+      // Held while dragged, resumed on the spring-back.
+      expect(holds).toEqual([true, false]);
+      // Back where it was: nothing left on it from the drag but the entrance kept off (removing
+      // ib-toast-dragging would otherwise bring back `animation: ib-toast-in` and replay it).
+      expect(toast.style.translate).toBe('');
+      expect(toast.style.opacity).toBe('');
+      expect(toast.style.animation).toBe('none');
+      expect(toast.classList.contains('ib-toast-dragging')).toBe(false);
+    });
+  }
+
+  test('a fast flick dismisses it from a shorter drag', () => {
+    const { toast, count } = swipeable();
+    // 90 px in 80 ms: about 1.1 px per ms, well past the flick speed, though short of 40%.
+    const at = (type: string, x: number, t: number) =>
+      act(() => {
+        toast.dispatchEvent(pointer(type, x, 860, 3, 1000 + t));
+      });
+    at('pointerdown', 600, 0);
+    at('pointermove', 620, 20);
+    at('pointermove', 660, 50);
+    at('pointermove', 690, 80);
+    at('pointerup', 690, 90);
+    expect(count().dismissed).toBe(1);
+  });
+
+  test('a vertical drag is the page\'s, a cancelled drag springs back, and a drag that starts on a button is the button\'s', () => {
+    const { toast, holds, count } = swipeable(true);
+    drag(toast, [[600, 860], [602, 840], [604, 760], [700, 700]]);
+    expect(count().dismissed).toBe(0);
+    expect(holds).toEqual([]);
+    drag(toast, [[600, 860], [620, 860], [800, 860]], 'pointercancel');
+    expect(count().dismissed).toBe(0);
+    expect(holds).toEqual([true, false]);
+    drag(toast, [[600, 860], [620, 860], [800, 860]], 'pointerup', toast.querySelector('[data-toast-undo]') as HTMLElement);
+    expect(count()).toEqual({ dismissed: 0, undone: 0 });
+  });
 });
 
-test.skipIf(!hasDom)('a file beside the thread: still the window\'s center, above whichever foot is higher', async () => {
-  const win = windowWith(true);
+test.skipIf(!hasDom)('a desktop toast stays where it is whatever opens: a thread, a file beside it, a full-screen file', async () => {
+  const win = windowWith(false);
+  const toast = show({ icon: 'check', lead: 'Moved to Quiet', detail: '“Invoice list layout”', onUndo: () => {} }, false, win);
+  const placed = () => ({ style: toast.getAttribute('style'), className: toast.className });
+  const first = placed();
+  // Nothing measured onto it: the window's bottom center comes from inbox.css alone.
+  expect(first.style).toBeNull();
+
+  act(() => win.querySelector('main')!.appendChild(threadPane()));
+  await nextFrame();
+  expect(placed()).toEqual(first);
+
   const view = document.createElement('section');
   view.className = 'ib-view';
   boxAt(view, 620, 0, 780, 900);
@@ -170,149 +263,66 @@ test.skipIf(!hasDom)('a file beside the thread: still the window\'s center, abov
   foot.setAttribute('data-view-foot', '');
   boxAt(foot, 620, 790, 780, 110);
   view.appendChild(foot);
-  win.querySelector('main')!.appendChild(view);
-  const toast = show({ icon: 'check', lead: 'Archived', onUndo: () => {} }, false, win);
-  // The file's strip (top 790) sits above the thread's foot (820): the toast clears it.
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${110 + TOAST_FOOT_GAP}px`);
-  expect(toast.classList.contains('ib-toast-file')).toBe(false);
-});
-
-/** An image's comment row inside a file view, from `top` to the given bottom. */
-function commentRow(view: HTMLElement, top: number, bottom: number): HTMLElement {
-  const row = document.createElement('div');
-  row.setAttribute('data-image-composer', '');
-  boxAt(row, 620, top, 780, bottom - top);
-  view.appendChild(row);
-  return row;
-}
-
-test.skipIf(!hasDom)('a file beside the thread with an image\'s comment row: above the row, and it rises as the row grows', async () => {
-  const win = windowWith(true);
-  const view = document.createElement('section');
-  view.className = 'ib-view';
-  boxAt(view, 620, 0, 780, 900);
-  const foot = document.createElement('div');
-  foot.setAttribute('data-view-foot', '');
-  boxAt(foot, 620, 841, 780, 59);
-  view.appendChild(foot);
-  // Two images: the comment row (776..841) sits on the stepping strip, above the thread's foot (820).
-  const row = commentRow(view, 776, 841);
-  win.querySelector('main')!.appendChild(view);
-  const toast = show({ icon: 'check', lead: 'Archived', onUndo: () => {} }, false, win);
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${900 - 776 + TOAST_FOOT_GAP}px`);
-
-  // The person types a few lines: the row grows upward (top 715) and the toast follows.
-  boxAt(row, 620, 715, 780, 126);
-  act(() => row.setAttribute('class', 'grown'));
+  act(() => win.querySelector('main')!.appendChild(view));
   await nextFrame();
-  expect(toast.style.bottom).toBe(`${900 - 715 + TOAST_FOOT_GAP}px`);
+  expect(placed()).toEqual(first);
 
-  // One image, no strip: the row alone is the file's foot.
-  foot.remove();
-  boxAt(row, 620, 820, 780, 80);
+  act(() => view.classList.add('ib-full'));
   await nextFrame();
-  expect(toast.style.bottom).toBe(`${80 + TOAST_LIST_GAP}px`);
+  expect(placed()).toEqual(first);
 });
 
-test.skipIf(!hasDom)('a full-screen file with its strip and an image\'s comment row: above the row, not on it', async () => {
-  const win = windowWith(true);
-  const view = document.createElement('section');
-  view.className = 'ib-view ib-full';
-  boxAt(view, 0, 0, 1400, 900);
-  const foot = document.createElement('div');
-  foot.setAttribute('data-view-foot', '');
-  boxAt(foot, 0, 841, 1400, 59);
-  view.appendChild(foot);
-  const row = commentRow(view, 776, 841);
-  win.querySelector('main')!.appendChild(view);
-  const toast = show({ icon: 'check', lead: 'Archived', onUndo: () => {} }, false, win);
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${900 - 776 + TOAST_FOOT_GAP}px`);
-  expect(toast.classList.contains('ib-toast-file')).toBe(true);
-  boxAt(row, 0, 700, 1400, 141);
-  act(() => row.setAttribute('class', 'grown'));
-  await nextFrame();
-  expect(toast.style.bottom).toBe(`${900 - 700 + TOAST_FOOT_GAP}px`);
-});
-
-test.skipIf(!hasDom)('with no thread open it sits centered on the window, near the list\'s bottom; it rises above a thread that opens', async () => {
-  const win = windowWith(false);
-  const toast = show({ icon: 'check', lead: 'Moved to Quiet', detail: '“Invoice list layout”', onUndo: () => {} }, false, win);
-  // The window's center, not the list's (240..1400: 820).
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${TOAST_LIST_GAP}px`);
-
-  // A thread opens while the toast is up: same center, now above the pane's foot.
-  act(() => win.querySelector('main')!.appendChild(threadPane()));
-  await nextFrame();
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${80 + TOAST_FOOT_GAP}px`);
-});
-
-test.skipIf(!hasDom)('a full-screen file: centered on the window, just above its foot strip, and over the file', () => {
-  const win = windowWith(true);
-  const view = document.createElement('section');
-  view.className = 'ib-view ib-full';
-  boxAt(view, 0, 0, 1400, 900);
-  const foot = document.createElement('div');
-  foot.setAttribute('data-view-foot', '');
-  boxAt(foot, 0, 841, 1400, 59);
-  view.appendChild(foot);
-  win.querySelector('main')!.appendChild(view);
-  const toast = show({ icon: 'check', lead: 'Archived', onUndo: () => {} }, false, win);
-  // The window's center, 59 + 12 above the bottom.
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${59 + TOAST_FOOT_GAP}px`);
-  expect(toast.classList.contains('ib-toast-file')).toBe(true);
-});
-
-test.skipIf(!hasDom)('a thread still loading: the toast waits for its pane instead of sitting over the list first', async () => {
-  const win = windowWith(false);
-  const toast = show({ icon: 'check', lead: 'Back in your Inbox', detail: '“Invoice list layout”', onUndo: () => {} }, false, win, true);
-  expect(toast.style.visibility).toBe('hidden');
-  expect(toast.style.left).toBe('');
-  act(() => win.querySelector('main')!.appendChild(threadPane()));
-  await nextFrame();
-  expect(toast.style.visibility).toBe('');
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${80 + TOAST_FOOT_GAP}px`);
-});
-
-test.skipIf(!hasDom)('a thread whose pane never comes: after the wait the toast sits over the list', async () => {
-  const win = windowWith(false);
-  const toast = show({ icon: 'check', lead: 'Back in your Inbox', onUndo: () => {} }, false, win, true);
-  expect(toast.style.visibility).toBe('hidden');
-  await act(async () => new Promise((resolve) => setTimeout(resolve, TOAST_PANE_WAIT_MS + 50)));
-  await nextFrame();
-  expect(toast.style.visibility).toBe('');
-  expect(toast.style.left).toBe('700px');
-  expect(toast.style.bottom).toBe(`${TOAST_LIST_GAP}px`);
-});
-
-test.skipIf(!hasDom)('a phone: "Read" for "Marked read", no Reply and no Z hint, and Undo undoes', () => {
+test.skipIf(!hasDom)('a phone: "Read" for "Marked read", no Reply and no Z hint, Undo undoes, and the × closes it', () => {
   let undone = 0;
   const { warn, ...copy } = markReadToast(row({ questions: questions({ stopped: true }) }), 'open');
-  const toast = show({ ...copy, icon: warn ? 'warn' : 'check', onUndo: () => undone++, onReply: () => {} }, true);
+  const toast = show({ ...copy, icon: warn ? 'warn' : 'check', onUndo: () => undone++, onReply: () => {} }, true, undefined, () => {});
   expect(toast.classList.contains('ib-toast-phone')).toBe(true);
   expect(toast.querySelector('.ib-tlead')?.textContent).toBe('Read');
   expect(toast.querySelector('.ib-tdetail')?.textContent).toBe('Claude Code was stopped');
-  expect(buttons(toast)).toEqual(['Undo']);
+  expect(buttons(toast)).toEqual(['Undo', '']);
+  expect(toast.querySelector('[data-toast-dismiss]')?.getAttribute('aria-label')).toBe('Dismiss');
   expect(toast.querySelector('kbd')).toBeNull();
   act(() => (toast.querySelector('[data-toast-undo]') as HTMLButtonElement).click());
   expect(undone).toBe(1);
 });
 
-test.skipIf(!hasDom)('an error keeps its message whole and may wrap, with no actions', () => {
+test.skipIf(!hasDom)('an error keeps its message whole and may wrap, with no actions but the ×', () => {
   const message = 'The thread did not change: the Inbox could not be reached.';
   for (const phone of [false, true]) {
-    const toast = show({ icon: 'warn', lead: message, wrap: true }, phone);
+    const toast = show({ icon: 'warn', lead: message, wrap: true }, phone, undefined, () => {});
     expect(toast.querySelector('.ib-tlead')?.textContent).toBe(message);
     expect(toast.classList.contains('ib-toast-wrap')).toBe(true);
-    expect(toast.querySelectorAll('button').length).toBe(0);
+    expect([...toast.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual(['Dismiss']);
     act(() => root?.unmount());
     host?.remove();
     root = null;
+  }
+});
+
+test.skipIf(!hasDom)('a toast leaving with focus inside and nowhere to return it gives focus to the open pane\'s visible header, never the body', () => {
+  // A phone with a thread open: the list's heading is hidden, so the thread's ‹ Inbox takes focus.
+  const page = document.createElement('div');
+  page.className = 'pn-inbox';
+  const main = document.createElement('main');
+  main.className = 'ib-main';
+  const heading = document.createElement('h1');
+  heading.textContent = 'Inbox';
+  heading.style.display = 'none';
+  main.appendChild(heading);
+  const pane = document.createElement('section');
+  pane.className = 'ib-pane';
+  pane.innerHTML = '<div class="ib-phead"><button type="button" class="ib-pback">Inbox</button></div><h2 class="ib-subject" tabindex="-1">Invoice list</h2>';
+  main.appendChild(pane);
+  page.appendChild(main);
+  document.body.appendChild(page);
+  try {
+    const toast = show({ icon: 'check', lead: 'Archived', onUndo: () => {} }, true, page, () => {});
+    // Focus arrives from nowhere (the body), then the toast goes.
+    act(() => (toast.querySelector('[data-toast-dismiss]') as HTMLButtonElement).focus());
+    act(() => root?.unmount());
+    root = null;
+    expect(document.activeElement).toBe(pane.querySelector('.ib-pback'));
+  } finally {
+    page.remove();
   }
 });
