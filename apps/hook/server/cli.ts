@@ -247,7 +247,7 @@ export const CARD_COMMAND_USAGE = [
   `Columns: ${INBOX_CARD_COLUMNS.join(", ")} (icebox is the person's only).`,
   "",
   "Keeps a card on the person's Board in the Plannotator Inbox for work that outlasts a reply.",
-  "Works only while the person has the Board on (Inbox Settings → General); off, it exits 1 with board_off.",
+  "Works only while the person has the Board on (Inbox Settings → Capabilities); off, it exits 1 with board_off.",
   "Run 'plannotator inbox --help' for the full guide (its card section, shown while the Board is on).",
 ].join("\n");
 
