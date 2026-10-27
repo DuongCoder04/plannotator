@@ -60,7 +60,8 @@ import { FileSwipeCard } from './FileSwipeCard';
 import { createPortal } from 'react-dom';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
-import { ShortcutHint } from '../shortcuts/hint';
+import { ShortcutHint, withShortcut } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import { inOverlay, isComposingKey, isEditableTarget, keyTarget, modalOpen } from '../shortcuts/guards';
 import { escapeRung, type EscapeRung } from '../escapeLadder';
 import { storage } from '@plannotator/ui/utils/storage';
@@ -1490,7 +1491,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   {!folded && 'Side by side'}
                 </button>
               </Tip>
-              <Tip content="Full screen: files open this way until you choose again">
+              {/* F names full screen here (approved hint placement); the key, unlike this button, saves nothing. */}
+              <Tip content={withShortcut('Full screen: files open this way until you choose again', { scope: inboxThreadShortcuts, action: 'fullScreen' })}>
                 <button type="button" className="ib-seg-o" aria-pressed="false" onClick={() => toggleFull()} aria-label={folded ? 'Full screen' : undefined} data-full-screen-toggle="">
                   <Icon name="frame" size={14} />
                   {!folded && 'Full screen'}

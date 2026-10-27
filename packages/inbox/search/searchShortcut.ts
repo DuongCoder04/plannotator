@@ -52,13 +52,14 @@ export function isOpenSearchKey(event: KeyEventLike, mac: boolean = isMac): bool
 }
 
 /**
- * Whether a keydown is `/` for search (an extra): a plain `/` where the person
- * is not typing, with single keys on. Matched by its character, so it is the
- * key that types `/` on any layout.
+ * Whether a keydown is `/` for search (an extra): a `/` where the person is
+ * not typing, with single keys on. Matched by its character, so it is the key
+ * that types `/` on any layout, Shift included where `/` needs it (Shift+7 on
+ * German, Swiss and Nordic layouts); ⌘ / Ctrl / Alt still stand it down.
  */
 export function isSlashSearchKey(event: KeyboardEvent, scope = inboxSearchShortcuts): boolean {
   if (!scope.shortcuts.openSearch.bindings.includes('/')) return false;
-  if (event.key !== '/' || event.shiftKey) return false;
+  if (event.key !== '/') return false;
   return bareKeyAllowed(event);
 }
 

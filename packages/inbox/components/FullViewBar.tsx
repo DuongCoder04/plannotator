@@ -3,8 +3,11 @@ import { Tooltip } from '@plannotator/ui/components/Tooltip';
 import { formatShortcutBindingText } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
 import { shortcutAria, TipKeys, type ShortcutRef } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 
 const EXIT_KEYS: ShortcutRef = { scope: inboxFileViewerShortcuts, action: 'escape' };
+/** F: out of full screen the way × goes (Thread.tsx `fullScreenByKey`). */
+const FULL_KEYS: ShortcutRef = { scope: inboxThreadShortcuts, action: 'fullScreen' };
 const TOOLS_KEYS: ShortcutRef = { scope: inboxFileViewerShortcuts, action: 'toggleTools' };
 const exitKeys = shortcutAria(EXIT_KEYS);
 import { modKey } from '@plannotator/ui/utils/platform';
@@ -104,7 +107,8 @@ export interface FullViewBarHandle {
   toggle: () => void;
 }
 
-function Tip({ text, note, keys, phone, passEscape, children }: { text: string; note?: string; keys?: ShortcutRef | null; phone: boolean; passEscape?: boolean; children: React.ReactElement }) {
+function Tip({ text, note, keys, phone, passEscape, children }: { text: string; note?: string; keys?: ShortcutRef | readonly ShortcutRef[] | null; phone: boolean; passEscape?: boolean; children: React.ReactElement }) {
+  const refs = keys ? (Array.isArray(keys) ? keys : [keys as ShortcutRef]) : [];
   // A phone has no hover: a tooltip there only opens on focus, unseen, and takes the next Escape for itself. The buttons carry their names.
   if (phone) return children;
   return (
@@ -116,7 +120,13 @@ function Tip({ text, note, keys, phone, passEscape, children }: { text: string; 
         <span className="flex flex-col gap-1">
           <span>{text}</span>
           {note && <span className="text-muted-foreground">{note}</span>}
-          {keys && <TipKeys {...keys} />}
+          {refs.length > 0 && (
+            <span className="flex items-center gap-2">
+              {refs.map((ref) => (
+                <TipKeys key={`${ref.scope.id}.${ref.action}`} {...ref} />
+              ))}
+            </span>
+          )}
         </span>
       }
     >
@@ -248,7 +258,8 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
   // The way out of full screen names where it goes, "Side by side" (a pick: remembered); on a phone or a stacked window it is Back to the thread.
   const exit = props.leave.kind === 'exit';
   const leaveButton = (
-    <Tip text={exit ? 'Side by side' : 'Back to the thread'} note={exit ? 'The file beside the thread; files open this way until you choose again' : undefined} phone={phone}>
+    // F goes back beside the thread too where full screen came from there (approved hint placement); it saves nothing.
+    <Tip text={exit ? 'Side by side' : 'Back to the thread'} note={exit ? 'The file beside the thread; files open this way until you choose again' : undefined} keys={exit && !props.exitCloses ? FULL_KEYS : null} phone={phone}>
       <button
         type="button"
         className={`ib-fvb ib-fvexit${exit ? ' ib-fvside' : ''}`}
@@ -416,7 +427,7 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
         {props.leave.kind === 'exit' && leaveButton}
         {props.onExitFull && props.leave.kind === 'exit' && !phone && (
           // Its tooltip says Esc, so one Esc on it leaves (the tooltip does not keep that press).
-          <Tip text={props.exitCloses ? 'Back to the thread' : 'Exit full screen'} keys={EXIT_KEYS} phone={phone} passEscape>
+          <Tip text={props.exitCloses ? 'Back to the thread' : 'Exit full screen'} keys={[EXIT_KEYS, FULL_KEYS]} phone={phone} passEscape>
             <button
               type="button"
               className="ib-fvb"

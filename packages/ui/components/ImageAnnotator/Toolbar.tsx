@@ -201,7 +201,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             key={c}
             type="button"
             onClick={() => onColorChange(c)}
-            title={COLOR_NAMES[c] ?? c}
             aria-label={`Colour: ${COLOR_NAMES[c] ?? c}`}
             aria-pressed={color === c}
             className={`w-5 h-5 rounded-full border-2 transition-transform ${

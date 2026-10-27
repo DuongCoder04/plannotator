@@ -111,7 +111,20 @@ export async function createKeyboardWorld(prefix = 'plannotator-inbox-keyboard-'
   const root = inboxScratch(prefix);
   const dataDir = join(root, 'data');
   markTourDecided(dataDir);
-  const env = { PATH: process.env.PATH ?? '', HOME: root, PLANNOTATOR_DATA_DIR: dataDir, PLANNOTATOR_BROWSER: NO_BROWSER, PLANNOTATOR_INBOX_CONNECT: '0' };
+  // The sibling specs' sandbox switches: no agent configs, no tailnet, phones or notes, no update check, no relay.
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: root,
+    PLANNOTATOR_DATA_DIR: dataDir,
+    PLANNOTATOR_BROWSER: NO_BROWSER,
+    NO_BROWSER,
+    PLANNOTATOR_INBOX_CONNECT: '0',
+    PLANNOTATOR_INBOX_TAILSCALE: '0',
+    PLANNOTATOR_INBOX_PHONES: '0',
+    PLANNOTATOR_INBOX_NOTES: '0',
+    PLANNOTATOR_UPDATE_CHECK: '0',
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
+  };
   const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
   if (started.status !== 0) throw new Error(`the Inbox did not start: ${started.stderr}`);
   rememberInboxOf(dataDir);

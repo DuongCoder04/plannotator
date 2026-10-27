@@ -63,9 +63,8 @@ import { SearchHost, type SearchLanding } from './components/SearchHost';
 import { onOpenSearchKey } from './search/searchShortcut';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxThreadShortcuts } from './shortcuts/thread.shortcuts';
-import { bareKeyAllowed, inOverlay, isComposingKey, isEditableTarget, isRepeatKey, keyTarget, modalOpen } from './shortcuts/guards';
+import { bareKeyAllowed, inOverlay, isComposingKey, isEditableTarget, isRepeatKey, keyTarget, modalOpen, singleKeysLive } from './shortcuts/guards';
 import { inboxAppShortcuts } from './shortcuts/app.shortcuts';
-import { shortcutPrefs } from './shortcuts/prefs';
 import { ShortcutMap } from './components/ShortcutMap';
 import { EmptyState } from './components/EmptyState';
 import { Icon } from './icons';
@@ -730,6 +729,8 @@ function Inbox() {
       if (lastInput() === 'pointer') return;
       // Focus left in what the traversal replaced moves too (focusKept says what stays). Checked again a beat later: a thread drawn again may drop it then.
       const place = (always: boolean) => {
+        // A click since this traversal (a timer left from an earlier Back can fire after one): focus stays the click's.
+        if (lastInput() === 'pointer') return;
         const active = document.activeElement;
         const to = readRoute();
         if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to, from)))) return;
@@ -2240,7 +2241,7 @@ function Inbox() {
    * for typing, composition and repeat; the rest is the thread's own).
    */
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
-    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !shortcutPrefs().singleKeys) return null;
+    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !singleKeysLive()) return null;
     if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || routeRef.current.guide) return null;
     // Under a dialog (Decide opens over the thread it came from) the letters are the dialog's.
     if (modalOpen()) return null;

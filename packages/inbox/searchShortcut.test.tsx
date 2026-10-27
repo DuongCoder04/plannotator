@@ -110,6 +110,8 @@ test.skipIf(!hasDom)('/ opens search where nobody is typing, and never in a fiel
   document.body.append(row, field);
   row.focus();
   expect(slash(row)).toEqual({ opened: 1, prevented: true });
+  // Where `/` is Shift+7 (German, Swiss, Nordic layouts) it is still the key that types `/`.
+  expect(slash(row, { shiftKey: true, code: 'Digit7' })).toEqual({ opened: 1, prevented: true });
   // Typing a slash in the reply box is a slash.
   expect(slash(field)).toEqual({ opened: 0, prevented: false });
   expect(slash(row, { ctrlKey: true })).toEqual({ opened: 0, prevented: false });

@@ -5,8 +5,18 @@
  * focused component's first). The registry already refuses a binding whose
  * modifiers differ from the key's (`E` never matches ⌘E or ⌥E).
  */
+import { isPhone } from '../phone';
 import { selectionToolbarShowing } from '../selectionToolbar';
 import { shortcutPrefs } from './prefs';
+
+/**
+ * Whether single keys (letters, `[` `]`, `?`, `/`, Shift+J) act at all: Single-key shortcuts on, and not a phone
+ * layout (`PHONE_QUERY`, the one that also hides every keycap and the shortcut map's button), so a key never works
+ * where nothing shows it. A desktop window narrower than 768 px is that layout too: no keycaps, no map, no letters.
+ */
+export function singleKeysLive(prefs: { singleKeys: boolean } = shortcutPrefs()): boolean {
+  return prefs.singleKeys && !isPhone();
+}
 
 /**
  * The element the key came from. `composedPath()[0]` reaches into shadow
@@ -82,7 +92,7 @@ export function isBareBinding(binding: string): boolean {
  * (the tour's replay, a guided review) on top.
  */
 export function bareKeyAllowed(event: KeyboardEvent, prefs: { singleKeys: boolean } = shortcutPrefs()): boolean {
-  if (!prefs.singleKeys) return false;
+  if (!singleKeysLive(prefs)) return false;
   if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || hasCommandModifier(event)) return false;
   const target = keyTarget(event);
   if (target) {

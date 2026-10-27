@@ -773,10 +773,19 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   await press('f');
   await at('F', { focus: pane(), address: addr(checkout, { view: 'full' }), view: 'full' });
   expect(await fileName()).toBe(stepped);
+  // The tooltips name F where it does the same: Side by side (full screen came from beside the thread) and ×.
+  const fHint = page.locator('[data-shortcut-hint="inbox-thread.fullScreen"]').filter({ visible: true });
+  await tabTo(page.locator('[data-full-view-exit="exit"]'));
+  await expect(fHint).toHaveCount(1);
+  await tabTo(page.locator('[data-full-view-close]'));
+  await expect(fHint).toHaveCount(1);
   await press('f');
   // Back beside the thread as Escape comes back (#2245): focus on the file's Side by side.
   await at('F again', { focus: pane().locator('[data-view-side]'), address: addr(checkout, { view: 'side' }), view: 'side' });
   expect(await fileName()).toBe(stepped);
+  // The view switch's Full screen tooltip names F.
+  await tabTo(pane().locator('[data-full-screen-toggle]'));
+  await expect(fHint).toHaveCount(1);
 
   await escapeFile();
   await at('closed', { focus: head, address: addr(checkout), view: 'thread' });
@@ -908,6 +917,7 @@ test('J7: the shortcut map, from anywhere', async () => {
   await press('Shift+?');
   await expect(map()).toHaveCount(0);
   await at('? again closes it', { focus: firstRow(), address: addr(null), view: 'list' });
+  expect(await page.evaluate(() => history.length), '? and ? again add no history').toBe(entries);
 
   // From a thread, a file and Settings: Escape closes it and focus goes back to what had it.
   await arrowTo(checkout);
@@ -934,6 +944,7 @@ test('J7: the shortcut map, from anywhere', async () => {
 
   // The keyboard button beside light and dark, and Show keys on buttons in the map's foot.
   const button = page.locator('[data-shortcut-map-button]');
+  const beforeButton = await page.evaluate(() => history.length);
   await tabTo(button);
   await press('Enter');
   await expect(map()).toBeVisible();
@@ -943,7 +954,7 @@ test('J7: the shortcut map, from anywhere', async () => {
   await press('Escape');
   await at('map closed', { focus: button, address: addr(checkout), view: 'thread' });
   await expect(keycaps()).toHaveCount(0);
-  expect(await page.evaluate(() => history.length) - entries, 'the map never adds history').toBe(await page.evaluate(() => history.length) - entries);
+  expect(await page.evaluate(() => history.length), 'the map from its button adds no history').toBe(beforeButton);
 });
 
 test('J8: Settings, both shortcut settings, and the keys honour them', async () => {
@@ -973,6 +984,32 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
   await expect(searchInput()).toBeFocused();
   await press('Escape');
   await focusHeld();
+
+  // Inside a thread and with a file open beside it, the single keys stay off: `[` `]` included; the arrows step.
+  const { checkout } = world.threads;
+  await arrowTo(checkout);
+  await press('Enter');
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  const inside = hash();
+  for (const key of ['j', 'n', 'Shift+J', 'r', 'o', 'f']) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(60);
+  }
+  await page.waitForTimeout(300);
+  expect(hash(), 'no single key acted in the thread').toBe(inside);
+  await tabTo(page.locator('section.ib-pane [data-attachment-id]').first());
+  await press('Enter');
+  await expect(pane()).toBeFocused();
+  const opened = await fileName();
+  await press(']');
+  await press('[');
+  await page.waitForTimeout(300);
+  expect(await fileName(), '[ and ] are single keys: off').toBe(opened);
+  await press('ArrowRight');
+  await expect.poll(fileName, { message: 'the arrows still step' }).not.toBe(opened);
+  await escapeFile();
+  await press('Escape');
+
   await press('g', 'i');
   await page.reload();
   await expect(page.locator('.ib-main .ib-lbody [data-thread-id]').first()).toBeVisible();
@@ -995,26 +1032,61 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
 
 // ── A phone: no shortcut keys at all (J1 and J8 the other way round) ──
 
-test('a phone (WebKit, iPhone 15): no keycaps, no keyboard button, and letters never act', async () => {
+/** Every single key, pressed in `p`'s list and then in an open thread: none acts, none is drawn. */
+async function singleKeysDoNothing(p: Page): Promise<void> {
+  const keys = ['e', 'z', 'r', 'o', 'f', 'j', 'k', 'n', 'Shift+J', 'Shift+K', '[', ']', 'Shift+?', '/', 'g', 'i', 'g', 'b', 'g', 's'];
+  const pressAll = async () => {
+    for (const key of keys) {
+      await p.keyboard.press(key);
+      await p.waitForTimeout(60);
+    }
+    await p.waitForTimeout(400);
+  };
+  const quiet = async (where: string) => {
+    await expect(p.locator('[data-dialog="shortcut-map"]'), `${where}: no map`).toHaveCount(0);
+    await expect(p.locator('dialog[data-search-palette][open]'), `${where}: no search`).toHaveCount(0);
+    await expect(p.locator('[data-toast-undo]'), `${where}: no toast (E, Z)`).toHaveCount(0);
+    await expect(p.locator('kbd[data-shortcut-hint]').filter({ visible: true }), `${where}: no keycaps`).toHaveCount(0);
+    await expect(p.locator('[data-shortcut-map-button]').filter({ visible: true }), `${where}: no keyboard button`).toHaveCount(0);
+  };
+  await p.goto(world.url);
+  await expect(p.locator('[data-thread-id]').filter({ visible: true }).first()).toBeVisible();
+  const list = p.url();
+  await pressAll();
+  expect(p.url(), 'the list: no key moved the page').toBe(list);
+  await quiet('the list');
+
+  // An open thread, focus on its subject: R, O, F, J, K, N, Shift+J and the rest do nothing there either.
+  await p.goto(`${world.url}#thread=${world.threads.checkout}`);
+  await expect(p.locator('section.ib-pane')).toBeVisible();
+  await p.locator('section.ib-pane h2.ib-subject').focus();
+  const thread = p.url();
+  const unread = await p.evaluate((id) => [...document.querySelectorAll(`[data-thread-id="${id}"]`)].some((el) => el.classList.contains('ib-u')), world.threads.checkout);
+  await pressAll();
+  expect(p.url(), 'the thread: no key moved the page').toBe(thread);
+  await expect(p.locator('section.ib-pane h2.ib-subject'), 'J, K, N moved no focus').toBeFocused();
+  await expect(p.locator('section.ib-pane textarea[aria-label^="Reply to"]'), 'R opened no reply box').toHaveCount(0);
+  await expect(p.locator('[data-attachment-pane]'), 'O and F opened no file').toHaveCount(0);
+  expect(await p.evaluate((id) => [...document.querySelectorAll(`[data-thread-id="${id}"]`)].some((el) => el.classList.contains('ib-u')), world.threads.checkout), 'E marked nothing').toBe(unread);
+  await quiet('the thread');
+}
+
+test('a phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no single key acts, in the list or a thread', async () => {
   const own: Browser = await webkit.launch({ args: [] });
   try {
     const phoneContext = await own.newContext({ ...devices['iPhone 15'] });
-    const phone = await phoneContext.newPage();
-    await phone.goto(`${world.url}`);
-    await expect(phone.locator('[data-thread-id]').filter({ visible: true }).first()).toBeVisible();
-    await expect(phone.locator('kbd[data-shortcut-hint]').filter({ visible: true })).toHaveCount(0);
-    await expect(phone.locator('[data-shortcut-map-button]').filter({ visible: true })).toHaveCount(0);
-    const was = phone.url();
-    for (const key of ['g', 'i', 'e', 'Shift+?', '/', 'o']) await phone.keyboard.press(key);
-    await phone.waitForTimeout(400);
-    expect(phone.url()).toBe(was);
-    await expect(phone.locator('[data-dialog="shortcut-map"]')).toHaveCount(0);
-    await expect(phone.locator('[data-toast-undo]')).toHaveCount(0);
-    await phone.goto(`${world.url}#thread=${world.threads.checkout}`);
-    await expect(phone.locator('section.ib-pane')).toBeVisible();
-    await expect(phone.locator('kbd[data-shortcut-hint]').filter({ visible: true })).toHaveCount(0);
+    await singleKeysDoNothing(await phoneContext.newPage());
     await phoneContext.close();
   } finally {
     await own.close();
+  }
+});
+
+test('a desktop window narrower than 768 px is the phone layout: no keycaps, no map, and no single key acts', async () => {
+  const narrow: BrowserContext = await page.context().browser()!.newContext({ viewport: { width: 600, height: 900 } });
+  try {
+    await singleKeysDoNothing(await narrow.newPage());
+  } finally {
+    await narrow.close();
   }
 });
