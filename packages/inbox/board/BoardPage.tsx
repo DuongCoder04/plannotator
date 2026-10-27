@@ -635,8 +635,8 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
  * the person sent, until it moves), or the agent's last word; and how long
  * ago anyone last wrote to it. Bold while unread. The title is the button that
  * opens the card (a click anywhere else on the card does too); "You: …" is its
- * own button, to the thread where the person makes the call (`youThread`), or
- * the card when it links none.
+ * own button, to the thread where the person makes the call (`youThread`);
+ * with no thread linked it is plain words, and a click on it opens the card.
  */
 function BoardCard({
   card,
@@ -719,17 +719,16 @@ function BoardCard({
                 <span className="ib-bc-sentt">Sent to {sent}</span>
               </span>
             ) : line ? (
-              line.you ? (
-                <button
-                  type="button"
-                  className="ib-bc-youlink"
-                  data-card-you-link={thread ?? ''}
-                  aria-label={youLinkLabel(line.text, thread)}
-                  onClick={() => (thread ? onOpenThread(card, thread) : onOpen(card))}
-                >
+              line.you && thread ? (
+                <button type="button" className="ib-bc-youlink" data-card-you-link={thread} aria-label={youLinkLabel(line.text)} onClick={() => onOpenThread(card, thread)}>
                   <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
-                  {thread && <Icon name="arrowUpRight" size={12} />}
+                  <Icon name="arrowUpRight" size={12} />
                 </button>
+              ) : line.you ? (
+                // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
+                <>
+                  <b className="ib-bc-youw">You:</b> {line.text}
+                </>
               ) : (
                 line.text
               )

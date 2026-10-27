@@ -194,7 +194,8 @@ export function cardYou(card: InboxCardWire): string | null {
  */
 export function youThread(card: Pick<InboxCardWire, 'threads' | 'sent'>, rowOf: (threadId: string) => { last_at?: string } | null): string | null {
   const sent = card.sent?.thread_id;
-  if (sent && (card.threads.includes(sent) || rowOf(sent))) return sent;
+  // A send links its thread (store.sendCard), and the wire drops a thread that is gone: so linked is enough.
+  if (sent && card.threads.includes(sent)) return sent;
   let best: string | null = null;
   let bestAt = -Infinity;
   for (const threadId of card.threads) {
@@ -208,10 +209,9 @@ export function youThread(card: Pick<InboxCardWire, 'threads' | 'sent'>, rowOf: 
   return best;
 }
 
-/** The "You: …" link's accessible name: "Open the thread to merge #14" (the card when no thread is linked). */
-export function youLinkLabel(you: string, thread: string | null): string {
-  const words = /^[A-Z][a-z]/.test(you) ? you[0]!.toLowerCase() + you.slice(1) : you;
-  return thread ? `Open the thread to ${words}` : `Open the card to ${words}`;
+/** The "You: …" link's accessible name: its visible words first (WCAG 2.5.3), then where it goes: "You: Merge #14, open the thread". */
+export function youLinkLabel(you: string): string {
+  return `You: ${you}, open the thread`;
 }
 
 /** The agent a sent card went to, while it waits in Backlog: "Sent to Codex". */

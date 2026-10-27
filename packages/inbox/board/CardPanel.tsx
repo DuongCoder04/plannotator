@@ -20,7 +20,7 @@ import { AuthorMark, Icon } from '../icons';
 import { Tip } from '../components/Tip';
 import { OnceButton } from './OnceButton';
 import { RefMarkIcon } from './RefMark';
-import { cardAge, cardFoot, cardYou, columnChoices, historyWords, refState, sentTo, youLinkLabel, youThread } from './model';
+import { cardAge, cardFoot, cardYou, columnChoices, historyWords, refState, sentTo, youThread } from './model';
 
 export interface CardPanelProps {
   card: InboxCardWire;
@@ -157,11 +157,12 @@ export function CardPanel(props: CardPanelProps) {
         </div>
         {you && (
           <div className="ib-crdp-you" data-card-you="">
-            <p>
+            <p id={`${headingId}-you`}>
               <b>You:</b> {you}
             </p>
             {youAt && (
-              <button type="button" className="ib-btn ib-pri ib-sm" data-card-open-thread={youAt} aria-label={youLinkLabel(you, youAt)} onClick={() => props.onOpenThread(youAt)}>
+              // Named by its words, "Open thread" (WCAG 2.5.3); what the person owes describes it.
+              <button type="button" className="ib-btn ib-pri ib-sm" data-card-open-thread={youAt} aria-describedby={`${headingId}-you`} onClick={() => props.onOpenThread(youAt)}>
                 Open thread
                 <Icon name="arrowUpRight" size={14} />
               </button>

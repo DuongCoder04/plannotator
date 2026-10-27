@@ -218,8 +218,8 @@ test.if(hasDom)('"You: …" opens the thread where the person makes the call, a 
   const link = (id: string) => cardEl(id)!.querySelector<HTMLButtonElement>('[data-card-you-link]')!;
   // Two buttons on each card: the title opens the card, "You: …" its thread.
   expect(cardEl('crd_two')!.querySelectorAll('button').length).toBe(2);
-  expect(link('crd_two').getAttribute('aria-label')).toBe('Open the thread to merge #15');
-  expect(link('crd_two').textContent).toBe('You: Merge #15');
+  // Its name holds the words it shows (WCAG 2.5.3), so a voice user can say what they see.
+  for (const id of ['crd_two', 'crd_sent']) expect(link(id).getAttribute('aria-label')!.startsWith(link(id).textContent!)).toBe(true);
   // The sent thread first; else the linked thread that spoke last.
   act(() => link('crd_sent').click());
   act(() => link('crd_two').click());
@@ -228,9 +228,10 @@ test.if(hasDom)('"You: …" opens the thread where the person makes the call, a 
     { card: 'crd_two', thread: 'msg_new' },
   ]);
   expect(drawn.opened).toEqual([]);
-  // No thread linked: "You: …" opens the card, and says so.
-  expect(link('crd_none').getAttribute('aria-label')).toBe('Open the card to choose fuzzy or prefix');
-  act(() => link('crd_none').click());
+  // No thread linked: "You: …" is plain words, no second tab stop; a click on them opens the card.
+  expect(cardEl('crd_none')!.querySelector('[data-card-you-link]')).toBeNull();
+  expect(cardEl('crd_none')!.querySelectorAll('button').length).toBe(1);
+  act(() => cardEl('crd_none')!.querySelector<HTMLElement>('.ib-bc-youw')!.click());
   expect(drawn.opened).toEqual(['crd_none']);
   // The title, and anywhere else on the card, open the card, never a thread.
   act(() => cardEl('crd_two')!.querySelector<HTMLButtonElement>('[data-card-open]')!.click());
@@ -250,7 +251,9 @@ test.if(hasDom)('the opened card puts Open thread at the top when the person owe
   });
   await settle();
   const open = $('[data-card-panel] [data-card-you] [data-card-open-thread]') as HTMLButtonElement;
-  expect(open.textContent).toBe('Open thread');
+  // Named by its own words (no aria-label to drift from them), described by what the person owes.
+  expect(open.hasAttribute('aria-label')).toBe(false);
+  expect(document.getElementById(open.getAttribute('aria-describedby')!)!.textContent).toContain('Merge #15');
   act(() => open.click());
   expect(threads).toEqual([{ card: 'crd_two', thread: 'msg_new' }]);
   // No thread to go to: no button.
