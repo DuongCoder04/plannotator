@@ -43,32 +43,35 @@ export const inboxThreadShortcuts = defineShortcutScope({
       preventDefault: true,
       displayOrder: 1,
     },
-    nextMessage: {
-      description: 'Next message',
+    // J / K are threads, Shift+J / Shift+K messages (approval "inbox-keyboard-shortcuts", J/K swap addendum
+    // 2026-10-27: the owner moves between threads far more often than between messages; Gmail and Superhuman agree).
+    nextThread: {
+      // App.tsx: the list's order as shown, folded Quiet left out; no wrap; replaces the thread in history. With no
+      // thread open, J / K move along the list's rows as ↓ ↑ do (nothing opens).
+      description: 'Next thread',
       bindings: ['J'],
       section: 'Thread',
-      hint: 'From the list too: focus moves into the open thread.',
+      hint: 'With a thread open, the one below opens as Enter opens it; Back still goes to the list. Else the next row.',
       preventDefault: true,
       displayOrder: 2,
     },
-    previousMessage: {
-      description: 'Previous message',
+    previousThread: {
+      description: 'Previous thread',
       bindings: ['K'],
       section: 'Thread',
       preventDefault: true,
       displayOrder: 3,
     },
-    nextThread: {
-      // App.tsx: the list's order as shown, folded Quiet left out; no wrap; replaces the thread in history.
-      description: 'Open the next thread',
+    nextMessage: {
+      description: 'Next message',
       bindings: ['Shift+J'],
       section: 'Thread',
-      hint: 'The thread below in the list, opened as Enter does. Back still goes to the list.',
+      hint: 'From the list too: focus moves into the open thread.',
       preventDefault: true,
       displayOrder: 3.1,
     },
-    previousThread: {
-      description: 'Open the previous thread',
+    previousMessage: {
+      description: 'Previous message',
       bindings: ['Shift+K'],
       section: 'Thread',
       preventDefault: true,

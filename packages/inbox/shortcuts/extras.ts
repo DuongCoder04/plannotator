@@ -9,8 +9,9 @@
  *
  * - `slashSearch`: `/` opens search, beside ⌘K / Ctrl+K.
  * - `goTo`: `G` then `I` / `B` / `S` go to the Inbox, the Board, Settings.
- * - `readFromList`: j / k / n also work with focus on the list beside an open
- *   thread, moving focus into the thread.
+ * - `readFromList`: the message keys (Shift+J / Shift+K since the J/K swap
+ *   addendum, and n) also work with focus on the list beside an open thread,
+ *   moving focus into the thread.
  */
 export interface InboxShortcutExtras {
   slashSearch: boolean;

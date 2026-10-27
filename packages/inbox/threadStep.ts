@@ -1,6 +1,6 @@
 /**
- * Next and previous thread (Shift+J / Shift+K; approval "inbox-keyboard-shortcuts",
- * amendment 2026-10-27): the list's order as it shows, from the thread open
+ * Next and previous thread (J / K; approval "inbox-keyboard-shortcuts", the
+ * Shift+J/K addendum and the J/K swap addendum, 2026-10-27): the list's order as it shows, from the thread open
  * now. Folded Quiet is not drawn, so it is skipped; no wrap at the ends.
  */
 

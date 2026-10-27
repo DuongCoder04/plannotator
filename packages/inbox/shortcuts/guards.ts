@@ -10,7 +10,7 @@ import { selectionToolbarShowing } from '../selectionToolbar';
 import { shortcutPrefs } from './prefs';
 
 /**
- * Whether single keys (letters, `[` `]`, `?`, `/`, Shift+J) act at all: Single-key shortcuts on, and not a phone
+ * Whether single keys (letters, Shift+J / Shift+K, `[` `]`, `?`, `/`) act at all: Single-key shortcuts on, and not a phone
  * layout (`PHONE_QUERY`, the one that also hides every keycap and the shortcut map's button), so a key never works
  * where nothing shows it. A desktop window narrower than 768 px is that layout too: no keycaps, no map, no letters.
  */

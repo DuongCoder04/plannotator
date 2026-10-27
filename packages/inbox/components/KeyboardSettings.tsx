@@ -17,9 +17,9 @@ export function KeyboardSettings() {
   const prefs = useShortcutPrefs();
   const phone = usePhone();
   if (phone) return null;
-  const letters = (['markRead', 'reply', 'nextMessage'] as const).map((action) => bindingOf({ scope: inboxThreadShortcuts, action })).join(', ');
+  const letters = (['markRead', 'reply', 'nextThread'] as const).map((action) => bindingOf({ scope: inboxThreadShortcuts, action })).join(', ');
   // A shifted letter is a single key too (WCAG 2.1.4): it turns off with them.
-  const shifted = words(bindingOf({ scope: inboxThreadShortcuts, action: 'nextThread' }));
+  const shifted = words(bindingOf({ scope: inboxThreadShortcuts, action: 'nextMessage' }));
   const chords = [bindingOf({ scope: inboxSearchShortcuts, action: 'openSearch' }), bindingOf({ scope: inboxThreadShortcuts, action: 'send' })].map(words).join(', ');
   const map = bindingOf({ scope: inboxAppShortcuts, action: 'openMap' });
   return (

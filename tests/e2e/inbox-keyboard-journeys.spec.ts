@@ -248,7 +248,7 @@ async function tabTo(target: Locator, { back = false, max = 40 } = {}): Promise<
   await expect(target, `reached by ${back ? 'Shift+Tab' : 'Tab'}`).toBeFocused();
 }
 
-/** J or K (whichever way it is) until `head` has focus. */
+/** Shift+J or Shift+K (whichever way it is; J / K are threads) until `head` has focus. */
 async function moveTo(head: Locator): Promise<void> {
   for (let i = 0; i < 12; i++) {
     const where = await head.evaluate((el) => {
@@ -257,7 +257,7 @@ async function moveTo(head: Locator): Promise<void> {
       return active && el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING ? 'above' : 'below';
     });
     if (where === 'here') return;
-    await press(where === 'above' ? 'k' : 'j');
+    await press(where === 'above' ? 'Shift+K' : 'Shift+J');
   }
   await expect(head).toBeFocused();
 }
@@ -300,7 +300,7 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   await press('Enter');
   await expect(messageOf(4)).toBeVisible();
   await focusHeld();
-  // Into the messages it showed, by J or K, to message 4.
+  // Into the messages it showed, by Shift+J or Shift+K, to message 4.
   await moveTo(headOf(4));
   await at('message 4', { focus: headOf(4), address: addr(rollout), view: 'thread' });
   await press('Enter');
@@ -482,7 +482,7 @@ test('S2: a morning of triage across the whole Inbox', async () => {
   await press('n');
   await focusHeld();
   await backAndForward('Stopped open', { focus: row(stopped), address: addr(null), view: 'list' }, { focus: row(stopped), address: addr(stopped), view: 'thread' });
-  await press('j', 'k', 'n');
+  await press('Shift+J', 'Shift+K', 'n');
   await focusHeld();
 
   // Answer both questions: Tab to a choice, Space; the next question's choice the same way.
@@ -575,7 +575,7 @@ test('S3: interrupted, a half-written reply survives everything', async () => {
   await page.goForward();
   await expect.poll(hash).toMatch(addr(checkout));
 
-  await press('n', 'j', 'o');
+  await press('n', 'Shift+J', 'o');
   await viewIs('side');
   await press(']');
   const image = pane();
@@ -608,7 +608,7 @@ test('S3: interrupted, a half-written reply survives everything', async () => {
   await expect(keycaps()).toHaveCount(0);
 
   const was = hash();
-  for (const key of ['e', 'r', 'o', 'j', '[', ']', 'Shift+?', '/', 'g', 'i']) {
+  for (const key of ['e', 'r', 'o', 'j', 'k', 'Shift+J', '[', ']', 'Shift+?', '/', 'g', 'i']) {
     await page.keyboard.press(key);
     await page.waitForTimeout(60);
   }
@@ -693,6 +693,12 @@ test('J1: triage the list and open the newest thread', async () => {
   await viewIs('list');
   await press('End', 'Home');
   await at('End Home', { focus: row(stopped), address: addr(null), view: 'list' });
+  // No thread open: J and K move along the rows as ↓ ↑ do (the next thread there), and open nothing.
+  const second = page.locator('.ib-main .ib-lbody').locator('[data-thread-id], button.ib-band').filter({ visible: true }).nth(1);
+  await press('j');
+  await at('J on the list', { focus: second, address: addr(null), view: 'list' });
+  await press('k', 'k');
+  await at('K K on the list (no wrap)', { focus: row(stopped), address: addr(null), view: 'list' });
   await arrowTo(holding);
   await press('e');
   await expect(page.locator('[data-toast-undo]')).toBeVisible();
@@ -702,8 +708,8 @@ test('J1: triage the list and open the newest thread', async () => {
   await press('Home', 'Enter');
   await at('Stopped open', { focus: row(stopped), address: addr(stopped), view: 'thread' });
 
-  // Shift+J / Shift+K: the next and previous thread in the list as it shows (folded Quiet left out), replacing
-  // the open one in history. From the list focus stays on the rows; from the thread it lands where N puts it.
+  // J / K (the swap addendum): the next and previous thread in the list as it shows (folded Quiet left out),
+  // replacing the open one in history. From the list focus stays on the rows; from the thread it lands where N puts it.
   const order = await page.evaluate(() => {
     const ids: string[] = [];
     for (const el of document.querySelectorAll('.ib-main .ib-lbody [data-thread-id]')) {
@@ -716,33 +722,33 @@ test('J1: triage the list and open the newest thread', async () => {
   expect(order, 'folded Quiet is not in the order').not.toContain(world.threads.refund);
   const entries = await page.evaluate(() => history.length);
   const live = page.locator('[data-inbox-live]');
-  await press('Shift+J');
-  await at('Shift+J from the row', { focus: row(order[1]!), address: addr(order[1]!), view: 'thread' });
-  // On to Rollout (eight messages), into it with J, then Shift+K from inside the thread.
+  await press('j');
+  await at('J from the row', { focus: row(order[1]!), address: addr(order[1]!), view: 'thread' });
+  // On to Rollout (eight messages), into it with Shift+J (a message), then K from inside the thread.
   const rolloutAt = order.indexOf(world.threads.rollout);
   expect(rolloutAt).toBeGreaterThan(1);
-  for (let i = 1; i < rolloutAt; i++) await press('Shift+J');
-  await at('Shift+J to Rollout', { focus: row(world.threads.rollout), address: addr(world.threads.rollout), view: 'thread' });
-  await press('j');
+  for (let i = 1; i < rolloutAt; i++) await press('j');
+  await at('J to Rollout', { focus: row(world.threads.rollout), address: addr(world.threads.rollout), view: 'thread' });
+  await press('Shift+J');
   await expect(inThread()).toBeFocused();
-  await press('Shift+K');
+  await press('k');
   const before = order[rolloutAt - 1]!;
-  await at('Shift+K from the thread', { focus: inThread(), address: addr(before), view: 'thread' });
+  await at('K from the thread', { focus: inThread(), address: addr(before), view: 'thread' });
   await expect(row(before), 'from the thread, focus stays in the thread').not.toBeFocused();
-  for (let i = 0; i < rolloutAt - 1; i++) await press('Shift+K');
+  for (let i = 0; i < rolloutAt - 1; i++) await press('k');
   await expect.poll(hash).toMatch(addr(stopped));
-  await press('Shift+K');
+  await press('k');
   await expect(live).toHaveText('First thread');
   await expect.poll(hash).toMatch(addr(stopped));
-  for (let i = 1; i < order.length; i++) await press('Shift+J');
+  for (let i = 1; i < order.length; i++) await press('j');
   await expect.poll(hash).toMatch(addr(order.at(-1)!));
   await focusHeld();
-  await press('Shift+J');
+  await press('j');
   await expect(live).toHaveText('Last thread');
   await expect.poll(hash, 'no wrap').toMatch(addr(order.at(-1)!));
-  expect(await page.evaluate(() => history.length), 'Shift+J and Shift+K add no history').toBe(entries);
-  // J and K are still the messages: J stays in this thread.
-  await press('j');
+  expect(await page.evaluate(() => history.length), 'J and K add no history').toBe(entries);
+  // Shift+J and Shift+K are the messages: Shift+J stays in this thread.
+  await press('Shift+J');
   await expect.poll(hash).toMatch(addr(order.at(-1)!));
   await page.goBack();
   await at('Back', { focus: row(order.at(-1)!), address: addr(null), view: 'list' });
@@ -752,7 +758,7 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   const { checkout } = world.threads;
   await load(`#thread=${checkout}`);
   await expect(page.locator('section.ib-pane')).toBeVisible();
-  await press('j', 'j', 'k', 'n');
+  await press('Shift+J', 'Shift+J', 'Shift+K', 'n');
   const head = await focusedHead();
   // J and N scroll the head into view smoothly: its place is where the scroll ends.
   const place = await settledPlace(head);
@@ -884,7 +890,7 @@ test('J6: Decide mode stays its own', async () => {
   const before = hash();
   const unread = () => row(decidedIn).evaluate((el) => el.classList.contains('ib-u'));
   const wasUnread = await unread();
-  await press('e', 'r', 'o', 'j', 'Shift+?', '/');
+  await press('e', 'r', 'o', 'j', 'Shift+J', 'Shift+?', '/');
   // E is Decide's, not Mark read on the thread behind it.
   expect(await unread(), 'the thread behind Decide was not marked read').toBe(wasUnread);
   await expect(decide()).toBeVisible();
@@ -969,7 +975,7 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
   await viewIs('list');
   await focusHeld();
   const was = hash();
-  for (const key of ['e', 'r', 'o', 'j', 'Shift+?', '/', 'g', 'i']) {
+  for (const key of ['e', 'r', 'o', 'j', 'k', 'Shift+J', 'Shift+?', '/', 'g', 'i']) {
     await page.keyboard.press(key);
     await page.waitForTimeout(60);
   }
@@ -991,7 +997,7 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
   await press('Enter');
   await expect(page.locator('section.ib-pane')).toBeVisible();
   const inside = hash();
-  for (const key of ['j', 'n', 'Shift+J', 'r', 'o', 'f']) {
+  for (const key of ['j', 'k', 'n', 'Shift+J', 'r', 'o', 'f']) {
     await page.keyboard.press(key);
     await page.waitForTimeout(60);
   }
@@ -1056,7 +1062,7 @@ async function singleKeysDoNothing(p: Page): Promise<void> {
   expect(p.url(), 'the list: no key moved the page').toBe(list);
   await quiet('the list');
 
-  // An open thread, focus on its subject: R, O, F, J, K, N, Shift+J and the rest do nothing there either.
+  // An open thread, focus on its subject: R, O, F, J, K, N, Shift+J, Shift+K and the rest do nothing there either.
   await p.goto(`${world.url}#thread=${world.threads.checkout}`);
   await expect(p.locator('section.ib-pane')).toBeVisible();
   await p.locator('section.ib-pane h2.ib-subject').focus();

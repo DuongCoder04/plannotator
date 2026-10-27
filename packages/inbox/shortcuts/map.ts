@@ -59,8 +59,8 @@ export const MAP_COLUMNS: MapGroup[][] = [
       rows: [
         { keys: [thread('reply')] },
         { label: 'Send the reply', keys: [thread('send')] },
+        { label: 'Next or previous thread', keys: [thread('nextThread'), thread('previousThread')] },
         { label: 'Next or previous message', keys: [thread('nextMessage'), thread('previousMessage')] },
-        { label: 'Open the next or previous thread', keys: [thread('nextThread'), thread('previousThread')] },
         { keys: [thread('firstNew')] },
         { keys: [thread('openNewest')] },
         { keys: [thread('fullScreen')] },

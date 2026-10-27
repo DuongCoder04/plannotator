@@ -1084,7 +1084,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const replyDraft = useReplyDraft(thread.thread_id);
   /** The words a Send carries: the box's, or (the box closed) those kept as its draft. */
   const boxWords = box.open ? box.text.trim() : ((replyDraft.conflict ?? replyDraft.draft?.body)?.trim() ?? '');
-  /** A draft put back in the box opens it without taking focus (j/k and the page keep working). */
+  /** A draft put back in the box opens it without taking focus (the thread's keys and the page keep working). */
   const restoringRef = useRef(false);
   /** The thread whose draft was put back already (once per visit). */
   const restoredFor = useRef<string | null>(null);
@@ -2161,7 +2161,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     target.querySelector<HTMLElement>('[data-fold-head]')?.focus({ preventScroll: true });
   }, [passedIds]);
 
-  // Opened by Shift+J / Shift+K from inside a thread (App.tsx, threadStep.ts): focus where N puts it, the first
+  // Opened by J / K from inside a thread (App.tsx, threadStep.ts): focus where N puts it, the first
   // new message, else the newest one, once the messages have drawn.
   useEffect(() => {
     const id = thread.thread_id;
@@ -2179,12 +2179,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     return () => cancelAnimationFrame(frame);
   }, [thread.thread_id, jumpNew]);
 
-  // The thread's keys (shortcuts/thread.shortcuts.ts; approval "inbox-keyboard-shortcuts"). j / k move between
-  // messages (and the middle fold), n goes to the first new one; R opens the reply box, O the newest file. Enter
+  // The thread's keys (shortcuts/thread.shortcuts.ts; approval "inbox-keyboard-shortcuts"). Shift+J / Shift+K move
+  // between messages (and the middle fold; J / K are threads since the swap addendum, App.tsx), n goes to the first new one; R opens the reply box, O the newest file. Enter
   // and Space are the buttons' own. None while typing, composing, under a dialog or menu, with single keys off
   // (guards.ts `bareKeyAllowed`), nor while words selected in a message show their toolbar. Keys aimed at the
   // thread count, and at the open file for R; from the list (the open thread's row for R and O, any row for
-  // j / k / n: the `readFromList` extra) they reach this thread too.
+  // Shift+J / Shift+K / n: the `readFromList` extra) they reach this thread too.
   const keyOrigin = (event: KeyboardEvent): 'thread' | 'file' | 'row' | 'list' | null => {
     const target = keyTarget(event);
     if (!target || target === document.body || sectionRef.current?.contains(target)) return 'thread';

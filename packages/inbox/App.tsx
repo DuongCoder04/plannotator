@@ -121,6 +121,7 @@ import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateN
 import { lastInput } from './lastInput';
 import { backFocusTargets, focusKept, focusLost } from './backFocus';
 import { askArrivalFocus, listOrder as drawnOrder, threadStep } from './threadStep';
+import { LIST_STOPS, listMoveIndex, listStops } from './listKeys';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -2270,23 +2271,33 @@ function Inbox() {
   };
   const threadKey = useRef<(() => void) | null>(null);
   /**
-   * Shift+J / Shift+K: the next or previous thread in the list as it shows (threadStep.ts), opened as Enter opens
-   * a row, replacing the open one in history so Back still goes to the list. From the thread focus lands where N
-   * puts it (Thread.tsx takes it); from the list it stays on the rows, on the new one. Not from a file, a guided
-   * review or the Artifacts view.
+   * J / K (approval "inbox-keyboard-shortcuts", J/K swap addendum 2026-10-27): the next or previous thread in the
+   * list as it shows (threadStep.ts), opened as Enter opens a row, replacing the open one in history so Back still
+   * goes to the list. From the thread focus lands where N puts it (Thread.tsx takes it); from the list it stays on
+   * the rows, on the new one. Not from a file, a guided review or the Artifacts view. With no thread open, on the
+   * list's rows, they move along them as ↓ ↑ do: the next thread there, nothing opened (`listMoveIndex`, no wrap).
    */
   const threadStepKey = (dir: 1 | -1) => ({
     when: (event: KeyboardEvent) => {
       if (!bareKeyAllowed(event)) return false;
       const now = routeRef.current;
-      if (now.page !== 'inbox' || !now.thread || now.file || now.guide || now.artifacts) return false;
+      if (now.page !== 'inbox' || now.file || now.guide || now.artifacts) return false;
       const target = keyTarget(event);
+      if (!now.thread) return !!target?.closest('.ib-main .ib-lbody') && target.matches(LIST_STOPS);
       return !target || target === document.body || !!target.closest('section.ib-pane, .ib-main .ib-lbody');
     },
     handle: (event: KeyboardEvent) => {
       const now = routeRef.current;
       const body = listBody(rootRef.current);
-      if (!body || !now.thread) return;
+      if (!body) return;
+      if (!now.thread) {
+        const stops = listStops(body);
+        const at = listMoveIndex(stops.length, stops.indexOf(keyTarget(event) as HTMLElement), dir > 0 ? 'next' : 'previous');
+        const next = at === null ? null : stops[at];
+        next?.focus({ preventScroll: true });
+        next?.scrollIntoView?.({ block: 'nearest' });
+        return;
+      }
       const step = threadStep(drawnOrder(body), now.thread, dir);
       if (!step) return say('This thread is not in the list on screen.');
       if ('end' in step) return say(step.end === 'last' ? 'Last thread' : 'First thread');
