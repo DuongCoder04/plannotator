@@ -240,9 +240,9 @@ for (const platform of [
       await ctx.addInitScript((value) => Object.defineProperty(Navigator.prototype, 'platform', { get: () => value, configurable: true }), platform.value);
       const p = await ctx.newPage();
       await p.goto(`${url}#thread=${world.threads.retry}`);
-      const hint = p.locator('.ib-side .ib-sp-entry [data-search-hint]');
-      await expect(hint).toHaveText(platform.hint);
-      await expect(p.locator('.ib-side .ib-sp-entry')).toHaveAttribute('aria-keyshortcuts', platform.value === 'MacIntel' ? 'Meta+K' : 'Control+K');
+      const hint = p.locator('.ib-side .ib-sp-entry [data-shortcut-hint="inbox-search.openSearch"]');
+      await expect(hint).toHaveAttribute('data-keycap', platform.hint);
+      await expect(p.locator('.ib-side .ib-sp-entry')).toHaveAttribute('aria-keyshortcuts', platform.value === 'MacIntel' ? 'Meta+K /' : 'Control+K /');
       await p.locator('.ib-side').screenshot({ path: join(proofDir, `30-sidebar-hint-${platform.shot}-light.png`) });
       await p.emulateMedia({ colorScheme: 'dark' });
       await p.waitForTimeout(250);
