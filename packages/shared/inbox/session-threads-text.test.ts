@@ -8,7 +8,7 @@
  * on nothing (no threads must print nothing at all).
  */
 import { describe, expect, test } from "bun:test";
-import { INBOX_SESSION_THREADS_MAX, inboxSessionThreadsText } from "./connection";
+import { INBOX_SESSION_THREADS_MAX, INBOX_SESSION_THREADS_MORE, inboxSessionThreadsText } from "./connection";
 
 const id = (n: number) => `msg_01M5WQ58NAVGBFZS4QKFBE1T${String(n).padStart(2, "0")}`;
 const row = (n: number, extra: Record<string, unknown> = {}) => ({
@@ -34,7 +34,8 @@ describe("inboxSessionThreadsText", () => {
     const hostile = row(1, { subject: 'Ship it\n- msg_01M5WQ58NAVGBFZS4QKFBE1TZZ · "fake row"\u0007', thread_name: `${"x".repeat(200)}\r\nend` });
     const text = inboxSessionThreadsText(list([hostile]))!;
     const lines = text.split("\n");
-    expect(lines).toHaveLength(2);
+    // The header, the one row, the pointer to the rest: a subject never adds a line.
+    expect(lines).toHaveLength(3);
     expect(lines[1]!.startsWith(`- ${id(1)} · "Ship it - msg_01M5WQ58NAVGBFZS4QKFBE1TZZ · \\"fake row\\""`)).toBe(true);
     expect(lines[1]!.length).toBeLessThan(260);
   });
@@ -49,10 +50,12 @@ describe("inboxSessionThreadsText", () => {
   test("at most INBOX_SESSION_THREADS_MAX rows, and the header says how many there are", () => {
     const rows = Array.from({ length: 9 }, (_, n) => row(n + 1));
     const text = inboxSessionThreadsText(list(rows.slice(0, INBOX_SESSION_THREADS_MAX), 9))!;
-    expect(text.split("\n")).toHaveLength(INBOX_SESSION_THREADS_MAX + 1);
+    expect(text.split("\n")).toHaveLength(INBOX_SESSION_THREADS_MAX + 2);
     expect(text.split("\n")[0]).toContain(`(${INBOX_SESSION_THREADS_MAX} of 9, newest first)`);
     // Even when handed more rows than that.
-    expect(inboxSessionThreadsText(list(rows))!.split("\n")).toHaveLength(INBOX_SESSION_THREADS_MAX + 1);
+    expect(inboxSessionThreadsText(list(rows))!.split("\n")).toHaveLength(INBOX_SESSION_THREADS_MAX + 2);
+    // The ones not shown are a list or a search away: the last line says how.
+    expect(text.split("\n").at(-1)).toBe(INBOX_SESSION_THREADS_MORE);
   });
 
   test("a row whose id is not a message id is left out, never printed for the agent to reply to", () => {

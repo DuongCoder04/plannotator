@@ -148,12 +148,19 @@ export function inboxHealthPeeks(health: unknown, serverSession: string): boolea
 }
 
 /**
+ * The thread list's last line: where the rest of the Inbox's context is (the
+ * owner's ask, 2026-10-27). The list shows only this session's open threads;
+ * every thread and older ones are a read_thread list or a search away.
+ */
+export const INBOX_SESSION_THREADS_MORE = 'More: read_thread with no id lists every thread (asked_by "anyone", include_resolved); search finds older ones by words (all_projects).'
+
+/**
  * The session's open threads as a few short lines for the agent's context
  * (after a compaction, on a resume), or null when there are none or the
  * result is not a read_thread list. One line per thread: its id, subject,
  * name, open questions, whether the person wrote something unread, and the
- * last activity. Never a message body. `result` is the read_thread list's
- * MCP result (its `structuredContent`).
+ * last activity. Never a message body. Then INBOX_SESSION_THREADS_MORE.
+ * `result` is the read_thread list's MCP result (its `structuredContent`).
  */
 export function inboxSessionThreadsText(result: unknown, toolName: string = INBOX_TOOL_NAME): string | null {
   const structured = (result as { structuredContent?: unknown } | null)?.structuredContent as { threads?: unknown; total?: unknown } | undefined
@@ -192,7 +199,7 @@ export function inboxSessionThreadsText(result: unknown, toolName: string = INBO
   const total = typeof structured.total === 'number' && structured.total > lines.length ? structured.total : lines.length
   const count = total > lines.length ? `${lines.length} of ${total}, newest first` : `${lines.length}`
   const check = INBOX_REPLY_TO_CHECK.replace('call read_thread', `call ${toolName} read_thread`)
-  return [`Your open Plannotator Inbox threads in this project (${count}). ${check}`, ...lines].join('\n')
+  return [`Your open Plannotator Inbox threads in this project (${count}). ${check}`, ...lines, INBOX_SESSION_THREADS_MORE].join('\n')
 }
 
 /** The bridge routes on the Inbox server (bearer token, loopback Host, no Origin). */
