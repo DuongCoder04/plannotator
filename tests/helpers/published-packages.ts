@@ -8,11 +8,13 @@ import { join, relative } from "node:path";
 
 export interface PackageManifest {
 	name?: string;
+	version?: string;
 	private?: boolean;
 	engines?: Record<string, unknown>;
 	os?: unknown;
 	cpu?: unknown;
 	libc?: unknown;
+	dependencies?: Record<string, unknown>;
 	peerDependencies?: Record<string, unknown>;
 }
 
@@ -37,8 +39,12 @@ export interface FloorFinding {
 	value: unknown;
 }
 
-/** engines keys an installer acts on. `bun` is deliberately absent (see the test). */
-const GATED_ENGINES = ["node", "npm", "opencode"] as const;
+/**
+ * engines keys that hold back an install or an update (`node`, `npm`,
+ * `vscode`), could start to (`opencode`), or deserve a review on every raise
+ * (`bun`). See the test for each.
+ */
+const GATED_ENGINES = ["node", "npm", "opencode", "vscode", "bun"] as const;
 const GATED_PLATFORM_FIELDS = ["os", "cpu", "libc"] as const;
 
 /** The OpenCode host package, under any of its published names. */
@@ -55,6 +61,11 @@ const SKIP_DIRS = new Set(["node_modules", "dist", "build", "generated"]);
  * runs `npm publish` and from which workflow.
  */
 export function findPublishablePackages(repoRoot: string): PublishedPackage[] {
+	return findRepoPackages(repoRoot).filter(({ manifest }) => manifest.private !== true);
+}
+
+/** Every package.json in the repo, private ones included. */
+export function findRepoPackages(repoRoot: string): PublishedPackage[] {
 	const found: PublishedPackage[] = [];
 	const walk = (dir: string) => {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -65,7 +76,7 @@ export function findPublishablePackages(repoRoot: string): PublishedPackage[] {
 				walk(full);
 			} else if (entry.name === "package.json") {
 				const manifest = JSON.parse(readFileSync(full, "utf8")) as PackageManifest;
-				if (manifest.private !== true) found.push({ path: relative(repoRoot, full), manifest });
+				found.push({ path: relative(repoRoot, full), manifest });
 			}
 		}
 	};
