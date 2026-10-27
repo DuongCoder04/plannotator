@@ -121,7 +121,7 @@ test.afterAll(async () => {
   }
 });
 
-test('the foot is Reply and Looks good side by side; no New message button; a question shows Reply alone', async () => {
+test('the foot is Reply and Looks good side by side; no New message button; a question shows Reply and its open-questions button, no Looks good', async () => {
   const { page, threads } = world;
   await page.goto(`${world.url}#thread=${threads.merged}`);
   const ack = page.locator('section.ib-pane [data-ack]');
@@ -138,7 +138,8 @@ test('the foot is Reply and Looks good side by side; no New message button; a qu
   await page.goto(`${world.url}#thread=${threads.question}`);
   await expect(page.locator('section.ib-pane [data-question-key]').first()).toBeVisible();
   await expect(page.locator('section.ib-pane [data-ack]')).toHaveCount(0);
-  expect(await footButtons(page)).toEqual(['Reply']);
+  // One open question: Reply plus the open-questions list (which holds Re-ask); never Looks good.
+  expect(await footButtons(page)).toEqual(['Reply', '1openquestion']);
   await shot(page, '02-open-question');
 });
 
@@ -152,7 +153,20 @@ test('a click: pressed, the line and the toast, nothing sent yet; the row reads 
   await expect(page.locator('[data-ack-pill]')).toContainText('goes to Claude Code in a few seconds');
   const toast = page.locator('[data-inbox-toast]');
   await expect(toast).toContainText('Looks good');
-  await expect(toast).toContainText('goes to Claude Code unless you undo');
+  await expect(toast).toContainText('Goes to Claude Code in 10 s · Moves to Quiet');
+  // A toast's words always show whole: nothing in it is cut (no "…"), and at 1440 and 1024 the 👍 copy
+  // fits one 40 px line with Undo and its Z.
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await toast.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)).then(() => undefined));
+    const cut = await toast.evaluate((el) =>
+      [el, ...el.querySelectorAll('*')].filter((node) => node.scrollWidth > node.clientWidth + 0.5).map((node) => node.className || node.tagName),
+    );
+    expect(cut, `cut at ${width}`).toEqual([]);
+    expect(await toast.locator('.ib-tdetail').evaluate((el) => getComputedStyle(el).textOverflow)).not.toBe('ellipsis');
+    expect((await toast.boundingBox())!.height, `one line at ${width}`).toBe(40);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
   await shot(page, '03-after');
   // The agent's thread still holds its one message (the note that carries the 👍 is never listed).
   const thread = await claude.readThread(threads.merged);
@@ -197,10 +211,12 @@ test('a waking connection: Queued, then one wake naming the message, then Delive
   await expect(page.locator('[data-ack-pill]')).toContainText('Queued for Claude Code; it gets this when its session is back.');
   const bridge = (path: string, body: unknown) =>
     fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${registry.token}` }, body: JSON.stringify(body) });
-  // The session polls while a turn runs: "is working", and no Send now (a 👍 asks nothing of the agent).
+  // The session polls while a turn runs: "is working", no Send now and no countdown (a 👍 asks nothing of the
+  // agent and waits for the turn to end: the owner's decision, INBOX_AUTO_SEND_ACK_NOTES false).
   expect((await bridge('/api/inbox/bridge/poll', { session, host: 'claude-code', waitMs: 0, busy: true, send_now: true })).status).toBe(200);
   await page.goto(`${world.url}#thread=${threads.wake}`);
-  await expect(page.locator('[data-ack-pill]')).toContainText('Queued · Claude Code is working; it gets this when its turn ends.');
+  await expect(page.locator('[data-ack-pill]')).toContainText(/Undelivered(?: \d+ min)? · Claude Code is working · it gets this when its turn ends/);
+  await expect(page.locator('[data-ack-pill]')).not.toContainText('by itself');
   await expect(page.locator('[data-send-now]')).toHaveCount(0);
   await shot(page, '06-queued');
   // The session's connection polls: one command, the wake naming the message.
@@ -223,6 +239,10 @@ test('Z takes it back; no page errors', async () => {
   const ack = page.locator('section.ib-pane [data-ack]');
   await ack.click();
   await expect(ack).toHaveAttribute('aria-pressed', 'true');
+  // The button is pressed once the thread is read again, but the toast (whose Undo Z runs)
+  // shows only after the list read that follows it (App.tsx `acknowledge`): a Z pressed in
+  // between does nothing. Wait for the Undo, as a person reads the toast before pressing Z.
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
   await page.locator('body').press('z');
   await expect(ack).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('[data-ack-pill]')).toHaveCount(0);

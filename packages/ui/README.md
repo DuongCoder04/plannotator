@@ -36,6 +36,8 @@ configurePlannotatorUI({
   alertIconRenderer,           // (name) => ReactNode | null for a GitHub alert title line's <!-- icon: name --> (default: null, the type's icon)
   fenceTheme,                  // (colorTheme, mode) => Shiki theme name | undefined for code fences (default: SHIKI_THEME_MAP, else pierre-dark/light)
   componentTooltips,           // true: ui's own hover text (components/HostTitle) draws as ui's Tooltip, not a native title (ui 0.53.0; default false)
+  digitHexIssueRefs,           // true: digit-only #123456 / #12345678 link as issue refs (when a ref link can be built), not hex swatches (default false)
+  refCardTransport,            // (href, ref, signal) => card data for an issue / PR / MR link; with one, useRefHoverCards(rootRef) draws hover cards (default: none, no card, no request)
   loadSettingsFromBackend,     // true: re-hydrate settings from your (synchronous) storageBackend after install, applied last
 });
 ```
@@ -237,9 +239,40 @@ exactly. The standalone `StickyHeaderLane` remains supported for Plannotator's
 hidden-at-rest ghost lane, but its always-visible mode is an overlay and is not
 the in-flow host integration.
 
+#### Content under the title (`Viewer.belowTitle`; unreleased)
+
+`belowTitle?: ReactNode` draws a host's node right under the document's
+title, e.g. a references block (pull requests, depends on, links, referenced
+by). Use it instead of inserting into the Viewer's DOM.
+
+- **Where.** When the body's first block is a level-1 heading, right after
+  that heading (`data-placement="below-title"`). Otherwise (a body that opens
+  with a paragraph, a `## heading`, or a `# title` further down) at the top of
+  the body, before the first block and after the frontmatter card
+  (`data-placement="top"`). The heading itself is unchanged.
+- **Outside the document text.** The wrapper `[data-viewer-below-title]` is
+  `annotation-exclude` (no comment starts in it, its text is never searched
+  or quoted), `data-pinpoint-ignore` (pinpoint and Vim skip it),
+  `data-print-hide`, and carries no `data-block-id`; heading slugs, the TOC,
+  exports and share links come from `blocks` and never see it.
+- **Comment positions ignore it.** web-highlighter's `startMeta`/`endMeta`
+  count elements by tag across the whole article, so a `<p>` or `<a>` in the
+  slot would renumber later comments. The highlighter stores and restores
+  positions as if the slot were not there, so the same comment has the same
+  metas with or without the slot, and with any slot contents. A selection
+  from the title that ends in the slot is cut back to the end of the title.
+  Only the wrapper the Viewer draws counts: its attribute carries a per-load
+  value, so a `<div data-viewer-below-title>` an author writes as raw HTML is
+  never taken for it. Match the wrapper by presence
+  (`[data-viewer-below-title]`), not by value.
+- **Absent is absent.** `undefined`, `null` and booleans draw no wrapper; the
+  DOM is exactly the one without the prop.
+
+See HANDOFF.md § "Viewer `belowTitle` (unreleased)".
+
 ### Diagram engine (`components/diagram`; 0.41.0)
 
-One renderer slot and one canvas render every Mermaid and Graphviz diagram — the fences in `Viewer` (`MermaidBlock`, `GraphvizBlock`), their popout, and whatever a host renders itself. `DiagramViewer` from `@plannotator/ui/components/diagram` takes `kind`, `source`, `theme` (`{ colorTheme, mode, shadowAmount? }`), `comments: DiagramComment[]` and `onCreateComment(anchor, text, additionalTargets)`; pass `onSave(source) => Promise<{ status: 'ok' } | { status: 'stale', currentSource }>` to get the Source pane (left of the canvas on desktop, under it on the phone; `readOnlySource` shows it without Save), and `sourceOpen` to toggle it. Zoom, pan and fit are the canvas's (wheel, drag, `+` `-` `0`, arrow keys); a click opens the composer at the part beneath while a drag pans (4 px threshold, 10 px for a finger), nothing highlights on a plain mouse-over (the ring under the pointer needs the platform modifier held), every edge carries an invisible 14 px hit path in one top layer and a click is resolved by priority over everything under the pointer (node, then edge, then cluster; an edge label is its edge), a click on no part comments on the whole diagram (kind `diagram`), sequence diagrams are addressable (actors, messages, notes, frames), a saved comment paints a ring and a numbered badge from the array order, and every comment re-resolves against each render through the engine's finder (id, then label, then unanchored — reported through `onUnanchoredChange`). The anchor is `DiagramAnchor` from `@plannotator/core/diagram-anchor` (`{ v: 1, family, kind, id | from + to, label, sourceLine }`, document lines), and Plannotator stores it as `Annotation.diagramAnchor`. Runtime slots: `utils/mermaid` (as before) and `utils/graphviz` (new, same shape, `@viz-js/viz` pinned `3.30.0`), each lazy on first use or filled by the host. `DiagramPopout` is the full-size viewer in the `PopoutDialog` chrome. See HANDOFF.md § "Diagram engine (0.41.0)" for every export, the adapter, the sanitizer and the migration notes.
+One renderer slot and one canvas render every Mermaid and Graphviz diagram — the fences in `Viewer` (`MermaidBlock`, `GraphvizBlock`), their popout, and whatever a host renders itself. `DiagramViewer` from `@plannotator/ui/components/diagram` takes `kind`, `source`, `theme` (`{ colorTheme, mode, shadowAmount? }`), `comments: DiagramComment[]` and `onCreateComment(anchor, text, additionalTargets)`; pass `onSave(source) => Promise<{ status: 'ok' } | { status: 'stale', currentSource }>` to get the Source pane (left of the canvas on desktop, under it on the phone; `readOnlySource` shows it without Save), and `sourceOpen` to toggle it. Zoom, pan and fit are the canvas's (wheel, drag, `+` `-` `0`, arrow keys); a click opens the composer at the part beneath while a drag pans (4 px threshold, 10 px for a finger), nothing highlights on a plain mouse-over (the ring under the pointer needs the platform modifier held), every edge carries an invisible 14 px hit path in one top layer and a click is resolved by priority over everything under the pointer (node, then edge, then cluster; an edge label is its edge), a click on no part comments on the whole diagram (kind `diagram`), sequence diagrams are addressable (actors, messages, notes, frames), a saved comment paints a ring and a numbered badge from the array order, and every comment re-resolves against each render through the engine's finder (id, then label, then unanchored — reported through `onUnanchoredChange`). The anchor is `DiagramAnchor` from `@plannotator/core/diagram-anchor` (`{ v: 1, family, kind, id | from + to, label, sourceLine }`, document lines), and Plannotator stores it as `Annotation.diagramAnchor`. Runtime slots: `utils/mermaid` (as before) and `utils/graphviz` (new, same shape, `@viz-js/viz` pinned `3.31.0`), each lazy on first use or filled by the host. `DiagramPopout` is the full-size viewer in the `PopoutDialog` chrome. See HANDOFF.md § "Diagram engine (0.41.0)" for every export, the adapter, the sanitizer and the migration notes.
 
 ### Host toolbar seams (0.43.0)
 
@@ -297,6 +330,16 @@ in 0.42.0 (proven by diffing the mounted `outerHTML` against the base commit).
   in a plain-text body, so the first person you list owns every occurrence of
   it; and a restored draft has no chips (and reports no ids) until the author
   picks again. No source → no overlay element at all.
+- **Agents in the `@` picker** (ui 0.53.1; the Plannotator
+  Inbox's agent tags): `MentionSource.kinds?: ('user' | 'agent')[]` (absent →
+  users only, as before) lets a host offer agents; `MentionSource.matchDetail?:
+  boolean` (absent → true) keeps a query from matching the `detail` line;
+  `MentionPerson.group?: string` draws consecutive people of one group under a
+  heading, each run a `role="group"` labelled by it (absent on every person →
+  the flat list); `MentionSource.renderNotice?: (tagged) => ReactNode` draws a
+  host line under the composer field from the people the draft still tags
+  (`CommentPopover`). All optional; a host passing none renders exactly as
+  before.
 - **`Viewer` / `HtmlViewer` `mentionSource`** (0.43.1): the same prop on the two
   viewers, forwarded to every comment composer each of them mounts, so a host
   wires mentions once per surface instead of per composer. The ids the author
@@ -377,7 +420,7 @@ The engine that lets a browser-integrated agent (Chrome/Edge WebMCP, `document.m
 - `useToolset({ id, active, build, deps, hooks })` attaches a named tool set to the document registry; handlers read through refs, so re-renders never re-register, and `active: false` aborts every registration (what Plannotator's Settings opt-out drives).
 - `AnnotationChangeTracker` / `buildNudges` are pure (no DOM): per-annotation `seq`, tombstones, a per-tab watermark with `since` override, and the nudge vocabulary every response carries.
 - A host with its own document state builds the same adapter-driven catalog Plannotator uses (`packages/editor/webmcp/documentTools.ts`, `buildDocumentTools(adapter, state, options)`) over its own getters and actions; multi-document pages should register one set whose tools take `path` (the folder-session shape) rather than one set per viewer (duplicate names across sets are skipped with a warning, never replaced).
-- Never register tools inside an untrusted iframe: the raw-HTML viewer's `sandbox="allow-scripts"` frame and the live-app frame carry no `allow="tools"`, and that is what keeps a framed page from impersonating the host's tools.
+- Never register tools inside an untrusted iframe: the raw-HTML viewer's `sandbox="allow-scripts allow-modals"` frame and the live-app frame carry no `allow="tools"`, and that is what keeps a framed page from impersonating the host's tools.
 
 The one additive data-model change that rides with it: `Annotation.inReplyTo` (threaded replies; the panel indents them under the parent, the export nests them, share links drop them).
 
@@ -424,6 +467,8 @@ See HANDOFF.md § "Decision toggle on any question, and an opener for the host's
 **Questions without decision lines (ui 0.53.0, core 0.25.13).** `Viewer` `questionDecisionLines?: boolean` (default `true`, today's behaviour). `false` parses every `:::question` card with core's new `{ decisionLines: false }` option (`parseQuestionBlock(kind, body, options?)`, `indexQuestionBlocks(blocks, options?)`): a `Decision:` line is shown as context, and no card gets a decision tag or row from it. The prompt, key, numbering and choices are the default parse's (the line still ends a choice right above it). For a host that records no decisions; the Plannotator Inbox passes it since Decisions were removed there (2026-10). Every decision seam above is unchanged.
 
 **Answers without comments (ui 0.53.0).** `Viewer` `answerOnly`: annotation authoring and the document actions (Global comment, Copy) are off as under `readOnly`, while question cards and checkboxes keep their handlers, for a host that shows a message to answer, not a document to annotate. See HANDOFF.md § "Viewer `answerOnly` (ui 0.53.0)".
+
+**Comments on an answer-only document (ui 0.53.1).** `Viewer` `textComments`, with `answerOnly`: the text-selection toolbar (comment-only) and its composer come back, question cards stay out of selection, nothing else of authoring does. See HANDOFF.md § "Viewer `textComments` (ui 0.53.1)".
 
 **Local links decided by the host (ui 0.53.0).** `Viewer` `resolveLocalLink`: the host decides what a link to a local path does (open it itself, or draw it as inert text), markdown and raw HTML alike. See HANDOFF.md § "Viewer `resolveLocalLink` (ui 0.53.0)".
 
