@@ -212,6 +212,8 @@ test.skipIf(!hasDom)('#settings opens General; the nav moves between sections by
     '#settings/about',
     '#settings/experimental',
   ]);
+  // Only Experimental sits below the line.
+  expect([...el.querySelectorAll('.ib-snav li.ib-snav-sep a')].map((a) => a.getAttribute('data-settings-link'))).toEqual(['experimental']);
   for (const section of ['agents', 'prompts', 'devices', 'archived', 'storage', 'about', 'experimental', 'general'] as const) {
     act(() => navLink(el, section).click());
     await until(() => window.location.hash === `#settings/${section}`, `#settings/${section}`);
@@ -326,8 +328,21 @@ test.skipIf(!hasDom)('#settings/experimental opens Experimental; its switch save
 test.skipIf(!hasDom)('an Inbox that reports no experimental feature has no Experimental row, and its address says so instead of an empty page', async () => {
   const { SettingsPage } = await import('./components/Settings');
   const { SidebarProvider } = await import('./shell/sidebar');
-  const model = JSON.parse((await call(current!.port, '/api/inbox/settings')).text) as Record<string, unknown>;
-  delete model.experimental;
+  // An older Inbox's settings: no `experimental`, phones off. Rendered on its own, no server.
+  const model = {
+    serverSession: 's',
+    version: '0.28.0',
+    port: 1,
+    url: 'http://localhost:1/',
+    mcp_url: 'http://127.0.0.1:1/mcp',
+    mcp_command: ['plannotator', 'inbox', 'mcp'],
+    home: '/home/u',
+    data_dir: '/home/u/.plannotator',
+    inbox_tool: { hosts: { 'claude-code': true, pi: false, opencode: false }, env: null },
+    notifications: { enabled: true, dismissed: false, allowed_origin: null },
+    phones: false,
+    store: { dir: '/home/u/.plannotator/inbox', bytes: 0, projects: [] },
+  };
   const noop = () => {};
   const page = (section: 'general' | 'experimental' | null, phoneList = false) => (
     <SidebarProvider>

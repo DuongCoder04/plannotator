@@ -914,7 +914,8 @@ export function SettingsPage(props: SettingsPageProps) {
               </div>
               <ul>
                 {sections.map((id) => (
-                  <li key={id}>
+                  // Experimental sits below a line (the owner, 2026-10-27); the phone's list has it in its own group instead.
+                  <li key={id} className={id === 'experimental' ? 'ib-snav-sep' : undefined}>
                     <a href={`#${settingsHash({ section: id })}`} aria-current={id === section ? 'page' : undefined} onClick={go(id)} data-settings-link={id}>
                       <Icon name={SECTION_ICON[id]} />
                       {SETTINGS_SECTION_LABEL[id]}
