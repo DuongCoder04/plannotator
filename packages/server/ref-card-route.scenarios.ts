@@ -8,11 +8,12 @@
  *
  * Covered: the card and its `serverSession`; refusals that run nothing (another
  * site, a Host this server does not answer, a url that is no such link, a
- * method other than GET); and the exposure rule: off in remote mode, and off
- * in a `--tailscale` session where the runtime has one (Bun annotate and
- * review). Requests go through node:http so Origin, Host and Sec-Fetch-Site
- * are exactly the ones under test. Every test runs under a temp
- * PLANNOTATOR_DATA_DIR.
+ * method other than GET); and the exposure rule: off in remote mode, and in a
+ * `--tailscale` session where the runtime has one (Bun annotate and review) on
+ * for a tab on this machine and the tailnet owner's tab through serve, off for
+ * any other tailnet device. Requests go through node:http so Origin, Host,
+ * Sec-Fetch-Site and the serve headers are exactly the ones under test. Every
+ * test runs under a temp PLANNOTATOR_DATA_DIR.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -114,10 +115,25 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * A runtime with `--tailscale`: which servers have it, and how a test publishes
+ * the session (the owner's login and the served URL, as the CLI records them)
+ * and forgets it again.
+ */
+export interface RefCardRouteTailnet {
+  kinds: RefCardRouteKind[];
+  publish(owner: string, servedUrl: string): void;
+  reset(): void;
+}
+
+const TAILNET_OWNER = "owner@example.com";
+const TAILNET_NAME = "devbox.tail1234.ts.net";
+const TAILNET_SERVED = `${TAILNET_NAME}:6060`;
+
 export function defineRefCardRouteScenarios(
   runtime: string,
   start: StartRefCardRouteServer,
-  options: { tailnet: RefCardRouteKind[] } = { tailnet: [] },
+  options: { tailnet?: RefCardRouteTailnet } = {},
 ): void {
   const environment = createTestEnvironment(
     [
@@ -144,6 +160,7 @@ export function defineRefCardRouteScenarios(
   afterEach(() => {
     server?.stop();
     server = null;
+    options.tailnet?.reset();
     environment.restore();
   });
 
@@ -231,13 +248,67 @@ export function defineRefCardRouteScenarios(
       });
     }
 
-    for (const kind of options.tailnet) {
-      test(`${kind}: a --tailscale session turns it off, and nothing runs`, async () => {
+    const tailnet = options.tailnet;
+    for (const kind of tailnet?.kinds ?? []) {
+      /** A request `tailscale serve` proxied from a tailnet device signed in as `login`. */
+      const throughServe = (login: string, servedHost = TAILNET_SERVED) =>
+        get(refPath(PR_URL), {
+          host: servedHost,
+          origin: `https://${servedHost}`,
+          "sec-fetch-site": "same-origin",
+          "tailscale-user-login": login,
+          "x-forwarded-for": "100.64.0.9",
+        });
+
+      test(`${kind}: a --tailscale session answers a tab on this machine`, async () => {
+        tailnet!.publish(TAILNET_OWNER, `https://${TAILNET_SERVED}`);
+        const serverSession = await setUp(kind, { tailnetPublished: true });
+        const card = await get(refPath(PR_URL), { origin: `http://${host}`, "sec-fetch-site": "same-origin" });
+        expect(card.status).toBe(200);
+        expect(card.body).toMatchObject({ ok: true, serverSession, data: { number: 12 } });
+        expect(queries()).toHaveLength(1);
+      });
+
+      test(`${kind}: a --tailscale session answers the tailnet owner's tab through serve`, async () => {
+        tailnet!.publish(TAILNET_OWNER, `https://${TAILNET_SERVED}`);
         await setUp(kind, { tailnetPublished: true });
-        const off = await get(refPath(PR_URL));
-        expect(off.status).toBe(404);
-        expect(off.body?.code).toBe("ref_cards_disabled");
+        const card = await throughServe(TAILNET_OWNER);
+        expect(card.status).toBe(200);
+        expect(card.body).toMatchObject({ ok: true, data: { title: "Ship the widget" } });
+        expect(queries()).toHaveLength(1);
+      });
+
+      test(`${kind}: a --tailscale session refuses every other tailnet device, and nothing runs`, async () => {
+        tailnet!.publish(TAILNET_OWNER, `https://${TAILNET_SERVED}`);
+        await setUp(kind, { tailnetPublished: true });
+        for (const refused of [
+          // Another login on the tailnet.
+          await throughServe("someone-else@example.com"),
+          // The owner's login, but not on the served name and port.
+          await throughServe(TAILNET_OWNER, `${TAILNET_NAME}:7070`),
+        ]) {
+          expect(refused.status).toBe(404);
+          expect(refused.body?.code).toBe("ref_cards_disabled");
+        }
+        // A tagged device (no login) and a funnel request are peers too.
+        const tagged = await get(refPath(PR_URL), { host: TAILNET_SERVED, "x-forwarded-for": "100.64.0.9" });
+        expect(tagged.status).toBe(404);
+        const funnel = await get(refPath(PR_URL), {
+          host: TAILNET_SERVED,
+          "tailscale-user-login": TAILNET_OWNER,
+          "tailscale-funnel-request": "?1",
+          "x-forwarded-for": "203.0.113.7",
+        });
+        expect(funnel.status).toBe(404);
         expect(calls).toHaveLength(0);
+      });
+
+      test(`${kind}: with no owner on record, only this machine's tabs get cards`, async () => {
+        tailnet!.publish("", `https://${TAILNET_SERVED}`);
+        await setUp(kind, { tailnetPublished: true });
+        expect((await throughServe(TAILNET_OWNER)).status).toBe(404);
+        expect(calls).toHaveLength(0);
+        expect((await get(refPath(PR_URL))).status).toBe(200);
       });
     }
   });

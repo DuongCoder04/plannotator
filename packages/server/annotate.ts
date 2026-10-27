@@ -18,7 +18,7 @@ import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
-import { createRefCards, refCardRouteResponse, type RefRunner } from "./ref-cards";
+import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
@@ -347,7 +347,8 @@ export async function startAnnotateServer(
 
   const isRemote = isRemoteSession();
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for, and
-  // never in remote mode or a `--tailscale` session, where other devices could drive the user's gh / glab.
+  // never in remote mode. In a `--tailscale` session only this machine's tabs and the tailnet owner's get
+  // them (`refCardsTailnetAllowed`): other devices must not drive the user's gh / glab.
   const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
@@ -1164,7 +1165,10 @@ export async function startAnnotateServer(
           if (updateRoute) return updateRoute;
 
           // API: a hover card's data for an issue, PR or MR link (GET /api/ref, ref-cards.ts).
-          const refRoute = await refCardRouteResponse(req, url, refCards, { enabled: !isRemote && options.tailnetPublished !== true, serverSession });
+          const refRoute = await refCardRouteResponse(req, url, refCards, {
+            enabled: isRemote ? false : options.tailnetPublished === true ? refCardsTailnetAllowed : true,
+            serverSession,
+          });
           if (refRoute) return refRoute;
 
 

@@ -14,6 +14,8 @@ import {
   type RefRunner,
 } from "@plannotator/shared/ref-cards";
 
+import { sessionTailnetAskAllowed } from "./session-tailnet";
+
 export * from "@plannotator/shared/ref-cards";
 
 /** The real CLIs, each with a time limit, no prompt, no color. */
@@ -43,20 +45,20 @@ export const refCliRunner: RefRunner = async (cli, args, env) => {
 };
 
 /** `createRefCards` with the Bun runner by default (tests pass their own). */
-export function createRefCards(options: Partial<Parameters<typeof createSharedRefCards>[0]> = {}): RefCards {
+export function createRefCards(options: Partial<Parameters<typeof createSharedRefCards>[0]> = {}): ReturnType<typeof createSharedRefCards> {
   return createSharedRefCards({ ...options, run: options.run ?? refCliRunner });
 }
 
 /**
  * `GET /api/ref` on a Bun plan, annotate or review server (`handleRefCardRoute`),
- * or null for any other path. `enabled` is false when the session is exposed
- * (remote mode, `--tailscale`): see the route's doc in the shared module.
+ * or null for any other path. `enabled` is false in remote mode; a `--tailscale`
+ * session passes a function that decides per request (`refCardsTailnetAllowed`).
  */
 export async function refCardRouteResponse(
   req: Request,
   url: URL,
   cards: RefCards,
-  options: { enabled: boolean; serverSession?: string },
+  options: { enabled: boolean | ((req: Request) => boolean); serverSession?: string },
 ): Promise<Response | null> {
   if (url.pathname !== REF_CARD_ROUTE) return null;
   const answer = await handleRefCardRoute(
@@ -66,10 +68,21 @@ export async function refCardRouteResponse(
       origin: req.headers.get("origin"),
       host: url.host,
       secFetchSite: req.headers.get("sec-fetch-site"),
-      enabled: options.enabled,
+      enabled: typeof options.enabled === "function" ? options.enabled(req) : options.enabled,
     },
     cards,
   );
   const body = answer.status === 200 && options.serverSession ? { serverSession: options.serverSession, ...answer.body } : answer.body;
   return Response.json(body, { status: answer.status, headers: { "Cache-Control": "no-store" } });
+}
+
+/**
+ * Who gets hover cards in a session published with `--tailscale`: a tab on this
+ * machine, and the tailnet owner's tab through `tailscale serve` with the served
+ * name as Host (the gate "Ask this session" uses, `sessionTailnetAskAllowed`).
+ * Every other device on the tailnet is refused, so it can never drive this
+ * computer's gh / glab. The Host allowlist has already run for a local tab.
+ */
+export function refCardsTailnetAllowed(req: Request): boolean {
+  return sessionTailnetAskAllowed(req, () => true);
 }
