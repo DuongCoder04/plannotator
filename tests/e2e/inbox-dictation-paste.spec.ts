@@ -188,7 +188,8 @@ test('a press in the reply box beside its text (the row of chips) puts the caret
   const p = await context.newPage();
   try {
     await p.goto(`${url}#thread=${threadId}`);
-    await p.locator('.ib-pfoot').getByRole('button', { name: 'Reply' }).click();
+    // Earlier tests leave a reply draft, which reopens the box by itself (see openReply).
+    await openReply(p);
     const rbox = p.locator('section.ib-pane .ib-rbox');
     const box = rbox.locator('textarea');
     await expect(box).toBeFocused();
