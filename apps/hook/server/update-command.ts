@@ -42,6 +42,7 @@ import {
   UPDATE_PREPARE_FAILED,
   type InstallerLaunch,
 } from "@plannotator/server/auto-update";
+import { tlsFailureIn } from "@plannotator/server/update-prepare";
 import { UPDATE_COMMAND_USAGE } from "./cli";
 
 export interface UpdateCommandDeps {
@@ -158,7 +159,11 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
       : `Installing v${latest}.\n`,
   );
   const run = deps.runInstaller ?? runInstallerForeground;
-  const code = await run(begun.launch, out);
+  let printed = "";
+  const code = await run(begun.launch, (text) => {
+    printed += text;
+    out(text);
+  });
   if (code === 130) {
     err(
       `The update was interrupted. Plannotator is still ${current}; the lock is released, so run plannotator update again when you like.\n`,
@@ -176,8 +181,26 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
     return 1;
   }
   if (code === UPDATE_PREPARE_FAILED) {
+    const tls = tlsFailureIn(printed);
+    if (tls === "revoked") {
+      // A blocked key: the network is the problem, and curl would trust it.
+      err(
+        `Couldn't download the update: the connection presented a revoked certificate. ${current} is still installed and works.\n` +
+          `Don't install Plannotator over this network. Try again on another network: plannotator update\n` +
+          `Details: ${autoUpdatePaths(dataDir).log}\n`,
+      );
+      return 1;
+    }
+    // A failed download can be a lasting local condition (a proxy, a network
+    // that inspects HTTPS), so the way out is always shown.
     err(
       `Couldn't download the update. ${current} is still installed and works. Try again later: plannotator update\n` +
+        `If this keeps happening, install it yourself:\n  ${command}\n` +
+        `or download it from ${releaseUrlFor(latest)}\n` +
+        (tls === "untrusted"
+          ? "If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate:\n" +
+            "  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n"
+          : "") +
         `Details: ${autoUpdatePaths(dataDir).log}\n`,
     );
     return 1;

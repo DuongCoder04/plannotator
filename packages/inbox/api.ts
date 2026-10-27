@@ -181,7 +181,8 @@ export interface UpdateDetails {
   command: string;
   plugin_command: string | null;
   sessions: { mode: string; project: string; label: string; started_at: string }[];
-  failure: { exit_code: number; log: string } | null;
+  /** `tls` (exit 75 only): the download failed at TLS. Absent from an older Inbox. */
+  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked' } | null;
   log: string;
   snoozed_until: string | null;
 }

@@ -20,15 +20,26 @@
  * against before it replaces anything (exit UPDATE_CHECKSUM_MISMATCH on a
  * mismatch, the old binary kept). Any failure here means nothing runs and nothing changes: exit
  * UPDATE_PREPARE_FAILED, an `update:` line on stderr (update.log), and a
- * later retry. There is never a fallback to downloading the script with curl.
+ * later retry. There is never a fallback to downloading the script with curl:
+ * anyone holding a leaked key could force that fallback, and macOS curl
+ * accepts their chain.
+ *
+ * A network that inspects HTTPS with its own root (a company proxy) fails
+ * Bun's built-in roots. That root is in this computer's store, which curl
+ * used, so after a certificate error each download is tried once more with
+ * Bun's roots plus this computer's (systemTrustedCa). Bun still refuses the
+ * compromised eMudhra keys there (CERT_REVOKED, whatever the roots), so the
+ * protection holds.
  *
  * Windows is unchanged: Windows blocks the leaked keys in its own store, which
  * the PowerShell wrapper's Invoke-WebRequest uses.
  */
 
-import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import tls from "node:tls";
 import { isAllowedOverrideUrl } from "@plannotator/shared/update-check";
 import { AUTO_UPDATE_LOCK_STALE_MS, UPDATE_PREPARE_FAILED, installScriptUrl } from "./auto-update";
 
@@ -41,6 +52,95 @@ const MAX_SCRIPT_BYTES = 4 * 1024 * 1024;
 /** Present in every install.sh: a page that lacks it (a proxy's error page) is never run. */
 const SCRIPT_MARKER = 'REPO="backnotprop/plannotator"';
 const DEFAULT_RELEASE_DOWNLOAD_URL = "https://github.com/backnotprop/plannotator/releases/download";
+/** emSign ECC Root CA - G3 (SHA-256). Bun 1.4.4 dropped it; the certificate retry never takes it back from this computer's store. */
+const EMSIGN_ECC_G3_SHA256 = "86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B";
+
+/**
+ * Why a download failed at TLS. `untrusted`: neither Bun's roots nor this
+ * computer's trust the certificate (a network that inspects HTTPS with a root
+ * this computer does not have either). `revoked`: the chain holds a key Bun
+ * blocks (the leaked eMudhra keys), so nothing may be installed over this
+ * network, by curl least of all.
+ */
+export type UpdateTlsFailure = "untrusted" | "revoked";
+
+/**
+ * The line `update-prepare` prints for each, on stderr (the terminal of
+ * `plannotator update`, and update.log). `plannotator update` and the Inbox
+ * read it back (tlsFailureIn, lastRunTlsFailure) to choose the way out.
+ */
+export const UPDATE_TLS_HINT: Record<UpdateTlsFailure, string> = {
+  untrusted:
+    "update: neither Plannotator nor this computer trusts the certificate that connection presented. If your network inspects HTTPS with its own certificate, run: NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update",
+  revoked:
+    "update: that connection presented a revoked certificate, so nothing was downloaded. Do not install Plannotator over this network; try again on another network.",
+};
+
+/** The TLS failure `update-prepare` reported in this output (a run's terminal text, or its part of update.log). */
+export function tlsFailureIn(text: string): UpdateTlsFailure | null {
+  if (text.includes(UPDATE_TLS_HINT.revoked)) return "revoked";
+  if (text.includes(UPDATE_TLS_HINT.untrusted)) return "untrusted";
+  return null;
+}
+
+/**
+ * The TLS failure the last finished update run in update.log reported: the
+ * text from the end of the run before it to this run's end (the wrapper's
+ * "update: install.sh exited" line). Reads the last 64 KB only.
+ */
+export function lastRunTlsFailure(logPath: string): UpdateTlsFailure | null {
+  let text: string;
+  try {
+    text = readFileSync(logPath, "utf-8").slice(-65_536);
+  } catch {
+    return null;
+  }
+  const END = "] update: install.sh exited";
+  const last = text.lastIndexOf(END);
+  if (last === -1) return null;
+  const previous = last === 0 ? -1 : text.lastIndexOf(END, last - 1);
+  return tlsFailureIn(text.slice(previous === -1 ? 0 : previous + END.length, last));
+}
+
+function errorCode(err: unknown): string | undefined {
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** The server's certificate was refused (verify codes: no trusted issuer, self-signed, revoked, expired, wrong host). */
+export function isCertificateError(err: unknown): boolean {
+  if (/CERT|SELF_SIGNED|ISSUER|LEAF_SIGNATURE/.test(errorCode(err) ?? "")) return true;
+  return err instanceof Error && /certificate/i.test(err.message);
+}
+
+function isRevokedError(err: unknown): boolean {
+  return errorCode(err) === "CERT_REVOKED" || (err instanceof Error && /certificate revoked/i.test(err.message));
+}
+
+/**
+ * The roots for the retry after a certificate error: Bun's own (with
+ * NODE_EXTRA_CA_CERTS) plus this computer's. On macOS those are the
+ * keychains' trusted certificates, where a company's management profile puts
+ * its root; on Linux, /etc/ssl/certs, which update-ca-certificates fills.
+ * Never emSign ECC Root CA - G3. Null when this computer adds nothing.
+ */
+export function systemTrustedCa(
+  get: ((kind: string) => string[]) | undefined = (tls as { getCACertificates?: (kind: string) => string[] }).getCACertificates,
+): string[] | null {
+  if (typeof get !== "function") return null;
+  try {
+    const system = get("system").filter((pem) => {
+      try {
+        return new X509Certificate(pem).fingerprint256 !== EMSIGN_ECC_G3_SHA256;
+      } catch {
+        return false;
+      }
+    });
+    return system.length > 0 ? [...get("default"), ...system] : null;
+  } catch {
+    return null;
+  }
+}
 
 /** "0.28.33", "v0.28.33" -> "v0.28.33"; anything else (a pre-release, junk) -> null. */
 export function normalizeReleaseTag(version: string): string | null {
@@ -74,7 +174,7 @@ export function releaseDownloadUrl(env: NodeJS.ProcessEnv = process.env): string
 export type PrepareResult =
   /** `notes`: the other CPU type's checksum, when it could not be read (optional; never a failure). */
   | { ok: true; dir: string; expected: string; scriptChecksPin: boolean; notes: string[] }
-  | { ok: false; error: string };
+  | { ok: false; error: string; tls?: UpdateTlsFailure };
 
 export interface PrepareDeps {
   version: string;
@@ -85,24 +185,45 @@ export interface PrepareDeps {
   tmpRoot?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** The roots for the retry after a certificate error (default systemTrustedCa; null: no retry). */
+  systemCa?: () => string[] | null;
 }
 
-async function fetchText(url: string, f: typeof fetch, timeoutMs: number): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+type Fetched = { ok: true; text: string } | { ok: false; error: string; tls?: UpdateTlsFailure };
+
+async function fetchText(url: string, f: typeof fetch, timeoutMs: number, systemCa: () => string[] | null): Promise<Fetched> {
   let host = url;
   try {
     host = new URL(url).host;
   } catch {}
-  try {
+  const attempt = async (ca?: string[]): Promise<Fetched> => {
     const res = await f(url, {
       redirect: "follow",
       headers: { "user-agent": "plannotator-update" },
       signal: AbortSignal.timeout(timeoutMs),
-    });
+      ...(ca && { tls: { ca } }),
+    } as RequestInit);
     // Bun 1.3.14 hands back a refusing proxy's 502 as a response, 1.4.4 throws; both end here.
     if (!res.ok) return { ok: false, error: `HTTP ${res.status} from ${host}` };
     return { ok: true, text: await res.text() };
+  };
+  const failed = (err: unknown): Fetched => ({
+    ok: false,
+    error: `${host}: ${(err instanceof Error ? err.message : String(err)).slice(0, 120)}`,
+    ...(isCertificateError(err) && { tls: isRevokedError(err) ? ("revoked" as const) : ("untrusted" as const) }),
+  });
+  try {
+    return await attempt();
   } catch (err) {
-    return { ok: false, error: `${host}: ${(err instanceof Error ? err.message : String(err)).slice(0, 120)}` };
+    // A revoked chain is refused whatever the roots, and any other error is not about roots.
+    if (!isCertificateError(err) || isRevokedError(err)) return failed(err);
+    const ca = systemCa();
+    if (!ca) return failed(err);
+    try {
+      return await attempt(ca);
+    } catch (again) {
+      return failed(again);
+    }
   }
 }
 
@@ -124,11 +245,14 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
   // never stops updates for the other.
   const assets = [native, ...candidateAssets(deps.platform).filter((a) => a !== native)];
   const base = releaseDownloadUrl(env);
+  // Read once, and only when a certificate error asks for it.
+  let roots: string[] | null | undefined;
+  const systemCa = () => (roots === undefined ? (roots = (deps.systemCa ?? systemTrustedCa)()) : roots);
   const [script, ...sums] = await Promise.all([
-    fetchText(installScriptUrl(deps.platform, env), f, timeoutMs),
-    ...assets.map((a) => fetchText(`${base}/${tag}/${a}.sha256`, f, timeoutMs)),
+    fetchText(installScriptUrl(deps.platform, env), f, timeoutMs, systemCa),
+    ...assets.map((a) => fetchText(`${base}/${tag}/${a}.sha256`, f, timeoutMs, systemCa)),
   ]);
-  if (!script!.ok) return { ok: false, error: `install script: ${script!.error}` };
+  if (!script!.ok) return { ok: false, error: `install script: ${script!.error}`, ...(script!.tls && { tls: script!.tls }) };
   const body = script!.text;
   if (!body.startsWith("#!") || !body.includes(SCRIPT_MARKER) || body.length > MAX_SCRIPT_BYTES) {
     return { ok: false, error: "install script: the download is not Plannotator's install script" };
@@ -143,13 +267,14 @@ export async function prepareUpdate(deps: PrepareDeps): Promise<PrepareResult> {
       continue;
     }
     const reason = `${assets[i]}.sha256: ${r.ok ? "not a SHA-256 checksum" : r.error}`;
-    if (assets[i] === native) return { ok: false, error: reason };
+    if (assets[i] === native) return { ok: false, error: reason, ...(!r.ok && r.tls && { tls: r.tls }) };
     notes.push(`${reason} (not this machine's CPU type; skipped)`);
   }
 
   let dir: string | null = null;
   try {
-    dir = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), UPDATE_DIR_PREFIX));
+    // Absolute even under a relative TMPDIR: the wrapper only uses an absolute dir.
+    dir = mkdtempSync(join(resolve(deps.tmpRoot ?? tmpdir()), UPDATE_DIR_PREFIX));
     chmodSync(dir, 0o700);
     writeFileSync(join(dir, "install.sh"), body, { mode: 0o600 });
     writeFileSync(join(dir, "expected-sha256"), pairs.join(" "), { mode: 0o600 });
@@ -205,10 +330,11 @@ export async function runUpdatePrepareCommand(args: string[], deps: UpdatePrepar
     err("update: usage: plannotator update-prepare <version>\n");
     return UPDATE_PREPARE_FAILED;
   }
-  sweepStaleUpdateDirs(deps.tmpRoot ?? tmpdir(), (deps.now ?? Date.now)());
+  sweepStaleUpdateDirs(resolve(deps.tmpRoot ?? tmpdir()), (deps.now ?? Date.now)());
   const result = await prepareUpdate({ ...deps, version });
   if (!result.ok) {
     err(`update: could not download the update (${result.error}); nothing was changed\n`);
+    if (result.tls) err(`${UPDATE_TLS_HINT[result.tls]}\n`);
     return UPDATE_PREPARE_FAILED;
   }
   for (const note of result.notes) err(`update: ${note}\n`);

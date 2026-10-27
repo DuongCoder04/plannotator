@@ -62,12 +62,20 @@ import {
   startManualUpdate,
   type InstallerLaunch,
   type ManualUpdateOutcome,
+  UPDATE_PREPARE_FAILED,
 } from "./auto-update";
 import { listSessions as defaultListSessions, type SessionInfo } from "./sessions";
+import { lastRunTlsFailure, type UpdateTlsFailure } from "./update-prepare";
 import { fetchReleaseImagesFor, storedReleaseImageSources } from "./inbox-whats-new-images";
 
 /** While an install runs, the binary is probed this often (the design's 2 s). */
 export const INBOX_UPDATING_TICK_MS = 2_000;
+
+/** The failure dialog's facts; a failed download also says whether it failed at TLS (update.log). */
+export function failureDetails(exitCode: number, log: string): NonNullable<InboxUpdateDetails["failure"]> {
+  const tls = exitCode === UPDATE_PREPARE_FAILED ? lastRunTlsFailure(log) : null;
+  return { exit_code: exitCode, log, ...(tls && { tls }) };
+}
 
 export type { InboxUpdate };
 export type InboxUpdateState = InboxUpdate["state"];
@@ -107,7 +115,13 @@ export interface InboxUpdateDetails {
   plugin_command: string | null;
   /** Open Plannotator sessions, which keep their old binary. */
   sessions: { mode: SessionInfo["mode"]; project: string; label: string; started_at: string }[];
-  failure: { exit_code: number; log: string } | null;
+  /**
+   * `tls` (additive, exit 75 only): the download failed at TLS, as
+   * update-prepare reported in update.log. `untrusted`: point
+   * NODE_EXTRA_CA_CERTS at the network's root. `revoked`: a blocked key, so
+   * never the install command over this network.
+   */
+  failure: { exit_code: number; log: string; tls?: UpdateTlsFailure } | null;
   log: string;
   snoozed_until: string | null;
 }
@@ -539,7 +553,7 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
       command: installCommandFor(process.platform, flags),
       plugin_command: flags.includes("skip-claude-plugin") ? CLAUDE_PLUGIN_UPDATE_COMMANDS.join(" && ") : null,
       sessions: sessions.map((s) => ({ mode: s.mode, project: s.project, label: s.label, started_at: s.startedAt })),
-      failure: current?.state === "failed" && result ? { exit_code: result.exitCode, log: paths.log } : null,
+      failure: current?.state === "failed" && result ? failureDetails(result.exitCode, paths.log) : null,
       log: paths.log,
       snoozed_until: snooze && isSnoozed(state, snooze.version, now()) ? new Date(snooze.until).toISOString() : null,
     };

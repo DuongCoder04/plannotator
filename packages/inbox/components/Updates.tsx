@@ -399,17 +399,23 @@ export function FailedDialog({
   onClose: () => void;
 }) {
   const code = details?.failure?.exit_code;
+  const tls = details?.failure?.tls;
   // Safe updates (step 1): the download didn't match the checksum Plannotator
-  // fetched, or Plannotator couldn't download the update.
-  // Neither offers the `curl | bash` line: it would go through the same
-  // connection that just failed.
+  // fetched, or the connection presented a revoked certificate (a blocked
+  // key). Neither offers the `curl | bash` line: it would go through the same
+  // connection, and curl trusts it. Any other failed download can be a lasting
+  // local condition (a proxy, a network that inspects HTTPS), so it keeps the
+  // way out: the install command and the release page.
   const mismatch = code === UPDATE_EXIT_CHECKSUM_MISMATCH;
   const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
+  const revoked = couldNotDownload && tls === 'revoked';
   const sub = mismatch
     ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
-    : couldNotDownload
-      ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
-      : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
+    : revoked
+      ? `The connection presented a revoked certificate, so Plannotator downloaded nothing. Plannotator ${update.current} still works. Don't install Plannotator over this network; try again on another network.`
+      : couldNotDownload
+        ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
+        : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
   return (
     <Modal label={mismatch ? 'The update stopped' : "The update didn't install"} onClose={onClose} testId="failed">
       <h2>{mismatch ? 'The update stopped' : <>The update didn&apos;t install</>}</h2>
@@ -418,6 +424,24 @@ export function FailedDialog({
         <>
           <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
+          {couldNotDownload && !revoked && (
+            <>
+              {tls === 'untrusted' && (
+                <>
+                  <p className="ib-sum">If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate and update from a terminal:</p>
+                  <CommandRow text="NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update" />
+                </>
+              )}
+              <p className="ib-sum">
+                If this keeps happening, install it yourself, or download it from{' '}
+                <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                  the release page
+                </a>
+                :
+              </p>
+              <CommandRow text={details.command} />
+            </>
+          )}
           {!mismatch && !couldNotDownload && (
             <>
               <p className="ib-sum">Or run the install script yourself:</p>

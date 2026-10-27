@@ -196,19 +196,20 @@ test.skipIf(!hasDom)('the failure dialog names the exit code and the log, and of
   expect(retried).toBe(1);
 });
 
-// Safe updates (step 1): after a mismatch (install.sh's pin check) or a failed
-// download (the wrapper's 75) the dialog must not hand the person the
-// `curl | bash` line: it would go through the connection that just failed.
-for (const [code, heading] of [
-  [UPDATE_EXIT_CHECKSUM_MISMATCH, 'The update stopped'],
-  [UPDATE_EXIT_DOWNLOAD_FAILED, "The update didn't install"],
+// Safe updates (step 1): after a mismatch (install.sh's pin check), or a
+// download refused for a revoked certificate (a blocked key), the dialog must
+// not hand the person the `curl | bash` line: it would go through the same
+// connection, and curl trusts it.
+for (const [name, failure, heading] of [
+  ['exit 113', { exit_code: UPDATE_EXIT_CHECKSUM_MISMATCH }, 'The update stopped'],
+  ['exit 75, a revoked certificate', { exit_code: UPDATE_EXIT_DOWNLOAD_FAILED, tls: 'revoked' as const }, "The update didn't install"],
 ] as const) {
-  test.skipIf(!hasDom)(`exit ${code}: no install-script line, the old version still works, Try Again stays`, () => {
+  test.skipIf(!hasDom)(`${name}: no install-script line, the old version still works, Try Again stays`, () => {
     let retried = 0;
     const el = render(
       <FailedDialog
         update={update('failed')}
-        details={details({ failure: { exit_code: code, log: '/home/u/.plannotator/update.log' } })}
+        details={details({ failure: { ...failure, log: '/home/u/.plannotator/update.log' } })}
         home="/home/u"
         onRetry={() => retried++}
         onClose={() => {}}
@@ -216,6 +217,7 @@ for (const [code, heading] of [
     );
     expect(el.querySelector('h2')?.textContent).toBe(heading);
     expect(el.textContent).not.toContain('curl -fsSL');
+    expect(el.querySelector('[data-failed-release]')).toBeNull();
     expect(el.textContent).not.toContain('Or run the install script yourself');
     expect(el.textContent).not.toContain('exited with code');
     expect(el.textContent).toContain('Plannotator 0.28.10 still works');
@@ -223,6 +225,28 @@ for (const [code, heading] of [
     const retry = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Try Again') as HTMLButtonElement;
     act(() => retry.click());
     expect(retried).toBe(1);
+  });
+}
+
+// A failed download can be lasting (a proxy, a network that inspects HTTPS):
+// the dialog keeps a way out, and on an untrusted certificate says how to add
+// the network's own.
+for (const tls of [undefined, 'untrusted'] as const) {
+  test.skipIf(!hasDom)(`exit 75${tls ? `, an ${tls} certificate` : ''}: the old version still works, and the way out is shown`, () => {
+    const el = render(
+      <FailedDialog
+        update={update('failed')}
+        details={details({ failure: { exit_code: UPDATE_EXIT_DOWNLOAD_FAILED, log: '/home/u/.plannotator/update.log', ...(tls && { tls }) } })}
+        home="/home/u"
+        onRetry={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(el.textContent).toContain('Plannotator 0.28.10 still works');
+    expect(el.textContent).toContain('If this keeps happening, install it yourself');
+    expect(el.textContent).toContain('curl -fsSL https://plannotator.ai/install.sh | bash -s -- --skip-gemini');
+    expect(el.querySelector('[data-failed-release]')?.getAttribute('href')).toBe('https://github.com/backnotprop/plannotator/releases/tag/v0.28.12');
+    expect(el.textContent.includes('NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update')).toBe(tls === 'untrusted');
   });
 }
 

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runUpdateCommand, type UpdateCommandDeps } from "./update-command";
 import { UPDATE_EXIT_CHECKSUM_MISMATCH } from "@plannotator/core/update-exit-codes";
+import { UPDATE_TLS_HINT } from "@plannotator/server/update-prepare";
 import type { FetchReleaseResult } from "@plannotator/shared/update-check";
 
 let dataDir: string;
@@ -116,11 +117,32 @@ describe("plannotator update (seams)", () => {
     expect(err).not.toContain("exited with code");
   });
 
-  test("an update that couldn't be downloaded: the old version still works, no install command", async () => {
+  // A failed download can be lasting (a proxy, a network that inspects HTTPS):
+  // the person always gets a way out, except over a network that presented a
+  // revoked certificate (a blocked key), where curl would trust it.
+  test("an update that couldn't be downloaded: the old version still works, and the way out is shown", async () => {
     expect(await run([], { runInstaller: async () => 75 })).toBe(1);
     expect(err).toContain("Couldn't download the update. 0.28.10 is still installed and works. Try again later: plannotator update");
+    expect(err).toContain("If this keeps happening, install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n");
+    expect(err).toContain("or download it from https://github.com/backnotprop/plannotator/releases/tag/v0.28.11");
     expect(err).toContain("update.log");
+    expect(err).not.toContain("NODE_EXTRA_CA_CERTS");
+  });
+
+  test("a certificate neither Plannotator nor this computer trusts: also how to add the network's certificate", async () => {
+    const runInstaller = async (_: unknown, write: (t: string) => void) => (write(`${UPDATE_TLS_HINT.untrusted}\n`), 75);
+    expect(await run([], { runInstaller })).toBe(1);
+    expect(err).toContain("  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n");
+    expect(err).toContain("If this keeps happening, install it yourself:\n  curl -fsSL");
+  });
+
+  test("a revoked certificate: never the install command, try another network", async () => {
+    const runInstaller = async (_: unknown, write: (t: string) => void) => (write(`${UPDATE_TLS_HINT.revoked}\n`), 75);
+    expect(await run([], { runInstaller })).toBe(1);
+    expect(err).toContain("the connection presented a revoked certificate. 0.28.10 is still installed and works.");
+    expect(err).toContain("Try again on another network: plannotator update");
     expect(err).not.toContain("curl");
+    expect(err).not.toContain("NODE_EXTRA_CA_CERTS");
   });
 
   test("another update holding the lock: exit 1, no second install", async () => {
@@ -192,6 +214,9 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
   // Async: the fake API and installer are served from this process, so a
   // spawnSync would block the server it is waiting on.
   async function cli(...args: string[]) {
+    return cliWith({}, ...args);
+  }
+  async function cliWith(extraEnv: Record<string, string>, ...args: string[]) {
     const proc = Bun.spawn(["bun", "--define", '__CLI_VERSION__="0.1.0"', entry, ...args], {
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -201,6 +226,7 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
         PLANNOTATOR_UPDATE_API_URL: `http://127.0.0.1:${server.port}/releases/latest`,
         PLANNOTATOR_INSTALL_SCRIPT_URL: `http://127.0.0.1:${server.port}/install.sh`,
         PLANNOTATOR_RELEASE_DOWNLOAD_URL: `http://127.0.0.1:${server.port}/download`,
+        ...extraEnv,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -237,18 +263,56 @@ describe.skipIf(process.platform === "win32")("plannotator update (process)", ()
     expect(readdirSync(home).filter((n) => n.startsWith("plannotator-update-"))).toEqual([]);
   }, 60_000);
 
-  test("a checksum Plannotator can't read means nothing runs: exit 1, the old version kept, no install command", async () => {
+  test("a checksum Plannotator can't read means nothing runs: exit 1, the old version kept, the way out shown", async () => {
     sumsBroken = true;
     const r = await cli();
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("Couldn't download the update. 0.1.0 is still installed and works.");
-    expect(r.stderr).not.toContain("curl");
+    expect(r.stderr).toContain("If this keeps happening, install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n");
     expect(existsSync(join(home, "installer-args"))).toBe(false);
     expect(existsSync(join(dataDir, "update.lock"))).toBe(false);
     expect(JSON.parse(readFileSync(join(dataDir, "update-result.json"), "utf-8"))).toEqual({ version: "v9.9.9", exitCode: 75 });
     expect(readFileSync(join(dataDir, "update.log"), "utf-8")).toContain("not a SHA-256 checksum");
     expect(readdirSync(home).filter((n) => n.startsWith("plannotator-update-"))).toEqual([]);
   }, 60_000);
+
+  // A network that inspects HTTPS with its own root, which neither Bun's roots
+  // nor this test's computer store hold: the stand-in serves the same release
+  // over HTTPS with a certificate from a private root. The update must either
+  // succeed or fail with the way out, and the way out it names must work.
+  test("a network that inspects HTTPS: the way out is shown, and NODE_EXTRA_CA_CERTS gets the update through", async () => {
+    const { makeSelfSignedTls } = await import("../../../tests/helpers/self-signed-tls");
+    const certs = join(home, "certs");
+    mkdirSync(certs);
+    const tls = makeSelfSignedTls(certs);
+    const inspected = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      tls: { cert: tls.cert, key: tls.key },
+      fetch: (req) => fetch(`http://127.0.0.1:${server.port}${new URL(req.url).pathname}`),
+    });
+    try {
+      const overHttps = {
+        PLANNOTATOR_INSTALL_SCRIPT_URL: `https://127.0.0.1:${inspected.port}/install.sh`,
+        PLANNOTATOR_RELEASE_DOWNLOAD_URL: `https://127.0.0.1:${inspected.port}/download`,
+      };
+      const refused = await cliWith(overHttps);
+      expect(refused.exitCode).toBe(1);
+      expect(existsSync(join(home, "installer-args"))).toBe(false);
+      expect(JSON.parse(readFileSync(join(dataDir, "update-result.json"), "utf-8"))).toEqual({ version: "v9.9.9", exitCode: 75 });
+      expect(refused.stderr).toContain("If this keeps happening, install it yourself:\n  curl -fsSL https://plannotator.ai/install.sh | bash\n");
+      expect(refused.stderr).toContain("or download it from https://github.com/backnotprop/plannotator/releases/tag/v9.9.9\n");
+      expect(refused.stderr).toContain("  NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update\n");
+      expect(existsSync(join(dataDir, "update.lock"))).toBe(false);
+
+      const through = await cliWith({ ...overHttps, NODE_EXTRA_CA_CERTS: tls.caFile });
+      expect(through.exitCode, through.stderr).toBe(0);
+      expect(through.stdout).toContain("Updated to 9.9.9.");
+      expect(readFileSync(join(home, "installer-pins"), "utf-8")).toContain(`=${"a".repeat(64)}`);
+    } finally {
+      inspected.stop(true);
+    }
+  }, 90_000);
 
   test("a failing install script exits 1 and says where the log is", async () => {
     installerExit = 4;

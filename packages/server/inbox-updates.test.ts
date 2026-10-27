@@ -16,6 +16,7 @@ import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxUsedBefore, startInboxServer, type InboxServer } from "./inbox";
 import { deriveInboxUpdate } from "./inbox-updates";
 import type { InstallerLaunch } from "./auto-update";
+import { UPDATE_TLS_HINT } from "./update-prepare";
 
 const NOW = Date.now();
 const BODY = [
@@ -290,6 +291,25 @@ describe("Update now", () => {
     expect(await waitFor(() => health(person), (u) => u !== null)).toMatchObject({ state: "failed", version: "0.28.12" });
     const details = await (await fetch(`http://127.0.0.1:${person.port}/api/inbox/update`)).json();
     expect(details.failure).toMatchObject({ exit_code: 1 });
+  });
+
+  // The failure dialog's way out depends on why the download failed: the
+  // last run's lines in update.log carry update-prepare's certificate hint.
+  test("a download refused at TLS says so in the failure details (75 only, the last run only)", async () => {
+    writeUpdateState(
+      { latestRelease: { tag: "0.28.12", fetchedAt: NOW }, pending: { version: "0.28.12", fromVersion: "0.28.10", startedAt: NOW, by: "person" } },
+      dataDir,
+    );
+    writeFileSync(join(dataDir, "update-result.json"), JSON.stringify({ version: "v0.28.12", exitCode: 75 }));
+    writeFileSync(
+      join(dataDir, "update.log"),
+      `update: could not download the update (install script: offline); nothing was changed\n[2026-10-26T00:00:00Z] update: install.sh exited 75\n` +
+        `update: could not download the update (install script: 127.0.0.1: unable to verify the first certificate); nothing was changed\n${UPDATE_TLS_HINT.untrusted}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`,
+    );
+    const server = await start();
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "failed" });
+    const details = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/update`)).json();
+    expect(details.failure).toMatchObject({ exit_code: 75, tls: "untrusted" });
   });
 });
 

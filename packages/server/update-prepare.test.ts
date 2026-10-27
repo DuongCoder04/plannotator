@@ -14,22 +14,29 @@
  * the network and nothing downloaded is a real binary.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import tls from "node:tls";
+import { EMSIGN_ECC_G3_PEM } from "../../scripts/check-bun-runtime-trust";
+import { makeSelfSignedTls, type SelfSignedTls } from "../../tests/helpers/self-signed-tls";
 import { autoUpdatePaths, installerCommand } from "./auto-update";
 import {
   UPDATE_CHECKSUM_MISMATCH,
   UPDATE_PREPARE_FAILED,
+  UPDATE_TLS_HINT,
   candidateAssets,
+  lastRunTlsFailure,
   nativeAsset,
   normalizeReleaseTag,
   prepareUpdate,
   releaseDownloadUrl,
   runUpdatePrepareCommand,
   sweepStaleUpdateDirs,
+  systemTrustedCa,
+  tlsFailureIn,
 } from "./update-prepare";
 
 const SCRIPT_HEAD = '#!/bin/bash\nREPO="backnotprop/plannotator"\n';
@@ -498,4 +505,196 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
       expect(r.lockHeld).toBe(false);
     }, 30_000);
   }
+});
+
+// ─────────────── A network that inspects HTTPS ───────────────
+//
+// Bun's own roots (which drop the leaked eMudhra root) refuse a company's
+// inspecting root; curl, which main used, trusted it through this computer's
+// store. So a certificate error is retried once with Bun's roots plus this
+// computer's. A stand-in serves the release over HTTPS with a certificate from
+// a private root, made per test run.
+
+describe.skipIf(process.platform === "win32")("certificate errors", () => {
+  let tlsFiles: SelfSignedTls;
+  beforeEach(() => {
+    const dir = join(root, "certs");
+    mkdirSync(dir);
+    tlsFiles = makeSelfSignedTls(dir);
+  });
+
+  function serveHttps(release: Release) {
+    const plain = serve(release);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      tls: { cert: tlsFiles.cert, key: tlsFiles.key },
+      fetch: (req) => fetch(`http://127.0.0.1:${plain.server.port}${new URL(req.url).pathname}`),
+    });
+    return {
+      port: server.port!,
+      env: {
+        PLANNOTATOR_INSTALL_SCRIPT_URL: `https://127.0.0.1:${server.port}/install.sh`,
+        PLANNOTATOR_RELEASE_DOWNLOAD_URL: `https://127.0.0.1:${server.port}/dl`,
+      },
+      stop() {
+        server.stop(true);
+        plain.server.stop(true);
+      },
+    };
+  }
+
+  test("this computer's store trusts the network's root: the retry downloads the same release", async () => {
+    const site = serveHttps({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\n`, sums: pins(ARM, X64) });
+    let asked = 0;
+    try {
+      const r = await prepareUpdate({
+        version: "1.2.3",
+        platform: process.platform,
+        env: site.env,
+        tmpRoot: root,
+        systemCa: () => (asked++, [...tls.rootCertificates, tlsFiles.caPem]),
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.expected.split(" ").toSorted()).toEqual([`plannotator-${OS}-arm64=${ARM}`, `plannotator-${OS}-x64=${X64}`]);
+      // The store is read once for all three downloads.
+      expect(asked).toBe(1);
+    } finally {
+      site.stop();
+    }
+  });
+
+  test("nothing trusts it: a failed download marked untrusted, with the NODE_EXTRA_CA_CERTS hint, nothing staged", async () => {
+    const site = serveHttps({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\n`, sums: pins(ARM, X64) });
+    try {
+      const r = await prepareUpdate({ version: "1.2.3", platform: process.platform, env: site.env, tmpRoot: root, systemCa: () => [...tls.rootCertificates] });
+      expect(r).toMatchObject({ ok: false, tls: "untrusted" });
+      let err = "";
+      const code = await runUpdatePrepareCommand(["1.2.3"], { platform: process.platform, env: site.env, tmpRoot: root, systemCa: () => null, out: () => {}, err: (t) => (err += t) });
+      expect(code).toBe(UPDATE_PREPARE_FAILED);
+      expect(tlsFailureIn(err)).toBe("untrusted");
+      expect(err).toContain("NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update");
+      expect(staged()).toEqual([]);
+    } finally {
+      site.stop();
+    }
+  });
+
+  test("a revoked chain (Bun's blocked eMudhra keys) is never retried with other roots", async () => {
+    let asked = 0;
+    const revoked = Object.assign(new Error("certificate revoked"), { code: "CERT_REVOKED" });
+    let err = "";
+    const code = await runUpdatePrepareCommand(["1.2.3"], {
+      platform: "linux",
+      env: ENV,
+      tmpRoot: root,
+      fetchImpl: fakeFetch(() => Promise.reject(revoked)),
+      systemCa: () => (asked++, [tlsFiles.caPem]),
+      out: () => {},
+      err: (t) => (err += t),
+    });
+    expect(code).toBe(UPDATE_PREPARE_FAILED);
+    expect(asked).toBe(0);
+    expect(tlsFailureIn(err)).toBe("revoked");
+  });
+
+  test("an error that is not about certificates is not retried", async () => {
+    let asked = 0;
+    const r = await prepareUpdate({
+      version: "1.2.3",
+      platform: "linux",
+      env: ENV,
+      tmpRoot: root,
+      fetchImpl: fakeFetch(() => Promise.reject(Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" }))),
+      systemCa: () => (asked++, [tlsFiles.caPem]),
+    });
+    expect(r).toMatchObject({ ok: false });
+    expect(r.ok === false && r.tls).toBeFalsy();
+    expect(asked).toBe(0);
+  });
+
+  test("the retry never takes emSign ECC Root CA - G3 back from this computer's store", () => {
+    const store = (system: string[]) => (kind: string) => (kind === "system" ? system : [...tls.rootCertificates]);
+    expect(systemTrustedCa(store([EMSIGN_ECC_G3_PEM]))).toBeNull();
+    const roots = systemTrustedCa(store([EMSIGN_ECC_G3_PEM, tlsFiles.caPem]))!;
+    expect(roots).toContain(tlsFiles.caPem);
+    expect(roots.some((pem) => new X509Certificate(pem).fingerprint256 === new X509Certificate(EMSIGN_ECC_G3_PEM).fingerprint256)).toBe(false);
+    expect(systemTrustedCa(store([]))).toBeNull();
+  });
+
+  test("end to end through the wrapper and the real install.sh: refused without the root, installed with NODE_EXTRA_CA_CERTS", async () => {
+    const binary = "#!/bin/sh\necho plannotator-new\n";
+    const box = sandbox(binary);
+    const site = serveHttps({ script: readFileSync(INSTALL_SH, "utf-8"), sums: pins(sha(binary), sha(binary)) });
+    try {
+      const refused = await runWrapper(box, site.port, site.env);
+      expect(refused.result).toEqual({ version: "v1.2.3", exitCode: UPDATE_PREPARE_FAILED });
+      expect(tlsFailureIn(refused.out)).toBe("untrusted");
+      expect(readFileSync(box.installed, "utf-8")).toContain("plannotator-old");
+      expect(refused.lockHeld).toBe(false);
+
+      const through = await runWrapper(box, site.port, { ...site.env, NODE_EXTRA_CA_CERTS: tlsFiles.caFile });
+      expect(through.result).toEqual({ version: "v1.2.3", exitCode: 0 });
+      expect(through.out).toContain("Checksum matches the one Plannotator fetched for v1.2.3.");
+      expect(readFileSync(box.installed, "utf-8")).toBe(binary);
+    } finally {
+      site.stop();
+    }
+  }, 120_000);
+});
+
+describe("update.log: the last run's TLS failure", () => {
+  const END = (code: number) => `[2026-10-27T00:00:00Z] update: install.sh exited ${code}\n`;
+  test("only the last finished run counts", () => {
+    const log = join(root, "update.log");
+    writeFileSync(log, `${UPDATE_TLS_HINT.untrusted}\n${END(75)}update: could not download the update (offline)\n${END(75)}`);
+    expect(lastRunTlsFailure(log)).toBeNull();
+    writeFileSync(log, `${END(0)}update: x\n${UPDATE_TLS_HINT.revoked}\n${END(75)}`);
+    expect(lastRunTlsFailure(log)).toBe("revoked");
+    writeFileSync(log, `${UPDATE_TLS_HINT.untrusted}\n${END(75)}`);
+    expect(lastRunTlsFailure(log)).toBe("untrusted");
+    expect(lastRunTlsFailure(join(root, "missing.log"))).toBeNull();
+  });
+});
+
+// ─────────────── A relative TMPDIR ───────────────
+
+describe.skipIf(process.platform === "win32")("a relative TMPDIR", () => {
+  test("the staged dir is still absolute, so the wrapper uses it and the update runs", async () => {
+    const box = sandbox("new");
+    const marker = join(box.home, "script-ran");
+    const { server } = serve({ script: `${SCRIPT_HEAD}# PLANNOTATOR_EXPECTED_SHA256\ntouch "${marker}"\n`, sums: pins(ARM, X64) });
+    try {
+      const r = await runWrapper(box, server.port!, { TMPDIR: relative(process.cwd(), box.tmp) });
+      expect(r.result).toEqual({ version: "v1.2.3", exitCode: 0 });
+      expect(existsSync(marker)).toBe(true);
+      expect(staged(box.tmp)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  test("prepareUpdate resolves a relative temp root", async () => {
+    const r = await prepareUpdate({ version: "1.2.3", platform: "linux", arch: "arm64", env: ENV, tmpRoot: relative(process.cwd(), root), fetchImpl: fakeFetch(genuine) });
+    expect(r.ok && isAbsolute(r.dir)).toBe(true);
+  });
+});
+
+// ─────────────── The release's asset names ───────────────
+//
+// Every binary from the first safe-updates release on asks for
+// `<tag>/<name>.sha256` for each name candidateAssets returns, and an update
+// fails (75) without its own. A shipped binary can't be changed, so the
+// release workflow must keep publishing exactly these names.
+
+test("release.yml publishes a .sha256 for every name update-prepare asks for", () => {
+  const workflow = readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf-8");
+  for (const name of [...candidateAssets("darwin"), ...candidateAssets("linux")]) {
+    expect(workflow).toContain(`--outfile ${name}\n`);
+    expect(workflow).toContain(`sha256sum ${name} > ${name}.sha256\n`);
+  }
+  // Uploaded with the binaries, and every artifact goes into the release.
+  expect(workflow).toMatch(/name: binaries\n\s+path: \|\n\s+plannotator-\*\n/);
+  expect(workflow).toContain("files: artifacts/*\n");
 });
