@@ -189,7 +189,7 @@ import {
   writeInboxAgents,
   type AgentEnvironment,
 } from "./inbox-agents";
-import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, removeInboxNote } from "./inbox-agent-notes";
+import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import {
   displayInboxSubject,
   INBOX_AGENT_IDS,
@@ -1078,6 +1078,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     (process.env.PLANNOTATOR_TEST_SANDBOX
       ? createAgentEnvironmentFor({ platform: process.platform, homeDir: join(dataDir, "agents-home"), env: { HOME: join(dataDir, "agents-home"), PATH: "" } })
       : createAgentEnvironment());
+  // The notes the person installed, brought up to this version while untouched (an update reaches
+  // them when the Inbox restarts onto it); an edited, damaged, read-only or busy file is left alone.
+  try {
+    refreshInboxNotes(dataDir, agentEnvironment);
+  } catch {
+    // Never holds up a start.
+  }
   let connecting: Promise<InboxConnectReport> | null = null;
   // The Inbox's stop ends a run still going: its agent CLIs are killed, never left running.
   const connectStop = new AbortController();

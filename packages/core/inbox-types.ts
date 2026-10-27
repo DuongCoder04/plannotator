@@ -1758,10 +1758,16 @@ export type InboxToolCostHost = "pi" | "opencode";
  * Pi with the cost test, 8,841 → 8,964 bytes (+123; about +30 tokens, so the
  * rounded token figure stands). With the Board on 10,294 (10,171 + 123,
  * estimated).
+ * Then the rules agents must get with no setup (the owner, 2026-10-27): the
+ * wake note's "reply_to set to that reply id, never an id from memory",
+ * read_thread's and search's leads (listing every thread, older messages),
+ * `asked_by` and `include_resolved` described, and the Recommended: line in
+ * `body`: measured on Pi, 9,227 bytes (+263, about +70 tokens). With the
+ * Board on 10,557 (10,294 + 263, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 8964, tokens: 2500 };
+const INBOX_TOOL_COST_NOW = { bytes: 9227, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10294, tokens: 2900 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10557, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

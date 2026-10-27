@@ -63,12 +63,12 @@ export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[numbe
 export const INBOX_MCP_INSTRUCTIONS = [
   "Plannotator Inbox: a local window on this machine where the person reads what you send and answers when they can, without holding your session open.",
   "",
-  "Use it when the person may not be watching this chat: a decision only they can make (ask it as a :::question block, then go on with other work), finished long work to hand over (a short summary, the files to look at in `attachments`), or when they ask you to. Ask in the chat instead when they are there; do not send routine progress.",
+  "Use it when the person may not be watching this chat: a decision only they can make (ask it as a :::question block, then go on with other work), finished long work to hand over (a short summary, files in `attachments`), or when they ask you to. Ask in the chat instead when they are there; do not send routine progress.",
   "",
-  "- send_message posts markdown. Your messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to to answer a message. Pass an idempotency_key so a retry never posts twice. The question syntax is in send_message's description.",
+  "- send_message posts markdown. Your messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Pass an idempotency_key so a retry never posts twice. The question syntax is in send_message's description.",
   "- attachments: paths of files to show the person (a plan, a screenshot, an HTML mock, any file), absolute or relative to project_path. Link one from the body (`[the mock](mock.html)`) to open it beside the thread. The person's annotations come back in their reply.",
-  "- wait_for_reply (thread_id) returns the reply as soon as it lands, or { status: \"waiting\", cursor } after about 50 seconds: call it again with that cursor. Call it when you need the answer, after the work that does not depend on it.",
-  "- read_thread reads one thread (thread_id): open questions, the newest messages in full, earlier ones one line each; without an id it lists yours. search finds messages by words. When an open question of yours no longer fits, send with reply_to into its thread with `supersedes` instead of leaving it open. resolve_message archives the thread for the person; use it only when nothing in it is left for them to read or answer.",
+  "- wait_for_reply (thread_id) returns the reply as soon as it lands, or { status: \"waiting\", cursor } after about 50 seconds: call it again with that cursor. Call it when you need the answer, after the work that does not need it.",
+  "- read_thread reads one thread (thread_id): open questions, the newest messages in full, earlier ones one line each; without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. When an open question of yours no longer fits, send with reply_to into its thread with `supersedes` instead of leaving it open. resolve_message archives the thread for the person; use it only when nothing in it is left for them to read or answer.",
   "- To walk the person through a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
   "",
   "The reply is the person's answer, framed as theirs: their words, then \"Answers to your questions\". No tool answers or approves on the person's behalf.",
@@ -983,8 +983,14 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           (sent.actions > 0 ? `${sent.questions > 0 ? " and" : " with"} ${sent.actions} action item${sent.actions === 1 ? "" : "s"}` : "") +
           supersededWords(sent.structured.superseded as string[]) +
           (sent.done > 0 ? `, marking ${sent.done} action item${sent.done === 1 ? "" : "s"} done` : "");
+        // The hints after the sent line, in this order, each "" when it has nothing to say.
+        const hints = [
+          imagesNotShownText(sent.imagesNotShown),
+          noStakesText(sent.noStakes),
+        ];
+        if (stale) hints.push(`\n${staleThreadText(stale, shortTime)}`);
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}${stale ? `\n${staleThreadText(stale, shortTime)}` : ""}`,
+          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${hints.join("")}`,
           stale ? { ...sent.structured, not_read_since: lastContactOf(stale) } : sent.structured,
         );
       }),
@@ -1000,8 +1006,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           thread_id: z.string().optional(),
           message_id: z.string().optional(),
           project_path: z.string().optional().describe(PROJECT_PATH_DESCRIPTION),
-          asked_by: z.enum(["me", "anyone"]).optional().describe("Default \"me\" when your session is known."),
-          include_resolved: z.boolean().optional(),
+          asked_by: z.enum(["me", "anyone"]).optional().describe("Default \"me\" (threads you sent in) when your session is known; \"anyone\" lists every thread."),
+          include_resolved: z.boolean().optional().describe("List archived threads too."),
           limit: z.number().int().min(1).max(100).optional().describe(`How many: a thread's messages in full (default ${INBOX_THREAD_WINDOW}), listed threads (20), search results (10, at most 50).`),
           expand: z.array(z.string()).optional().describe("Message ids of this thread to show in full."),
           before: z.union([z.string(), z.number().min(0)]).optional().describe("Only messages before this message id or cursor."),

@@ -97,7 +97,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           "type": "string"
         },
         "asked_by": {
-          "description": "Default \"me\" when your session is known.",
+          "description": "Default \"me\" (threads you sent in) when your session is known; \"anyone\" lists every thread.",
           "type": "string",
           "enum": [
             "me",
@@ -105,6 +105,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           ]
         },
         "include_resolved": {
+          "description": "List archived threads too.",
           "type": "boolean"
         },
         "limit": {

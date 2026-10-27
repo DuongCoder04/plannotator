@@ -235,7 +235,7 @@ export const INBOX_TOOL_LEAD =
  * OpenCode 2 as a user message, and all three carry the wake's first line.
  */
 export const INBOX_TOOL_WAKE_NOTE =
-  "When the person replies to a message you sent, their reply arrives in this session by itself once it is idle, as a message headed `Plannotator Inbox: <subject> (<reply id>)`: end your turn, or go on with other work; do not call wait_for_reply. When they need to hear back, answer with send_message reply_to."
+  "When the person replies to a message you sent, their reply arrives in this session by itself once it is idle, as a message headed `Plannotator Inbox: <subject> (<reply id>)`: end your turn, or go on with other work; do not call wait_for_reply. When they need to hear back, answer with send_message reply_to set to that reply id, never an id from memory."
 
 /**
  * Fixed text, the description's last line: where everything the tool's short
@@ -251,8 +251,8 @@ export const INBOX_TOOL_HELP_NOTE = "Every field and the full question syntax: `
  * OpenCode request carries it).
  */
 export const INBOX_AGENT_ACTION_LEADS: Readonly<Record<string, string>> = {
-  read_thread: 'Read a thread (thread_id): open questions, the newest messages, earlier ones one line each; or list yours.',
-  search: 'Find messages by words (read-only).',
+  read_thread: 'Read a thread (thread_id): open questions, the newest messages, earlier ones one line each; with no id, list your threads (asked_by "anyone": all).',
+  search: 'Find messages by words, older ones too (read-only).',
   get_guide_brief: "Get Plannotator's method, the guide's JSON shape and the rules for writing a guided review, with a worked submit_guide call.",
   card: "A Board card for work that outlasts this reply: create it, then move it and say where it is as the work moves.",
 }
@@ -283,7 +283,7 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
       'Holds up: sync release',
       ':::',
       '',
-      '`:::question-multi` takes several choices, `:::question-text` free text. The person can always answer Other, add a note or skip, so never add an Other choice yourself. `Stopped: <why>` only when you cannot go on until it is answered (never `Stopped: no`); `Holds up: <work>` names work that waits while you go on. Ask only what you cannot decide alone, about 8 a round at most. Answers come back in the reply under "Answers to your questions".',
+      'Your recommendation goes on the `Recommended:` line, never in a choice label. `:::question-multi` takes several choices, `:::question-text` free text. The person can always answer Other, add a note or skip, so never add an Other choice yourself. `Stopped: <why>` only when you cannot go on until it is answered (never `Stopped: no`); `Holds up: <work>` names work that waits while you go on. Ask only what you cannot decide alone, about 8 a round at most. Answers come back in the reply under "Answers to your questions".',
       '',
       'Optional lines after the question; most questions need none of these: `Stakes: <what it affects>` (give one with every Stopped or Holds up), `Shows: ![alt](path)` or `Shows: [name](file)` (the one picture or file it is about), `Why: <why your recommendation>` on its own line, `Reversible: no — <why>` only when it cannot be undone. Visual options can be picture choices, `- [ ] Label — ![alt](path)`: the picture picks it, the label comes back.',
       '',

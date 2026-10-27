@@ -4,8 +4,10 @@
  *
  * Written only with the person's yes: the window's one-time question, a
  * Settings switch, or `plannotator inbox --notes <ids>` (the install prompt,
- * after the person agreed in chat). Never by a start, the shim or a
- * connection.
+ * after the person agreed in chat). Never added by a start, the shim or a
+ * connection. A note already installed is brought up to the current version
+ * by the Inbox's start, only while it is byte for byte an earlier version
+ * Plannotator wrote (refreshInboxNotes).
  *
  * Where (honouring CLAUDE_CONFIG_DIR, CODEX_HOME, OPENCODE_CONFIG_DIR /
  * XDG_CONFIG_HOME, PI_CODING_AGENT_DIR and Gemini's `context.fileName`):
@@ -29,7 +31,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
   INBOX_AGENT_LABELS,
@@ -60,8 +62,9 @@ import {
  * v2 (2026-10-27, the misfiled-thread AAR): two lines after v1's, the check
  * before a reply_to into a thread not read in this context window, and where
  * a question's recommendation goes. A v1 block Plannotator wrote is brought up
- * to date the next time the note is added (`--notes`, the Settings switch);
- * a block the person edited never is.
+ * to date at the Inbox's next start (refreshInboxNotes) or when the note is
+ * added again (`--notes`, the Settings switch); a block the person edited
+ * never is.
  */
 export const INBOX_NOTE_VERSION = 2;
 const noteStart = (version: number) =>
@@ -439,6 +442,118 @@ export function addInboxNote(agent: InboxNoteAgentId, dataDir: string, e: AgentE
   }
   writeInboxAgentNotes(dataDir, file);
   return { ok: true, agent, action, path: shown! };
+}
+
+/** What refreshInboxNotes did with one agent's note. */
+export interface NoteRefresh {
+  agent: InboxNoteAgentId;
+  /** The file its record names (resolved). */
+  path: string;
+  /**
+   * `refreshed`: the block was an earlier version, untouched, and now is this
+   * one; `shared`: another agent's record named the same file, refreshed for
+   * it; `current`: already this version; `edited`: not byte for byte a version
+   * Plannotator wrote, or not the one its record names (the person's, left
+   * alone); `none`: no block (the person removed it; never put back);
+   * `damaged`: markers other than exactly one start line before exactly one
+   * end line; `missing`: no file; `read-only`: the file has no write
+   * permission for its owner; `changed`: the file changed after it was read
+   * (left for the next start); `refused`: not readable or writable.
+   */
+  result: "refreshed" | "shared" | "current" | "edited" | "none" | "damaged" | "missing" | "read-only" | "changed" | "refused";
+}
+
+export interface RefreshInboxNotesOptions {
+  /** Test seam: runs after a file was read and its new text made, right before the write. */
+  beforeWrite?: (path: string) => void;
+}
+
+/**
+ * Brings every note Plannotator installed (each record in agent-notes.json)
+ * up to this version, with no action by the person: run at the Inbox's start,
+ * so an update reaches every installed note when the Inbox restarts onto it.
+ * Deterministic and conservative, on the same marker rules as every write:
+ *  - the block is found only as exactly one start line before exactly one end
+ *    line (findBlock); any other markers are damaged and nothing is written;
+ *  - it is replaced only when it is byte for byte (line endings aside) a block
+ *    an earlier Plannotator wrote AND the one its record names (the hash):
+ *    a block the person edited is never touched, nor a file without a record;
+ *  - a note the person removed (no block) is never put back;
+ *  - a read-only file (no owner write bit) is left alone;
+ *  - the file is read again right before the write and left alone when it
+ *    changed since it was read (another writer: never clobbered);
+ *  - every byte outside the block, the block's own line ending (CRLF stays
+ *    CRLF), the BOM and the mode are kept; a symlink is written at its target
+ *    and stays a link; the write is atomic (a temp file, then a rename);
+ *  - a file several agents' records name (Pi's AGENTS.md a link to Codex's)
+ *    is written once, and every record naming it follows.
+ * Never throws for one file: the rest still run. Off with PLANNOTATOR_INBOX_NOTES=0.
+ */
+export function refreshInboxNotes(dataDir: string, e: AgentEnvironment, options: RefreshInboxNotesOptions = {}): NoteRefresh[] {
+  if (!agentHomeAllowed(e) || inboxNotesDisabled(e.env)) return [];
+  const file = readInboxAgentNotes(dataDir);
+  const current = sha256(INBOX_NOTE_BLOCK);
+  const byPath = new Map<string, InboxNoteAgentId[]>();
+  for (const agent of INBOX_NOTE_AGENT_IDS) {
+    const record = file.notes[agent];
+    if (record) byPath.set(record.path, [...(byPath.get(record.path) ?? []), agent]);
+  }
+  const results: NoteRefresh[] = [];
+  let recordsChanged = false;
+  for (const [path, agents] of byPath) {
+    const recorded = new Set(agents.map((agent) => file.notes[agent]!.block_sha256));
+    let result: NoteRefresh["result"];
+    try {
+      result = refreshNoteFile(path, recorded, options);
+    } catch {
+      result = "refused";
+    }
+    agents.forEach((agent, index) => {
+      results.push({ agent, path, result: result === "refreshed" && index > 0 ? "shared" : result });
+      const record = file.notes[agent]!;
+      // The file now holds this version's block exactly: a record that named an earlier one follows.
+      if ((result === "refreshed" || result === "current") && record.block_sha256 !== current && EARLIER_BLOCK_HASHES.has(record.block_sha256)) {
+        file.notes[agent] = { ...record, version: INBOX_NOTE_VERSION, block_sha256: current };
+        recordsChanged = true;
+      }
+    });
+  }
+  if (recordsChanged) writeInboxAgentNotes(dataDir, file);
+  return results;
+}
+
+/** One file of refreshInboxNotes: its outcome, the file written only for `refreshed`. */
+function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: RefreshInboxNotesOptions): NoteRefresh["result"] {
+  const read = readAgentFile(path);
+  if (read.kind === "missing") return "missing";
+  if (read.kind === "refused") return "refused";
+  const found = findBlock(read.text);
+  if (found.kind === "none") return "none";
+  if (found.kind === "damaged") return "damaged";
+  const hash = sha256(found.block);
+  if (hash === sha256(INBOX_NOTE_BLOCK)) return "current";
+  if (!EARLIER_BLOCK_HASHES.has(hash) || !recorded.has(hash)) return "edited";
+  if ((read.mode & 0o200) === 0) return "read-only";
+  // The block's own line ending, so the bytes around it never change their ending.
+  const nl = found.block.includes("\r\n") ? "\r\n" : "\n";
+  const next = read.text.slice(0, found.start) + blockIn(nl) + read.text.slice(found.end);
+  options.beforeWrite?.(read.target);
+  // Compare and write: the bytes on disk must still be the ones this read (and the mode the same).
+  const before = Buffer.from(withBom(read.text, read.bom), "utf8");
+  let now: Buffer;
+  try {
+    now = readFileSync(read.target);
+    if ((statSync(read.target).mode & 0o777) !== read.mode) return "changed";
+  } catch {
+    return "changed";
+  }
+  if (!now.equals(before)) return "changed";
+  try {
+    writeAgentFileAtomic(read.target, withBom(next, read.bom), read.mode, false);
+  } catch {
+    return "refused";
+  }
+  return "refreshed";
 }
 
 /**
