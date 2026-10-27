@@ -118,7 +118,7 @@ import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
 import { lastInput } from './lastInput';
-import { backFocusTargets, focusLost } from './backFocus';
+import { backFocusTargets, focusKept, focusLost } from './backFocus';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -727,12 +727,12 @@ function Inbox() {
       const from = routeRef.current;
       onHash();
       if (lastInput() === 'pointer') return;
-      // Focus left in what the traversal replaced (the thread before, a page) moves too; focus the person keeps
-      // in the sidebar or the list stays. Checked again a beat later: a thread drawn again may drop it then.
+      // Focus left in what the traversal replaced moves too (focusKept says what stays). Checked again a beat later: a thread drawn again may drop it then.
       const place = (always: boolean) => {
         const active = document.activeElement;
-        if (modalOpen() || (!focusLost(active) && (!always || active?.closest('.ib-side, .ib-main .ib-lbody')))) return;
-        focusFirst(backFocusTargets(readRoute(), from));
+        const to = readRoute();
+        if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to)))) return;
+        focusFirst(backFocusTargets(to, from));
       };
       requestAnimationFrame(() => requestAnimationFrame(() => place(true)));
       setTimeout(() => place(false), 300);

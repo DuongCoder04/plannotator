@@ -197,6 +197,18 @@ const earlier = () => page.locator(`${BODY} button.ib-mfold-b[data-fold-head]`);
 const articles = () => page.locator(`${BODY} [data-message-article]`);
 const foldedCount = () => page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-message-article]`)].filter((a) => !a.hasAttribute('data-open')).length, BODY);
 /** Where `head` sits in the thread's view (px from its top): what the person sees, whatever grew above it. */
+/** A head's place once a smooth scroll has ended (two reads 150 ms apart agree). */
+async function settledPlace(head: Locator): Promise<number> {
+  let last = await placeOf(head);
+  for (let i = 0; i < 20; i++) {
+    await page.waitForTimeout(150);
+    const now = await placeOf(head);
+    if (Math.abs(now - last) < 0.5) return now;
+    last = now;
+  }
+  return last;
+}
+
 const placeOf = (head: Locator) => head.evaluate((el, sel) => el.getBoundingClientRect().top - document.querySelector<HTMLElement>(sel)!.getBoundingClientRect().top, BODY);
 const scrollTop = () => page.evaluate((sel) => document.querySelector<HTMLElement>(sel)?.scrollTop ?? -1, BODY);
 const fileName = () => pane().getAttribute('aria-label');
@@ -709,7 +721,8 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   await expect(page.locator('section.ib-pane')).toBeVisible();
   await press('j', 'j', 'k', 'n');
   const head = await focusedHead();
-  const place = await placeOf(head);
+  // J and N scroll the head into view smoothly: its place is where the scroll ends.
+  const place = await settledPlace(head);
   await press('o');
   await at('O', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
   const opened = await fileName();

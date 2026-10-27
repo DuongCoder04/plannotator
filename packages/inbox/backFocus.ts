@@ -5,8 +5,7 @@
  * of the thread just left (or the Quiet band folding it), else the first row (G I). A thread: its row, else
  * its subject. A file: its pane. Settings: its heading (G S).
  *
- * Focus kept in the sidebar or the list stays there (both stay across a
- * traversal); anywhere else, what had it was replaced, so it moves.
+ * Focus the traversal did not replace stays (focusKept).
  */
 export interface BackFocusRoute {
   page: string;
@@ -23,12 +22,25 @@ export function backFocusTargets(to: BackFocusRoute, from: BackFocusRoute): stri
   if (to.page !== 'inbox') return ['.ib-main h1'];
   if (to.thread && to.file) return ['[data-attachment-pane]', row(to.thread), 'section.ib-pane h2.ib-subject'];
   if (to.thread) return [row(to.thread), 'section.ib-pane h2.ib-subject'];
-  // The thread just left, else (folded away in Quiet) the band that holds it.
+  // The thread just left, else (folded away in Quiet, its row not drawn) the band that holds it, as closing it
+  // by Escape does.
   const left =
     from.page === 'inbox' && from.thread
-      ? [row(from.thread), `.ib-main .ib-lbody [data-section-id]:has([data-thread-id="${CSS.escape(from.thread)}"]) button.ib-band`]
+      ? [row(from.thread), `.ib-main .ib-lbody [data-section-id]:has([data-thread-id="${CSS.escape(from.thread)}"]) button.ib-band`, '.ib-main .ib-lbody [data-section-id="quiet"] button.ib-band']
       : [];
   return [...left, '.ib-main .ib-lbody [data-thread-id]', '.ib-main .ib-lbody button.ib-band', '.ib-main .ib-empty h2', '.ib-main h1'];
+}
+
+/**
+ * Focus the traversal leaves where it is: in the sidebar; in the list when the list is where it went; on the row
+ * of the thread it went to. Anything else (a row of another thread, the thread before, a page) moves.
+ */
+export function focusKept(active: Element | null, to: BackFocusRoute): boolean {
+  if (!active || focusLost(active)) return false;
+  if (active.closest('.ib-side')) return true;
+  if (to.page !== 'inbox') return false;
+  if (!to.thread) return !!active.closest('.ib-main .ib-lbody');
+  return active.matches(row(to.thread));
 }
 
 /** Focus was taken by the traversal: nothing has it, or what has it left the page or is no longer drawn. */
