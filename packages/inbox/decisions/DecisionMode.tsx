@@ -750,6 +750,15 @@ export function DecisionMode(props: DecisionModeProps) {
     return reasons;
   };
 
+  /**
+   * The close question let go (Escape, Keep deciding): its buttons leave the page, so focus goes back to the Close
+   * button that asked it, never to the page itself (approval "inbox-keyboard-shortcuts", consistent Escape).
+   */
+  const keepDeciding = () => {
+    setConfirm(false);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-decision-mode] [data-decision-close]')?.focus());
+  };
+
   const requestClose = () => {
     const now = closeReasons();
     if (now.half + now.ready + now.failed + now.drafts + now.sending > 0 || now.words) setConfirm(true);
@@ -797,7 +806,7 @@ export function DecisionMode(props: DecisionModeProps) {
   /** Escape: one layer at a time (a box with words in it is a layer: it lets go of focus first). */
   const escape = () => {
     if (lightbox) return;
-    if (confirm) return setConfirm(false);
+    if (confirm) return keepDeciding();
     if (fieldOpenRef.current?.()) return;
     if (overview) return setOverview(false);
     requestClose();
@@ -968,7 +977,7 @@ export function DecisionMode(props: DecisionModeProps) {
           <div className="ib-dm-loading">Reading what waits on you…</div>
         )}
       </div>
-      {confirm && <CloseConfirm reasons={closeReasons()} closing={closing} onKeep={() => setConfirm(false)} onKeepDraft={keepDraft} onSend={sendAnswered} />}
+      {confirm && <CloseConfirm reasons={closeReasons()} closing={closing} onKeep={keepDeciding} onKeepDraft={keepDraft} onSend={sendAnswered} />}
       <div className="ib-sr" aria-live="polite" data-decision-live="">
         {said}
       </div>

@@ -118,6 +118,7 @@ import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
 import { lastInput } from './lastInput';
+import { backFocusTargets, focusLost } from './backFocus';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -400,7 +401,8 @@ function listCovered(): boolean {
 
 /** A row of the list on screen, by its thread (one element per row: the wide, two-line or phone row). */
 function rowElement(body: ParentNode, threadId: string): HTMLElement | null {
-  return body.querySelector<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`);
+  // The one on screen: a list draws some rows twice (one hidden), and a row in folded Quiet is not drawn at all.
+  return [...body.querySelectorAll<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`)].find((el) => el.getClientRects().length > 0) ?? null;
 }
 
 /**
@@ -718,12 +720,29 @@ function Inbox() {
       settleTourEntry();
       setRoute(readRoute());
     };
+    // Back and Forward (finding F1): once the page they landed on has drawn, focus goes where its key would put
+    // it, if the traversal took focus away. Not after a pointer (a mouse's Back button, a swipe): a row given
+    // focus the person never chose is a row `E` would mark read.
+    const onTraverse = () => {
+      const from = routeRef.current;
+      onHash();
+      if (lastInput() === 'pointer') return;
+      // Focus left in what the traversal replaced (the thread before, a page) moves too; focus the person keeps
+      // in the sidebar or the list stays. Checked again a beat later: a thread drawn again may drop it then.
+      const place = (always: boolean) => {
+        const active = document.activeElement;
+        if (modalOpen() || (!focusLost(active) && (!always || active?.closest('.ib-side, .ib-main .ib-lbody')))) return;
+        focusFirst(backFocusTargets(readRoute(), from));
+      };
+      requestAnimationFrame(() => requestAnimationFrame(() => place(true)));
+      setTimeout(() => place(false), 300);
+    };
     stripStrayMsg();
     window.addEventListener('hashchange', onHash);
-    window.addEventListener('popstate', onHash);
+    window.addEventListener('popstate', onTraverse);
     return () => {
       window.removeEventListener('hashchange', onHash);
-      window.removeEventListener('popstate', onHash);
+      window.removeEventListener('popstate', onTraverse);
     };
   }, []);
 
@@ -1290,13 +1309,20 @@ function Inbox() {
       return;
     }
     closing.current = { threadId: closed, asOf: latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed) ?? null };
-    const active = document.activeElement;
     // A thread opened from search or a link may have no row on screen (Quiet folded, another project): the
-    // Quiet band, else the first row, so focus is never left on the page.
-    if (body && lastInput() === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
-      const target = rowElement(body, closed) ?? body.querySelector<HTMLElement>('[data-section-id="quiet"] button.ib-band') ?? body.querySelector<HTMLElement>('[data-thread-id]');
+    // Quiet band, else the first row, so focus is never left on the page. Checked now and once the thread's pane
+    // has gone (what had focus in it may outlive this commit by a frame).
+    const keepFocus = () => {
+      const active = document.activeElement;
+      if (!body || lastInput() !== 'keyboard' || (active && active !== document.body && active.isConnected && active.getClientRects().length > 0)) return;
+      if (routeRef.current.thread || routeRef.current.page !== 'inbox') return;
+      // The list draws some rows twice (the wide and the two-line row), one hidden: the one on screen.
+      const shown = (selector: string) => [...body.querySelectorAll<HTMLElement>(selector)].find((el) => el.getClientRects().length > 0);
+      const target = shown(`[data-thread-id="${CSS.escape(closed)}"]`) ?? shown('[data-section-id="quiet"] button.ib-band') ?? shown('[data-thread-id]');
       target?.focus({ preventScroll: true });
-    }
+    };
+    keepFocus();
+    requestAnimationFrame(() => requestAnimationFrame(keepFocus));
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
       // when a message arrived there that they did not see: it comes back
@@ -1372,6 +1398,13 @@ function Inbox() {
       '.ib-bpage h1',
       '.ib-main h1',
     ]);
+    // The thread draws again under Settings' way back and puts focus on its subject as it opens; a file that was
+    // open is where the person was, so it has focus once the thread has drawn.
+    if (to.file) {
+      setTimeout(() => {
+        if (!document.activeElement?.closest('[data-attachment-pane], .ib-side')) focusFirst(['[data-attachment-pane]']);
+      }, 300);
+    }
   };
 
   // Settings is a focused page (design of record inbox-settings-tabs): the sidebar slides away while it
@@ -1530,6 +1563,11 @@ function Inbox() {
     const sameThread = now.page === 'inbox' && !!now.thread && now.thread === next.thread && !now.file && !now.guide;
     // Otherwise a new history entry: Back returns to where the search started (on a phone, the list).
     writeRoute(next, sameThread ? { replace: true } : {});
+    // The landing puts focus on the result in the thread; a thread with nothing to land on (its reply box already
+    // open with a draft, no Reply to focus) leaves it nowhere: the thread's subject then, never the page.
+    setTimeout(() => {
+      if (focusLost(document.activeElement) && !modalOpen()) focusFirst(['section.ib-pane [data-reply-button]', 'section.ib-pane h2.ib-subject', '.ib-main h1']);
+    }, 400);
   };
   // ── Compose: a new message to a connected agent (compose/ComposeDialog.tsx) ──
   const openCompose = (request: ComposeRequest, opener?: HTMLElement | null) => {
@@ -3097,9 +3135,12 @@ function Inbox() {
     if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
+    } else if (body && lastInput() === 'keyboard' && gone && lost && rowElement(body, gone)) {
+      // The row is still on screen but was drawn again (its section changed under a held list): focus follows it.
+      rowElement(body, gone)?.focus({ preventScroll: true });
     } else if (body && lastInput() === 'keyboard' && gone && lost && !rowElement(body, gone)) {
       const next = rowInSlot(order, gone, (id) => rowElement(body, id) !== null);
-      const target = next ? rowElement(body, next) : body.querySelector<HTMLElement>('button.ib-band');
+      const target = next ? rowElement(body, next) : ([...body.querySelectorAll<HTMLElement>('button.ib-band')].find((el) => el.getClientRects().length > 0) ?? null);
       target?.focus({ preventScroll: true });
     }
     listOrder.current = body ? [...body.querySelectorAll('[data-thread-id]')].map((el) => el.getAttribute('data-thread-id')!) : [];

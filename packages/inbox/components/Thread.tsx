@@ -81,7 +81,7 @@ import { OpenQuestionsButton } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { ShortcutHint, useShortcutAria, useShortcutHintShown } from '../shortcuts/hint';
-import { lastInput } from '../lastInput';
+import { lastInput, traversedJustNow } from '../lastInput';
 import { bareKeyAllowed, keyTarget } from '../shortcuts/guards';
 import { INBOX_SHORTCUT_EXTRAS } from '../shortcuts/extras';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
@@ -1856,7 +1856,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** The last tile, image or link a click or key in the thread was aimed at, and whether it came from the keyboard. */
   const lastOpener = useRef<{ el: HTMLElement; keyboard: boolean; at: number } | null>(null);
   /** What had focus in the thread when a key (O) opened a file: it has focus again when the file closes. */
-  const keyOpener = useRef<HTMLElement | null>(null);
+  const keyOpener = useRef<{ el: HTMLElement; message: string | null } | null>(null);
   /** The file open last: its tile takes focus when the file closes and focus would be lost. */
   const lastFileId = useRef<string | null>(null);
   if (file) lastFileId.current = file.id;
@@ -1887,6 +1887,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     }
     // A file opening from the messages on screen: remember what opened it by keyboard, for focus on the way back.
     if (sameThread && was.file === 'none' && file && placeShown(was)) returnFocus.current = opener?.keyboard ? { el: opener.el, selector: placeSelector(opener.el) } : null;
+    // A file opened from its tile or image is no longer O's: focus goes back to that opener instead.
+    if (opener) keyOpener.current = null;
   }
   useLayoutEffect(() => {
     const was = parsePlaceLayout(place.current.committed);
@@ -1911,42 +1913,49 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       stopHold();
       holdRef.current = holdPlace(body, saved, placed, undefined, sectionRef.current ?? body);
     }
+    const lost = () => {
+      const active = document.activeElement;
+      return !active || active === document.body || !active.isConnected;
+    };
+    // O remembers where focus was in the thread (keyOpener). Only a close the address agrees with uses it: a layout
+    // that passes through "no file" while a file steps or changes view keeps it.
+    const closing = now.file === 'none' && was.file !== 'none';
+    const closed = closing && !/[#&]file=/.test(window.location.hash);
+    const opener = closed ? keyOpener.current : null;
+    // Back closing the file keeps what O remembered, for Forward opening it again; any other close forgets it.
+    if (closed && !traversedJustNow()) keyOpener.current = null;
+    // A message head drawn again while the file was open (it folded or unfolded) is found by its message.
+    const keyBack =
+      opener && opener.el.isConnected && body.contains(opener.el)
+        ? opener.el
+        : opener?.message
+          ? body.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(opener.message)}"] [data-fold-head]`)
+          : null;
+    // Opened by O from a place in the thread: back to that place, the thread where it was.
+    if (keyBack && lastInput() === 'keyboard' && lost()) keyBack.focus({ preventScroll: true });
     // Focus back on what opened the file by keyboard, if nothing else has it.
-    if (focusBack) {
-      const active = document.activeElement;
-      if (!active || active === document.body || !active.isConnected) {
-        const target = focusBack.el.isConnected && body.contains(focusBack.el) ? focusBack.el : focusBack.selector ? body.querySelector<HTMLElement>(focusBack.selector) : null;
-        target?.focus({ preventScroll: true });
-      }
+    if (focusBack && lost()) {
+      const target = focusBack.el.isConnected && body.contains(focusBack.el) ? focusBack.el : focusBack.selector ? body.querySelector<HTMLElement>(focusBack.selector) : null;
+      target?.focus({ preventScroll: true });
     }
-    // A file closed with the pane holding focus (Escape, ×, a key that opened it with no opener: O): focus is never
-    // left on the page. The tile of the file last open, else the thread's subject.
-    if (now.file === 'none' && was.file !== 'none') {
-      const back = keyOpener.current;
-      keyOpener.current = null;
-      const active = document.activeElement;
-      // After a pointer close (the ×, a click) nothing takes focus: a ring on a tile the person never chose.
-      if (lastInput() === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
-        // Opened by a key (O, F) from a place in the thread: back to that place, the thread where it was.
-        if (back && back.isConnected && body.contains(back)) back.focus({ preventScroll: true });
-        else {
-          // The thread keeps its place (restorePlace above), so focus goes to something the person can see: the
-          // file's tile, else the head of the message it came in, else the first message head in view, and only
-          // then the subject. Nothing scrolls for it.
-          const view = body.getBoundingClientRect();
-          const seen = (el: HTMLElement | null | undefined): el is HTMLElement => {
-            if (!el || el.tabIndex < 0) return false;
-            const r = el.getBoundingClientRect();
-            return r.height > 0 && r.bottom > view.top && r.top < view.bottom;
-          };
-          const id = lastFileId.current;
-          const tiles = id ? [...body.querySelectorAll<HTMLElement>(`[data-attachment-id="${CSS.escape(id)}"]`)] : [];
-          const tile = tiles.find(seen);
-          const head = tiles[0]?.closest('[data-message-article]')?.querySelector<HTMLElement>('[data-fold-head]');
-          const target = tile ?? (seen(head) ? head : [...body.querySelectorAll<HTMLElement>('[data-fold-head]')].find(seen)) ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
-          target?.focus({ preventScroll: true });
-        }
-      }
+    // A file closed with the pane holding focus (Escape, ×) and nothing above took it: focus is never left on the
+    // page. After a pointer close nothing takes focus: a ring on a tile the person never chose.
+    if (closing && lastInput() === 'keyboard' && lost()) {
+      // The thread keeps its place (restorePlace above), so focus goes to something the person can see: the
+      // file's tile, else the head of the message it came in, else the first message head in view, and only
+      // then the subject. Nothing scrolls for it.
+      const view = body.getBoundingClientRect();
+      const seen = (el: HTMLElement | null | undefined): el is HTMLElement => {
+        if (!el || el.tabIndex < 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && r.bottom > view.top && r.top < view.bottom;
+      };
+      const id = lastFileId.current;
+      const tiles = id ? [...body.querySelectorAll<HTMLElement>(`[data-attachment-id="${CSS.escape(id)}"]`)] : [];
+      const tile = tiles.find(seen);
+      const head = tiles[0]?.closest('[data-message-article]')?.querySelector<HTMLElement>('[data-fold-head]');
+      const target = tile ?? (seen(head) ? head : [...body.querySelectorAll<HTMLElement>('[data-fold-head]')].find(seen)) ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
+      target?.focus({ preventScroll: true });
     }
     // Only the layout matters here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2164,7 +2173,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       return;
     }
     const active = document.activeElement;
-    keyOpener.current = !file && active instanceof HTMLElement && bodyRef.current?.contains(active) ? active : null;
+    keyOpener.current =
+      !file && active instanceof HTMLElement && bodyRef.current?.contains(active)
+        ? { el: active, message: active.matches('[data-fold-head]') ? (active.closest('[data-message-article]')?.getAttribute('data-message-article') ?? null) : null }
+        : null;
     openFromMessage(newest.attachment);
   };
   useShortcutScope({

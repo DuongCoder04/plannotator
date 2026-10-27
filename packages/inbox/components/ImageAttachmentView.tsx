@@ -320,6 +320,16 @@ export function ImageAttachmentView({
                 event.preventDefault();
                 event.stopPropagation();
                 void submit();
+                return;
+              }
+              // Escape leaves the field first (approval "inbox-keyboard-shortcuts": one layer per Escape): focus goes
+              // to the file's pane, the words stay; the next Escape is the pane's.
+              if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented) {
+                const paneEl = event.currentTarget.closest<HTMLElement>('[data-attachment-pane]');
+                if (!paneEl) return;
+                event.preventDefault();
+                event.stopPropagation();
+                paneEl.focus({ preventScroll: true });
               }
             }}
           />
