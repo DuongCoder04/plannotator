@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { InboxRunAgentsModel } from '@plannotator/core/inbox-acp';
 import { inboxId, type InboxDraftTo } from '@plannotator/core/inbox-types';
-import { InboxApiError, inboxApi, type DraftView } from '../api';
+import { InboxApiError, inboxApi, type ComposeSessionsModel, type DraftView, type StartThreadInput } from '../api';
 import { tildePath, whenTime } from '../format';
 import { HostMark, Icon } from '../icons';
 import { ComposeFileTiles, attachedAnnouncement, useComposeFiles } from './ComposeFiles';
@@ -46,6 +46,8 @@ import {
   hostLabel,
   isDirty,
   composeOpening,
+  composeBoardChoice,
+  rememberComposeBoardChoice,
   statusLine,
   sendThreadName,
   suggestThreadName,
@@ -60,8 +62,18 @@ const PHONE_SKILL_LIST_HEIGHT = 198;
 export interface ComposeRequest {
   /** A draft to reopen (the Drafts page). */
   draft?: DraftView | null;
+  /** Words the message starts with (the tour's suggested request). */
+  body?: string;
   /** A session to put in To (the palette's "Message <host> in <project>"). */
   session?: string | null;
+  /**
+   * A Board card with no thread (its opened card's "Create thread"): the
+   * message starts with the card's title, so the thread's subject is the
+   * title, and the window links the sent thread to the card (`ComposeSent.cardId`).
+   * Saved as a draft, the draft keeps the card (`InboxDraft.card`), so sending
+   * it later from Drafts still links the thread.
+   */
+  card?: { id: string; title: string } | null;
 }
 
 export interface ComposeSent {
@@ -71,6 +83,22 @@ export interface ComposeSent {
   projectName: string;
   /** The draft it was sent from (it is deleted with the Send), or null. */
   draftId: string | null;
+  /** The Board card the thread was created for (`ComposeRequest.card`): link the thread to it. */
+  cardId?: string | null;
+}
+
+/**
+ * Where compose reads and sends (tour v2): the live sessions and the new
+ * thread, and whether it keeps drafts and takes files. Absent: the Inbox's own
+ * routes, drafts and uploads, exactly as always. The onboarding tour passes
+ * one that writes nothing (`drafts: false`: closing asks nothing and Save
+ * draft is gone; `uploads: false`: no paperclip, drop or paste).
+ */
+export interface ComposeTransport {
+  sessions: () => Promise<ComposeSessionsModel>;
+  startThread: (input: StartThreadInput) => Promise<{ thread_id: string; project?: { id: string; name: string; root: string } }>;
+  drafts: boolean;
+  uploads: boolean;
 }
 
 export interface ComposeDialogProps {
@@ -85,12 +113,42 @@ export interface ComposeDialogProps {
   onSaved: (draft: DraftView) => void;
   onDeleted: (draft: DraftView) => void;
   onClose: () => void;
+  transport?: ComposeTransport;
+  /**
+   * Drawn inside the dialog, after its own content (the tour's coach card): a
+   * modal dialog is the top layer, so anything meant to show over it lives in
+   * it. Absent: nothing.
+   */
+  aside?: React.ReactNode;
+  /** The Board is on (Settings): compose offers the Board chip. Absent: off, no chip. */
+  board?: boolean;
+}
+
+/**
+ * The Board chip (approval "inbox-compose-board-chip", v3): at the right of
+ * the Thread row, a plain toggle (`aria-pressed`) named "Track on Board",
+ * with a component tooltip. On, the Send asks the agent to track the work on
+ * the Board (`board_request`); the agent makes the card(s). No shortcut.
+ */
+function BoardChip(props: { on: boolean; onToggle: () => void }) {
+  return (
+    <Tip content={props.on ? 'On your Board when sent' : 'Track on your Board'}>
+      <button type="button" className="ib-cp-board" aria-pressed={props.on} aria-label="Track on Board" data-compose-board="" onClick={props.onToggle}>
+        <span className="ib-cp-board-box" aria-hidden="true">
+          {props.on && <Icon name="check" size={11} />}
+        </span>
+        Board
+      </button>
+    </Tip>
+  );
 }
 
 const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 export function ComposeDialog(props: ComposeDialogProps) {
-  const { request, phone, current, lastSent, home } = props;
+  const { request, phone, current, lastSent, home, transport } = props;
+  const keepsDrafts = transport?.drafts ?? true;
+  const takesFiles = transport?.uploads ?? true;
   const dialogRef = useRef<HTMLDialogElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const toRef = useRef<HTMLButtonElement>(null);
@@ -100,7 +158,14 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const statusId = `ib-cp-status-${uid}`;
 
   const [draft, setDraft] = useState<DraftView | null>(request.draft ?? null);
-  const [body, setBody] = useState(request.draft?.body ?? '');
+  const [body, setBody] = useState(request.draft?.body ?? request.body ?? (request.card ? `${request.card.title}\n\n` : ''));
+  // The Board card this thread is for (Create thread), kept on its draft so a draft sent later still links it.
+  const card = request.card ?? request.draft?.card ?? null;
+  // The Board chip: a draft's own choice, else this browser's last one. Never in Create thread (the card is the Board's
+  // already), and shown only while the Board is on; a draft keeps its choice while the Board is off.
+  const [boardOn, setBoardOn] = useState(() => (request.draft ? request.draft.board_request === true : composeBoardChoice()));
+  const boardChip = props.board === true && !card;
+  const boardRequest = !card && boardOn;
   // The thread's name (its chip): follows the message until the person types in it (ThreadNameChip).
   const [nameState, setNameState] = useState<ThreadNameState>(() => threadNameStateOf(request.draft));
   const [chosen, setChosen] = useState<string | null>(opening.chosen);
@@ -112,7 +177,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
       setTimeout(() => setPasteSaid(attachedAnnouncement(names)), 30);
     },
   });
-  const { model, load } = useComposeSessions(true);
+  const { model, load } = useComposeSessions(true, transport?.sessions);
   const projects = model?.projects ?? [];
   const target = findTarget(projects, chosen);
   const anyLive = composeTargets(projects).length > 0;
@@ -178,13 +243,16 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const threadName = draftThreadName(nameState);
   useEffect(() => {
     sendKey.current = crypto.randomUUID();
-  }, [body, chosen, threadName, nameState.edited ? '' : suggested, uploadIds.join(',')]);
+  }, [body, chosen, threadName, nameState.edited ? '' : suggested, uploadIds.join(','), boardChip && boardRequest]);
   const draftId = useRef(request.draft?.id ?? inboxId('drf'));
 
   // Nothing written: no words, no files, no typed thread name. An empty compose is never kept as a draft.
-  const empty = body.trim() === '' && files.files.length === 0 && threadName.trim() === '';
+  // A Board card's Create thread starts with the card's title: left as it was, that is nothing written either.
+  const cardStart = request.card && !request.draft ? `${request.card.title}\n\n` : null;
+  const untouched = cardStart !== null && body === cardStart && files.files.length === 0 && threadName.trim() === '';
+  const empty = untouched || (body.trim() === '' && files.files.length === 0 && threadName.trim() === '');
   const saved = draftSnapshot(draft);
-  const dirty = isDirty({ body, session: chosen, files: uploadIds, threadName }, saved, draft !== null) || files.uploading;
+  const dirty = !untouched && (isDirty({ body, session: chosen, files: uploadIds, threadName, board: boardRequest }, saved, draft !== null) || files.uploading);
   const projectName = current?.name ?? null;
 
   // ── the dialog ──
@@ -221,8 +289,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
       return;
     }
     // Something written that was not saved: ask. An empty compose (a draft emptied too) is never kept, so it
-    // closes asking nothing; a reopened draft emptied this way stays saved as it was.
-    if (dirty && !empty) {
+    // closes asking nothing; a reopened draft emptied this way stays saved as it was. No drafts (the tour): nothing to ask.
+    if (keepsDrafts && dirty && !empty) {
       setQuestion(true);
       return;
     }
@@ -257,31 +325,32 @@ export function ComposeDialog(props: ComposeDialogProps) {
     setBusy('send');
     try {
       // The skills the words reference go with the message as one block at its end, as New message's do (skills.ts).
-      const skills = await inboxSkillsBlock([body], INBOX_MESSAGE_SKILL_AUDIENCE);
+      const skills = transport ? null : await inboxSkillsBlock([body], INBOX_MESSAGE_SKILL_AUDIENCE);
       if (start) {
         // A new session the Inbox runs: made with the thread, its first turn is this message.
         const started = await inboxApi.startRun({
           agent: start.agent.id,
           project_id: start.place.project_id,
-          body: withSkillsBlock(body, skills),
+          body: skills ? withSkillsBlock(body, skills) : body,
           idempotency_key: sendKey.current,
           uploads: uploadIds,
           ...named,
           ...(draft ? { draft_id: draft.id } : {}),
         });
-        props.onSent({ threadId: started.thread_id, session: started.run?.key ?? '', host: start.agent.id, projectName: started.project?.name ?? start.place.name, draftId: draft?.id ?? null });
+        props.onSent({ threadId: started.thread_id, session: started.run?.key ?? '', host: start.agent.id, projectName: started.project?.name ?? start.place.name, draftId: draft?.id ?? null, cardId: card?.id ?? null });
         return;
       }
       if (!target) return;
-      const result = await inboxApi.startThread({
+      const result = await (transport ? transport.startThread : inboxApi.startThread)({
         to: { host: target.host, session: target.session },
-        body: withSkillsBlock(body, skills),
+        body: skills ? withSkillsBlock(body, skills) : body,
         idempotency_key: sendKey.current,
         uploads: uploadIds,
         ...named,
         ...(draft ? { draft_id: draft.id } : {}),
+        ...(boardChip && boardRequest ? { board_request: true as const } : {}),
       });
-      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null });
+      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null, cardId: card?.id ?? null });
     } catch (cause) {
       if (cause instanceof InboxApiError && cause.code === 'session_not_live') {
         void load();
@@ -316,7 +385,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         : start
           ? { id: start.place.project_id, root: start.place.root, name: start.place.name }
         : (draft?.project ?? (current?.root ? { id: current.id, root: current.root, name: current.name ?? current.root } : null));
-      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName });
+      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName, ...(card ? { card } : {}), ...(boardRequest ? { board_request: true as const } : {}) });
       setDraft(result.draft);
       setConflict(null);
       return result.draft;
@@ -399,7 +468,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
   // While the sessions are read, neither Save draft nor a dead To: a neutral "Looking…" state.
   const loading = !model;
   // Save draft only for something written: an empty compose offers none (a phone shows the disabled Send instead).
-  const saveOffered = !sendable && !loading && !empty;
+  const saveOffered = keepsDrafts && !sendable && !loading && !empty;
   const title = draft ? 'Draft' : 'New message';
   const status = start
     ? `${start.agent.label} starts in ${tildePath(start.place.root, home)} when you send.`
@@ -500,7 +569,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) requestClose();
       }}
       onDragOver={(event) => {
-        if (![...event.dataTransfer.types].includes('Files')) return;
+        if (!takesFiles || ![...event.dataTransfer.types].includes('Files')) return;
         event.preventDefault();
         setDropping(true);
       }}
@@ -510,10 +579,10 @@ export function ComposeDialog(props: ComposeDialogProps) {
       }}
       // A paste anywhere in the dialog that carries files attaches them; text pastes as text.
       onPaste={(event) => {
-        if (files.paste(event)) setError(null);
+        if (takesFiles && files.paste(event)) setError(null);
       }}
       onDrop={(event) => {
-        if (event.dataTransfer.files.length === 0) return;
+        if (!takesFiles || event.dataTransfer.files.length === 0) return;
         event.preventDefault();
         setDropping(false);
         files.add(event.dataTransfer.files);
@@ -548,6 +617,13 @@ export function ComposeDialog(props: ComposeDialogProps) {
         </h2>
       )}
       {toRow}
+      {card && (
+        <p className="ib-cp-card" data-compose-card={card.id}>
+          <span>
+            A thread for the Board card <b dir="auto">{card.title}</b>. Sending links it to the card.
+          </span>
+        </p>
+      )}
       {picker && (
         <ToPicker
           groups={groups}
@@ -598,6 +674,15 @@ export function ComposeDialog(props: ComposeDialogProps) {
           }}
           idBase={`ib-cp-tname-${uid}`}
         />
+        {boardChip && (
+          <BoardChip
+            on={boardOn}
+            onToggle={() => {
+              setBoardOn(!boardOn);
+              rememberComposeBoardChoice(!boardOn);
+            }}
+          />
+        )}
       </div>
       {model && !anyChoice && !endedNote && (
         <div className="ib-cp-note" data-compose-note="none">
@@ -696,21 +781,32 @@ export function ComposeDialog(props: ComposeDialogProps) {
         </div>
       ) : (
         <div className="ib-cp-foot">
-          <Tip content="Attach files">
-            <label className="ib-cp-clip" aria-label="Attach files">
-              <Icon name="clip" size={17} />
-              <input
-                type="file"
-                multiple
-                className="ib-sr"
-                data-compose-attach=""
-                onChange={(event) => {
-                  if (event.target.files) files.add(event.target.files);
-                  event.target.value = '';
-                }}
-              />
-            </label>
-          </Tip>
+          {takesFiles ? (
+            <Tip content="Attach files">
+              <label className="ib-cp-clip" aria-label="Attach files">
+                <Icon name="clip" size={17} />
+                <input
+                  type="file"
+                  multiple
+                  className="ib-sr"
+                  data-compose-attach=""
+                  // A phone's picker offers the photo library and Files (iOS gives no Paste for a picture in a text
+                  // field); what it hands over is named as a paste is (`image.jpg` -> `pasted-image-<stamp>.jpg`).
+                  accept={phone ? 'image/*,*/*' : undefined}
+                  onChange={(event) => {
+                    if (event.target.files) (phone ? files.attach : files.add)(event.target.files);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+            </Tip>
+          ) : (
+            <Tip content="Files: not in the tour">
+              <span className="ib-cp-clip" role="img" aria-label="Files: not in the tour" aria-disabled="true" data-compose-attach-off="">
+                <Icon name="clip" size={17} />
+              </span>
+            </Tip>
+          )}
           {/* On a desktop the To line already says "Draft · saved". */}
           {draft && !dirty && phone && (
             <span className="ib-cp-savedline" data-compose-saved="">
@@ -754,6 +850,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
       <div className="ib-sr" aria-live="polite" data-compose-paste-live="">
         {pasteSaid}
       </div>
+      {props.aside}
       {dropping && (
         <div className="ib-cp-drop" aria-hidden="true">
           <Icon name="clip" size={20} />

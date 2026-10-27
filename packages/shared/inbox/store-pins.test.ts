@@ -8,7 +8,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import fc from "fast-check";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InboxError } from "./schema";
@@ -198,5 +198,37 @@ describe("pins in the store", () => {
       }),
       { numRuns: 60 },
     );
+  });
+});
+
+describe("a pins.json the Inbox cannot read is never wiped by the next pin", () => {
+  test("not JSON: moved aside, kept byte for byte, and the new pin is written", () => {
+    const { dir, store, project } = open();
+    const a = store.sendMessage({ project_id: project.id, author: agent("ses_a"), body: "One" }).message;
+    const bytes = '{"v":1,"pins":[{"thread_id":"msg_01K7AAAAAAAAAAAAAAAAAAAAAA",';
+    writeFileSync(join(dir, "inbox", "pins.json"), bytes);
+    store.setPinned(a.thread_id, true);
+    const aside = readdirSync(join(dir, "inbox")).filter((n) => n.startsWith("pins.json.unreadable-"));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, "inbox", aside[0]!), "utf8")).toBe(bytes);
+    expect(JSON.parse(readFileSync(join(dir, "inbox", "pins.json"), "utf8")).pins.map((p: { thread_id: string }) => p.thread_id)).toEqual([a.thread_id]);
+  });
+
+  test("unpinning the last pin over a bad file moves it aside too, never deletes it", () => {
+    const { dir, store, project } = open();
+    const a = store.sendMessage({ project_id: project.id, author: agent("ses_a"), body: "One" }).message;
+    store.setPinned(a.thread_id, true);
+    writeFileSync(join(dir, "inbox", "pins.json"), "[]");
+    store.setPinned(a.thread_id, false);
+    expect(readdirSync(join(dir, "inbox")).filter((n) => n.startsWith("pins.json.unreadable-"))).toHaveLength(1);
+  });
+
+  test("a newer version's pins.json is refused, kept as it is", () => {
+    const { dir, store, project } = open();
+    const a = store.sendMessage({ project_id: project.id, author: agent("ses_a"), body: "One" }).message;
+    const bytes = JSON.stringify({ v: 2, pins: [{ thread: "x" }] });
+    writeFileSync(join(dir, "inbox", "pins.json"), bytes);
+    expect(code(() => store.setPinned(a.thread_id, true))).toBe("pins_newer");
+    expect(readFileSync(join(dir, "inbox", "pins.json"), "utf8")).toBe(bytes);
   });
 });
