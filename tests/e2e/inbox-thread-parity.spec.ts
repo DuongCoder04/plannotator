@@ -145,8 +145,25 @@ async function settle(page: Page): Promise<void> {
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
   });
   // WebKit draws an image it just scaled at low quality and repaints it at high quality half a second later
-  // (its ImageQualityController): wait that out, or a capture can land on either.
-  if (page.context().browser()?.browserType().name() === 'webkit') await page.waitForTimeout(700);
+  // (its ImageQualityController): wait that out, then repaint the scrollers whole (a layer for two frames,
+  // then none; nothing moves, nothing takes focus). Even so, WebKit now and then blends the one pixel row
+  // where a scroller clips a picture tile a few colour levels differently from run to run (main against
+  // itself too); the report names such a capture, and its DOM still matches.
+  if (page.context().browser()?.browserType().name() === 'webkit') {
+    await page.waitForTimeout(700);
+    await page.evaluate(async () => {
+      const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      // Each scroller's style attribute is put back exactly as it was, so the captured DOM is untouched.
+      const scrollers = [...document.querySelectorAll<HTMLElement>('.ib-pbody, .ib-lbody')].map((el) => ({ el, style: el.getAttribute('style') }));
+      for (const { el } of scrollers) el.style.setProperty('transform', 'translateZ(0)');
+      await frames();
+      for (const { el, style } of scrollers) {
+        if (style === null) el.removeAttribute('style');
+        else el.setAttribute('style', style);
+      }
+      await frames();
+    });
+  }
 }
 
 function domDir(info: TestInfo): string {
