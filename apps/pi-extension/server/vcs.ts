@@ -16,7 +16,7 @@ import {
 	prepareGitCommand,
 	runGitDiff as runGitDiffCore,
 } from "../generated/review-core.ts";
-import { resolveRepoWorkingTreeEntry } from "../generated/repo-file.ts";
+import { readRepoWorkingTreeEntry } from "../generated/repo-file.ts";
 import {
 	JJ_COLOR_FREE_ARGS,
 	type ReviewJjRuntime,
@@ -214,8 +214,10 @@ export const reviewRuntime: ReviewGitRuntime = {
 		return runCommand("git", command.args, "git not found", options, command);
 	},
 
-	async checkWorkingTreeEntry(root, path) {
-		return resolveRepoWorkingTreeEntry(root, path);
+	// The default decoder is Node's readFileSync(path, "utf-8") (a BOM stays),
+	// which is what readTextFile below returns.
+	async readWorkingTreeEntry(root, path, options) {
+		return readRepoWorkingTreeEntry(root, path, options);
 	},
 
 	runGitBytes(
