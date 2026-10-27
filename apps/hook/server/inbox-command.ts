@@ -6,6 +6,10 @@
  *   plannotator inbox --background  start it detached (no browser), print the
  *                                   URL, exit 0; what agents and the shim run
  *   plannotator inbox --no-open     run here without opening a browser
+ *   plannotator inbox --open        open it in the browser, starting it
+ *                                   detached first when it is not running;
+ *                                   print the URL, exit 0 (never blocks: what
+ *                                   the /plannotator-inbox commands run)
  *   plannotator inbox --tailscale   also publish it over the tailnet for this
  *                                   run (with any of the above; a running
  *                                   Inbox is asked to publish), for the
@@ -31,10 +35,11 @@ import {
 } from "@plannotator/shared/inbox/registry";
 import { handleInboxServerReady, startInboxServer } from "@plannotator/server/inbox";
 import { exposureWarning, type InboxTailscaleState } from "@plannotator/server/inbox-tailscale";
-import { openBrowser } from "@plannotator/server/browser";
+import { openBrowser, openBrowserDetached } from "@plannotator/server/browser";
+import { isRemoteSession } from "@plannotator/server/remote";
 import { agentSpec, createAgentEnvironment, formatConnectReport, inboxConnectDisabled } from "@plannotator/server/inbox-agents";
-import { addInboxNote, inboxNotesDisabled, markNotesAsked } from "@plannotator/server/inbox-agent-notes";
-import { INBOX_AGENT_LABELS, INBOX_NOTE_AGENT_IDS, type InboxConnectReport, type InboxNoteAgentId } from "@plannotator/core/inbox-types";
+import { addInboxNote, INBOX_NOTE_BODY, inboxNotesDisabled, markNotesAsked } from "@plannotator/server/inbox-agent-notes";
+import { INBOX_AGENT_LABELS, INBOX_AUTO_SEND_AFTER_MS, INBOX_NOTE_AGENT_IDS, type InboxConnectReport, type InboxNoteAgentId } from "@plannotator/core/inbox-types";
 import { writeUrlQr } from "@plannotator/server/qr";
 import { getCliVersion } from "./cli";
 import { inboxHostSessionFromEnv, runInboxMcpShim } from "./inbox-mcp-shim";
@@ -130,6 +135,11 @@ export async function ensureInboxRunning(dataDir: string, options: { tailscale?:
   } finally {
     release?.();
   }
+}
+
+/** `--open` over SSH: no browser opened on the remote host, so say how to reach the Inbox. */
+export function inboxRemoteOpenHint(port: number): string {
+  return `No browser opened: this is a remote session. Forward the port (ssh -L ${port}:127.0.0.1:${port} <this host>) and open the URL, or run plannotator inbox --tailscale.`;
 }
 
 /** Where the Inbox is on the tailnet, or why it is not there; the Inbox runs locally either way. Stderr only. */
@@ -252,6 +262,8 @@ async function serveInbox(dataDir: string, open: boolean, htmlContent: string | 
       htmlContent,
       selfCommand: selfCommand(),
       publishTailnet: tailscale,
+      // Testing knob: how long a reply waits on a busy agent before it goes in by itself (default 5 minutes).
+      ...autoSendAfterMsFromEnv(),
       // The stop route (uninstall --purge) ends the process.
       onStopRequested: () => process.exit(0),
       // Its data folder (or inbox.json) is gone or another Inbox's: nothing
@@ -312,6 +324,12 @@ async function writeNotes(dataDir: string, list: string): Promise<number> {
   const added: InboxNoteAgentId[] = [];
   for (const id of ids as InboxNoteAgentId[]) {
     const label = INBOX_AGENT_LABELS[id];
+    if (id === "cursor") {
+      process.stdout.write(`${INBOX_NOTE_BODY}\n\n`);
+      process.stderr.write("Cursor User Rules are managed in Cursor Settings → Rules. Copy the block above there; Plannotator cannot detect, update or remove a copied rule.\n");
+      added.push(id);
+      continue;
+    }
     // Never a file for an agent that is not on this computer.
     if (!agentSpec(id).detect(environment)) {
       ok = false;
@@ -340,7 +358,7 @@ async function writeNotes(dataDir: string, list: string): Promise<number> {
   }
   // The window never asks about an agent whose note is there now; the others are still asked, once each.
   await markNotesAsked(added, { dataDir, selfCommand: selfCommand(), environment });
-  if (ok) process.stderr.write("Each agent reads it from its next session. Remove it in the Inbox's Settings or with plannotator uninstall.\n");
+  if (ok && added.some((id) => id !== "cursor")) process.stderr.write("Managed notes are read from each agent's next session. Remove them in the Inbox's Settings or with plannotator uninstall.\n");
   return ok ? 0 : 1;
 }
 
@@ -384,22 +402,34 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
 
   let background = false;
   let noOpen = false;
+  let open = false;
   let tailscale = false;
   for (const arg of args) {
     if (arg === "--background") background = true;
     else if (arg === "--no-open") noOpen = true;
+    else if (arg === "--open") open = true;
     else if (arg === "--tailscale") tailscale = true;
     else if (arg === "--notes") usageError("--notes goes first and alone: plannotator inbox --notes codex,gemini");
     else usageError(`Unknown inbox option: ${arg}`);
   }
 
-  if (background) {
+  if (open && (background || noOpen)) {
+    usageError(`--open does not go with ${background ? "--background" : "--no-open"}: it starts the Inbox in the background itself and opens it.`);
+  }
+
+  if (background || open) {
     try {
       const before = await inboxStatus(dataDir);
       const entry = await ensureInboxRunning(dataDir, { tailscale });
       // Stdout stays the local URL alone (agents read it); the tailnet goes to stderr.
       if (tailscale && (before.state === "running" || before.state === "busy")) await publishRunningInbox(entry);
       else reportTailnet(readInboxRegistry(dataDir)?.tailscale ?? entry.tailscale, tailscale);
+      // --open: the person asked for the window (the /plannotator-inbox
+      // commands). The opener is never waited for: a browser it starts may
+      // hold its output open for as long as it runs.
+      if (open && (await openBrowserDetached(entry.url, { isRemote: isRemoteSession() })) === "remote") {
+        process.stderr.write(`${inboxRemoteOpenHint(entry.port)}\n`);
+      }
       process.stdout.write(`${entry.url}\n`);
       process.exit(0);
     } catch (error) {
@@ -424,4 +454,27 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
     process.exit(0);
   }
   return serveInbox(dataDir, !noOpen, assets.htmlContent, tailscale, connect);
+}
+
+/**
+ * `PLANNOTATOR_INBOX_AUTO_SEND_MS`: a testing knob for the end-to-end proof
+ * on the compiled binary (approval "inbox-busy-agent-reply"): how long a
+ * reply waits on a busy agent before the Inbox puts it into the running turn
+ * by itself. A whole number of milliseconds from 1,000 up to the default; it
+ * can only make the wait shorter, and only in a build that is not a release
+ * (`version` not X.Y.Z, e.g. `0.0.0-dev` or a source run) or under the test
+ * sandbox (`PLANNOTATOR_TEST_SANDBOX`). A release ignores it, so an agent that
+ * starts the Inbox cannot make replies jump into turns. Anything else is
+ * ignored (the default, `INBOX_AUTO_SEND_AFTER_MS`, 5 minutes).
+ */
+export function autoSendAfterMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  version: string | undefined = getCliVersion(),
+): { autoSendAfterMs?: number } {
+  const release = typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version);
+  if (release && !env.PLANNOTATOR_TEST_SANDBOX) return {};
+  const raw = env.PLANNOTATOR_INBOX_AUTO_SEND_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return {};
+  const ms = Number(raw);
+  return Number.isSafeInteger(ms) && ms >= 1_000 && ms <= INBOX_AUTO_SEND_AFTER_MS ? { autoSendAfterMs: ms } : {};
 }

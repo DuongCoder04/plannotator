@@ -17,7 +17,6 @@ import { attachmentSequence, stepAnnouncement, type AttachmentStep } from './ste
 
 const hasDom = typeof document !== 'undefined';
 const { AttachmentPane } = (hasDom ? await import('./components/AttachmentPane') : {}) as typeof import('./components/AttachmentPane');
-const { ImageAttachmentView } = (hasDom ? await import('./components/ImageAttachmentView') : {}) as typeof import('./components/ImageAttachmentView');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -89,7 +88,7 @@ interface Harness {
 }
 
 /** The pane as the thread drives it: a step opens the next file in place. */
-function Pane({ start, full = true, harness, steps = STEPS, phone = false }: { start: InboxAttachmentState; full?: boolean; harness: Harness; steps?: AttachmentStep[]; phone?: boolean }) {
+function Pane({ start, full = false, harness, steps = STEPS, phone = false }: { start: InboxAttachmentState; full?: boolean; harness: Harness; steps?: AttachmentStep[]; phone?: boolean }) {
   const [open, setOpen] = useState(start);
   const noop = () => {};
   const all = steps.map((s) => s.attachment);
@@ -103,7 +102,8 @@ function Pane({ start, full = true, harness, steps = STEPS, phone = false }: { s
       projectRoot="/work/shop"
       version="current"
       onVersion={noop}
-      full={full}
+      full={full || phone}
+      fullLocked={phone}
       onToggleFull={noop}
       focusId={null}
       readOnly={false}
@@ -111,7 +111,7 @@ function Pane({ start, full = true, harness, steps = STEPS, phone = false }: { s
       onRemoved={noop}
       onOpenAt={noop}
       onClose={() => harness.closed++}
-      strip={{ picks: 0, annotations: 0, onBack: noop, onWriteReply: noop }}
+      strip={{ picks: 0, annotations: 0, onWriteReply: noop }}
       steps={steps}
       phone={phone}
       onStep={(id, version) => {
@@ -251,41 +251,55 @@ test.skipIf(!hasDom)('the keys stand down: while typing, with a modifier, on rep
   expect(harness.steps.map((s) => s.id)).toEqual([shotB.id, zip.id]);
 });
 
-test.skipIf(!hasDom)('an image at its own size that scrolls keeps the arrows; ] still steps', async () => {
-  // happy-dom has no layout: every image stage reports it is wider than it shows.
-  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
-  Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
-    configurable: true,
-    get(this: HTMLElement) {
-      return this.classList.contains('ib-imgstage') ? 2400 : 0;
-    },
-  });
+test.skipIf(!hasDom)('a zoomed image never keeps the arrows: → and ] step from the focused stage at Actual size and zoomed; ↓ pans it', async () => {
+  // happy-dom answers a relative src with an error on about:blank: give the page an address.
+  const happy = (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM;
+  const was = location.href;
+  happy.setURL('http://localhost:4000/');
   try {
-    const noop = () => {};
-    // At its own size and wider than the stage: the stage claims the arrows.
-    await render(<ImageAttachmentView attachment={shotA} version="current" annotations={[]} selectedId={null} readOnly={false} onSave={async () => true} onError={noop} initialFit="actual" />);
-    expect(host!.querySelector('.ib-imgstage')!.getAttribute('data-fit')).toBe('actual');
-    expect(host!.querySelector('.ib-imgstage')!.getAttribute('data-claims-arrows')).toBe('true');
-    act(() => root!.unmount());
-    host!.remove();
-    // Fitted: it does not.
-    await render(<ImageAttachmentView attachment={shotA} version="current" annotations={[]} selectedId={null} readOnly={false} onSave={async () => true} onError={noop} />);
-    expect(host!.querySelector('.ib-imgstage')!.hasAttribute('data-claims-arrows')).toBe(false);
-    act(() => root!.unmount());
-    host!.remove();
+    const harness = harnessOf();
+    await render(<Pane start={shotA} harness={harness} />);
+    const loadStage = async () => {
+      const stage = host!.querySelector<HTMLElement>('[data-image-zoom-stage]')!;
+      stage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 600, right: 1000, bottom: 600, x: 0, y: 0, toJSON() {} }) as DOMRect;
+      const img = stage.querySelector<HTMLImageElement>('[data-lightbox-image]')!;
+      Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 2000 });
+      Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 1500 });
+      await act(async () => {
+        img.dispatchEvent(new Event('load'));
+      });
+      return { stage, img };
+    };
+    const { stage, img } = await loadStage();
+    // Actual size: the image is far larger than the stage, and nothing claims the arrows.
+    await act(async () => host!.querySelector<HTMLButtonElement>('[data-image-fit]')!.click());
+    expect(host!.querySelector('[data-claims-arrows]')).toBeNull();
+    stage.focus();
+    const before = img.style.transform;
+    const down = await key(stage, { key: 'ArrowDown' });
+    expect(down.defaultPrevented).toBe(true);
+    expect(img.style.transform).not.toBe(before);
+    expect(harness.steps).toEqual([]);
+    await key(stage, { key: 'ArrowRight' });
+    expect(harness.steps.map((s) => s.id)).toEqual([spec.id]);
+    // Back on the image, zoomed by a pinch: → still steps.
+    await key(pane(), { key: '[' });
+    expect(openId()).toBe(shotA.id);
+    const again = await loadStage();
+    const wheel = new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true });
+    Object.defineProperty(wheel, 'ctrlKey', { value: true });
+    Object.defineProperty(wheel, 'clientX', { value: 500 });
+    Object.defineProperty(wheel, 'clientY', { value: 300 });
+    await act(async () => {
+      again.stage.dispatchEvent(wheel);
+    });
+    expect(again.stage.getAttribute('data-image-zoom-stage')).toBe('zoom');
+    again.stage.focus();
+    await key(again.stage, { key: 'ArrowRight' });
+    expect(openId()).toBe(spec.id);
   } finally {
-    if (own) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', own);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth;
+    happy.setURL(was);
   }
-
-  // In the pane, a part that claims the arrows keeps them; ] still steps.
-  const harness = harnessOf();
-  await render(<Pane start={shotA} harness={harness} />);
-  host!.querySelector('.ib-imgstage')!.setAttribute('data-claims-arrows', 'true');
-  await key(pane(), { key: 'ArrowRight' });
-  expect(harness.steps).toEqual([]);
-  await key(pane(), { key: ']' });
-  expect(harness.steps.map((s) => s.id)).toEqual([spec.id]);
 });
 
 test.skipIf(!hasDom)('beside the thread, keys step only from inside the file; full screen, from anywhere', async () => {
@@ -356,17 +370,22 @@ test.skipIf(!hasDom)('the peek opens a picture list, one row per message; it own
   expect(openId()).toBe(shotB.id);
 });
 
-test.skipIf(!hasDom)('on a phone the count opens the peek as a bottom sheet, three across; the backdrop closes it and focus returns to the count', async () => {
+test.skipIf(!hasDom)('on a phone (always full screen) the position in the comments sheet opens the peek as a bottom sheet, three across; the backdrop closes it and focus returns to the position', async () => {
   await render(<Pane start={shotA} harness={harnessOf()} phone />);
-  await act(async () => host!.querySelector<HTMLButtonElement>('[data-step-label]')!.click());
+  // No stepper under the file on a phone: the toolbar and its comments sheet carry the position.
+  expect(host!.querySelector('[data-attachment-stepper]')).toBeNull();
+  await act(async () => host!.querySelector<HTMLButtonElement>('[data-full-view-comments]')!.click());
+  const pos = host!.querySelector<HTMLButtonElement>('[data-full-view-foot] [data-full-view-position]')!;
+  await act(async () => pos.click());
   const sheet = document.querySelector<HTMLElement>('[data-image-peek-sheet]')!;
   expect(sheet).not.toBeNull();
   expect(sheet.querySelector('[data-image-peek="sheet"]')).not.toBeNull();
   expect(sheet.querySelector('[role="row"] [class*="grid-cols-3"]')).not.toBeNull();
   await act(async () => sheet.querySelector<HTMLElement>('[data-peek-backdrop]')!.click());
+  await settle();
   expect(document.querySelector('[data-image-peek-sheet]')).toBeNull();
-  // The backdrop covered everything: focus goes back to the count that opened it.
-  expect(document.activeElement).toBe(host!.querySelector('[data-step-label]'));
+  // The backdrop covered everything: focus goes back to the position that opened it.
+  expect(document.activeElement).toBe(pos);
 });
 
 test('images in a message come before its attached files, in text order; each says where it was', () => {
@@ -508,15 +527,3 @@ test.skipIf(!hasDom)('the arrows stand down inside a block that scrolls sideways
   expect(harness.steps.map((s) => s.id)).toEqual([shotB.id]);
 });
 
-test.skipIf(!hasDom)('on a phone the end note takes the place of the count in the bar, never floating over the file', async () => {
-  const harness = harnessOf();
-  await render(<Pane start={zip} harness={harness} phone />);
-  const label = host!.querySelector<HTMLButtonElement>('[data-step-label]')!;
-  expect(label.textContent).toContain('4 of 4');
-  await act(async () => host!.querySelector<HTMLButtonElement>('[data-step-next]')!.click());
-  const note = host!.querySelector('[data-step-end-note]')!;
-  expect(note.textContent).toBe('Last file in this thread');
-  expect(label.contains(note)).toBe(true);
-  expect(label.textContent).not.toContain('4 of 4');
-  expect(host!.querySelectorAll('[data-step-end-note]')).toHaveLength(1);
-});

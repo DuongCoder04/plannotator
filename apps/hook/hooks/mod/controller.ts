@@ -22,6 +22,9 @@ import {
   cliArgvFor,
   failedText,
   fileIn,
+  INBOX_OPEN_TIMEOUT_MS,
+  inboxOpenAnswer,
+  inboxOpenArgv,
   isSeveralFilePaths,
   launchArgv,
   launchDirOf,
@@ -29,9 +32,11 @@ import {
   openedText,
   parseReadyFile,
   pickerFile,
+  planApprovalPathOf,
   privateDirArgv,
   pruneArgv,
   RECENT_MESSAGES_SUBJECT,
+  removeFileArgv,
   recentAssistantTexts,
   SETTLED_BY,
   SETTLED_DIR,
@@ -48,6 +53,7 @@ import {
   isTrustablePlanPath,
   MAX_PLAN_FILE_BYTES,
   normalizePlanForHash,
+  planApprovalRecord,
   planCallAction,
   planWaitingStatus,
   revisedDenyText,
@@ -59,6 +65,7 @@ import {
 } from './plan'
 import {
   isOlderCliBundleRefusal,
+  isOlderCliTailscaleRefusal,
   parsePlannotatorToolInput,
   plannotatorDecisionSubject,
   plannotatorDistinctSubjects,
@@ -72,6 +79,7 @@ import {
   plannotatorToolTargets,
   plannotatorUnknownSessionText,
   PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT,
+  PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT,
   scriptOnlyAnnotateFlag,
   scriptOnlyAnnotateFlagText,
   type PlannotatorCloseOutcome,
@@ -119,7 +127,15 @@ export interface LaunchRecord {
    * the server shuts down.
    */
   closedByAgent?: boolean
+  /** The ready file's `tailnet` (a `--tailscale` session of a CLI that keeps Ask this session there, #2166). */
+  tailnet?: { ask: boolean }
+  /** Opened by the tool with `tailscale: true`: a ready line without `tailnet` means a CLI too old for it. */
+  tailscaleAsked?: boolean
 }
+
+/** What the mod says when a tool `tailscale` launch came up late from a CLI too old for it. */
+export const TAILSCALE_LATE_OLDER_CLI_TEXT = (subject: string): string =>
+  `${subject} opened, but the installed Plannotator is too old to keep "Ask this session" over the tailnet. Update Plannotator (\`plannotator update\`).`
 
 /** The `pn-` session id of a launch: the six hex digits that end its launch id. */
 export function sessionIdOf(launch: { id: string }): string {
@@ -296,8 +312,12 @@ export interface SessionInfo {
    * at its first session start (inbox.ts); absent: no Inbox connection.
    */
   inboxTools?: readonly InboxToolInfo[]
+  /** The name the engine registered `plannotator_inbox` under (`mcp__<server>__plannotator_inbox`): the wake's closing line names it. */
+  inboxToolName?: string
   /** The session's working folder, read when asked (the Inbox link's polls say where the session works). */
   cwd?: () => Promise<string>
+  /** The session's root folder (`$.session.root()`), read once at the link's start: where `claude --resume` runs. */
+  root?: () => Promise<string>
 }
 
 export class PlannotatorMod {
@@ -347,13 +367,16 @@ export class PlannotatorMod {
           dataDir: session.dataDir,
           sessionId: session.sessionId,
           tools: session.inboxTools,
+          ...(session.inboxToolName ? { toolName: session.inboxToolName } : {}),
           isBusy: () => this.turns.busy,
-          // Send now goes into a running main turn, never into this session's own Ask question.
+          // Send now goes into a running main turn, never into this session's own Ask question, and
+          // never into a turn another plugin's prompt started (that plugin may read its answer as its own).
           steerableTurn: () => {
             const turn = this.turns.runningTurn
-            return turn !== null && !this.turns.ownsTurn(turn) ? turn : null
+            return turn !== null && !this.turns.ownsTurn(turn) && !this.turns.isOtherPluginTurn(turn) ? turn : null
           },
           ...(session.cwd ? { cwd: session.cwd } : {}),
+          ...(session.root ? { root: session.root } : {}),
           instanceId: this.instanceId,
         })
       : null
@@ -749,6 +772,13 @@ export class PlannotatorMod {
     if (!ready) return false
     launch.url = ready.url
     launch.port = ready.port
+    if (ready.tailnet) launch.tailnet = ready.tailnet
+    else if (launch.tailscaleAsked && !launch.starting) {
+      // The tool answered "starting" and the CLI came up later: the tool can
+      // no longer refuse, so say it here (the review stays open).
+      this.host.log(TAILSCALE_LATE_OLDER_CLI_TEXT(launch.subject))
+      this.host.toast(TAILSCALE_LATE_OLDER_CLI_TEXT(launch.subject))
+    }
     if (ready.target !== undefined) {
       // The server's own answer: it may have found a bare name elsewhere in the project.
       if (launch.target !== undefined && !plannotatorSameTarget(launch.target, ready.target)) {
@@ -795,6 +825,14 @@ export class PlannotatorMod {
 
   // --- Commands ------------------------------------------------------------
 
+  /** `/plannotator-inbox`: open the person's Inbox (starting it detached when stopped) and say its address. */
+  async openInbox(): Promise<string> {
+    const result = await this.host
+      .run(inboxOpenArgv(), { env: { PLANNOTATOR_DATA_DIR: this.session.dataDir }, timeoutMs: INBOX_OPEN_TIMEOUT_MS })
+      .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: error instanceof Error ? error.message : String(error) }))
+    return inboxOpenAnswer(result)
+  }
+
   /** `/plannotator-review`, `/plannotator-annotate`, `/plannotator-last`: open and return at once. */
   async runCommand(kind: Exclude<SessionKind, 'plan'>, rawArgs: string): Promise<string> {
     await this.touchLaunches()
@@ -824,7 +862,8 @@ export class PlannotatorMod {
   async runTool(input: unknown): Promise<{ text: string } | { deny: string }> {
     await this.adoptNewStoredLaunches()
     await this.touchLaunches()
-    const parsed = parsePlannotatorToolInput(input)
+    // The mod's launch can publish over the tailnet, so `tailscale` is accepted (#2166).
+    const parsed = parsePlannotatorToolInput(input, { tailscale: true })
     if (!parsed.ok) return { deny: parsed.error }
     const call = parsed.input
     switch (call.action) {
@@ -843,17 +882,59 @@ export class PlannotatorMod {
     // A list of files is one review of all of them (a bundle), named as such.
     const bundle = Array.isArray(call.target)
     const subject = bundle ? plannotatorBundleSubject(targets) : subjectFor(action, targets)
-    const opened = await this.open(action, plannotatorToolArgs(call), subject, gate ? { deliverApproval: true } : {})
+    const tailscale = call.tailscale === true
+    const opened = await this.open(action, plannotatorToolArgs(call), subject, {
+      ...(gate ? { deliverApproval: true } : {}),
+      ...(tailscale ? { tailscaleAsked: true } : {}),
+    })
     switch (opened.state) {
       case 'error':
         // An older CLI answers several paths with its ambiguity error.
         if (bundle && isOlderCliBundleRefusal(opened.text)) return { deny: PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT }
+        // A CLI from before `--tailscale` refuses the word (an unknown flag or
+        // file). A current CLI's publish failure (`--tailscale: Tailscale is
+        // not running`, signed out, port routed) is shown as it is.
+        if (tailscale && isOlderCliTailscaleRefusal(opened.text)) return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
         return { deny: opened.text }
       case 'starting':
         return { text: plannotatorToolOpenedText(opened.subject, undefined, gate, opened.sessionId, opened.target) }
       case 'ready':
-        return { text: plannotatorToolOpenedText(opened.subject, opened.url, gate, opened.sessionId, opened.target) }
+        if (tailscale && !opened.tailnet) {
+          // The CLI opened it without the tailnet's Ask this session (it
+          // predates #2166) or not on the tailnet at all (it ignored the
+          // flag): say so and do not leave it open, never a silent downgrade.
+          await this.abandonLaunch(opened.sessionId)
+          return { deny: PLANNOTATOR_TOOL_TAILSCALE_UNAVAILABLE_TEXT }
+        }
+        return {
+          text: plannotatorToolOpenedText(
+            opened.subject,
+            opened.url,
+            gate,
+            opened.sessionId,
+            opened.target,
+            tailscale ? opened.tailnet : undefined,
+          ),
+        }
     }
+  }
+
+  /**
+   * Stop a review the tool just opened and must not leave running (a CLI too
+   * old for `tailscale`): TERM its process when the pid still names a
+   * plannotator process (`STOP_SCRIPT`), then forget it. Nothing is delivered.
+   */
+  private async abandonLaunch(sessionId: string): Promise<void> {
+    const launch = [...this.launches.values()].find((candidate) => sessionIdOf(candidate) === sessionId)
+    if (!launch) return
+    launch.settling = true
+    const pid = (await this.host.readFile(fileIn(launch.dir, 'pid')).catch(() => '')).trim()
+    if (/^\d+$/.test(pid)) {
+      await this.host.run(stopArgv(pid, [fileIn(launch.dir, 'result'), fileIn(launch.dir, 'exit')]), { timeoutMs: 5_000 }).catch(() => null)
+    }
+    await this.forget(launch)
+    await this.host.run(cleanupArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
+    this.host.debug(`abandoned ${launch.id}: the CLI cannot serve the tailnet session the tool asked for`)
   }
 
   // --- The agent's own sessions (list, close) ------------------------------
@@ -972,7 +1053,8 @@ export class PlannotatorMod {
    * its process, unless the reviewer's decision is already on disk or the pid
    * no longer names a plannotator process (`STOP_SCRIPT`). A decision such a
    * CLI is still publishing (it waits 1.5 s after the reviewer decides) cannot
-   * be seen and is lost; see "Version skew" in AGENTS.md.
+   * be seen and is lost; see "Version skew" in
+   * docs/agent-guides/claude-code-mod.md.
    */
   private async stopOlderCli(launch: LiveLaunch, id: string, subject: string): Promise<PlannotatorCloseOutcome> {
     const pid = (await this.host.readFile(fileIn(launch.dir, 'pid')).catch(() => '')).trim()
@@ -1028,7 +1110,7 @@ export class PlannotatorMod {
   ): Promise<
     | { state: 'error'; text: string }
     | { state: 'starting'; subject: string; sessionId: string; target?: PlannotatorTarget }
-    | { state: 'ready'; subject: string; url: string; sessionId: string; extra?: string; target?: PlannotatorTarget }
+    | { state: 'ready'; subject: string; url: string; sessionId: string; extra?: string; target?: PlannotatorTarget; tailnet?: { ask: boolean } }
   > {
     if (kind === 'annotate') {
       // Strict gates and --hook answer on the CLI's exit code, stdout or result
@@ -1064,7 +1146,14 @@ export class PlannotatorMod {
     // The launch's subject, told apart from a same-named open review, and its full target.
     const named = { subject: started.subject, ...(started.target !== undefined ? { target: started.target } : {}) }
     if (outcome === 'timeout') return { state: 'starting', sessionId, ...named }
-    return { state: 'ready', url: started.url as string, sessionId, ...named, ...(extra ? { extra } : {}) }
+    return {
+      state: 'ready',
+      url: started.url as string,
+      sessionId,
+      ...named,
+      ...(extra ? { extra } : {}),
+      ...(started.tailnet ? { tailnet: started.tailnet } : {}),
+    }
   }
 
   // --- Plan review -------------------------------------------------------------
@@ -1114,6 +1203,7 @@ export class PlannotatorMod {
       this.passing.set(input.tool_use_id, action.approval)
       this.approval = null
       await this.persistApproval()
+      await this.recordPassingApproval(input.tool_use_id, action.approval)
       return { pass: true }
     }
 
@@ -1205,8 +1295,33 @@ export class PlannotatorMod {
   }
 
   /** The approved ExitPlanMode call finished (allowed or not). */
-  onPlanCallSettled(toolUseId: string): void {
+  async onPlanCallSettled(toolUseId: string): Promise<void> {
     this.passing.delete(toolUseId)
+    // Its record for the classic hook goes with it: answered or not, the call is over.
+    const { path } = planApprovalPathOf(this.session.dataDir, this.session.sessionId, toolUseId)
+    await this.host.run(removeFileArgv(path), { timeoutMs: 5_000 }).catch(() => undefined)
+  }
+
+  /**
+   * The approved call, recorded for the plugin's own PermissionRequest command
+   * hook while it is in flight (plan.ts `PLAN_APPROVALS_DIR`, #2007). Where an
+   * organization's guard plugin sends `classic.PermissionRequest` past this
+   * mod, that hook answers the call with this approval instead of opening a
+   * second review. Elsewhere this mod answers first and the record is only
+   * removed. A record that cannot be written leaves the call as it was.
+   */
+  private async recordPassingApproval(toolUseId: string, approval: PendingApproval): Promise<void> {
+    try {
+      const { dir, path } = planApprovalPathOf(this.session.dataDir, this.session.sessionId, toolUseId)
+      const made = await this.host.run(privateDirArgv(dir), { timeoutMs: 5_000 })
+      if (made.exitCode !== 0) {
+        this.host.debug(`plan approval record: could not make ${dir} (exit ${made.exitCode})`)
+        return
+      }
+      await this.host.writeFile(path, JSON.stringify(planApprovalRecord(approval, await this.host.now())))
+    } catch (error) {
+      this.host.debug(`plan approval record not written: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   // --- Watching and delivery -------------------------------------------------

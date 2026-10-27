@@ -89,6 +89,9 @@ export async function runEmbeddedPlanReview(
     htmlContent: input.htmlContent,
     opencodeClient: input.client,
     sessionBridge: input.sessionBridge,
+    // submit_plan's executor delivers an approval's feedback as the
+    // approved-with-notes prompt.
+    approvalNotesSupported: true,
     ...(input.opencodeToolCapable ? { opencodeToolCapable: true } : {}),
     onReady: async (url, isRemote, port) => {
       // announce: false. This runs in OpenCode's own process, sharing stderr
@@ -125,6 +128,7 @@ export async function handleEmbeddedCommand(
     client: any;
     htmlContent: string;
     reviewHtmlContent: string;
+    reviewDiagramEngineDir?: string;
     getSharingEnabled: () => Promise<boolean>;
     getShareBaseUrl: () => string | undefined;
     getPasteApiUrl: () => string | undefined;
