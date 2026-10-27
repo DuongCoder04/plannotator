@@ -95,8 +95,9 @@ import { isPhone, trackKeyboard, usePhone } from './phone';
 import { installPasteFollowsField } from './pasteTarget';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { LIST_MIN_WIDTH, THREAD_BESIDE_FILE_WIDTH, paneGutters, useStack } from './stack';
-import { backTo, pushScreen } from './history';
+import { backBy, backTo, pushScreen } from './history';
 import { parseFileView, sameScreenAnyView } from './fileView';
+import { fileEntryOp, fullFromSide, pageBackPastSwitch, withFullMark, type FrameMove, type FullMark } from './fullScreenOrigin';
 import { adoptSavedTheme, inboxServerSync } from './theme';
 import { adoptSavedDiffStyle } from './diffStyle';
 import { adoptSavedTextSize, applyRememberedTextSize } from './textSize';
@@ -306,7 +307,7 @@ function currentHash(): string {
  * its state (the screen it was opened from, history.ts), so that Back is still
  * the browser's Back on a phone.
  */
-function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
+function writeRoute(route: Route, options: { replace?: boolean; fullMark?: FullMark | null } = {}): void {
   // The Artifacts view belongs to the thread it was opened in: another thread, or a message to land on, opens on the messages.
   if (route.artifacts && (route.thread !== readRoute().thread || route.msg)) route = { ...route, artifacts: false };
   const hash = hashOf(route);
@@ -314,11 +315,14 @@ function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
   // Leaving the tour takes the tour's own entry, whatever leads out of it (a sidebar row, a search result, a link),
   // so the browser's Back never reopens #tour=N.
   const leavingTour = readRoute().page === 'tour' && route.page !== 'tour';
+  // `fullMark`: the entry's full-screen mark (fullScreenOrigin.ts). Absent: a replace keeps the one on screen, a push sets none.
+  const mark = options.fullMark;
   if (options.replace || leavingTour) {
-    if (hash !== currentHash()) window.history.replaceState(window.history.state, '', next);
+    const state = mark === undefined ? window.history.state : withFullMark(window.history.state, mark);
+    if (hash !== currentHash() || state !== window.history.state) window.history.replaceState(state, '', next);
   } else {
     // Each entry remembers the one it was opened from, so a phone's way back can be the browser's own Back (closeTo).
-    pushScreen(hash, currentHash(), next);
+    pushScreen(hash, currentHash(), next, window.history, mark ? withFullMark(null, mark) : undefined);
   }
   window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
@@ -369,6 +373,32 @@ function stripStrayMsg(): void {
  */
 function closeTo(route: Route): void {
   if (!((isPhone() || leavesCoveringPane(route)) && backTo(hashOf(route)))) writeRoute(route);
+}
+
+/** What to do once a Back this window started lands, until it lands (or a second passes). */
+let landing: { then: () => void; timer: ReturnType<typeof setTimeout> } | null = null;
+
+/**
+ * Run `then` once a Back this window started lands; a Back that never lands
+ * drops it. The window's route listener runs it first thing, before it reads
+ * the address (`settleLanding`), so an entry it rewrites is never drawn as it
+ * was (no flash of another file, no page frame reloaded).
+ */
+function whenBackLands(then: () => void): void {
+  if (landing) clearTimeout(landing.timer);
+  const timer = setTimeout(() => {
+    if (landing?.timer === timer) landing = null;
+  }, 1000);
+  landing = { then, timer };
+}
+
+/** The traversal landed (popstate, or only hashchange in some engines): run what was waiting for it. */
+function settleLanding(): void {
+  const waiting = landing;
+  if (!waiting) return;
+  landing = null;
+  clearTimeout(waiting.timer);
+  waiting.then();
 }
 
 /**
@@ -728,6 +758,8 @@ function Inbox() {
 
   useEffect(() => {
     const onHash = () => {
+      // A Back this window started: its rewrite of the entry it landed on comes first (whenBackLands).
+      settleLanding();
       stripStrayMsg();
       settleTourEntry();
       setRoute(readRoute());
@@ -3447,31 +3479,51 @@ function Inbox() {
               // A call that names no view keeps the one in the address (the pane names it for a step, a version, a linked page).
               const keepView = file.view === undefined ? (routeRef.current.file?.view ?? null) : file.view;
               const next = { ...routeRef.current, file: { ...file, view: keepView } };
-              // Back through a linked page's stack: the browser's Back when this entry was opened from there,
-              // whatever view that entry names (the switch replaced only the entry on screen); once it lands,
-              // the view the person is in now replaces the one it named.
-              if (options?.back && backTo(hashOf(next), window.history, sameScreenAnyView)) {
-                const view = next.file.view;
-                if (view) {
-                  // Where the traversal lands (popstate, or only hashchange in some engines), once; a Back that never lands drops it.
-                  const landed = () => {
-                    stop();
-                    const now = readRoute();
-                    if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
-                  };
-                  const stop = () => {
-                    clearTimeout(timer);
-                    window.removeEventListener('popstate', landed);
-                    window.removeEventListener('hashchange', landed);
-                  };
-                  const timer = setTimeout(stop, 1000);
-                  window.addEventListener('popstate', landed);
-                  window.addEventListener('hashchange', landed);
+              /** Show `next` the way fullScreenOrigin.ts names (the history is the stack of frames). */
+              const show = (request: { move?: FrameMove; replace?: boolean }) => {
+                const op = fileEntryOp({ hash: currentHash(), state: window.history.state }, hashOf(next), request);
+                if (op.kind === 'back') {
+                  // Back onto the entry beside the thread; where asked, it then shows the file on screen now (a step inside full screen kept).
+                  if (backBy(op.steps)) {
+                    const land = op.land;
+                    if (land !== null) {
+                      whenBackLands(() => {
+                        if (currentHash() !== land && readRoute().thread === next.thread) writeRoute(next, { replace: true });
+                      });
+                    }
+                    return;
+                  }
+                  return writeRoute(next, { replace: true, fullMark: null });
                 }
-                return;
+                if (op.kind === 'replace') writeRoute(next, op.keep ? { replace: true } : { replace: true, fullMark: op.mark });
+                else writeRoute(next, { fullMark: op.mark });
+              };
+              if (options?.back) {
+                // A linked page's Back in a full screen the switch entered on that page: back past the switch's entry and the
+                // page beside the thread, then full screen again with the switch, so × and Back still come back beside the thread.
+                if (pageBackPastSwitch({ hash: currentHash(), state: window.history.state }, hashOf(next), sameScreenAnyView) && backBy(2)) {
+                  whenBackLands(() => {
+                    if (readRoute().thread === next.thread) show({ move: 'switch-full' });
+                  });
+                  return;
+                }
+                // Back through a linked page's stack: the browser's Back when this entry was opened from there,
+                // whatever view that entry names (a pick swapped only the entry on screen); once it lands,
+                // the view the person is in now replaces the one it named.
+                if (backTo(hashOf(next), window.history, sameScreenAnyView)) {
+                  const view = next.file.view;
+                  if (view) {
+                    whenBackLands(() => {
+                      const now = readRoute();
+                      if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
+                    });
+                  }
+                  return;
+                }
               }
-              writeRoute(next, options);
+              show({ move: options?.move, replace: options?.replace });
             }}
+            fullFromSide={fullFromSide(window.history.state)}
             onOpenGuide={(messageId) => go({ ...route, guide: messageId })}
             artifacts={route.artifacts === true}
             onArtifacts={(open) => (open ? go({ ...routeRef.current, artifacts: true, msg: null }) : close({ ...routeRef.current, artifacts: false }))}

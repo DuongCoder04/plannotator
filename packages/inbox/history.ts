@@ -10,11 +10,11 @@
  */
 
 /** The parts of `window.history` these use (a test hands in its own). */
-export type HistoryLike = Pick<History, 'state' | 'pushState' | 'back'>;
+export type HistoryLike = Pick<History, 'state' | 'pushState' | 'back'> & Partial<Pick<History, 'go'>>;
 
-/** Open `hash` as a new entry that remembers `from`, unless it is the hash on screen. */
-export function pushScreen(hash: string, from: string, url: string, history: HistoryLike = window.history): void {
-  if (hash !== from) history.pushState({ ibFrom: from }, '', url);
+/** Open `hash` as a new entry that remembers `from` (and any `extra` marks), unless it is the hash on screen. */
+export function pushScreen(hash: string, from: string, url: string, history: HistoryLike = window.history, extra?: Record<string, unknown>): void {
+  if (hash !== from) history.pushState({ ...extra, ibFrom: from }, '', url);
 }
 
 /**
@@ -46,6 +46,21 @@ export function backTo(hash: string, history: HistoryLike = window.history, same
   if (!state || typeof state.ibFrom !== 'string' || !same(state.ibFrom, hash)) return false;
   pending = setTimeout(settle, 1000);
   history.back();
+  return true;
+}
+
+/**
+ * Back by `steps` entries (full screen back onto the entry beside the thread
+ * it was entered from, fullScreenOrigin.ts), with the same guard against a
+ * second press while one is on its way. Returns false (nothing done) when
+ * `steps` is not a positive count.
+ */
+export function backBy(steps: number, history: HistoryLike = window.history): boolean {
+  if (pending !== null) return true;
+  if (!Number.isInteger(steps) || steps < 1) return false;
+  pending = setTimeout(settle, 1000);
+  if (steps === 1 || !history.go) history.back();
+  else history.go(-steps);
   return true;
 }
 
