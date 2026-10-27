@@ -633,17 +633,17 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
 };
 
 /**
- * One card, variant C "Lean", leaner (owner, 2026-10-27: the agent "should
- * probably be a small presence circle ... next to the timestamp at the bottom
- * right"): the title, the whole width; then "You: …" (the person's columns),
- * "Sent to <agent>" with the delivery tick (a card the person sent, until it
- * moves), or the agent's last word, on one line; at the bottom right the
- * linked PR's or issue's mark, the agent's small round mark (a dashed ring for
- * the person's card) and how long ago anyone last wrote to it. Bold while
- * unread. The title is the button that opens the card (a click anywhere else
- * on the card does too); "You: …" is its own button, to the thread where the
- * person makes the call (`youThread`); with no thread linked it is plain
- * words, and a click on it opens the card.
+ * One card, "Title row" (approval board-lane-card, r1, 2026-10-27): the
+ * title, with the linked PR's or issue's mark, the agent's small round mark (a
+ * dashed ring for the person's card) and how long ago anyone last wrote to it
+ * at the right of its first line. A second line only when the person owes
+ * something ("You: …", in the person's columns) or a send is pending ("Sent to
+ * <agent>" with the delivery tick, until it moves). The agent's last word is
+ * not on the lane card: the opened card has it. Bold while unread. The title
+ * is the button that opens the card (a click anywhere else on the card does
+ * too); "You: …" is its own button, to the thread where the person makes the
+ * call (`youThread`); with no thread linked it is plain words, and a click on
+ * it opens the card.
  */
 function BoardCard({
   card,
@@ -669,9 +669,10 @@ function BoardCard({
   const mark = markOf(card);
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
   const thread = line?.you ? youThread(card, rowOf) : null;
-  // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
-  // on): one line, the marks and the age beside the title, never an empty second line.
-  const oneLine = !sent && !line;
+  // "Title row" (approval board-lane-card, r1): a card is its title row, the marks and the age at its right.
+  // A second line only when the person owes something ("You: …") or a send is pending ("Sent to …"); the
+  // agent's last word is left off the lane card and stays in the opened card. Never an empty second line.
+  const oneLine = !sent && !line?.you;
   const owner = cardOwnerName(card);
   const meta = (
     <span className="ib-bc-meta">
@@ -711,13 +712,13 @@ function BoardCard({
     >
       <span className="ib-bc-top">
         <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
+          {meta}
           <Tip content={card.title} cut>
             <span className="ib-bc-t" dir="auto">
               {card.title}
             </span>
           </Tip>
         </button>
-        {oneLine && meta}
       </span>
       {!oneLine && (
         <span className="ib-bc-bot">
@@ -732,16 +733,13 @@ function BoardCard({
                 <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
                 <Icon name="arrowUpRight" size={12} />
               </button>
-            ) : line?.you ? (
+            ) : (
               // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
               <>
-                <b className="ib-bc-youw">You:</b> {line.text}
+                <b className="ib-bc-youw">You:</b> {line?.text}
               </>
-            ) : (
-              line?.text
             )}
           </span>
-          {meta}
         </span>
       )}
     </li>
