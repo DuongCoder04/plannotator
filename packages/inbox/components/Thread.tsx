@@ -3496,7 +3496,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               {/* Sent with compose's Board chip on (approval "inbox-compose-board-chip"): a quiet mark, never the agent's block. */}
               {!isAgent && message.board_request === true && (
                 <span className="ib-m-board" data-board-request="">
-                  {' · '}
+                  <span className="ib-to-sep">·</span>
                   <Icon name="board" />
                   <span aria-hidden="true">Board</span>
                   <span className="ib-sr">Board tracking asked</span>

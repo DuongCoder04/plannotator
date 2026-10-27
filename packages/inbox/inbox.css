@@ -3271,7 +3271,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-cp-board[aria-pressed="true"] .ib-cp-board-box { background: var(--primary); color: var(--primary-foreground); box-shadow: none; }
 @media (pointer: coarse) { .pn-inbox .ib-cp-board::after { content: ''; position: absolute; inset: -9px -4px; } }
 /* The person's message sent with the Board chip on: a quiet mark after whom it went to. */
-.ib-m-board { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-foreground); }
+.ib-m-board { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; color: var(--muted-foreground); }
 .ib-m-board svg { width: 12px; height: 12px; }
 .ib-cp-savedline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-cp-savedline svg { color: var(--success, oklch(0.72 0.17 150)); }
