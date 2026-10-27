@@ -10,7 +10,6 @@ import {
   addRepoDirEntries,
   baseName,
   buildRepoTreeIndex,
-  countChangedByFolder,
   emptyLazyRepoTreeIndex,
   flattenRepoTree,
   type RepoTreeIndex,
@@ -74,7 +73,7 @@ const OnDiskDot: React.FC<{ change: RepoOnDiskChange }> = ({ change }) => (
 /**
  * The tree's All files: the whole repository at the diff's new side, changed
  * files with today's rows (viewed circle, status letter, +/-, comment badge,
- * staging), everything else muted, and folders counting the changes they hold.
+ * staging), everything else muted.
  * Virtualized: only the rows in view are in the DOM.
  */
 export const RepoFileTree: React.FC<RepoFileTreeProps> = ({
@@ -118,8 +117,7 @@ export const RepoFileTree: React.FC<RepoFileTreeProps> = ({
     return built;
   }, [repo.paths, repo.dirs, changedPaths]);
 
-  const changedByFolder = useMemo(() => countChangedByFolder(changedPaths), [changedPaths]);
-  const rows = useMemo(() => flattenRepoTree(index, expanded, changedByFolder), [index, expanded, changedByFolder]);
+  const rows = useMemo(() => flattenRepoTree(index, expanded), [index, expanded]);
 
   // Lazy listings: an expanded folder the server has not sent yet is asked for.
   useEffect(() => {
@@ -224,15 +222,6 @@ export const RepoFileTree: React.FC<RepoFileTreeProps> = ({
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
           <span className="truncate">{row.name}</span>
-          {row.changed > 0 && (
-            <span
-              className="ml-auto flex-shrink-0 min-w-[1.25rem] h-4 px-1 rounded-full bg-primary/15 text-primary text-[10px] font-medium tabular-nums flex items-center justify-center"
-              title={`${row.changed} changed file${row.changed === 1 ? '' : 's'} in this folder`}
-              data-repo-folder-changes
-            >
-              {row.changed}
-            </span>
-          )}
         </button>
       );
     }

@@ -24,7 +24,7 @@ export interface RepoTreeIndex {
 }
 
 export type RepoTreeRow =
-  | { kind: 'folder'; path: string; name: string; depth: number; expanded: boolean; changed: number; loaded: boolean }
+  | { kind: 'folder'; path: string; name: string; depth: number; expanded: boolean; loaded: boolean }
   | { kind: 'file'; path: string; name: string; depth: number }
   | { kind: 'loading'; path: string; depth: number };
 
@@ -153,20 +153,10 @@ export function repoAncestors(path: string): string[] {
   return out;
 }
 
-/** How many changed files each folder holds, at any depth. */
-export function countChangedByFolder(changedPaths: Iterable<string>): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const path of changedPaths) {
-    for (const dir of repoAncestors(path)) counts.set(dir, (counts.get(dir) ?? 0) + 1);
-  }
-  return counts;
-}
-
 /** The rows on screen: folders and files under expanded folders, depth first. */
 export function flattenRepoTree(
   index: RepoTreeIndex,
   expanded: ReadonlySet<string>,
-  changedByFolder: ReadonlyMap<string, number>,
 ): RepoTreeRow[] {
   const rows: RepoTreeRow[] = [];
   const walk = (folderPath: string, depth: number) => {
@@ -185,7 +175,6 @@ export function flattenRepoTree(
         name: baseName(dir),
         depth,
         expanded: isExpanded,
-        changed: changedByFolder.get(dir) ?? 0,
         loaded: child?.loaded ?? false,
       });
       if (isExpanded) walk(dir, depth + 1);

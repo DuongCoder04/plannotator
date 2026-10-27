@@ -6,8 +6,7 @@
  * Regressions guarded:
  *  - All files losing the changed files' own rows (viewed circle, letter,
  *    +/-), or a changed file the new side deletes dropping out of the tree;
- *  - folders not counting the changes they hold, or opening anything but the
- *    paths that lead to changes;
+ *  - folders opening anything but the paths that lead to changes;
  *  - the list rendering every row of a big repository (it must be virtual);
  *  - a lazy listing never asking for a folder that is opened;
  *  - files changed on disk since the snapshot showing no mark.
@@ -155,12 +154,6 @@ describe.skipIf(!hasDom)('FileTree: Changes | All files', () => {
     const changedRow = el.querySelector('[data-repo-file="packages/review-editor/utils/fileKindTree.ts"]')!;
     expect(changedRow.querySelector('[role="checkbox"]')).not.toBeNull();
     expect(changedRow.textContent).toContain('+2');
-    // Folders count the changes they hold.
-    const count = (path: string) =>
-      el.querySelector(`[data-repo-folder="${path}"] [data-repo-folder-changes]`)?.textContent ?? null;
-    expect(count('packages')).toBe('3');
-    expect(count('packages/review-editor/utils')).toBe('2');
-    expect(count('apps')).toBeNull();
   });
 
   test('folders open and close; a changed row selects its diff, an unchanged one opens the file', async () => {
