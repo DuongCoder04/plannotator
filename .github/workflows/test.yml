@@ -321,6 +321,7 @@ jobs:
           packages/review-editor/components/FileTree.search-placement.test.tsx
           packages/review-editor/components/FileTree.fileKinds.test.tsx
           packages/review-editor/components/FileHeader.fileKind.test.tsx
+          packages/review-editor/components/PackageChangesCard.test.tsx
           packages/review-editor/components/FileTreeNode.controls.test.tsx
           packages/ui/components/Settings.analysis.test.tsx
           packages/ui/components/AnnotationPanel.props.test.tsx
