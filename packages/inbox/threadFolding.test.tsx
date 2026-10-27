@@ -6,7 +6,7 @@
  * has no layout, so where a test needs positions it gives the elements some.
  * The real browser proof is tests/e2e/inbox-thread-folding.spec.ts.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';

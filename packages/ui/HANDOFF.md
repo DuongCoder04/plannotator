@@ -1182,7 +1182,7 @@ handed to `onAddAnnotation` has no `mentions` key at all (`'mentions' in ann`
 is false, asserted rather than `toBeUndefined()` — the difference between the
 conditional spread and the bare shorthand is invisible to the latter).
 
-Tests (both DOM-gated, both in the workflow's DOM_TESTS step):
+Tests (both DOM-gated, both in `tests/dom-test-list.txt`):
 `components/Viewer.mentionSource.test.tsx` (5) drives the real Viewer — the
 selection composer through the Vim toolbar's type-to-comment gesture and the
 global composer through its button — and
@@ -1336,8 +1336,8 @@ line (3 lines above it) and with the textarea scrolled (`scrollTop` 40) —
 and the caret x after the token is **0.016px** from the span's end.
 
 Tests: `utils/composerTokens.test.ts` (16, DOM-free) and
-`components/CommentPopover.mentionChips.test.tsx` (11, DOM-gated, in the
-workflow's DOM_TESTS step).
+`components/CommentPopover.mentionChips.test.tsx` (11, DOM-gated, in
+`tests/dom-test-list.txt`).
 
 ## Annotation card header slot and mentions on the edit box (0.45.0)
 
@@ -1506,7 +1506,7 @@ edit textarea carries none of the five mention ARIA attributes, typing `@`
 opens nothing, and `onEdit` is called with an updates object whose key list is
 exactly `['text']`.
 
-Tests (both DOM-gated, both added to the workflow's DOM_TESTS step):
+Tests (both DOM-gated, both added to `tests/dom-test-list.txt`):
 `components/AnnotationPanel.cardHeader.test.tsx` (6) and
 `components/AnnotationPanel.editMentions.test.tsx` (10).
 

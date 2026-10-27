@@ -187,9 +187,9 @@ A test must guard a behavior that can actually regress. Before writing one, name
 
 The Test workflow (`.github/workflows/test.yml`) runs the suite as parallel jobs, one lane each, through `scripts/ci-test-lane.ts <lane>`:
 
-- `unit-1`..`unit-4`: the plain `bun test` sweep split by Bun's `--shard=k/4`, so a new test file lands in a shard by itself. A CLI `--path-ignore-patterns` replaces bunfig.toml's `pathIgnorePatterns` instead of adding to them, so the script reads them from bunfig.toml and passes them again, plus the heavy files.
+- `unit-1`..`unit-3`: the plain `bun test` sweep split by Bun's `--shard=k/3`, so a new test file lands in a shard by itself. A CLI `--path-ignore-patterns` replaces bunfig.toml's `pathIgnorePatterns` instead of adding to them, so the script reads them from bunfig.toml and passes them again, plus the heavy files.
 - `heavy-mod`, `heavy-agents`: the files that drive real agent processes against a real Inbox (minutes each), one process per file. To move a file into a heavy lane, add it to `HEAVY_LANES` in the script.
-- `dom-1`..`dom-6`: `tests/dom-test-list.txt` with `DOM_TESTS=1` and `--isolate`. **A new DOM-gated test file goes into that list**, not into the workflow.
+- `dom-1`..`dom-4`: `tests/dom-test-list.txt` with `DOM_TESTS=1` and `--isolate`. **A new DOM-gated test file goes into that list**, not into the workflow.
 - The `checks` job keeps the typechecks, the package smokes and the two DOM steps that need their own process (`useFileBrowser`, the real `@pierre/diffs` files). `Test (all green)` succeeds only when every job did.
 
 Run one lane locally with `bun run scripts/ci-test-lane.ts unit-2`. Several lanes run at once on one local checkout can race on the `apps/hook/dist` stubs (`tests/helpers/hook-dist-stub.ts`): one process removes the stubs another relies on. On CI each lane is its own machine. `scripts/ci-test-lanes.test.ts` fails when the workflow matrix and the script's lanes differ, when a shard loses a bunfig ignore pattern, or when the DOM list names a missing, repeated or own-process file. `scripts/dom-test-allowlist.test.ts` fails when a DOM-gated file is in neither the list nor an own-process step.

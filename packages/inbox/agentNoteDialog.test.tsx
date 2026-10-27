@@ -7,7 +7,7 @@
  * "Don't add a note" answer for these agents only and write nothing. The
  * page's requests go to a recording fetch.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';

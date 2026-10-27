@@ -12,7 +12,7 @@
  * cancelling, a one-way or picture question swipes, or Stakes /
  * Why / Shows stop showing.
  *
- * DOM-gated (DOM_TESTS=1, happy-dom), from the test.yml DOM list.
+ * DOM-gated (DOM_TESTS=1, happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { act } from 'react';

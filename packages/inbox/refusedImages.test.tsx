@@ -14,7 +14,7 @@
  * the `<img>` gets the `load` or `error` event a browser fires for that
  * answer. tests/e2e/inbox-picture-choices.spec.ts proves it in real browsers.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { act } from 'react';

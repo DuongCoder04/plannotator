@@ -6,7 +6,7 @@
  * lock, "Agent's next session" after a change, and the agents not found
  * folded behind the harness picker. Requests go to a recording fetch.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';

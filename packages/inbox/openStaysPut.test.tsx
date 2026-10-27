@@ -14,7 +14,7 @@
  * The slide itself (its frames) is proved in a real browser by
  * tests/e2e/inbox-open-stays-put.spec.ts; happy-dom lays nothing out.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';

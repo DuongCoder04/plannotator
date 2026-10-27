@@ -31,8 +31,8 @@ export const HEAVY_LANES: Readonly<Record<string, readonly string[]>> = {
   'heavy-mod': ['apps/hook/hooks/mod/inbox.test.ts'],
   'heavy-agents': ['apps/opencode-plugin/inbox-v2-wake.test.ts', 'apps/pi-extension/inbox.test.ts'],
 };
-export const UNIT_SHARDS = 4;
-export const DOM_SHARDS = 6;
+export const UNIT_SHARDS = 3;
+export const DOM_SHARDS = 4;
 export const DOM_LIST = 'tests/dom-test-list.txt';
 
 export function heavyFiles(): string[] {

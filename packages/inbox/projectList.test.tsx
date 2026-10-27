@@ -7,7 +7,7 @@
  * back merely hidden (display: none, an empty span) while the grid still
  * reserves its width. Pixel positions are proved in tests/e2e/inbox.spec.ts.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';

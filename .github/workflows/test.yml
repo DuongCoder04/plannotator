@@ -110,21 +110,23 @@ jobs:
         run: bun test scripts/dom-test-allowlist.test.ts scripts/ci-test-lanes.test.ts
 
   # The plain `bun test` sweep, split across jobs (scripts/ci-test-lane.ts).
-  # It took 20-23 min as one process; the longest lane is now about 4 min.
+  # It took 20-23 min as one process; each lane now takes about 4-7 min.
+  # Few lanes on purpose: every job of a run asks for a runner at once, and
+  # the account has about 20 concurrent runners for every workflow and PR.
   # heavy-*: the files that drive real agent processes, one process each.
   # unit-k: Bun's own --shard=k/N over every other discovered file, so a new
   # test file always lands in some shard.
   unit:
     name: Unit tests (${{ matrix.lane }})
     runs-on: ubuntu-24.04
-    # A backstop, not a budget: lanes take about 4-5 min. Some tests run on
+    # A backstop, not a budget: lanes take about 4-7 min. Some tests run on
     # fake timers, where bun's per-test timeout cannot fire, so a stuck await
     # would otherwise idle until GitHub's 6-hour default.
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        lane: [heavy-mod, heavy-agents, unit-1, unit-2, unit-3, unit-4]
+        lane: [heavy-mod, heavy-agents, unit-1, unit-2, unit-3]
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -153,13 +155,13 @@ jobs:
   dom:
     name: DOM tests (${{ matrix.lane }})
     runs-on: ubuntu-24.04
-    # A backstop, not a budget: lanes take about 3-5 min. Some DOM tests run on
+    # A backstop, not a budget: lanes take about 3-6 min. Some DOM tests run on
     # fake timers, where bun's per-test timeout cannot fire.
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        lane: [dom-1, dom-2, dom-3, dom-4, dom-5, dom-6]
+        lane: [dom-1, dom-2, dom-3, dom-4]
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -838,12 +840,14 @@ jobs:
           }
 
   # One check that stands for the whole workflow: green only when every job
-  # above succeeded. It runs even when one of them failed or was cancelled
-  # (`always()`), so it always reports. A branch rule or a merge script can
-  # require this one name instead of tracking every lane.
+  # above succeeded. It runs even when one of them failed, so a failure is
+  # reported here too. It does not run in a cancelled run (a PR run superseded
+  # by a newer push), so that run takes no runner slot only to report a
+  # failure. A branch rule or a merge script can require this one name
+  # instead of tracking every lane.
   all-green:
     name: Test (all green)
-    if: always()
+    if: ${{ !cancelled() }}
     needs:
       - checks
       - unit

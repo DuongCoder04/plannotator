@@ -14,7 +14,7 @@
  * nothing until its button, which saves what the card's own Skip saves.
  *
  * The pure rules (openQuestions.ts) run everywhere; the window's parts are
- * DOM-gated: they run under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: they run under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
