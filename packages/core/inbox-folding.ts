@@ -10,6 +10,7 @@ import { isInboxActionReport, isInboxNote, type InboxMessageWire, type InboxQues
 import { QUESTION_ANSWERS_HEADING, type QuestionAnswer } from './question-block';
 import { INBOX_STILL_OPEN_LINE, sliceText } from './inbox-questions';
 import { withoutInboxSkillsBlock } from './skill-reference-block';
+import { INLINE_DESTINATION, stripInlineMarkup } from './inline-markdown';
 
 /**
  * Where "new since you looked" starts: the seq of the person's last look at
@@ -253,11 +254,7 @@ export function cleanInline(text: string, options: { keepTags?: boolean } = {}):
     escaped.push(ch);
     return `\u0001${escaped.length - 1}\u0001`;
   });
-  out = out
-    .replace(new RegExp(`!\\[[^\\]]*\\]${LINK_DESTINATION}`, 'g'), '')
-    .replace(new RegExp(`\\[((?:[^\\[\\]]|\\[[^\\[\\]]*\\])*)\\]${LINK_DESTINATION}`, 'g'), '$1')
-    .replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_m, target: string, label?: string) => label ?? target);
-  if (!options.keepTags) out = out.replace(/<\/?[A-Za-z][^>]*>/g, '');
+  out = stripInlineMarkup(out, { keepTags: options.keepTags });
   // A closing mark ends a word: whitespace, the end, or punctuation that does
   // not run into another word (`__init__.py` is a name, not emphasis).
   const close = `(?=$|\\s|[,;:!?)\\]"'’]|\\.(?!\\w))`;
@@ -270,8 +267,6 @@ export function cleanInline(text: string, options: { keepTags?: boolean } = {}):
 
 /** The characters a backslash escapes, as the inline renderer reads them (ui's InlineMarkdown). */
 const ESCAPED = /\\([\\*_`[\]~!.()\-#>+|{}&$])/g;
-/** A link's `(destination)`: one level of balanced parentheses inside. */
-const LINK_DESTINATION = '\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)';
 
 /**
  * A picked choice's label as plain words. A label is the agent's inline
@@ -285,13 +280,14 @@ const LINK_DESTINATION = '\\((?:[^()\\n]|\\([^()\\n]*\\))*\\)';
  */
 export function plainLabel(label: string): string {
   const plain = (text: string) =>
-    cleanInline(text.replace(/<(https?:\/\/[^>]+)>/g, '$1').replace(/<([^@>\s]+@[^>\s]+)>/g, '$1'), { keepTags: true })
+    cleanInline(text.replace(/<(https?:\/\/[^<>]+)>/g, '$1').replace(/<([^<@>\s]+@[^<>\s]+)>/g, '$1'), { keepTags: true })
       .replace(/\s+/g, ' ')
       .trim();
-  const image = new RegExp(`!\\[([^\\]]*)\\]\\(\\s*<?([^\\s)>]*)`, 'g');
+  // Bounded like inline-markdown.ts: each pattern stops at the next opener.
+  const image = /!\[([^\][]*)\]\(\s*<?((?:[^\s()<>]|\([^\s()<>]*\))*)/g;
   return (
     plain(label) ||
-    plain(label.replace(new RegExp(`!\\[([^\\]]*)\\]${LINK_DESTINATION}`, 'g'), '$1')) ||
+    plain(label.replace(new RegExp(String.raw`!\[([^\][]*)\]` + INLINE_DESTINATION, 'g'), '$1')) ||
     [...label.matchAll(image)].map((m) => m[2]!.split(/[\\/]/).pop()!.replace(/[?#].*$/, '')).filter(Boolean).join(', ') ||
     label.trim()
   );
