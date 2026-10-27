@@ -238,7 +238,7 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   const command = `codex mcp add plannotator-inbox -- ${binary} inbox mcp`;
   const panel = page.getByRole('tabpanel', { name: 'Codex' });
   await expect(panel.locator('pre')).toHaveText(command);
-  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after.']);
+  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after. With Codex 0.149 or later, your replies come back into the Codex thread by themselves.']);
   await expect(panel.getByText('Another way', { exact: false })).toBeVisible();
   await expect(panel.getByText('Codex', { exact: true })).toHaveCount(0);
   await shot('1.3-first-run-codex');
@@ -397,7 +397,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await pane.getByText('Yes', { exact: true }).click();
   await expect(pane.getByText(/^Picked .* · in your draft$/)).toHaveCount(2);
   // "Draft" replaces "Not sent" (approval "inbox-reply-drafts").
-  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft 2 picks');
+  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
   // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
@@ -550,7 +550,7 @@ test('Settings: in sections; Settings → Agents switches apply to the next sess
   // A focused page (design of record inbox-settings-tabs): General first, the section nav beside it.
   await expect(page.getByRole('heading', { name: 'General', level: 1 })).toBeVisible();
   const nav = page.getByRole('navigation', { name: 'Settings sections' });
-  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Devices', 'Archived', 'Storage', 'About']);
+  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Prompts', 'Devices', 'Capabilities', 'Archived', 'Storage', 'About']);
   await nav.getByRole('link', { name: 'Agents' }).click();
   await expect(page).toHaveURL(/#settings\/agents$/);
   await expect(nav.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page');

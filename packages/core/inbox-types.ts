@@ -17,13 +17,14 @@
 import type { QuestionAnswer, QuestionKind } from "./question-block";
 import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, InboxInlineImage } from "./inbox-attachments";
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
-import { INBOX_CARD_ACTION_ON, type InboxCard } from "./inbox-cards";
+import type { InboxCard } from "./inbox-cards";
 
 // The attachment shapes and file rules (step 2) live in their own module and
 // reach the Inbox through this published entry, so core's export map is unchanged.
 export * from "./inbox-attachments";
 export * from "./inbox-open-in";
 export * from "./inbox-delivery";
+export * from "./inbox-codex";
 // The Board's cards (approval "inbox-board"), the same way.
 export * from "./inbox-cards";
 // The surface bridge's messages (the phone, PLAN step S1), the same way.
@@ -261,6 +262,19 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
   cursor: "Cursor",
 };
 
+/**
+ * The agent hosts a person's reply wakes as a new turn by itself: Claude Code,
+ * Pi and OpenCode 2 through Plannotator's own connection (OpenCode 1 has the
+ * tool but no wake), and Codex through MCP alone, where the Inbox puts the
+ * reply into the Codex thread with `codex queue` (Codex CLI
+ * INBOX_CODEX_QUEUE_MIN_VERSION or later; packages/server/inbox-codex-wake.ts).
+ * The one list: wording that names which agents a reply wakes reads it.
+ */
+export const INBOX_WAKING_HOSTS = ["claude-code", "pi", "opencode", "codex"] as const;
+
+/** Of INBOX_WAKING_HOSTS, the ones an MCP connection alone wakes (no Plannotator plugin): Codex. */
+export const INBOX_MCP_WAKING_HOSTS: readonly string[] = ["codex"];
+
 /** How the person sees an agent: the name it gave, else its host's name, else "An agent". */
 export function inboxAgentName(author: { kind: string; host?: string | null; name?: string | null } | null | undefined): string {
   if (!author || author.kind !== "agent") return "An agent";
@@ -467,6 +481,15 @@ export interface InboxMessage {
    * agent's answer lands in it by `reply_to`. Absent on every other message.
    */
   started_by_person?: true;
+  /**
+   * On the root of a thread the person started with compose's Board chip on
+   * (approval "inbox-compose-board-chip", 2026-10-27): the person asked the
+   * agent to track the work on the Board. The body stays as typed; what the
+   * agent receives for this message (the delivered turn, wait_for_reply,
+   * read_thread) carries `inboxBoardRequestBlock` after it. Absent on every
+   * other message.
+   */
+  board_request?: true;
   /**
    * On the root of a thread the person started: who gave it its name, the
    * thread chip (approval "inbox-agent-names-own-thread"). The person may name
@@ -1325,6 +1348,14 @@ export interface InboxHealth {
    * Inbox tabs of one browser origin share one stream (packages/inbox/sharedEvents.ts).
    */
   event_streams?: number;
+  /**
+   * This Inbox honours the peek mark on a read_thread list
+   * (`INBOX_PEEK_META_KEY`): no project made for a folder it does not know,
+   * the rows not counted as read (additive). A connection reads the session's
+   * threads only from an Inbox that says so; an older one would make a
+   * project for every folder that compacts or resumes.
+   */
+  peek?: true;
 }
 
 /** What an Inbox window reports about its browser's notification permission for its own origin. */
@@ -1426,7 +1457,7 @@ export interface InboxTourChange {
 }
 
 /** The tour's content version: the fixture's `v`, recorded with each stamp. */
-export const INBOX_TOUR_VERSION = 1;
+export const INBOX_TOUR_VERSION = 2;
 
 /**
  * The Inbox window's text size (config.json `inboxTextSize`, through GET and
@@ -1587,6 +1618,13 @@ export interface InboxAgentRow {
    * alone: 1), for the plugin line that version reads.
    */
   plugin?: { installed: boolean; disabled?: boolean; managed?: boolean; generation?: "1" | "2" } | null;
+  /**
+   * An agent its MCP connection alone wakes (INBOX_MCP_WAKING_HOSTS: Codex),
+   * connected through MCP: whether this Inbox can wake it now (Codex: a Codex
+   * CLI INBOX_CODEX_QUEUE_MIN_VERSION or later it can run). Absent for every
+   * other row and from an older Inbox.
+   */
+  wakes?: boolean;
 }
 
 export interface InboxAgentsModel {
@@ -1619,20 +1657,57 @@ export interface InboxAgentsModel {
 export type InboxToolHostId = "claude-code" | "pi" | "opencode";
 
 /**
+ * The runtime a polling session runs in, as the window names its fix: Claude
+ * Code, Pi, Oh My Pi (polls as host `pi`, says `plugin.host: "oh-my-pi"`), or
+ * OpenCode 2 (host `opencode`; OpenCode 1 does not poll).
+ */
+export type InboxReloadRuntime = "claude-code" | "pi" | "oh-my-pi" | "opencode";
+
+/**
  * A polling session runs an older Plannotator plugin than a restart would
- * load (`fix: "restart"`), or the installed plugin is itself behind this
- * Inbox's Plannotator, so a restart alone does not help (`fix:
- * "update_plugin"`; Pi: `"update_extension"`, `pi update --extensions` then
- * `/reload`). `loaded` is the version the session runs (null when its
- * connection predates reporting it), `installed` what a restart loads (Pi:
- * the Inbox's own version, which the extension should match).
+ * load (`fix: "restart"`, Claude Code), or the installed plugin is itself
+ * behind this Inbox's Plannotator, so a restart alone does not help (`fix:
+ * "update_plugin"`). Pi, Oh My Pi and OpenCode 2 (packages/server/inbox-restart.ts):
+ * `"reload"` when reloading the host loads newer code than the session runs
+ * (`reload_command`: Pi `/reload`, Oh My Pi `/restart`, OpenCode 2
+ * `opencode2 reload` or `opencode2 plugin update`), `"update_extension"` when
+ * the package on disk is itself behind this Inbox (`update_command`, then
+ * `reload_command`). `loaded` is the version the session runs (null when its
+ * connection predates reporting it), `installed` what a restart loads (Pi with
+ * an older connection: the Inbox's own version, which the extension should match).
  */
 export interface InboxSessionOutdated {
   loaded: string | null;
   installed: string | null;
-  fix: "restart" | "update_plugin" | "update_extension";
-  /** With `update_plugin`: the command that updates the plugin itself. */
+  fix: "restart" | "update_plugin" | "update_extension" | "reload";
+  /** With `update_plugin` / `update_extension`: the command that updates the plugin itself. */
   update_command?: string;
+  /** Which runtime the session runs in (absent from an older Inbox: Claude Code, or Pi for `update_extension`). */
+  runtime?: InboxReloadRuntime;
+  /** What loads the new code in that runtime: `/reload`, `/restart`, `opencode2 reload`. Absent for Claude Code (`/reload-plugins`). */
+  reload_command?: string;
+  /** Typed in the session (`/reload`, `/restart`) or run in a shell (`opencode2 reload`). */
+  reload_where?: "session" | "shell";
+  /** When the reload does not take: `opencode2 service restart`. */
+  fallback_command?: string;
+  /**
+   * OpenCode 2: the config pins this exact spec (`@plannotator/opencode@0.28.20`), so
+   * `opencode2 plugin update` does nothing: the person changes it to `pin_to`, then reloads.
+   */
+  pinned_spec?: string;
+  pin_to?: string;
+  /** OpenCode 2: `all` when the plugin's configured spec is unknown, so `opencode2 plugin update` names no target and updates every outdated plugin. */
+  update_scope?: "all";
+}
+
+/**
+ * The live sessions a reload alone brings up to date, per runtime: the
+ * sidebar's "Reload Claude Code N" ("Reload agents N" when more than one
+ * runtime has some). Additive beside `restart_claude_code`.
+ */
+export interface InboxRestartAgents {
+  total: number;
+  runtimes: Partial<Record<InboxReloadRuntime, number>>;
 }
 
 /** One open session as Settings → Agents lists it. */
@@ -1649,6 +1724,8 @@ export interface InboxOpenSession {
   outdated: InboxSessionOutdated | null;
   /** `cd <folder> && claude --resume <session>` (Claude Code, with a known folder); null otherwise. */
   restart_command: string | null;
+  /** The runtime it runs in (Pi's group holds Oh My Pi sessions too). Absent from an older Inbox. */
+  runtime?: InboxReloadRuntime;
 }
 
 export interface InboxHostSessions {
@@ -1699,8 +1776,49 @@ export type InboxToolCostHost = "pi" | "opencode";
  * Pi with the cost test (INBOX_TOOL_COST_DUMP): 8,248 → 8,701 bytes, 1,964 →
  * 2,086 tokens with o200k_base (+453 bytes, +122 tokens). So 8,701 bytes
  * without the card action and 9,817 with it (9,364 + 453, estimated).
+ * The screenshot nudge in `attachments` ("For something visual, a screenshot
+ * or image usually reads fastest…") added one sentence, measured on Pi with
+ * the cost test: 8,701 → 8,841 bytes (+140; about +30 tokens, so the rounded
+ * token figure stands). So 8,841 without the card action and 9,957 with it
+ * (9,817 + 140, estimated).
+ * The Board's step 2 switched the card action on (INBOX_CARD_ACTION_ON), with
+ * its `ref` argument and the Backlog wording: measured on Pi with the cost
+ * test, 10,131 bytes; tokens scaled from the last o200k_base count (2,086 for
+ * 8,701 bytes, so about 2,430) and stated high, as always. The review then let
+ * `column` take `asked` (the old name of backlog, listed in the schema and
+ * its description): measured again, 10,171 bytes (+40).
+ * Then the Board became something the person turns on (config.json
+ * `inboxBoard`, off by default; approval "inbox-board" 2026-10-26): an Inbox
+ * lists `card` only while it is on, so what a user gets by default is the
+ * entry WITHOUT `card`, and that is the stated cost. With the Board on it is
+ * the 10,171 bytes above.
+ * The title rule (approval "inbox-board-amendments-2026-10-27": "2–5 words
+ * naming the work, never a sentence", and link the thread where the person
+ * decides) in the card description and its `title` and `thread_id`
+ * arguments: measured on Pi with the cost test and the Board on, 10,171 →
+ * 10,303 bytes (+132; about +35 tokens, so the rounded, high token figure
+ * stands).
+ * The reply_to check (INBOX_REPLY_TO_CHECK, the misfiled-thread AAR,
+ * 2026-10-27) added one sentence to the agent tool's `reply_to`: measured on
+ * Pi with the cost test, 8,841 → 8,964 bytes (+123; about +30 tokens, so the
+ * rounded token figure stands). With the Board on 10,294 (10,171 + 123,
+ * estimated).
+ * Then the rules agents must get with no setup (the owner, 2026-10-27): the
+ * wake note's "reply_to set to that reply id, never an id from memory",
+ * read_thread's and search's leads (listing every thread, older messages),
+ * `asked_by` and `include_resolved` described, and the Recommended: line in
+ * `body`: measured on Pi, 9,227 bytes (+263, about +70 tokens). With the
+ * Board on 10,557 (10,294 + 263, estimated).
+ * Then the chat-or-Inbox rule in the lead (the owner, 2026-10-27), with the
+ * wake note and get_guide_brief's lead shortened to fit: measured on Pi,
+ * 9,283 bytes (+56); its one wording ("when the person writes in the chat",
+ * "with a blocking question tool (AskUserQuestion or similar)"): 9,298 bytes
+ * (+15). With the Board on 10,760 (the Board title rule's 10,303 + this
+ * branch's 457, estimated).
  */
-const INBOX_TOOL_COST_NOW = INBOX_CARD_ACTION_ON ? { bytes: 9817, tokens: 2800 } : { bytes: 8701, tokens: 2500 };
+const INBOX_TOOL_COST_NOW = { bytes: 9298, tokens: 2600 };
+/** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
@@ -1824,6 +1942,14 @@ export interface InboxDraft {
    * out again from the body when the draft opens).
    */
   thread_name?: string;
+  /**
+   * The Board card it was started for (the opened card's Create thread): the
+   * Send that sends the draft links the new thread to this card. Absent for
+   * any other draft.
+   */
+  card?: { id: string; title: string };
+  /** Compose's Board chip was on (approval "inbox-compose-board-chip"): the Send asks the agent to track the work on the Board. */
+  board_request?: true;
 }
 
 /** A draft's chip: its chosen session is live, has ended, or none was chosen. */
@@ -1899,4 +2025,69 @@ export function inboxEngineTooOldForSendNow(version: string | null | undefined):
     if (have[i]! !== min[i]!) return have[i]! < min[i]!;
   }
   return false;
+}
+
+/**
+ * Settings → Prompts (approval "inbox-prompts-page", #2194): what Plannotator
+ * tells agents, as `GET /api/inbox/settings` carries it in `prompts`.
+ */
+export const INBOX_PROMPT_HOSTS = ["claude-code", "pi", "opencode"] as const;
+export type InboxPromptHost = (typeof INBOX_PROMPT_HOSTS)[number];
+
+/** One of the plan, review and annotate prompts (config.json `prompts.<group>.<name>`), read-only in the window. */
+export interface InboxPromptItem {
+  /** `prompts.<group>.<name>`, the config.json key. */
+  key: string;
+  group: "plan" | "review" | "annotate";
+  /** The group's heading: Plan, Code review, Annotate. */
+  group_label: string;
+  label: string;
+  /** Plannotator's own text. */
+  default: string;
+  /** The text in effect for an agent without its own: config.json's, else the default. */
+  text: string;
+  /** config.json sets this prompt (the shared text, or one agent's own). */
+  custom: boolean;
+  /** The agents config.json gives their own text for this prompt (`prompts.<group>.runtimes.<agent>.<name>`). */
+  runtimes: string[];
+  /** A fact about the default, shown while it is in effect ("OpenCode has a shorter default."). */
+  note: string | null;
+}
+
+export interface InboxPromptsSettings {
+  /** The Inbox reminder at session start (config.json `prompts.inbox`). */
+  reminder: {
+    /** `prompts.inbox.reminder`: the person's shared text, or null (the default). */
+    shared: string | null;
+    /** `prompts.inbox.runtimes.<agent>.reminder`: an agent's own text (it wins), or null. */
+    runtimes: Record<InboxPromptHost, string | null>;
+    /** The built-in lines: for hosts whose reply comes back by itself, and for those without it (OpenCode 1). */
+    defaults: { wake: string; no_wake: string };
+    /** The most characters a custom reminder may hold; a longer one is refused. */
+    max: number;
+    /** Whether each agent gets a reminder at all (`inboxReminder`, with the Inbox tool). */
+    on: Record<InboxPromptHost, boolean>;
+    /**
+     * Whether each agent's reply comes back by itself, so its default is `defaults.wake`;
+     * false: the no-wake default (OpenCode 1). Absent from an older Inbox: all true.
+     */
+    wakes?: Record<InboxPromptHost, boolean>;
+    /**
+     * Text config.json holds that is over `max` and so is ignored (the agent gets the
+     * next text in line): its length, else null. Absent from an older Inbox.
+     */
+    over?: { shared: number | null; runtimes: Record<InboxPromptHost, number | null> };
+    /** Whether this page may change it: false through the tailnet (it reaches every agent on this computer). */
+    editable: boolean;
+  };
+  /** The plan, review and annotate prompts, in the order the page lists them. */
+  others: InboxPromptItem[];
+}
+
+/** `POST /api/inbox/settings` `{ prompts: { inbox: … } }`: a string sets the text, null (or blank) deletes the key. */
+export interface InboxPromptsChange {
+  inbox: {
+    reminder?: string | null;
+    runtimes?: Partial<Record<InboxPromptHost, { reminder?: string | null }>>;
+  };
 }

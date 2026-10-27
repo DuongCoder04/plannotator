@@ -1757,16 +1757,138 @@ rm -rf "$HOME/.bun/install/cache/@plannotator" 2>/dev/null || true
 # Clear Pi jiti cache to force fresh download on next run
 rm -rf /tmp/jiti 2>/dev/null || true
 
+# Pi extension (#902). `pi install npm:@plannotator/pi-extension` runs a bare
+# `npm install @plannotator/pi-extension` in <agent dir>/npm. npm may settle on
+# an older version and still exit 0 ("up to date"): it passes over a release
+# whose `engines` the running Node does not meet (0.28.32's Node floor), and a
+# registry mirror can lag. `pi update <source>` is Pi's own update: it asks the
+# registry for the newest version and installs `<name>@latest` by name (older
+# Pi reinstalls with `npm install -g`), and it leaves Pi's settings as they are.
+# So an existing install is updated with `pi update`, a first install that
+# landed on an older version gets the same `pi update`, the version on disk is
+# read back where Pi loads it from, and "installed"/"updated" is said only when
+# it reached this release; otherwise one line names the cause it can see and
+# the command to run. The step never pins a version in Pi's settings (a pinned
+# source is skipped by every later `pi update`). A source the person pinned
+# (npm:@plannotator/pi-extension@0.28.20) is left alone and the line says how
+# to move it. Nothing is removed first, so a failed step leaves the install as
+# it was. `pi update` shipped together with `pi install`, and it runs here only
+# when Pi's settings list the extension. Same logic in install.ps1 and
+# install.cmd's :UpdatePiExtension.
+PI_EXTENSION_SOURCE="npm:@plannotator/pi-extension"
+
+# Pi's agent dir: $PI_CODING_AGENT_DIR (~ expanded, as Pi does), else ~/.pi/agent.
+pi_agent_dir() {
+    case "${PI_CODING_AGENT_DIR:-}" in
+        "") printf '%s\n' "$HOME/.pi/agent" ;;
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s\n' "$HOME/${PI_CODING_AGENT_DIR#\~/}" ;;
+        *) printf '%s\n' "$PI_CODING_AGENT_DIR" ;;
+    esac
+}
+
+# How Pi's user settings list the extension: "none", "unpinned", or
+# "pinned:<version>" for an exact version (what `pi update` skips).
+pi_extension_configured() {
+    _pi_settings="$(pi_agent_dir)/settings.json"
+    if [ ! -f "$_pi_settings" ] || ! grep -Eq '"npm:@plannotator/pi-extension(@[^"]*)?"' "$_pi_settings" 2>/dev/null; then
+        echo "none"
+        return 0
+    fi
+    _pi_pin=$(sed -n 's/.*"npm:@plannotator\/pi-extension@v\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9A-Za-z.+-]*\)".*/\1/p' "$_pi_settings" 2>/dev/null | head -n 1)
+    if [ -n "$_pi_pin" ]; then
+        echo "pinned:$_pi_pin"
+    else
+        echo "unpinned"
+    fi
+}
+
+# The installed extension's version, read where Pi loads it from: the managed
+# <agent dir>/npm/node_modules copy when it exists, else the global npm root
+# (where older Pi installed user packages). Empty when it can't be read.
+pi_extension_installed_version() {
+    _pi_pkg="$(pi_agent_dir)/npm/node_modules/@plannotator/pi-extension"
+    if [ ! -d "$_pi_pkg" ]; then
+        _pi_pkg=""
+        if command -v npm >/dev/null 2>&1; then
+            _pi_root=$(npm root -g 2>/dev/null | head -n 1)
+            if [ -n "$_pi_root" ]; then
+                _pi_pkg="$_pi_root/@plannotator/pi-extension"
+            fi
+        fi
+    fi
+    [ -n "$_pi_pkg" ] && [ -f "$_pi_pkg/package.json" ] || return 0
+    sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_pi_pkg/package.json" 2>/dev/null | head -n 1
+}
+
+# Whether version $1 is at least $2 (major.minor.patch; any suffix ignored).
+pi_version_at_least() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        sub(/^v/, "", a); sub(/^v/, "", b); sub(/[-+].*/, "", a); sub(/[-+].*/, "", b)
+        split(a, x, "."); split(b, y, ".")
+        for (i = 1; i <= 3; i++) { p = x[i] + 0; q = y[i] + 0; if (p > q) exit 0; if (p < q) exit 1 }
+        exit 0
+    }'
+}
+
 update_pi_extension_if_present() {
     if ! command -v pi &>/dev/null; then
         return 0
     fi
 
-    echo "Updating Pi extension..."
-    if pi install npm:@plannotator/pi-extension; then
-        echo "Pi extension updated."
+    _pi_target="${latest_tag#v}"
+    _pi_state=$(pi_extension_configured)
+    _pi_fresh=0
+    case "$_pi_state" in
+        none)
+            _pi_fresh=1
+            echo "Installing Pi extension..."
+            if ! pi install "$PI_EXTENSION_SOURCE"; then
+                echo "Skipping Pi extension install (pi install failed)"
+                return 0
+            fi
+            _pi_before=$(pi_extension_installed_version)
+            if [ -z "$_pi_before" ] || ! pi_version_at_least "$_pi_before" "$_pi_target"; then
+                # npm settled on an older version (or it can't be read): Pi's
+                # own update asks for the newest one by name.
+                pi update "$PI_EXTENSION_SOURCE" || true
+            fi
+            ;;
+        pinned:*)
+            echo "Pi extension: pinned to ${_pi_state#pinned:} in Pi's settings, left as is. To move it: pi install ${PI_EXTENSION_SOURCE}@${_pi_target}"
+            return 0
+            ;;
+        *)
+            echo "Updating Pi extension..."
+            _pi_before=$(pi_extension_installed_version)
+            if ! pi update "$PI_EXTENSION_SOURCE"; then
+                # The update failed, or this Pi's update takes no source: the
+                # install command, as before. Neither removes anything first.
+                pi install "$PI_EXTENSION_SOURCE" || true
+            fi
+            ;;
+    esac
+
+    _pi_after=$(pi_extension_installed_version)
+    if [ -z "$_pi_after" ]; then
+        echo "Pi extension: could not read its installed version. To update it: pi update ${PI_EXTENSION_SOURCE}"
+    elif ! pi_version_at_least "$_pi_after" "$_pi_target"; then
+        # The one cause visible from here: the registry npm uses does not
+        # have this release yet (a mirror catching up, or npm not published).
+        _pi_view=""
+        if command -v npm >/dev/null 2>&1; then
+            _pi_view=$(npm view "@plannotator/pi-extension@${_pi_target}" version --fetch-timeout=10000 --fetch-retries=0 2>&1 || true)
+        fi
+        case "$_pi_view" in
+            *E404*) echo "Pi extension: still ${_pi_after} (${_pi_target} is not on your npm registry yet). Run this later: pi update ${PI_EXTENSION_SOURCE}" ;;
+            *) echo "Pi extension: still ${_pi_after} (this release is ${_pi_target}). To update it: pi update ${PI_EXTENSION_SOURCE}" ;;
+        esac
+    elif [ "$_pi_fresh" -eq 1 ]; then
+        echo "Pi extension installed (${_pi_after})."
+    elif [ "$_pi_before" = "$_pi_after" ]; then
+        echo "Pi extension already up to date (${_pi_after})."
     else
-        echo "Skipping Pi extension update (pi install failed)"
+        echo "Pi extension updated to ${_pi_after}."
     fi
 }
 
@@ -2187,6 +2309,7 @@ checkout_failed=0
         copy_skill_if_present apps/skills/claude/plannotator-review "$CLAUDE_SKILLS_DIR"
         copy_skill_if_present apps/skills/claude/plannotator-annotate "$CLAUDE_SKILLS_DIR"
         copy_skill_if_present apps/skills/claude/plannotator-last "$CLAUDE_SKILLS_DIR"
+        copy_skill_if_present apps/skills/claude/plannotator-inbox "$CLAUDE_SKILLS_DIR"
         # The plannotator knowledge skill (CLI reference) has no Claude-only
         # injection form — its body is pure prose — so Claude installs the
         # same single-sourced copy Codex gets from apps/skills/core.
@@ -2200,6 +2323,7 @@ checkout_failed=0
         copy_skill_if_present apps/skills/core/plannotator-review "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-annotate "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-last "$AGENTS_SKILLS_DIR"
+        copy_skill_if_present apps/skills/core/plannotator-inbox "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator "$AGENTS_SKILLS_DIR"
         echo "Installed shared agent skills to ${AGENTS_SKILLS_DIR}/"
     else
@@ -2227,6 +2351,8 @@ checkout_failed=0
         # Kiro-specific skills (origin baked in) come from apps/kiro-cli/skills.
         copy_skill_if_present apps/kiro-cli/skills/plannotator-review "$KIRO_SKILLS_DIR"
         copy_skill_if_present apps/kiro-cli/skills/plannotator-annotate "$KIRO_SKILLS_DIR"
+        # /plannotator-inbox needs no origin label: the shell-neutral core copy.
+        copy_skill_if_present apps/skills/core/plannotator-inbox "$KIRO_SKILLS_DIR"
         # The plannotator knowledge skill (CLI reference) has no Kiro-specific
         # form, so Kiro receives the single-sourced core copy like every other
         # scope. Without it, Kiro users get the action skills but no reference.
@@ -2251,6 +2377,8 @@ checkout_failed=0
         copy_skill_if_present apps/vibe/skills/plannotator-review "$VIBE_SKILLS_DIR"
         copy_skill_if_present apps/vibe/skills/plannotator-annotate "$VIBE_SKILLS_DIR"
         copy_skill_if_present apps/vibe/skills/plannotator-last "$VIBE_SKILLS_DIR"
+        # /plannotator-inbox needs no origin label: the shell-neutral core copy.
+        copy_skill_if_present apps/skills/core/plannotator-inbox "$VIBE_SKILLS_DIR"
         # The plannotator knowledge skill (CLI reference) is agent-agnostic and
         # single-sourced in apps/skills/core; Vibe gets the same copy every
         # other scope does. Without it, Vibe users get launchers but no CLI
@@ -2540,7 +2668,7 @@ else
     echo ""
     echo '  "plugin": ["@plannotator/opencode@latest"]'
     echo ""
-    echo "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
+    echo "Then restart OpenCode (OpenCode 2: run opencode2 reload). The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
 fi
 # Agent-specific closing sections print only for agents this run detected,
 # reusing the detection each integration block above already ran (Pi: `pi` on
@@ -2559,9 +2687,13 @@ if [ "$pi_detected" -eq 1 ]; then
     echo "  PI USERS"
     echo "=========================================="
     echo ""
-    echo "Install or update the extension:"
+    echo "Install the extension:"
     echo ""
     echo "  pi install npm:@plannotator/pi-extension"
+    echo ""
+    echo "Update it (pi install leaves an existing install as it is):"
+    echo ""
+    echo "  pi update npm:@plannotator/pi-extension"
 fi
 # Oh My Pi (OMP) loads the Pi extension as an OMP plugin (#1814). This run
 # installs nothing into OMP: the section says how, because "Ask this session"

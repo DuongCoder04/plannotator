@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { capturePlace, holdPlace, openerOf, opensFile, parsePlaceLayout, placeInView, placeLayoutKey, placeSelector, placeShown, restorePlace, type ThreadPlace } from '../threadPlace';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
+import { useRefHoverCards } from '@plannotator/ui/components/RefHoverCard';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
+import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
@@ -21,7 +25,7 @@ import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
-import { agentName, clockTime, dayWords, fullTime, plural, whenTime } from '../format';
+import { agentName, clockTime, dayWords, formatCount, fullTime, plural, whenTime } from '../format';
 import { foldSnippet, holdingsOf, isDelivered, isPersonLook, isPersonReply, lastNonNote, lookBoundary, newSinceLook, planFolds, snippetText, type FoldSnippet, type Holding } from '../folding';
 import { highlightSearchHits } from '../search/highlight';
 import { AuthorMark, Icon } from '../icons';
@@ -33,7 +37,7 @@ import { useReplyDraft } from '../replyDraft';
 import { conflictText, DraftHead, DraftFootNote } from './DraftLabel';
 import { canToggleRead } from '../markRead';
 import { NewMessageButton, NewMessageComposer, NewMessagePopover, hostName, useLiveSessions, type NewMessageMode } from './NewMessage';
-import { autoAfterText, deliveryLine, restartNote, TURN_ENDED_TEXT, waitInputs, type DeliveryLine, type RecipientConnection } from '../deliveryLine';
+import { autoAfterText, deliveryLine, restartNote, TURN_ENDED_TEXT, uncertainItem, waitInputs, type DeliveryLine, type RecipientConnection } from '../deliveryLine';
 import { RestartLine } from './RestartNote';
 import { UndeliveredBand, UndeliveredText, useMinuteClock } from './Undelivered';
 import { SendToAnotherSession } from '../compose/SendToAnotherSession';
@@ -73,8 +77,8 @@ import { ActionChecklist, type ActionMark } from './ActionChecklist';
 import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
-import { OpenQuestionsButton } from './OpenQuestions';
-import { laidOutChildren, pillHitsButtons } from '../footFit';
+import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
+import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { selectionToolbarShowing } from '../selectionToolbar';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, type SendTarget, type SentContents } from '../sendTargets';
@@ -261,6 +265,7 @@ export function MessageBody({
   imageBase,
   onImage,
   pictureBadge,
+  inlineRefOf,
 }: {
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
@@ -304,6 +309,8 @@ export function MessageBody({
     onSave: (annotation: Annotation) => Promise<boolean>;
     onUnanchored?: (report: { attempted: readonly string[]; unanchored: readonly string[] }) => void;
     onPainted?: () => void;
+    /** Words the comment box opens with for this selection (the tour's suggested comment); absent: an empty box. */
+    suggest?: (selectedText: string) => string | undefined;
   };
   /**
    * The person's own sent reply (sentReply.ts): the answers it carried, read
@@ -326,6 +333,12 @@ export function MessageBody({
   onImage?: (src: string, alt: string) => void;
   /** A label over each picture choice's picture (ui QuestionBlock `pictureBadge`); absent: none. */
   pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
+  /**
+   * The src as the body wrote it, read back from an image URL the body drew: what finds the image's captured
+   * file (`inline_images`, by `ref`). Absent: the message's own image route (inlineImageRefFromSrc). The
+   * tour passes its own, for images drawn from its assets.
+   */
+  inlineRefOf?: (src: string) => string | null;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -338,9 +351,23 @@ export function MessageBody({
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false }), [shown]);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false }) : []), [restShown]);
   const refRepo = useRefRepo(repo);
+  // The body's images go through a host resolver that names the same URL ui's
+  // default would (the window's resolver, `inboxImageSrcResolver`), only so ui
+  // draws an image the Inbox refuses (403 image_hidden, 404) as its alt text in
+  // a quiet chip instead of a broken-image icon: markdown images, `<img>` in
+  // raw-HTML blocks and question cards' pictures alike. Remote, `data:` and
+  // `blob:` sources keep their URL (HtmlBlock's default test: `https:host/a.png`
+  // is remote too).
+  const imageBaseDir = imageBase ?? inboxMessageImageBase(message.id);
+  const resolveImage = useCallback<ImageResolver>(
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    [imageBaseDir],
+  );
   // A tall screenshot in the body shows its top, cropped like the gallery's
   // (inbox.css); a click still opens it whole.
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Hover cards for issue, PR and MR links in the body (ui RefHoverCard).
+  const refCard = useRefHoverCards(bodyRef);
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -361,17 +388,20 @@ export function MessageBody({
   const openImageRef = useRef(onOpenInlineImage);
   openImageRef.current = onOpenInlineImage;
   const [fallback, setFallback] = useState<{ src: string; alt: string } | null>(null);
+  const refOfRef = useRef(inlineRefOf);
+  refOfRef.current = inlineRefOf;
+  const refOf = useCallback((src: string) => (refOfRef.current ? refOfRef.current(src) : inlineImageRefFromSrc(src, message.id)), [message.id]);
   const imageOf = useCallback(
     (src: string | null) => {
-      const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
+      const ref = src ? refOf(src) : null;
       return ref === null ? null : (inlineRef.current.find((image) => image.ref === ref) ?? null);
     },
-    [message.id],
+    [refOf],
   );
   /** Open one of the body's images: its captured file in the viewer, else the lightbox. False: not one of them. */
   const openImage = useCallback(
     (src: string | null, alt: string): boolean => {
-      if (!src || inlineImageRefFromSrc(src, message.id) === null) return false;
+      if (!src || refOf(src) === null) return false;
       // An image that failed to load (outside the project, gone) opens nothing: an empty lightbox helps no one.
       if ([...(bodyRef.current?.querySelectorAll<HTMLImageElement>('img[data-ib-broken]') ?? [])].some((img) => img.getAttribute('src') === src)) return true;
       const image = imageOf(src);
@@ -379,7 +409,7 @@ export function MessageBody({
       else setFallback({ src, alt });
       return true;
     },
-    [imageOf, message.id],
+    [imageOf, refOf],
   );
   const onImageRef = useRef(onImage);
   onImageRef.current = onImage;
@@ -391,7 +421,7 @@ export function MessageBody({
       // A question card's picture (a picture choice, `Shows:`): the card makes it pick, or opens it with its own button.
       if (img.hasAttribute('data-question-picture')) continue;
       const src = img.getAttribute('src');
-      const ref = src ? inlineImageRefFromSrc(src, message.id) : null;
+      const ref = src ? refOf(src) : null;
       if (ref === null || img.hasAttribute('data-ib-broken')) continue;
       const image = imageOf(src);
       const name = image?.name ?? ref.split(/[\\/]/).pop() ?? 'image';
@@ -604,7 +634,9 @@ export function MessageBody({
   );
 
   return (
+    <ImageResolverContext.Provider value={resolveImage}>
     <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef}>
+      {refCard}
       {(!replyParts || shown !== '') && (
       <Viewer
         ref={viewerRef}
@@ -615,6 +647,7 @@ export function MessageBody({
         onSelectAnnotation={comments ? selectComment : noop}
         selectedAnnotationId={comments ? selectedComment : null}
         textComments={comments !== undefined}
+        suggestComment={comments?.suggest}
         allowImages={false}
         onRestoreReport={comments ? restoreReport : undefined}
         mode="selection"
@@ -622,7 +655,7 @@ export function MessageBody({
         maxWidth={null}
         stickyActions={false}
         disableCodePathValidation
-        imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
+        imageBaseDir={imageBaseDir}
         onImageClick={onImageClick}
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
@@ -660,7 +693,7 @@ export function MessageBody({
           maxWidth={null}
           stickyActions={false}
           disableCodePathValidation
-          imageBaseDir={imageBase ?? inboxMessageImageBase(message.id)}
+          imageBaseDir={imageBaseDir}
           onImageClick={onImageClick}
           resolveLocalLink={resolveLocalLink}
           refRepo={refRepo}
@@ -682,6 +715,7 @@ export function MessageBody({
       )}
       {fallback && createPortal(<ImageLightbox src={fallback.src} alt={fallback.alt} onClose={() => setFallback(null)} />, document.body)}
     </div>
+    </ImageResolverContext.Provider>
   );
 }
 
@@ -768,6 +802,8 @@ export interface ThreadPaneProps {
   onReplyOpened?: () => void;
   /** On a phone the header leads with a Back button named for the screen under the thread ("Inbox", a project). */
   backLabel?: string;
+  /** A thread opened from a Board card: the chip naming the card, under the subject (board/CardChip.tsx). */
+  cardChip?: React.ReactNode;
   /** A phone: one screen at a time, so an open file takes the whole window (phone.ts). */
   phone?: boolean;
   /**
@@ -799,9 +835,11 @@ export interface ThreadPaneProps {
    * if folded or hidden in the middle fold, scrolled to the centre, focused
    * and ringed (a question's card when the match was in a question), and the
    * query's words are highlighted in it until the first click or key in the
-   * thread. `onLanded` then drops `msg=` from the hash.
+   * thread. `onLanded` then drops `msg=` from the hash. `focus: 'prompt'`
+   * (decision mode's "Open the thread", approval "inbox-decide-thread-only"):
+   * focus goes to the question's prompt, not the card.
    */
-  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null } | null;
+  landing?: { messageId: string; terms: readonly string[]; questionKey: string | null; focus?: 'prompt' } | null;
   onLanded?: () => void;
   /**
    * The Artifacts view is on (approval "inbox-thread-artifacts", `#thread=…&artifacts`):
@@ -810,6 +848,12 @@ export interface ThreadPaneProps {
   artifacts?: boolean;
   /** Turn the Artifacts view on or off (the header's button, "Back to the thread"). Absent: no Artifacts button. */
   onArtifacts?: (open: boolean) => void;
+  /**
+   * Decision mode (experimental, thread only): "Decide these N" at the top of
+   * the open-questions list, which opens the dialog scoped to this thread.
+   * The window passes it only while two or more of the thread's decisions wait.
+   */
+  decide?: OpenQuestionsDecide | null;
 }
 
 /** The thread's attachments as they are now and the annotations waiting for a Send, kept fresh. */
@@ -967,7 +1011,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -1140,6 +1184,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const sectionRef = useRef<HTMLElement>(null);
   /** After a fold changes: keep the message the person acted on in place, then move focus. */
   const anchorRef = useRef<{ id: string | null; top: number; focus: string | null; folding: boolean } | null>(null);
+  /** Stops holding the place put back after a file (threadPlace.ts `holdPlace`); everything that scrolls the thread calls it first. */
+  const holdRef = useRef<(() => void) | null>(null);
+  const stopHold = () => {
+    holdRef.current?.();
+    holdRef.current = null;
+  };
+  useEffect(() => () => holdRef.current?.(), []);
   const [announced, setAnnounced] = useState('');
   const announce = (text: string) => {
     setAnnounced('');
@@ -1234,6 +1285,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
 
   /** Scroll to a card or a message, focus it, and ring it briefly; a folded message opens first. */
   const jumpTo = useCallback((target: JumpTarget) => {
+    // A place held after a file closed must not pull the thread back while the message unfolds.
+    holdRef.current?.();
+    holdRef.current = null;
     if (unfold(target.messageId)) {
       requestAnimationFrame(() => jumpNow(target));
       return;
@@ -1248,6 +1302,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         ? body.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(target.messageId)}"]`)
         : body.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(target.messageId)}"] [data-question-key="${CSS.escape(target.key)}"]`);
     if (!element) return;
+    stopHold();
     const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     element.scrollIntoView?.({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
     if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
@@ -1309,11 +1364,25 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onLandedRef.current?.();
         return;
       }
-      const card = target.questionKey ? body.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(target.messageId)}"] [data-question-key="${CSS.escape(target.questionKey)}"]`) : null;
-      const element = card ?? article;
+      const inMessage = `[data-message-id="${CSS.escape(target.messageId)}"]`;
+      const key = target.questionKey ? CSS.escape(target.questionKey) : null;
+      const card = key ? body.querySelector<HTMLElement>(`${inMessage} [data-question-key="${key}"]`) : null;
+      // An action item is a row of its message's checklist (ActionChecklist), not a question card.
+      const actionRow = key && !card ? body.querySelector<HTMLElement>(`${inMessage} [data-action-card="${key}"]`) : null;
+      const element = card ?? actionRow ?? article;
+      stopHold();
       element.scrollIntoView?.({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
-      if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
-      element.focus({ preventScroll: true });
+      // The card's prompt is what names it (its aria-labelledby): focus it there when asked, else the card. An
+      // action row's prompt is its task, the row's toggle.
+      const promptId = target.focus === 'prompt' ? card?.getAttribute('aria-labelledby') : null;
+      const prompt = promptId
+        ? card!.querySelector<HTMLElement>(`#${CSS.escape(promptId)}`)
+        : target.focus === 'prompt' && actionRow
+          ? actionRow.querySelector<HTMLElement>('[data-action-toggle]')
+          : null;
+      const focused = prompt ?? element;
+      if (!focused.hasAttribute('tabindex')) focused.setAttribute('tabindex', '-1');
+      focused.focus({ preventScroll: true });
       element.classList.remove('ib-q-target-out');
       element.classList.add('ib-q-target');
       setTimeout(() => {
@@ -1326,7 +1395,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       landedHits.current = { messageId: target.messageId, terms: target.terms };
       onLandedRef.current?.();
     };
-    // A folded message opens first, then the landing measures it.
+    // A folded message opens first, then the landing measures it. A place held after a file must not pull it back.
+    stopHold();
     if (unfold(target.messageId)) requestAnimationFrame(() => requestAnimationFrame(land));
     else requestAnimationFrame(land);
     // articleOf reads the body's ref.
@@ -1595,7 +1665,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     }
     // A comment on a message's text: that message, its passage brought into view and rung.
     if (record.message) {
+      // A place held after a file must not pull the thread back over the passage (show() scrolls inside rAF).
+      stopHold();
       const show = () => {
+        stopHold();
         const mark = bodyRef.current?.querySelector<HTMLElement>(
           `[data-message-id="${CSS.escape(record.message_id)}"] [data-bind-id="${CSS.escape(record.id)}"], [data-message-id="${CSS.escape(record.message_id)}"] [data-highlight-id="${CSS.escape(record.id)}"]`,
         );
@@ -1775,7 +1848,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (bodyRef.current) bodyRef.current.scrollTop = threadScroll.current;
     const button = artifactsButtonRef.current;
     if (button) button.focus();
-    else bodyRef.current?.querySelector<HTMLElement>('.ib-subject')?.focus();
+    else bodyRef.current?.querySelector<HTMLElement>('.ib-subject')?.focus({ preventScroll: true });
   }, [artifactsOn]);
   // The thread's scroll, kept while the grid is shown over it.
   useEffect(() => {
@@ -1787,6 +1860,98 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     body.addEventListener('scroll', keep, { passive: true });
     return () => body.removeEventListener('scroll', keep);
   }, [artifactsOn]);
+  // ── Your place in the thread, around a file (threadPlace.ts) ──
+  // Beside a file the thread is a narrow column, under a full-screen file it is covered, and on a phone or a
+  // stacked window it is display:none (WebKit then forgets its scrollTop). Each time that changes, the place
+  // on screen is read and put back once the new layout is laid out: the tile or image the person opened at the
+  // same distance from the top, else the first thing that was in view. A hidden layout keeps the place it was
+  // given, so closing the file brings the thread back where it was. Never the open-time landing (the New
+  // divider): that runs once per thread.
+  const placeKey = placeLayoutKey({ thread: thread.thread_id, file: fileCovers ? 'covered' : file ? 'side' : 'none', grid: artifactsOn, guide: covered });
+  /** The last tile, image or link a click or key in the thread was aimed at, and whether it came from the keyboard. */
+  const lastOpener = useRef<{ el: HTMLElement; keyboard: boolean; at: number } | null>(null);
+  /** The tile or image the open file was opened from by keyboard: focus goes back to it when the file closes. */
+  const returnFocus = useRef<{ el: HTMLElement; selector: string | null } | null>(null);
+  /**
+   * `saved`: the place to put back. `placedTop`: the scrollTop it was put back at; a scroll elsewhere (the person,
+   * `n`, a jump to a card) means the place on screen is the one to read next time, else `saved` is kept as it
+   * was (beside a file the thread is narrower and taller, and reading it there would lose what a clamp cost).
+   */
+  const place = useRef<{ committed: string; read: string | null; saved: ThreadPlace | null; placedTop: number | null }>({ committed: placeKey, read: null, saved: null, placedTop: null });
+  // Read in render, not in an effect: by the time any effect runs React has committed the new layout (the
+  // thread already narrowed, hidden or uncovered), so the old place can no longer be measured.
+  if (place.current.committed !== placeKey && place.current.read !== placeKey) {
+    place.current.read = placeKey;
+    const was = parsePlaceLayout(place.current.committed);
+    const body = bodyRef.current;
+    const sameThread = was.thread === thread.thread_id;
+    // The opener counts only when it opens the file that is opening now (not a button pressed a moment ago).
+    const recent = lastOpener.current && performance.now() - lastOpener.current.at < 2000 ? lastOpener.current : null;
+    const opener = sameThread && was.file === 'none' && file && recent && opensFile(recent.el, file.id) ? recent : null;
+    stopHold();
+    const untouched = was.file !== 'none' && place.current.saved !== null && place.current.placedTop !== null && body !== null && Math.abs(body.scrollTop - place.current.placedTop) <= 1;
+    if (!sameThread) place.current.saved = null;
+    else if (placeShown(was) && body && !untouched) {
+      place.current.saved = capturePlace(body, opener?.el ?? null);
+      place.current.placedTop = null;
+    }
+    // A file opening from the messages on screen: remember what opened it by keyboard, for focus on the way back.
+    if (sameThread && was.file === 'none' && file && placeShown(was)) returnFocus.current = opener?.keyboard ? { el: opener.el, selector: placeSelector(opener.el) } : null;
+  }
+  useLayoutEffect(() => {
+    const was = parsePlaceLayout(place.current.committed);
+    place.current.committed = placeKey;
+    place.current.read = null;
+    const now = parsePlaceLayout(placeKey);
+    if (placeLayoutKey(was) === placeKey) return;
+    const body = bodyRef.current;
+    // The file closed: whatever focus it is owed is settled here (the Artifacts grid gives focus back itself).
+    const focusBack = now.file === 'none' && was.file !== 'none' ? returnFocus.current : null;
+    if (now.file === 'none') returnFocus.current = null;
+    if (!body || !placeShown(now)) return;
+    const saved = place.current.saved;
+    const placed = () => {
+      place.current.placedTop = body.scrollTop;
+    };
+    // A file opening beside the thread moves the thread only when what was opened would leave the view: the
+    // narrower column keeps what the person sees above it (the message's head row) where it can.
+    if (saved && now.file === 'side' && was.file === 'none' && placeInView(body, saved)) placed();
+    else if (saved && restorePlace(body, saved)) {
+      placed();
+      stopHold();
+      holdRef.current = holdPlace(body, saved, placed, undefined, sectionRef.current ?? body);
+    }
+    // Focus back on what opened the file by keyboard, if nothing else has it.
+    if (focusBack) {
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) {
+        const target = focusBack.el.isConnected && body.contains(focusBack.el) ? focusBack.el : focusBack.selector ? body.querySelector<HTMLElement>(focusBack.selector) : null;
+        target?.focus({ preventScroll: true });
+      }
+    }
+    // Only the layout matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placeKey]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const onClick = (event: MouseEvent) => {
+      const el = openerOf(event.target, body);
+      lastOpener.current = el ? { el, keyboard: event.detail === 0, at: performance.now() } : null;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const el = openerOf(event.target, body);
+      lastOpener.current = el ? { el, keyboard: true, at: performance.now() } : null;
+    };
+    body.addEventListener('click', onClick, true);
+    body.addEventListener('keydown', onKey, true);
+    return () => {
+      body.removeEventListener('click', onClick, true);
+      body.removeEventListener('keydown', onKey, true);
+    };
+  }, []);
+
   // A file or a guided review opened from the grid closes: focus back on its tile, unless something took it.
   const gridCovered = file !== null || covered;
   const gridCoveredWas = useRef(gridCovered);
@@ -1834,7 +1999,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const article = articleOf(first.id);
     if (!article) return;
     const by = followBy(measureFirstLines(article), body.getBoundingClientRect());
-    if (by > 0) body.scrollBy?.({ top: by, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    if (by > 0) {
+      stopHold();
+      body.scrollBy?.({ top: by, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    }
     // `announce` and `articleOf` are this render's; only a new thread payload matters here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thread]);
@@ -1914,6 +2082,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (!body || !first) return;
     const target = below ? (newBelow(body, passedIds(), false)[0] ?? first) : first;
     const divider = target === first ? body.querySelector<HTMLElement>('[data-new-divider]') : null;
+    holdRef.current?.();
+    holdRef.current = null;
     (divider ?? target).scrollIntoView?.({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
     target.querySelector<HTMLElement>('[data-fold-head]')?.focus({ preventScroll: true });
   }, [passedIds]);
@@ -2600,7 +2770,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             name: last.delivery ? toName(last, last.delivery) : last.to ? toName(last, last.to) : hostName(lastTo.host),
             deliveredAt: last.delivery?.at ?? null,
             time: whenTime,
-            wakes: true,
+            // A Codex reply whose `codex queue` ran out of time may not have gone: saved, not queued.
+            wakes: !uncertainItem(recipientConnection, last.id),
             sendingNow: !!last.deliver_now_at,
             connection: recipientConnection,
             undelivered: undelivered ? { host: hostName(lastTo.host) } : null,
@@ -2611,7 +2782,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             // A reply that tags agents: the owner's own delivery, never another recipient's.
             deliveredAt: lastTags.length > 0 ? (last.delivery?.at ?? sent?.recipients?.find((r) => r.owner)?.delivered_at ?? null) : (sent?.checked_at ?? null),
             time: whenTime,
-            wakes: wakingSession !== null || (askedSession !== null && recipientConnection != null),
+            wakes: (wakingSession !== null || (askedSession !== null && recipientConnection != null)) && !uncertainItem(recipientConnection, last.id),
             sendingNow: !!last.deliver_now_at,
             connection: recipientConnection,
             askerEnded: askerEnded && asking ? { name: asking.name } : null,
@@ -2619,8 +2790,16 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           });
   // No Send now because that session runs an older plugin than a restart loads (the "Steps" line,
   // owner approval "restart-warning"): only while the reply waits for a working session.
-  const restartName = lastTo ? hostName(lastTo.host) : repliedTo?.author.kind === 'agent' && repliedTo.author.host ? hostName(repliedTo.author.host) : asker;
   const restart = delivered?.state === 'queued' && !last.deliver_now_at ? restartNote(recipientConnection) : null;
+  // Oh My Pi polls as host `pi`: its runtime names it (owner approval "reload-hosts").
+  const restartName =
+    restart?.runtime === 'oh-my-pi'
+      ? 'Oh My Pi'
+      : lastTo
+        ? hostName(lastTo.host)
+        : repliedTo?.author.kind === 'agent' && repliedTo.author.host
+          ? hostName(repliedTo.author.host)
+          : asker;
   // The name the waiting band uses ("Claude Code", "Claude Code (another session)").
   const ownerLineName = lastTo
     ? last.to
@@ -2834,6 +3013,40 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // While new messages are below the view: a pill that goes to them.
   // On a phone the pill sits over the middle of the foot's row; when a button lies under that middle, above the foot.
   const footRowRef = useRef<HTMLDivElement>(null);
+  /**
+   * How far the closed foot shortened so the buttons and the draft status share one line (footFit.ts
+   * `fitWholeFootRow`: the skip chip, Edit, the open questions count, the draft's words, tighter spacing).
+   * Null: no status, no layout, or even the shortest form does not fit (the status wraps above).
+   */
+  const [rowLevel, setRowLevel] = useState<number | null>(null);
+  const footStatusShown = waiting || draftKept;
+  const footRowShown = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !box.open && !(route.open && asking);
+  const rowMax: OpenQuestionsLabelForm = phone ? 'short' : 'full';
+  // What the row shows; a change re-fits it (with its width).
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone].join('|');
+  const rowFittedFor = useRef('');
+  const fitRowRef = useRef<(force?: boolean) => void>(() => {});
+  fitRowRef.current = (force = false) => {
+    const row = footRowRef.current;
+    if (!row) return;
+    const key = `${row.getBoundingClientRect().width}|${footSig}`;
+    if (!force && key === rowFittedFor.current) return;
+    rowFittedFor.current = key;
+    const level = footStatusShown ? fitWholeFootRow(row, rowMax, phone) : null;
+    setRowLevel((current) => (current === level ? current : level));
+  };
+  // Every render (after the open questions button drew itself), and whenever the row's width changes.
+  useLayoutEffect(() => fitRowRef.current());
+  useEffect(() => {
+    const row = footRowRef.current;
+    if (!row || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitRowRef.current());
+    observer.observe(row);
+    // Words measured in a fallback font fit differently once the real one loads.
+    void document.fonts?.ready.then(() => fitRowRef.current(true));
+    return () => observer.disconnect();
+    // The row comes and goes (the reply box, the route choice, the stale guard, compose).
+  }, [footRowShown]);
   const [pillAbove, setPillAbove] = useState(false);
   const pillOnRow = showNew && phone && !waiting && !draftKept;
   const placePill = useCallback(() => {
@@ -3102,6 +3315,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       <div className={`ib-pbody${one ? '' : ' ib-folding'}`} ref={bodyRef} hidden={artifactsOn}>
         {/* A focus target (the way back's fallback, a stacked thread), never a tab stop. */}
         <h2 className="ib-subject" dir="auto" tabIndex={-1}>{thread.subject ?? '(no subject)'}</h2>
+        {cardChip ? <div className="ib-tmeta" data-thread-card-row="">{cardChip}</div> : null}
         {notice}
         {startedTo && (
           <div className="ib-tmeta" data-started-by="">
@@ -3298,6 +3512,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 <span data-tagged-names="">
                   {' · tagged '}
                   {sentTags.map((t) => tagName(t, ownerOfSent && 'host' in ownerOfSent ? ownerOfSent.host : null, ownerOfSent && 'session' in ownerOfSent ? ownerOfSent.session : null)).join(', ')}
+                </span>
+              )}
+              {/* Sent with compose's Board chip on (approval "inbox-compose-board-chip"): a quiet mark, never the agent's block. */}
+              {!isAgent && message.board_request === true && (
+                <span className="ib-m-board" data-board-request="">
+                  <span className="ib-to-sep">·</span>
+                  <Icon name="board" />
+                  <span aria-hidden="true">Board</span>
+                  <span className="ib-sr">Board tracking asked</span>
                 </span>
               )}
             </>
@@ -3769,6 +3992,28 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   Cancel
                 </button>
                 <span className="ib-sp" />
+                {/* A phone has no way to paste a picture into the reply (iOS offers no Paste for an image in a plain
+                    text field), so it gets an attach button: the photo library or Files, into the same tiles,
+                    upload path and names as a paste. A desktop stays paste-only (the owner's choice). */}
+                {phone && (
+                  <Tip content="Attach files">
+                    <label className="ib-rattach" aria-label="Attach files">
+                      <Icon name="clip" size={19} />
+                      <input
+                        type="file"
+                        multiple
+                        accept="image/*,*/*"
+                        className="ib-sr"
+                        data-reply-attach=""
+                        onChange={(event) => {
+                          if (event.target.files) replyFiles.attach(event.target.files);
+                          event.target.value = '';
+                          setError(null);
+                        }}
+                      />
+                    </label>
+                  </Tip>
+                )}
                 {/* The in-thread New message button is off (approval "inbox-acknowledge"); its route and code stay. */}
                 {SHOW_NEW_MESSAGE_BUTTON && !archived && <NewMessageButton live={live} mode={newMessage} onClick={() => void pressNewMessage()} />}
               </div>
@@ -3783,7 +4028,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           {/* Buttons on the left in today's order, the draft status and the skip chip at the right end (approval
               "thread-foot-status-right", option A). Too narrow for one line, the status takes its own line ABOVE the
               buttons (wrap-reverse; one item per line aligns to the start), so it never wraps between them. */}
-          <div className="ib-acts ib-footrow" data-foot-row="" ref={footRowRef}>
+          <div className="ib-acts ib-footrow" data-foot-row="" data-fit={rowLevel ? footRowTokens(rowLevel, phone) : undefined} ref={footRowRef}>
             <div className="ib-footbtns" data-foot-buttons="">
               {(waiting || draftKept) && (
                 <button type="button" className="ib-btn ib-pri" ref={sendRef} onClick={() => void send()} disabled={sending} aria-describedby={footStatusIds}>
@@ -3800,7 +4045,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 aria-describedby={waiting || draftKept ? footStatusIds : undefined}
               >
                 <Icon name={waiting || draftKept ? 'pen' : 'reply'} size={15} />
-                {waiting || draftKept ? 'Edit draft' : 'Reply'}
+                {/* Short of room, "Edit", and on a phone the pencil alone (footFit.ts): the words stay as hidden text,
+                    so the name is "Edit draft". */}
+                {waiting || draftKept ? (
+                  <span>
+                    Edit<span className="ib-fl"> draft</span>
+                  </span>
+                ) : (
+                  'Reply'
+                )}
               </button>
               {/* The thread's open questions (approval "inbox-thread-open-questions"): a list that takes the person to each
                   card, with Re-ask at its foot (owner, 2026-10-23: the open questions again, in one message per session). */}
@@ -3813,11 +4066,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                       ? { label: reaskItemLabel(reaskOpen), tooltip: reaskTooltip(reaskList), busy: reasking, onReask: () => void sendReask() }
                       : null
                   }
+                  decide={decide}
                   triggerRef={reaskRef}
                   phone={phone}
                   measure={measureOpenQuestions}
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
                   onSetSkipped={setSkippedFromList}
+                  rowForm={rowLevel !== null && footStatusShown ? footRowOpenQuestionsForm(rowLevel, rowMax) : null}
                 />
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits. */}
@@ -3948,10 +4203,22 @@ function SkipChip({ count, keepOpen, onToggle, id }: { count: number; keepOpen: 
       {/* The icon and the sentence are one item, so where the chip wraps (a narrow reply box) the icon stays with its words. */}
       <span className="ib-skip-s" id={id}>
         {!keepOpen && <Icon name="forward" size={14} />}
-        {keepOpen ? `${plural(count, 'question')} ${count === 1 ? 'stays' : 'stay'} open` : `${plural(count, 'question')} will be skipped`}
+        {/* Short of room, the foot's row drops the middle words ("1 open", "Skip"; footFit.ts, inbox.css): they leave
+            only the eye, so the description and the button's name keep them, and the text reads the same. */}
+        <span>
+          {formatCount(count)}
+          <span className="ib-fl">{keepOpen ? ` question${count === 1 ? ' stays' : 's stay'}` : ` question${count === 1 ? '' : 's'} will be`}</span>
+          {keepOpen ? ' open' : ' skipped'}
+        </span>
       </span>
       <button type="button" onClick={onToggle} data-skip-toggle="">
-        {keepOpen ? `Skip ${them}` : 'Keep open'}
+        {keepOpen ? (
+          <>
+            Skip<span className="ib-fl"> {them}</span>
+          </>
+        ) : (
+          'Keep open'
+        )}
       </button>
     </span>
   );
