@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { copyTextToClipboard } from '../utils/clipboard';
-import { describeSendFailure, sendFailureOf } from '../utils/sendFailure';
+import { canRetrySend, describeSendFailure, sendFailureOf } from '../utils/sendFailure';
 
 /**
  * The one message a review page shows when a decision did not reach the
@@ -10,12 +10,42 @@ import { describeSendFailure, sendFailureOf } from '../utils/sendFailure';
  * failure replaces it rather than stacking. The page itself is untouched:
  * the handlers that call this keep every annotation and never show a
  * "sent" screen.
+ *
+ * The handlers bracket every send with `sendStarted()` / `sendSettled()`: a
+ * new send takes the message down (it no longer describes the page), and
+ * Retry does nothing while a send is in flight, so it can never post a
+ * second decision beside the one already going.
  */
 
-export const SEND_FAILURE_TOAST_ID = 'plannotator-send-failure';
-
-/** Each failure gets a fresh Copy button (a repeat must not read "Copied"). */
+/**
+ * Each failure is a new toast with its own id, and the one before it is
+ * dismissed. Reusing one id races sonner: a dismissal reaches the Toaster a
+ * frame or two late, so a failure that lands within that window (a refused
+ * connection fails in milliseconds) would be marked deleted as it appears.
+ */
 let failures = 0;
+/** The failure toast on screen, if any. */
+let currentId: string | null = null;
+/** Decision sends in flight on this page. */
+let inFlight = 0;
+
+/** A decision send begins: the old failure no longer applies. */
+export function sendStarted(): void {
+  inFlight += 1;
+  dismissSendFailureToast();
+}
+
+/** A decision send ended, however it ended. */
+export function sendSettled(): void {
+  inFlight = Math.max(0, inFlight - 1);
+}
+
+/** The failure no longer applies (a send started, or the review was decided). */
+export function dismissSendFailureToast(): void {
+  if (currentId === null) return;
+  toast.dismiss(currentId);
+  currentId = null;
+}
 
 /**
  * Copy feedback stays inside the toast after a click (a plain sonner `cancel`
@@ -24,7 +54,7 @@ let failures = 0;
  * from the theme, since the Toasters run sonner's light theme and its
  * secondary fill disappears on a dark card.
  */
-function CopyFeedbackButton({ text }: { text: string }) {
+function CopyFeedbackButton({ getText }: { getText: () => string | undefined }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   return (
     <button
@@ -34,6 +64,11 @@ function CopyFeedbackButton({ text }: { text: string }) {
       data-send-failure-copy=""
       className="!bg-foreground/10 !text-foreground"
       onClick={() => {
+        const text = getText();
+        if (!text) {
+          setState('failed');
+          return;
+        }
         void copyTextToClipboard(text).then((copied) => setState(copied ? 'copied' : 'failed'));
       }}
     >
@@ -47,31 +82,45 @@ export function showSendFailureToast(options: {
   what: 'feedback' | 'approval';
   /** The error the send threw (`DecisionSendError` says why). */
   error: unknown;
-  /** Sends the same decision again. */
+  /** Sends the same decision again, from the page as it is now. */
   onRetry: () => void;
-  /** The text the failed send carried, as the page's Copy feedback copies it.
-   *  Omitted when there was nothing to copy (a bare approval). */
-  copyText?: string;
+  /** The text Retry would send now, as the page's Copy feedback copies it.
+   *  Omitted when the decision carries no text (a bare approval). */
+  copyText?: () => string | undefined;
 }): void {
   const { what, error, onRetry, copyText } = options;
+  const failure = sendFailureOf(error);
+  dismissSendFailureToast(); // replaced, never stacked
+  const id = `plannotator-send-failure-${++failures}`;
+  currentId = id;
+  const forget = () => {
+    if (currentId === id) currentId = null;
+  };
   toast.error(what === 'approval' ? 'Approval not sent' : 'Feedback not sent', {
-    id: SEND_FAILURE_TOAST_ID,
-    description: describeSendFailure(sendFailureOf(error)),
+    id,
+    onDismiss: forget,
+    description: describeSendFailure(failure),
     duration: Infinity,
     // It stays up, so it sits at the bottom, clear of the header's decision
     // control and the annotation panel the reviewer may want to read.
     position: 'bottom-center',
     closeButton: true,
-    // Always set, even to undefined: sonner merges an update into the toast
-    // with the same id, so an omitted key would keep the previous failure's
-    // Copy button and its text.
-    cancel: copyText ? <CopyFeedbackButton key={++failures} text={copyText} /> : undefined,
-    action: { label: 'Retry', onClick: onRetry },
-    classNames: { toast: '!w-auto', description: '!text-foreground/70' },
+    cancel: copyText ? <CopyFeedbackButton getText={copyText} /> : undefined,
+    // An already-decided review cannot take the decision again.
+    action: canRetrySend(failure)
+      ? {
+          label: 'Retry',
+          onClick: () => {
+            if (inFlight > 0) return;
+            onRetry();
+          },
+        }
+      : undefined,
+    // 420px on a desktop (sonner's 356px wraps the reason onto three lines),
+    // re-centred on sonner's column; phones keep sonner's full-width layout.
+    classNames: {
+      toast: 'sm:!w-[420px] sm:![margin-left:calc((var(--width)_-_420px)_/_2)]',
+      description: '!text-foreground/70',
+    },
   });
-}
-
-/** A later send succeeded: the failure no longer applies. */
-export function dismissSendFailureToast(): void {
-  toast.dismiss(SEND_FAILURE_TOAST_ID);
 }

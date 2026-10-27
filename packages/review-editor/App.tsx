@@ -53,7 +53,7 @@ import { monoFontStack, normalizeCssFontSize } from '@plannotator/ui/utils/cssFo
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
 import { assertSendOk, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
-import { dismissSendFailureToast, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
+import { dismissSendFailureToast, sendSettled, sendStarted, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
@@ -680,6 +680,10 @@ const ReviewApp: React.FC = () => {
   const [isApproving, setIsApproving] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
   const [submitted, setSubmitted] = useState<'approved' | 'feedback' | 'exited' | false>(false);
+  // A decided review has nothing left to retry: take any send failure down.
+  useEffect(() => {
+    if (submitted) dismissSendFailureToast();
+  }, [submitted]);
   // The agent that opened this review closed it (POST /api/host/close); the
   // reviewer's unsent comments stay in the draft for a reopen.
   const [agentClosed, setAgentClosed] = useState<{ unsentAnnotations: number } | null>(null);
@@ -4214,6 +4218,7 @@ const ReviewApp: React.FC = () => {
   // state (spec §3.2).
   const handleSendFeedback = useCallback(async (): Promise<boolean> => {
     setIsSendingFeedback(true);
+    sendStarted();
     try {
       await flushReviewProgress();
       const agentSwitchSettings = getAgentSwitchSettings('review');
@@ -4234,8 +4239,7 @@ const ReviewApp: React.FC = () => {
         setIsSendingFeedback(false);
         return false;
       }
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       setSubmitted('feedback');
       return true;
     } catch (err) {
@@ -4245,10 +4249,13 @@ const ReviewApp: React.FC = () => {
         what: 'feedback',
         error: err,
         onRetry: () => { void retryDecisionRef.current.sendFeedback(); },
-        // The same text the Copy feedback button copies.
-        copyText: feedbackMarkdown,
+        // What the Copy feedback button copies, read when clicked: what
+        // Retry would send now.
+        copyText: () => retryDecisionRef.current.feedbackMarkdown,
       });
       return false;
+    } finally {
+      sendSettled();
     }
   }, [feedbackMarkdown, allAnnotations, getDraftGeneration, flushReviewProgress]);
 
@@ -4282,6 +4289,7 @@ const ReviewApp: React.FC = () => {
   // mounting the App.
   const handleApprove = useCallback(async (options?: { note?: string; withAnnotations?: boolean }) => {
     setIsApproving(true);
+    sendStarted();
     try {
       await flushReviewProgress();
       const res = await fetch('/api/feedback', {
@@ -4299,8 +4307,7 @@ const ReviewApp: React.FC = () => {
         setIsApproving(false);
         return;
       }
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       setSubmitted('approved');
     } catch (err) {
       console.error('Failed to approve:', err);
@@ -4309,22 +4316,32 @@ const ReviewApp: React.FC = () => {
         what: 'approval',
         error: err,
         onRetry: () => { void retryDecisionRef.current.approve(options); },
-        // The text this approval carried (the same builder as the POST); a
-        // bare approval has none to copy.
-        copyText: buildReviewApprovalBody({
-          draftGeneration: getDraftGeneration(),
-          note: options?.note,
-          withAnnotations: options?.withAnnotations === true,
-          feedbackMarkdown,
-          annotations: allAnnotations,
-        }).feedback || undefined,
+        // The approval's text as Retry would send it now; a bare approval
+        // has none to copy.
+        copyText: options?.note?.trim() || options?.withAnnotations
+          ? () => retryDecisionRef.current.approvalFeedback(options)
+          : undefined,
       });
+    } finally {
+      sendSettled();
     }
   }, [getDraftGeneration, feedbackMarkdown, allAnnotations, flushReviewProgress]);
-  // Retry from the failure toast runs the latest handler, so it sends what
-  // the page holds now, the same as pressing the button again would.
-  const retryDecisionRef = useRef({ sendFeedback: handleSendFeedback, approve: handleApprove });
-  retryDecisionRef.current = { sendFeedback: handleSendFeedback, approve: handleApprove };
+  // The failure toast's Retry and Copy feedback read the page when clicked:
+  // Retry runs the latest handler, Copy copies what that handler would send.
+  const latestDecision = {
+    sendFeedback: handleSendFeedback,
+    approve: handleApprove,
+    feedbackMarkdown,
+    approvalFeedback: (options?: { note?: string; withAnnotations?: boolean }) => buildReviewApprovalBody({
+      draftGeneration: 0, // not part of the text
+      note: options?.note,
+      withAnnotations: options?.withAnnotations === true,
+      feedbackMarkdown,
+      annotations: allAnnotations,
+    }).feedback,
+  };
+  const retryDecisionRef = useRef(latestDecision);
+  retryDecisionRef.current = latestDecision;
 
   // --- The unified review decision control, agent mode (spec §3.2/§4) ------
   // One primary, one callback: the header's left segment, the global

@@ -120,6 +120,9 @@ let failFeedbackPosts = 0;
 let feedbackNetworkFailures = 0;
 /** Upcoming /api/approve POSTs that answer 500, recorded first. */
 let failApprovePosts = 0;
+/** When true, the next /api/feedback POST gets the servers' already-decided
+ *  refusal (another window sent first), recorded first. */
+let refuseNextFeedbackAsDecided = false;
 
 const MARKDOWN = "# Notes\n\nSome body text.\n";
 
@@ -166,6 +169,10 @@ function makeFetch(plan: unknown): typeof fetch {
       if (url.pathname === "/api/feedback" && failFeedbackPosts > 0) {
         failFeedbackPosts -= 1;
         return Response.json({ error: "boom" }, { status: 500 });
+      }
+      if (url.pathname === "/api/feedback" && refuseNextFeedbackAsDecided) {
+        refuseNextFeedbackAsDecided = false;
+        return Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
       }
       if (url.pathname === "/api/feedback" && feedbackNetworkFailures > 0) {
         feedbackNetworkFailures -= 1;
@@ -271,6 +278,7 @@ afterEach(async () => {
   failFeedbackPosts = 0;
   feedbackNetworkFailures = 0;
   failApprovePosts = 0;
+  refuseNextFeedbackAsDecided = false;
   seededExternalAnnotations = [];
   savedDocumentDrafts.clear();
   fileBrowserModule?.resetFileTreeBackend();
@@ -806,6 +814,8 @@ describe.if(hasDom)("annotate: a send that does not reach Plannotator", () => {
   // by its title rather than taking the first toast on the page.
   const failureToast = () =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]"))
+      // A dismissed toast stays in the DOM while it animates out.
+      .filter((el) => el.getAttribute("data-removed") !== "true")
       .find((el) => el.querySelector("[data-title]")?.textContent?.endsWith(" not sent"));
   const toastButton = (label: string) =>
     Array.from(failureToast()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === label);
@@ -900,5 +910,38 @@ describe.if(hasDom)("annotate: a send that does not reach Plannotator", () => {
     expect(failureToast()!.textContent).toContain("Approval not sent");
     // A bare approval carries no text, so there is nothing to copy.
     expect(Boolean(toastButton("Copy feedback"))).toBe(false);
+  });
+
+  test("a send that then succeeds leaves no failure message over Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    failFeedbackPosts = 1;
+    await mountAnnotate();
+    await sendNote("tighten the intro");
+    await waitFor(failureToast, "the failure message");
+
+    await act(async () => primaryButton()!.click());
+    await waitFor(() => completionState(), "the completion screen");
+    expect(completionState()).toBe("denied");
+    expect(failureToast()).toBeUndefined();
+  });
+
+  // Another window (or the agent) decided this review first: the server
+  // refuses with 409 already_decided. Retrying can never work, so the
+  // message says why and offers only Copy feedback.
+  test("already decided elsewhere: its own message, Copy feedback, no Retry", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    refuseNextFeedbackAsDecided = true;
+    await mountAnnotate();
+    await sendNote("one more thing");
+    await waitFor(failureToast, "the failure message");
+
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("Feedback not sent");
+    expect(failureToast()!.textContent).toContain("already decided");
+    expect(failureToast()!.textContent).not.toContain("409");
+    expect(Boolean(toastButton("Retry"))).toBe(false);
+    expect(Boolean(toastButton("Copy feedback"))).toBe(true);
   });
 });

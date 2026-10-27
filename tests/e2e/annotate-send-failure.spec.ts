@@ -4,7 +4,8 @@
  * ERR_CONNECTION_REFUSED and the page showed nothing, so the reviewer thought
  * it was sent. Now the page stays as it was and says "Feedback not sent",
  * with Retry and Copy feedback; the comment's autosaved draft comes back when
- * the same file is opened again.
+ * the same file is opened again. A send from a second window after the first
+ * one decided says the review was already decided, with no Retry.
  *
  * Against the compiled binary (see inbox.spec.ts for the build), under a temp
  * HOME and PLANNOTATOR_DATA_DIR, headless. PNGs of the failure, light and
@@ -140,6 +141,48 @@ test('annotate: the server killed under an open page, Send Feedback says it was 
     await dark.context.close();
   } finally {
     for (const child of children) await killServer(child);
+    await removeInboxScratch(root);
+  }
+});
+
+test('annotate: a second window sending after the first one did says it was already decided, with no Retry', async ({ browser }) => {
+  expect(existsSync(binary), 'build the scratch binary first').toBe(true);
+  mkdirSync(proofDir, { recursive: true });
+  const root = inboxScratch('plannotator-annotate-send-decided-e2e-');
+  writeFileSync(join(root, 'sample.md'), '# Sample\n\nThe first example.\n\nThe second example.\n');
+  let child: ChildProcess | undefined;
+  try {
+    const started = await startAnnotate(root, 1);
+    child = started.child;
+    const first = await open(browser, started.url, 'light');
+    const second = await first.context.newPage();
+    second.setDefaultTimeout(15_000);
+    await second.goto(started.url);
+
+    for (const [page, text] of [[first.page, 'From the first window'], [second, COMMENT]] as const) {
+      await page.getByRole('button', { name: 'Global comment', exact: true }).click();
+      const composer = page.locator('[data-comment-popover]');
+      await composer.getByPlaceholder('Add a global comment...').fill(text);
+      await composer.getByRole('button', { name: 'Add', exact: true }).click();
+    }
+
+    // The first window sends; the server keeps answering for a moment after
+    // the decision, and refuses the second window's send as already decided.
+    await first.page.locator('[data-decision-primary]').click();
+    await expect(first.page.locator('[data-completion-state]')).toBeVisible();
+    await second.locator('[data-decision-primary]').click();
+    const toast = failureToast(second);
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText('already decided');
+    await expect(toast.getByRole('button', { name: 'Copy feedback' })).toBeVisible();
+    await expect(toast.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+    await expect(second.locator('[data-completion-state]')).toHaveCount(0);
+    await expect(second.getByText(COMMENT).first()).toBeVisible();
+    await second.waitForTimeout(500); // sonner's enter transition
+    await second.screenshot({ path: join(proofDir, 'annotate-send-already-decided-light.png') });
+    await first.context.close();
+  } finally {
+    if (child) await killServer(child);
     await removeInboxScratch(root);
   }
 });

@@ -80,8 +80,8 @@ import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { agentSwitchTargetLabel, getAgentSwitchDefaults, getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
-import { assertSendOk, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
-import { dismissSendFailureToast, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
+import { assertSendOk, PLAN_REVISED_CODE, refusalCode, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
+import { dismissSendFailureToast, sendSettled, sendStarted, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
 import {
@@ -776,6 +776,10 @@ const App: React.FC = () => {
   const [isExiting, setIsExiting] = useState(false);
   // 'done': an annotate Done with nothing to send (no feedback went out).
   const [submitted, setSubmitted] = useState<'approved' | 'denied' | 'done' | 'exited' | null>(null);
+  // A decided review has nothing left to retry: take any send failure down.
+  useEffect(() => {
+    if (submitted) dismissSendFailureToast();
+  }, [submitted]);
   // The agent that opened this review closed it (POST /api/host/close); the
   // reviewer's unsent comments stay in the draft for a reopen.
   const [agentClosed, setAgentClosed] = useState<ExternalSessionClosed | null>(null);
@@ -4299,6 +4303,11 @@ const App: React.FC = () => {
     return wrapFeedbackForAgent(feedback);
   }, [annotateMode, annotateSource, feedbackTemplates, getAnnotateFeedbackTarget]);
 
+  // The send-failure toast's Copy feedback reads the page when it is clicked,
+  // so it copies what its Retry would send now, not the failed send's text.
+  const latestFeedbackRef = useRef({ payload: getCurrentFeedbackPayload, wrap: wrapCopiedFeedback });
+  latestFeedbackRef.current = { payload: getCurrentFeedbackPayload, wrap: wrapCopiedFeedback };
+
   const currentFeedbackPayload = useMemo(() => getCurrentFeedbackPayload(), [
     agentFeedbackRevision,
     editableDocuments.version,
@@ -4394,6 +4403,7 @@ const App: React.FC = () => {
   // a host that would deliver them.
   const handleApprove = async (options?: { discardFeedback?: boolean }): Promise<boolean> => {
     setIsSubmitting(true);
+    sendStarted();
     let sentFeedback: string | undefined;
     try {
       // Integrations must describe the same document the feedback diff does —
@@ -4487,13 +4497,12 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return false;
       }
-      if (res.status === 409) {
+      if (res.status === 409 && (await refusalCode(res)) === PLAN_REVISED_CODE) {
         handleStaleRevisionRefusal();
         return false;
       }
       // A 500 used to fall through to the Approved screen (#1392).
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       setSubmitted('approved');
       return true;
     } catch (error) {
@@ -4503,14 +4512,17 @@ const App: React.FC = () => {
         error,
         onRetry: () => { void headerHandlersRef.current.handleApprove(options); },
         // Approve with notes sends the notes as they are: no deny framing.
-        copyText: sentFeedback,
+        copyText: sentFeedback ? () => latestFeedbackRef.current.payload() : undefined,
       });
       return false;
+    } finally {
+      sendSettled();
     }
   };
 
   const handleDeny = async (): Promise<boolean> => {
     setIsSubmitting(true);
+    sendStarted();
     let sentPayload: string | undefined;
     try {
       const checkedSavedFileChanges = await validateSavedFileChangesBeforeSubmit();
@@ -4540,13 +4552,12 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return false;
       }
-      if (res.status === 409) {
+      if (res.status === 409 && (await refusalCode(res)) === PLAN_REVISED_CODE) {
         handleStaleRevisionRefusal();
         return false;
       }
       // A 500 used to fall through to the Feedback Sent screen (#1392).
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       setSubmitted('denied');
       return true;
     } catch (error) {
@@ -4555,9 +4566,14 @@ const App: React.FC = () => {
         what: 'feedback',
         error,
         onRetry: () => { void headerHandlersRef.current.handleDeny(); },
-        copyText: sentPayload === undefined ? undefined : wrapCopiedFeedback(sentPayload),
+        copyText: sentPayload === undefined ? undefined : () => {
+          const latest = latestFeedbackRef.current;
+          return latest.wrap(latest.payload());
+        },
       });
       return false;
+    } finally {
+      sendSettled();
     }
   };
 
@@ -4590,6 +4606,7 @@ const App: React.FC = () => {
     approvalFraming?: boolean;
   }): Promise<boolean> => {
     setIsSubmitting(true);
+    sendStarted();
     let sentFeedback: string | undefined;
     try {
       snapshotActiveEditableDocument();
@@ -4648,8 +4665,7 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return false;
       }
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       dismissDraft();
       // The completion screen must not claim feedback went out when nothing
       // did: the same predicate the servers use to make this a no-op decision.
@@ -4667,9 +4683,14 @@ const App: React.FC = () => {
         // to send has nothing worth copying.
         copyText: sentFeedback === undefined || isEmptyFeedbackSentinel(sentFeedback)
           ? undefined
-          : wrapCopiedFeedback(sentFeedback),
+          : () => {
+              const latest = latestFeedbackRef.current;
+              return latest.wrap(latest.payload(undefined, options));
+            },
       });
       return false;
+    } finally {
+      sendSettled();
     }
   };
 
@@ -4681,6 +4702,7 @@ const App: React.FC = () => {
     discardAnnotations?: boolean;
   }): Promise<boolean> => {
     setIsSubmitting(true);
+    sendStarted();
     let sentFeedback: string | undefined;
     try {
       snapshotActiveEditableDocument();
@@ -4712,8 +4734,7 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return false;
       }
-      assertSendOk(res);
-      dismissSendFailureToast();
+      await assertSendOk(res);
       dismissDraft();
       setSubmitted('approved');
       return true;
@@ -4724,9 +4745,11 @@ const App: React.FC = () => {
         what: 'approval',
         error,
         onRetry: () => { void headerHandlersRef.current.handleAnnotateApprove(options); },
-        copyText: sentFeedback || undefined,
+        copyText: sentFeedback ? () => latestFeedbackRef.current.payload() : undefined,
       });
       return false;
+    } finally {
+      sendSettled();
     }
   };
 

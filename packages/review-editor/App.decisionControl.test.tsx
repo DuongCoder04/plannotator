@@ -1045,6 +1045,8 @@ describe.if(hasDom)("review: a send that does not reach Plannotator", () => {
   // by its title rather than taking the first toast on the page.
   const failureToast = () =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]"))
+      // A dismissed toast stays in the DOM while it animates out.
+      .filter((el) => el.getAttribute("data-removed") !== "true")
       .find((el) => el.querySelector("[data-title]")?.textContent?.endsWith(" not sent"));
   const toastButton = (label: string) =>
     Array.from(failureToast()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === label);

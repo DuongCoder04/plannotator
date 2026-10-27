@@ -114,8 +114,11 @@ let decisions: Decision[] = [];
 let agents: Array<{ id: string; name: string }> = [];
 /** Upcoming /api/approve POSTs that fail as a network error (recorded first). */
 let approveNetworkFailures = 0;
-/** How the next /api/deny POST fails (recorded first), then it answers ok. */
-let nextDenyFailure: "network" | 500 | null = null;
+/** How the next /api/deny POST fails (recorded first), then it answers ok.
+ *  "closed" is Pi's refusal once the session that opened the review ended. */
+let nextDenyFailure: "network" | 500 | "closed" | null = null;
+/** When set, /api/deny POSTs wait for it before answering (a send in flight). */
+let denyGate: Promise<void> | null = null;
 
 const PLAN = "# Plan: move tokens\n\nStore refresh tokens in the keychain.\n";
 const QUESTION_PLAN = [
@@ -164,8 +167,13 @@ function makeFetch(plan: unknown): typeof fetch {
         const failure = nextDenyFailure;
         nextDenyFailure = null;
         if (failure === "network") throw new TypeError("Failed to fetch");
+        if (failure === "closed") {
+          // apps/pi-extension/server/serverPlan.ts refuseClosed.
+          return Response.json({ error: "This review was closed: the session that opened it ended.", code: "already_decided" }, { status: 409 });
+        }
         return Response.json({ error: "boom" }, { status: failure });
       }
+      if (url.pathname === "/api/deny" && denyGate) await denyGate;
       return Response.json({ ok: true });
     }
     return Response.json({});
@@ -287,6 +295,7 @@ afterEach(async () => {
   agents = [];
   approveNetworkFailures = 0;
   nextDenyFailure = null;
+  denyGate = null;
   seededExternalAnnotations = [];
   memory.clear();
   configStore.set("agentSwitch", null);
@@ -520,6 +529,8 @@ describe.if(hasDom)("plan review: a decision that does not reach Plannotator", (
   // by its title rather than taking the first toast on the page.
   const failureToast = () =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]"))
+      // A dismissed toast stays in the DOM while it animates out.
+      .filter((el) => el.getAttribute("data-removed") !== "true")
       .find((el) => el.querySelector("[data-title]")?.textContent?.endsWith(" not sent"));
   const toastButton = (label: string) =>
     Array.from(failureToast()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === label);
@@ -583,5 +594,59 @@ describe.if(hasDom)("plan review: a decision that does not reach Plannotator", (
     expect(failureToast()!.textContent).toContain("Approval not sent");
     expect(Boolean(toastButton("Copy feedback"))).toBe(false);
     expect(Boolean(toastButton("Retry"))).toBe(true);
+  });
+
+  test("the next send takes the message down, and a success leaves none behind", async () => {
+    nextDenyFailure = 500;
+    await mountWithComment({});
+    await act(async () => primaryButton()!.click());
+    await waitFor(failureToast, "the failure message");
+
+    // The header's own Send, not Retry: the message no longer applies.
+    await act(async () => primaryButton()!.click());
+    await waitFor(() => completionState(), "the completion screen");
+    expect(completionState()).toBe("denied");
+    expect(failureToast()).toBeUndefined();
+  });
+
+  // Retry beside a send already in flight would post the decision twice; the
+  // Bun plan server has no already-decided check, so integrations (a Bear
+  // note) and the archive would run twice.
+  test("Retry while a send is in flight sends nothing", async () => {
+    nextDenyFailure = "network";
+    await mountWithComment({});
+    await act(async () => primaryButton()!.click());
+    await waitFor(failureToast, "the failure message");
+    const retry = toastButton("Retry")!;
+
+    let open!: () => void;
+    denyGate = new Promise<void>((resolve) => { open = resolve; });
+    await act(async () => primaryButton()!.click());
+    await waitFor(() => decisions.length === 2, "the second send");
+    // Still on the page (sonner animates a dismissed toast out).
+    expect(retry.isConnected).toBe(true);
+    await act(async () => retry.click());
+    await settle();
+    expect(decisions).toHaveLength(2);
+
+    open();
+    await waitFor(() => completionState(), "the completion screen");
+    expect(decisions.map((d) => d.endpoint)).toEqual(["deny", "deny"]);
+  });
+
+  // Pi's plan server refuses a decision after the session that opened the
+  // review ended (409 already_decided). It used to read as "The agent
+  // revised the plan", which sends the reviewer looking for a new version.
+  test("Pi's already_decided refusal is not a plan revision and offers no Retry", async () => {
+    nextDenyFailure = "closed";
+    await mountWithComment({ origin: "pi" });
+    await act(async () => primaryButton()!.click());
+    await waitFor(failureToast, "the failure message");
+
+    expect(failureToast()!.textContent).toContain("already decided");
+    expect(Boolean(toastButton("Retry"))).toBe(false);
+    expect(Boolean(toastButton("Copy feedback"))).toBe(true);
+    expect(document.body.textContent).not.toContain("The agent revised the plan");
+    expect(completionState()).toBeNull();
   });
 });
