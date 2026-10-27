@@ -184,6 +184,7 @@ async function drawBoard(openCard: string | null) {
     onChanged: () => {},
     onSeeDrops: () => {},
     onOpenThread: () => {},
+    onCreateThread: () => {},
   };
   act(() => root!.render(<SidebarProvider><BoardPage {...props} /></SidebarProvider>));
 }

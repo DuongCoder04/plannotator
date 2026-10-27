@@ -41,8 +41,10 @@ itself before loading the extension.
 
 Run Pi on **Node 22.23.4+, 24.22.1+ or 26.12.1+**. These October 2026 security
 releases stop trusting the compromised eMudhra certificate chain. On an older
-Node, HTTPS calls made inside Pi still trust it. The package's `engines` field
-states this floor; npm warns but does not block the install.
+Node, HTTPS calls made inside Pi still trust it, and the extension says so once
+when Pi starts (on Bun: Bun 1.4.4+). The package declares no `engines` floor on
+purpose: npm passes over a release whose floor the running Node misses, which
+kept older-Node installs on an old Plannotator without a word.
 
 Pi 0.79 introduced project trust for repository-local inputs. In interactive
 sessions, Pi asks before loading project settings, instructions, resources, and

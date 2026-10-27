@@ -23,6 +23,7 @@ import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
 import type { InboxCardWire, InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
 import { DecisionMode } from './decisions/DecisionMode';
 import { DecisionPill, decideEntryShown } from './decisions/entry';
+import { threadDecisions } from './decisions/model';
 import {
   InboxApiError,
   inboxApi,
@@ -95,8 +96,9 @@ import { isPhone, trackKeyboard, usePhone } from './phone';
 import { installPasteFollowsField } from './pasteTarget';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { LIST_MIN_WIDTH, THREAD_BESIDE_FILE_WIDTH, paneGutters, useStack } from './stack';
-import { backTo, pushScreen } from './history';
+import { backBy, backTo, pushScreen, settleLanding, whileWritingRoute } from './history';
 import { parseFileView, sameScreenAnyView } from './fileView';
+import { fileEntryOp, fullExitFile, fullFromSide, pageBackPastSwitch, withFullMark, type FrameMove, type FullMark } from './fullScreenOrigin';
 import { adoptSavedTheme, inboxServerSync } from './theme';
 import { adoptSavedDiffStyle } from './diffStyle';
 import { adoptSavedTextSize, applyRememberedTextSize } from './textSize';
@@ -231,6 +233,8 @@ interface Route {
   section?: SettingsSection | null;
   /** `#settings/devices/pair`: Pair a phone is open. */
   pair?: boolean;
+  /** `#settings/experimental` (an old link): Capabilities, landing on its Experimental group. Never written to the address. */
+  experimental?: boolean;
 }
 
 function readRoute(): Route {
@@ -240,7 +244,7 @@ function readRoute(): Route {
 function routeOf(fullHash: string): Route {
   const hash = fullHash.replace(/^#/, '');
   const settingsAt = parseSettingsHash(hash);
-  if (settingsAt) return { page: 'settings', project: null, thread: null, section: settingsAt.section, pair: settingsAt.pair };
+  if (settingsAt) return { page: 'settings', project: null, thread: null, section: settingsAt.section, pair: settingsAt.pair, experimental: settingsAt.experimental };
   const params = new URLSearchParams(hash);
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
@@ -306,7 +310,7 @@ function currentHash(): string {
  * its state (the screen it was opened from, history.ts), so that Back is still
  * the browser's Back on a phone.
  */
-function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
+function writeRoute(route: Route, options: { replace?: boolean; fullMark?: FullMark | null } = {}): void {
   // The Artifacts view belongs to the thread it was opened in: another thread, or a message to land on, opens on the messages.
   if (route.artifacts && (route.thread !== readRoute().thread || route.msg)) route = { ...route, artifacts: false };
   const hash = hashOf(route);
@@ -314,13 +318,17 @@ function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
   // Leaving the tour takes the tour's own entry, whatever leads out of it (a sidebar row, a search result, a link),
   // so the browser's Back never reopens #tour=N.
   const leavingTour = readRoute().page === 'tour' && route.page !== 'tour';
+  // `fullMark`: the entry's full-screen mark (fullScreenOrigin.ts). Absent: a replace keeps the one on screen, a push sets none.
+  const mark = options.fullMark;
   if (options.replace || leavingTour) {
-    if (hash !== currentHash()) window.history.replaceState(window.history.state, '', next);
+    const state = mark === undefined ? window.history.state : withFullMark(window.history.state, mark);
+    if (hash !== currentHash() || state !== window.history.state) window.history.replaceState(state, '', next);
   } else {
     // Each entry remembers the one it was opened from, so a phone's way back can be the browser's own Back (closeTo).
-    pushScreen(hash, currentHash(), next);
+    pushScreen(hash, currentHash(), next, window.history, mark ? withFullMark(null, mark) : undefined);
   }
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  // Its own hashchange: a Back still on its way does not land in it (history.ts settleLanding).
+  whileWritingRoute(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
 }
 
 /** The history-entry mark an ended tour leaves on its own entry: the hash it went back to (approval "inbox-onboarding-tour"). */
@@ -351,6 +359,18 @@ function settleTourEntry(): void {
  * Two paths does not come back here. A cookie, so a port change keeps it.
  */
 const TOUR_DECIDED_COOKIE = 'plannotator-inbox-tour-decided';
+
+/**
+ * `#settings/experimental`, Experimental's own page before it moved into
+ * Capabilities (the owner, 2026-10-27): the address becomes
+ * `#settings/capabilities` in place (no new history entry). True when it
+ * did, so the route keeps landing on the Experimental group.
+ */
+function settleOldExperimental(): boolean {
+  if (!parseSettingsHash(window.location.hash.replace(/^#/, ''))?.experimental) return false;
+  window.history.replaceState(window.history.state, '', `#${settingsHash({ section: 'capabilities' })}`);
+  return true;
+}
 
 /** A `msg=` with no thread to land in (a hand-edited or truncated link) leaves the address bar; the route already ignores it. */
 function stripStrayMsg(): void {
@@ -491,13 +511,13 @@ function Inbox() {
   /**
    * Decision mode (experimental, approval "inbox-decision-mode"): the
    * projection while the feature is on, and the sitting (open, or tucked
-   * into its pill behind a thread). Off, nothing of it renders.
+   * into its pill behind a thread). Off, nothing of it renders. Thread only
+   * (owner, 2026-10-27): a sitting is one thread's decisions (`thread`), opened
+   * from that thread's open-questions list; there is no global way in.
    */
   const [decisions, setDecisions] = useState<InboxDecision[] | null>(null);
-  const decisionsRef = useRef(decisions);
-  decisionsRef.current = decisions;
-  // `startNonce`: a new start while the sitting is open (another notification) moves it to that card.
-  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null; startNonce: number } | null>(null);
+  // `startNonce`: a new start while the sitting is open moves it to that card.
+  const [decide, setDecide] = useState<{ thread: string; title: string | null; tucked: boolean; start: string | null; startNonce: number } | null>(null);
   /** What opened decision mode: focus goes back there when the sitting ends. */
   const decideOpener = useRef<HTMLElement | null>(null);
   const [decideLeft, setDecideLeft] = useState(0);
@@ -644,6 +664,8 @@ function Inbox() {
   const searchOpener = useRef<HTMLElement | null>(null);
   /** The landing a search result asked for: the query's words to highlight in that message, a question's card to focus. */
   const searchLanding = useRef<SearchLanding | null>(null);
+  /** Decision mode's "Open the thread" (thread only): the question to land on, its prompt focused. */
+  const decideLanding = useRef<{ messageId: string; questionKey: string } | null>(null);
   /**
    * Compose (a new message to a connected agent): open with what it starts
    * from (a draft, a session), and the drafts not sent (the sidebar's Drafts
@@ -688,35 +710,10 @@ function Inbox() {
     // A click on a notification: the thread opens, and the list on screen catches up, even with a
     // thread open. The one exception to "the list holds still while a thread is open" (settle.ts):
     // the person was away, and the thread notified may not be on screen at all.
-    openThread: (threadId, questionId) => {
-      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode"):
-      // the question it notified about, else a Stopped one of that thread. The projection may not have the
-      // new question yet, so it is read once more before giving up on it.
-      const stoppedOf = (list: readonly InboxDecision[] | null) =>
-        (questionId ? list?.find((d) => d.id === questionId && d.question.stopped !== null) : undefined) ??
-        list?.find((d) => d.thread.id === threadId && d.question.stopped !== null);
-      const fallback = () => {
-        writeRoute({ page: 'inbox', project: null, thread: threadId });
-        void refreshList(true);
-      };
-      if (!decisionModeOnRef.current) return fallback();
-      const openOn = (decision: InboxDecision) => {
-        setDecide((current) => ({ tucked: false, start: decision.id, startNonce: (current?.startNonce ?? 0) + 1 }));
-        void refreshDecisions();
-        void refreshList(true);
-      };
-      const known = stoppedOf(decisionsRef.current);
-      if (known) return openOn(known);
-      if (!questionId) return fallback();
-      void inboxApi.decisions().then(
-        (model) => {
-          setDecisions(model.decisions);
-          const found = stoppedOf(model.decisions);
-          if (found) openOn(found);
-          else fallback();
-        },
-        () => fallback(),
-      );
+    // Decision mode is thread only (owner, 2026-10-27): a Stopped notification opens its thread too, never the dialog.
+    openThread: (threadId) => {
+      writeRoute({ page: 'inbox', project: null, thread: threadId });
+      void refreshList(true);
     },
     // A click on a burst's notice: the list at rest, as it now is.
     openList: () => {
@@ -728,11 +725,15 @@ function Inbox() {
 
   useEffect(() => {
     const onHash = () => {
+      // A Back this window started: its rewrite of the entry it landed on comes first (history.ts settleLanding).
+      settleLanding();
       stripStrayMsg();
       settleTourEntry();
-      setRoute(readRoute());
+      const oldExperimental = settleOldExperimental();
+      setRoute(oldExperimental ? { ...readRoute(), experimental: true } : readRoute());
     };
     stripStrayMsg();
+    settleOldExperimental();
     window.addEventListener('hashchange', onHash);
     window.addEventListener('popstate', onHash);
     return () => {
@@ -1632,7 +1633,16 @@ function Inbox() {
       onUndo: () => {
         dismissToast();
         void inboxApi
-          .saveDraft(draft.id, { body: draft.body, to: draft.to, project: draft.project, files: draft.files.map((f) => f.upload_id), base: null })
+          // Everything the draft kept: its typed thread name and the Board card it was started for (Create thread).
+          .saveDraft(draft.id, {
+            body: draft.body,
+            to: draft.to,
+            project: draft.project,
+            files: draft.files.map((f) => f.upload_id),
+            base: null,
+            ...(draft.thread_name ? { thread_name: draft.thread_name } : {}),
+            ...(draft.card ? { card: draft.card } : {}),
+          })
           .then(() => refreshDrafts())
           .then(() => say('Draft restored.'))
           .catch(() => showToast({ icon: 'warn', lead: 'The draft could not be restored.', wrap: true }));
@@ -1649,6 +1659,7 @@ function Inbox() {
   /** The thread landed on the message `msg=` named: drop it from the hash, so a reload does not jump again. */
   const landed = () => {
     searchLanding.current = null;
+    decideLanding.current = null;
     if (routeRef.current.msg) writeRoute({ ...routeRef.current, msg: null }, { replace: true });
   };
 
@@ -2372,7 +2383,7 @@ function Inbox() {
     }
   };
 
-  // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  // Settings → Capabilities → Experimental: decision mode, saved to config.json and applied at once.
   // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
   const toggleBoard = async (next: boolean) => {
     setSettingsError(null);
@@ -2447,24 +2458,29 @@ function Inbox() {
       setDecide(null);
     }
   }, [decisionModeOn, refreshDecisions]);
-  const decideCount = decisionModeOn ? (decisions?.length ?? 0) : 0;
-  const openDecide = (start: string | null = null) => {
-    const active = document.activeElement;
-    decideOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
-    setDecide((current) => ({ tucked: false, start, startNonce: (current?.startNonce ?? 0) + 1 }));
+  /** A thread's "Decide these N": decision mode on, no sitting going, and two or more of its decisions waiting. */
+  const decideInThread = (threadId: string) => {
+    if (!decisionModeOn || !decisions || decide) return null;
+    const count = threadDecisions(decisions, threadId).length;
+    return decideEntryShown(count) ? { count, onDecide: () => openDecide(threadId) } : null;
+  };
+  /** The sitting's queue: its thread's decisions only. */
+  const sittingDecisions = useMemo(() => (decisions && decide ? threadDecisions(decisions, decide.thread) : null), [decisions, decide?.thread]);
+  const openDecide = (threadId: string) => {
+    // Opened from the open-questions list, whose row goes with the list: focus comes back to its button.
+    decideOpener.current = document.querySelector<HTMLElement>('section.ib-pane [data-open-questions]');
+    const first = decisions ? threadDecisions(decisions, threadId)[0] : undefined;
+    setDecide((current) => ({ thread: threadId, title: first ? (first.thread.subject ?? first.thread.thread_name) : null, tucked: false, start: null, startNonce: (current?.startNonce ?? 0) + 1 }));
     void refreshDecisions();
   };
-  /** The sitting ended: focus back on what opened it, else on a Decide button still on screen. */
+  /** The sitting ended: focus back on what opened it, else on the thread's open-questions button. */
   const closeDecide = () => {
     setDecide(null);
     void refreshList(true);
     const opener = decideOpener.current;
     decideOpener.current = null;
     requestAnimationFrame(() => {
-      const target =
-        (opener?.isConnected ? opener : null) ??
-        document.querySelector<HTMLElement>('[data-decide-head]') ??
-        document.querySelector<HTMLElement>('[data-decide-nav]');
+      const target = (opener?.isConnected ? opener : null) ?? document.querySelector<HTMLElement>('section.ib-pane [data-open-questions]');
       target?.focus({ preventScroll: true });
     });
   };
@@ -3163,6 +3179,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        landOnExperimental={route.experimental === true}
         onToggleBoard={(next) => void toggleBoard(next)}
         agents={agents}
         onAgents={setAgents}
@@ -3294,6 +3311,7 @@ function Inbox() {
         }}
         onSeeDrops={seeDrops}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
         marks={settings !== null && settings.via !== 'tailnet'}
       />
@@ -3380,8 +3398,6 @@ function Inbox() {
           pinned={pinsOn ? pinnedIds : undefined}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
-          decideCount={decideEntryShown(decideCount) ? decideCount : 0}
-          onDecide={() => openDecide()}
           phone={phone}
           empty={
             projectAllArchived(filterProject) ? (
@@ -3447,36 +3463,61 @@ function Inbox() {
               // A call that names no view keeps the one in the address (the pane names it for a step, a version, a linked page).
               const keepView = file.view === undefined ? (routeRef.current.file?.view ?? null) : file.view;
               const next = { ...routeRef.current, file: { ...file, view: keepView } };
-              // Back through a linked page's stack: the browser's Back when this entry was opened from there,
-              // whatever view that entry names (the switch replaced only the entry on screen); once it lands,
-              // the view the person is in now replaces the one it named.
-              if (options?.back && backTo(hashOf(next), window.history, sameScreenAnyView)) {
-                const view = next.file.view;
-                if (view) {
-                  // Where the traversal lands (popstate, or only hashchange in some engines), once; a Back that never lands drops it.
-                  const landed = () => {
-                    stop();
-                    const now = readRoute();
-                    if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
-                  };
-                  const stop = () => {
-                    clearTimeout(timer);
-                    window.removeEventListener('popstate', landed);
-                    window.removeEventListener('hashchange', landed);
-                  };
-                  const timer = setTimeout(stop, 1000);
-                  window.addEventListener('popstate', landed);
-                  window.addEventListener('hashchange', landed);
+              /** Show `next` the way fullScreenOrigin.ts names (the history is the stack of frames). */
+              const show = (request: { move?: FrameMove; replace?: boolean }) => {
+                const op = fileEntryOp({ hash: currentHash(), state: window.history.state }, hashOf(next), request);
+                if (op.kind === 'back') {
+                  // Back onto the entry beside the thread; where asked, it then shows the file on screen now (a step inside full screen kept).
+                  const land = op.land;
+                  const landThere =
+                    land === null
+                      ? undefined
+                      : () => {
+                          if (currentHash() !== land && readRoute().thread === next.thread) writeRoute(next, { replace: true });
+                        };
+                  if (backBy(op.steps, window.history, landThere)) return;
+                  return writeRoute(next, { replace: true, fullMark: null });
                 }
-                return;
+                if (op.kind === 'replace') writeRoute(next, op.keep ? { replace: true } : { replace: true, fullMark: op.mark });
+                else writeRoute(next, { fullMark: op.mark });
+              };
+              if (options?.back) {
+                // A linked page's Back in a full screen the switch entered on that page: back past the switch's entry and the
+                // page beside the thread, then full screen again with the switch, so × and Back still come back beside the thread.
+                if (
+                  pageBackPastSwitch({ hash: currentHash(), state: window.history.state }, hashOf(next), sameScreenAnyView) &&
+                  backBy(2, window.history, () => {
+                    if (readRoute().thread === next.thread) show({ move: 'switch-full' });
+                  })
+                ) {
+                  return;
+                }
+                // Back through a linked page's stack: the browser's Back when this entry was opened from there,
+                // whatever view that entry names (a pick swapped only the entry on screen); once it lands,
+                // the view the person is in now replaces the one it named.
+                const view = next.file.view;
+                const viewThere = view
+                  ? () => {
+                      const now = readRoute();
+                      if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
+                    }
+                  : undefined;
+                if (backTo(hashOf(next), window.history, sameScreenAnyView, viewThere)) return;
               }
-              writeRoute(next, options);
+              show({ move: options?.move, replace: options?.replace });
             }}
+            fullFromSide={fullFromSide(window.history.state)}
+            fullExitFile={fullExitFile(window.history.state)}
             onOpenGuide={(messageId) => go({ ...route, guide: messageId })}
             artifacts={route.artifacts === true}
             onArtifacts={(open) => (open ? go({ ...routeRef.current, artifacts: true, msg: null }) : close({ ...routeRef.current, artifacts: false }))}
+            // Decision mode's one way in (thread only): from two of this thread's decisions up, and not while a
+            // sitting is tucked into its pill (the pill's Resume is the way back to it).
+            decide={decideInThread(thread.thread_id)}
             landing={
-              route.msg
+              route.msg && decideLanding.current?.messageId === route.msg
+                ? { messageId: route.msg, terms: [], questionKey: decideLanding.current.questionKey, focus: 'prompt' }
+                : route.msg
                 ? {
                     messageId: route.msg,
                     terms: searchLanding.current?.messageId === route.msg ? searchLanding.current.terms : [],
@@ -3576,8 +3617,6 @@ function Inbox() {
             updated={updated}
             onSearch={(opener) => openSearch(opener)}
             onCompose={(opener) => openCompose({}, opener)}
-            decideCount={decideEntryShown(decideCount) ? decideCount : 0}
-            onDecide={() => openDecide()}
             pins={pinRows}
             openThreadId={route.thread}
             onOpenPin={(row) => (tourRealStep ? endTour('finish', { page: 'inbox', project: null, thread: row.thread_id }) : openPinned(row))}
@@ -3778,9 +3817,17 @@ function Inbox() {
           current={composeCurrent}
           lastSent={lastSent}
           home={settings?.home ?? null}
+          board={boardEnabled === true}
           onSent={(sent) => {
             rememberSent(sent.session);
             composeSent(sent);
+            // Create thread from a Board card: the new thread is linked to the card, so its Open thread goes there.
+            if (sent.cardId) {
+              void inboxApi
+                .editCard(sent.cardId, { op: 'link', thread_id: sent.threadId })
+                .then(() => refreshCards())
+                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
+            }
           }}
           onSaved={composeSaved}
           onDeleted={(draft) => {
@@ -3793,7 +3840,8 @@ function Inbox() {
       {decisionModeOn && decide && (
         <DecisionMode
           open={!decide.tucked}
-          decisions={decisions}
+          decisions={sittingDecisions}
+          scope={decide.title}
           rows={latestRows}
           start={decide.start}
           startNonce={decide.startNonce}
@@ -3802,14 +3850,25 @@ function Inbox() {
           subscribeQuestions={subscribeQuestions}
           onLeft={setDecideLeft}
           onPaused={setDecidePaused}
-          onTuck={(threadId, fileId) => {
+          onTuck={(threadId, fileId, question) => {
             setDecide((current) => (current ? { ...current, tucked: true } : current));
+            if (question && !fileId) {
+              // A card's "Open the thread" (approval "inbox-decide-thread-only"): the dialog closes into its pill and
+              // the thread (already behind it) lands on that question, its prompt focused. The same thread replaces
+              // the entry, as a search result's landing does, so Back never stops on the same thread twice.
+              decideLanding.current = { messageId: question.messageId, questionKey: question.key };
+              searchLanding.current = null;
+              const now = routeRef.current;
+              const same = now.page === 'inbox' && now.thread === threadId && !now.file && !now.guide;
+              writeRoute({ page: 'inbox', project: same ? now.project : null, thread: threadId, msg: question.messageId }, same ? { replace: true } : {});
+              return;
+            }
             writeRoute({ page: 'inbox', project: null, thread: threadId, file: fileId ? { id: fileId, version: 'current', focus: null } : null });
           }}
           onClose={closeDecide}
         />
       )}
-      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} paused={decidePaused} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
+      {decisionModeOn && decide?.tucked && <DecisionPill left={decideLeft} paused={decidePaused} thread={route.page === 'inbox' && route.thread === decide.thread ? null : decide.title} onResume={() => setDecide((current) => (current ? { ...current, tucked: false } : current))} />}
       <div className="ib-sr" aria-live="polite" data-inbox-live="">
         {said}
       </div>
