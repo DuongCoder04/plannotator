@@ -55,7 +55,7 @@ function loopback(path: string, method = 'GET', body?: string): Promise<{ status
   });
 }
 
-const TESTS = 9;
+const TESTS = 10;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -347,6 +347,40 @@ test.skipIf(!hasDom)("the owner's path: the image preview under a message opens 
   await act(async () => window.history.back());
   await until(() => view() === null, 'Back: the thread');
   expect(window.location.hash).toBe(threadOnly);
+});
+
+test.skipIf(!hasDom)("a file opened full screen over another one beside the thread: × and Escape go back to that one, and ask first about a comment not saved yet", async () => {
+  document.cookie = `${VIEW_COOKIE}=side; path=/`;
+  await renderThread();
+  await openTile('plan.md');
+  expect(inFullScreen()).toBe(false);
+  // The image full screen for this once, from its tile's ⋯, over plan.md beside the thread.
+  const menu = await tileMenu('shot.png');
+  await act(async () => menu.querySelector<HTMLElement>('[data-open-as="full"]')!.click());
+  await until(() => view()?.getAttribute('data-attachment-pane') === world.openIn.ids['shot.png'] && inFullScreen(), 'the image full screen');
+  const box = () => host!.querySelector<HTMLTextAreaElement>('[data-image-composer] textarea');
+  await until(() => box() !== null, "the image's comment box");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(box()!, 'The total sits too low.');
+    box()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const question = () => host!.querySelector<HTMLElement>('[data-step-guard]');
+
+  // Escape's last rung would show plan.md: it asks first, and Keep writing stays on the image with the words.
+  for (let i = 0; i < 4 && question() === null && inFullScreen(); i++) await escapeOnPane();
+  await until(() => question() !== null, 'the question about the comment, after Escape');
+  expect(question()!.querySelector('[data-guard-discard]')!.textContent).toBe('Discard and go to plan.md');
+  await act(async () => question()!.querySelector<HTMLButtonElement>('[data-guard-keep]')!.click());
+  expect(inFullScreen()).toBe(true);
+  expect(view()!.getAttribute('data-attachment-pane')).toBe(world.openIn.ids['shot.png']!);
+  expect(box()!.value).toBe('The total sits too low.');
+
+  // × asks the same; Discard goes on to plan.md beside the thread.
+  await act(async () => host!.querySelector<HTMLButtonElement>('[data-full-view-close]')!.click());
+  await until(() => question() !== null, 'the question about the comment, after ×');
+  expect(inFullScreen()).toBe(true);
+  await act(async () => question()!.querySelector<HTMLButtonElement>('[data-guard-discard]')!.click());
+  await until(() => view()?.getAttribute('data-attachment-pane') === world.openIn.ids['plan.md'] && !inFullScreen(), 'plan.md beside the thread');
 });
 
 test.skipIf(!hasDom)("a comment card in the reply box opens its file in the view it is in: a one-off view from a tile's ⋯ stays", async () => {

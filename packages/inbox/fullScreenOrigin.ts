@@ -44,6 +44,8 @@ export const FULL_DEPTH_STATE = 'ibFullDepth';
 export const FULL_SWITCH_STATE = 'ibFullSwitch';
 /** The history-entry mark on the switch's entry: the screen the entry beside the thread was opened from (a linked page's Back reaches past both). */
 export const FULL_SIDE_FROM_STATE = 'ibSideFrom';
+/** The history-entry mark of a full screen opened over another file beside the thread: that entry's screen, where × goes back to. */
+export const FULL_OVER_STATE = 'ibFullOver';
 
 /** A full screen entered from beside the thread, as an entry remembers it. */
 export interface FullMark {
@@ -53,6 +55,8 @@ export interface FullMark {
   viaSwitch: boolean;
   /** On the switch's own entry: the screen the entry beside the thread under it was opened from. */
   sideFrom?: string;
+  /** Opened over another file beside the thread (not the switch): the screen of the entry beside the thread, where × lands. */
+  over?: string;
 }
 
 /** The mark an entry's `state` carries, or null (no full screen entered from beside the thread). */
@@ -61,7 +65,13 @@ export function fullMark(state: unknown): FullMark | null {
   const depth = record?.[FULL_DEPTH_STATE];
   if (typeof depth !== 'number' || !Number.isInteger(depth) || depth < 1) return null;
   const sideFrom = record![FULL_SIDE_FROM_STATE];
-  return { depth, viaSwitch: record![FULL_SWITCH_STATE] === true, ...(typeof sideFrom === 'string' ? { sideFrom } : {}) };
+  const over = record![FULL_OVER_STATE];
+  return {
+    depth,
+    viaSwitch: record![FULL_SWITCH_STATE] === true,
+    ...(typeof sideFrom === 'string' ? { sideFrom } : {}),
+    ...(typeof over === 'string' ? { over } : {}),
+  };
 }
 
 /** The screen an entry was opened from (history.ts `ibFrom`), or null. */
@@ -81,10 +91,12 @@ export function withFullMark(state: unknown, mark: FullMark | null): Record<stri
   delete base[FULL_DEPTH_STATE];
   delete base[FULL_SWITCH_STATE];
   delete base[FULL_SIDE_FROM_STATE];
+  delete base[FULL_OVER_STATE];
   if (mark) {
     base[FULL_DEPTH_STATE] = mark.depth;
     if (mark.viaSwitch) base[FULL_SWITCH_STATE] = true;
     if (mark.sideFrom !== undefined) base[FULL_SIDE_FROM_STATE] = mark.sideFrom;
+    if (mark.over !== undefined) base[FULL_OVER_STATE] = mark.over;
   }
   return base;
 }
@@ -96,6 +108,20 @@ export function withFullMark(state: unknown, mark: FullMark | null): Record<stri
  */
 export function fullScreenExit(fromSide: boolean, locked: boolean): 'side' | 'close' {
   return !locked && fromSide ? 'side' : 'close';
+}
+
+/**
+ * The file × and Escape's last rung go back to when it is another file than
+ * the one on screen: a full screen opened over another file beside the
+ * thread lands on that file (null: the switch keeps the file on screen, or no
+ * full screen was entered from beside the thread). Leaving the file on
+ * screen, they then ask first about a comment not saved yet, as a step or a
+ * close does (AttachmentPane's `leave`).
+ */
+export function fullExitFile(state: unknown): string | null {
+  const mark = fullMark(state);
+  if (!mark || mark.viaSwitch || mark.over === undefined) return null;
+  return new URLSearchParams(mark.over.replace(/^#/, '')).get('file');
 }
 
 /**
@@ -142,7 +168,7 @@ export function fileEntryOp(now: EntryNow, next: string, request: { move?: Frame
       return { kind: 'push', hash: next, mark: { depth: 1, viaSwitch: true, ...(sideFrom !== null ? { sideFrom } : {}) } };
     }
     case 'open-full':
-      return { kind: 'push', hash: next, mark: { depth: 1, viaSwitch: false } };
+      return { kind: 'push', hash: next, mark: { depth: 1, viaSwitch: false, over: now.hash } };
     case 'exit-full':
     case 'show-side':
       // Back down to the entry beside the thread; a full screen not entered from there swaps in place, as before.
@@ -151,7 +177,11 @@ export function fileEntryOp(now: EntryNow, next: string, request: { move?: Frame
   }
   if (request.replace) return { kind: 'replace', hash: next, keep: true };
   // A page pushed inside a full screen entered from beside the thread is one entry deeper in it.
-  return { kind: 'push', hash: next, mark: mark && viewOf(next) === 'full' ? { depth: mark.depth + 1, viaSwitch: mark.viaSwitch } : null };
+  return {
+    kind: 'push',
+    hash: next,
+    mark: mark && viewOf(next) === 'full' ? { depth: mark.depth + 1, viaSwitch: mark.viaSwitch, ...(mark.over !== undefined ? { over: mark.over } : {}) } : null,
+  };
 }
 
 /**

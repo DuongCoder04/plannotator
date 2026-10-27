@@ -27,7 +27,7 @@
  * beside the thread.
  */
 import { describe, expect, test } from 'bun:test';
-import { fileEntryOp, fullFromSide, fullMark, fullScreenExit, pageBackPastSwitch, withFullMark, type FrameMove } from './fullScreenOrigin';
+import { fileEntryOp, fullExitFile, fullFromSide, fullMark, fullScreenExit, pageBackPastSwitch, withFullMark, type FrameMove } from './fullScreenOrigin';
 import { sameScreenAnyView } from './fileView';
 
 const THREAD = '#thread=t';
@@ -148,6 +148,8 @@ class World {
   ];
   /** Side by side was just picked in full screen: what its Undo does (Thread.tsx pickView). */
   pick: { inPlace: boolean; origin: Expected['origin']; overThread: boolean } | null = null;
+  /** The last move left a file for another without the pane asking about a comment not saved yet (or asked naming another file). */
+  unasked: string | null = null;
 
   constructor(
     readonly phone: boolean,
@@ -312,7 +314,16 @@ class World {
       case 'escape':
         // × and Escape's last rung: close this full screen, back to exactly the view it was opened from.
         if (frame !== 'F') return false;
-        this.exitFull();
+        {
+          // The file the pane names when it asks about a comment not saved yet (Thread.tsx's exitLeavesFor); closing asks anyway.
+          const id = partsOf(file!).id;
+          const exitTo = this.rules.moves && !this.rules.exitCloses(this.now.state, this.phone) ? fullExitFile(this.now.state) : null;
+          const asks = exitTo !== null && exitTo !== id ? exitTo : null;
+          this.exitFull();
+          const landed = this.on;
+          const leftFor = landed.frame === 'S' && landed.file !== null && partsOf(landed.file).id !== id ? partsOf(landed.file).id : null;
+          if (this.rules.moves && asks !== leftFor) this.unasked = `${move.kind} from ${file} landed on ${landed.file}; the pane asked naming ${asks}`;
+        }
         if ((top.origin === 'switch' || top.origin === 'open') && !this.phone) this.expectLeaveToSide(file!, top.origin === 'switch');
         else this.expectClose();
         return true;
@@ -397,6 +408,7 @@ class World {
 
   /** The first way the history differs from the expected stack, or null. */
   fault(): string | null {
+    if (this.unasked) return this.unasked;
     const seen = this.entries.slice(0, this.index + 1).map((e) => shown(e.hash, this.phone));
     const want = this.expected.map((e) => ({ frame: e.frame, file: e.file }));
     if (JSON.stringify(seen) !== JSON.stringify(want)) return `history ${JSON.stringify(seen)} but expected ${JSON.stringify(want)}`;
