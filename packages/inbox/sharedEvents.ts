@@ -26,7 +26,8 @@
  * holds a lock of its own (`WINDOW_LOCK_PREFIX` + its id) for its life; the
  * leader queues for each follower's lock, which the browser grants when that
  * tab is gone (closed or crashed), and tells the server (`gone`). A tab also
- * says so itself at pagehide (a beacon).
+ * says so itself at pagehide (a beacon), and reports nothing more until a
+ * pageshow brings it back from the back/forward cache.
  *
  * Where Web Locks or BroadcastChannel is missing (an older browser, an
  * insecure context) `subscribeInboxEvents` opens this tab's own stream, as

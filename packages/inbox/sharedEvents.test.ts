@@ -617,6 +617,12 @@ test('the back/forward cache: pagehide (persisted) steps down and says gone; pag
   expect(a.connects).toBeGreaterThan(connects);
   expectAll(a, 0, 2);
   expect(w.server.streams.size).toBe(1);
+  // Back from the cache it is live: its later reports (a leader change, a hello) go out again.
+  const restored = a.connects;
+  w.kill(b);
+  await settle(16);
+  expect(w.leader()).toBe(a.id);
+  expect(a.connects).toBeGreaterThan(restored);
 });
 
 test('a sleeping follower behind a new leader that started past it fetches the lines between, once, in order', async () => {
