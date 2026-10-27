@@ -71,7 +71,9 @@ async function open(browser: Browser, url: string, scheme: 'light' | 'dark'): Pr
   return { context, page };
 }
 
-const failureToast = (page: Page) => page.locator('[data-sonner-toast]').filter({ hasText: 'Feedback not sent' });
+// A Retry dismisses the old toast as it shows the new one; sonner keeps the
+// old one in the DOM (data-removed="true") through its exit animation.
+const failureToast = (page: Page) => page.locator('[data-sonner-toast]:not([data-removed="true"])').filter({ hasText: 'Feedback not sent' });
 
 /** Send Feedback against the dead server: the message, and nothing else changes. */
 async function sendAndExpectFailure(page: Page): Promise<void> {
