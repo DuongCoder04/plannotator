@@ -1,24 +1,32 @@
 /**
- * Inter's stylistic sets reach Inter only (#1961). They used to be set with
- * `font-feature-settings` on body, which every element inherits, whatever font
- * it renders in: on Linux, code review's diffs and line-number gutters fall back
- * to Ubuntu Mono, whose `ss02` turns digits into superscripts. theme.css now
- * names the sets for Inter's families (`@font-feature-values`) and applies them
- * with `font-variant-alternates`, which a font not named there ignores.
+ * On desktop Linux, Inter's stylistic sets reach Inter only (#1961). They are
+ * set with `font-feature-settings` on body, which every element inherits,
+ * whatever font it renders in: on Linux, code review's diffs and line-number
+ * gutters fall back to Ubuntu Mono, whose `ss02` turns digits into
+ * superscripts. Under `pn-os-linux` (put on <html> by ThemeProvider, from the
+ * navigator) theme.css instead names the sets for Inter's families
+ * (`@font-feature-values`) and applies them with `font-variant-alternates`,
+ * which a font not named there ignores. macOS, iOS and Windows keep the body
+ * rule unchanged (SF Pro, the system-ui themes' font, draws its open 4 and
+ * straight 6 and 9 with it).
  *
  * Proved in real browsers against the built apps (apps/hook/dist: run
  * `bun run --cwd apps/review build && bun run build:hook` first), served on
- * loopback so the review app falls back to its demo diff:
- *  - every monospace surface computes `font-feature-settings: normal`: the
- *    diff's gutter numbers and code inside Pierre's shadow roots, and the plan's
- *    fenced code, `.font-mono` and `kbd`;
- *  - Inter still renders with its sets (prose is pixel-identical to Inter with
- *    `"ss01", "ss02", "cv01"`, and differs from Inter without them);
- *  - with a font whose `ss02` is superscript digits (PLANNOTATOR_E2E_SS02_FONT:
- *    a path to Ubuntu Mono, from google/fonts `ufl/ubuntumono`) standing in for
- *    the monospace font, the gutter and a fenced code block render exactly as
- *    the font does with no features, while the old body rule, put back, changes
- *    them. Skipped when the variable is unset.
+ * loopback so the review app falls back to its demo diff. Each page is told
+ * its platform by a navigator stub (init script), so the Linux and macOS
+ * paths both run on any host:
+ *  - Linux: every monospace surface computes `font-feature-settings: normal`:
+ *    the diff's gutter numbers and code inside Pierre's shadow roots, and the
+ *    plan's fenced code, `.font-mono` and `kbd`; body asks for Inter's named
+ *    sets. (The bundled Inter subset has no ss01, ss02 or cv01 glyphs, so
+ *    nothing here claims a pixel difference on Inter.)
+ *  - macOS and Windows: body and the monospace text compute the body rule's
+ *    `"ss01", "ss02", "cv01"`, exactly as before, with no alternates;
+ *  - Linux, with a font whose `ss02` is superscript digits
+ *    (PLANNOTATOR_E2E_SS02_FONT: a path to Ubuntu Mono, from google/fonts
+ *    `ufl/ubuntumono`) standing in for the monospace font: the gutter and a
+ *    fenced code block render exactly as the font does with no features, while
+ *    the old body rule, put back, changes them. Skipped when the variable is unset.
  * Browsers: chromium and webkit (what CI installs), or PLANNOTATOR_E2E_FONT_BROWSERS
  * (comma list, e.g. "chromium,firefox,webkit").
  */
@@ -35,8 +43,12 @@ const pages: Record<string, string> = {
 };
 const ss02FontPath = process.env.PLANNOTATOR_E2E_SS02_FONT;
 const TEST_FONT = 'PN SS02 Test';
-/** The rule theme.css carried before #1961. */
-const OLD_BODY_RULE = 'body { font-feature-settings: "ss01", "ss02", "cv01"; }';
+/**
+ * The body rule: what theme.css carried everywhere before #1961, and still
+ * carries outside Linux. Put back on a Linux page, so `!important` to beat
+ * `:root.pn-os-linux body`.
+ */
+const OLD_BODY_RULE = 'body { font-feature-settings: "ss01", "ss02", "cv01" !important; }';
 const browsers = (process.env.PLANNOTATOR_E2E_FONT_BROWSERS ?? 'chromium,webkit')
   .split(',')
   .map((name) => name.trim())
@@ -44,15 +56,33 @@ const browsers = (process.env.PLANNOTATOR_E2E_FONT_BROWSERS ?? 'chromium,webkit'
 
 const engines = { chromium, firefox, webkit };
 
+/** What each platform's browser reports; the page's CSS keys off the class rootPlatform derives from it. */
+const NAVIGATORS = {
+  linux: { platform: 'Linux x86_64', hint: 'Linux', userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36' },
+  mac: { platform: 'MacIntel', hint: 'macOS', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36' },
+  windows: { platform: 'Win32', hint: 'Windows', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36' },
+};
+type Os = keyof typeof NAVIGATORS;
+/** The tags macOS, iOS and Windows keep. */
+const KEPT_FEATURES = ['cv01', 'ss01', 'ss02'];
+/** A computed font-feature-settings as its sorted tags (Chromium sorts them, WebKit keeps the authored order). */
+const tags = (value: string) => (value === 'normal' ? [] : value.split(',').map((tag) => tag.trim().replace(/^"|"$/g, '')).sort());
+
 /**
  * A fresh browser of that engine per test (the config's own browser is chromium only).
  * The config's launch args are Chromium's (`--use-mock-keychain`, `--password-store=basic`),
  * and WebKit and Firefox refuse to start with them, so the other engines get none.
  */
-async function withPage(name: keyof typeof engines, run: (page: Page) => Promise<void>) {
+async function withPage(name: keyof typeof engines, os: Os, run: (page: Page) => Promise<void>) {
   const browser = await engines[name].launch(name === 'chromium' ? { headless: true } : { headless: true, args: [] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.addInitScript((nav) => {
+      const define = (key: string, value: unknown) => Object.defineProperty(Navigator.prototype, key, { configurable: true, get: () => value });
+      define('platform', nav.platform);
+      define('userAgent', nav.userAgent);
+      define('userAgentData', { platform: nav.hint, brands: [], mobile: false });
+    }, NAVIGATORS[os]);
     await run(page);
   } finally {
     await browser.close();
@@ -174,8 +204,30 @@ async function addStyle(page: Page, css: string): Promise<() => Promise<void>> {
 
 for (const browserName of browsers) {
   test.describe(browserName, () => {
-    test('code review: the gutter and diff code inside Pierre get no feature tags', async () => withPage(browserName, async (page) => {
+    for (const os of ['mac', 'windows'] as const) {
+      test(`${os}: body keeps "ss01", "ss02", "cv01" and everything inherits it, as before`, async () => withPage(browserName, os, async (page) => {
+        await openReview(page);
+        expect(await page.evaluate(() => document.documentElement.className)).toContain(os === 'mac' ? 'pn-os-apple' : 'pn-os-windows');
+        const body = await page.evaluate(() => {
+          const style = getComputedStyle(document.body);
+          return { alternates: style.fontVariantAlternates, features: style.fontFeatureSettings };
+        });
+        expect(body.alternates).toBe('normal');
+        expect(tags(body.features)).toEqual(KEPT_FEATURES);
+        const gutter = await shadowSettings(page, '[data-column-number]');
+        expect(gutter.length).toBeGreaterThan(0);
+        for (const value of gutter) expect(tags(value)).toEqual(KEPT_FEATURES);
+
+        await openPlan(page);
+        const mono = await featureSettings(page, '.font-mono:not(pre, code, pre *, code *)');
+        expect(mono.length).toBeGreaterThan(0);
+        for (const value of mono) expect(tags(value)).toEqual(KEPT_FEATURES);
+      }));
+    }
+
+    test('linux: code review: the gutter and diff code inside Pierre get no feature tags', async () => withPage(browserName, 'linux', async (page) => {
       await openReview(page);
+      expect(await page.evaluate(() => document.documentElement.className)).toContain('pn-os-linux');
       const gutter = await shadowSettings(page, '[data-column-number]');
       const code = await shadowSettings(page, '[data-line], [data-line] *');
       expect(gutter.length).toBeGreaterThan(0);
@@ -191,42 +243,12 @@ for (const browserName of browsers) {
       expect(body.family).toContain('Inter Variable');
     }));
 
-    test('plan review: fenced code, .font-mono and kbd get no feature tags', async () => withPage(browserName, async (page) => {
+    test('linux: plan review: fenced code, .font-mono and kbd get no feature tags', async () => withPage(browserName, 'linux', async (page) => {
       await openPlan(page);
       const fence = await featureSettings(page, FENCE);
       const mono = await featureSettings(page, '.font-mono, kbd, pre, code');
       expect(fence.length).toBeGreaterThan(0);
       expect(new Set([...fence, ...mono])).toEqual(new Set(['normal']));
-    }));
-
-    test('Inter still renders with ss01, ss02 and cv01', async () => withPage(browserName, async (page) => {
-      await openPlan(page);
-      await page.evaluate(async () => {
-        await document.fonts.load('32px "Inter Variable"');
-        const holder = document.createElement('div');
-        holder.id = 'pn-inter-probe';
-        holder.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483647;background:#fff;color:#000;font-size:32px;line-height:1.2;padding:8px';
-        const text = 'Il1 0 4 6 9 Ill1';
-        for (const [id, style] of [
-          ['inherited', ''],
-          ['explicit', 'font-variant-alternates:normal;font-feature-settings:"ss01","ss02","cv01"'],
-          ['none', 'font-variant-alternates:normal;font-feature-settings:normal'],
-        ]) {
-          const line = document.createElement('div');
-          line.id = `pn-inter-${id}`;
-          line.textContent = text;
-          line.setAttribute('style', `display:inline-block;${style}`);
-          holder.append(line, document.createElement('br'));
-        }
-        document.body.append(holder);
-        await document.fonts.ready;
-      });
-      expect(await page.locator('#pn-inter-inherited').evaluate((el) => getComputedStyle(el).fontFamily)).toContain('Inter Variable');
-      const inherited = await page.locator('#pn-inter-inherited').screenshot();
-      const explicit = await page.locator('#pn-inter-explicit').screenshot();
-      const none = await page.locator('#pn-inter-none').screenshot();
-      expect(inherited.equals(explicit)).toBe(true);
-      expect(inherited.equals(none)).toBe(false);
     }));
 
     test.describe('with a font whose ss02 is superscript digits', () => {
@@ -235,7 +257,7 @@ for (const browserName of browsers) {
       const useTestFont = `@font-face { font-family: "${TEST_FONT}"; src: url(/test-font); }
 :root:root { --diffs-font-family: "${TEST_FONT}" !important; --font-mono: "${TEST_FONT}" !important; }`;
 
-      test('the diff gutter renders plain digits, and the old rule would not', async () => withPage(browserName, async (page) => {
+      test('linux: the diff gutter renders plain digits, and the old rule would not', async () => withPage(browserName, 'linux', async (page) => {
         await openReview(page);
         await addStyle(page, useTestFont);
         await page.evaluate(() => document.fonts.load('20px "PN SS02 Test"'));
@@ -255,7 +277,7 @@ for (const browserName of browsers) {
         expect(fixed.equals(explicitNormal)).toBe(true);
       }));
 
-      test('monospace text in plan review renders plain digits, and the old rule would not', async () => withPage(browserName, async (page) => {
+      test('linux: monospace text in plan review renders plain digits, and the old rule would not', async () => withPage(browserName, 'linux', async (page) => {
         await openPlan(page);
         await addStyle(page, useTestFont);
         await page.evaluate(() => document.fonts.load('16px "PN SS02 Test"'));
