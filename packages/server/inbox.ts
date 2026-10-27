@@ -493,7 +493,7 @@ const ERROR_STATUS: Record<string, number> = {
   card_person_only: 403,
   // Over your tailnet (packages/server/inbox-tailscale.ts).
   tailscale_env_decides: 409,
-  // Settings → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
+  // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
   tailscale_unavailable: 409,
   local_only: 403,
@@ -1637,7 +1637,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     text_size: textSizeState(),
     /** The guided review's diff layout (config.json `diffOptions.diffStyle`), shared with code review; null when never chosen. */
     diff_style: diffStyleState(),
-    /** Experimental features, each off unless switched on (Settings → Experimental). */
+    /** Experimental features, each off unless switched on (Settings → Capabilities → Experimental). */
     experimental: experimentalState(),
     /** The Board (config.json `inboxBoard`): off unless the person turned it on. */
     board: { on: boardOn() },

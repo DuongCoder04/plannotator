@@ -1246,8 +1246,6 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-snav a:hover { background: color-mix(in oklch, var(--muted) 55%, transparent); color: var(--foreground); }
 .ib-snav a[aria-current="page"] { background: color-mix(in oklch, var(--primary) 12%, transparent); color: var(--primary); }
 .pn-inbox .ib-snav a svg.ib-ic { width: 15px; height: 15px; }
-/* Settings → Experimental, the desktop nav's last row, below a line in the row-divider colour (the phone list groups it instead). */
-.ib-snav li.ib-snav-sep { margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--ib-sep-s, var(--ib-hair)); }
 .ib-scount { margin-left: auto; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .ib-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex: none; }
 .ib-dot.ib-warn { background: var(--warning, oklch(0.75 0.15 85)); }
@@ -1262,6 +1260,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-sgroup > h2 { font-size: var(--ib-fs-13-5, 13.5px); font-weight: 600; margin: 0 0 3px; }
 .ib-sgroup > p { margin: 0 0 10px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.5; }
 .ib-sgroup > h2 + .ib-card { margin-top: 8px; }
+/* Capabilities → Experimental's heading takes focus when `#settings/experimental` lands there, like a section's h1. */
+.pn-inbox .ib-sgroup > h2[tabindex]:focus, .pn-inbox .ib-sgroup > h2[tabindex]:focus-visible { outline: none; }
 .ib-sgroup > .ib-callout { margin-bottom: 10px; }
 .ib-spg > .ib-callout { margin-top: 16px; }
 .ib-card { border: 1px solid var(--ib-line); border-radius: 10px; overflow: hidden; background: var(--card); }

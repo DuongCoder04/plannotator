@@ -396,7 +396,7 @@ export interface PlannotatorConfig {
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;
    * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
-   * Settings → Experimental through POST /api/inbox/settings
+   * Settings → Capabilities → Experimental through POST /api/inbox/settings
    * `{ experimental: { decision_mode } }`.
    */
   experimental?: { decisionMode?: boolean };
