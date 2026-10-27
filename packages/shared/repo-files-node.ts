@@ -5,24 +5,30 @@
  *
  * Every working-tree file the explorer opens is read through `readRepoFile`
  * (repo-file.ts), the same guard code navigation uses: the real path must stay
- * inside the repository (a tracked `link -> /etc/hosts` or a folder symlinked
- * out is refused), only regular files are read (a FIFO never blocks the
- * server), and a file over the cap is refused before any byte is read.
- * Vendored to Pi, so both runtimes share it.
+ * inside the repository, before and after the open (a tracked
+ * `link -> /etc/hosts` or a folder symlinked out is refused), only regular
+ * files are read (a FIFO never blocks the server), and a file over the cap is
+ * refused before any byte is read. Vendored to Pi, so both runtimes share it.
  */
 
 import { readRepoFile } from "./repo-file";
-import type { RepoFileRead } from "./repo-files";
-
-/** Bytes looked at for a NUL, as `decodeRepoFileBytes` does. */
-const BINARY_SNIFF_CHARS = 8192;
+import { decodeRepoFileBytes, type RepoFileRead } from "./repo-files";
 
 /**
  * Read one working-tree file. `root` is the repository (or a workspace
- * child's) root and `path` is relative to it.
+ * child's) root and `path` is relative to it. The bytes are decoded the way a
+ * file read from git is (`decodeRepoFileBytes`: a NUL or invalid UTF-8 is a
+ * binary file), so the answer does not depend on where the file came from.
  */
-export function readRepoWorkingTreeFile(root: string, path: string, maxBytes: number): RepoFileRead {
-  const result = readRepoFile(root, path, { maxBytes });
+export async function readRepoWorkingTreeFile(root: string, path: string, maxBytes: number): Promise<RepoFileRead> {
+  let bytes: Uint8Array | null = null;
+  const result = await readRepoFile(root, path, {
+    maxBytes,
+    decode: (read) => {
+      bytes = read;
+      return "";
+    },
+  });
   if (!result.ok) {
     switch (result.reason) {
       case "too-large":
@@ -35,11 +41,7 @@ export function readRepoWorkingTreeFile(root: string, path: string, maxBytes: nu
         return { kind: "unavailable" };
     }
   }
-  // `readRepoFile` decodes UTF-8 leniently, so a binary file shows up as a
-  // NUL near the start or as replacement characters for invalid sequences.
-  const content = result.content;
-  if (content.slice(0, BINARY_SNIFF_CHARS).includes("\0") || content.includes("�")) {
-    return { kind: "binary" };
-  }
-  return { kind: "text", content };
+  if (!bytes) return { kind: "unavailable" };
+  const decoded = decodeRepoFileBytes(bytes);
+  return "content" in decoded ? { kind: "text", content: decoded.content } : { kind: "binary" };
 }
