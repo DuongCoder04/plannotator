@@ -387,7 +387,7 @@ export interface PlannotatorConfig {
   /**
    * Settings → Agents' "Run in the Inbox", per agent the Inbox can run over
    * ACP (packages/server/inbox-acp-runner.ts): `{ "grok": false }` takes
-   * "Start a new Grok Build session" out of compose. Unset: on (when the
+   * "New Grok Build session" out of compose. Unset: on (when the
    * agent is installed).
    */
   inboxRun?: Partial<Record<string, boolean>>;

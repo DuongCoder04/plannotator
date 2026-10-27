@@ -107,7 +107,7 @@ export function composeOpening(request: { draft?: Pick<InboxDraft, 'to'> | null;
 }
 
 /**
- * "Start a new Grok Build session" (the ACP runner, packages/server/inbox-acp-runner.ts):
+ * "New Grok Build session" (the ACP runner, packages/server/inbox-acp-runner.ts):
  * a row per agent the Inbox can start and folder to start it in. Its id in To
  * is `start:<agent>:<project id>`, never a live session's id.
  */

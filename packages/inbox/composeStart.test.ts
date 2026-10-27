@@ -1,5 +1,5 @@
 /**
- * Compose's "Start a new Grok Build session" rows (the ACP runner): which
+ * Compose's "New Grok Build session" rows (the ACP runner): which
  * agents and folders the To picker offers, and how To names one.
  */
 import { describe, expect, test } from 'bun:test';

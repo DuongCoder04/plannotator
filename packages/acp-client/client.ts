@@ -75,7 +75,23 @@ export interface AcpStartOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** Append the usual program folders to PATH (default true; the Inbox passes its own PATH as it is). */
   augmentPath?: boolean;
+  /**
+   * Give up on an agent that does not answer `initialize` in this long: its
+   * process group is stopped (SIGTERM, then SIGKILL) and `start` rejects.
+   * Default: no limit.
+   */
+  initializeTimeoutMs?: number;
+  /**
+   * Stop a process that is still starting: once aborted, its process group is
+   * stopped and `start` rejects. Aborted with the reason `"kill"`, the group
+   * gets SIGKILL at once (the caller is exiting); otherwise SIGTERM, then
+   * SIGKILL after a grace period.
+   */
+  signal?: AbortSignal;
 }
+
+/** `start` gave up: the agent did not answer `initialize` in time, or the caller stopped it. */
+export class AcpStartAbortedError extends Error {}
 
 export interface AcpClientInfo {
   name: string;
@@ -234,18 +250,38 @@ export class AcpClient {
     });
     if (startError) throw new Error(`Could not start ${launch.command}: ${startError.message}`);
     const client = new AcpClient(child, handlers);
+    // An agent that hangs in `initialize` (a self-update, a sign-in waiting on a prompt) can still be stopped:
+    // by a time limit, or by the caller's signal.
+    const { signal, initializeTimeoutMs } = options;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let onAbort: (() => void) | null = null;
+    const gaveUp = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new AcpStartAbortedError(`${launch.command} was stopped while it started.`));
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+      if (initializeTimeoutMs !== undefined) {
+        timer = setTimeout(() => reject(new AcpStartAbortedError(`${launch.command} did not answer within ${Math.round(initializeTimeoutMs / 1000)} s of starting.`)), initializeTimeoutMs);
+      }
+    });
     try {
-      client.initializeResult = await client.raceExit(
-        client.connection.initialize({
-          protocolVersion: PROTOCOL_VERSION,
-          clientCapabilities: CLIENT_CAPABILITIES,
-          clientInfo,
-        }),
-        "initialize",
-      );
+      client.initializeResult = await Promise.race([
+        client.raceExit(
+          client.connection.initialize({
+            protocolVersion: PROTOCOL_VERSION,
+            clientCapabilities: CLIENT_CAPABILITIES,
+            clientInfo,
+          }),
+          "initialize",
+        ),
+        gaveUp,
+      ]);
     } catch (err) {
-      client.dispose();
+      if (signal?.aborted && signal.reason === "kill") client.kill();
+      else client.dispose();
       throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
     }
     const agentVersion = client.initializeResult.protocolVersion;
     if (agentVersion !== PROTOCOL_VERSION) {

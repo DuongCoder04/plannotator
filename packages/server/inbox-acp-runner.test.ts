@@ -37,8 +37,18 @@ afterAll(() => removeStubbedHtml(stubs));
 const roots: string[] = [];
 const servers: InboxServer[] = [];
 const restoreEnv: (() => void)[] = [];
+/** The hanging agents' pids: killed after each test whatever it asserted, so a failing test never leaves one running. */
+const hangPids = new Set<number>();
 afterEach(async () => {
   for (const server of servers.splice(0)) server.stop();
+  for (const pid of hangPids) {
+    try {
+      process.kill(pid, "SIGKILL"); // inbox-guard: own child (a test's hanging fake agent, never an Inbox)
+    } catch {
+      // Already gone.
+    }
+  }
+  hangPids.clear();
   for (const restore of restoreEnv.splice(0)) restore();
   // The agents' process groups get SIGTERM, then SIGKILL after 3 s.
   await Bun.sleep(100);
@@ -103,7 +113,10 @@ const alive = (pid: number) => {
   }
 };
 
-async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionError?: string; [k: string]: unknown }, opts: { tailnet?: boolean; setAsideDelayMs?: number } = {}): Promise<World> {
+async function world(
+  script: { turns?: Step[][]; steps?: Step[]; loadSessionError?: string; [k: string]: unknown },
+  opts: { tailnet?: boolean; setAsideDelayMs?: number; launch?: { command: string; args: string[]; env?: Record<string, string> }; startTimeoutMs?: number; env?: Record<string, string> } = {},
+): Promise<World> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-acp-runner-")));
   roots.push(root);
   const project = join(root, "billing");
@@ -127,13 +140,18 @@ async function world(script: { turns?: Step[][]; steps?: Step[]; loadSessionErro
     NO_BROWSER,
     PLANNOTATOR_INBOX_CONNECT: "0",
     PLANNOTATOR_TEST_SANDBOX: process.env.PLANNOTATOR_TEST_SANDBOX,
+    ...opts.env,
   };
   const make = () =>
     startInboxServer({
       dataDir,
       selfCommand: [process.execPath, "run", CLI],
       agentEnvironment: createAgentEnvironmentFor({ platform: process.platform, homeDir: home, env }),
-      acpRunner: { launches: { grok: { command: process.execPath, args: [FAKE_AGENT], env: { FAKE_ACP_SCRIPT: scriptPath, FAKE_ACP_LOG: logPath } } }, stopGraceMs: 1500 },
+      acpRunner: {
+        launches: { grok: opts.launch ?? { command: process.execPath, args: [FAKE_AGENT], env: { FAKE_ACP_SCRIPT: scriptPath, FAKE_ACP_LOG: logPath } } },
+        stopGraceMs: 1500,
+        ...(opts.startTimeoutMs !== undefined ? { startTimeoutMs: opts.startTimeoutMs } : {}),
+      },
       ...(opts.tailnet ? { tailscale: fakeTailscale, publishTailnet: true, phones: false } : {}),
       ...(opts.setAsideDelayMs !== undefined ? { setAsideDelayMs: opts.setAsideDelayMs } : {}),
     });
@@ -196,6 +214,32 @@ const ended = (w: World, key: string, turns: number) => until(async () => {
 
 function reply(w: World, to: InboxMessage, words: string) {
   return post(w, `/api/inbox/messages/${to.id}/reply`, { idempotency_key: `r-${Math.random()}`, words });
+}
+
+/**
+ * An agent that hangs in `initialize`: it reads stdin and never answers, ignores SIGTERM and stdin's end
+ * (as a Grok updating itself, or waiting on a sign-in, may), and writes its pid and the identity variables
+ * it was started with to `out` (each start overwrites it).
+ */
+function hangingAgent(dir: string): { launch: { command: string; args: string[]; env: Record<string, string> }; read: () => { pid: number; env: Record<string, string | null> } | null } {
+  const out = join(dir, "hang.json");
+  const source = [
+    'const names = ["PLANNOTATOR_SESSION_TAG", "PI_SESSION_ID", "CODEX_THREAD_ID", "CLAUDECODE", "KEEP_ME"];',
+    "require('node:fs').writeFileSync(process.env.HANG_OUT, JSON.stringify({ pid: process.pid, env: Object.fromEntries(names.map((n) => [n, process.env[n] ?? null])) }));",
+    "process.on('SIGTERM', () => {});",
+    "process.stdin.on('data', () => {});",
+    "process.stdin.on('end', () => {});",
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  return {
+    launch: { command: process.execPath, args: ["-e", source], env: { HANG_OUT: out } },
+    read: () => {
+      if (!existsSync(out)) return null;
+      const read = JSON.parse(readFileSync(out, "utf8")) as { pid: number; env: Record<string, string | null> };
+      hangPids.add(read.pid);
+      return read;
+    },
+  };
 }
 
 /** The fake answers with the Inbox's own send_message (asking permission first, as Grok does), then says a word. */
@@ -365,6 +409,63 @@ describe("the ACP runner", () => {
     expect(agentMessages(w, a.thread_id, a.run.key)).toHaveLength(0);
     // Only A's session was cancelled.
     expect(w.log().filter((e) => e.event === "cancel")).toHaveLength(1);
+  }, 60_000);
+
+  test("15: a start that hangs in initialize (ignoring SIGTERM and stdin's end): Stop ends the turn and kills it, the next start is not stuck behind it, and the Inbox's stop kills a start at once", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-acp-hang-")));
+    roots.push(dir);
+    const hang = hangingAgent(dir);
+    const w = await world({}, { launch: hang.launch });
+    const a = await startRun(w, "Session A, please.");
+    const first = await until(() => hang.read(), "the hanging agent to start");
+    expect((await status(w, a.run.key)).state).toBe("starting");
+    expect((await post(w, `/api/inbox/acp/${a.run.key}/stop`, {})).status).toBe(200);
+    // Past the 1.5 s grace: the turn ends as stopped, nothing sent, and the process group gets SIGTERM, then SIGKILL.
+    const stopped = await ended(w, a.run.key, 1);
+    expect(stopped.turn!.outcome).toBe("stopped");
+    await until(() => !alive(first.pid), "the hung agent to be gone", 10_000);
+    // A later session starts its own process: it does not wait on the hung start.
+    const b = await startRun(w, "Session B, please.");
+    const second = await until(() => {
+      const read = hang.read();
+      return read && read.pid !== first.pid ? read : null;
+    }, "a new agent process");
+    expect((await status(w, b.run.key)).state).toBe("starting");
+    // The Inbox's own stop kills a process still starting, at once (SIGKILL: it ignores SIGTERM).
+    w.server.stop();
+    servers.splice(servers.indexOf(w.server), 1);
+    await until(() => !alive(second.pid), "the starting agent to be killed with the Inbox", 2_000);
+  }, 60_000);
+
+  test("16: an agent that never answers initialize fails the turn after the start timeout, in plain words, and is killed", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-acp-hang-")));
+    roots.push(dir);
+    const hang = hangingAgent(dir);
+    const w = await world({}, { launch: hang.launch, startTimeoutMs: 2000 });
+    const started = await startRun(w);
+    const agent = await until(() => hang.read(), "the hanging agent to start");
+    const run = await ended(w, started.run.key, 1);
+    expect(run.turn!.outcome).toBe("failed");
+    expect(run.turn!.error).toBe("Grok Build did not answer within 2 s of starting, so nothing was sent. Try again.");
+    expect(w.server.store.pendingReplies(started.run.key).map((m) => m.id)).toContain(started.thread_id);
+    await until(() => !alive(agent.pid), "the hung agent to be gone", 10_000);
+  }, 60_000);
+
+  test("17: the agent never starts as another session: the session tag, Pi's session, Codex's thread and Claude Code's marker are dropped from its environment", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-acp-hang-")));
+    roots.push(dir);
+    const hang = hangingAgent(dir);
+    const w = await world(
+      {},
+      {
+        launch: hang.launch,
+        // An Inbox started from a Codex shell inside Claude Code, say: every identity is in its environment.
+        env: { PLANNOTATOR_SESSION_TAG: "claude-code:ses_x", PI_SESSION_ID: "pi_session_1", CODEX_THREAD_ID: "019a0000-0000-7000-8000-000000000000", CLAUDECODE: "1", KEEP_ME: "yes" },
+      },
+    );
+    await startRun(w);
+    const started = await until(() => hang.read(), "the agent to start");
+    expect(started.env).toEqual({ PLANNOTATOR_SESSION_TAG: null, PI_SESSION_ID: null, CODEX_THREAD_ID: null, CLAUDECODE: null, KEEP_ME: "yes" });
   }, 60_000);
 
   test("12: the agent crashes mid-turn: the turn fails in plain words, nothing is sent again, and the next reply starts a new process", async () => {

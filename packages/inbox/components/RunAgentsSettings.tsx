@@ -2,14 +2,16 @@ import { useEffect, useState } from 'react';
 import type { InboxRunAgentsModel } from '@plannotator/core/inbox-acp';
 import { InboxApiError, inboxApi } from '../api';
 import { HostMark } from '../icons';
-import { CopyButton } from './ConnectPicker';
 
 /**
  * Settings → Agents: "Run in the Inbox" (the ACP runner, packages/server/
  * inbox-acp-runner.ts). Per agent the Inbox can start itself: whether New
- * message offers "Start a new … session", what it runs with, and that Grok
- * Build updates itself when it starts. An older Inbox answers 404: nothing
- * is drawn.
+ * message offers "New … session", what it runs with, and that Grok
+ * Build updates itself when it starts. Only agents installed on this computer
+ * are listed, and with none the section is not drawn: someone without Grok
+ * Build sees Settings as before (the owner's rule: no change to an existing
+ * person's screen without approval). An older Inbox answers 404: nothing is
+ * drawn.
  */
 export function RunAgentsSettings() {
   const [model, setModel] = useState<InboxRunAgentsModel | null>(null);
@@ -25,8 +27,9 @@ export function RunAgentsSettings() {
       gone = true;
     };
   }, []);
-  if (!model || model.agents.length === 0) return null;
-  const toggle = async (id: (typeof model.agents)[number]['id'], on: boolean) => {
+  const installed = model?.agents.filter((agent) => agent.installed) ?? [];
+  if (installed.length === 0) return null;
+  const toggle = async (id: (typeof installed)[number]['id'], on: boolean) => {
     if (busy) return;
     setBusy(id);
     setError(null);
@@ -51,7 +54,7 @@ export function RunAgentsSettings() {
         </p>
       )}
       <div className="ib-card">
-        {model.agents.map((agent) => (
+        {installed.map((agent) => (
           <div className="ib-prow" key={agent.id} data-settings-run-agent={agent.id}>
             <HostMark host={agent.id} big />
             <span className="ib-txt">
@@ -59,16 +62,9 @@ export function RunAgentsSettings() {
                 {agent.label}
               </span>
               <span className="ib-desc">
-                {agent.installed
-                  ? `Offered in New message as "Start a new ${agent.label} session". Its model is the one ${agent.label} itself uses.`
-                  : (agent.reason ?? `${agent.label} is not installed.`)}
+                {`Offered in New message as "New ${agent.label} session". Its model is the one ${agent.label} itself uses.`}
                 {agent.self_updates && ` ${agent.label} updates itself when it starts, so a session here may bring a new version.`}
               </span>
-              {!agent.installed && (
-                <span className="ib-desc ib-run-install">
-                  <code>{agent.install_command}</code> <CopyButton text={agent.install_command} />
-                </span>
-              )}
             </span>
             <span className="ib-ctl">
               <button

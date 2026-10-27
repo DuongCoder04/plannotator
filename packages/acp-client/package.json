@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/acp-client",
-  "version": "0.28.30",
+  "version": "0.0.1",
   "private": true,
   "description": "Plannotator's ACP client: starts an agent over the Agent Client Protocol (Guides in VS Code, the Inbox's runner)",
   "type": "module",

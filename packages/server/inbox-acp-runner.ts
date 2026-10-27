@@ -3,7 +3,7 @@
  * in the thread is a real turn (spec "Inbox replies as real turns for Cursor
  * and Grok", step 1: Grok Build; Cursor is one more `INBOX_RUN_AGENTS` entry).
  *
- * Compose's "Start a new Grok Build session" makes a runner session (a key,
+ * Compose's "New Grok Build session" makes a runner session (a key,
  * `run_<ulid>`, which is also its agent session id in the Inbox), writes the
  * person's first message as a thread addressed to it (compose's
  * `writeThread`), and the runner hands every message the session waits for
@@ -39,7 +39,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RequestPermissionRequest, RequestPermissionResponse, SessionNotification } from "@agentclientprotocol/sdk";
-import { AcpClient, type AgentLaunch } from "@plannotator/acp-client/client";
+import { AcpClient, AcpStartAbortedError, type AgentLaunch } from "@plannotator/acp-client/client";
 import { GROK, resolveAgentLaunch, type AgentDescriptor } from "@plannotator/acp-client/agents";
 import { ownToolAutoAllow, type OwnTools } from "@plannotator/acp-client/permission-policy";
 import {
@@ -100,6 +100,18 @@ export const INBOX_RUN_AGENTS: readonly InboxRunAgent[] = [
 export const INBOX_RUN_IDLE_MS = 10 * 60_000;
 /** After Stop, how long the agent gets to end the turn before its process group is killed. */
 export const INBOX_RUN_STOP_GRACE_MS = 10_000;
+/**
+ * How long an agent gets to answer `initialize` (Grok Build updates itself as it starts) before its process
+ * group is stopped and the turn fails: a hung start never holds every later session of that agent.
+ */
+export const INBOX_RUN_START_TIMEOUT_MS = 120_000;
+/**
+ * Dropped from the environment an agent the Inbox runs starts with: another session's identity. With it, a
+ * `plannotator inbox …` or `plannotator card …` from the agent's shell would send as that session (the
+ * Claude Code / Pi tag, Pi's session, the Codex thread whose replies `codex queue` takes) or read as started
+ * from Claude Code. The agent's MCP server names its own session (PLANNOTATOR_SESSION_TAG in its env).
+ */
+export const INBOX_RUN_ENV_DROPPED = ["PLANNOTATOR_SESSION_TAG", "PI_SESSION_ID", "CODEX_THREAD_ID", "CLAUDECODE"] as const;
 const TURNS_KEPT = 50;
 const TOOLS_KEPT = 20;
 const TEXT_SHOWN = 4000;
@@ -149,6 +161,8 @@ interface LiveTurn {
 interface AgentProcess {
   client: AcpClient | null;
   starting: Promise<AcpClient> | null;
+  /** Stops the process while it is still starting (Stop, the Inbox's own stop): `abort("kill")` kills it at once. */
+  abort: AbortController;
   idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -184,9 +198,10 @@ export interface InboxAcpRunnerOptions {
   onChange: (change: { key: string; threadIds: string[]; permission?: { title: string; label: string; threadId: string | null; replyId: string | null } }) => void;
   /** Tests: start these instead of the agent's own program (the fake ACP agent). No version check then. */
   launches?: Partial<Record<InboxRunAgentId, InboxRunLaunchOverride>>;
-  /** Tests: shorter idle and Stop timers. */
+  /** Tests: shorter idle, Stop and start timers. */
   idleMs?: number;
   stopGraceMs?: number;
+  startTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -197,6 +212,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
   const now = options.now ?? (() => new Date());
   const idleMs = options.idleMs ?? INBOX_RUN_IDLE_MS;
   const stopGraceMs = options.stopGraceMs ?? INBOX_RUN_STOP_GRACE_MS;
+  const startTimeoutMs = options.startTimeoutMs ?? INBOX_RUN_START_TIMEOUT_MS;
   const dir = join(options.dataDir, "inbox", "acp");
   const file = join(dir, "sessions.json");
   const agentById = new Map(INBOX_RUN_AGENTS.map((agent) => [agent.id, agent]));
@@ -300,11 +316,14 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     return answer;
   };
 
-  /** The environment the agent starts with: the person's, without another session's tag (its shell would send as that session). */
+  /**
+   * The environment the agent starts with: the person's, without another session's identity, which its
+   * shell's `plannotator inbox …` / `plannotator card …` would send as (the session tag, Pi's session,
+   * Codex's thread) or read as started from that agent (Claude Code's marker).
+   */
   const agentEnv = (): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...environment.env };
-    delete env.PLANNOTATOR_SESSION_TAG;
-    delete env.PI_SESSION_ID;
+    for (const name of INBOX_RUN_ENV_DROPPED) delete env[name];
     return env;
   };
 
@@ -430,13 +449,14 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     }
     if (proc?.starting) return proc.starting;
     // Recorded before anything is awaited: a second turn arriving meanwhile waits for this one process.
-    const mine: AgentProcess = { client: null, starting: null, idleTimer: null };
+    const mine: AgentProcess = { client: null, starting: null, abort: new AbortController(), idleTimer: null };
     processes.set(agent.id, mine);
-    const current = () => !stopped && processes.get(agent.id) === mine;
+    const current = () => !stopped && processes.get(agent.id) === mine && !mine.abort.signal.aborted;
+    const label = agent.descriptor.label;
     const starting = (async () => {
       const resolved = await resolveLaunch(agent);
       if (!resolved.ok) throw new InboxError("agent_unavailable", resolved.reason);
-      if (!current()) throw new InboxError("agent_unavailable", `${agent.descriptor.label} was not started: the Inbox is stopping.`);
+      if (!current()) throw new InboxError("agent_unavailable", `${label} was not started: it was stopped.`);
       const client = await AcpClient.start(
         { ...resolved.launch, cwd },
         {
@@ -451,12 +471,18 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
           },
         },
         { name: "plannotator-inbox", title: "Plannotator Inbox", version: options.version },
-        { env: agentEnv(), augmentPath: false },
-      );
+        { env: agentEnv(), augmentPath: false, initializeTimeoutMs: startTimeoutMs, signal: mine.abort.signal },
+      ).catch((error: unknown) => {
+        if (!(error instanceof AcpStartAbortedError)) throw error;
+        throw new InboxError(
+          "agent_unavailable",
+          mine.abort.signal.aborted ? `${label} was stopped while it started; nothing was sent.` : `${label} did not answer within ${Math.round(startTimeoutMs / 1000)} s of starting, so nothing was sent. Try again.`,
+        );
+      });
       // The Inbox stopped (or this process was replaced) while it started: it never runs a turn.
       if (!current()) {
         client.kill();
-        throw new InboxError("agent_unavailable", `${agent.descriptor.label} was not started: the Inbox is stopping.`);
+        throw new InboxError("agent_unavailable", `${label} was not started: it was stopped.`);
       }
       mine.client = client;
       mine.starting = null;
@@ -547,7 +573,13 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     let delivered = false;
     let opened = false;
     try {
-      client = await ensureClient(agent, record.cwd);
+      // A start that hangs: Stop's grace ends the turn here (and stops the starting process when no other turn waits for it).
+      client = await Promise.race([
+        ensureClient(agent, record.cwd),
+        turn.abandoned.then((): never => {
+          throw new StopBeforePrompt();
+        }),
+      ]);
       turn.client = client;
       if (turn.stopRequested) throw new StopBeforePrompt();
       if (record.acp_session_id === null) {
@@ -755,7 +787,7 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     return { agents, places: places() };
   };
 
-  /** Compose's "Start a new … session": the session, then the thread addressed to it. */
+  /** Compose's "New … session": the session, then the thread addressed to it. */
   const start = async (body: Record<string, unknown>): Promise<unknown> => {
     const replay = options.compose.replayThread(body);
     if (replay) return replay;
@@ -806,8 +838,16 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     // which keeps it: this turn ends here as stopped.
     turn.stopTimer ??= setTimeout(() => {
       if (turns.get(key) !== turn) return;
-      const shared = [...turns.entries()].some(([other, t]) => other !== key && t.client !== null && t.client === client);
-      if (client && !shared) client.dispose();
+      if (turn.client === null) {
+        // Still starting (a hang in initialize): the starting process is stopped (SIGTERM, then SIGKILL),
+        // unless another turn waits for that same start.
+        const proc = processes.get(record.agent);
+        const waits = [...turns.entries()].some(([other, t]) => other !== key && t.client === null && sessions.get(other)?.agent === record.agent);
+        if (proc && proc.client === null && !waits) proc.abort.abort();
+      } else {
+        const shared = [...turns.entries()].some(([other, t]) => other !== key && t.client !== null && t.client === turn.client);
+        if (!shared) turn.client.dispose();
+      }
       turn.abandon();
     }, stopGraceMs);
     changed(key);
@@ -903,6 +943,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     for (const proc of processes.values()) {
       if (proc.idleTimer) clearTimeout(proc.idleTimer);
       proc.client?.kill();
+      // A process still starting (even one hung in initialize) is killed now, with its group.
+      proc.abort.abort("kill");
       void proc.starting?.then((client) => client.kill()).catch(() => {});
     }
     processes.clear();

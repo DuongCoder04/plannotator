@@ -181,7 +181,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const projects = model?.projects ?? [];
   const target = findTarget(projects, chosen);
   const anyLive = composeTargets(projects).length > 0;
-  // "Start a new Grok Build session" (the ACP runner): the agents the Inbox can start, read once (an older Inbox answers 404).
+  // "New Grok Build session" (the ACP runner): the agents the Inbox can start, read once (an older Inbox answers 404).
   const [runs, setRuns] = useState<InboxRunAgentsModel | null>(null);
   useEffect(() => {
     let gone = false;
@@ -336,6 +336,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
           uploads: uploadIds,
           ...named,
           ...(draft ? { draft_id: draft.id } : {}),
+          // The Board chip shows for a new session too: its request goes with the thread, as for a live session.
+          ...(boardChip && boardRequest ? { board_request: true as const } : {}),
         });
         props.onSent({ threadId: started.thread_id, session: started.run?.key ?? '', host: start.agent.id, projectName: started.project?.name ?? start.place.name, draftId: draft?.id ?? null, cardId: card?.id ?? null });
         return;

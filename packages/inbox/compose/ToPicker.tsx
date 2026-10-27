@@ -18,7 +18,7 @@ import { filterGroups, hostLabel, pickerRows, type ComposeGroup, type ComposeTar
  * the auto-fill compose dropped); typing or an arrow key highlights the first row.
  * Focus stays in the filter (`aria-activedescendant`).
  *
- * After the live sessions, "Start a new Grok Build session" rows (the ACP
+ * After the live sessions, "New Grok Build session" rows (the ACP
  * runner): one per agent the Inbox can start and folder, the current project
  * first; typing searches every folder (`starts`).
  */

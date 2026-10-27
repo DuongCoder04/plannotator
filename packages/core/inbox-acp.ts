@@ -2,7 +2,7 @@
  * Plannotator Inbox: sessions the Inbox runs itself over ACP (spec "Inbox
  * replies as real turns for Cursor and Grok", step 1: Grok Build). The wire
  * shapes the server's runner (packages/server/inbox-acp-runner.ts) answers and
- * the window draws (the run line, the permission card, compose's "Start a new
+ * the window draws (the run line, the permission card, compose's "New
  * Grok Build session"). Browser-safe: no Node.
  *
  * Nothing here ever carries an agent's raw ACP traffic: activity is tool

@@ -235,7 +235,7 @@
     },
     "packages/acp-client": {
       "name": "@plannotator/acp-client",
-      "version": "0.28.30",
+      "version": "0.0.1",
       "dependencies": {
         "@agentclientprotocol/sdk": "1.9.0",
       },

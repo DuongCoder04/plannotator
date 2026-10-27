@@ -5,7 +5,7 @@
  * hands it in `session/new` (the builder relay), and calls their tools like a
  * real agent would. Everything it receives is appended to FAKE_ACP_LOG.
  *
- * Run with bun: `bun tests/fake-acp-agent.ts`.
+ * Run with bun: `bun tests/helpers/fake-acp-agent.ts` (FAKE_ACP_SCRIPT and FAKE_ACP_LOG set).
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
