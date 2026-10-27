@@ -803,13 +803,15 @@ function Inbox() {
   /**
    * The list on screen catches up: with the person's own reads and actions
    * (`own`: closing a thread; agent activity still waits behind "N new"), or
-   * with everything (`all`: Show, another folder or page).
+   * with everything (`all`: Show, another folder or page). `opening`: the
+   * thread a covered list settles behind (a phone, a stacked window), which
+   * settles as it now is, like the thread just closed.
    */
   const settleList = useCallback(
-    (what: 'own' | 'all', slide: boolean) => {
+    (what: 'own' | 'all', slide: boolean, opening?: OpenThread) => {
       cancelSettle();
       // The thread just closed settles as it now is, an arrival there included (held.ts settleOwn).
-      const closed = closing.current;
+      const closed = opening ?? closing.current;
       closing.current = null;
       const next = latestRef.current;
       if (!next) return;
@@ -1251,7 +1253,12 @@ function Inbox() {
         opened = landed();
       }
       closing.current = null;
-      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false);
+      // The thread opening settles as it now is too: an agent message the list
+      // held there is the person's to read now, not news for "N new". Held,
+      // its row kept the state the list showed (Quiet, say) and Back, which
+      // settles nothing when every message is seen, left it there with its
+      // questions open.
+      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false, { threadId });
       // The look covers what this read showed, not a message that lands before the server takes it.
       await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
       if (!cancelled) await refreshList(false);

@@ -40,7 +40,7 @@ const BEAT_MS = 160;
 
 const NEWS = ['Search index built', 'Install page links fixed', 'Changelog drafted', 'Docs deploy finished'];
 
-type ProjectKey = 'desk' | 'reduce' | 'phone' | 'stacked' | 'framesDark' | 'framesLight' | 'mouse' | 'held';
+type ProjectKey = 'desk' | 'reduce' | 'phone' | 'stacked' | 'framesDark' | 'framesLight' | 'mouse' | 'held' | 'phoneAsks' | 'stackedAsks';
 
 interface World {
   root: string;
@@ -75,7 +75,7 @@ test.beforeAll(async () => {
   expect(started.status, started.stderr).toBe(0);
   const agent = await SimAgent.connect({ binary, env, name: 'Claude Code', host: 'claude-code' });
   const projects = {} as World['projects'];
-  for (const key of ['desk', 'reduce', 'phone', 'stacked', 'framesDark', 'framesLight', 'mouse', 'held'] as const) {
+  for (const key of ['desk', 'reduce', 'phone', 'stacked', 'framesDark', 'framesLight', 'mouse', 'held', 'phoneAsks', 'stackedAsks'] as const) {
     const path = scratchProject(join(root, 'src'), key === 'desk' ? 'docs-site' : `docs-${key}`);
     const threads = await seed(agent, path, key);
     if (key === 'held') {
@@ -342,6 +342,83 @@ for (const layout of [
       expect(await sectionOf(page, first!)).toBeNull();
       expect(await sectionOf(page, second!)).toBe('new');
       await shot(page, `07-${layout.key}-after-second-back`);
+    } finally {
+      await context.close();
+      await own?.close();
+    }
+  });
+}
+
+/** Four open questions, each with Stakes before its choices and Recommended, then Holds up, after them (the shape the owner saw land in Quiet). */
+const HOLDING_QUESTIONS = [
+  'I read the channel code. Four decisions before I go on.',
+  ...[1, 2, 3, 4].flatMap((n) => [
+    '',
+    ':::question',
+    `Which wire format should shape ${n} use?`,
+    `Stakes: shape ${n} decides the format every client reads.`,
+    '',
+    '- [ ] JSON lines',
+    '- [ ] One JSON document',
+    'Recommended: JSON lines',
+    'Holds up: the channel, and with it shapes 2 and 3',
+    ':::',
+  ]),
+].join('\n');
+
+for (const layout of [
+  { name: 'phone (WebKit, iPhone 15)', key: 'phoneAsks' as const, back: '[data-phone-back]' },
+  { name: 'stacked window (Chromium, 900 px)', key: 'stackedAsks' as const, back: '[data-stack-back]' },
+]) {
+  test(`${layout.name}: questions an agent asked while the list was held, read and left with Back, put the row in Holding up work, never in Quiet`, async ({ browser }: { browser: Browser }) => {
+    let own: Browser | null = null;
+    let context: BrowserContext;
+    if (layout.key === 'phoneAsks') {
+      own = await webkit.launch({ args: [] });
+      context = await own.newContext({ ...devices['iPhone 15'], colorScheme: 'dark' });
+    } else {
+      context = await browser.newContext({ viewport: { width: 900, height: 900 }, colorScheme: 'dark' });
+    }
+    const open = async (page: Page, id: string) => {
+      if (layout.key === 'phoneAsks') await page.locator(`.ib-lbody [data-thread-id="${id}"]`).tap();
+      else await page.locator(`.ib-lbody [data-thread-id="${id}"]`).click();
+      await expect(page.locator('section.ib-pane')).toBeVisible();
+    };
+    const back = async (page: Page) => {
+      await page.locator(`section.ib-pane ${layout.back}`).click();
+      await expect(page.locator('section.ib-pane')).toHaveCount(0);
+      await page.waitForTimeout(BEAT_MS + 300);
+    };
+    /** The thread's row as the server reads it. */
+    const serverRow = async (id: string) => {
+      const list = (await (await fetch(`${world.url}/api/inbox/threads?archived=exclude`)).json()) as { sections: { id: string; threads: { thread_id: string; unseen: number }[] }[] };
+      for (const section of list.sections) for (const row of section.threads) if (row.thread_id === id) return { section: section.id, unseen: row.unseen };
+      return null;
+    };
+    try {
+      const page = await context.newPage();
+      const { id, path, threads } = world.projects[layout.key];
+      // The newest thread (the seed's last), top of New, and the session that wrote it.
+      const first = threads[threads.length - 1]!;
+      await page.goto(`${world.url}/#project=${id}`);
+      await expect(page.locator(`[data-section-id="new"] [data-thread-id="${first}"]`)).toBeVisible();
+      // Read, then Back: the list as left, the row in New, no longer bold.
+      await open(page, first);
+      await expect.poll(() => isBold(page, first)).toBe(false);
+      await back(page);
+      expect(await sectionOf(page, first)).toBe('new');
+      // The agent asks four questions there that hold up work: the list holds still, the news waits behind "1 new".
+      await world.agent.send({ project_path: path, reply_to: first, body: HOLDING_QUESTIONS, agent_session: `ses_${layout.key}_${NEWS.length - 1}` } as Parameters<SimAgent['send']>[0]);
+      await expect(page.locator('[data-inbox-notice]')).toContainText('1 new');
+      expect(await sectionOf(page, first)).toBe('new');
+      // The person opens it and reads the questions (the look is recorded), then goes Back.
+      await open(page, first);
+      await expect(page.locator('section.ib-pane fieldset[data-question-key]')).toHaveCount(4);
+      await expect.poll(() => serverRow(first)).toEqual({ section: 'holding', unseen: 0 });
+      await back(page);
+      // Where its open questions put it: Holding up work, as the server says; not folded away in Quiet.
+      expect(await sectionOf(page, first)).toBe('holding');
+      await shot(page, `08-${layout.key}-questions-read-after-back`);
     } finally {
       await context.close();
       await own?.close();
