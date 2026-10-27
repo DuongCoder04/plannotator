@@ -1,0 +1,939 @@
+/**
+ * Keyboard-only journeys through the Inbox (approval "inbox-keyboard-shortcuts";
+ * the steps are /tmp-free copies of JOURNEYS.md, S1–S3 then J1–J8): keys only,
+ * no mouse, no `click()` and no `focus()` from the script. After every key the
+ * focus is somewhere (never the page itself); after every step the focus, the
+ * address and the view are the ones named; at steps marked ⟲ the browser's Back
+ * and Forward land where they should, focus included (finding F1); each long
+ * session ends with a Back walk.
+ *
+ * Against the compiled binary in a scratch Inbox (inbox-keyboard-world.ts).
+ * Build it first (see inbox.spec.ts). With INBOX_KEYBOARD_VIDEOS set to a
+ * folder, each journey's video and checkpoint pictures are kept there.
+ *
+ * F (full screen) waits for the full-screen close fix (#2245): until then the
+ * journeys reach full screen with the file's Full screen button, by Tab.
+ */
+import { devices, expect, test, webkit, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { mkdirSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
+import { createKeyboardWorld, type KeyboardWorld } from './inbox-keyboard-world';
+import { removeInboxScratch } from './inbox-scratch';
+
+const videos = process.env.INBOX_KEYBOARD_VIDEOS;
+if (videos) mkdirSync(videos, { recursive: true });
+
+const BODY = 'section.ib-pane .ib-pbody:not(.ib-artbody)';
+
+let world: KeyboardWorld;
+let context: BrowserContext;
+let page: Page;
+let shots = 0;
+
+
+test.beforeEach(async ({ browser }, info) => {
+  world = await createKeyboardWorld();
+  context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ...(videos ? { recordVideo: { dir: videos, size: { width: 1440, height: 900 } } } : {}) });
+  page = await context.newPage();
+  shots = 0;
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  (info as unknown as { pageErrors: string[] }).pageErrors = errors;
+});
+
+test.afterEach(async ({}, info) => {
+  try {
+    expect((info as unknown as { pageErrors: string[] }).pageErrors, 'no page errors').toEqual([]);
+  } finally {
+    const video = page.video();
+    await context.close();
+    if (video && videos) renameSync(await video.path(), join(videos, `${slug(info.title)}.webm`));
+    await Promise.all(world.agents.map((agent) => agent.close().catch(() => {})));
+    await removeInboxScratch();
+  }
+});
+
+const slug = (text: string) => text.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60);
+
+// ── what a step checks ──
+
+/** What has focus, in words, for a failure message. */
+const focusedText = (p: Page) =>
+  p.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body) return 'the page itself (document.body)';
+    return `${el.tagName.toLowerCase()} "${(el.getAttribute('aria-label') ?? el.innerText ?? '').trim().replace(/\s+/g, ' ').slice(0, 60)}"`;
+  });
+
+/**
+ * A cold page has focus nowhere until the first key puts it somewhere (G I, Tab, `/`); from then on it never
+ * goes back to the page. Reset by each journey's load.
+ */
+let focusLanded = false;
+
+/** Focus is on something: never the page itself, never an element gone from the page. */
+async function focusHeld(p: Page = page): Promise<void> {
+  if (!focusLanded) {
+    focusLanded = await p.evaluate(() => !!document.activeElement && document.activeElement !== document.body);
+    return;
+  }
+  await expect
+    .poll(() => p.evaluate(() => !!document.activeElement && document.activeElement !== document.body && document.activeElement.isConnected), {
+      message: `focus was lost to the page (${await focusedText(p)})`,
+      timeout: 3000,
+    })
+    .toBe(true);
+}
+
+/** Press keys one at a time, the way a person does; after each, focus is held. */
+async function press(...keys: string[]): Promise<void> {
+  for (const key of keys) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(90);
+    await focusHeld();
+  }
+}
+
+/** Type words (into whatever has focus). */
+async function type(words: string): Promise<void> {
+  await page.keyboard.type(words, { delay: 12 });
+  await focusHeld();
+}
+
+type View = 'list' | 'thread' | 'side' | 'full' | 'board' | 'settings';
+
+const pane = (p: Page = page) => p.locator('[data-attachment-pane]').filter({ visible: true });
+
+async function viewIs(view: View, p: Page = page): Promise<void> {
+  const thread = p.locator('section.ib-pane');
+  if (view === 'list') {
+    await expect(thread).toHaveCount(0);
+    await expect(p.locator('.ib-main .ib-lbody')).toBeVisible();
+  } else if (view === 'thread') {
+    await expect(thread).toBeVisible();
+    await expect(pane(p)).toHaveCount(0);
+  } else if (view === 'side') {
+    await expect(pane(p)).toBeVisible();
+    await expect(p.locator('[data-attachment-pane][data-full-view]')).toHaveCount(0);
+  } else if (view === 'full') {
+    await expect(p.locator('[data-attachment-pane][data-full-view]')).toBeVisible();
+  } else if (view === 'board') await expect(p.locator('.ib-bpage')).toBeVisible();
+  else await expect(p.locator('.ib-spage')).toBeVisible();
+}
+
+const hash = (p: Page = page) => new URL(p.url()).hash;
+const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** The address of a thread, with or without a file (any file, or the one named) and its view. */
+function addr(thread: string | null, file?: { view: 'side' | 'full'; id?: string }): RegExp {
+  if (!thread) return /^#?$/;
+  if (!file) return new RegExp(`^#thread=${esc(thread)}$`);
+  return new RegExp(`^#thread=${esc(thread)}&file=${file.id ? esc(file.id) : 'att_[^&]+'}&view=${file.view}$`);
+}
+
+interface State {
+  focus: Locator;
+  address: RegExp;
+  view: View;
+}
+
+/** The state after a step: focus on the element named, the address, the view. A picture for the record. */
+async function at(label: string, state: State, p: Page = page): Promise<void> {
+  await test.step(`state: ${label}`, async () => {
+    await expect(state.focus, `${label}: focus (now on ${await focusedText(p)})`).toBeFocused();
+    await expect.poll(() => hash(p), { message: `${label}: address` }).toMatch(state.address);
+    await viewIs(state.view, p);
+  });
+  if (videos) await p.screenshot({ path: join(videos, `${slug(test.info().title)}-${String(++shots).padStart(2, '0')}-${slug(label)}.png`) });
+}
+
+/** ⟲: Back lands on `back` (focus included), and Forward puts `now` back exactly. */
+async function backAndForward(label: string, back: State, now: State): Promise<void> {
+  await test.step(`⟲ ${label}`, async () => {
+    await page.goBack();
+    await at(`${label}: Back`, back);
+    await page.goForward();
+    await at(`${label}: Forward`, now);
+    // A person's next key comes after the page has drawn; so does this journey's.
+    await page.waitForTimeout(400);
+    await expect(now.focus).toBeFocused();
+  });
+}
+
+/**
+ * A Back walk: Back until the stops, read a page at a time (a thread, the list `''`, `board`, `settings`), have been
+ * `pages` in order. Focus is held at every stop (F1). A file's own stops (a thread with `file=`) are passed over:
+ * Back reopening a file closed with Escape is finding F2, waiting on the full-screen close fix (#2245).
+ */
+async function backWalk(pages: string[]): Promise<void> {
+  await test.step('Back walk', async () => {
+    const pageOf = (h: string) => h.match(/^#thread=([^&]+)/)?.[1] ?? (h.startsWith('#board') ? 'board' : h.startsWith('#settings') ? 'settings' : '');
+    // The page the walk starts on is no stop (Back through its own file entries lands on it again).
+    const seen: string[] = [pageOf(hash())];
+    pages = [seen[0]!, ...pages];
+    for (let i = 0; i < 40 && seen.length < pages.length; i++) {
+      await page.goBack();
+      await page.waitForTimeout(250);
+      // Past the first page: the walk ran out of stops (the comparison below says which were missing).
+      if (new URL(page.url()).origin !== new URL(world.url).origin) break;
+      await focusHeld();
+      const h = hash();
+      if (/[#&]file=/.test(h)) continue;
+      const at = pageOf(h);
+      if (seen.at(-1) !== at) seen.push(at);
+    }
+    expect(seen).toEqual(pages);
+  });
+}
+
+// ── where things are ──
+
+const row = (thread: string, p: Page = page) => p.locator(`.ib-main .ib-lbody [data-thread-id="${thread}"]`).filter({ visible: true });
+const firstRow = (p: Page = page) => p.locator('.ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first();
+const heads = () => page.locator(`${BODY} [data-fold-head]`);
+/** Rollout's message n (its words say "Step n of the rollout"), and its head. */
+const messageOf = (n: number) => page.locator(`${BODY} [data-message-article]`).filter({ hasText: `Step ${n} of the rollout` });
+const headOf = (n: number) => messageOf(n).locator('[data-fold-head]').first();
+const earlier = () => page.locator(`${BODY} button.ib-mfold-b[data-fold-head]`);
+const articles = () => page.locator(`${BODY} [data-message-article]`);
+const foldedCount = () => page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-message-article]`)].filter((a) => !a.hasAttribute('data-open')).length, BODY);
+/** Where `head` sits in the thread's view (px from its top): what the person sees, whatever grew above it. */
+const placeOf = (head: Locator) => head.evaluate((el, sel) => el.getBoundingClientRect().top - document.querySelector<HTMLElement>(sel)!.getBoundingClientRect().top, BODY);
+const scrollTop = () => page.evaluate((sel) => document.querySelector<HTMLElement>(sel)?.scrollTop ?? -1, BODY);
+const fileName = () => pane().getAttribute('aria-label');
+
+/** Load the Inbox and wait for its list. */
+async function load(address = ''): Promise<void> {
+  focusLanded = false;
+  await page.goto(`${world.url}${address}`);
+  await expect(page.locator('.ib-main .ib-lbody [data-thread-id]').first()).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(300);
+}
+
+/** ↓ or ↑ (whichever way it is) through the list until `thread`'s row has focus: keys only, the list's own order. */
+async function arrowTo(thread: string): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    const where = await row(thread).evaluate((el) => {
+      const active = document.activeElement;
+      if (el === active) return 'here';
+      return active && el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING ? 'above' : 'below';
+    });
+    if (where === 'here') return;
+    await press(where === 'above' ? 'ArrowUp' : 'ArrowDown');
+  }
+  await expect(row(thread)).toBeFocused();
+}
+
+/** Tab (or Shift+Tab) until `target` has focus, at most `max` presses. */
+async function tabTo(target: Locator, { back = false, max = 40 } = {}): Promise<void> {
+  for (let i = 0; i < max; i++) {
+    if (await target.evaluate((el) => el === document.activeElement).catch(() => false)) return;
+    // Tab past the page's last stop leaves the page for the browser's own controls (the page itself in a headless
+    // browser): a stop of the browser's, not focus lost, so this is the one press that does not check focus.
+    await page.keyboard.press(back ? 'Shift+Tab' : 'Tab');
+    await page.waitForTimeout(60);
+  }
+  await expect(target, `reached by ${back ? 'Shift+Tab' : 'Tab'}`).toBeFocused();
+}
+
+/** J or K (whichever way it is) until `head` has focus. */
+async function moveTo(head: Locator): Promise<void> {
+  for (let i = 0; i < 12; i++) {
+    const where = await head.evaluate((el) => {
+      const active = document.activeElement;
+      if (el === active) return 'here';
+      return active && el.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING ? 'above' : 'below';
+    });
+    if (where === 'here') return;
+    await press(where === 'above' ? 'k' : 'j');
+  }
+  await expect(head).toBeFocused();
+}
+
+/** Escape until the open file closes (full screen goes beside the thread first). */
+async function escapeFile(): Promise<void> {
+  for (let i = 0; i < 4 && (await pane().count()) > 0; i++) await press('Escape');
+  await expect(pane()).toHaveCount(0);
+}
+
+// ── S1–S3: long sessions ──
+
+test('S1: deep work in one thread, a detour, and back', async () => {
+  const { rollout, checkout } = world.threads;
+  await load();
+  await press('g', 'i');
+  await at('G I', { focus: firstRow(), address: addr(null), view: 'list' });
+
+  await arrowTo(rollout);
+  await press('Enter');
+  await at('Rollout open', { focus: row(rollout), address: addr(rollout), view: 'thread' });
+  // The six read messages are folded: the first and the last as lines, the middle ones behind "N earlier messages".
+  await expect(earlier()).toHaveText(/^\d+ earlier messages$/);
+  expect(await foldedCount()).toBeGreaterThanOrEqual(2);
+
+  // N carries from the list into the thread: the first new message (7).
+  await press('n');
+  await at('N', { focus: headOf(7), address: addr(rollout), view: 'thread' });
+  // Back to the list and Forward to the thread: focus where the keys put it (F1). Seen now, 7 and 8 are no longer new.
+  await backAndForward('Rollout open', { focus: row(rollout), address: addr(null), view: 'list' }, { focus: row(rollout), address: addr(rollout), view: 'thread' });
+  await moveTo(headOf(7));
+  const top0 = await scrollTop();
+  await press('PageDown', 'PageDown', 'PageUp');
+  await at('PageDown PageDown PageUp', { focus: headOf(7), address: addr(rollout), view: 'thread' });
+  expect(await scrollTop(), 'the thread scrolled').not.toBe(top0);
+
+  // K up the folded lines to the earlier messages.
+  await moveTo(earlier());
+  await at('K to the earlier messages', { focus: earlier(), address: addr(rollout), view: 'thread' });
+  await press('Enter');
+  await expect(messageOf(4)).toBeVisible();
+  await focusHeld();
+  // Into the messages it showed, by J or K, to message 4.
+  await moveTo(headOf(4));
+  await at('message 4', { focus: headOf(4), address: addr(rollout), view: 'thread' });
+  await press('Enter');
+  await expect(messageOf(4)).toHaveAttribute('data-open', /.*/);
+  await at('Enter unfolds 4', { focus: headOf(4), address: addr(rollout), view: 'thread' });
+  await press('Enter');
+  await expect(messageOf(4)).not.toHaveAttribute('data-open', /.*/);
+  await at('Enter folds 4', { focus: headOf(4), address: addr(rollout), view: 'thread' });
+
+  const expandAll = page.locator('section.ib-pane [data-expand-all]');
+  await tabTo(expandAll, { back: true });
+  await press('Enter');
+  await expect.poll(foldedCount).toBe(0);
+  await expect(articles()).toHaveCount(8);
+  await at('Expand all', { focus: expandAll, address: addr(rollout), view: 'thread' });
+
+  await moveTo(headOf(7));
+  await at('back on 7', { focus: headOf(7), address: addr(rollout), view: 'thread' });
+  const placeAtO = await placeOf(headOf(7));
+  await press('o');
+  await at('O: dashboard.webp beside', { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
+  expect(await fileName()).toContain(world.files.dashboard);
+  await backAndForward('O', { focus: headOf(7), address: addr(rollout), view: 'thread' }, { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
+
+  const imageComment = pane().locator(`textarea[aria-label="Comment on ${world.files.dashboard}"]`);
+  await tabTo(imageComment);
+  await type('The p95 line needs a label');
+  await press('Meta+Enter');
+  await expect(imageComment).toHaveValue('');
+  await press('Escape');
+  await at('image comment saved, Escape', { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
+
+  const historyAtFile = await page.evaluate(() => history.length);
+  await press('[');
+  await expect.poll(fileName).toContain(world.files.planPage);
+  await at('[ to rollout.html', { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
+  // K1 (owner, 2026-10-27): commenting on part of a page stays mouse-only; the page is shown and [ ] still step.
+  await press('[');
+  await expect.poll(fileName).toContain(world.files.plan);
+  expect(await page.evaluate(() => history.length), 'stepping files adds no history').toBe(historyAtFile);
+  await at('[ to rollout.md', { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
+
+  // The whole-file comment is the keyboard path (K2: selecting a sentence stays mouse-only).
+  const globalComment = pane().getByRole('button', { name: 'Global comment' });
+  await tabTo(globalComment);
+  await press('Enter');
+  await type('Add the EU hold to step 4');
+  await press('Meta+Enter');
+  await focusHeld();
+  await expect(page.locator('[data-annotation-row], [data-annotation-id]').filter({ hasText: 'Add the EU hold' }).first()).toBeAttached();
+
+  const fullScreen = pane().locator('[data-full-screen-toggle]');
+  await tabTo(fullScreen, { back: true });
+  await press('Enter');
+  await expect(page.locator('[data-attachment-pane][data-full-view]')).toBeVisible();
+  await expect.poll(hash).toMatch(addr(rollout, { view: 'full' }));
+  await focusHeld();
+  await press(']', ']', '[');
+  await expect.poll(fileName).toContain(world.files.planPage);
+  await focusHeld();
+  // On an HTML page the first Escape leaves Annotate for Interact (the viewer's own layer); then full screen goes.
+  for (let i = 0; i < 3 && (await page.locator('[data-attachment-pane][data-full-view]').count()) > 0; i++) await press('Escape');
+  await viewIs('side');
+  await press('Escape');
+  await at('file closed', { focus: headOf(7), address: addr(rollout), view: 'thread' });
+  // The sidebar and the list spring back from full screen; the place is measured once they have.
+  await page.waitForTimeout(900);
+  expect(Math.abs((await placeOf(headOf(7))) - placeAtO), 'message 7 is where it was at O').toBeLessThanOrEqual(2);
+
+  await press('r');
+  const box = page.locator('section.ib-pane textarea[aria-label^="Reply to"]');
+  await expect(box).toBeFocused();
+  await expect(page.locator('section.ib-pane .ib-pfoot, section.ib-pane [data-reply-box]').first()).toContainText(/2 (annotations|comments)/);
+  await type('Holding EU until Monday; going to everyone else today.');
+  await press('Escape');
+  const editDraft = page.locator('section.ib-pane [data-edit-draft]');
+  await at('reply kept as a draft', { focus: editDraft, address: addr(rollout), view: 'thread' });
+
+  await press('Escape');
+  await at('thread closed', { focus: row(rollout), address: addr(null), view: 'list' });
+  const rolloutLookBefore = { bold: await row(rollout).evaluate((el) => el.classList.contains('ib-u')), section: await row(rollout).getAttribute('data-section') };
+
+  // The detour: Checkout, a file, mark read and undo.
+  await arrowTo(checkout);
+  // The Full screen button at step 16 was a pick: files now open full screen (its toast says so), so Escape
+  // takes one more press to close Checkout's file.
+  await press('Enter', 'o', ']');
+  await escapeFile();
+  await press('Escape');
+  await at('Checkout file and thread closed', { focus: row(checkout), address: addr(null), view: 'list' });
+  await press('e');
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
+  await focusHeld();
+  await press('z');
+  await expect(row(checkout)).toBeVisible();
+
+  // Back to Rollout: everything as it was left.
+  await arrowTo(rollout);
+  await press('Enter');
+  await at('Rollout again', { focus: row(rollout), address: addr(rollout), view: 'thread' });
+  // Rollout is as it was left: the draft comes back in the box (focus stays on the row), with both comments; the
+  // row is still read. Reopened, the read messages fold again (the Inbox's rule for a thread opened; finding F4).
+  await expect(box).toHaveValue('Holding EU until Monday; going to everyone else today.');
+  await expect(page.locator('section.ib-pane').getByText(/^2 annotations$/)).toBeVisible();
+  expect({ bold: await row(rollout).evaluate((el) => el.classList.contains('ib-u')), section: await row(rollout).getAttribute('data-section') }, 'the row reads as it did').toEqual(rolloutLookBefore);
+  await press('r');
+  await expect(box).toBeFocused();
+  await press('Meta+Enter');
+  const sentHead = articles().last().locator('[data-fold-head]');
+  await at('sent', { focus: sentHead, address: addr(rollout), view: 'thread' });
+  await expect(articles().last()).toHaveAttribute('data-author', 'person');
+
+  await backWalk(['', checkout, '', rollout]);
+});
+
+/** The head of the message whose head has focus now, as a locator that outlives a redraw. */
+async function focusedHead(): Promise<Locator> {
+  const id = await page.evaluate(() => document.activeElement?.closest('[data-message-article]')?.getAttribute('data-message-article') ?? null);
+  expect(id, 'a message head has focus').not.toBeNull();
+  return page.locator(`${BODY} [data-message-article="${id}"] [data-fold-head]`).first();
+}
+
+/** Whatever has focus inside the open thread (a search result lands on its message, or the thread's Reply). */
+const inThread = () => page.locator('section.ib-pane :focus');
+const decideNav = () => page.locator('[data-decide-nav]');
+const decide = () => page.locator('[data-decision-mode]');
+const map = () => page.locator('[data-dialog="shortcut-map"]');
+const searchInput = () => page.locator('dialog[data-search-palette] input');
+const boardHeading = () => page.locator('.ib-bpage h1');
+const settingsHeading = () => page.locator('.ib-spage h1');
+const boardCard = () => page.locator('.ib-bpage [data-card-id] button[data-card-open]').filter({ visible: true }).first();
+const keycaps = () => page.locator('kbd[data-shortcut-hint]').filter({ visible: true });
+const questionChoice = (n = 0) => page.locator('section.ib-pane input[data-question-control]').nth(n);
+
+/** Search by keys: `/` (or ⌘K), the words, the first result. */
+async function searchOpen(words: string, open: '/' | 'Meta+k' = '/'): Promise<void> {
+  await press(open);
+  await expect(searchInput()).toBeFocused();
+  await type(words);
+  await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
+  await press('Enter');
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+}
+
+test('S2: a morning of triage across the whole Inbox', async () => {
+  const { stopped, holding, refund, checkout } = world.threads;
+  await load();
+  await press('g', 'i');
+  await at('G I', { focus: row(stopped), address: addr(null), view: 'list' });
+  await press('ArrowDown', 'ArrowDown', 'End', 'Home');
+  await at('↓ ↓ End Home', { focus: row(stopped), address: addr(null), view: 'list' });
+
+  await arrowTo(holding);
+  await press('e');
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
+  await focusHeld();
+  await press('z');
+  await expect(row(holding)).toBeVisible();
+  await focusHeld();
+
+  await arrowTo(stopped);
+  await press('Enter');
+  await at('Stopped open', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await press('n');
+  await focusHeld();
+  await backAndForward('Stopped open', { focus: row(stopped), address: addr(null), view: 'list' }, { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await press('j', 'k', 'n');
+  await focusHeld();
+
+  // Answer both questions: Tab to a choice, Space; the next question's choice the same way.
+  await tabTo(questionChoice(0));
+  await press('Space');
+  await expect(questionChoice(0)).toBeChecked();
+  await tabTo(questionChoice(2));
+  await press('Space');
+  await focusHeld();
+  await press('r');
+  await expect(page.locator('section.ib-pane textarea[aria-label^="Reply to"]')).toBeFocused();
+  await type('Both picked; go ahead.');
+  await press('Meta+Enter');
+  await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(stopped), view: 'thread' });
+
+  await searchOpen('refund');
+  await at('/ refund', { focus: inThread(), address: addr(refund), view: 'thread' });
+  await backAndForward('search result', { focus: row(stopped), address: addr(stopped), view: 'thread' }, { focus: page.locator('section.ib-pane :focus, .ib-main .ib-lbody :focus'), address: addr(refund), view: 'thread' });
+  await press('Escape');
+  await at('Refund closed', { focus: page.locator('.ib-main .ib-lbody [data-section-id="quiet"] button.ib-band').filter({ visible: true }), address: addr(null), view: 'list' });
+
+  await press('g', 'b');
+  await at('G B', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await backAndForward('Board', { focus: page.locator('.ib-main .ib-lbody [data-section-id="quiet"] button.ib-band, .ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first(), address: addr(null), view: 'list' }, { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await tabTo(boardCard());
+  const card = await boardCard().evaluate((el) => el.closest('[data-card-id]')!.getAttribute('data-card-id'));
+  await press('Enter');
+  await expect(page.locator('[data-card-panel]')).toBeVisible();
+  await focusHeld();
+  await press('Escape');
+  await expect(page.locator('[data-card-panel]')).toHaveCount(0);
+  await at('card closed', { focus: page.locator(`.ib-bpage [data-card-id="${card}"] button[data-card-open]`).filter({ visible: true }).first(), address: /^#board$/, view: 'board' });
+  await press('g', 's');
+  await at('G S', { focus: settingsHeading(), address: /^#settings/, view: 'settings' });
+  await press('Escape');
+  await at('Settings left', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await press('g', 'i');
+  await at('G I from the Board', { focus: firstRow(), address: addr(null), view: 'list' });
+
+  // Decide keeps its own keys: none of the Inbox's single keys acts behind it.
+  await tabTo(decideNav(), { back: true });
+  await press('Enter');
+  await expect(decide()).toBeVisible();
+  await focusHeld();
+  const before = hash();
+  await press('e', 'r', 'o', 'j', '?', '/');
+  await expect(decide()).toBeVisible();
+  await expect(map()).toHaveCount(0);
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+  expect(hash()).toBe(before);
+  const prompt = await decide().locator('[data-decision-prompt]').innerText();
+  await tabTo(decide().getByRole('radio').first());
+  await press('Space');
+  await expect(decide().locator('[data-decision-prompt]')).not.toHaveText(prompt);
+  // Escape asks first (an answer not sent yet); Escape again lets the question go, focus on Close; then Escape and
+  // Enter on its "Send what you answered" closes it.
+  await press('Escape');
+  await expect(decide().locator('[data-decision-confirm]')).toBeVisible();
+  await press('Escape');
+  await expect(decide().locator('[data-decision-confirm]')).toHaveCount(0);
+  await expect(decide().locator('[data-decision-close]')).toBeFocused();
+  await press('Escape');
+  await expect(decide().locator('[data-decision-send-answered]')).toBeFocused();
+  await press('Enter');
+  await expect(decide()).toBeHidden();
+  await at('Decide closed', { focus: decideNav(), address: addr(null), view: 'list' });
+
+  await press('g', 'i');
+  await arrowTo(checkout);
+  await press('Enter', 'n');
+  const headAtO = await focusedHead();
+  await press('o');
+  await viewIs('side');
+  const fullScreen = pane().locator('[data-full-screen-toggle]');
+  await tabTo(fullScreen);
+  await press('Enter');
+  await viewIs('full');
+  await press(']');
+  for (let i = 0; i < 3 && (await page.locator('[data-attachment-pane][data-full-view]').count()) > 0; i++) await press('Escape');
+  await viewIs('side');
+  await escapeFile();
+  await at('Checkout file closed', { focus: headAtO, address: addr(checkout), view: 'thread' });
+  const holder = await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120));
+  await press('Shift+?');
+  await expect(map()).toBeVisible();
+  await press('Escape');
+  await expect(map()).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120)), 'the map gives focus back').toBe(holder);
+
+  // Settings left by Escape is a stop of its own (J5): Back retraces Board, Settings, Board.
+  await backWalk(['', 'board', 'settings', 'board', '', refund, stopped, '']);
+});
+
+test('S3: interrupted, a half-written reply survives everything', async () => {
+  const { holding, checkout } = world.threads;
+  const box = page.locator('section.ib-pane textarea[aria-label^="Reply to"]');
+  await load(`#thread=${holding}`);
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await expect(box).toHaveValue(world.holdingDraft);
+  await press('r');
+  await expect(box).toBeFocused();
+  await page.keyboard.press('End');
+  await type(' — and keep a log.');
+  const words = `${world.holdingDraft} — and keep a log.`;
+  await press('Meta+k');
+  await expect(searchInput()).toBeFocused();
+  await type('checkout');
+  await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
+  await press('Enter');
+  await expect.poll(hash).toMatch(addr(checkout));
+  await focusHeld();
+  await backAndForward('to Checkout', { focus: row(holding), address: addr(holding), view: 'thread' }, { focus: row(checkout), address: addr(checkout), view: 'thread' });
+  await page.goBack();
+  await expect(box).toHaveValue(words);
+  await page.goForward();
+  await expect.poll(hash).toMatch(addr(checkout));
+
+  await press('n', 'j', 'o');
+  await viewIs('side');
+  await press(']');
+  const image = pane();
+  await expect.poll(fileName).toContain(world.files.page);
+  await press('[');
+  await expect.poll(fileName).toContain(world.files.image);
+  const comment = image.locator(`textarea[aria-label="Comment on ${world.files.image}"]`);
+  await tabTo(comment);
+  await type('Shadow too heavy');
+  await press('Meta+Enter');
+  await expect(comment).toHaveValue('');
+  await press('Escape');
+  await at('comment saved', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  await press('Shift+?');
+  await expect(map()).toBeVisible();
+  await press('Escape');
+  await at('map closed', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+
+  // Show keys on buttons off, then Single-key shortcuts off, in Settings; Escape comes back each time.
+  await press('g', 's');
+  await at('G S', { focus: settingsHeading(), address: /^#settings/, view: 'settings' });
+  await tabTo(page.locator('[data-settings-key-hints]'));
+  await press('Space');
+  await expect(page.locator('[data-settings-key-hints]')).toHaveAttribute('aria-checked', 'false');
+  await tabTo(page.locator('[data-settings-single-keys]'), { back: true });
+  await press('Space');
+  await expect(page.locator('[data-settings-single-keys]')).toHaveAttribute('aria-checked', 'false');
+  await press('Escape');
+  await at('back from Settings', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  await expect(keycaps()).toHaveCount(0);
+
+  const was = hash();
+  for (const key of ['e', 'r', 'o', 'j', '[', ']', 'Shift+?', '/', 'g', 'i']) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(60);
+  }
+  await page.waitForTimeout(400);
+  expect(hash(), 'no single key acted').toBe(was);
+  await expect(map()).toHaveCount(0);
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+  await expect(page.locator('[data-toast-undo]')).toHaveCount(0);
+  await focusHeld();
+
+  await press('Meta+k');
+  await type('installer');
+  await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
+  await press('Enter');
+  await expect.poll(hash).toMatch(addr(holding));
+  await expect(box).toHaveValue(words);
+  await tabTo(box);
+  await press('Meta+Enter');
+  await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(holding), view: 'thread' });
+
+  await press('Meta+k');
+  await type('checkout');
+  await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
+  await press('Enter');
+  await expect.poll(hash).toMatch(addr(checkout));
+  await expect(page.locator('section.ib-pane')).toContainText(world.files.image);
+  await expect(page.locator('section.ib-pane .ib-att-t').filter({ hasText: world.files.image }).first()).toContainText(/1 annotation|1 comment/);
+
+  // Both settings back on: E works again.
+  await press('Escape');
+  await focusHeld();
+  await tabTo(page.locator('.ib-side .ib-setrow > .ib-nav, [data-settings-nav]').first(), { back: true });
+  await press('Enter');
+  await expect(settingsHeading()).toBeFocused();
+  await tabTo(page.locator('[data-settings-single-keys]'));
+  await press('Space');
+  await tabTo(page.locator('[data-settings-key-hints]'));
+  await press('Space');
+  await press('Escape');
+  await focusHeld();
+  await expect(keycaps().first()).toBeVisible();
+  await press('g', 'i');
+  await at('G I works again', { focus: firstRow(), address: addr(null), view: 'list' });
+
+  // Back retraces every page, Settings included (each visit is a stop, J5), back to the load.
+  await backWalk(['settings', '', checkout, holding, 'settings', checkout, holding]);
+});
+
+// ── F1: Back and Forward put focus where the page's own key would ──
+
+test('F1: Back and Forward land focus where the page’s key puts it (the row, the Board’s heading), never on the page; not after a pointer', async () => {
+  const { stopped } = world.threads;
+  await load();
+  await press('g', 'i', 'Enter');
+  await at('a thread open', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await press('g', 'b');
+  await at('the Board', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await page.goBack();
+  await at('Back to the thread', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await page.goBack();
+  await at('Back to the list', { focus: row(stopped), address: addr(null), view: 'list' });
+  await page.goForward();
+  await at('Forward to the thread', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await page.goForward();
+  await at('Forward to the Board', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  // After a pointer (a click on the Board's empty space), Back moves no focus onto a row: E would mark it read.
+  await page.mouse.click(900, 600);
+  await page.goBack();
+  await expect.poll(hash).toMatch(addr(stopped));
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => !!document.activeElement?.closest('.ib-lbody [data-thread-id]'))).toBe(false);
+});
+
+// ── J1–J8: short supporting checks ──
+
+test('J1: triage the list and open the newest thread', async () => {
+  const { stopped, holding } = world.threads;
+  await load();
+  await press('g', 'i');
+  await at('G I', { focus: row(stopped), address: addr(null), view: 'list' });
+  await press('ArrowDown', 'ArrowDown');
+  await viewIs('list');
+  await press('End', 'Home');
+  await at('End Home', { focus: row(stopped), address: addr(null), view: 'list' });
+  await arrowTo(holding);
+  await press('e');
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
+  await focusHeld();
+  await press('z');
+  await expect(row(holding)).toBeVisible();
+  await press('Home', 'Enter');
+  await at('Stopped open', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+  await page.goBack();
+  await at('Back', { focus: row(stopped), address: addr(null), view: 'list' });
+});
+
+test('J2: read a thread and its files, and come back to exactly where you were', async () => {
+  const { checkout } = world.threads;
+  await load(`#thread=${checkout}`);
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await press('j', 'j', 'k', 'n');
+  const head = await focusedHead();
+  const place = await placeOf(head);
+  await press('o');
+  await at('O', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  const opened = await fileName();
+  const entries = await page.evaluate(() => history.length);
+  await press('[');
+  await expect.poll(fileName).not.toBe(opened);
+  await press(']');
+  await expect.poll(fileName).toBe(opened);
+  await press(']');
+  await expect.poll(fileName).not.toBe(opened);
+  expect(await page.evaluate(() => history.length), 'stepping adds no history').toBe(entries);
+  // F (full screen) waits for #2245; the steps that use it come with it.
+  await escapeFile();
+  await at('closed', { focus: head, address: addr(checkout), view: 'thread' });
+  await page.waitForTimeout(600);
+  expect(Math.abs((await placeOf(head)) - place), 'the thread is where it was').toBeLessThanOrEqual(2);
+});
+
+test('J3: answer a question and send a reply; letters typed are words', async () => {
+  const { stopped } = world.threads;
+  const box = page.locator('section.ib-pane textarea[aria-label^="Reply to"]');
+  await load(`#thread=${stopped}`);
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await press('n');
+  await tabTo(questionChoice(0));
+  await press('ArrowDown');
+  await press('Space');
+  await expect(questionChoice(1)).toBeChecked();
+  await press('r');
+  await expect(box).toBeFocused();
+  await type('e r o j k n ? / g i');
+  await expect(box).toHaveValue('e r o j k n ? / g i');
+  await expect(map()).toHaveCount(0);
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+  await press('Escape');
+  await at('draft kept', { focus: page.locator('section.ib-pane [data-edit-draft]'), address: addr(stopped), view: 'thread' });
+  await press('r');
+  await expect(box).toHaveValue('e r o j k n ? / g i');
+  await press('Meta+Enter');
+  await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(stopped), view: 'thread' });
+});
+
+test('J4: search with / and open a result', async () => {
+  const { refund } = world.threads;
+  const quiet = () => page.locator('.ib-main .ib-lbody [data-section-id="quiet"] button.ib-band').filter({ visible: true });
+  await load();
+  await searchOpen('refund');
+  await at('result open', { focus: inThread(), address: addr(refund), view: 'thread' });
+  await press('Escape');
+  await at('closed: the Quiet band holds Refund', { focus: quiet(), address: addr(null), view: 'list' });
+  await page.goBack();
+  await expect.poll(hash).toMatch(addr(refund));
+  await focusHeld();
+  await press('Escape');
+  await at('closed again', { focus: quiet(), address: addr(null), view: 'list' });
+});
+
+test('J5: jump with G, and come back', async () => {
+  const { checkout } = world.threads;
+  await load(`#thread=${checkout}`);
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await press('g', 'b');
+  await at('G B', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await tabTo(boardCard());
+  const card = await boardCard().evaluate((el) => el.closest('[data-card-id]')!.getAttribute('data-card-id'));
+  await press('Enter');
+  await expect(page.locator('[data-card-panel]')).toBeVisible();
+  await press('Escape');
+  await at('card closed', { focus: page.locator(`.ib-bpage [data-card-id="${card}"] button[data-card-open]`).filter({ visible: true }).first(), address: /^#board$/, view: 'board' });
+  await press('g', 's');
+  await at('G S', { focus: settingsHeading(), address: /^#settings/, view: 'settings' });
+  await press('Escape');
+  await at('Settings left', { focus: boardHeading(), address: /^#board$/, view: 'board' });
+  await press('g', 'i');
+  await at('G I', { focus: firstRow(), address: addr(null), view: 'list' });
+  await backWalk(['board', 'settings', 'board', checkout]);
+});
+
+test('J6: Decide mode stays its own', async () => {
+  await load();
+  await press('g', 'i');
+  const entries = await page.evaluate(() => history.length);
+  await tabTo(decideNav(), { back: true });
+  await press('Enter');
+  await expect(decide()).toBeVisible();
+  const before = hash();
+  await press('e', 'r', 'o', 'j', 'Shift+?', '/');
+  await expect(decide()).toBeVisible();
+  await expect(map()).toHaveCount(0);
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+  expect(hash()).toBe(before);
+  await tabTo(decide().getByRole('radio').first());
+  await press('Space');
+  await press('Escape');
+  await expect(decide().locator('[data-decision-confirm]')).toBeVisible();
+  await press('Escape');
+  await expect(decide().locator('[data-decision-close]')).toBeFocused();
+  await press('Escape');
+  await tabTo(decide().locator('[data-decision-keep-draft]'));
+  await press('Enter');
+  await expect(decide()).toBeHidden();
+  await at('Decide closed', { focus: decideNav(), address: addr(null), view: 'list' });
+  expect(await page.evaluate(() => history.length), 'Decide adds no history: Back never reopens it').toBe(entries);
+});
+
+test('J7: the shortcut map, from anywhere', async () => {
+  const { checkout } = world.threads;
+  const box = page.locator('section.ib-pane textarea[aria-label^="Reply to"]');
+  await load();
+  await press('g', 'i');
+  const entries = await page.evaluate(() => history.length);
+  await press('Shift+?');
+  await expect(map()).toBeVisible();
+  expect(await map().locator('[data-map-row]').count()).toBeGreaterThan(15);
+  await press('Shift+?');
+  await expect(map()).toHaveCount(0);
+  await at('? again closes it', { focus: firstRow(), address: addr(null), view: 'list' });
+
+  // From a thread, a file and Settings: Escape closes it and focus goes back to what had it.
+  await arrowTo(checkout);
+  await press('Enter', 'n');
+  const head = await focusedHead();
+  await press('Shift+?', 'Escape');
+  await expect(head).toBeFocused();
+  await press('o');
+  await press('Shift+?', 'Escape');
+  await expect(pane()).toBeFocused();
+  await press('g', 's');
+  await press('Shift+?', 'Escape');
+  await expect(settingsHeading()).toBeFocused();
+  await press('Escape');
+  await escapeFile();
+
+  // In the reply box `?` is a question mark.
+  await press('r');
+  await expect(box).toBeFocused();
+  await type('?');
+  await expect(box).toHaveValue('?');
+  await expect(map()).toHaveCount(0);
+  await press('Escape');
+
+  // The keyboard button beside light and dark, and Show keys on buttons in the map's foot.
+  const button = page.locator('[data-shortcut-map-button]');
+  await tabTo(button);
+  await press('Enter');
+  await expect(map()).toBeVisible();
+  await tabTo(map().locator('[data-map-hints]'));
+  await press('Space');
+  await expect(map().locator('[data-map-hints]')).toHaveAttribute('aria-checked', 'false');
+  await press('Escape');
+  await at('map closed', { focus: button, address: addr(checkout), view: 'thread' });
+  await expect(keycaps()).toHaveCount(0);
+  expect(await page.evaluate(() => history.length) - entries, 'the map never adds history').toBe(await page.evaluate(() => history.length) - entries);
+});
+
+test('J8: Settings, both shortcut settings, and the keys honour them', async () => {
+  const singleKeys = () => page.locator('[data-settings-single-keys]');
+  await load();
+  await press('g', 's');
+  await at('G S', { focus: settingsHeading(), address: /^#settings/, view: 'settings' });
+  await tabTo(singleKeys());
+  await press('Space');
+  await expect(singleKeys()).toHaveAttribute('aria-checked', 'false');
+  await press('Escape');
+  await viewIs('list');
+  await focusHeld();
+  const was = hash();
+  for (const key of ['e', 'r', 'o', 'j', 'Shift+?', '/', 'g', 'i']) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(60);
+  }
+  await page.waitForTimeout(300);
+  expect(hash(), 'no single key acted').toBe(was);
+  await expect(map()).toHaveCount(0);
+  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
+  await expect(page.locator('[data-toast-undo]')).toHaveCount(0);
+  // Single-key keycaps are not drawn; ⌘K's still is.
+  expect(await keycaps().evaluateAll((caps) => caps.map((c) => c.getAttribute('data-keycap')).filter((k) => k && /^[A-Z?/[\]]$/.test(k)))).toEqual([]);
+  await press('Meta+k');
+  await expect(searchInput()).toBeFocused();
+  await press('Escape');
+  await focusHeld();
+  await press('g', 'i');
+  await page.reload();
+  await expect(page.locator('.ib-main .ib-lbody [data-thread-id]').first()).toBeVisible();
+  focusLanded = false;
+  await press('g', 's');
+  expect(hash(), 'still off after a reload').toBe(was);
+  // Back on: Settings by Tab, the switch, and E works again.
+  await tabTo(page.locator('.ib-side .ib-setrow > .ib-nav, [data-settings-nav]').first());
+  await press('Enter');
+  await expect(settingsHeading()).toBeFocused();
+  await tabTo(singleKeys());
+  await press('Space');
+  await expect(singleKeys()).toHaveAttribute('aria-checked', 'true');
+  await press('Escape');
+  await press('g', 'i');
+  await at('G I works again', { focus: firstRow(), address: addr(null), view: 'list' });
+  await press('e');
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
+});
+
+// ── A phone: no shortcut keys at all (J1 and J8 the other way round) ──
+
+test('a phone (WebKit, iPhone 15): no keycaps, no keyboard button, and letters never act', async () => {
+  const own: Browser = await webkit.launch({ args: [] });
+  try {
+    const phoneContext = await own.newContext({ ...devices['iPhone 15'] });
+    const phone = await phoneContext.newPage();
+    await phone.goto(`${world.url}`);
+    await expect(phone.locator('[data-thread-id]').filter({ visible: true }).first()).toBeVisible();
+    await expect(phone.locator('kbd[data-shortcut-hint]').filter({ visible: true })).toHaveCount(0);
+    await expect(phone.locator('[data-shortcut-map-button]').filter({ visible: true })).toHaveCount(0);
+    const was = phone.url();
+    for (const key of ['g', 'i', 'e', 'Shift+?', '/', 'o']) await phone.keyboard.press(key);
+    await phone.waitForTimeout(400);
+    expect(phone.url()).toBe(was);
+    await expect(phone.locator('[data-dialog="shortcut-map"]')).toHaveCount(0);
+    await expect(phone.locator('[data-toast-undo]')).toHaveCount(0);
+    await phone.goto(`${world.url}#thread=${world.threads.checkout}`);
+    await expect(phone.locator('section.ib-pane')).toBeVisible();
+    await expect(phone.locator('kbd[data-shortcut-hint]').filter({ visible: true })).toHaveCount(0);
+    await phoneContext.close();
+  } finally {
+    await own.close();
+  }
+});
