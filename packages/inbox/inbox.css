@@ -948,6 +948,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 /* Short of room, the row shortens before the status wraps above the buttons (footFit.ts `fitWholeFootRow`,
    one step per token of `data-fit`). The words it drops (.ib-fl) leave only the eye, so names, descriptions
    and the text itself keep them. */
+/* Step 0: the keycaps go first; they are for the eye only (aria-keyshortcuts and the map keep the key). */
+.ib-footrow[data-fit~="keys"] .ib-btn-kbd { display: none; }
 .ib-footrow[data-fit~="skip"] .ib-skipchip .ib-fl,
 .ib-footrow[data-fit~="edit"] [data-edit-draft] .ib-fl,
 .ib-footrow[data-fit~="draft"] .ib-draft-foot .ib-st { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }

@@ -117,6 +117,7 @@ import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
 import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
+import { lastInput } from './lastInput';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -400,24 +401,6 @@ function listCovered(): boolean {
 /** A row of the list on screen, by its thread (one element per row: the wide, two-line or phone row). */
 function rowElement(body: ParentNode, threadId: string): HTMLElement | null {
   return body.querySelector<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`);
-}
-
-/**
- * The person's last way of acting: a key, or a pointer (a mouse, a finger,
- * a pen). The window moves focus for the person (to a closed thread's row, to
- * the row now in a gone row's slot, to the first row Show brought in) only
- * after a key: after a mouse or a tap it would put a row under the keyboard
- * that the person never chose, and `E` would mark it read.
- */
-let lastInput: 'keyboard' | 'pointer' | null = null;
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', () => (lastInput = 'keyboard'), true);
-  window.addEventListener('pointerdown', () => (lastInput = 'pointer'), true);
-  // A screen reader (or switch access) presses a control with a click that no key or pointer came
-  // before, and that counts no clicks (`detail` 0): the person is not using a mouse.
-  window.addEventListener('click', (event) => {
-    if (event.detail === 0) lastInput = 'keyboard';
-  }, true);
 }
 
 /**
@@ -1310,7 +1293,7 @@ function Inbox() {
     const active = document.activeElement;
     // A thread opened from search or a link may have no row on screen (Quiet folded, another project): the
     // Quiet band, else the first row, so focus is never left on the page.
-    if (body && lastInput === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
+    if (body && lastInput() === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
       const target = rowElement(body, closed) ?? body.querySelector<HTMLElement>('[data-section-id="quiet"] button.ib-band') ?? body.querySelector<HTMLElement>('[data-thread-id]');
       target?.focus({ preventScroll: true });
     }
@@ -3114,7 +3097,7 @@ function Inbox() {
     if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
-    } else if (body && lastInput === 'keyboard' && gone && lost && !rowElement(body, gone)) {
+    } else if (body && lastInput() === 'keyboard' && gone && lost && !rowElement(body, gone)) {
       const next = rowInSlot(order, gone, (id) => rowElement(body, id) !== null);
       const target = next ? rowElement(body, next) : body.querySelector<HTMLElement>('button.ib-band');
       target?.focus({ preventScroll: true });
@@ -3440,7 +3423,7 @@ function Inbox() {
           refreshSpin={refreshSpin && refreshSpin.scope === route.project ? refreshSpin.key : null}
           onShowNew={() => {
             // Show's line goes away with the press: after a key, focus goes to the first row it brought in.
-            focusAfterShow.current = lastInput === 'keyboard';
+            focusAfterShow.current = lastInput() === 'keyboard';
             listOrder.current = [...(listBody(rootRef.current)?.querySelectorAll('[data-thread-id]') ?? [])].map((el) => el.getAttribute('data-thread-id')!);
             if (latestRef.current) showFrom.current = shown;
             settleList('all', true);

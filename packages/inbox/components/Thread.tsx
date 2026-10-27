@@ -80,7 +80,8 @@ import { Tip } from './Tip';
 import { OpenQuestionsButton } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
-import { ShortcutHint, useShortcutAria } from '../shortcuts/hint';
+import { ShortcutHint, useShortcutAria, useShortcutHintShown } from '../shortcuts/hint';
+import { lastInput } from '../lastInput';
 import { bareKeyAllowed, keyTarget } from '../shortcuts/guards';
 import { INBOX_SHORTCUT_EXTRAS } from '../shortcuts/extras';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
@@ -1924,16 +1925,26 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       const back = keyOpener.current;
       keyOpener.current = null;
       const active = document.activeElement;
-      if (!active || active === document.body || !active.isConnected) {
+      // After a pointer close (the ×, a click) nothing takes focus: a ring on a tile the person never chose.
+      if (lastInput() === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
         // Opened by a key (O, F) from a place in the thread: back to that place, the thread where it was.
         if (back && back.isConnected && body.contains(back)) back.focus({ preventScroll: true });
         else {
+          // The thread keeps its place (restorePlace above), so focus goes to something the person can see: the
+          // file's tile, else the head of the message it came in, else the first message head in view, and only
+          // then the subject. Nothing scrolls for it.
+          const view = body.getBoundingClientRect();
+          const seen = (el: HTMLElement | null | undefined): el is HTMLElement => {
+            if (!el || el.tabIndex < 0) return false;
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.bottom > view.top && r.top < view.bottom;
+          };
           const id = lastFileId.current;
-          const tile = id ? [...body.querySelectorAll<HTMLElement>(`[data-attachment-id="${CSS.escape(id)}"]`)].find((el) => el.tabIndex >= 0 && el.getClientRects().length > 0) : undefined;
-          const target = tile ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
+          const tiles = id ? [...body.querySelectorAll<HTMLElement>(`[data-attachment-id="${CSS.escape(id)}"]`)] : [];
+          const tile = tiles.find(seen);
+          const head = tiles[0]?.closest('[data-message-article]')?.querySelector<HTMLElement>('[data-fold-head]');
+          const target = tile ?? (seen(head) ? head : [...body.querySelectorAll<HTMLElement>('[data-fold-head]')].find(seen)) ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
           target?.focus({ preventScroll: true });
-          // Never focus out of sight: the tile comes into view if the thread's place left it out.
-          target?.scrollIntoView?.({ block: 'nearest' });
         }
       }
     }
@@ -3103,7 +3114,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const footRowShown = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !box.open && !(route.open && asking);
   const rowMax: OpenQuestionsLabelForm = phone ? 'short' : 'full';
   // What the row shows; a change re-fits it (with its width).
-  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone].join('|');
+  // The Reply keycap (Show keys on buttons) takes room too: turning it on or off re-fits the row.
+  const replyKeyShown = useShortcutHintShown({ scope: inboxThreadShortcuts, action: 'reply' });
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone, replyKeyShown].join('|');
   const rowFittedFor = useRef('');
   const fitRowRef = useRef<(force?: boolean) => void>(() => {});
   fitRowRef.current = (force = false) => {
