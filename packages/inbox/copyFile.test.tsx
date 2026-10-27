@@ -17,7 +17,7 @@ import type { InboxAttachmentState } from '@plannotator/core/inbox-types';
 const hasDom = typeof document !== 'undefined';
 // The pane pulls in the Viewer, which reads `window` at module-eval time.
 const { AttachmentPane, CODE_ROW_BELOW_NOTE } = (hasDom ? await import('./components/AttachmentPane') : {}) as typeof import('./components/AttachmentPane');
-const { COPY_FILE_FEEDBACK_MS } = (hasDom ? await import('./components/CopyFileButton') : {}) as typeof import('./components/CopyFileButton');
+const { COPY_FILE_FEEDBACK_MS, CopyFileButton } = (hasDom ? await import('./components/CopyFileButton') : {}) as typeof import('./components/CopyFileButton');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -25,13 +25,16 @@ const realFetch = globalThis.fetch;
 /** What the clipboard was given, in order. */
 let written: string[] = [];
 let clipboardFails = false;
+/** Set: the clipboard answers only when the test calls it (a slow or prompting browser). */
+let hold: ((answer: () => void) => void) | null = null;
 let restoreClipboard: (() => void) | null = null;
-let restoreRects: (() => void) | null = null;
+let restoreGlobals: (() => void) | null = null;
 
 beforeEach(() => {
   if (!hasDom) return;
   written = [];
   clipboardFails = false;
+  hold = null;
   const before = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -39,6 +42,10 @@ beforeEach(() => {
       writeText: (text: string) => {
         if (clipboardFails) return Promise.reject(new Error('denied'));
         written.push(text);
+        if (hold) {
+          const keep = hold;
+          return new Promise<void>((resolve) => keep(resolve));
+        }
         return Promise.resolve();
       },
     },
@@ -57,8 +64,8 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   restoreClipboard?.();
   restoreClipboard = null;
-  restoreRects?.();
-  restoreRects = null;
+  restoreGlobals?.();
+  restoreGlobals = null;
 });
 
 function file(id: string, name: string, kind: string, extra: Partial<InboxAttachmentState> = {}): InboxAttachmentState {
@@ -222,7 +229,7 @@ function layOut(noteBottom: number, codeTop: number) {
     if (this.matches('[data-code-view]')) return { x: 0, y: codeTop, top: codeTop, left: 0, right: 1280, bottom: 800, width: 1280, height: 800 - codeTop, toJSON() {} } as DOMRect;
     return real.call(this);
   };
-  restoreRects = () => {
+  restoreGlobals = () => {
     Element.prototype.getBoundingClientRect = real;
   };
 }
@@ -246,4 +253,101 @@ test.skipIf(!hasDom)('with no note to clear (beside the thread, or a file unchan
   await openPane(manifest, { full: true });
   expect(host!.querySelector('[data-full-view-changed]')).toBeNull();
   expect(host!.querySelector<HTMLElement>('[data-code-row]')!.style.paddingTop).toBe('');
+});
+
+/** The feedback timers the button starts and clears, counted through the real ones (restored after). */
+function watchTimers() {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const started = new Set<unknown>();
+  const cleared = new Set<unknown>();
+  globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+    const id = realSet(fn, ms, ...rest);
+    if (ms === COPY_FILE_FEEDBACK_MS) started.add(id);
+    return id;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((id: unknown) => {
+    if (started.has(id)) cleared.add(id);
+    return realClear(id as ReturnType<typeof setTimeout>);
+  }) as typeof clearTimeout;
+  const restore = restoreGlobals;
+  restoreGlobals = () => {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+    restore?.();
+  };
+  /** Feedback timers still pending. */
+  return { started, pending: () => [...started].filter((id) => !cleared.has(id)).length };
+}
+
+async function renderButton(text: string, announced: string[]) {
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  const draw = (t: string) => root!.render(<CopyFileButton text={t} name={t === CURRENT ? 'b.yaml' : 'a.yaml'} sent={false} announce={(line) => announced.push(line)} />);
+  await act(async () => {
+    root = createRoot(host!);
+    draw(text);
+  });
+  return { draw: (t: string) => act(() => draw(t)), button: () => host!.querySelector<HTMLButtonElement>('[data-copy-file]')! };
+}
+
+test.skipIf(!hasDom)('closing the file while Copied shows clears its timer', async () => {
+  const timers = watchTimers();
+  const announced: string[] = [];
+  const { button } = await renderButton(SENT, announced);
+  await press(button());
+  expect(button().textContent).toBe('Copied');
+  expect(timers.pending()).toBe(1);
+  act(() => root!.unmount());
+  root = null;
+  expect(timers.pending()).toBe(0);
+});
+
+test.skipIf(!hasDom)('a copy that answers after the file closed says nothing and starts no timer', async () => {
+  const timers = watchTimers();
+  let answer: (() => void) | null = null;
+  hold = (resolve) => {
+    answer = resolve;
+  };
+  const announced: string[] = [];
+  const { button } = await renderButton(SENT, announced);
+  await act(async () => {
+    button().click();
+  });
+  act(() => root!.unmount());
+  root = null;
+  await act(async () => {
+    answer!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(written).toEqual([SENT]);
+  expect(announced).toEqual([]);
+  expect(timers.started.size).toBe(0);
+});
+
+test.skipIf(!hasDom)('another file: Copied and its timer do not carry over, and a late answer for the last file says nothing', async () => {
+  const timers = watchTimers();
+  const announced: string[] = [];
+  const { button, draw } = await renderButton(SENT, announced);
+  await press(button());
+  expect(button().textContent).toBe('Copied');
+  draw(CURRENT);
+  expect(button().textContent).toBe('Copy file');
+  expect(timers.pending()).toBe(0);
+  // A press on the new file whose answer comes after the next switch.
+  let answer: (() => void) | null = null;
+  hold = (resolve) => {
+    answer = resolve;
+  };
+  await act(async () => {
+    button().click();
+  });
+  draw(SENT);
+  await act(async () => {
+    answer!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(button().textContent).toBe('Copy file');
+  expect(announced).toEqual(['Copied a.yaml.']);
+  expect(timers.pending()).toBe(0);
 });

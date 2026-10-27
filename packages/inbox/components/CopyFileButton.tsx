@@ -26,21 +26,22 @@ export interface CopyFileButtonProps {
 export function CopyFileButton({ text, name, sent, announce }: CopyFileButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Another file or version: the last one's "Copied" does not carry over.
+  /** The text on screen: a copy that answers for another file, or after the pane closed, says nothing and starts no timer. */
+  const current = useRef<string | null>(null);
+  // Another file or version: the last one's "Copied" does not carry over, nor does its timer.
   useEffect(() => {
+    current.current = text;
     setState('idle');
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-  }, [text]);
-  useEffect(
-    () => () => {
+    return () => {
+      current.current = null;
       if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
+      timer.current = null;
+    };
+  }, [text]);
 
   const copy = async () => {
     const ok = await copyTextToClipboard(text);
+    if (current.current !== text) return;
     announce(ok ? `Copied ${name}.` : `${name} was not copied. Select the code and copy it instead.`);
     setState(ok ? 'copied' : 'failed');
     if (timer.current) clearTimeout(timer.current);

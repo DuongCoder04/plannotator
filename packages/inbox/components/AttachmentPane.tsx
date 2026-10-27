@@ -1682,7 +1682,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             <div className="ib-codeview" data-code-view="">
               {/* The code's top row: Copy file first (approval "inbox-copy-file"), then how to comment. */}
               <div className="ib-codehint" style={codeClear === null ? undefined : { paddingTop: codeClear }} data-code-row="">
-                <CopyFileButton text={view.text} name={attachment.name} sent={effectiveVersion === 'sent'} announce={announce} />
+                <CopyFileButton text={view.text} name={attachment.name} sent={view.version !== 'current'} announce={announce} />
                 {!props.readOnly && (
                   <span className="ib-codehint-t">{phone ? 'Tap a line to comment.' : 'Click a line number, drag across lines, or select code to comment.'}</span>
                 )}
