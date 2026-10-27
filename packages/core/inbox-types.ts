@@ -482,6 +482,15 @@ export interface InboxMessage {
    */
   started_by_person?: true;
   /**
+   * On the root of a thread the person started with compose's Board chip on
+   * (approval "inbox-compose-board-chip", 2026-10-27): the person asked the
+   * agent to track the work on the Board. The body stays as typed; what the
+   * agent receives for this message (the delivered turn, wait_for_reply,
+   * read_thread) carries `inboxBoardRequestBlock` after it. Absent on every
+   * other message.
+   */
+  board_request?: true;
+  /**
    * On the root of a thread the person started: who gave it its name, the
    * thread chip (approval "inbox-agent-names-own-thread"). The person may name
    * it in compose; otherwise the first reply from a session that may name it
@@ -1909,6 +1918,8 @@ export interface InboxDraft {
    * any other draft.
    */
   card?: { id: string; title: string };
+  /** Compose's Board chip was on (approval "inbox-compose-board-chip"): the Send asks the agent to track the work on the Board. */
+  board_request?: true;
 }
 
 /** A draft's chip: its chosen session is live, has ended, or none was chosen. */
