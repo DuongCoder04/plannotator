@@ -19,7 +19,6 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
-  basename,
   dirname,
   isAbsolute,
   join,
@@ -29,7 +28,10 @@ import {
   resolve,
 } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
-import { parseT3HookCommand, T3_SETTINGS_BACKUP_SUFFIX } from "@plannotator/shared/t3-hook-command";
+import { T3_SETTINGS_BACKUP_SUFFIX } from "@plannotator/shared/t3-hook-command";
+import { isManagedHook, remainingHookReferences, type ManagedHookSpec } from "./uninstall-hooks";
+import { remainingInboxReferences } from "./uninstall-inbox-references";
+import { pluginReferences, enabledPluginReferences, piPackageReferences, directoryReferences, vscodeReferences } from "./uninstall-host-references";
 import { runningT3Workers, stopT3Workers } from "@plannotator/shared/t3-workers";
 import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/inbox/registry";
 import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
@@ -305,11 +307,7 @@ type MutableUninstallResult = {
   errors: string[];
 };
 
-type HookCleanupSpec = {
-  readonly event: string;
-  readonly matcher?: string;
-  readonly suffix: "" | "improve-context" | "t3-hook";
-};
+type HookCleanupSpec = ManagedHookSpec;
 
 type HookCleanupPolicy = {
   readonly allowRelocatedBinary: boolean;
@@ -464,7 +462,7 @@ export async function runPlannotatorUninstall(
   removeHostConfigEntries(request, environment, paths, state);
   // Plain uninstall too: with the binary gone, an agent's plannotator-inbox
   // entry would fail to start at every launch.
-  await removeInboxAgentConnections(request, environment, state);
+  await removeInboxAgentConnections(request, environment, paths.binaryPaths, state);
   removeInstalledFiles(request, environment, paths, state);
   if (dataDirSafetyIssue) {
     state.warnings.push(
@@ -487,6 +485,37 @@ export async function runPlannotatorUninstall(
       // reopen a path-swap window after the destructive-boundary revalidation.
       removeInstallerData(request, state);
       if (request.purge && !inboxBlocksPurge) purgeLocalData(request, state);
+    }
+  }
+
+  if (!request.dryRun && state.errors.length === 0) {
+    for (const [filePath, allowRelocatedBinary] of [
+      [join(paths.claudeDir, "settings.json"), false],
+      [join(paths.codexDir, "hooks.json"), true],
+      [join(environment.homeDir, ".gemini", "settings.json"), false],
+      [join(paths.vibeDir, "hooks.toml"), false],
+    ] as const) {
+      let config: unknown;
+      if (filePath.endsWith(".toml")) {
+        try {
+          config = Bun.TOML.parse(readFileSync(filePath, "utf8"));
+        } catch (error) {
+          if (isMissingPathError(error)) continue;
+          reportHostCleanupFailure(
+            `Could not inspect ${filePath}`, formatError(error),
+            { manualCleanup: `Make ${filePath} readable, valid TOML and remove only hooks that invoke Plannotator; preserve unrelated hooks.` },
+            request, state,
+          );
+          continue;
+        }
+      } else {
+        config = readJsonRecord(
+          filePath, "remaining host hooks",
+          { manualCleanup: `Make ${filePath} a readable, writable strict JSON object and remove only hooks that invoke Plannotator; preserve unrelated settings.` },
+          request, state,
+        );
+      }
+      reportRemainingHookReferences(config, filePath, paths.binaryPaths, environment.platform, allowRelocatedBinary, request, state);
     }
   }
 
@@ -560,12 +589,13 @@ function agentEnvironmentOf(environment: UninstallEnvironment): AgentEnvironment
  * agents on this computer (inbox-agents.ts): only the recorded ones that still
  * run Plannotator. An entry the person changed to run something else is theirs
  * and is named; so is one that runs this binary but has no record (agents.json
- * lost), which the person may have added by hand. A failure is a warning,
- * never a reason to keep the CLI.
+ * lost), which the person may have added by hand. A surviving reference to
+ * the CLI blocks binary removal; unrelated notes remain warning-only.
  */
 async function removeInboxAgentConnections(
   request: UninstallRequest,
   environment: UninstallEnvironment,
+  binaryPaths: readonly string[],
   state: MutableUninstallResult,
 ): Promise<void> {
   const agents = agentEnvironmentOf(environment);
@@ -577,6 +607,11 @@ async function removeInboxAgentConnections(
   if (request.dryRun) {
     for (const item of plan.items) state.planned.push(item.describe);
     for (const note of notes.items) state.planned.push(note.describe);
+    if (state.errors.length === 0) {
+      for (const reference of remainingInboxReferences(agents, binaryPaths, new Set(plan.items.map((item) => item.agent)))) {
+        state.errors.push(`${reference}. Then rerun \`${formatUninstallRetryCommand(request)}\`.`);
+      }
+    }
     return;
   }
   for (const note of notes.items) {
@@ -593,6 +628,11 @@ async function removeInboxAgentConnections(
     }
     state.removed.push(item.describe);
     removed.push(item.agent);
+  }
+  if (state.errors.length === 0) {
+    for (const reference of remainingInboxReferences(agents, binaryPaths)) {
+      state.errors.push(`${reference}. Then rerun \`${formatUninstallRetryCommand(request)}\`.`);
+    }
   }
   // A plain uninstall keeps the data: forget these records so a reinstall connects them again.
   if (!request.purge) forgetInboxAgents(state.dataDir, removed);
@@ -614,6 +654,26 @@ function reportHostCleanupFailure(
   state.errors.push(
     `${summary}: ${problem}. Manual cleanup: ${recovery.manualCleanup} Then rerun \`${formatUninstallRetryCommand(request)}\`.`,
   );
+}
+
+function reportRemainingHookReferences(
+  config: unknown,
+  filePath: string,
+  binaryPaths: readonly string[],
+  platform: NodeJS.Platform,
+  allowRelocatedBinary: boolean,
+  request: UninstallRequest,
+  state: MutableUninstallResult,
+  projectedRemovals: readonly ManagedHookSpec[] = [],
+  removedVibeIndices: ReadonlySet<number> = new Set(),
+): void {
+  for (const field of remainingHookReferences(config, binaryPaths, platform, allowRelocatedBinary, projectedRemovals, removedVibeIndices)) {
+    reportHostCleanupFailure(
+      `Preserved Plannotator reference in ${filePath}`, `${field} still invokes Plannotator`,
+      { manualCleanup: `Remove only the Plannotator hook at ${field} in ${filePath}; preserve unrelated hooks and settings.` },
+      request, state,
+    );
+  }
 }
 
 function resolveOwnedPaths(environment: UninstallEnvironment) {
@@ -672,29 +732,17 @@ async function removeHostPlugins(
         ...(request.purge ? [] : ["--keep-data"]),
         "--yes",
       ],
-      installed:
-        hasEnabledPlugin(
-          join(paths.claudeDir, "settings.json"),
-          "plannotator@plannotator",
-        ) ||
-        hasInstalledPlugin(
-          join(paths.claudeDir, "plugins", "installed_plugins.json"),
-          "plannotator@plannotator",
-        ),
+      references: () => pluginReferences(paths.claudeDir, "plannotator@plannotator"),
     },
     {
       label: "GitHub Copilot CLI plugin plannotator-copilot@plannotator",
       command: "copilot",
       args: ["plugins", "remove", "plannotator-copilot@plannotator", "--plugin"],
-      installed:
-        hasEnabledPlugin(
-          join(paths.copilotDir, "settings.json"),
-          "plannotator-copilot@plannotator",
-        ) ||
-        hasDirectoryWithPrefix(
-          join(paths.copilotDir, "installed-plugins", "plannotator"),
-          "plannotator-copilot",
-        ),
+      references: () => {
+        const enabled = enabledPluginReferences(join(paths.copilotDir, "settings.json"), "plannotator-copilot@plannotator");
+        const installed = directoryReferences(join(paths.copilotDir, "installed-plugins", "plannotator"), "plannotator-copilot");
+        return { references: [...enabled.references, ...installed.references], errors: [...enabled.errors, ...installed.errors] };
+      },
     },
     {
       label: "Droid plugin plannotator@plannotator",
@@ -706,57 +754,57 @@ async function removeHostPlugins(
         "--scope",
         "user",
       ],
-      installed:
-        hasEnabledPlugin(
-          join(paths.factoryDir, "settings.json"),
-          "plannotator@plannotator",
-        ) ||
-        hasInstalledPlugin(
-          join(paths.factoryDir, "plugins", "installed_plugins.json"),
-          "plannotator@plannotator",
-        ),
+      references: () => pluginReferences(paths.factoryDir, "plannotator@plannotator"),
     },
     {
       label: "Pi extension npm:@plannotator/pi-extension",
       command: "pi",
       args: ["remove", "npm:@plannotator/pi-extension"],
-      installed: hasPiPackage(
-        join(
-          environment.env.PI_CODING_AGENT_DIR || join(environment.homeDir, ".pi", "agent"),
-          "settings.json",
-        ),
-      ),
+      references: () => {
+        const filePath = join(environment.env.PI_CODING_AGENT_DIR || join(environment.homeDir, ".pi", "agent"), "settings.json");
+        return piPackageReferences(filePath);
+      },
     },
     {
       label: "VS Code extension backnotprop.plannotator-webview",
       command: "code",
       args: ["--uninstall-extension", "backnotprop.plannotator-webview"],
-      installed: hasDirectoryWithPrefix(
-        join(environment.homeDir, ".vscode", "extensions"),
-        "backnotprop.plannotator-webview-",
-      ),
+      references: () => vscodeReferences(join(environment.homeDir, ".vscode", "extensions")),
     },
   ] as const;
 
   for (const action of actions) {
-    if (!action.installed) continue;
-    if (request.dryRun) {
-      state.planned.push(action.label);
+    const scan = action.references();
+    if (scan.errors.length > 0) {
+      state.errors.push(...scan.errors.map((error) => `${error} Then rerun \`${formatUninstallRetryCommand(request)}\`.`));
       continue;
     }
-
+    const references = scan.references;
+    if (references.length === 0) continue;
     const executable = environment.which(action.command);
     const manualCommand = [action.command, ...action.args].join(" ");
+    const manualRemoval = `If the host was permanently uninstalled, remove only these detected Plannotator entries: ${references.join("; ")}. Preserve unrelated configuration, then rerun \`${formatUninstallRetryCommand(request)}\`.`;
     if (!executable) {
       state.errors.push(
-        `${action.label} was detected but ${action.command} is unavailable; it was not removed. Manual cleanup: restore ${action.command} on PATH and run \`${manualCommand}\`. After it succeeds, rerun \`${formatUninstallRetryCommand(request)}\`.`,
+        `${action.label} was detected but ${action.command} is unavailable; it was not removed. Manual cleanup: restore ${action.command} on PATH and run \`${manualCommand}\`. After it succeeds, rerun \`${formatUninstallRetryCommand(request)}\`. ${manualRemoval}`,
       );
       continue;
     }
 
+    if (request.dryRun) {
+      state.planned.push(action.label);
+      continue;
+    }
     const result = await environment.runCommand(executable, action.args);
     if (result.exitCode === 0) {
-      state.removed.push(action.label);
+      const remaining = action.references();
+      if (remaining.errors.length > 0) {
+        state.errors.push(...remaining.errors.map((error) => `${error} Then rerun \`${formatUninstallRetryCommand(request)}\`.`));
+      } else if (remaining.references.length > 0) {
+        state.errors.push(`${action.label} still has recognized references after ${action.command} reported success. Manual cleanup: remove only ${remaining.references.join("; ")}; preserve unrelated configuration. Then rerun \`${formatUninstallRetryCommand(request)}\`.`);
+      } else {
+        state.removed.push(action.label);
+      }
     } else {
       state.errors.push(
         `${action.label} was not removed automatically (${result.timedOut ? "command timed out" : `exit ${result.exitCode}`}). Manual cleanup: run \`${manualCommand}\` directly and resolve the host error until it succeeds. Then rerun \`${formatUninstallRetryCommand(request)}\`.`,
@@ -821,7 +869,7 @@ function removeHostConfigEntries(
     state,
   );
 
-  cleanupVibeHooks(join(paths.vibeDir, "hooks.toml"), request, state);
+  cleanupVibeHooks(join(paths.vibeDir, "hooks.toml"), paths.binaryPaths, environment.platform, request, state);
 
   for (const configDir of paths.configDirs) {
     for (const name of ["opencode.json", "opencode.jsonc"]) {
@@ -1318,6 +1366,7 @@ function cleanupHooksJson(
     state,
   );
   if (!parsed) return;
+  if (request.dryRun) reportRemainingHookReferences(parsed, filePath, binaryPaths, platform, policy.allowRelocatedBinary, request, state, specs);
 
   const hooks = asRecord(parsed.hooks);
   if (!hooks) return;
@@ -1373,7 +1422,9 @@ function cleanupHooksJson(
     else hooks[spec.event] = nextEntries;
   }
 
-  if (!changed) return;
+  if (!changed) {
+    return;
+  }
   if (Object.keys(hooks).length === 0) delete parsed.hooks;
   else parsed.hooks = hooks;
 
@@ -1441,10 +1492,11 @@ const VIBE_MANAGED_END = "# <<< plannotator-managed-vibe-hooks";
  */
 function cleanupVibeHooks(
   filePath: string,
+  binaryPaths: readonly string[],
+  platform: NodeJS.Platform,
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): void {
-  if (!existsSync(filePath)) return;
   const recovery = {
     manualCleanup: `Make ${filePath} readable and writable. Remove the lines between and including the "${VIBE_MANAGED_START}" and "${VIBE_MANAGED_END}" markers; keep every other hook. Delete the file only if nothing remains.`,
   };
@@ -1452,6 +1504,7 @@ function cleanupVibeHooks(
   try {
     content = readFileSync(filePath, "utf8");
   } catch (error) {
+    if (isMissingPathError(error)) return;
     reportHostCleanupFailure(
       `Could not inspect ${filePath}`,
       formatError(error),
@@ -1466,8 +1519,14 @@ function cleanupVibeHooks(
   const nextLines: string[] = [];
   let skipping = false;
   let sawStart = false;
+  let hookIndex = -1;
+  const removedHookIndices = new Set<number>();
   for (const line of lines) {
     const trimmed = line.trim();
+    if (/^\[\[\s*(?:hooks|"hooks"|'hooks')\s*\]\]/.test(trimmed)) {
+      hookIndex++;
+      if (skipping) removedHookIndices.add(hookIndex);
+    }
     if (!skipping && trimmed.startsWith(VIBE_MANAGED_START)) {
       skipping = true;
       sawStart = true;
@@ -1482,6 +1541,14 @@ function cleanupVibeHooks(
     nextLines.push(line);
   }
 
+  if (request.dryRun) {
+    try {
+      const original: unknown = Bun.TOML.parse(content);
+      reportRemainingHookReferences(original, filePath, binaryPaths, platform, false, request, state, [], removedHookIndices);
+    } catch (error) {
+      reportHostCleanupFailure(`Could not inspect ${filePath}`, formatError(error), recovery, request, state);
+    }
+  }
   if (!sawStart) return;
 
   const remaining = nextLines.filter((line) => line.trim().length > 0);
@@ -1533,6 +1600,8 @@ function cleanupGeminiSettings(
     state,
   );
   if (!parsed) return;
+  if (request.dryRun) reportRemainingHookReferences(parsed, filePath, binaryPaths, platform, false, request, state,
+    [{ event: "BeforeTool", matcher: "exit_plan_mode", suffix: "" }]);
   const wasInstallerTemplate = isGeminiInstallerTemplate(
     parsed,
     binaryPaths,
@@ -1541,7 +1610,9 @@ function cleanupGeminiSettings(
 
   const hooks = asRecord(parsed.hooks);
   const beforeTool = hooks?.BeforeTool;
-  if (!hooks || !Array.isArray(beforeTool)) return;
+  if (!hooks || !Array.isArray(beforeTool)) {
+    return;
+  }
 
   let changed = false;
   const nextEntries: unknown[] = [];
@@ -1571,7 +1642,13 @@ function cleanupGeminiSettings(
     nextEntries.push({ ...entry, hooks: nextHooks });
   }
 
-  if (!changed) return;
+  if (!changed) {
+    return;
+  }
+  if (nextEntries.length === 0) delete hooks.BeforeTool;
+  else hooks.BeforeTool = nextEntries;
+  if (Object.keys(hooks).length === 0) delete parsed.hooks;
+  else parsed.hooks = hooks;
   if (request.dryRun) {
     state.planned.push(`managed Gemini hook in ${filePath}`);
     return;
@@ -1582,10 +1659,6 @@ function cleanupGeminiSettings(
     return;
   }
 
-  if (nextEntries.length === 0) delete hooks.BeforeTool;
-  else hooks.BeforeTool = nextEntries;
-  if (Object.keys(hooks).length === 0) delete parsed.hooks;
-  else parsed.hooks = hooks;
   writeJson(
     filePath,
     parsed,
@@ -1800,11 +1873,11 @@ function readJsonRecord(
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): JsonRecord | null {
-  if (!existsSync(filePath)) return null;
   let content: string;
   try {
     content = readFileSync(filePath, "utf8");
   } catch (error) {
+    if (isMissingPathError(error)) return null;
     reportHostCleanupFailure(
       `Could not inspect ${filePath}`,
       formatError(error),
@@ -2076,59 +2149,6 @@ function removePath(
   }
 }
 
-function isManagedHook(
-  value: unknown,
-  binaryPaths: readonly string[],
-  suffix: "" | "improve-context" | "t3-hook",
-  platform: NodeJS.Platform,
-  allowRelocatedBinary = false,
-): boolean {
-  const hook = asRecord(value);
-  if (!hook || hook.type !== "command" || typeof hook.command !== "string") {
-    return false;
-  }
-
-  const command = hook.command.trim();
-  if (suffix === "t3-hook") {
-    const parsed = parseT3HookCommand(command);
-    return parsed !== undefined && (parsed.executable === "plannotator" || binaryPaths.some((path) => sameCommand(parsed.executable, path, platform)));
-  }
-  const expectedBare = suffix ? `plannotator ${suffix}` : "plannotator";
-  if (command === expectedBare) return true;
-
-  for (const binaryPath of binaryPaths) {
-    const candidates = suffix
-      ? [`${binaryPath} ${suffix}`, `"${binaryPath}" ${suffix}`]
-      : [binaryPath, `"${binaryPath}"`];
-    if (candidates.some((candidate) => sameCommand(command, candidate, platform))) {
-      return true;
-    }
-  }
-  return allowRelocatedBinary && isRelocatedPlannotatorCommand(command, suffix);
-}
-
-function isRelocatedPlannotatorCommand(
-  command: string,
-  suffix: "" | "improve-context",
-): boolean {
-  const commandSuffix = suffix ? ` ${suffix}` : "";
-  if (commandSuffix && !command.endsWith(commandSuffix)) return false;
-
-  const executable = commandSuffix
-    ? command.slice(0, -commandSuffix.length).trim()
-    : command;
-  const unquoted =
-    executable.length >= 2 &&
-      executable.startsWith('"') &&
-      executable.endsWith('"')
-      ? executable.slice(1, -1)
-      : executable;
-  if (!isAbsolute(unquoted)) return false;
-
-  const executableName = basename(unquoted).toLowerCase();
-  return executableName === "plannotator" || executableName === "plannotator.exe";
-}
-
 function isGeminiInstallerTemplate(
   value: JsonRecord,
   binaryPaths: readonly string[],
@@ -2178,57 +2198,6 @@ function isPlannotatorOpenCodePlugin(value: unknown): boolean {
   return spec !== null && /^@plannotator\/opencode(?:@|$)/.test(spec);
 }
 
-function hasEnabledPlugin(filePath: string, pluginId: string): boolean {
-  const parsed = tryReadJsonRecord(filePath);
-  const enabled = parsed ? asRecord(parsed.enabledPlugins) : null;
-  return enabled?.[pluginId] === true;
-}
-
-function hasInstalledPlugin(filePath: string, pluginId: string): boolean {
-  const parsed = tryReadJsonRecord(filePath);
-  const plugins = parsed ? asRecord(parsed.plugins) : null;
-  const installs = plugins?.[pluginId];
-  return Array.isArray(installs) && installs.length > 0;
-}
-
-function hasPiPackage(filePath: string): boolean {
-  const parsed = tryReadJsonRecord(filePath);
-  const packages = parsed?.packages;
-  if (!Array.isArray(packages)) return false;
-
-  return packages.some((entry) => {
-    const record = asRecord(entry);
-    const source =
-      typeof entry === "string"
-        ? entry
-        : typeof record?.source === "string"
-          ? record.source
-          : null;
-    return (
-      typeof source === "string" &&
-      /^npm:@plannotator\/pi-extension(?:@|$)/.test(source)
-    );
-  });
-}
-
-function tryReadJsonRecord(filePath: string): JsonRecord | null {
-  if (!existsSync(filePath)) return null;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
-    return asRecord(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function hasDirectoryWithPrefix(directory: string, prefix: string): boolean {
-  try {
-    return readdirSync(directory).some((entry) => entry.startsWith(prefix));
-  } catch {
-    return false;
-  }
-}
-
 function asRecord(value: unknown): JsonRecord | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as JsonRecord
@@ -2241,18 +2210,6 @@ function hasOnlyKeys(
 ): boolean {
   const allowedSet = new Set(allowed);
   return Object.keys(value).every((key) => allowedSet.has(key));
-}
-
-function sameCommand(
-  left: string,
-  right: string,
-  platform: NodeJS.Platform,
-): boolean {
-  const normalizedLeft = left.replace(/\\/g, "/");
-  const normalizedRight = right.replace(/\\/g, "/");
-  return platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
 }
 
 function sameLexicalPath(

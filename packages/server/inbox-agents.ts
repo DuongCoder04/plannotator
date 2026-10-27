@@ -1386,10 +1386,13 @@ export interface InboxAgentReachState {
  * `~/.claude.json`. Read only, never written: Claude Code is connected through
  * its plugin, and this only says that one added by hand already reaches the Inbox.
  */
-function claudeCodeMcpEntry(e: AgentEnvironment, ours: readonly (readonly string[])[]): InboxEntryRead {
-  const dir = envDir(e, "CLAUDE_CONFIG_DIR");
+export function claudeCodeMcpPath(e: AgentEnvironment): string {
+  return join(envDir(e, "CLAUDE_CONFIG_DIR") ?? e.homeDir, ".claude.json");
+}
+
+export function claudeCodeMcpEntry(e: AgentEnvironment, ours: readonly (readonly string[])[]): InboxEntryRead {
   // .claude.json holds Claude Code's per-project history and often passes 1 MiB; this read only looks.
-  return classify(rawJsonEntry(join(dir ?? e.homeDir, ".claude.json"), ["mcpServers"], false, CLAUDE_JSON_MAX_BYTES), ours, true);
+  return classify(rawJsonEntry(claudeCodeMcpPath(e), ["mcpServers"], false, CLAUDE_JSON_MAX_BYTES), ours, true);
 }
 
 /** The most `.claude.json` the read-only MCP lookup reads. */
