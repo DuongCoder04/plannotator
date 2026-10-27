@@ -535,7 +535,11 @@ test('the contract lines: picture tiles (the picture answers, its zoom never doe
 });
 
 test('the Codex session it answered is never woken through a codex CLI: none is looked up or run', async () => {
-  // Test 2 answers Codex's question; its session sent with a wake. Without the sandbox the Inbox ran
-  // `codex --version` and `codex queue` from PATH: here, the stubs in front of the runner's own codex.
+  // Test 2 answers Codex's question (its session sent with a wake): without that answer this proves nothing.
+  const thread = (await (await fetch(`http://127.0.0.1:${port()}/api/inbox/threads/${stripeThread}`)).json()) as { thread?: { messages: { author: { kind: string }; body: string }[] } };
+  const answered = thread.thread?.messages.some((m) => m.author.kind === 'person' && m.body.includes('Yes, Thursday')) ?? false;
+  expect(answered, "Codex's question was answered (run this with the queue test)").toBe(true);
+  // Without the sandbox the Inbox ran `codex --version` and `codex queue` from PATH: here, the stubs in front of
+  // the runner's own codex.
   expect(agentCliCalls(world.stubs)).toEqual([]);
 });
