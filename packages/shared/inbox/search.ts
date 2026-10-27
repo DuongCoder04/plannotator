@@ -3,7 +3,8 @@
  * built lazily on the first search in slices that yield, and kept current
  * from the store's lines. The design of record is the approved "inbox-search"
  * brief (owner approval 2026-10-13; not in this repo); what a build here
- * needs from it is in CLAUDE.md ("Search" under "Plannotator Inbox").
+ * needs from it is in docs/agent-guides/inbox-notifications-and-agents.md
+ * ("Search").
  *
  * What is indexed, one document each:
  *   thread    its subject (the current one, following a replaced question's
@@ -48,8 +49,10 @@ import {
   type InboxSearchThreadRow,
 } from "@plannotator/core/inbox-search";
 import { findQuestionBlocks, QUESTION_ANSWERS_HEADING, type QuestionAnswer } from "@plannotator/core/question-block";
+import { INBOX_STILL_OPEN_LINE } from "@plannotator/core/inbox-questions";
 import { withoutInboxSkillsBlock } from "@plannotator/core/skill-reference-block";
 import {
+  displayInboxSubject,
   inboxAgentName,
   isInboxNote,
   type InboxLine,
@@ -154,18 +157,21 @@ export function forEachInboxSearchBodyLine(markdown: string, visit: (line: strin
 
 /**
  * The person's own words in a reply: not the generated first line, not the
- * answers section, and not the skills block the window pastes at the end (a
+ * still-open line, not the answers section, and not the skills block the window pastes at the end (a
  * human-only skill's SKILL.md text, which the person did not write; the
  * `$name` they typed stays in their words, so the reply is still found by it).
  */
-export function inboxSearchReplyText(body: string): string {
+export function inboxSearchReplyText(body: string, message?: { reask?: readonly string[] | null }): string {
+  // A Re-ask note carries no words of the person's: its body is the instructions the Inbox wrote for the agent.
+  if ((message?.reask?.length ?? 0) > 0) return "";
   return replyWordsText(withoutInboxSkillsBlock(body));
 }
 
 /** inboxSearchReplyText for a body whose skills block is already gone (a windowed long reply). */
 function replyWordsText(body: string): string {
   const lines = body.split(/\r?\n/);
-  const at = lines.findIndex((line) => ANSWERS_HEADING_LINE.test(line.trim()));
+  // The answers section, or the still-open line the store writes before it (folding.ts replyWords cuts the same).
+  const at = lines.findIndex((line) => ANSWERS_HEADING_LINE.test(line.trim()) || INBOX_STILL_OPEN_LINE.test(line.trim()));
   const kept = (at >= 0 ? lines.slice(0, at) : lines).join("\n");
   return inboxSearchBodyText(kept.replace(/^\s*(?:Answered \d+ questions?(?:, skipped \d+)?|Skipped \d+ questions?)\.\s*/, ""));
 }
@@ -383,7 +389,13 @@ export class InboxSearchIndex {
 
   private listen(): void {
     if (this.unsubscribe) return;
-    this.unsubscribe = this.store.subscribe((line) => this.noteLine(line));
+    const lines = this.store.subscribe((line) => this.noteLine(line));
+    // A reply draft writes no line but moves its thread's section (the status filter reads it).
+    const drafts = this.store.onReplyDraftChange((threadId) => this.facts.delete(threadId));
+    this.unsubscribe = () => {
+      lines();
+      drafts();
+    };
   }
 
   /** A store line marks what it touches; the next search (or a short timer) re-indexes it. */
@@ -404,6 +416,10 @@ export class InboxSearchIndex {
         break;
       }
       case "annotation":
+        // Not indexed, but a comment waiting for a Send moves its thread's section (`unsent`).
+        this.facts.delete(line.record.thread_id);
+        return;
+      case "card":
         return;
     }
     if (line.kind === "message" || line.kind === "question") {
@@ -634,7 +650,7 @@ export class InboxSearchIndex {
     }
     const facts = this.factsOf(threadId);
     const project = this.store.project(root.project_id);
-    const subject = facts?.subject ?? root.subject ?? "";
+    const subject = facts?.subject ?? displayInboxSubject(root.subject) ?? "";
     this.put(
       `t:${threadId}`,
       "thread",
@@ -649,7 +665,7 @@ export class InboxSearchIndex {
     if (message.author.kind === "person") {
       if (isInboxNote(message)) return;
       // A message's body never changes once stored: its length stands for it.
-      this.put(`m:${message.id}`, "message", { ...meta, from: "me" }, { title: [], other: [inboxSearchReplyText(message.body)] }, `${message.body.length}`);
+      this.put(`m:${message.id}`, "message", { ...meta, from: "me" }, { title: [], other: [inboxSearchReplyText(message.body, message)] }, `${message.body.length}`);
       return;
     }
     const questions = this.store.questionsOf(message.id).flatMap(questionTexts);
@@ -925,12 +941,12 @@ export class InboxSearchIndex {
         const root = this.store.message(doc.ref);
         if (!root) return [];
         const facts = this.factsOf(doc.ref);
-        return [facts?.subject ?? root.subject ?? "", root.thread_name ?? "", this.store.project(root.project_id)?.name ?? ""];
+        return [facts?.subject ?? displayInboxSubject(root.subject) ?? "", root.thread_name ?? "", this.store.project(root.project_id)?.name ?? ""];
       }
       case "message": {
         const message = this.store.message(doc.ref);
         if (!message) return [];
-        if (message.author.kind === "person") return [inboxSearchReplyText(message.body)];
+        if (message.author.kind === "person") return [inboxSearchReplyText(message.body, message)];
         return [inboxSearchBodyText(message.body), ...this.store.questionsOf(message.id).flatMap(questionTexts), inboxAgentName(message.author)];
       }
       case "file": {
@@ -1150,8 +1166,10 @@ export class InboxSearchIndex {
    */
   private bestMessageText(message: InboxMessage, terms: readonly string[]): { text: string; question: { key: string; replaced: boolean } | null } {
     const candidates: { text: string; question: { key: string; replaced: boolean } | null }[] = [];
-    if (message.author.kind === "person") candidates.push({ text: replyWordsText(nearFirstHit(withoutInboxSkillsBlock(message.body), terms)), question: null });
-    else {
+    if (message.author.kind === "person") {
+      // A Re-ask note's body is the Inbox's words, not the person's: nothing to draw a row from.
+      if ((message.reask?.length ?? 0) === 0) candidates.push({ text: replyWordsText(nearFirstHit(withoutInboxSkillsBlock(message.body), terms)), question: null });
+    } else {
       candidates.push({ text: inboxSearchBodyText(nearFirstHit(message.body, terms)), question: null });
       for (const q of this.store.questionsOf(message.id)) {
         const ref = { key: q.key, replaced: q.state === "superseded" };

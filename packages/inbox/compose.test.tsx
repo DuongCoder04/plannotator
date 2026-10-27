@@ -178,6 +178,15 @@ async function openCompose(el: HTMLElement) {
   await until(() => !!dialog()?.querySelector('[data-compose-to]'), 'compose');
 }
 
+/** Pick `session` in To through the picker, as a person does (a plain New message opens with To empty). */
+async function pickTo(session: string) {
+  await until(() => dialog()!.querySelector('[data-compose-to]:not([data-loading])') !== null && dialog()!.querySelector('button[data-compose-to]') !== null, 'To loaded');
+  act(() => (dialog()!.querySelector('button[data-compose-to]') as HTMLButtonElement).click());
+  await until(() => dialog()!.querySelector(`[role="option"][data-compose-session="${session}"]`) !== null, `${session} in the picker`);
+  act(() => (dialog()!.querySelector(`[role="option"][data-compose-session="${session}"]`) as HTMLElement).click());
+  await until(() => dialog()!.querySelector(`[data-compose-to="${session}"]`) !== null, `To names ${session}`);
+}
+
 async function drafts(): Promise<{ id: string; body: string; status: string }[]> {
   return (JSON.parse((await loopback('/api/inbox/drafts')).text) as { drafts: { id: string; body: string; status: string }[] }).drafts;
 }
@@ -187,6 +196,10 @@ test.skipIf(!hasDom)('no live agent: Send sends nothing and says so; Escape asks
   await openCompose(el);
   await until(() => dialog()!.querySelector('[data-compose-to="none"]') !== null, 'the no-agent state');
   expect(dialog()!.querySelector('[data-compose-note="none"]')?.textContent).toContain('Nothing can be sent until one is.');
+  // To is a line of text here, not a button: focus that started on To lands in the message.
+  await until(() => document.activeElement === dialog()!.querySelector('textarea'), 'focus in the message');
+  // Nothing written: no Save draft (an empty compose is never kept).
+  expect(dialog()!.querySelector('[data-compose-save]')).toBeNull();
   // An empty compose closes at once, asking nothing.
   key('Escape');
   await until(() => dialog() === null, 'compose closed');
@@ -209,7 +222,11 @@ test.skipIf(!hasDom)('no live agent: Send sends nothing and says so; Escape asks
   act(() => (dialog()!.querySelector('[data-compose-discard]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'compose closed');
   expect(await drafts()).toEqual([]);
-  expect(el.querySelector('[data-drafts-nav]')).toBeNull();
+  // The Drafts row counts only the seeded world's unsent replies (a picked
+  // question waits there), never the discarded message. Bun 1.3 passed a
+  // failing `.toBeNull()` here when the element was too big to print.
+  const { replies } = JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies?: unknown[] };
+  expect(el.querySelector('[data-drafts-nav] .ib-n')?.textContent ?? '0').toBe(String(replies?.length ?? 0));
 });
 
 test.skipIf(!hasDom)('Keep draft: the sidebar\'s Drafts row and the Drafts page list it with its chip; delete has Undo', async () => {
@@ -219,7 +236,9 @@ test.skipIf(!hasDom)('Keep draft: the sidebar\'s Drafts row and the Drafts page 
   key('Escape');
   act(() => (dialog()!.querySelector('[data-compose-keep]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'compose closed');
-  await until(() => el.querySelector('[data-drafts-nav]')?.textContent === 'Drafts1', 'the Drafts row');
+  // The Drafts row counts the threads holding unsent work too (the world's picks not sent, approval "inbox-reply-drafts").
+  const replies = (JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies?: unknown[] }).replies?.length ?? 0;
+  await until(() => el.querySelector('[data-drafts-nav]')?.textContent === `Drafts${1 + replies}`, 'the Drafts row');
   expect(document.querySelector('[data-inbox-toast]')?.textContent).toContain('It waits under Drafts and never sends itself.');
 
   act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
@@ -240,13 +259,16 @@ test.skipIf(!hasDom)('Keep draft: the sidebar\'s Drafts row and the Drafts page 
   expect((await drafts()).map((d) => d.body)).toEqual(['Idea: group the list by session.']);
 });
 
-test.skipIf(!hasDom)('a live session: To is prefilled, Send starts the thread addressed to it, and the draft it came from goes', async () => {
+test.skipIf(!hasDom)('a live session: a draft saved with nobody in To reopens with To empty; picked, Send starts the thread addressed to it, and the draft it came from goes', async () => {
   await poll('ses_live_dom', 'claude-code', projects[0]!);
   const el = await renderApp('#drafts');
   await until(() => el.querySelectorAll('[data-draft-id]').length === 1, 'the draft row');
   await until(() => el.querySelector('[data-draft-chip]')?.textContent === 'No agent chosen', 'the chip');
-  act(() => (el.querySelector('.ib-draft-open') as HTMLButtonElement).click());
-  await until(() => dialog()?.querySelector('[data-compose-to="ses_live_dom"]') !== null && dialog() !== null, 'To prefilled');
+  act(() => (el.querySelector('[data-draft-id] .ib-draft-open') as HTMLButtonElement).click());
+  // Never filled by itself, though a session is live.
+  await until(() => dialog()?.querySelector('[data-compose-to="choose"]:not([data-loading])') != null, 'To loaded, empty');
+  expect(dialog()!.querySelector('[data-compose-send]')?.getAttribute('aria-disabled')).toBe('true');
+  await pickTo('ses_live_dom');
   expect(dialog()!.querySelector('[data-compose-status]')?.textContent).toBe('Claude Code takes it as its next turn.');
   act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'compose closed');
@@ -254,13 +276,135 @@ test.skipIf(!hasDom)('a live session: To is prefilled, Send starts the thread ad
   expect(send.body).toMatchObject({ to: { host: 'claude-code', session: 'ses_live_dom' }, body: 'Idea: group the list by session.' });
   expect(typeof send.body.draft_id).toBe('string');
   expect(document.querySelector('[data-inbox-toast]')?.textContent).toContain('Sent to Claude Code');
+  // One short line: the project, no trailing sentence; the live region still says the whole of it.
+  const detail = document.querySelector('[data-inbox-toast] .ib-tdetail')?.textContent ?? '';
+  expect(detail).toMatch(/^in \S/);
+  expect(detail).not.toContain('next turn');
+  await until(() => /^Sent to Claude Code in .+\. It takes it as its next turn\.$/.test(document.querySelector('[data-inbox-live]')?.textContent ?? ''), 'the live region says the whole sentence');
   // The row that opened it is gone: focus goes to the Drafts heading (no other draft), never the page.
   await until(() => document.activeElement === el.querySelector('[data-drafts-page] h1'), 'focus on the Drafts heading');
   expect(await drafts()).toEqual([]);
-  await until(() => el.querySelector('[data-drafts-nav]') === null, 'no Drafts row');
+  // No message draft left: the Drafts row counts only the threads holding unsent work (none: no row).
+  const replies = (JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies?: unknown[] }).replies?.length ?? 0;
+  await until(() => (el.querySelector('[data-drafts-nav]')?.textContent ?? 'Drafts0') === `Drafts${replies}`, 'the Drafts row without the message');
   const sections = (JSON.parse((await loopback('/api/inbox/threads')).text) as { sections: InboxListSection[] }).sections;
   const row = sections.flatMap((s) => s.threads).find((t) => t.subject === 'Idea: group the list by session')!;
   expect(row).toMatchObject({ section: 'sent', addressee: { host: 'claude-code', session: 'ses_live_dom' } });
+});
+
+// The failure this guards (the owner, 2026-10-22: "I keep sending messages to
+// the wrong agent in inbox, i think we need to leave the to: field empty."):
+// To used to name the last session sent to, or the current project's, so a
+// quick message went to whoever that was.
+test.skipIf(!hasDom)('a plain New message opens with To empty and focus on To; Send is refused until an agent is picked; a draft and "Message <host>" keep the session they name', async () => {
+  await poll('ses_empty_a', 'claude-code', projects[0]!);
+  await poll('ses_empty_b', 'pi', projects[0]!);
+  const el = await renderApp();
+  await openCompose(el);
+  const toButton = () => dialog()!.querySelector('button[data-compose-to]') as HTMLButtonElement;
+  expect(document.activeElement).toBe(toButton());
+  await until(() => dialog()!.querySelector('[data-compose-to="choose"]:not([data-loading])') !== null, 'To loaded, empty');
+  // Still empty once the live sessions are read, focus still on To.
+  await new Promise((r) => setTimeout(r, 200));
+  expect(toButton().getAttribute('data-compose-to')).toBe('choose');
+  expect(toButton().getAttribute('aria-label')).toBe('To: choose an agent');
+  expect(document.activeElement).toBe(toButton());
+  // Pinned on purpose: the user-facing refusal while To is empty.
+  expect(dialog()!.querySelector('[data-compose-status]')?.textContent).toBe('Choose an agent to send it.');
+  expect(dialog()!.querySelector('[data-compose-send]')?.getAttribute('aria-disabled')).toBe('true');
+  // Nothing written yet: Save draft is not offered (an empty compose is never kept).
+  expect(dialog()!.querySelector('[data-compose-save]')).toBeNull();
+  type('Look at the relay budget.');
+  await until(() => dialog()!.querySelector('[data-compose-save]') !== null, 'Save draft once something is written');
+  key('Enter', { metaKey: true });
+  await until(() => dialog()!.querySelector('[data-compose-error]') !== null, 'the error');
+  // Pinned on purpose: the user-facing refusal ⌘↵ gives while To is empty.
+  expect(dialog()!.querySelector('[data-compose-error]')?.textContent).toBe('Nothing sent: choose a live agent first.');
+  expect(posted.some((p) => p.path === '/api/inbox/messages')).toBe(false);
+  // Escape in the picker with nobody picked: focus goes back to To.
+  act(() => toButton().click());
+  await until(() => dialog()!.querySelector('[data-compose-picker]') !== null, 'the picker');
+  act(() => {
+    (dialog()!.querySelector('[data-compose-picker] input') as HTMLInputElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await until(() => dialog()!.querySelector('[data-compose-picker]') === null, 'the picker closed');
+  expect(document.activeElement).toBe(toButton());
+  await pickTo('ses_empty_b');
+  expect(document.activeElement).toBe(dialog()!.querySelector('textarea'));
+  expect(dialog()!.querySelector('[data-compose-send]')?.hasAttribute('aria-disabled')).toBe(false);
+
+  // Kept as a draft: reopened, it names the session it was for, focus in the message.
+  key('Escape');
+  act(() => (dialog()!.querySelector('[data-compose-keep]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'compose closed');
+  act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
+  await until(() => el.querySelector('[data-draft-id] .ib-draft-open') !== null, 'the draft row');
+  act(() => (el.querySelector('[data-draft-id] .ib-draft-open') as HTMLButtonElement).click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_empty_b"]') != null, 'the draft keeps its To');
+  expect(document.activeElement).toBe(dialog()!.querySelector('textarea'));
+  act(() => (dialog()!.querySelector('[data-compose-delete]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'draft deleted');
+
+  // The palette's "Message <host> in <project>": To names that session.
+  act(() => (el.querySelector('.ib-sp-entry') as HTMLButtonElement).click());
+  await until(() => document.querySelector('dialog[data-search-palette]') !== null, 'the palette');
+  const input = document.querySelector('dialog[data-search-palette] input') as HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  act(() => {
+    setter.call(input, 'claude');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await until(() => document.querySelector('[data-compose-action="message"]') !== null, 'the Message action');
+  act(() => (document.querySelector('[data-compose-action="message"]') as HTMLElement).click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_empty_a"]') != null, 'To names the action\'s session');
+  expect(document.activeElement).toBe(dialog()!.querySelector('textarea'));
+  key('Escape');
+  await until(() => dialog() === null, 'compose closed');
+});
+
+// The owner's own case: a message sent to session A; the next plain New
+// message must not name A. The picker lists A first but highlights no row,
+// so Enter there brings nothing back.
+test.skipIf(!hasDom)('sent to session A, the next plain New message opens with To empty; the picker lists A first with no row highlighted, Enter picks nothing, an arrow highlights A', async () => {
+  await poll('ses_owner_a', 'claude-code', projects[0]!);
+  await poll('ses_owner_b', 'pi', projects[0]!);
+  const el = await renderApp();
+  await openCompose(el);
+  await pickTo('ses_owner_a');
+  type('First message to A.');
+  act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'sent');
+  expect(posted.find((p) => p.path === '/api/inbox/messages')!.body).toMatchObject({ to: { session: 'ses_owner_a' } });
+
+  await openCompose(el);
+  await until(() => dialog()!.querySelector('[data-compose-to]:not([data-loading])') !== null, 'To loaded');
+  await new Promise((r) => setTimeout(r, 200));
+  const toButton = dialog()!.querySelector('button[data-compose-to]') as HTMLButtonElement;
+  expect(toButton.getAttribute('data-compose-to')).toBe('choose');
+  expect(document.activeElement).toBe(toButton);
+
+  act(() => toButton.click());
+  await until(() => dialog()!.querySelector('[data-compose-picker] [role="option"]') !== null, 'the picker');
+  const input = dialog()!.querySelector('[data-compose-picker] input') as HTMLInputElement;
+  const options = () => [...dialog()!.querySelectorAll<HTMLElement>('[data-compose-picker] [role="option"]')];
+  expect(options()[0]!.getAttribute('data-compose-session')).toBe('ses_owner_a');
+  expect(options().some((o) => o.getAttribute('aria-selected') === 'true')).toBe(false);
+  expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+  const press = (k: string) =>
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    });
+  press('Enter');
+  expect(dialog()!.querySelector('[data-compose-picker]')).not.toBeNull();
+  expect(toButton.getAttribute('data-compose-to')).toBe('choose');
+  // An arrow key highlights the first row (A); Enter then picks it, by the person's choice.
+  press('ArrowDown');
+  expect(options()[0]!.getAttribute('aria-selected')).toBe('true');
+  expect(input.getAttribute('aria-activedescendant')).toBe(options()[0]!.id);
+  press('Enter');
+  await until(() => dialog()!.querySelector('[data-compose-to="ses_owner_a"]') !== null, 'A picked');
+  key('Escape');
+  await until(() => dialog() === null, 'compose closed');
 });
 
 /** The ids of the list's rows on screen, by section. */
@@ -291,7 +435,7 @@ test.skipIf(!hasDom)('Send with a thread open: the new thread is in Sent at once
   await until(() => el.querySelector('section.ib-pane') !== null && el.querySelector('.ib-listcol .ib-lbody [data-thread-id]') !== null, 'the thread and the list');
   const before = rowsOnScreen(el);
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to="ses_sent_open"]') !== null, 'To prefilled');
+  await pickTo('ses_sent_open');
   type('Look at the flaky upload test while I read this.');
   act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'sent');
@@ -310,7 +454,7 @@ test.skipIf(!hasDom)('Send with no thread open: the new thread is in Sent at onc
   const el = await renderApp();
   await until(() => el.querySelector('.ib-listcol .ib-lbody [data-thread-id]') !== null, 'the list');
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to="ses_sent_list"]') !== null, 'To prefilled');
+  await pickTo('ses_sent_list');
   type('Draft the release notes for the paste fix.');
   act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'sent');
@@ -322,7 +466,7 @@ test.skipIf(!hasDom)('git too slow to tell the project (project_unresolved): the
   await poll('ses_live_dom', 'claude-code', projects[0]!);
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_live_dom');
   type('Plan the retry budget.');
   sendAnswer = { status: 503, body: { code: 'project_unresolved', error: 'Could not tell which project /x belongs to: git did not answer in time. Nothing was sent or saved; try the same call again.' } };
   try {
@@ -346,7 +490,7 @@ test.skipIf(!hasDom)('the To picker: one line per session, a start time only whe
   await poll('ses_solo', 'claude-code', other);
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await until(() => dialog()!.querySelector('[data-compose-to="choose"]:not([data-loading])') !== null, 'To loaded, empty');
   act(() => (dialog()!.querySelector('[data-compose-to]') as HTMLButtonElement).click());
   await until(() => dialog()!.querySelector('[data-compose-session="ses_solo"]') !== null, 'the picker');
   const option = (session: string) => dialog()!.querySelector(`[role="option"][data-compose-session="${session}"]`)!;
@@ -388,7 +532,7 @@ test.skipIf(!hasDom)('the thread chip follows the message until typed in; typed,
   await poll('ses_named', 'claude-code', projects[0]!);
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_named');
   // Nothing written yet: an empty chip with its placeholder, right under To, before the message.
   expect(chip().getAttribute('data-compose-thread-name')).toBe('auto');
   expect(chip().hasAttribute('data-empty')).toBe(true);
@@ -438,7 +582,7 @@ test.skipIf(!hasDom)('the thread chip follows the message until typed in; typed,
   expect(saved.map((d) => d.thread_name)).toEqual([undefined]);
   act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
   await until(() => el.querySelectorAll('[data-draft-id]').length === 1, 'the draft row');
-  act(() => (el.querySelector('.ib-draft-open') as HTMLButtonElement).click());
+  act(() => (el.querySelector('[data-draft-id] .ib-draft-open') as HTMLButtonElement).click());
   await until(() => dialog()?.querySelector('[data-compose-to="ses_named"]') != null && chipInput()?.value === 'Paste bug', 'reopened, named from the message');
 
   // A typed name is kept by the draft, as typed.
@@ -454,7 +598,7 @@ test.skipIf(!hasDom)('Send: a typed name goes as thread_name (checked first), th
   await poll('ses_named', 'claude-code', projects[0]!);
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_named');
   type('I want to explore what adding a board would look like. Kanban specifically.');
   await until(() => chipInput().value === 'Kanban board', 'named from the message');
   // Not a valid name: Send sends nothing and says why on the chip.
@@ -480,7 +624,7 @@ test.skipIf(!hasDom)('Send: a typed name goes as thread_name (checked first), th
 
   // The chip left as it was goes as compose's suggestion.
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_named');
   type('can you fix the paste bug in the reply box');
   await until(() => chipInput().value === 'Paste bug', 'named from the message');
   posted = [];
@@ -508,7 +652,7 @@ test.skipIf(!hasDom)('a typed name another open thread has: refused (409) and sa
 
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_taken');
   // 130 emoji (260 UTF-16 units): kept to 120 characters, as the server counts them.
   fillChip('🎉'.repeat(130));
   expect([...chipInput().value].length).toBe(120);
@@ -529,7 +673,7 @@ test.skipIf(!hasDom)('a typed name another open thread has: refused (409) and sa
 
   // A suggestion that is taken: the Send goes, the thread just has no name yet (its agent names it).
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_taken');
   type('Thinking about the relay budget again.');
   await until(() => chipInput().value === 'Relay budget', 'a taken suggestion');
   act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
@@ -542,7 +686,7 @@ test.skipIf(!hasDom)('dictation or a paste into the chip that cannot be a name i
   await poll('ses_named', 'claude-code', projects[0]!);
   const el = await renderApp();
   await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-to^="ses_"]') !== null, 'To prefilled');
+  await pickTo('ses_named');
   type('Kanban board idea.');
   await until(() => chipInput().value !== '', 'named');
   const before = chipInput().value;
@@ -569,4 +713,169 @@ test.skipIf(!hasDom)('dictation or a paste into the chip that cannot be a name i
   // A dictated sentence of eight words or more is a sentence, not a name, even when it would fit.
   expect(paste('this is a sentence the person said out loud').defaultPrevented).toBe(true);
   expect(paste('Short').defaultPrevented).toBe(false);
+});
+
+// Create thread (owner, 2026-10-27: a card with no thread offers "Create thread": "create, create, create is
+// the idea"). What regresses: the thread not linked to the card after the Send (Open thread never appears),
+// compose addressed to nobody, or a card's title the person did not change counted as words to keep.
+test.skipIf(!hasDom)('Create thread on a card with no thread: compose to a live session in its project, starting with the title; the Send links the thread to the card', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: true } }))).status).toBe(200);
+  // The first-visit dialog is claimed here, so it never covers the card.
+  await loopback('/api/inbox/board/intro', 'POST', '{}');
+  const project = (JSON.parse((await loopback('/api/inbox/projects')).text) as { projects: { id: string; root: string }[] }).projects[0]!;
+  const made = JSON.parse((await loopback('/api/inbox/cards', 'POST', JSON.stringify({ project: project.id, title: 'Settings search' }))).text) as { card: { id: string; threads: string[] } };
+  expect(made.card.threads).toEqual([]);
+  await poll('ses_create_thread', 'claude-code', project.root);
+  const el = await renderApp(`#board&card=${made.card.id}`);
+  await until(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]:not(:disabled)') !== null, 'Create thread');
+  expect(el.querySelector('[data-card-open-thread]')).toBeNull();
+  act(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]')!.click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_create_thread"]') != null, 'compose to the live session');
+  expect(dialog()!.querySelector('[data-compose-card]')!.textContent).toContain('Settings search');
+  expect((dialog()!.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Settings search\n\n');
+  // The card is the Board's already: no Board chip here, even with the Board on.
+  expect(dialog()!.querySelector('[data-compose-board]')).toBeNull();
+  // Untouched, it is nothing to keep: Escape closes without asking.
+  key('Escape');
+  await until(() => dialog() === null, 'closed without asking');
+  act(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]')!.click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_create_thread"]') != null, 'compose again');
+  type('Settings search\n\nFuzzy or prefix matching? Say which and why.');
+  act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'sent');
+  const thread = await threadIdOf('Settings search');
+  await until(async () => (JSON.parse((await loopback(`/api/inbox/cards/${made.card.id}`)).text) as { card: { threads: string[] } }).card.threads.includes(thread), 'the thread linked to the card');
+  await until(() => el.querySelector(`[data-card-open-thread="${thread}"]`) !== null, 'Open thread on the card');
+  expect(el.querySelector('[data-card-create-thread]')).toBeNull();
+});
+
+// Owner's follow-up to Create thread (2026-10-27): a draft kept from it must still link the thread when it is
+// sent later, from Drafts. What regresses: the draft dropping the card, so the later Send starts an unlinked
+// thread and the card keeps offering Create thread.
+test.skipIf(!hasDom)('Create thread kept as a draft: the draft keeps the card; sent later from Drafts, the thread is linked to the card', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: true } }))).status).toBe(200);
+  await loopback('/api/inbox/board/intro', 'POST', '{}');
+  const project = (JSON.parse((await loopback('/api/inbox/projects')).text) as { projects: { id: string; root: string }[] }).projects[0]!;
+  const made = JSON.parse((await loopback('/api/inbox/cards', 'POST', JSON.stringify({ project: project.id, title: 'Draft card link' }))).text) as { card: { id: string } };
+  await poll('ses_draft_card', 'claude-code', project.root);
+  const el = await renderApp(`#board&card=${made.card.id}`);
+  await until(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]:not(:disabled)') !== null, 'Create thread');
+  act(() => el.querySelector<HTMLButtonElement>('[data-card-create-thread]')!.click());
+  await until(() => dialog()?.querySelector('[data-compose-to="ses_draft_card"]') != null, 'compose to the live session');
+  type('Draft card link\n\nWhich of the two search modes?');
+  key('Escape');
+  act(() => (dialog()!.querySelector('[data-compose-keep]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'kept as a draft');
+  const kept = (await drafts()).find((d) => d.body.startsWith('Draft card link')) as unknown as { id: string; card?: { id: string; title: string } };
+  expect(kept.card).toEqual({ id: made.card.id, title: 'Draft card link' });
+  // Nothing sent yet: the card still has no thread.
+  expect((JSON.parse((await loopback(`/api/inbox/cards/${made.card.id}`)).text) as { card: { threads: string[] } }).card.threads).toEqual([]);
+
+  // Deleted from Drafts and brought back with Undo: it still names the card (review of #2248).
+  act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) !== null, 'the draft row');
+  act(() => (el.querySelector(`[data-draft-id="${kept.id}"] [data-draft-delete]`) as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) === null, 'the row gone');
+  act(() => (document.querySelector('[data-toast-undo]') as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) !== null, 'the draft back');
+  const restored = (await drafts()).find((d) => d.id === kept.id) as unknown as { card?: { id: string; title: string } };
+  expect(restored.card).toEqual({ id: made.card.id, title: 'Draft card link' });
+
+  // Later, from Drafts: the draft reopens naming the card, and its Send links the thread.
+  act(() => (el.querySelector(`[data-draft-id="${kept.id}"] .ib-draft-open`) as HTMLButtonElement).click());
+  await until(() => dialog()?.querySelector(`[data-compose-card="${made.card.id}"]`) != null, 'the draft names the card');
+  await until(() => dialog()!.querySelector('[data-compose-to="ses_draft_card"]') !== null, 'To keeps the session');
+  act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'sent');
+  const thread = await threadIdOf('Draft card link');
+  await until(async () => (JSON.parse((await loopback(`/api/inbox/cards/${made.card.id}`)).text) as { card: { threads: string[] } }).card.threads.includes(thread), 'the thread linked to the card');
+  // A draft naming something that is not a card is refused, not kept with a broken link.
+  const refused = await loopback(`/api/inbox/drafts/drf_${'0'.repeat(26)}`, 'POST', JSON.stringify({ body: 'x', base: null, card: { id: 'msg_x', title: 'x' } }));
+  expect(refused.status).toBe(422);
+  expect(JSON.parse(refused.text)).toMatchObject({ code: 'validation_error', field: 'card' });
+});
+
+// The Board chip (approval "inbox-compose-board-chip"). What regresses: the chip shown while the Board is off
+// (it would ask an agent for cards the Board refuses), the request not reaching the server, the person's words
+// changed, the choice forgotten, or the sent message unmarked.
+const BOARD_CHOICE_KEY = 'plannotator-inbox-compose-board';
+const boardChip = () => dialog()!.querySelector<HTMLButtonElement>('[data-compose-board]');
+
+test.skipIf(!hasDom)('Board chip: none while the Board is off', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: false } }))).status).toBe(200);
+  // The browser's last choice is on: with the Board off, the chip is still not drawn.
+  localStorage.setItem(BOARD_CHOICE_KEY, '1');
+  try {
+    await poll('ses_chip_off', 'claude-code', projects[0]!);
+    const el = await renderApp();
+    await openCompose(el);
+    await until(() => dialog()!.querySelector('[data-compose-thread-row]') !== null, 'the Thread row');
+    expect(boardChip()).toBeNull();
+  } finally {
+    localStorage.removeItem(BOARD_CHOICE_KEY);
+  }
+});
+
+test.skipIf(!hasDom)('Board chip: off by default; on, the Send asks for the Board with the words as typed, the sent message is marked, and the next compose remembers it', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: true } }))).status).toBe(200);
+  await loopback('/api/inbox/board/intro', 'POST', '{}');
+  localStorage.removeItem(BOARD_CHOICE_KEY);
+  await poll('ses_chip', 'claude-code', projects[0]!);
+  let el = await renderApp();
+  await openCompose(el);
+  await until(() => boardChip() !== null, 'the Board chip');
+  expect(boardChip()!.getAttribute('aria-pressed')).toBe('false');
+  // The accessible name, pinned on purpose: the approval's name for the control (it holds its visible word, WCAG 2.5.3).
+  expect(boardChip()!.getAttribute('aria-label')).toBe('Track on Board');
+  act(() => boardChip()!.click());
+  expect(boardChip()!.getAttribute('aria-pressed')).toBe('true');
+  expect(localStorage.getItem(BOARD_CHOICE_KEY)).toBe('1');
+  await pickTo('ses_chip');
+  type('Chip tracked work\n\nMove the retry budget into config.');
+  act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'sent');
+  const sendBody = posted.find((p) => p.path === '/api/inbox/messages')!.body;
+  expect(sendBody.board_request).toBe(true);
+  const threadId = await threadIdOf('Chip tracked work');
+  const stored = JSON.parse((await loopback(`/api/inbox/threads/${threadId}`)).text) as { thread: { messages: { body: string; board_request?: boolean }[] } };
+  expect(stored.thread.messages[0]).toMatchObject({ body: 'Chip tracked work\n\nMove the retry budget into config.', board_request: true });
+
+  // The next compose starts on (this browser's last choice); turned off, it is remembered off.
+  await openCompose(el);
+  await until(() => boardChip() !== null, 'the Board chip again');
+  expect(boardChip()!.getAttribute('aria-pressed')).toBe('true');
+  act(() => boardChip()!.click());
+  expect(localStorage.getItem(BOARD_CHOICE_KEY)).toBeNull();
+  key('Escape');
+  await until(() => dialog() === null, 'closed');
+
+  // The sent message carries the quiet mark, not the agent's block.
+  act(() => root?.unmount());
+  host?.remove();
+  el = await renderApp(`#thread=${threadId}`);
+  await until(() => el.querySelector(`[data-message-article] [data-board-request]`) !== null, 'the Board mark');
+  expect(el.textContent).not.toContain('plannotator-board-request');
+});
+
+test.skipIf(!hasDom)('Board chip: a draft keeps it, whatever the browser chose since', async () => {
+  expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: true } }))).status).toBe(200);
+  await loopback('/api/inbox/board/intro', 'POST', '{}');
+  localStorage.removeItem(BOARD_CHOICE_KEY);
+  await poll('ses_chip_draft', 'claude-code', projects[0]!);
+  const el = await renderApp();
+  await openCompose(el);
+  await until(() => boardChip() !== null, 'the Board chip');
+  act(() => boardChip()!.click());
+  type('Chip draft kept\n\nLater.');
+  key('Escape');
+  act(() => (dialog()!.querySelector('[data-compose-keep]') as HTMLButtonElement).click());
+  await until(() => dialog() === null, 'kept as a draft');
+  const kept = (await drafts()).find((d) => d.body.startsWith('Chip draft kept')) as unknown as { id: string; board_request?: boolean };
+  expect(kept.board_request).toBe(true);
+  localStorage.removeItem(BOARD_CHOICE_KEY);
+  act(() => (el.querySelector('[data-drafts-nav]') as HTMLButtonElement).click());
+  await until(() => el.querySelector(`[data-draft-id="${kept.id}"]`) !== null, 'the draft row');
+  act(() => (el.querySelector(`[data-draft-id="${kept.id}"] .ib-draft-open`) as HTMLButtonElement).click());
+  await until(() => boardChip() !== null, 'the draft opens with the chip');
+  expect(boardChip()!.getAttribute('aria-pressed')).toBe('true');
 });

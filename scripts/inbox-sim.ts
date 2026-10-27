@@ -81,10 +81,17 @@ export class SimAgent {
     attachments?: string[];
     /** Earlier questions of the thread this message supersedes: `<message id>` or `<message id>/<key>`. */
     supersedes?: string[];
+    /** Its own action items (`:::action`) of the thread it saw done: `<message id>/<key>` or `<message id>`. */
+    done?: string[];
   }, options: { wakes?: boolean } = {}): Promise<Structured> {
     // `wakes`: send as a connection whose session the person's reply wakes
     // would (the mod, Pi, OpenCode 2), so the Inbox may call it ended later.
     return this.call('send_message', { ...input, agent_name: this.name, agent_host: this.host }, options.wakes ? { [INBOX_WAKES_META_KEY]: true } : undefined);
+  }
+
+  /** The Board's `card` tool (create, move, say, link, ship, drop, list); a refusal throws with the Inbox's words. */
+  card(input: { op: string; project_path?: string; [field: string]: unknown }): Promise<Structured> {
+    return this.call('card', { ...input, agent_name: this.name, agent_host: this.host });
   }
 
   /** get_guide_brief: the method, the guide's shape, the diff steps, the rules and a worked example call. */

@@ -60,6 +60,47 @@ body[data-plannotator-pinpoint-cursor],
 body[data-plannotator-pinpoint-cursor] * {
   cursor: crosshair !important;
 }
+/* A plain click on a link with a real destination follows it while armed
+ * (Cmd/Ctrl-click pins it), so such a link keeps the pointer that says so,
+ * until the modifier is held. A link that goes nowhere (no href, "", "#",
+ * javascript:) is not followed and keeps the crosshair. SVG links may carry
+ * only xlink:href, hence the any-namespace attribute. */
+body[data-plannotator-pinpoint-cursor]:not([data-plannotator-pin-modifier]) :is(a, area)[href]:not([href=""]):not([href="#"]):not([href^="javascript:" i]),
+body[data-plannotator-pinpoint-cursor]:not([data-plannotator-pin-modifier]) :is(a, area)[href]:not([href=""]):not([href="#"]):not([href^="javascript:" i]) *,
+body[data-plannotator-pinpoint-cursor]:not([data-plannotator-pin-modifier]) svg a:not([href])[*|href]:not([*|href=""]):not([*|href="#"]):not([*|href^="javascript:" i]),
+body[data-plannotator-pinpoint-cursor]:not([data-plannotator-pin-modifier]) svg a:not([href])[*|href]:not([*|href=""]):not([*|href="#"]):not([*|href^="javascript:" i]) * {
+  cursor: pointer !important;
+}
+/* Touch, armed: a tap on a link follows it and a press-and-hold pins it for
+ * a comment. iOS's link callout would take that hold, so it is off on links
+ * while armed, once a touch is seen (data-plannotator-touch) or on screens
+ * without hover. The callout is all: link text stays selectable, so a drag
+ * across a link (a trackpad, a touchscreen laptop) still quotes its words.
+ * Only while a hold on a link is in progress (data-plannotator-link-hold,
+ * from its touchstart to its release) is selection off too, so the platform's
+ * long-press does not start a native text selection under the finger. */
+body[data-plannotator-pinpoint-cursor][data-plannotator-touch] :is(a, area),
+body[data-plannotator-pinpoint-cursor][data-plannotator-touch] :is(a, area) *,
+body[data-plannotator-pinpoint-cursor][data-plannotator-touch] svg a,
+body[data-plannotator-pinpoint-cursor][data-plannotator-touch] svg a * {
+  -webkit-touch-callout: none !important;
+}
+@media (hover: none) {
+  body[data-plannotator-pinpoint-cursor] :is(a, area),
+  body[data-plannotator-pinpoint-cursor] :is(a, area) *,
+  body[data-plannotator-pinpoint-cursor] svg a,
+  body[data-plannotator-pinpoint-cursor] svg a * {
+    -webkit-touch-callout: none !important;
+  }
+}
+body[data-plannotator-link-hold] :is(a, area),
+body[data-plannotator-link-hold] :is(a, area) *,
+body[data-plannotator-link-hold] svg a,
+body[data-plannotator-link-hold] svg a * {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
 /* Armed pinpoint over an EMBEDDED local document: the embed is one element
  * from the outer page's point of view, and the bridge is never injected into a
  * nested frame, so a click inside it would simply vanish into another document.
@@ -419,6 +460,10 @@ export const BRIDGE_SCRIPT = `(function() {
   // --- Selection ---
   var pendingSelection = null;
   var pendingRange = null; // live range for the pending selection (scroll tracking)
+  // The pending text selection's own text, uncapped: what plain-text Copy
+  // writes. Range.toString() would lose the rendered line breaks between
+  // blocks and keep the source indentation.
+  var pendingCopyText = '';
   var pendingPinEl = null; // element pinned by a pinpoint click (outline + scroll tracking)
   var pendingPinAnchor = null; // serialized anchor for the pending pin
   var pendingPinKey = null; // target key for the primary pinpoint target (multi-select)
@@ -530,7 +575,8 @@ export const BRIDGE_SCRIPT = `(function() {
     }
     skipNextClear = false; // a real text selection happened
     var range = sel.getRangeAt(0);
-    var text = capSelectionText(sel.toString().trim());
+    var fullText = sel.toString().trim();
+    var text = capSelectionText(fullText);
     if (!text) return false;
 
     // A draft now owns the surface: kill the click-to-select hover
@@ -539,6 +585,7 @@ export const BRIDGE_SCRIPT = `(function() {
 
     var rect = range.getBoundingClientRect();
     pendingRange = range;
+    pendingCopyText = fullText;
     pendingSelection = {
       text: text,
       startContainerPath: getNodePath(range.startContainer),
@@ -556,6 +603,13 @@ export const BRIDGE_SCRIPT = `(function() {
       targetKey: (extras && extras.targetKey) || undefined,
       targetLabel: (extras && extras.targetLabel) || undefined,
       context: (extras && extras.context) || undefined,
+      // This bridge answers rich-copy-request for a text selection (the
+      // toolbar's rich-text Copy). Optional and additive: an older bridge
+      // omits it and Copy stays plain text, so no protocol version bump.
+      richCopy: (extras && extras.pinpoint) ? undefined : true,
+      // The quote above was cut to MAX_SELECTION_TEXT: a plain-text copy made
+      // from it alone (no answer to rich-copy-request) says so.
+      textCut: text.length < fullText.length ? true : undefined,
       rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
     });
     renderAnnotationOverlay(); // draft selection highlight (overlay-projected)
@@ -603,6 +657,46 @@ export const BRIDGE_SCRIPT = `(function() {
     if (LIVE && (!isEditorOrigin(e.origin) || !e.data || e.data.token !== LIVE.token)) return;
     if (!e.data || !e.data.type) return;
     var type = e.data.type;
+
+    // Copy (rich text) was pressed in the parent: build the pending text
+    // range's markup now (never on selection). A throw or an oversized range
+    // answers without markup, so the parent copies plain text.
+    if (type === PREFIX + 'rich-copy-request') {
+      // Text and markup are each capped at 256 KiB: past it the text is cut
+      // (never at half a surrogate pair) and marked, and the markup is not
+      // built at all (too large for rich text).
+      var copyHtml = '';
+      var copyText = '';
+      var copyTruncated = false;
+      var copyTooLarge = false;
+      try {
+        if (pendingRange && pendingSelection && pendingSelection.startContainerPath) {
+          copyText = pendingCopyText || pendingRange.toString();
+          if (copyText.length > 262144) {
+            var copyCut = 262144;
+            var copyLast = copyText.charCodeAt(copyCut - 1);
+            if (copyLast >= 0xd800 && copyLast <= 0xdbff) copyCut -= 1;
+            copyText = copyText.slice(0, copyCut);
+            copyTruncated = true;
+            copyTooLarge = true;
+          } else {
+            copyHtml = htmlForRange(pendingRange);
+            if (copyHtml.length > 262144) copyTooLarge = true;
+          }
+        }
+      } catch (err) {
+        copyHtml = '';
+      }
+      postToParent({
+        type: PREFIX + 'rich-copy',
+        id: typeof e.data.id === 'string' ? e.data.id : '',
+        html: copyTooLarge ? '' : copyHtml,
+        text: copyText,
+        truncated: copyTruncated,
+        tooLarge: copyTooLarge
+      });
+      return;
+    }
 
     if (type === PREFIX + 'create-mark') {
       var id = e.data.id;
@@ -1321,6 +1415,10 @@ export const BRIDGE_SCRIPT = `(function() {
     return pinpointBoxEl;
   }
   function positionPinpointBox(el) {
+    if (pendingPinHidden(el)) {
+      if (pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+      return;
+    }
     var r = el.getBoundingClientRect();
     var box = getPinpointBoxEl();
     box.style.display = 'block';
@@ -1357,6 +1455,14 @@ export const BRIDGE_SCRIPT = `(function() {
   // changes); shared by mousemove and the scroll/resize reconcile pass.
   // Per-event hit-testing only — never builds the semantic graph.
   function updatePinpointHover(x, y, fallbackNode) {
+    // A link a plain click follows shows no pin outline unless Cmd/Ctrl is
+    // held: the outline always matches what a click there will do.
+    if (!pinModifierHeld && !pendingPinEl && (followableLinkAt(fallbackNode) || followableLinkAt(deepElementFromPoint(x, y)))) {
+      pinpointHover = null;
+      hidePinpointBox();
+      hidePinpointLabel();
+      return;
+    }
     var el = pinpointLeafAt(x, y, fallbackNode);
     // The 25px marker bubble owns clicks over it (they select its comment),
     // so hover must advertise the MARKER's own identity — no annotate box,
@@ -1387,9 +1493,36 @@ export const BRIDGE_SCRIPT = `(function() {
     positionPinpointLabel(el, pinpointHoverLabel(el));
   }
 
+  // Cmd or Ctrl held (the pin modifier): a link under the pointer shows the
+  // pin outline and the crosshair instead of the follow pointer. Read from
+  // the key itself (as the token-hover gate does) and from every pointer
+  // move, so a key pressed with focus outside this frame still counts.
+  var pinModifierHeld = false;
+  function setPinModifier(held) {
+    if (held === pinModifierHeld) return;
+    pinModifierHeld = held;
+    if (document.body) {
+      if (held) document.body.setAttribute('data-plannotator-pin-modifier', '');
+      else document.body.removeAttribute('data-plannotator-pin-modifier');
+    }
+    if (annotateModeActive && currentInputMethod === 'pinpoint' && lastPointer && !(vimEnabled && vimPhase !== 'inactive')) {
+      updatePinpointHover(lastPointer.x, lastPointer.y, lastPointerNode || pinpointHover);
+    }
+  }
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Meta' || e.key === 'Control') setPinModifier(true);
+  }, true);
+  document.addEventListener('keyup', function(e) {
+    if (e.key === 'Meta' || e.key === 'Control') setPinModifier(e.metaKey || e.ctrlKey);
+  }, true);
+  window.addEventListener('blur', function() { setPinModifier(false); });
+
   var lastPointer = null;
+  var lastPointerNode = null;
   document.addEventListener('mousemove', function(e) {
     lastPointer = { x: e.clientX, y: e.clientY };
+    lastPointerNode = e.target && e.target.nodeType === 1 ? e.target : null;
+    if (!!(e.metaKey || e.ctrlKey) !== pinModifierHeld) setPinModifier(!!(e.metaKey || e.ctrlKey));
     updateDragYield(e);
     if (!annotateModeActive) return; // Interact mode: no hover affordances
     if (currentInputMethod !== 'pinpoint') {
@@ -1439,6 +1572,8 @@ export const BRIDGE_SCRIPT = `(function() {
       if (annotateModeActive && currentInputMethod !== 'pinpoint' && lastPointer && !pendingPinEl && !pendingSelection) {
         setHoverHighlight(committedHighlightIdAtCached(lastPointer.x, lastPointer.y));
       }
+      // Before the boxes: it may re-find a replaced target they then follow.
+      reconcilePendingPinVisibility();
       positionMultiTargetBoxes();
       if (pendingPinEl && pendingPinEl.isConnected) {
         positionPinpointBox(pendingPinEl);
@@ -3431,7 +3566,91 @@ export const BRIDGE_SCRIPT = `(function() {
     }
   }
 
+  // A draft's composer hides with its target and keeps the draft: a slide the
+  // page hid (display:none, visibility:hidden, no box) is not a scroll-out.
+  // Offscreen targets stay visible to support roaming multi-select. A target
+  // the page REPLACED with a new element (a framework re-render, a live-app
+  // route change) is found again through its anchor, the way restore re-finds
+  // committed targets; one that cannot be found keeps the composer visible,
+  // so a draft is never left where nobody can reach it.
+  var pendingPinVisible = true;
+  var pendingPinSearchGen = 0;
+  function pendingPinHidden(el) {
+    if (!el || !el.isConnected) return false;
+    if (targetStyleHidden(el)) return true;
+    var rect = el.getBoundingClientRect();
+    return layoutActive() && !rect.width && !rect.height;
+  }
+
+  function refindPendingTarget(anchor, taken) {
+    var found = resolveAnchorElement(anchor);
+    if (!found || isViewerOverlayNode(found)) return null;
+    for (var i = 0; i < taken.length; i++) if (taken[i] === found) return null;
+    return found;
+  }
+
+  // Re-find detached draft targets, once per DOM generation each. Returns
+  // whether the primary moved to a new element.
+  function refreshPendingTargets() {
+    var taken = [pendingPinEl];
+    for (var t = 0; t < pendingMultiTargets.length; t++) taken.push(pendingMultiTargets[t].el);
+    var moved = false;
+    if (pendingPinEl && !pendingPinEl.isConnected && pendingPinAnchor && pendingPinSearchGen !== domGeneration) {
+      pendingPinSearchGen = domGeneration;
+      var found = refindPendingTarget(pendingPinAnchor, taken);
+      if (found) {
+        pendingPinEl = found;
+        // The text range belonged to the replaced element: commit as an
+        // element pin on the new one (as a promoted primary does).
+        if (pendingRange && !rangeAlive(pendingRange)) pendingRange = null;
+        if (pendingSelection && pendingSelection.startContainerPath) {
+          pendingSelection = { element: true, text: pendingSelection.text };
+        }
+        moved = true;
+      }
+    }
+    for (var i = 0; i < pendingMultiTargets.length; i++) {
+      var entry = pendingMultiTargets[i];
+      if (!entry.el || entry.el.isConnected || !entry.anchor || entry.searchGen === domGeneration) continue;
+      entry.searchGen = domGeneration;
+      var next = refindPendingTarget(entry.anchor, taken);
+      if (next) { entry.el = next; taken.push(next); }
+    }
+    return moved;
+  }
+
+  // Re-anchor the parent's composer on the pin (it cannot see the page).
+  function postPendingPinRect() {
+    if (!pendingSelection || !pendingPinEl || !pendingPinEl.isConnected) return;
+    var tracked = pendingRange && rangeAlive(pendingRange) ? pendingRange : pendingPinEl;
+    var r = tracked.getBoundingClientRect();
+    postToParent({
+      type: PREFIX + 'selection-rect',
+      rect: { top: r.top, left: r.left, width: r.width, height: r.height }
+    });
+  }
+
+  function reconcilePendingPinVisibility() {
+    if (!pendingPinEl) return;
+    var moved = refreshPendingTargets();
+    var visible = !pendingPinHidden(pendingPinEl);
+    for (var i = 0; !visible && i < pendingMultiTargets.length; i++) {
+      visible = !pendingPinHidden(pendingMultiTargets[i].el);
+    }
+    // A detached primary has no geometry: never leave its outline behind.
+    if (!pendingPinEl.isConnected && pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+    var shown = visible && !pendingPinVisible;
+    if (visible !== pendingPinVisible) {
+      pendingPinVisible = visible;
+      postToParent({ type: PREFIX + 'pin-visibility', visible: visible });
+      if (!visible && pinpointBoxEl) pinpointBoxEl.style.display = 'none';
+    }
+    if (visible && (moved || shown)) postPendingPinRect();
+  }
+
   function clearPendingPin() {
+    pendingPinVisible = true;
+    pendingPinSearchGen = 0;
     pendingPinEl = null;
     pendingPinContext = null;
     pendingPinAnchor = null;
@@ -3487,6 +3706,7 @@ export const BRIDGE_SCRIPT = `(function() {
   }
 
   function positionBoxToEl(box, el) {
+    if (pendingPinHidden(el)) { box.style.display = 'none'; return; }
     var r = el.getBoundingClientRect();
     box.style.display = 'block';
     box.style.left = r.left + 'px';
@@ -3618,6 +3838,7 @@ export const BRIDGE_SCRIPT = `(function() {
    */
   function removeMultiTargetByKey(key, echo) {
     if (!key) return;
+    schedulePinpointReconcile();
     if (key === pendingPinKey) {
       if (!pendingMultiTargets.length) {
         // Last target gone — the draft is cancelled.
@@ -3634,6 +3855,7 @@ export const BRIDGE_SCRIPT = `(function() {
       var next = pendingMultiTargets.shift();
       destroyMultiTargetBox(next.box);
       pendingPinEl = next.el;
+      pendingPinSearchGen = 0;
       pendingPinAnchor = next.anchor;
       pendingPinKey = next.key;
       pendingPinLabel = next.label;
@@ -3701,6 +3923,7 @@ export const BRIDGE_SCRIPT = `(function() {
     var key = makeTargetKey();
     var box = createMultiTargetBox(el);
     pendingMultiTargets.push({ key: key, el: el, anchor: anchor, label: label, text: text, point: point, context: context, box: box });
+    schedulePinpointReconcile();
     postToParent({
       type: PREFIX + 'multi-target-added',
       key: key,
@@ -3835,6 +4058,8 @@ export const BRIDGE_SCRIPT = `(function() {
     multiSelectArmed = false;
     multiSelectMax = MAX_MULTI_TARGETS;
     pendingPinEl = el;
+    pendingPinVisible = true;
+    pendingPinSearchGen = 0;
     pendingPinAnchor = buildElementAnchor(el);
     pendingPinKey = makeTargetKey();
     pendingPinLabel = pinpointHoverLabel(el);
@@ -3899,6 +4124,230 @@ export const BRIDGE_SCRIPT = `(function() {
     return true;
   }
 
+  // --- Touch: a tap on a link follows it, press-and-hold pins it ---
+  // The owner's amendment to html-link-click (2026-10-20): on a phone there is
+  // no Cmd/Ctrl, so while armed a TAP on a link follows it (the click handlers
+  // below take it as a plain click) and a PRESS-AND-HOLD of HOLD_PIN_MS opens
+  // a comment on it, pinned exactly as a Cmd-click pins it. Every surface
+  // alike: srcdoc pages (annotate, plan review's HTML, the Inbox) and live apps.
+  // A finger that moves past HOLD_SLOP_PX (a scroll), a second finger, or a
+  // scroll cancels the hold. The release of a hold that pinned never follows
+  // the link and never reaches the page: its pointerup and touchend are
+  // stopped at the window (registered before a live app's own listeners),
+  // touchend is cancelled so no click is synthesized, and a click that still
+  // arrives is swallowed once. That swallow ends at the next touch, mouse
+  // press or key, so it never eats an unrelated click.
+  // While a hold is in progress, link text is not selectable (the CSS above),
+  // so the platform's long-press starts no native selection under the finger;
+  // Android's contextmenu, its long-press signal, fires the hold at once.
+  var HOLD_PIN_MS = 500;
+  var HOLD_SLOP_PX = 10;
+  var HOLD_SWALLOW_MAX_MS = 10000; // a release never seen (an app stopped touchend)
+  var linkHold = null; // { timer, x, y, id, target }
+  // After a hold pinned: { pointerId, released, until } until its release's
+  // click (if any) is swallowed or the next gesture starts.
+  var heldGesture = null;
+  var lastTouchPointerId = null;
+  function holdArmed() {
+    return annotateModeActive && currentInputMethod === 'pinpoint' && !(vimEnabled && vimPhase !== 'inactive');
+  }
+  function setLinkHoldStyle(on) {
+    if (!document.body) return;
+    if (on) document.body.setAttribute('data-plannotator-link-hold', '');
+    else document.body.removeAttribute('data-plannotator-link-hold');
+  }
+  function cancelLinkHold() {
+    if (!linkHold) return;
+    clearTimeout(linkHold.timer);
+    linkHold = null;
+    setLinkHoldStyle(false);
+  }
+  function fireLinkHold() {
+    var hold = linkHold;
+    if (!hold) return false;
+    clearTimeout(hold.timer);
+    linkHold = null;
+    if (!holdArmed() || !hold.target.isConnected) {
+      setLinkHoldStyle(false);
+      return false;
+    }
+    var el = resolvePinpointTargetAt(hold.x, hold.y, hold.target);
+    if (!el) {
+      setLinkHoldStyle(false);
+      return false;
+    }
+    heldGesture = { pointerId: lastTouchPointerId, released: false, pointerUpSeen: false, pointerEnded: false, touchEnded: false, target: hold.target, touchId: hold.id, x: hold.x, y: hold.y, until: Date.now() + HOLD_SWALLOW_MAX_MS };
+    // The same pin a Cmd-click makes: the link's own words as a text range.
+    // Selection is back on for that, then off again until the finger lifts.
+    setLinkHoldStyle(false);
+    try { window.getSelection().removeAllRanges(); } catch (ex) {}
+    annotateElement(el, undefined, true, { x: hold.x, y: hold.y });
+    setLinkHoldStyle(true);
+    return true;
+  }
+  function endHeldGesture() {
+    heldGesture = null;
+  }
+  function touchById(list, id) {
+    for (var i = 0; list && i < list.length; i++) if (list[i].identifier === id) return list[i];
+    return null;
+  }
+  // The release of a hold is stopped, so the page never sees it end: a press
+  // library (React Aria's usePress, Motion's whileTap, dnd-kit) would keep the
+  // press open. In its place the page gets a pointercancel and a touchcancel
+  // on the element the finger went down on, which end a press without
+  // activating it. The bridge's own listeners ignore those two.
+  var bridgeSynthetic = typeof WeakSet === 'function' ? new WeakSet() : null;
+  function isBridgeSynthetic(e) {
+    return !!(bridgeSynthetic && bridgeSynthetic.has(e));
+  }
+  function dispatchSynthetic(target, event) {
+    if (bridgeSynthetic) bridgeSynthetic.add(event);
+    try { target.dispatchEvent(event); } catch (ex) {}
+  }
+  function sendPointerCancel(g, pointerId) {
+    if (g.pointerEnded || pointerId === null || pointerId === undefined) return;
+    g.pointerEnded = true;
+    var target = g.target && g.target.isConnected ? g.target : document.body;
+    if (!target) return;
+    var init = { bubbles: true, cancelable: false, composed: true, pointerId: pointerId, pointerType: 'touch', isPrimary: true, clientX: g.x, clientY: g.y };
+    var event = null;
+    try { if (typeof PointerEvent === 'function') event = new PointerEvent('pointercancel', init); } catch (ex) {}
+    if (!event) {
+      event = new Event('pointercancel', { bubbles: true, cancelable: false, composed: true });
+      try {
+        Object.defineProperty(event, 'pointerId', { value: pointerId });
+        Object.defineProperty(event, 'pointerType', { value: 'touch' });
+        Object.defineProperty(event, 'isPrimary', { value: true });
+      } catch (ex) {}
+    }
+    dispatchSynthetic(target, event);
+  }
+  function sendTouchCancel(g) {
+    if (g.touchEnded) return;
+    g.touchEnded = true;
+    var target = g.target && g.target.isConnected ? g.target : document.body;
+    if (!target) return;
+    var event = null;
+    try {
+      if (typeof TouchEvent === 'function' && typeof Touch === 'function') {
+        var t = new Touch({ identifier: g.touchId, target: target, clientX: g.x, clientY: g.y });
+        event = new TouchEvent('touchcancel', { bubbles: true, cancelable: false, composed: true, touches: [], targetTouches: [], changedTouches: [t] });
+      }
+    } catch (ex) { event = null; }
+    if (!event) {
+      event = new Event('touchcancel', { bubbles: true, cancelable: false, composed: true });
+      var point = { identifier: g.touchId, target: target, clientX: g.x, clientY: g.y };
+      try {
+        Object.defineProperty(event, 'touches', { value: [] });
+        Object.defineProperty(event, 'targetTouches', { value: [] });
+        Object.defineProperty(event, 'changedTouches', { value: [point] });
+      } catch (ex) {}
+    }
+    dispatchSynthetic(target, event);
+  }
+  // Pointer events come before touch events; the touch's pointerId names the
+  // release's pointerup.
+  window.addEventListener('pointerdown', function(e) {
+    if (isBridgeSynthetic(e)) return;
+    if (e.pointerType === 'touch') {
+      lastTouchPointerId = e.pointerId;
+      if (heldGesture && heldGesture.released) endHeldGesture();
+      return;
+    }
+    // A mouse or pen press: whatever click comes next is its own.
+    endHeldGesture();
+  }, true);
+  window.addEventListener('keydown', function() { if (heldGesture && heldGesture.released) endHeldGesture(); }, true);
+  function heldPointer(e) {
+    if (!heldGesture || e.pointerType !== 'touch') return false;
+    return heldGesture.pointerId === null || e.pointerId === heldGesture.pointerId;
+  }
+  window.addEventListener('pointerup', function(e) {
+    if (isBridgeSynthetic(e) || !heldPointer(e) || heldGesture.pointerUpSeen) return;
+    heldGesture.pointerUpSeen = true;
+    e.stopImmediatePropagation();
+    sendPointerCancel(heldGesture, e.pointerId);
+  }, true);
+  // The browser ended the held pointer itself (it took the touch): nothing to stand in for.
+  window.addEventListener('pointercancel', function(e) {
+    if (isBridgeSynthetic(e) || !heldPointer(e)) return;
+    heldGesture.pointerUpSeen = true;
+    heldGesture.pointerEnded = true;
+  }, true);
+  window.addEventListener('touchend', function(e) {
+    if (isBridgeSynthetic(e)) return;
+    if (heldGesture && !heldGesture.released) {
+      // The release of the hold that pinned: no click, no navigation, and
+      // the page's own touchend never runs on it; it gets cancels instead.
+      if (e.cancelable) e.preventDefault();
+      e.stopImmediatePropagation();
+      var g = heldGesture;
+      g.released = true;
+      g.until = Date.now() + 800;
+      setLinkHoldStyle(false);
+      // Engines that send touchend before pointerup: the pointer ends here
+      // (its own pointerup, when it comes, is still stopped).
+      sendPointerCancel(g, g.pointerId);
+      sendTouchCancel(g);
+      return;
+    }
+    cancelLinkHold(); // a tap: the click that follows it follows the link
+  }, { capture: true, passive: false });
+  window.addEventListener('touchcancel', function(e) {
+    if (isBridgeSynthetic(e)) return;
+    cancelLinkHold();
+    setLinkHoldStyle(false);
+    if (heldGesture) {
+      heldGesture.released = true;
+      heldGesture.touchEnded = true;
+      heldGesture.until = Date.now() + 800;
+    }
+  }, true);
+  document.addEventListener('touchstart', function(e) {
+    if (document.body && !document.body.hasAttribute('data-plannotator-touch')) {
+      document.body.setAttribute('data-plannotator-touch', '');
+    }
+    cancelLinkHold();
+    // A new touch: whatever click comes next is its own, even if the last
+    // hold's release was never seen.
+    endHeldGesture();
+    setLinkHoldStyle(false);
+    if (!holdArmed() || !e.touches || e.touches.length !== 1) return;
+    if (isViewerOverlayNode(e.target) || !followableLinkAt(e.target)) return;
+    var t = e.touches[0];
+    linkHold = { x: t.clientX, y: t.clientY, id: t.identifier, target: e.target, timer: 0 };
+    linkHold.timer = setTimeout(fireLinkHold, HOLD_PIN_MS);
+    setLinkHoldStyle(true);
+  }, { capture: true, passive: true });
+  document.addEventListener('touchmove', function(e) {
+    if (!linkHold) return;
+    var t = touchById(e.touches, linkHold.id);
+    if (!t || e.touches.length !== 1 || Math.abs(t.clientX - linkHold.x) > HOLD_SLOP_PX || Math.abs(t.clientY - linkHold.y) > HOLD_SLOP_PX) {
+      cancelLinkHold();
+    }
+  }, { capture: true, passive: true });
+  window.addEventListener('scroll', cancelLinkHold, true);
+  document.addEventListener('contextmenu', function(e) {
+    if (linkHold) {
+      e.preventDefault();
+      fireLinkHold();
+      return;
+    }
+    if (heldGesture && Date.now() < heldGesture.until) e.preventDefault();
+  }, true);
+  // On the window, before every other click handler of the bridge and a live
+  // app's own, so the release of a hold reaches neither the link handler nor
+  // the pinpoint one, nor the page (a live app would navigate).
+  window.addEventListener('click', function(e) {
+    if (!heldGesture) return;
+    var swallow = Date.now() < heldGesture.until;
+    endHeldGesture();
+    if (!swallow) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+
   // --- Local-site link navigation (srcdoc sessions only) ---
   // A srcdoc document has no URL of its own: its base URL is the PARENT page's,
   // which is the Plannotator server. So a plain link to 02-detail.html resolves
@@ -3910,8 +4359,14 @@ export const BRIDGE_SCRIPT = `(function() {
   // The frame therefore never navigates itself. In-page fragments scroll here;
   // everything else is handed to the parent, which owns resolution against the
   // current document's directory and is the trust boundary for the href.
-  // Registered BEFORE the pinpoint handler and never stopping propagation, so
-  // an armed click still pins the link element exactly as it always did.
+  // Registered BEFORE the pinpoint handler and never stopping propagation.
+  //
+  // One rule while armed (the owner's ruling, html-link-click, 2026-10-20):
+  // a plain click on a link FOLLOWS it, exactly as in Interact; a click with
+  // the platform modifier (Cmd on macOS, Ctrl elsewhere: either is taken)
+  // PINS it for a comment through the pinpoint handler below, as does a
+  // shift-click that adds it to an open multi-select draft. A drag that ended
+  // on the link owns its click: it neither follows nor pins.
   //
   // Live app sessions are excluded outright: they navigate a real origin
   // through the proxy, which is the whole point of that surface.
@@ -3934,6 +4389,25 @@ export const BRIDGE_SCRIPT = `(function() {
     return true;
   }
 
+  // While armed, whether a click on a link pins it instead of following it:
+  // the platform modifier (Cmd or Ctrl), a shift-click adding to an open
+  // multi-select draft, or the trailing click of a drag that selected text.
+  function armedClickPins(e) {
+    if (e.metaKey || e.ctrlKey || dragEndedClick) return true;
+    return !!(e.shiftKey && pendingPinEl && multiSelectArmed && pendingSelection);
+  }
+
+  // A link with a real destination: one a plain click follows while armed.
+  // No href, "", "#" and javascript: go nowhere, so a click on them pins
+  // the element as on any other (agents' mocks use <a href="#"> for buttons).
+  function isFollowableHref(raw) {
+    return !!raw && raw !== '#' && !/^javascript:/i.test(raw);
+  }
+
+  function followableLinkAt(node) {
+    return !!node && isFollowableHref(navigableLinkHref(node));
+  }
+
   function navigableLinkHref(node) {
     var el = node && node.nodeType === 1 ? node : node && node.parentElement;
     if (!el || !el.closest) return '';
@@ -3953,26 +4427,30 @@ export const BRIDGE_SCRIPT = `(function() {
       if (!raw) return;
       // The page's own scripting, not a navigation: leave it alone.
       if (/^javascript:/i.test(raw)) return;
+      // Armed and pinning (a link that goes nowhere, the modifier, or a
+      // drag's trailing click): the frame never navigates, and the pinpoint
+      // handler below takes the click.
+      if (annotateModeActive && currentInputMethod === 'pinpoint' && (!isFollowableHref(raw) || armedClickPins(e))) {
+        e.preventDefault();
+        return;
+      }
       if (raw.charAt(0) === '#') {
         e.preventDefault();
         scrollToLocalFragment(raw.slice(1));
         return;
       }
       e.preventDefault();
+      // Only a person's click follows a link: a page's own script calling
+      // a.click() never navigates the viewer or pushes the host's history.
+      if (!e.isTrusted) return;
       // A native host decides links itself: a person's tap opens the link as a
       // new window, which the host's web view hands to its own delegate (the
       // frame never navigates; the host page's CSP would refuse it anyway).
       if (hostNavigates) {
-        if (e.isTrusted && !(annotateModeActive && currentInputMethod === 'pinpoint')) {
-          var target = (e.target && e.target.closest) ? e.target.closest('a,area') : null;
-          try { window.open(target && target.href ? target.href : raw, '_blank', 'noopener'); } catch (ex) {}
-        }
+        var target = (e.target && e.target.closest) ? e.target.closest('a,area') : null;
+        try { window.open(target && target.href ? target.href : raw, '_blank', 'noopener'); } catch (ex) {}
         return;
       }
-      // Armed pinpoint: the click belongs to annotation, and the capture-phase
-      // pinpoint handler below is about to pin this element. Navigation is
-      // already suppressed above, which is all this surface owes the click.
-      if (annotateModeActive && currentInputMethod === 'pinpoint') return;
       postToParent({ type: PREFIX + 'link-click', href: raw.slice(0, 2048) });
     }, true);
   }
@@ -3991,7 +4469,12 @@ export const BRIDGE_SCRIPT = `(function() {
     // and mousedown clears a prior pin's leftover selection, so stale
     // selection state never blocks the next plain re-pin click. One-shot:
     // only the drag's own trailing click is suppressed.
-    if (dragEndedClick) { dragEndedClick = false; return; }
+    if (dragEndedClick) {
+      dragEndedClick = false;
+      // Never a navigation either (a live app's link would otherwise follow).
+      if (navigableLinkHref(e.target)) e.preventDefault();
+      return;
+    }
     // Shift-click while an ARMED pinpoint draft is open: toggle the element
     // in/out of the SAME draft comment instead of replacing the selection.
     // Unarmed drafts (modes the parent does not mirror, e.g. quickLabel)
@@ -4005,6 +4488,9 @@ export const BRIDGE_SCRIPT = `(function() {
       if (multiEl) toggleMultiTarget(multiEl, { x: e.clientX, y: e.clientY });
       return;
     }
+    // A plain click on a link follows it (the link handler above posted it;
+    // in a live app the browser navigates for real). The modifier pins it.
+    if (isFollowableHref(navigableLinkHref(e.target)) && !armedClickPins(e)) return;
     // Click what the hover box shows: the currently hovered element is the
     // target the user aimed at. Fall back to a fresh hit-test at the click
     // point (e.g. a click with no preceding mousemove).
@@ -4032,12 +4518,36 @@ export const BRIDGE_SCRIPT = `(function() {
     window.getSelection().removeAllRanges();
     renderAnnotationOverlay();
   }
+  // An Escape in Interact that the page did not use (no handler cancelled it
+  // or stopped it on its way up, focus not in one of its text fields) is
+  // offered to the host as page-escape, after every handler had its turn: the
+  // Inbox leaves full screen with it. The page still got the key first.
+  var escapeReachedWindow = null;
+  window.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') escapeReachedWindow = e;
+  });
+  function offerUnusedEscape(e) {
+    if (e.repeat || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    var t = e.target;
+    if (t && t.nodeType === 1) {
+      var tag = t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      if (t.closest && t.closest('[contenteditable]:not([contenteditable="false"])')) return;
+    }
+    // The page's own dialog closes on this Escape (the browser's default, not a handler).
+    if (document.querySelector('dialog[open]')) return;
+    setTimeout(function() {
+      if (escapeReachedWindow !== e || e.defaultPrevented) return;
+      postToParent({ type: PREFIX + 'page-escape' });
+    }, 0);
+  }
   document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape' || vimEnabled) return;
     if (!annotateModeActive) {
       // Interact mode: Esc belongs to the page — except an open drag-comment
       // draft (drag-selection stays live in Interact) still closes first.
       if (pendingSelection) closePendingDraft();
+      else offerUnusedEscape(e);
       return;
     }
     if (pendingSelection) {
@@ -4949,6 +5459,29 @@ export const BRIDGE_SCRIPT = `(function() {
       vimAddedBodyTabIndex = false;
     }
     if (document.body) document.body.removeAttribute('data-plannotator-vim-focus-owner');
+  }
+
+  // Selected markup for the parent's rich-text Copy button, built only when
+  // the button is pressed (rich-copy-request). Keeps the enclosing formatting
+  // that cloneContents omits for text endpoints (the same semantic ancestors
+  // selectionRangeToHtml keeps) and absolutizes links.
+  function htmlForRange(range) {
+    var holder = document.createElement('div');
+    var fragment = range.cloneContents();
+    var ancestor = range.commonAncestorContainer.nodeType === 1
+      ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    while (ancestor && ancestor !== document.body) {
+      if (ancestor.matches('a,b,blockquote,code,del,em,h1,h2,h3,h4,h5,h6,i,li,ol,p,pre,s,strong,sub,sup,table,tbody,td,tfoot,th,thead,tr,u,ul')) {
+        var wrapper = ancestor.cloneNode(false);
+        while (fragment.firstChild) wrapper.appendChild(fragment.firstChild);
+        fragment.appendChild(wrapper);
+      }
+      ancestor = ancestor.parentElement;
+    }
+    holder.appendChild(fragment);
+    var links = holder.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) links[i].setAttribute('href', links[i].href);
+    return holder.innerHTML;
   }
 
   function copyVimText(text) {

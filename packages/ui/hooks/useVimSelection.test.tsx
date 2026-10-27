@@ -114,6 +114,55 @@ describe.if(hasDom)('useVimSelection', () => {
     act(() => root.unmount());
   });
 
+  test('never reads the page selection on a mount where vim was never on', () => {
+    // window.getSelection() forces a layout; a document open with vim off
+    // must not pay for a reset there is nothing to reset.
+    const original = window.getSelection.bind(window);
+    let reads = 0;
+    window.getSelection = () => {
+      reads += 1;
+      return original();
+    };
+    try {
+      const { root, host } = mountHarness({ enabled: false, onRange: () => {} });
+      act(() => {
+        root.render(<VimHarness enabled={false} onRange={() => {}} />);
+      });
+      expect(host.querySelector('article')?.dataset.phase).toBe('inactive');
+      expect(reads).toBe(0);
+      act(() => root.unmount());
+    } finally {
+      window.getSelection = original;
+    }
+  });
+
+  test('turning vim off after it was on still clears the document selection', () => {
+    const { article, root } = mountHarness({ enabled: true, onRange: () => {} });
+    act(() => article.focus());
+    expect(article.dataset.phase).toBe('block');
+
+    const range = document.createRange();
+    range.selectNodeContents(article.querySelector('p') as HTMLElement);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    expect(window.getSelection()?.rangeCount).toBe(1);
+
+    act(() => {
+      root.render(<VimHarness enabled={false} onRange={() => {}} />);
+    });
+    expect(article.dataset.phase).toBe('inactive');
+    expect(window.getSelection()?.rangeCount).toBe(0);
+
+    // Off again with the selection back: a later run while off resets nothing.
+    selection?.addRange(range);
+    act(() => {
+      root.render(<VimHarness enabled={false} onRange={() => {}} />);
+    });
+    expect(window.getSelection()?.rangeCount).toBe(1);
+    act(() => root.unmount());
+  });
+
   test('does not retain handled commands when the optional HUD is disabled', () => {
     const { article, root } = mountHarness({
       enabled: true,
@@ -212,15 +261,26 @@ describe.if(hasDom)('useVimSelection', () => {
 
   test('copies a Visual selection, collapses it, and keeps document focus', async () => {
     const copied: string[] = [];
+    // Vim `y` copies plain text only, even where a rich clipboard is offered
+    // (rich copy is the selection toolbar's button, never a key).
+    const richWrites: unknown[] = [];
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(
       navigator,
       'clipboard',
     );
+    const clipboardItemDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem');
+    Object.defineProperty(globalThis, 'ClipboardItem', {
+      configurable: true,
+      value: class { constructor(_items: unknown) {} },
+    });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
         writeText: async (text: string) => {
           copied.push(text);
+        },
+        write: async (items: unknown) => {
+          richWrites.push(items);
         },
       },
     });
@@ -243,6 +303,7 @@ describe.if(hasDom)('useVimSelection', () => {
 
       expect(copyEvent?.defaultPrevented).toBe(true);
       expect(copied).toEqual(['Alpha ']);
+      expect(richWrites).toEqual([]);
       expect(article.dataset.phase).toBe('text');
       expect(document.activeElement).toBe(article);
       expect(window.getSelection()?.isCollapsed).toBe(true);
@@ -257,6 +318,8 @@ describe.if(hasDom)('useVimSelection', () => {
       } else {
         delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
       }
+      if (clipboardItemDescriptor) Object.defineProperty(globalThis, 'ClipboardItem', clipboardItemDescriptor);
+      else delete (globalThis as typeof globalThis & { ClipboardItem?: unknown }).ClipboardItem;
     }
   });
 

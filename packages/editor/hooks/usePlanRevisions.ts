@@ -25,6 +25,10 @@ export interface PlanRevisionSnapshot {
   previousPlan: string | null;
   versionInfo: VersionInfo | null;
   planRevision: number;
+  /** The revision's history version file (absolute), when the server names it. */
+  planPath?: string | null;
+  /** The plan's own file (absolute), when the server trusts it (its text is the plan). */
+  planFilePath?: string | null;
 }
 
 export type PlanRevisionBlocker = 'edits' | 'linked-document' | 'composer' | null;
@@ -32,9 +36,12 @@ export type PlanRevisionBlocker = 'edits' | 'linked-document' | 'composer' | nul
 /**
  * Comment composers and the selection toolbar live inside the viewer (and in
  * portals), not in App state, so they are read from the DOM at apply time.
+ * The decision control's note field (the header popover's composer) and the
+ * compact DecisionNoteDialog count too: a note is written about the plan on
+ * screen, so a revision waits until it is sent or put away (#1057).
  */
 export const PLAN_REVISION_COMPOSER_SELECTOR =
-  '[data-comment-popover="true"], .annotation-toolbar, [data-diagram-composer]';
+  '[data-comment-popover="true"], .annotation-toolbar, [data-diagram-composer], [data-decision-note-input], [data-decision-note-composer]';
 
 export function isPlanRevisionComposerOpen(): boolean {
   if (typeof document === 'undefined') return false;
@@ -151,6 +158,8 @@ export function usePlanRevisions(options: UsePlanRevisionsOptions): UsePlanRevis
         previousPlan: data.previousPlan ?? null,
         versionInfo: data.versionInfo ?? null,
         planRevision: data.planRevision,
+        planPath: typeof data.planPath === 'string' ? data.planPath : null,
+        planFilePath: typeof data.planFilePath === 'string' ? data.planFilePath : null,
       });
     } catch {
       // The next poll retries.

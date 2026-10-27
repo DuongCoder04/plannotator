@@ -52,6 +52,12 @@ export interface AskAIParams {
    *  received, and the server frames it as read-only context, never as
    *  feedback (#1748). Leave unset for every other provider. */
   draftAnnotations?: string;
+  /** Called once, when the stream first shows the question reached the
+   *  session (an answer started, or the session took it over). A busy, gone
+   *  or failed ask never calls it; a retry keeps it, so the retried question
+   *  calls it when it lands. Lets a caller record what the session was told
+   *  (e.g. which document a note named) only once it was received. */
+  onDelivered?: () => void;
 }
 
 /** What to send as `draftAnnotations` for one question: the list when this
@@ -72,6 +78,15 @@ const BRIDGE_DRAFTS_KEY = 'session-bridge';
 
 /** Stream messages that show the session received the question. */
 const DELIVERED_MESSAGE_TYPES = new Set(['text_delta', 'text', 'tool_use', 'tool_result', 'result']);
+
+/**
+ * A busy "Ask this session" answer still offers its choice ("Ask when it
+ * finishes" / "Interrupt and ask now"): the question has not been asked yet,
+ * and clearing the thread would drop it without a word.
+ */
+export function hasPendingBusyChoice(messages: AIChatEntry[]): boolean {
+  return messages.some(m => m.response.errorCode === SESSION_ASK_ERROR_CODES.agentBusy);
+}
 
 /** Overrides for re-asking a question that ended in a busy/gone/blocked answer. */
 export interface AIRetryOptions {
@@ -179,8 +194,9 @@ export interface AITransport {
   session(body: unknown, signal: AbortSignal): Promise<Response>;
   /** POST /api/ai/query — send a message; returns the streaming SSE response. */
   query(body: unknown, signal: AbortSignal): Promise<Response>;
-  /** POST /api/ai/abort — abort a session (supersede + standalone). Resolves once
-      the server acknowledges so a following query can await it (best-effort, never rejects). */
+  /** POST /api/ai/abort. A superseding question sends `reason: 'supersede'`
+   * so session bridges close the answer without stopping the host turn.
+   * Resolves once acknowledged, before the old fetch is disconnected. */
   abort(body: unknown): Promise<unknown>;
   /** POST /api/ai/permission — respond to a permission request. Fire-and-forget. */
   permission(body: unknown): void;
@@ -238,9 +254,9 @@ export const resetAITransport = (): void => {
  * ask() relies on this resolving. Single-sourced so every abort call site stays
  * hardened. Reads `aiTransport` at call time so a late override is honored.
  */
-function safeAbort(sessionId: string): Promise<unknown> {
+function safeAbort(sessionId: string, reason?: 'supersede'): Promise<unknown> {
   return Promise.resolve()
-    .then(() => aiTransport.abort({ sessionId }))
+    .then(() => aiTransport.abort({ sessionId, ...(reason && { reason }) }))
     .catch(() => {});
 }
 
@@ -261,10 +277,15 @@ export function useAIChat({
   // In-flight server abort (from Stop or a superseding question). The next ask()
   // waits on it so a new query can't race the still-active turn into busy.
   const pendingAbortRef = useRef<Promise<unknown> | null>(null);
+  // Answers a newer question replaced. Their fetch stays open until the server
+  // acknowledges the supersede, but nothing more they stream is shown.
+  const supersededRef = useRef(new WeakSet<AbortController>());
   const sessionEpochRef = useRef(0);
   const createRequestRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   sessionIdRef.current = thread.sessionId;
+  const threadRef = useRef(thread);
+  threadRef.current = thread;
 
   const updateMessages = useCallback((updater: (messages: AIChatEntry[]) => AIChatEntry[]) => {
     setThread(prev => ({ ...prev, messages: updater(prev.messages) }));
@@ -316,16 +337,13 @@ export function useAIChat({
     }
   }, [context, model, providerId, reasoningEffort, setSessionId]);
 
-  // Tell the server to stop the current session's in-flight turn, and resolve
-  // once it has. Used by the Stop button and when a new question supersedes a
-  // streaming one — aborting the browser fetch alone leaves the agent's turn
-  // running. The /api/ai/abort handler clears the session's active flag before
-  // it responds, so awaiting this guarantees a following query won't race it
-  // into a session_busy error. Best-effort (never rejects).
-  const postServerAbort = useCallback((): Promise<unknown> => {
+  // Stop cancels the turn. Supersede closes the old answer but lets a session
+  // bridge's host keep working until the reviewer chooses to interrupt it.
+  // Both clear the server's query before the next one. Best-effort (never rejects).
+  const postServerAbort = useCallback((reason?: 'supersede'): Promise<unknown> => {
     const sessionId = sessionIdRef.current; // capture the session being aborted now
     if (!sessionId) return Promise.resolve();
-    return safeAbort(sessionId);
+    return safeAbort(sessionId, reason);
   }, []);
 
   // The params each question was asked with, so a busy answer can be
@@ -341,19 +359,18 @@ export function useAIChat({
   const deliveredDraftsRef = useRef<{ sessionId: string; text: string } | null>(null);
 
   const ask = useCallback(async (params: AskAIParams, askOptions?: { providerId?: string }) => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      // Supersede: stop the server-side turn (not just the browser fetch).
-      pendingAbortRef.current = postServerAbort();
+    const previous = abortRef.current;
+    if (previous) {
+      supersededRef.current.add(previous);
+      pendingAbortRef.current = postServerAbort('supersede');
     }
-    // Wait for any in-flight server abort — from this supersede OR a prior Stop
-    // click — so the query below doesn't race the still-active turn into a
-    // session_busy error. Stopping still kills the turn; chatting right after
-    // just waits the one round-trip for the stop to land.
+    // Let the server distinguish supersede from Stop before disconnecting:
+    // cancelling the SSE fetch first would still abort the host's turn.
     if (pendingAbortRef.current) {
       await pendingAbortRef.current;
       pendingAbortRef.current = null;
     }
+    previous?.abort();
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -392,7 +409,7 @@ export function useAIChat({
         sid = await createSession(controller.signal, epoch);
       }
 
-      if (controller.signal.aborted || epoch !== sessionEpochRef.current) {
+      if (controller.signal.aborted || supersededRef.current.has(controller) || epoch !== sessionEpochRef.current) {
         throw createAbortError('AI question was superseded');
       }
 
@@ -400,11 +417,20 @@ export function useAIChat({
       const drafts = draftAnnotationsToSend(deliveredDraftsRef.current, BRIDGE_DRAFTS_KEY, params.draftAnnotations);
       // Recorded once the session shows it received the question, so a busy,
       // gone or failed ask sends the list again next time.
+      let deliveredCalled = false;
       const markDraftsDelivered = (msg: { type?: unknown; code?: unknown }) => {
-        if (drafts === undefined) return;
         const received = DELIVERED_MESSAGE_TYPES.has(String(msg.type))
           || (msg.type === 'error' && msg.code === SESSION_ASK_ERROR_CODES.takenOver);
-        if (received) deliveredDraftsRef.current = { sessionId: BRIDGE_DRAFTS_KEY, text: drafts };
+        if (!received) return;
+        if (drafts !== undefined) deliveredDraftsRef.current = { sessionId: BRIDGE_DRAFTS_KEY, text: drafts };
+        if (!deliveredCalled) {
+          deliveredCalled = true;
+          try {
+            params.onDelivered?.();
+          } catch {
+            // A caller's bookkeeping must never break the stream.
+          }
+        }
       };
       const res = await aiTransport.query({
         sessionId: sid,
@@ -425,6 +451,7 @@ export function useAIChat({
 
       while (true) {
         const { done, value } = await reader.read();
+        if (supersededRef.current.has(controller)) throw createAbortError('AI question was superseded');
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
@@ -566,7 +593,7 @@ export function useAIChat({
         )
       );
     } finally {
-      if (abortRef.current === controller) {
+      if (abortRef.current === controller && !supersededRef.current.has(controller)) {
         setIsStreaming(false);
         abortRef.current = null;
       }
@@ -649,6 +676,22 @@ export function useAIChat({
     setError(null);
   }, [postServerAbort, threadTitle]);
 
+  // The panel's "New chat": clears the thread and forgets the Plannotator AI
+  // session, so the next question starts a fresh one (a separate AI then gets
+  // the full context again). Unlike `resetThread` (a document switch), it never
+  // stops anything: while a question is in flight (streaming, creating its
+  // session, or waiting on a busy "Ask this session") or a busy answer still
+  // offers its choice, it does nothing and answers false, so a running turn is
+  // not aborted and a pending ask is not dropped. What the agent session already received (`deliveredDraftsRef`) is
+  // kept: with "Ask this session" a new chat reaches the SAME host session,
+  // which still remembers it.
+  const newChat = useCallback((): boolean => {
+    if (abortRef.current) return false;
+    if (hasPendingBusyChoice(threadRef.current.messages)) return false;
+    resetThread();
+    return true;
+  }, [resetThread]);
+
   useEffect(() => {
     return () => {
       sessionEpochRef.current += 1;
@@ -672,6 +715,7 @@ export function useAIChat({
     abort,
     resetSession,
     resetThread,
+    newChat,
     sessionId: thread.sessionId,
   };
 }
