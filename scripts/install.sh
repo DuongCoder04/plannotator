@@ -2595,7 +2595,7 @@ else
     echo ""
     echo '  "plugin": ["@plannotator/opencode@latest"]'
     echo ""
-    echo "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
+    echo "Then restart OpenCode (OpenCode 2: run opencode2 reload). The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
 fi
 # Agent-specific closing sections print only for agents this run detected,
 # reusing the detection each integration block above already ran (Pi: `pi` on

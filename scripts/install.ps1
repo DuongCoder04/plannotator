@@ -1844,7 +1844,7 @@ if ($skipOpencodeResolved) {
     Write-Host ""
     Write-Host '  "plugin": ["@plannotator/opencode@latest"]'
     Write-Host ""
-    Write-Host "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
+    Write-Host "Then restart OpenCode (OpenCode 2: run opencode2 reload). The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
 }
 # Agent-specific closing sections print only for agents this run detected,
 # reusing the detection the integration steps above already ran (Pi: `pi` on
