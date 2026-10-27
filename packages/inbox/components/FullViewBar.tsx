@@ -258,7 +258,8 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
   // The way out of full screen names where it goes, "Side by side" (a pick: remembered); on a phone or a stacked window it is Back to the thread.
   const exit = props.leave.kind === 'exit';
   const leaveButton = (
-    // F goes back beside the thread too where full screen came from there (approved hint placement); it saves nothing.
+    // F is named once, on the control that does what it does (approved hint placement): here where full screen came
+    // from beside the thread (F goes back there, saving nothing); on × where × closes the file.
     <Tip text={exit ? 'Side by side' : 'Back to the thread'} note={exit ? 'The file beside the thread; files open this way until you choose again' : undefined} keys={exit && !props.exitCloses ? FULL_KEYS : null} phone={phone}>
       <button
         type="button"
@@ -427,7 +428,7 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
         {props.leave.kind === 'exit' && leaveButton}
         {props.onExitFull && props.leave.kind === 'exit' && !phone && (
           // Its tooltip says Esc, so one Esc on it leaves (the tooltip does not keep that press).
-          <Tip text={props.exitCloses ? 'Back to the thread' : 'Exit full screen'} keys={[EXIT_KEYS, FULL_KEYS]} phone={phone} passEscape>
+          <Tip text={props.exitCloses ? 'Back to the thread' : 'Exit full screen'} keys={props.exitCloses ? [EXIT_KEYS, FULL_KEYS] : EXIT_KEYS} phone={phone} passEscape>
             <button
               type="button"
               className="ib-fvb"

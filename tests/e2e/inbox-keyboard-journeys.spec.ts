@@ -779,12 +779,13 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   await press('f');
   await at('F', { focus: pane(), address: addr(checkout, { view: 'full' }), view: 'full' });
   expect(await fileName()).toBe(stepped);
-  // The tooltips name F where it does the same: Side by side (full screen came from beside the thread) and ×.
+  // The tooltips name F once, where it does the same: full screen came from beside the thread, so Side by side, not ×.
   const fHint = page.locator('[data-shortcut-hint="inbox-thread.fullScreen"]').filter({ visible: true });
   await tabTo(page.locator('[data-full-view-exit="exit"]'));
   await expect(fHint).toHaveCount(1);
   await tabTo(page.locator('[data-full-view-close]'));
-  await expect(fHint).toHaveCount(1);
+  await expect(page.locator('[data-shortcut-hint$=".escape"]').filter({ visible: true })).toHaveCount(1);
+  await expect(fHint).toHaveCount(0);
   await press('f');
   // Back beside the thread as Escape comes back (#2245): focus on the file's Side by side.
   await at('F again', { focus: pane().locator('[data-view-side]'), address: addr(checkout, { view: 'side' }), view: 'side' });
