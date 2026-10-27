@@ -66,7 +66,7 @@ describe("a Recommended: line names a choice by the plain words of its label", (
   test("a 19,000-character label of brackets or tags (the body cap is 20,000) parses in linear time", () => {
     // `![` runs are left out: the picture-choice pattern (CHOICE_IMAGE_RE) takes ~160 ms on them, as on main
     // before this; stripInlineMarkup's own `![` case is guarded in inline-markdown.test.ts.
-    for (const run of ["[", "[[", "<a", "[a](", "[[a|"]) {
+    for (const run of ["[", "[[", "<a", "[a](", "[[a|", "[a]((", "[a](x("]) {
       const label = run.repeat(Math.ceil(19_000 / run.length)).slice(0, 19_000);
       for (const kind of ["question", "question-multi"] as const) {
         const elapsed = ms(() => parseQuestionBlock(kind, block([`- [ ] ${label}`, "- [ ] Algolia"], "Recommended: Pagefind and Algolia")));
