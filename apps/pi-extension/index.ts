@@ -141,6 +141,18 @@ function loadPlannotatorPrompts(): Promise<PlannotatorPromptsModule> {
 	return promptsModulePromise;
 }
 
+/**
+ * Load the prompts a decision is written with while the review is open, not
+ * when the decision arrives: an update that lands while the reviewer works
+ * would otherwise stop that lazy import (importFresh, #2085) and the
+ * feedback would never reach the session (5 of 5 times on a real Pi 0.84.4,
+ * `pi update --extensions` under an open annotate review). A failed preload
+ * is dropped: the decision tries again, as before.
+ */
+function preloadDecisionPrompts(): void {
+	void loadPlannotatorPrompts().catch(() => {});
+}
+
 async function loadAnnotateCommandModules() {
 	const [annotateArgs, annotateTarget, annotateBundle, atReference, resolveFile, referenceCommon] = await importFresh(() => Promise.all([
 		import("./generated/annotate-args.ts"),
@@ -969,6 +981,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		deliver: (result: T, review: PiOpenReview) => Promise<void>,
 	): PiOpenReview {
 		const review = openReviews.add({ kind, ...names, url: session.url, owner: ownerOf(ctx), hostControl: session.hostControl });
+		preloadDecisionPrompts();
 		const events = announceSessionOpened(review);
 		void session
 			.waitForDecision()
@@ -2052,6 +2065,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 			// A previous review that is somehow still tracked loses to the new one.
 			if (pendingPlanReview && pendingPlanReview !== review) stopPendingPlanReview();
 			pendingPlanReview = review;
+			preloadDecisionPrompts();
 			// The history version the server saved this plan as: pushing the SAME
 			// text is a no-op that reports it (updatePlan's unchanged branch).
 			let planVersion: number | undefined;

@@ -100,7 +100,9 @@ packages/inbox/sendNow.test.tsx
 packages/inbox/undelivered.test.tsx
 packages/inbox/tagAgents.test.tsx
 packages/inbox/restartWarning.test.tsx
+packages/inbox/reloadHosts.test.tsx
 packages/inbox/pasteFiles.test.tsx
+packages/inbox/questionCardPhone.test.tsx
 packages/inbox/markRead.test.tsx
 packages/inbox/ack.test.tsx
 packages/inbox/actionChecklist.test.tsx
@@ -229,6 +231,7 @@ packages/review-editor/components/PanelChrome.test.tsx
 packages/review-editor/components/FileTree.search-placement.test.tsx
 packages/review-editor/components/FileTree.fileKinds.test.tsx
 packages/review-editor/components/FileHeader.fileKind.test.tsx
+packages/review-editor/components/PackageChangesCard.test.tsx
 packages/review-editor/components/FileTreeNode.controls.test.tsx
 packages/ui/components/Settings.analysis.test.tsx
 packages/ui/components/AnnotationPanel.props.test.tsx
