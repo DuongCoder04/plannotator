@@ -34,6 +34,7 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   archived: 'archive',
   storage: 'disk',
   about: 'info',
+  capabilities: 'puzzle',
   experimental: 'beaker',
 };
 
@@ -52,7 +53,7 @@ export interface SettingsPageProps {
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
   /** Settings → Experimental: decision mode's switch. Absent (or an Inbox that reports no experimental features): no Experimental row. */
   onToggleExperimental?: (next: boolean) => void;
-  /** Settings → General → Board: the Board's switch. Absent (or an Inbox without the switch): no Board group. */
+  /** Settings → Capabilities → Board: the Board's switch. Absent (or an Inbox without the switch): no Capabilities row. */
   onToggleBoard?: (next: boolean) => void;
   /** Over your tailnet: the switch, and whether a change is in flight. */
   onToggleTailscale: (next: boolean, replaceExposed?: boolean) => void;
@@ -198,11 +199,9 @@ function GeneralSection({
   notifyReach,
   onTestNotification,
   sound,
-  onToggleBoard,
   onTakeTour,
   updateRow,
 }: {
-  onToggleBoard?: (next: boolean) => void;
   onTakeTour?: () => void;
   updateRow?: ReactNode;
   settings: SettingsModel;
@@ -374,27 +373,35 @@ function GeneralSection({
           Notifications are allowed per address, so a browser on another device asks once there.
         </div>
       </section>
-      {settings.board && onToggleBoard && (
-        <section className="ib-sgroup" data-settings-board="" aria-labelledby="ib-g-board">
-          <h2 id="ib-g-board">Board</h2>
-          <div className="ib-card">
-            <div className="ib-prow">
-              <span className="ib-txt">
-                <span className="ib-l" id="ib-board-label">
-                  Board
-                </span>
-                <span className="ib-desc">
-                  A page of the work in flight, one card per piece, that your agents keep current. Off, there is no Board page and agents are not offered cards; every card is kept. Agents pick this up in their next session.
-                </span>
-              </span>
-              <span className="ib-ctl">
-                <Switch on={settings.board.on} labelledBy="ib-board-label" onClick={() => onToggleBoard(!settings.board!.on)} />
-              </span>
-            </div>
-          </div>
-        </section>
-      )}
     </>
+  );
+}
+
+/**
+ * Capabilities (the owner, 2026-10-27): the switches that turn a whole
+ * feature on or off, moved out of General. Today one: the Board (config.json
+ * `inboxBoard`, POST /api/inbox/settings `{ board: { on } }`), with the same
+ * words as before.
+ */
+function CapabilitiesSection({ board, onToggleBoard }: { board: { on: boolean }; onToggleBoard: (next: boolean) => void }) {
+  return (
+    <section className="ib-sgroup" data-settings-board="" aria-label="Capabilities">
+      <div className="ib-card">
+        <div className="ib-prow">
+          <span className="ib-txt">
+            <span className="ib-l" id="ib-board-label">
+              Board
+            </span>
+            <span className="ib-desc">
+              A page of the work in flight, one card per piece, that your agents keep current. Off, there is no Board page and agents are not offered cards; every card is kept. Agents pick this up in their next session.
+            </span>
+          </span>
+          <span className="ib-ctl">
+            <Switch on={board.on} labelledBy="ib-board-label" onClick={() => onToggleBoard(!board.on)} />
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -605,6 +612,7 @@ const LEDE: Record<SettingsSection, string> = {
   archived: 'Threads you archived stay out of the list. Unarchive one to put it back and open it.',
   storage: '',
   about: 'The version, and how Plannotator keeps itself up to date.',
+  capabilities: 'What the Inbox does beyond your messages. Each switch turns a whole feature on or off.',
   experimental: 'Features still being tried. Each stays off until you turn it on.',
 };
 
@@ -612,9 +620,9 @@ const LEDE: Record<SettingsSection, string> = {
  * Settings (design of record `.product/approved/inbox-settings-tabs/`,
  * Workspaces' SettingsFrame in the Inbox's scale): a focused page with
  * "← Inbox" on top, a section nav (General, Agents, Prompts, Devices,
- * Archived, Storage, About, and Experimental last while there is one) and one
+ * Archived, Storage, About, Capabilities, and Experimental last while there is one) and one
  * section per page at `#settings/<section>`. On a phone, a list of the
- * sections (Experimental in a group of its own at the bottom), then one
+ * sections (Capabilities and Experimental each in a group of its own at the bottom), then one
  * section with "‹ Settings".
  */
 export function SettingsPage(props: SettingsPageProps) {
@@ -673,11 +681,14 @@ export function SettingsPage(props: SettingsPageProps) {
   // Experimental is the nav's last row, shown only while this Inbox reports an experimental feature (an older
   // Inbox omits `experimental`, and an empty page is worse than no row). Its address still opens on its own.
   const experimental = settings?.experimental && props.onToggleExperimental ? settings.experimental : null;
-  const sections = SETTINGS_SECTIONS.filter((id) => id !== 'experimental' || experimental !== null);
-  /** The phone's list of sections, in its groups: settings, your data and Plannotator, then Experimental on its own. */
+  // Capabilities, the same way: only while the Inbox has a switch for it (an older Inbox has no Board).
+  const board = settings?.board && props.onToggleBoard ? settings.board : null;
+  const sections = SETTINGS_SECTIONS.filter((id) => (id !== 'experimental' || experimental !== null) && (id !== 'capabilities' || board !== null));
+  /** The phone's list of sections, in its groups: settings, your data and Plannotator, then Capabilities and Experimental each on its own. */
   const phoneGroups: { label: string; ids: SettingsSection[] }[] = [
     { label: 'Settings', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) < 4) },
-    { label: 'Your data and Plannotator', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) >= 4 && id !== 'experimental') },
+    { label: 'Your data and Plannotator', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) >= 4 && id !== 'capabilities' && id !== 'experimental') },
+    { label: 'Capabilities', ids: sections.filter((id) => id === 'capabilities') },
     { label: 'Experimental', ids: sections.filter((id) => id === 'experimental') },
   ].filter((group) => group.ids.length > 0);
 
@@ -729,6 +740,8 @@ export function SettingsPage(props: SettingsPageProps) {
         return formatBytes(settings.store.bytes);
       case 'about':
         return settings.version;
+      case 'capabilities':
+        return board?.on ? 'Board' : 'Off';
       case 'experimental':
         return experimental?.decision_mode.on ? 'Decision mode' : 'Off';
     }
@@ -746,7 +759,6 @@ export function SettingsPage(props: SettingsPageProps) {
             notifyReach={notifyReach}
             onTestNotification={onTestNotification}
             sound={sound}
-            onToggleBoard={props.onToggleBoard}
             onTakeTour={props.onTakeTour}
             updateRow={props.updateRow}
           />
@@ -806,6 +818,17 @@ export function SettingsPage(props: SettingsPageProps) {
         break;
       case 'about':
         body = about;
+        break;
+      case 'capabilities':
+        body =
+          board && props.onToggleBoard ? (
+            <CapabilitiesSection board={board} onToggleBoard={props.onToggleBoard} />
+          ) : (
+            <div className="ib-card ib-sempty" data-settings-capabilities-none="">
+              <Icon name="puzzle" />
+              This Inbox is older than Settings → Capabilities. Restart it to update.
+            </div>
+          );
         break;
       case 'experimental':
         body =

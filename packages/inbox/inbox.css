@@ -4956,6 +4956,9 @@ a.ib-bc-main { cursor: pointer; }
 .ib-boff h2 { margin: 0; font-size: var(--ib-fs-18, 18px); font-weight: 600; }
 .ib-boff p { margin: 0; max-width: 460px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); line-height: 1.55; }
 .ib-boff .ib-btn { margin-top: 4px; }
+/* "The same switch is in Settings → Capabilities": a link like the ones in a settings row's description. */
+.ib-boff-note a { color: var(--primary); text-decoration: none; }
+.ib-boff-note a:hover { text-decoration: underline; }
 
 /* The opened card: a panel beside the Board (a full screen on a phone). */
 .ib-crdp { flex: 0 0 min(560px, 44%); min-width: 0; display: flex; flex-direction: column; border-radius: var(--ib-lr-lg, 10px); background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklch, var(--border) 60%, transparent); overflow: hidden; }
