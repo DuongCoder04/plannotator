@@ -6,11 +6,21 @@
 
 export type ThreadStep = { to: string } | { end: 'first' | 'last' } | null;
 
-/** The thread `dir` away from `current` in `order` (ids top to bottom); null when `current` is not in it. */
-export function threadStep(order: readonly string[], current: string, dir: 1 | -1): ThreadStep {
+/**
+ * The thread `dir` away from `current` in `order` (ids top to bottom). When `current` left the rows on screen
+ * while open (E moved it to folded Quiet, another tab archived it), it steps from the slot it had in `slot`, the
+ * last order that drew it: the nearest row that way still on screen. Null when neither has it.
+ */
+export function threadStep(order: readonly string[], current: string, dir: 1 | -1, slot: readonly string[] = []): ThreadStep {
   const at = order.indexOf(current);
-  if (at < 0) return null;
-  const to = order[at + dir];
+  if (at >= 0) {
+    const to = order[at + dir];
+    return to ? { to } : { end: dir > 0 ? 'last' : 'first' };
+  }
+  const was = slot.indexOf(current);
+  if (was < 0) return null;
+  const way = dir > 0 ? slot.slice(was + 1) : slot.slice(0, was).reverse();
+  const to = way.find((id) => id !== current && order.includes(id));
   return to ? { to } : { end: dir > 0 ? 'last' : 'first' };
 }
 

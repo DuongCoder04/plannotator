@@ -2298,14 +2298,17 @@ function Inbox() {
         next?.scrollIntoView?.({ block: 'nearest' });
         return;
       }
-      const step = threadStep(drawnOrder(body), now.thread, dir);
+      // The open thread's row may have left the list (E moved it to folded Quiet): step from the slot it had.
+      const slot = openSlot.current?.thread === now.thread ? openSlot.current.order : [];
+      const step = threadStep(drawnOrder(body), now.thread, dir, slot);
       if (!step) return say('This thread is not in the list on screen.');
       if ('end' in step) return say(step.end === 'last' ? 'Last thread' : 'First thread');
       const fromList = !!keyTarget(event)?.closest('.ib-main .ib-lbody');
       // Into another section: its name, as the eye sees the band.
       const section = (id: string) => rowElement(body, id)?.closest('[role="group"]')?.getAttribute('aria-label') ?? null;
       const into = section(step.to);
-      if (into && into !== section(now.thread)) say(into);
+      const from = section(now.thread);
+      if (into && from && into !== from) say(into);
       askArrivalFocus(fromList ? null : step.to);
       writeRoute({ page: 'inbox', project: now.project, thread: step.to }, { replace: true });
       if (fromList) {
@@ -3174,6 +3177,8 @@ function Inbox() {
   // left the rows on screen (for folded Quiet) hands it to the row now in its
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
+  // The last order that drew the open thread's row, kept when that row leaves the rows on screen: J / K step from its slot.
+  const openSlot = useRef<{ thread: string; order: string[] } | null>(null);
   const focusAfterShow = useRef(false);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
@@ -3213,6 +3218,8 @@ function Inbox() {
       target?.focus({ preventScroll: true });
     }
     listOrder.current = body ? [...body.querySelectorAll('[data-thread-id]')].map((el) => el.getAttribute('data-thread-id')!) : [];
+    const open = routeRef.current.thread;
+    if (open && order.includes(open) && !listOrder.current.includes(open)) openSlot.current = { thread: open, order };
   }, [shown]);
   const stackedBefore = useRef({ thread: stack.thread });
   useEffect(() => {

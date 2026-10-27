@@ -754,6 +754,44 @@ test('J1: triage the list and open the newest thread', async () => {
   await at('Back', { focus: row(order.at(-1)!), address: addr(null), view: 'list' });
 });
 
+/** The ids of the rows the list shows, top to bottom, once each (folded Quiet is not drawn). */
+const shownOrder = () =>
+  page.evaluate(() => {
+    const ids: string[] = [];
+    for (const el of document.querySelectorAll('.ib-main .ib-lbody [data-thread-id]')) {
+      const id = el.getAttribute('data-thread-id')!;
+      if (!ids.includes(id) && el.getClientRects().length > 0) ids.push(id);
+    }
+    return ids;
+  });
+
+test('J1b: J from a thread whose row left the list on screen steps from the slot it had', async () => {
+  // E on an opened update moves its row into folded Quiet while the thread stays open (#2265). J and K then go on
+  // from where the row was, never "not in the list". (Without #2265 the open row is held, and this passes as plain J.)
+  const { news } = world.threads;
+  await load();
+  await press('g', 'i');
+  const order = await shownOrder();
+  const slot = order.indexOf(news);
+  expect(slot, 'the update shows in the list').toBeGreaterThanOrEqual(0);
+  const [key, expected] = order[slot + 1] ? (['j', order[slot + 1]!] as const) : (['k', order[slot - 1]!] as const);
+  await arrowTo(news);
+  await press('Enter');
+  await at('the update open', { focus: row(news), address: addr(news), view: 'thread' });
+  // The look lands (the server has the update in Quiet; the window holds its row in place), then E.
+  const sectionOf = async (id: string) => {
+    const list = (await (await fetch(new URL('/api/inbox/threads?archived=exclude', world.url))).json()) as { sections: { id: string; threads: { thread_id: string }[] }[] };
+    return list.sections.find((section) => section.threads.some((t) => t.thread_id === id))?.id ?? null;
+  };
+  await expect.poll(() => sectionOf(news), { timeout: 5000 }).toBe('quiet');
+  await press('e');
+  // With Mark read on a seen update (#2265) the row moves into folded Quiet now; before it, E leaves it be.
+  await page.waitForTimeout(800);
+  await press(key);
+  await at('J after E', { focus: row(expected), address: addr(expected), view: 'thread' });
+  await expect(page.locator('[data-inbox-live]')).not.toHaveText('This thread is not in the list on screen.');
+});
+
 test('J2: read a thread and its files, and come back to exactly where you were', async () => {
   const { checkout } = world.threads;
   await load(`#thread=${checkout}`);
