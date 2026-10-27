@@ -15,7 +15,8 @@ import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
-import { QUESTION_AUTHORING_GUIDE, questionChoiceWithoutRecommendedMarker } from "@plannotator/core/question-block";
+import { QUESTION_AUTHORING_GUIDE } from "@plannotator/core/question-block";
+import { inboxQuestionKeysWithRecommendedMarker } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_DONE_DESCRIPTION } from "@plannotator/core/inbox-actions";
 import { checkInboxSubject, INBOX_CARD_ACTION_ON, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
 import { INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
@@ -650,8 +651,8 @@ export function noStakesText(count: number): string {
 export function recommendedInLabelText(count: number): string {
   if (count <= 0) return "";
   return count === 1
-    ? " 1 question marks its recommendation inside a choice label; next time write `Recommended: <label>` on its own line after the choices instead, and keep labels plain."
-    : ` ${count} questions mark their recommendation inside a choice label; next time write \`Recommended: <label>\` on its own line after the choices instead, and keep labels plain.`;
+    ? " 1 question marks its recommendation inside a choice label; next time mark it only with `Recommended: <label>` on its own line after the choices, and keep labels plain."
+    : ` ${count} questions mark their recommendation inside a choice label; next time mark each only with \`Recommended: <label>\` on its own line after the choices, and keep labels plain.`;
 }
 
 /** A message id (`msg_` and a 26-character ULID), as an agent might pass one as `thread` by mistake. */
@@ -764,12 +765,9 @@ export async function sendAgentMessage(
   const noStakes = (message.questions ?? [])
     .filter((q) => q.kind !== "action" && (q.stopped !== null || q.holds_up.length > 0) && !q.stakes)
     .map((q) => q.key);
-  // A question with no `Recommended:` line whose recommendation sits in a
-  // choice label (read by the parser, or two markers it could not read).
-  const recommendedInLabel = (message.questions ?? [])
-    .filter((q) => q.kind !== "action" && q.recommendation === null
-      && (q.choices.some((c) => c.recommended) || q.choices.some((c) => questionChoiceWithoutRecommendedMarker(c) !== null)))
-    .map((q) => q.key);
+  // A question written with a recommended marker in a choice label (read
+  // by the parser or not, with or without a `Recommended:` line).
+  const recommendedInLabel = inboxQuestionKeysWithRecommendedMarker(message.body);
   return {
     imagesNotShown: notShown,
     noStakes: noStakes.length,

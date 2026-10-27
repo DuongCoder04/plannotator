@@ -87,17 +87,23 @@ const HOLDS_UP_RE = /^holds up\s*:\s*(.*)$/i;
 const CLOSE_RE = /^\s*:::\s*$/;
 
 /**
- * The question blocks of a message body, in block order. A body is read like
- * a comment: no frontmatter. A body with no block (or none that parses)
- * answers [].
+ * The keys of a body's questions written with a recommended marker in a
+ * choice label or description (`Foo (Recommended)`, `[Recommended] Foo`),
+ * whether or not the block also has a `Recommended:` line: the Inbox nudges
+ * the agent to keep labels plain.
  */
-export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[] {
+export function inboxQuestionKeysWithRecommendedMarker(markdown: string): string[] {
+  return questionBlocksOf(markdown).flatMap(({ key, parsed }) => (parsed.recommendedMarker ? [key] : []));
+}
+
+/** Each question block of a body, parsed as the Inbox reads it. */
+function questionBlocksOf(markdown: string): { key: string; startLine: number; parsed: ParsedQuestion }[] {
   if (typeof markdown !== "string" || !markdown.includes(":::question")) return [];
   // Each block is read over the markdown with reference links resolved, as
   // the renderer reads it, so a prompt written with a reference link keeps
   // the key the card computes.
   const resolved = resolveReferenceLinks(markdown).split("\n");
-  const out: ParsedInboxQuestion[] = [];
+  const out: { key: string; startLine: number; parsed: ParsedQuestion }[] = [];
   for (const location of findQuestionBlocks(markdown, { frontmatter: false })) {
     const lines = resolved
       .slice(location.startLine - 1, location.endLine)
@@ -107,7 +113,20 @@ export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[
     const inner = lines.slice(1, CLOSE_RE.test(lines.at(-1) ?? "") && lines.length > 1 ? -1 : undefined);
     // The Inbox records no decisions: a `Decision:` line is context.
     const parsed = parseQuestionBlock(location.directiveKind, inner.join("\n"), { decisionLines: false });
-    if (parsed === null) continue;
+    if (parsed !== null) out.push({ key: location.key, startLine: location.startLine, parsed });
+  }
+  return out;
+}
+
+/**
+ * The question blocks of a message body, in block order. A body is read like
+ * a comment: no frontmatter. A body with no block (or none that parses)
+ * answers [].
+ */
+export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[] {
+  const out: ParsedInboxQuestion[] = [];
+  for (const { key, startLine, parsed } of questionBlocksOf(markdown)) {
+    const location = { key, startLine };
     const context = parsed.context.trim();
     out.push({
       key: location.key,

@@ -82,6 +82,24 @@ test("two marked choices on a pick-one question: no recommendation, still nudged
   expect(structured.recommended_in_label).toEqual([structured.questions[0].key]);
 });
 
+test("a marker beside a Recommended: line is nudged too (agreeing or not), and leaves the label", async () => {
+  const { project, server, client } = await world();
+  for (const line of ["Recommended: Ours only", "Recommended: Any"]) {
+    const { text, structured } = await send(client, { project_path: project, body: ask("- [ ] Ours only (Recommended)", "- [ ] Any", "", line) });
+    expect(structured.recommended_in_label).toEqual([structured.questions[0].key]);
+    expect(text).toContain(recommendedInLabelText(1).trim());
+    const thread = (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/threads/${structured.thread_id}`)).json()) as any;
+    const labels = thread.thread.messages.at(-1).questions[0].choices.map((c: any) => c.label);
+    expect(labels).toEqual(["Ours only", "Any"]);
+  }
+});
+
+test("a leading marker is read and nudged", async () => {
+  const { project, client } = await world();
+  const { structured } = await send(client, { project_path: project, body: ask("- [ ] [Recommended] Ours only", "- [ ] Any") });
+  expect(structured.recommended_in_label).toEqual([structured.questions[0].key]);
+});
+
 test("no nudge with a Recommended: line, or with no recommendation at all", async () => {
   const { project, client } = await world();
   const withLine = await send(client, { project_path: project, body: ask("- [ ] Ours only", "- [ ] Any", "", "Recommended: Ours only") });
