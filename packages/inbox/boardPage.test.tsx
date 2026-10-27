@@ -68,6 +68,15 @@ const CARDS: InboxCardWire[] = [
   card('crd_sqlite', { title: 'Spike: SQLite for the store', column: 'dropped', aside_from: 'building', dropped: { at: NEW, by: CODEX, reason: 'Superseded by the JSONL store', seen_at: null } }),
 ];
 
+/** Cards waiting on the person, for the "You: …" way in: sent in a thread, linked to two threads, linked to none. */
+const YOU_CARDS: InboxCardWire[] = [
+  card('crd_sent', { title: 'Fixed address', column: 'your_look', you: 'Pick a dialog', threads: ['msg_new', 'msg_sent'], sent: { at: OLD, to: CLAUDE, thread_id: 'msg_sent' } }),
+  card('crd_two', { title: 'Caret anywhere', column: 'your_review', you: 'Merge #15', threads: ['msg_new', 'msg_old'] }),
+  card('crd_none', { title: 'Settings search', column: 'your_look', you: 'Choose fuzzy or prefix' }),
+];
+const YOU_LAST: Record<string, string> = { msg_new: '2026-10-21T09:00:00.000Z', msg_old: '2026-10-20T09:00:00.000Z', msg_sent: '2026-10-19T09:00:00.000Z' };
+const youRow = (id: string) => (YOU_LAST[id] ? ({ thread_id: id, subject: id, project: { id: 'prj_1', name: 'web' }, last_at: YOU_LAST[id] } as unknown as InboxListRow) : null);
+
 let root: Root | null = null;
 let calls: { method: string; path: string; body: Record<string, unknown> | null }[] = [];
 const restorers: Array<() => void> = [];
@@ -102,8 +111,8 @@ function scriptFetch(sessions: unknown[] = []) {
     const refs = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)\/refs$/);
     if (refs) return json({ refs: [] });
     const one = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)$/);
-    if (one && method === 'GET') return json({ card: CARDS.find((c) => c.id === one[1]), history: [{ kind: 'created', at: OLD, by: CLAUDE }] });
-    if (one && method === 'POST') return json({ card: { ...CARDS.find((c) => c.id === one[1])!, sent: body?.op === 'send' ? { at: NEW, to: CLAUDE, thread_id: body.thread_id } : null } });
+    if (one && method === 'GET') return json({ card: [...CARDS, ...YOU_CARDS].find((c) => c.id === one[1]), history: [{ kind: 'created', at: OLD, by: CLAUDE }] });
+    if (one && method === 'POST') return json({ card: { ...[...CARDS, ...YOU_CARDS].find((c) => c.id === one[1])!, sent: body?.op === 'send' ? { at: NEW, to: CLAUDE, thread_id: body.thread_id } : null } });
     if (url.pathname === '/api/inbox/cards') return json({ card: card('crd_new', { title: String(body?.title), agent: null, notes: (body?.notes as string) ?? null }) });
     if (/^\/api\/inbox\/threads\/[^/]+\/message$/.test(url.pathname)) return json({ message: { id: 'msg_start' }, replayed: false });
     return json({ error: 'not scripted' }, 404);
@@ -195,6 +204,60 @@ test.if(hasDom)('the lanes in order, a card’s two lines, bold while unread, no
   expect(open.getAttribute('aria-label')).toContain('Auto-update for users');
   act(() => open.click());
   expect(calls.some((c) => c.path.startsWith('/api/inbox/cards/'))).toBe(false);
+});
+
+test.if(hasDom)('"You: …" opens the thread where the person makes the call, a target apart from opening the card', async () => {
+  scriptFetch();
+  const threads: { card: string; thread: string }[] = [];
+  const drawn = draw({
+    model: { serverSession: 's', cursor: 1, cards: YOU_CARDS, dropped_unseen: 0, seen_seq: LOOK },
+    rowOf: youRow,
+    onOpenThread: (target, thread) => threads.push({ card: target.id, thread }),
+  });
+  await settle();
+  const link = (id: string) => cardEl(id)!.querySelector<HTMLButtonElement>('[data-card-you-link]')!;
+  // Two buttons on each card: the title opens the card, "You: …" its thread.
+  expect(cardEl('crd_two')!.querySelectorAll('button').length).toBe(2);
+  expect(link('crd_two').getAttribute('aria-label')).toBe('Open the thread to merge #15');
+  expect(link('crd_two').textContent).toBe('You: Merge #15');
+  // The sent thread first; else the linked thread that spoke last.
+  act(() => link('crd_sent').click());
+  act(() => link('crd_two').click());
+  expect(threads).toEqual([
+    { card: 'crd_sent', thread: 'msg_sent' },
+    { card: 'crd_two', thread: 'msg_new' },
+  ]);
+  expect(drawn.opened).toEqual([]);
+  // No thread linked: "You: …" opens the card, and says so.
+  expect(link('crd_none').getAttribute('aria-label')).toBe('Open the card to choose fuzzy or prefix');
+  act(() => link('crd_none').click());
+  expect(drawn.opened).toEqual(['crd_none']);
+  // The title, and anywhere else on the card, open the card, never a thread.
+  act(() => cardEl('crd_two')!.querySelector<HTMLButtonElement>('[data-card-open]')!.click());
+  act(() => cardEl('crd_sent')!.querySelector<HTMLElement>('.ib-bc-age')!.click());
+  expect(drawn.opened).toEqual(['crd_none', 'crd_two', 'crd_sent']);
+  expect(threads.length).toBe(2);
+});
+
+test.if(hasDom)('the opened card puts Open thread at the top when the person owes something, to the same thread', async () => {
+  scriptFetch();
+  const threads: { card: string; thread: string }[] = [];
+  const drawn = draw({
+    model: { serverSession: 's', cursor: 1, cards: YOU_CARDS, dropped_unseen: 0, seen_seq: LOOK },
+    rowOf: youRow,
+    openCard: 'crd_two',
+    onOpenThread: (target, thread) => threads.push({ card: target.id, thread }),
+  });
+  await settle();
+  const open = $('[data-card-panel] [data-card-you] [data-card-open-thread]') as HTMLButtonElement;
+  expect(open.textContent).toBe('Open thread');
+  act(() => open.click());
+  expect(threads).toEqual([{ card: 'crd_two', thread: 'msg_new' }]);
+  // No thread to go to: no button.
+  drawn.rerender({ openCard: 'crd_none' });
+  await settle();
+  expect($('[data-card-panel] [data-card-you]')!.textContent).toContain('Choose fuzzy or prefix');
+  expect($('[data-card-open-thread]')).toBeNull();
 });
 
 test.if(hasDom)('the agents’ drops show above the lanes with their reason; Got it says the person looked', async () => {

@@ -7,7 +7,6 @@ import {
   INBOX_SECTIONS,
   inboxAgentName,
   inboxCardRefsOf,
-  isInboxCardPersonColumn,
   type InboxCardColumn,
   type InboxCardHistoryEntry,
   type InboxCardRef,
@@ -21,7 +20,7 @@ import { AuthorMark, Icon } from '../icons';
 import { Tip } from '../components/Tip';
 import { OnceButton } from './OnceButton';
 import { RefMarkIcon } from './RefMark';
-import { cardAge, cardFoot, columnChoices, historyWords, refState, sentTo } from './model';
+import { cardAge, cardFoot, cardYou, columnChoices, historyWords, refState, sentTo, youLinkLabel, youThread } from './model';
 
 export interface CardPanelProps {
   card: InboxCardWire;
@@ -77,6 +76,9 @@ export function CardPanel(props: CardPanelProps) {
   const refs = inboxCardRefsOf(card);
   const agent = card.agent?.kind === 'agent' ? card.agent : null;
   const notSent = card.column === 'backlog' && !agent && !card.sent;
+  // What the person owes, and the thread where they make that call (the lane card's "You: …" goes there too).
+  const you = cardYou(card);
+  const youAt = you ? youThread(card, props.rowOf) : null;
   return (
     <aside
       className={`ib-crdp${phone ? ' ib-crdp-phone' : ''}`}
@@ -153,10 +155,18 @@ export function CardPanel(props: CardPanelProps) {
             </span>
           )}
         </div>
-        {isInboxCardPersonColumn(card.column) && card.you && (
-          <p className="ib-crdp-you" data-card-you="">
-            <b>You:</b> {card.you}
-          </p>
+        {you && (
+          <div className="ib-crdp-you" data-card-you="">
+            <p>
+              <b>You:</b> {you}
+            </p>
+            {youAt && (
+              <button type="button" className="ib-btn ib-pri ib-sm" data-card-open-thread={youAt} aria-label={youLinkLabel(you, youAt)} onClick={() => props.onOpenThread(youAt)}>
+                Open thread
+                <Icon name="arrowUpRight" size={14} />
+              </button>
+            )}
+          </div>
         )}
         {card.column === 'dropped' && card.dropped && (
           <p className="ib-crdp-dropped">

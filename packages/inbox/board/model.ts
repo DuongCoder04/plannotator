@@ -180,6 +180,40 @@ export function cardOwnerName(card: InboxCardWire): string {
   return card.agent?.kind === 'agent' ? inboxAgentName(card.agent) : 'You';
 }
 
+/** What the person owes on a card ("You: …"), only in Your look and Your review; null otherwise. */
+export function cardYou(card: InboxCardWire): string | null {
+  return isInboxCardPersonColumn(card.column) && card.you ? card.you : null;
+}
+
+/**
+ * The thread where the person makes the call a card's "You: …" asks for (owner,
+ * 2026-10-27: "it should take me to the thread where I need to make the call"):
+ * the thread the card was sent in, else the linked thread with the latest
+ * message (the later-linked one when the list does not hold it or on a tie).
+ * Null when the card links no thread: the card opens instead.
+ */
+export function youThread(card: Pick<InboxCardWire, 'threads' | 'sent'>, rowOf: (threadId: string) => { last_at?: string } | null): string | null {
+  const sent = card.sent?.thread_id;
+  if (sent && (card.threads.includes(sent) || rowOf(sent))) return sent;
+  let best: string | null = null;
+  let bestAt = -Infinity;
+  for (const threadId of card.threads) {
+    const at = Date.parse(rowOf(threadId)?.last_at ?? '');
+    const time = Number.isNaN(at) ? -Infinity : at;
+    if (best === null || time >= bestAt) {
+      best = threadId;
+      bestAt = time;
+    }
+  }
+  return best;
+}
+
+/** The "You: …" link's accessible name: "Open the thread to merge #14" (the card when no thread is linked). */
+export function youLinkLabel(you: string, thread: string | null): string {
+  const words = /^[A-Z][a-z]/.test(you) ? you[0]!.toLowerCase() + you.slice(1) : you;
+  return thread ? `Open the thread to ${words}` : `Open the card to ${words}`;
+}
+
 /** The agent a sent card went to, while it waits in Backlog: "Sent to Codex". */
 export function sentTo(card: InboxCardWire): string | null {
   return isInboxCardSentWaiting(card) && card.sent ? inboxAgentName(card.sent.to) : null;
