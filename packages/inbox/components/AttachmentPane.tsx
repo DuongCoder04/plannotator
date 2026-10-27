@@ -60,6 +60,7 @@ import { FileSwipeCard } from './FileSwipeCard';
 import { createPortal } from 'react-dom';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
+import { ShortcutHint } from '../shortcuts/hint';
 import { inOverlay, isComposingKey, isEditableTarget, keyTarget, modalOpen } from '../shortcuts/guards';
 import { escapeRung, type EscapeRung } from '../escapeLadder';
 import { storage } from '@plannotator/ui/utils/storage';
@@ -798,6 +799,23 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         handle: () => {
           if (escapeNext.current) climb(escapeNext.current);
         },
+      },
+    },
+  });
+
+  // Beside the thread, an Escape nothing else used closes the file (approval "inbox-keyboard-shortcuts": Escape
+  // takes off the top layer). Last of all: on the window, bubbling, after the ladder, the thread and every control.
+  useShortcutScope({
+    scope: inboxFileViewerShortcuts,
+    handlers: {
+      escape: {
+        when: (event) => {
+          if (full || props.fullLocked || linkedTop || event.defaultPrevented || paneEscapes.has(event) || isComposingKey(event) || modalOpen()) return false;
+          if (document.querySelector(SELF_CLOSING_DRAFTS)) return false;
+          const target = keyTarget(event);
+          return !(target && (isEditableTarget(target) || inOverlay(target) || target.closest('[role="menu"], [role="listbox"], [aria-expanded="true"]')));
+        },
+        handle: () => close(),
       },
     },
   });
@@ -1913,8 +1931,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           {chip?.note && <span className="ib-fvchip-note">{chip.note}</span>}
           {multi && !phone && (
             <span className="ib-fvchip-keys">
-              <kbd>[</kbd>
-              <kbd>]</kbd>
+              <ShortcutHint scope={inboxFileViewerShortcuts} action="previous" className="" />
+              <ShortcutHint scope={inboxFileViewerShortcuts} action="next" className="" />
             </span>
           )}
         </div>

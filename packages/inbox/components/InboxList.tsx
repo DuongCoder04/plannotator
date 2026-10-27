@@ -1,4 +1,7 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { inboxListShortcuts } from '../shortcuts/list.shortcuts';
+import { shortcutAria, withShortcut } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
 import { agentName, formatCount, shortTime, waitCount } from '../format';
@@ -20,6 +23,9 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { decideLabel } from '../decisions/entry';
 import { attachPullToRefresh } from '../pullRefresh';
+import { useShortcutScope } from '@plannotator/ui/shortcuts';
+import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
+import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys';
 
 export interface InboxListProps {
   title: string;
@@ -287,7 +293,27 @@ function RowWithAction({
   // A reply waiting on a busy agent that can take it now: Send now, on hover and keyboard focus as Mark read.
   const sendNow = onSendNow && !offer && row.delivery?.send_now === true && rowWait(row.delivery) !== null;
   return (
-    <div className="ib-rw" data-row={row.thread_id} data-menu={menu ? '' : undefined}>
+    <div
+      className="ib-rw"
+      data-row={row.thread_id}
+      data-menu={menu ? '' : undefined}
+      onKeyDown={(event) => {
+        // Tab from the row onto its action (focus fix 1): the action shows only while the row has keyboard focus,
+        // and focus leaves the row before it reaches the action, so the browser's own Tab finds it gone and drops
+        // focus on the page. The wrapper holds it shown (`data-action-focus`) while focus moves; Shift+Tab back is
+        // the browser's.
+        if (event.key !== 'Tab' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+        if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-thread-id]')) return;
+        const wrapper = event.currentTarget;
+        const action = wrapper.querySelector<HTMLElement>(':scope > .ib-ract');
+        if (!action) return;
+        event.preventDefault();
+        wrapper.setAttribute('data-action-focus', '');
+        action.addEventListener('blur', () => wrapper.removeAttribute('data-action-focus'), { once: true });
+        action.focus();
+        if (document.activeElement !== action) wrapper.removeAttribute('data-action-focus');
+      }}
+    >
       {children}
       {sendNow && (
         <Tip content={`Send now: put your reply into ${agentName(rowAgent(row))}'s running turn without waiting for it to end`}>
@@ -307,7 +333,7 @@ function RowWithAction({
         </Tip>
       )}
       {offer && (
-        <Tip content={`Mark read (E): out of the top until ${agentName(rowAgent(row))} writes again`}>
+        <Tip content={withShortcut(`Mark read: out of the top until ${agentName(rowAgent(row))} writes again`, { scope: inboxThreadShortcuts, action: 'markRead' })}>
           <button
             type="button"
             className="ib-ract"
@@ -419,6 +445,29 @@ export function InboxList(props: InboxListProps) {
   // Another project on a phone: the list starts at its top. The list itself stays mounted (its Quiet fold and,
   // across a resize past the phone width, its scroll are kept).
   const bodyRef = useRef<HTMLDivElement>(null);
+  // ↑ ↓ Home End move focus between the rows (listKeys.ts), only while a row or the Quiet band has it.
+  const listKey = (move: ListMove) => ({
+    when: (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isComposingKey(event) || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || modalOpen()) return false;
+      const target = keyTarget(event);
+      const body = bodyRef.current;
+      return !!(target && body?.contains(target) && target.matches(LIST_STOPS));
+    },
+    handle: (event: KeyboardEvent) => {
+      const body = bodyRef.current;
+      if (!body) return;
+      const stops = listStops(body);
+      const at = listMoveIndex(stops.length, stops.indexOf(keyTarget(event) as HTMLElement), move);
+      const next = at === null ? null : stops[at];
+      if (!next) return;
+      next.focus({ preventScroll: true });
+      next.scrollIntoView?.({ block: 'nearest' });
+    },
+  });
+  useShortcutScope({
+    scope: inboxListShortcuts,
+    handlers: { next: listKey('next'), previous: listKey('previous'), first: listKey('first'), last: listKey('last') },
+  });
   const shownScope = useRef(props.scope ?? null);
   useLayoutEffect(() => {
     const scope = props.scope ?? null;
@@ -466,7 +515,7 @@ export function InboxList(props: InboxListProps) {
   };
   const onRowAction = props.onRowAction;
   // Shift+F10 opens a row's menu (the context-menu key too), named on each row for assistive technology.
-  const rowKeys = onRowAction ? 'Shift+F10' : undefined;
+  const rowKeys = onRowAction ? shortcutAria({ scope: inboxListShortcuts, action: 'rowMenu' }) : undefined;
   // The row callbacks keep one identity for the list's life (they call the latest props), so a row whose
   // data did not change is not rendered again when the list is (ListRow is memoized on its row's content).
   const latest = useRef(props);

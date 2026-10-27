@@ -20,7 +20,7 @@ import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTil
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
 import type { OpenInSurface } from './OpenIn';
 import { stepsOf } from '../stepping';
-import { artifactKey, artifactOfFile, threadArtifacts } from '../artifacts';
+import { artifactKey, artifactOfFile, newestViewableFile, threadArtifacts } from '../artifacts';
 import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import type { InboxToastModel } from './Toast';
@@ -80,7 +80,11 @@ import { Tip } from './Tip';
 import { OpenQuestionsButton } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
-import { selectionToolbarShowing } from '../selectionToolbar';
+import { ShortcutHint, useShortcutAria } from '../shortcuts/hint';
+import { bareKeyAllowed, keyTarget } from '../shortcuts/guards';
+import { INBOX_SHORTCUT_EXTRAS } from '../shortcuts/extras';
+import { useShortcutScope } from '@plannotator/ui/shortcuts';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, type SendTarget, type SentContents } from '../sendTargets';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
@@ -1174,6 +1178,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const hiddenNow = new Set(fold.hidden.flatMap((ids, index) => (fold.revealed.has(index) ? [] : ids)));
   const allOpen = thread.messages.every((m) => !fold.folded.has(m.id)) && hiddenNow.size === 0;
   const sectionRef = useRef<HTMLElement>(null);
+  const replyKeys = useShortcutAria({ scope: inboxThreadShortcuts, action: 'reply' });
   /** After a fold changes: keep the message the person acted on in place, then move focus. */
   const anchorRef = useRef<{ id: string | null; top: number; focus: string | null; folding: boolean } | null>(null);
   /** Stops holding the place put back after a file (threadPlace.ts `holdPlace`); everything that scrolls the thread calls it first. */
@@ -1849,6 +1854,11 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const placeKey = placeLayoutKey({ thread: thread.thread_id, file: fileCovers ? 'covered' : file ? 'side' : 'none', grid: artifactsOn, guide: covered });
   /** The last tile, image or link a click or key in the thread was aimed at, and whether it came from the keyboard. */
   const lastOpener = useRef<{ el: HTMLElement; keyboard: boolean; at: number } | null>(null);
+  /** What had focus in the thread when a key (O) opened a file: it has focus again when the file closes. */
+  const keyOpener = useRef<HTMLElement | null>(null);
+  /** The file open last: its tile takes focus when the file closes and focus would be lost. */
+  const lastFileId = useRef<string | null>(null);
+  if (file) lastFileId.current = file.id;
   /** The tile or image the open file was opened from by keyboard: focus goes back to it when the file closes. */
   const returnFocus = useRef<{ el: HTMLElement; selector: string | null } | null>(null);
   /**
@@ -1906,6 +1916,25 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       if (!active || active === document.body || !active.isConnected) {
         const target = focusBack.el.isConnected && body.contains(focusBack.el) ? focusBack.el : focusBack.selector ? body.querySelector<HTMLElement>(focusBack.selector) : null;
         target?.focus({ preventScroll: true });
+      }
+    }
+    // A file closed with the pane holding focus (Escape, ×, a key that opened it with no opener: O): focus is never
+    // left on the page. The tile of the file last open, else the thread's subject.
+    if (now.file === 'none' && was.file !== 'none') {
+      const back = keyOpener.current;
+      keyOpener.current = null;
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) {
+        // Opened by a key (O, F) from a place in the thread: back to that place, the thread where it was.
+        if (back && back.isConnected && body.contains(back)) back.focus({ preventScroll: true });
+        else {
+          const id = lastFileId.current;
+          const tile = id ? [...body.querySelectorAll<HTMLElement>(`[data-attachment-id="${CSS.escape(id)}"]`)].find((el) => el.tabIndex >= 0 && el.getClientRects().length > 0) : undefined;
+          const target = tile ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
+          target?.focus({ preventScroll: true });
+          // Never focus out of sight: the tile comes into view if the thread's place left it out.
+          target?.scrollIntoView?.({ block: 'nearest' });
+        }
       }
     }
     // Only the layout matters here.
@@ -2067,49 +2096,91 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     target.querySelector<HTMLElement>('[data-fold-head]')?.focus({ preventScroll: true });
   }, [passedIds]);
 
-  // j / k move between messages (and the middle fold), n goes to the first
-  // new one; Enter and Space are the buttons' own. Never while typing, and
-  // never while the Artifacts grid stands in for the messages.
-  useEffect(() => {
-    if (one || artifactsOn) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
-      if (event.key !== 'j' && event.key !== 'k' && event.key !== 'n') return;
-      // Words selected in a message: its toolbar takes the letters (a comment starting with them).
-      if (selectionToolbarShowing()) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (target) {
-        if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
-        if (target.tagName === 'INPUT' && !['radio', 'checkbox'].includes((target as HTMLInputElement).type)) return;
-        // Keys aimed at the open file, a dialog or a popover are theirs.
-        if (target !== document.body && !sectionRef.current?.contains(target)) return;
-        if (target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
-      }
-      const body = bodyRef.current;
-      if (!body) return;
-      event.preventDefault();
-      if (event.key === 'n') {
-        jumpNew();
-        return;
-      }
-      const heads = [...body.querySelectorAll<HTMLElement>('[data-fold-head]')];
-      if (heads.length === 0) return;
-      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      const home = active?.closest('[data-message-article], [data-middle-fold]') ?? null;
-      let index = heads.findIndex((h) => h === active || (home !== null && h.closest('[data-message-article], [data-middle-fold]') === home));
-      if (index < 0) {
-        const top = body.getBoundingClientRect().top;
-        index = heads.findIndex((h) => h.getBoundingClientRect().top >= top) - (event.key === 'j' ? 1 : 0);
-      }
-      const next = heads[Math.max(0, Math.min(heads.length - 1, index + (event.key === 'j' ? 1 : -1)))];
-      if (next) {
-        next.focus({ preventScroll: true });
-        next.scrollIntoView?.({ block: 'nearest' });
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [one, artifactsOn, jumpNew]);
+  // The thread's keys (shortcuts/thread.shortcuts.ts; approval "inbox-keyboard-shortcuts"). j / k move between
+  // messages (and the middle fold), n goes to the first new one; R opens the reply box, O the newest file. Enter
+  // and Space are the buttons' own. None while typing, composing, under a dialog or menu, with single keys off
+  // (guards.ts `bareKeyAllowed`), nor while words selected in a message show their toolbar. Keys aimed at the
+  // thread count, and at the open file for R; from the list (the open thread's row for R and O, any row for
+  // j / k / n: the `readFromList` extra) they reach this thread too.
+  const keyOrigin = (event: KeyboardEvent): 'thread' | 'file' | 'row' | 'list' | null => {
+    const target = keyTarget(event);
+    if (!target || target === document.body || sectionRef.current?.contains(target)) return 'thread';
+    if (target.closest('[data-attachment-pane]')) return 'file';
+    const row = target.closest('.ib-listcol [data-thread-id]');
+    if (row) return row.getAttribute('data-thread-id') === thread.thread_id ? 'row' : 'list';
+    if (target.closest('.ib-listcol')) return 'list';
+    return null;
+  };
+  const readKeysOn = !one && !artifactsOn;
+  const readKeyAllowed = (event: KeyboardEvent) => {
+    if (!readKeysOn || !bareKeyAllowed(event)) return false;
+    const origin = keyOrigin(event);
+    return origin === 'thread' || (INBOX_SHORTCUT_EXTRAS.readFromList && !file && (origin === 'row' || origin === 'list'));
+  };
+  const moveMessage = (step: 1 | -1) => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const heads = [...body.querySelectorAll<HTMLElement>('[data-fold-head]')];
+    if (heads.length === 0) return;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const home = active?.closest('[data-message-article], [data-middle-fold]') ?? null;
+    let index = body.contains(active) ? heads.findIndex((h) => h === active || (home !== null && h.closest('[data-message-article], [data-middle-fold]') === home)) : -1;
+    if (index < 0) {
+      const top = body.getBoundingClientRect().top;
+      index = heads.findIndex((h) => h.getBoundingClientRect().top >= top) - (step === 1 ? 1 : 0);
+    }
+    const next = heads[Math.max(0, Math.min(heads.length - 1, index + step))];
+    if (next) {
+      next.focus({ preventScroll: true });
+      next.scrollIntoView?.({ block: 'nearest' });
+    }
+  };
+  /** The Reply button's path, from a key: from a file in full screen, back beside the thread first (the strip's Write a reply). */
+  const replyByKey = () => {
+    if (box.open) {
+      textRef.current?.focus();
+      return;
+    }
+    if (file && full) writeReplyFromFile();
+    else openBox();
+  };
+  /** The file O opens: its tile shows the O keycap. */
+  const newestFileId = useMemo(() => newestViewableFile(artifactList)?.attachment.id ?? null, [artifactList]);
+  const openNewestByKey = () => {
+    const newest = newestViewableFile(artifactList);
+    if (!newest) {
+      announce('No files in this thread.');
+      return;
+    }
+    const active = document.activeElement;
+    keyOpener.current = !file && active instanceof HTMLElement && bodyRef.current?.contains(active) ? active : null;
+    openFromMessage(newest.attachment);
+  };
+  useShortcutScope({
+    scope: inboxThreadShortcuts,
+    handlers: {
+      nextMessage: { when: readKeyAllowed, handle: () => moveMessage(1) },
+      previousMessage: { when: readKeyAllowed, handle: () => moveMessage(-1) },
+      firstNew: { when: readKeyAllowed, handle: () => jumpNew() },
+      reply: {
+        when: (event) => {
+          // Only where the Reply button is (or the box is already open): never where the foot shows something else.
+          if (!bareKeyAllowed(event) || !(box.open || sectionRef.current?.querySelector('[data-reply-button]'))) return false;
+          const origin = keyOrigin(event);
+          return origin === 'thread' || origin === 'row' || origin === 'file';
+        },
+        handle: replyByKey,
+      },
+      openNewest: {
+        when: (event) => {
+          if (!bareKeyAllowed(event) || artifactsOn) return false;
+          const origin = keyOrigin(event);
+          return origin === 'thread' || origin === 'row';
+        },
+        handle: openNewestByKey,
+      },
+    },
+  });
 
   // Another window (or a phone's Send) saved, sent or discarded this thread's draft, or this one did:
   // its copy here follows. A box with no edits since its last save or read takes the new words (or
@@ -2168,6 +2239,18 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       return;
     }
     if (box.open) textRef.current?.focus();
+    // The box closed (Escape, Cancel, a Send that did not go) and took focus with it: the foot's Reply (or Edit
+    // draft) has it next. A Send that went gives focus to the reply in the thread instead (send, `focusSent`).
+    else if (!focusSent.current) {
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) {
+        requestAnimationFrame(() => {
+          const now = document.activeElement;
+          if (focusSent.current || (now && now !== document.body && now.isConnected)) return;
+          sectionRef.current?.querySelector<HTMLElement>('[data-reply-button]')?.focus({ preventScroll: true });
+        });
+      }
+    }
   }, [box.open]);
 
   // The update control's restart guard: an unsent reply is the one thing a
@@ -2314,6 +2397,14 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const kept = replyDraft.conflict ?? replyDraft.draft?.body ?? '';
     setBox({ open: true, text: kept.trim() ? kept : '' });
     setError(null);
+  };
+
+  /** Write a reply from an open file (the strip's button, R): full screen goes back beside the thread, the box opens. */
+  /** A Send went: focus moves to the reply once the thread shows it. */
+  const focusSent = useRef(false);
+  const writeReplyFromFile = () => {
+    setFull(false);
+    openBox();
   };
 
   /** Back from the choice to the reply: the draft and its choice kept, focus at the end of the text. */
@@ -2613,12 +2704,22 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         went += 1;
       }
       done = true;
+      // Focus goes to the reply once it is in the thread (not to Reply: the box-close effect leaves it be).
+      focusSent.current = true;
       finishSent(sentUploads, words !== '');
       setFull(false);
       await onChanged();
       await reloadFiles();
       // The reply and where it is now sit at the foot of the thread.
-      requestAnimationFrame(() => bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight }));
+      requestAnimationFrame(() => {
+        bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
+        if (!focusSent.current) return;
+        focusSent.current = false;
+        const active = document.activeElement;
+        if (active && active !== document.body && active.isConnected) return;
+        const heads = bodyRef.current?.querySelectorAll<HTMLElement>('[data-message-article] [data-fold-head]');
+        (heads?.[heads.length - 1] ?? sectionRef.current?.querySelector<HTMLElement>('[data-reply-button]'))?.focus({ preventScroll: true });
+      });
     } catch (cause) {
       failure = cause;
       if (isSuperseded(cause)) {
@@ -3166,7 +3267,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       <button type="button" className="ib-hbtn" data-mark-read="" aria-pressed={readAt !== null} disabled={!markReadEnabled} onClick={() => onMarkRead!(readAt === null)}>
         <Icon name="checkCircle" size={16} />
         <span className="ib-hbtn-l">{readAt !== null ? 'Read' : 'Mark read'}</span>
-        <kbd className="ib-kbd ib-wide">E</kbd>
+        <ShortcutHint scope={inboxThreadShortcuts} action="markRead" className="ib-kbd ib-wide" />
       </button>
     </Tip>
   ) : null;
@@ -3636,6 +3737,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     onOpenAs={phone || fileStacked ? undefined : openFromMessage}
                     openId={file && !full && !phone && !fileStacked ? file.id : null}
                     openIn={openIn}
+                    newestId={newestFileId}
                   />
                 )}
                 {message.guide && <GuideCard guide={message.guide} onOpen={() => onOpenGuide(message.id)} />}
@@ -4013,6 +4115,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 data-edit-draft={waiting || draftKept ? '' : undefined}
                 data-reply-button=""
                 aria-describedby={waiting || draftKept ? footStatusIds : undefined}
+                aria-keyshortcuts={replyKeys}
               >
                 <Icon name={waiting || draftKept ? 'pen' : 'reply'} size={15} />
                 {/* Short of room, "Edit", and on a phone the pencil alone (footFit.ts): the words stay as hidden text,
@@ -4024,6 +4127,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 ) : (
                   'Reply'
                 )}
+                <ShortcutHint scope={inboxThreadShortcuts} action="reply" className="ib-kbd ib-btn-kbd" />
               </button>
               {/* The thread's open questions (approval "inbox-thread-open-questions"): a list that takes the person to each
                   card, with Re-ask at its foot (owner, 2026-10-23: the open questions again, in one message per session). */}
@@ -4147,10 +4251,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         strip={{
           picks: picksCount,
           annotations: records.length,
-          onWriteReply: () => {
-            setFull(false);
-            openBox();
-          },
+          onWriteReply: writeReplyFromFile,
         }}
       />
     )}

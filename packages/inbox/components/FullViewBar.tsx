@@ -1,6 +1,12 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Tooltip } from '@plannotator/ui/components/Tooltip';
-import { formatShortcutBindingText, formatShortcutBindingTokens } from '@plannotator/ui/shortcuts';
+import { formatShortcutBindingText } from '@plannotator/ui/shortcuts';
+import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
+import { shortcutAria, TipKeys, type ShortcutRef } from '../shortcuts/hint';
+
+const EXIT_KEYS: ShortcutRef = { scope: inboxFileViewerShortcuts, action: 'escape' };
+const TOOLS_KEYS: ShortcutRef = { scope: inboxFileViewerShortcuts, action: 'toggleTools' };
+const exitKeys = shortcutAria(EXIT_KEYS);
 import { modKey } from '@plannotator/ui/utils/platform';
 import { Icon } from '../icons';
 import { Tip as HoverTip } from './Tip';
@@ -95,22 +101,7 @@ export interface FullViewBarHandle {
   toggle: () => void;
 }
 
-function Keys({ binding }: { binding: string }) {
-  return (
-    <span className="flex items-center gap-1">
-      {formatShortcutBindingTokens(binding).map((key, index) => (
-        <kbd
-          key={`${key}-${index}`}
-          className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border/60 bg-muted px-1 font-mono text-[10px] leading-none text-foreground/80"
-        >
-          {key}
-        </kbd>
-      ))}
-    </span>
-  );
-}
-
-function Tip({ text, note, binding, phone, passEscape, children }: { text: string; note?: string; binding?: string | null; phone: boolean; passEscape?: boolean; children: React.ReactElement }) {
+function Tip({ text, note, keys, phone, passEscape, children }: { text: string; note?: string; keys?: ShortcutRef | null; phone: boolean; passEscape?: boolean; children: React.ReactElement }) {
   // A phone has no hover: a tooltip there only opens on focus, unseen, and takes the next Escape for itself. The buttons carry their names.
   if (phone) return children;
   return (
@@ -122,7 +113,7 @@ function Tip({ text, note, binding, phone, passEscape, children }: { text: strin
         <span className="flex flex-col gap-1">
           <span>{text}</span>
           {note && <span className="text-muted-foreground">{note}</span>}
-          {binding && <Keys binding={binding} />}
+          {keys && <TipKeys {...keys} />}
         </span>
       }
     >
@@ -422,20 +413,20 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
         {props.leave.kind === 'exit' && leaveButton}
         {props.onExitFull && props.leave.kind === 'exit' && !phone && (
           // Its tooltip says Esc, so one Esc on it leaves (the tooltip does not keep that press).
-          <Tip text="Exit full screen" binding="Escape" phone={phone} passEscape>
+          <Tip text="Exit full screen" keys={EXIT_KEYS} phone={phone} passEscape>
             <button
               type="button"
               className="ib-fvb"
               onClick={props.onExitFull}
               aria-label="Exit full screen"
-              aria-keyshortcuts="Escape"
+              aria-keyshortcuts={exitKeys}
               data-full-view-close=""
             >
               <Icon name="x" size={iconSize} />
             </button>
           </Tip>
         )}
-        <Tip text={hideText} binding={props.chord} phone={phone}>
+        <Tip text={hideText} keys={props.chord ? TOOLS_KEYS : null} phone={phone}>
           <button
             type="button"
             className="ib-fvb ib-fvhide"

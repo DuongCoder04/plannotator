@@ -62,7 +62,10 @@ import { SearchHost, type SearchLanding } from './components/SearchHost';
 import { onOpenSearchKey } from './search/searchShortcut';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxThreadShortcuts } from './shortcuts/thread.shortcuts';
-import { isComposingKey, isEditableTarget, isRepeatKey } from './shortcuts/guards';
+import { bareKeyAllowed, inOverlay, isComposingKey, isEditableTarget, isRepeatKey, keyTarget, modalOpen } from './shortcuts/guards';
+import { inboxAppShortcuts } from './shortcuts/app.shortcuts';
+import { shortcutPrefs } from './shortcuts/prefs';
+import { ShortcutMap } from './components/ShortcutMap';
 import { EmptyState } from './components/EmptyState';
 import { Icon } from './icons';
 import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, loadTour, tourComposeBody, tourComposeTransport, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
@@ -1305,7 +1308,12 @@ function Inbox() {
     }
     closing.current = { threadId: closed, asOf: latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed) ?? null };
     const active = document.activeElement;
-    if (body && lastInput === 'keyboard' && (!active || active === document.body)) rowElement(body, closed)?.focus({ preventScroll: true });
+    // A thread opened from search or a link may have no row on screen (Quiet folded, another project): the
+    // Quiet band, else the first row, so focus is never left on the page.
+    if (body && lastInput === 'keyboard' && (!active || active === document.body || !active.isConnected)) {
+      const target = rowElement(body, closed) ?? body.querySelector<HTMLElement>('[data-section-id="quiet"] button.ib-band') ?? body.querySelector<HTMLElement>('[data-thread-id]');
+      target?.focus({ preventScroll: true });
+    }
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
       // when a message arrived there that they did not see: it comes back
@@ -1361,6 +1369,27 @@ function Inbox() {
   // the browser's Back when the page was opened from there (history.ts), a new entry otherwise.
   const whatsNewReturn = useRef('');
   if (route.page !== 'settings' && route.page !== 'whats-new' && route.page !== 'tour') whatsNewReturn.current = hashOf(route);
+  /**
+   * Back from Settings or What's new to where the person was (‹ Inbox, Escape), focus on what is there: an open
+   * file's pane, else the open thread's row, else its subject, else the first row (never left on the page as the
+   * sidebar slides back).
+   */
+  const pageBackRef = useRef(() => {});
+  pageBackRef.current = () => {
+    const hash = route.page === 'whats-new' ? whatsNewReturn.current : settingsReturn.current;
+    const to = routeOf(hash);
+    if (route.page === 'whats-new') {
+      if (!backTo(hash)) go(to);
+    } else go(to);
+    focusSoon([
+      // A file was open (beside the thread or full screen): its pane, which may cover the row.
+      ...(to.file ? ['[data-attachment-pane]'] : []),
+      ...(to.thread ? [`.ib-main .ib-lbody [data-thread-id="${CSS.escape(to.thread)}"]`, 'section.ib-pane h2.ib-subject'] : []),
+      '.ib-main .ib-lbody [data-thread-id]',
+      '.ib-bpage h1',
+      '.ib-main h1',
+    ]);
+  };
 
   // Settings is a focused page (design of record inbox-settings-tabs): the sidebar slides away while it
   // is open and comes back on leaving, without writing the person's stored choice. ⌘B there opens it
@@ -1372,6 +1401,15 @@ function Inbox() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Settings and What's new are focused pages: Escape goes back to where the person was ("‹ Inbox"), unless
+      // something on the page used it (a dialog, a menu, a field).
+      if (event.key === 'Escape' && (routeRef.current.page === 'settings' || routeRef.current.page === 'whats-new')) {
+        const from = keyTarget(event);
+        if (event.defaultPrevented || isComposingKey(event) || modalOpen() || (from && (isEditableTarget(from) || inOverlay(from) || from.closest('[role="menu"], [role="listbox"], [aria-expanded="true"]')))) return;
+        if (isPhone()) return;
+        pageBackRef.current();
+        return;
+      }
       // An open file owns Escape (the HTML viewer's ladder, the composers).
       if (event.key !== 'Escape' || !routeRef.current.thread || routeRef.current.file) return;
       // Something inside the thread already used this Escape (the reply's choice at Send goes back to the reply).
@@ -2169,7 +2207,7 @@ function Inbox() {
    * for typing, composition and repeat; the rest is the thread's own).
    */
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
-    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event)) return null;
+    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !shortcutPrefs().singleKeys) return null;
     if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || routeRef.current.guide) return null;
     // Words selected in a message: its toolbar takes the letters (a comment starting with them).
     if (selectionToolbarShowing()) return null;
@@ -2205,6 +2243,43 @@ function Inbox() {
       undo: {
         when: (event) => (threadKey.current = threadKeyAction(event, 'z')) !== null,
         handle: () => threadKey.current?.(),
+      },
+    },
+  });
+
+  // The window's keys (shortcuts/app.shortcuts.ts; approval "inbox-keyboard-shortcuts"): `?` opens the shortcut
+  // map; G then I, B or S go to the Inbox, the Board, Settings, focus landing on what is there (never on the page).
+  // Single keys, so none while typing or under a dialog (guards.ts), nor over the tour's replay, nor on a phone.
+  const [mapOpen, setMapOpen] = useState(false);
+  const appKeyAllowed = (event: KeyboardEvent) => bareKeyAllowed(event) && routeRef.current.page !== 'tour' && !isPhone();
+  /** Focus the first of `selectors` on screen once the page it is on has drawn (two frames: the route, then its layout). */
+  const focusSoon = (selectors: readonly string[]) => requestAnimationFrame(() => requestAnimationFrame(() => focusFirst(selectors)));
+  useShortcutScope({
+    scope: inboxAppShortcuts,
+    handlers: {
+      openMap: { when: appKeyAllowed, handle: () => setMapOpen(true) },
+      goInbox: {
+        when: appKeyAllowed,
+        handle: () => {
+          const now = routeRef.current;
+          if (now.page !== 'inbox') leave({ page: 'inbox', project: null, thread: null });
+          const open = now.page === 'inbox' ? now.thread : null;
+          focusSoon([...(open ? [`.ib-main .ib-lbody [data-thread-id="${CSS.escape(open)}"]`] : []), '.ib-main .ib-lbody [data-thread-id]', '.ib-main .ib-lbody button.ib-band', '.ib-main .ib-empty h2', '.ib-main h1']);
+        },
+      },
+      goBoard: {
+        when: (event) => appKeyAllowed(event) && boardOnRef.current,
+        handle: () => {
+          if (routeRef.current.page !== 'board') leave({ page: 'board', project: null, thread: null });
+          focusSoon(['.ib-bpage h1']);
+        },
+      },
+      goSettings: {
+        when: appKeyAllowed,
+        handle: () => {
+          if (routeRef.current.page !== 'settings') leave({ page: 'settings', project: null, thread: null });
+          else focusSoon(['.ib-spage h1']);
+        },
       },
     },
   });
@@ -3224,7 +3299,7 @@ function Inbox() {
             ? go({ page: 'settings', project: null, thread: null, section: 'devices', pair: true })
             : close({ page: 'settings', project: null, thread: null, section: 'devices' })
         }
-        onBack={() => go(routeOf(settingsReturn.current))}
+        onBack={() => pageBackRef.current()}
         onRetry={() => {
           setSettingsError(null);
           void refreshSettings();
@@ -3237,10 +3312,7 @@ function Inbox() {
         model={whatsNew}
         error={whatsNewError}
         update={update}
-        onBack={() => {
-          const hash = whatsNewReturn.current;
-          if (!backTo(hash)) go(routeOf(hash));
-        }}
+        onBack={() => pageBackRef.current()}
         onUpdate={pressUpdate}
         onTakeTour={
           settings?.tour && !tourUnavailable && settings.tour.seen_at === null && settings.tour.skipped_at === null && settings.tour.finished_at === null ? startTour : undefined
@@ -3602,12 +3674,22 @@ function Inbox() {
             onCheckFailing={() => leave({ page: 'settings', project: null, thread: null, section: 'about' })}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
+            onShortcuts={() => setMapOpen(true)}
           />
           )
         }
       >
         <main className="ib-main">{main}</main>
       </SidebarShell>
+      {mapOpen && !phone && (
+        <ShortcutMap
+          onClose={() => setMapOpen(false)}
+          onSettings={() => {
+            setMapOpen(false);
+            leave({ page: 'settings', project: null, thread: null, section: 'general' });
+          }}
+        />
+      )}
       {updateDialog === 'update' && update && (
         <UpdateDialog
           details={updateDetails}

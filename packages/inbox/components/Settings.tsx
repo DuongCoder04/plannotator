@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { KeyboardSettings } from './KeyboardSettings';
 import { INBOX_SOUND_MAX_VOLUME, INBOX_SOUND_MIN_VOLUME, INBOX_TEXT_SIZES } from '@plannotator/core/inbox-types';
 import type { InboxSound } from '../sound';
 import type { AgentToolHost, SettingsModel } from '../api';
@@ -299,6 +300,7 @@ function GeneralSection({
           <PaletteRow />
         </div>
       </section>
+      <KeyboardSettings />
       <section className="ib-sgroup" data-settings-notifications="" aria-labelledby="ib-g-attention">
         <h2 id="ib-g-attention">When an agent asks you</h2>
         <div className="ib-card">
@@ -652,6 +654,10 @@ export function SettingsPage(props: SettingsPageProps) {
     lastSection.current = section;
     if (firstSection.current) {
       firstSection.current = false;
+      // Opening Settings: the sidebar slides away with the button that opened it, so focus starts at the heading
+      // (approval "inbox-keyboard-shortcuts", focus fix 6), unless something on the page already has it.
+      const active = document.activeElement;
+      if (!phone && !active?.closest('.ib-spage')) heading.current?.focus({ preventScroll: true });
       return;
     }
     if (section === null) {
