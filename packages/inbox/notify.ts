@@ -233,7 +233,8 @@ function sameHost(a: string, b: string): boolean {
 }
 
 function supported(): boolean {
-  return typeof window !== 'undefined' && 'Notification' in window;
+  // The constructor itself, not the name: a Notification property left undefined is no support.
+  return typeof window !== 'undefined' && typeof (window as { Notification?: unknown }).Notification === 'function';
 }
 
 function currentPermission(): NotificationPermission | 'unsupported' {
