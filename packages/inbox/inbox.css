@@ -4991,8 +4991,9 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-crdp-you { margin: 0; padding: 12px 16px; border-radius: var(--ib-lr-md, 9px); background: color-mix(in oklab, var(--warning, oklch(0.75 0.15 85)) 15%, var(--card)); font-size: var(--ib-fs-15, 15px); overflow-wrap: anywhere; }
 .ib-crdp-you b { color: var(--ib-onyou-fg); }
 /* The top: Open thread, or Create thread with no thread (approved 2026-10-27), right of the Move menu. */
-.pn-inbox .ib-crdp-thread { margin-left: auto; gap: 5px; }
-.ib-crdp-top > .ib-crdp-thread ~ .ib-crdp-x { margin-left: 0; }
+.pn-inbox .ib-crdp-open { gap: 5px; }
+.ib-crdp-top > :is(.ib-crdp-open, .ib-tipwrap:has(> .ib-crdp-open)) { margin-left: auto; }
+.ib-crdp-top > :is(.ib-crdp-open, .ib-tipwrap:has(> .ib-crdp-open)) ~ .ib-crdp-x { margin-left: 0; }
 /* "Ask for an update": a quiet link by History. */
 .ib-crdp-sec h3.ib-crdp-hhead { display: flex; align-items: baseline; gap: 8px; }
 .ib-crdp-ask { margin-left: auto; padding: 0; border: 0; background: none; color: var(--muted-foreground); font: inherit; font-weight: 500; cursor: pointer; }

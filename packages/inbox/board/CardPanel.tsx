@@ -113,7 +113,7 @@ export function CardPanel(props: CardPanelProps) {
           <Tip content={props.rowOf(threadAt)?.subject ?? 'The card’s thread'}>
             <button
               type="button"
-              className={`ib-btn ib-sm ib-crdp-thread${you ? ' ib-pri' : ''}`}
+              className={`ib-btn ib-sm ib-crdp-open${you ? ' ib-pri' : ''}`}
               data-card-open-thread={threadAt}
               // Named by its words, "Open thread" (WCAG 2.5.3); what the person owes describes it.
               aria-describedby={you ? `${headingId}-you` : undefined}
@@ -447,7 +447,7 @@ function CreateThreadButton({ primary, disabled, onCreate }: { primary: boolean;
     <Tip content={disabled ? 'No agent is running in this project.' : 'A new thread to the card’s agent, linked to this card'}>
       <button
         type="button"
-        className={`ib-btn ib-sm ib-crdp-thread${primary ? ' ib-pri' : ''}`}
+        className={`ib-btn ib-sm ib-crdp-open${primary ? ' ib-pri' : ''}`}
         disabled={disabled}
         data-card-create-thread=""
         onClick={(event) => onCreate(event.currentTarget)}
