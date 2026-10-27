@@ -7325,6 +7325,9 @@ const App: React.FC = () => {
   // when the plan is short, instead of stopping halfway down the grid. The
   // document column grows to fill the scroll area and the Viewer's card fills it.
   const gridPaperFillsView = gridEnabled && !isHtmlSurface && !isEditingMarkdown;
+  // The plan diff's card fills the same way, so toggling Diff does not make the
+  // paper jump from full height to half.
+  const gridDiffPaperFillsView = gridEnabled && !isHtmlSurface;
   if (isLoading && !isSharedSession) {
     return (
       <ThemeProvider defaultTheme="dark" manageFavicon>
@@ -7671,7 +7674,7 @@ const App: React.FC = () => {
               )}
 
               {planDiff.diffBlocks && planDiff.diffStats && !goalSetupMode && (
-                <div className="w-full flex justify-center" style={{ display: isPlanDiffActive ? undefined : 'none' }}>
+                <div className={`w-full flex justify-center${gridDiffPaperFillsView ? ' flex-1 print:flex-none' : ''}`} data-grid-paper-column={gridDiffPaperFillsView ? '' : undefined} style={{ display: isPlanDiffActive ? undefined : 'none' }}>
                   <PlanDiffViewer
                     diffBlocks={planDiff.diffBlocks}
                     diffStats={planDiff.diffStats}
@@ -7687,6 +7690,7 @@ const App: React.FC = () => {
                     onSelectAnnotation={handleSelectAnnotation}
                     selectedAnnotationId={selectedAnnotationId}
                     mode={effectiveEditorMode}
+                    fillHeight={gridDiffPaperFillsView}
                   />
                 </div>
               )}

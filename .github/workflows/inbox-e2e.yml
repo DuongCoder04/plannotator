@@ -16,7 +16,8 @@ name: Inbox window e2e
 # engine WKWebView is, and the VS Code Guides webview's sanitizer and Mermaid
 # path (vscode-guides-sanitize.spec.ts) and its answer frame
 # (vscode-guides-answer.spec.ts), no binary needed. Runs only when the
-# Inbox, the ui and the guide viewer it composes, the binary entry or the build
+# Inbox, the ui and the guide viewer it composes, the plan editor (the Grid
+# paper spec, grid-paper-fill.spec.ts), the binary entry or the build
 # could have changed.
 
 on:
@@ -41,6 +42,7 @@ on:
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
@@ -87,6 +89,7 @@ on:
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
