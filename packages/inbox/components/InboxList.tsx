@@ -11,7 +11,7 @@ import { ListColumnEdge } from '../shell/ListColumnEdge';
 import { SidebarTrigger, useSidebar } from '../shell/sidebar';
 import { offersRowMarkRead } from '../markRead';
 import { useNarrowerThan } from '../narrower';
-import { inboxHasUnsent, inboxRowArchived } from '@plannotator/core/inbox-types';
+import { inboxHasUnsent, inboxRowArchived, type InboxSectionId } from '@plannotator/core/inbox-types';
 import { DraftLabel } from './DraftLabel';
 import { ThreadRowMenu } from './RowMenu';
 import type { RowMenuAction } from '../rowMenu';
@@ -268,18 +268,21 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
  */
 function RowWithAction({
   row,
+  drawn,
   menu,
   onMarkRead,
   onSendNow,
   children,
 }: {
   row: InboxListRow;
+  /** The group the row sits in on screen: a seen update the list still holds in New keeps Mark read. */
+  drawn: InboxSectionId;
   menu: boolean;
   onMarkRead?: (row: InboxListRow) => void;
   onSendNow?: (row: InboxListRow) => void;
   children: ReactNode;
 }) {
-  const offer = onMarkRead && offersRowMarkRead(row);
+  const offer = onMarkRead && offersRowMarkRead(row, drawn);
   // A reply waiting on a busy agent that can take it now: Send now, on hover and keyboard focus as Mark read.
   const sendNow = onSendNow && !offer && row.delivery?.send_now === true && rowWait(row.delivery) !== null;
   return (
@@ -460,6 +463,7 @@ export function InboxList(props: InboxListProps) {
     }
     return null;
   };
+  const sectionOf = (threadId: string) => props.sections.find((section) => section.threads.some((r) => r.thread_id === threadId))?.id ?? null;
   const onRowAction = props.onRowAction;
   // Shift+F10 opens a row's menu (the context-menu key too), named on each row for assistive technology.
   const rowKeys = onRowAction ? 'Shift+F10' : undefined;
@@ -553,6 +557,7 @@ export function InboxList(props: InboxListProps) {
           ref={bodyRef}
           className="ib-lbody"
           rowOf={rowOf}
+          sectionOf={sectionOf}
           canMarkRead={props.onMarkRead !== undefined}
           pinnedOf={props.pinned ? (threadId) => props.pinned!.has(threadId) : undefined}
           onTarget={setMenuRow}
@@ -589,6 +594,7 @@ export function InboxList(props: InboxListProps) {
                     <ListRow
                       key={row.thread_id}
                       row={row}
+                      drawn={section.id}
                       // A phone's row has no hover action (a hover on a touch screen is a first tap): Mark read is in the thread's header there.
                       shape={props.phone ? 'phone' : twoLine ? 'narrow' : 'wide'}
                       filtered={props.filtered}
@@ -614,6 +620,8 @@ export function InboxList(props: InboxListProps) {
 
 interface ListRowProps {
   row: InboxListRow;
+  /** The group the row sits in on screen. */
+  drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
   filtered: boolean;
   selected: boolean;
@@ -637,11 +645,11 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, shape, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
+  function ListRow({ row, drawn, shape, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
     const open = () => onOpen(row);
     if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
     return (
-      <RowWithAction row={row} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
+      <RowWithAction row={row} drawn={drawn} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
         {shape === 'narrow' ? (
           <NarrowRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         ) : (
@@ -652,6 +660,7 @@ const ListRow = memo(
   },
   (a, b) =>
     a.shape === b.shape &&
+    a.drawn === b.drawn &&
     a.filtered === b.filtered &&
     a.selected === b.selected &&
     a.lit === b.lit &&

@@ -36,7 +36,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, drawnSection, filterSections, heldNotice, markHeldRowArchived, putRowBack, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -84,7 +84,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
-import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
+import { canToggleRead, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
@@ -1852,6 +1852,7 @@ function Inbox() {
    */
   const markRead = async (threadId: string, read: boolean) => {
     const before = rowOf(threadId);
+    if (read && before && seenHeldInNew(before, drawnSection(shownRef.current, threadId))) return moveSeenToQuiet(threadId, before);
     // With a thread open the list holds still: the row moves to Quiet when the list next settles.
     const open = routeRef.current.thread;
     const deferred = open !== null;
@@ -1886,6 +1887,33 @@ function Inbox() {
             },
           }
         : {}),
+    });
+  };
+
+  /**
+   * Mark read on a seen update the list still holds in New (markRead.ts
+   * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
+   * written; its row moves to Quiet now, sliding as the row's hover Mark read
+   * does. Undo puts it back where it was drawn.
+   */
+  const moveSeenToQuiet = (threadId: string, row: InboxListRow) => {
+    const before = shownRef.current;
+    const sections = latestRef.current?.sections;
+    if (!before || !sections) return;
+    armSlide();
+    setShown((current) => (current ? settleThread(current, sections, threadId) : current));
+    // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
+    const { lead, detail } = markReadToast(row, 'list');
+    showToast({
+      lead,
+      detail,
+      icon: 'check',
+      onUndo: () => {
+        dismissToast();
+        armSlide();
+        setShown((current) => (current ? putRowBack(current, before, threadId) : current));
+        say('Moved back to the top.');
+      },
     });
   };
 
@@ -2202,7 +2230,7 @@ function Inbox() {
     const threadId = rowId ?? (open && open.thread_id === routeRef.current.thread ? open.thread_id : null);
     if (!threadId) return null;
     const row = rowOf(threadId);
-    if (!row || !canToggleRead(row)) return null;
+    if (!row || !canToggleRead(row, drawnSection(shownRef.current, threadId))) return null;
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
@@ -3445,6 +3473,7 @@ function Inbox() {
             thread={thread}
             sent={openThreadRow?.sent ?? null}
             row={openThreadRow}
+            drawn={drawnSection(shown, thread.thread_id)}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
             onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
