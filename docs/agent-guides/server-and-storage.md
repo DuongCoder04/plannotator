@@ -347,6 +347,8 @@ Runs as a separate service on port `19433` (self-hosted) or as a Cloudflare Work
 
 Every plan is automatically saved to `~/.plannotator/history/{project}/{slug}/` on arrival, before the user sees the UI. Versions are numbered sequentially (`001.md`, `002.md`, etc.). The history slug is `{sanitized-heading}-YYYY-MM-DD`, scoped by project name (git repo or cwd), and is resolved by `resolveHistorySlug()` (`packages/shared/storage.ts`) so that the date names the day the chain STARTED, not today (#1679): an open server keeps its own slug for revisions whose heading is unchanged (`updatePlan`, Pi's and the Claude Code mod's); otherwise today's `{heading}-{UTC date}` directory is used if it already holds versions; otherwise the most recently written existing `{heading}-YYYY-MM-DD` directory of the project that is not dated after today is continued when its newest version file's mtime is within `PLAN_HISTORY_CONTINUE_WINDOW_MS` (48h); otherwise today's directory starts a new chain. So a plan revised across midnight (UTC or local) or resumed the next day keeps its version diff, every revision refreshes the window, and a same-heading plan after two quiet days starts fresh. Nothing on disk is renamed or migrated. Both plan servers (Bun and Pi) use it. The decision snapshots in `~/.plannotator/plans/` are named separately by `generateSlug()` (heading + the UTC date the plan arrived at the server, or of its latest in-session revision, unchanged), because `parseArchiveFilename` / `listArchivedPlans` read that date back; the feedback archive's `target.slug` names the history directory, matching its `planVersionFile`. Identical resubmissions are deduplicated (no new file if content matches the latest version).
 
+**The project half (#2197).** `{project}` is the basename of the git toplevel (else the folder) that `detectProjectName()` finds. It is read from the CLI's cwd, which a shell `cd` moves between submits, so for Claude Code the session's root is also consulted (a workspace folder holding separate clones would otherwise split one plan into two chains of length 1): the mod reads `$.session.root()` once per session and sends it as `projectRoot` on `claude-mod-plan`'s stdin; the classic PermissionRequest hook uses `CLAUDE_PROJECT_DIR` (only for origin `claude-code`, never Gemini, which sets the same variable as an alias). Both reach the plan server as `ServerOptions.historyRoot` (ignored unless an existing absolute folder). `resolveHistoryChain(projects, slug)` (`packages/shared/storage.ts`) runs `resolveHistorySlug` for the cwd's project first and the root's project second, takes the first whose chain already holds versions, and otherwise starts a new chain under the cwd's project. So a plan started at the root and resubmitted from a nested clone continues its chain, while where a new plan lands does not change: a nested clone keeps its own plans (and their feedback archive records), and same-heading plans from two clones never merge. With no root, or a root equal to the cwd, the list is the cwd's project alone. Not covered: a plan started in a nested clone and resubmitted from the root or another clone (the clone is no candidate then; that needs the host to remember the plan's earlier folder). The root only affects which existing chain is continued (and so the feedback archive record, which names that history version); plan file trust, linked docs, `/api/doc` roots, `projectRoot` on `/api/plan`, `repoInfo` and the `sessions/` registry label keep the process's cwd. Other agents pass no root. Tests: `apps/hook/server/plan-history-root.test.ts` (the CLI as processes, both Claude Code paths), `resolveHistoryChain` in `packages/server/storage.test.ts`, the stdin in the mod's `controller.test.ts`.
+
 This powers the version history API (`/api/plan/version`, `/api/plan/versions`) and the plan diff system.
 
 **Annotate mode** also saves history on open, so the same version diff works when annotating a standalone `.md`/`.txt`/`.html` file (or any other supported plain-text file, e.g. `.yaml`/`.json`/`.toml`). It keys the slug by **file path** — `annotate-{sanitized-basename}-{hash8}` — rather than heading + date, so re-opening the same file groups its versions even as its content (and headings) change. **Note this writes a copy of each annotated file's content** under `~/.plannotator/history/` (or `PLANNOTATOR_DATA_DIR`); disable via `PLANNOTATOR_ANNOTATE_HISTORY=0` or `{ "annotateHistory": false }` in `~/.plannotator/config.json` to keep annotate sessions stateless (the version diff is then unavailable, and the durable submitted-feedback records described in the env-var table are also skipped). Single-local-file annotate sessions additionally write each submitted decision to `history/{project}/{slug}/submissions/{timestamp}.md` BEFORE deleting the annotation draft, so feedback survives an agent-side timeout (#678); a failed record write keeps the draft as the recovery copy. For `--render-html` files the diff is rendered as the real page with inline `<ins>`/`<del>` highlights via `htmlDiff()` (`packages/shared/html-diff.ts`).
@@ -467,59 +469,13 @@ Details that surprise people:
   contributor's own data dir. Tests that need the archive opt back in inside
   their own test bodies.
 
-## Usage counts for experimental features
+## Usage counts (removed)
 
-Approval record: `.product/approved/experimental-telemetry/`. Its `approval.md` overrides `SPEC.md` on three points: counts are on by default with a notice, there is no install id but two local facts, and storage is D1 behind our own Worker. Phase 1 (#2142) is the module, the CLI and the Worker, with the privacy review's fixes. Nothing records yet. Phase 2, after decision mode (#2141), wires the seven counting calls, the notice in Inbox Settings (which writes `usageCountsNotice`), and the callers of the sender.
+Plannotator collects no usage counts. Usage counts for experimental features (#2142, approval `.product/approved/experimental-telemetry--2026-10-24/`) were removed before anything recorded them (approval `.product/approved/remove-usage-counts/`); the experimental flags themselves stay (`resolveExperimental` in `packages/shared/config.ts`). What is left:
 
-- **Registry and batch** (`packages/core/usage-counts.ts`, browser-safe; the client and the Worker import the same file):
-  - `USAGE_COUNT_FEATURES` lists each counted feature: `id`, `rev`, `notice` (the notice version a person must have seen), `collectUntil`, the `useEvent` that means "used it" (decision mode: `opened`), and its events.
-  - Decision mode counts until `2027-04-30`. Its events: `active_day`, `entry_shown` (day events); `opened`, `decided`, `sent`, `to_thread`, `finished` (counts); and two local facts, `first_day` and `days_last7`.
-  - One batch covers one feature and one complete UTC day: `{"schema":1,"feature":…,"rev":…,"day":…,"events":{…}}`. Keys are in a fixed order, events in registry order, and an event at 0 is left out.
-  - Values: counts are whole numbers from 1 to 100; day events and `first_day` are 1; `days_last7` is 1, 2, 4 or 6 (the first day of its 1 / 2–3 / 4–5 / 6–7 bucket).
-  - A batch never carries free text, ids, paths or the app version.
-  - `buildUsageCountsBatch` copies only registry keys. `parseUsageCountsBatch` is the strict validator: it refuses extra keys, a day more than 3 days back (`USAGE_COUNTS_MAX_DAYS_BACK`) or more than 1 day ahead, a day past `collectUntil`, and a body over 1024 bytes.
-  - `usageCountsServedThrough(today)` (today minus 4) is the newest day the read route serves.
-  - `buildUsageCountsRequest(host, body)` gives every byte of the request (fixed headers, `User-Agent: plannotator-telemetry`, `Connection: close`).
-- **On or off** (`packages/shared/usage-counts.ts`, `usageCountsStatus`). Counts are on for a feature only when all of these hold:
-  - the feature is on: `usageCountFeatureOn(config, id, resolveExperimental)` is `config.experimental[id] === true` AND (in phase 2) `resolveExperimental(config, id)`. A feature turned on only by `PLANNOTATOR_EXPERIMENTAL` never counts, because no notice was shown;
-  - the notice was shown at the registry's version: config.json `usageCountsNotice: { decisionMode: 1 }`, written only by the notice UI, at least `feature.notice`. A notice bump stops counting until the new notice is shown;
-  - config.json `usageCounts` does not turn counts off. Absent or `true` means on, `false` turns off every feature, and `{ "decisionMode": false }` turns off one;
-  - neither `PLANNOTATOR_TELEMETRY=0` nor `DO_NOT_TRACK=1` is set;
-  - the feature's counting has not ended.
-
-  Nothing turns counts on: no env var, no flag. Off means nothing is recorded and unsent counts are deleted (`recordUsageCount` and `sendUsageCounts` delete them when they find counts off).
-- **Recording**: `recordUsageCount(feature, event, { version, … })` is typed, so only a feature's `day` and `count` events compile, and the build version is required (`usage-counts.typecheck.ts`, checked by the typecheck). It records only where `resolveUsageCountsEndpoint(version, env) !== null`: a release, or a build that is not a release with a loopback `PLANNOTATOR_TELEMETRY_URL`. A dev or source build records nothing. It never throws.
-- **The store**: `${dataDir}/usage-counts/` (0700, files 0600, written whole under a mkdir lock that is stale after 30 s). It holds:
-  - `counts.json`: days → feature → `{ rev, events, firstUse?, closed?, notBefore? }`;
-  - `facts.json`: per feature `{ used?: true, usedDays? }`. `used` has no date and stays after off. The used days are the last 10 at most and go with the counts;
-  - `sent.jsonl`: the last 60 bodies;
-  - `state.json`: the send claim.
-- **Closing a day**: when a day is complete in UTC, its facts are written into it once. `days_last7` counts the used days in the 7 days ending on that day. `first_day` is sent on the day the feature was first used, once per install. The day then waits a random delay of up to 4 h past its close (`notBefore`). Days older than 3 days are dropped unsent.
-- **The sender**: `sendUsageCounts({ version, … })`.
-  - It sends one request per (feature, complete day) once its `notBefore` has passed, oldest first, at most 14 per attempt, with a random gap of 2–20 s between two.
-  - It makes at most one attempt an hour, waits 6 h after a failure, and waits for `Retry-After` (clamped to 1–24 h) after a 429. The attempt is claimed in `state.json` before any request.
-  - Before each batch it reads the on/off rule again. A 2xx removes the batch; a 4xx drops it.
-  - The bytes go out on our own socket (`node:tls`, or `node:net` for a loopback test endpoint), so no runtime adds a header.
-  - A release sends to `counts.plannotator.ai`.
-  - In phase 1 nothing calls it on a timer (phase 2: the Inbox's start and health tick, and the CLI's `registerCliSession` tick).
-- **Off, per feature or for all**: `forgetUsageCounts` deletes the feature's counts, used days and `sent.jsonl` lines. A global off also deletes `sent.jsonl` and `state.json`. Only the `used` markers stay.
-- **CLI**: `plannotator telemetry` (`apps/hook/server/telemetry-command.ts`, hidden in `HIDDEN_SUBCOMMANDS` until phase 2).
-  - `--show [--json]` prints each feature's state, whether the notice was shown, today's counts, the waiting batches as the exact request, and the last batches sent. It makes no network request.
-  - `--off [--feature <id>]` writes config and deletes unsent counts. `--on [--feature <id>]` puts the default back; it never stands in for the notice, and an env hard off still wins.
-  - `--send [--json]` (for tests and the owner) sends now, past the hourly window and the close delay.
-- **Uninstall**: a plain `plannotator uninstall` and `--purge` both remove `usage-counts/` (`removeInstallerData`). A plain uninstall keeps config.json, so an opt-out (`usageCounts: false`) survives a reinstall.
-- **The Worker**: `apps/telemetry` (README there). D1 holds `daily_totals(day, feature, rev, event, bucket, reports, total)`. It stores no IP and no per-request row.
-  - The token-guarded `GET /v1/totals` serves only days closed for good (`served_through`). It hides a `(day, rev)` with fewer than 5 reports and any cell with fewer than 5 reports, and sums only the cells it shows.
-  - A retention cron removes old totals.
-  - `workers_dev = false` and `preview_urls = false`.
-  - The README covers D1 Time Travel (a 7- or 30-day write history) and the data-quality limits: no auth, a lost 2xx is counted twice, a 4xx drops a batch.
-- **Tests**:
-  - `packages/core/usage-counts.test.ts`: the byte table and the validator.
-  - `packages/shared/usage-counts.test.ts`: the on/off rules (the notice gate, the env-only trap), dev builds recording nothing, the facts across days, fast-check properties that no input string reaches a batch, the close delay and gaps, per-feature off, and the sender against a loopback endpoint.
-  - `apps/hook/server/telemetry-command.test.ts`: the CLI as processes, with zero requests while off or without the notice.
-  - `packages/server/uninstall.test.ts`.
-  - `apps/telemetry/test` (`wrangler dev`).
-- **The privacy-policy draft**: `apps/marketing/drafts/privacy-usage-counts.md`. It is not published; the live `privacy.astro` lines 17 and 71 change at launch.
+- config.json keys `usageCounts` (which v0.28.33's hidden `plannotator telemetry --off` could write) and `usageCountsNotice` are ignored. Loading such a file gives no error and no warning, and nothing rewrites it to drop them.
+- Every `plannotator uninstall` (plain or `--purge`) still removes a leftover `${dataDir}/usage-counts/` (`removeInstallerData`, `packages/server/uninstall.test.ts`).
+- `plannotator telemetry` is an unknown command.
 
 ## Plan Diff
 
