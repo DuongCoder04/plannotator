@@ -351,7 +351,9 @@ describe.skipIf(process.platform === "win32")("POSIX update wrapper (safe update
   test("never-stuck: a bad .sha256 means the script never runs", async () => {
     const box = sandbox("new");
     const marker = join(box.home, "script-ran");
-    const { server } = serve({ script: `${SCRIPT_HEAD}touch "${marker}"\n`, sums: pins("not-a-checksum", X64) });
+    // This machine's CPU type: a bad .sha256 for the other type only drops
+    // that pin (staged, with a note), so it would pass on arm64 and not on x64.
+    const { server } = serve({ script: `${SCRIPT_HEAD}touch "${marker}"\n`, sums: { ...pins(ARM, X64), [NATIVE]: "not-a-checksum  x\n" } });
     try {
       const r = await runWrapper(box, server.port!);
       expect(r.result?.exitCode).toBe(UPDATE_PREPARE_FAILED);
