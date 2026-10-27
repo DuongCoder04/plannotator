@@ -2769,8 +2769,16 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           });
   // No Send now because that session runs an older plugin than a restart loads (the "Steps" line,
   // owner approval "restart-warning"): only while the reply waits for a working session.
-  const restartName = lastTo ? hostName(lastTo.host) : repliedTo?.author.kind === 'agent' && repliedTo.author.host ? hostName(repliedTo.author.host) : asker;
   const restart = delivered?.state === 'queued' && !last.deliver_now_at ? restartNote(recipientConnection) : null;
+  // Oh My Pi polls as host `pi`: its runtime names it (owner approval "reload-hosts").
+  const restartName =
+    restart?.runtime === 'oh-my-pi'
+      ? 'Oh My Pi'
+      : lastTo
+        ? hostName(lastTo.host)
+        : repliedTo?.author.kind === 'agent' && repliedTo.author.host
+          ? hostName(repliedTo.author.host)
+          : asker;
   // The name the waiting band uses ("Claude Code", "Claude Code (another session)").
   const ownerLineName = lastTo
     ? last.to

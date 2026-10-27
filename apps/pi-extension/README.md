@@ -31,7 +31,7 @@ pi -e npm:@plannotator/pi-extension
 pi update --extensions
 ```
 
-This updates your installed Pi packages, Plannotator included. `pi update npm:@plannotator/pi-extension` updates only Plannotator, and `pi update --all` updates Pi and every package. A plain `pi update` updates only Pi itself, not Plannotator. Restart Pi after updating.
+This updates your installed Pi packages, Plannotator included. `pi update npm:@plannotator/pi-extension` updates only Plannotator, and `pi update --all` updates Pi and every package. A plain `pi update` updates only Pi itself, not Plannotator. Then type `/reload` in each open Pi session to load the new version (Oh My Pi: `omp plugin upgrade @plannotator/pi-extension`, then `/restart`). With the Inbox tool on, a session says so once when the version on disk differs from the one it runs, and the Inbox's Settings → Agents lists it. A version pinned in Pi's settings (`npm:@plannotator/pi-extension@0.28.20`) is skipped by `pi update`: run `pi install npm:@plannotator/pi-extension` to move it to the latest.
 
 ## Pi version and project trust
 
@@ -74,7 +74,8 @@ extension runs in OMP too. Install it, then restart OMP:
 omp plugin install @plannotator/pi-extension
 ```
 
-Update with `omp plugin upgrade @plannotator/pi-extension`. Remove with
+Update with `omp plugin upgrade @plannotator/pi-extension`, then type
+`/restart` in each open OMP session to load the new version. Remove with
 `omp plugin uninstall @plannotator/pi-extension`.
 
 Open reviews with the extension's commands: `/plannotator-review`,
