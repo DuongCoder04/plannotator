@@ -110,26 +110,67 @@ const KILL_GRACE_MS = 3000;
  */
 const pendingGroupKills = new Set<number>();
 
-/** SIGTERM a group now, SIGKILL it after the grace (or at once through `killPendingProcessGroups`). */
+/**
+ * Whether the agent's process group still has a member (POSIX: `kill(-pid, 0)`).
+ * An empty group's id is free: once its pid is reused by a new group leader (a
+ * detached spawn, a shell, the Inbox's own isolated git), a signal to it would
+ * reach an unrelated group, so a delayed signal is sent only while this holds.
+ * EPERM (a group of another user's) counts as not ours. Windows: no group
+ * probe; true.
+ */
+export function processGroupAlive(pid: number): boolean {
+  if (process.platform === "win32") return true;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** SIGTERM a group now, SIGKILL it after the grace (or at once through `killPendingProcessGroups`), if it still has a member then. */
 function stopProcessGroup(pid: number): ReturnType<typeof setTimeout> {
   killProcessTree(pid, "SIGTERM");
   pendingGroupKills.add(pid);
   const timer = setTimeout(() => {
-    pendingGroupKills.delete(pid);
-    killProcessTree(pid, "SIGKILL");
+    if (!pendingGroupKills.delete(pid)) return;
+    if (processGroupAlive(pid)) killProcessTree(pid, "SIGKILL");
   }, KILL_GRACE_MS);
   timer.unref?.();
   return timer;
 }
 
 /**
- * SIGKILL every agent process group still inside its grace: what a stopped,
- * exited or crashed agent started (a dev server, a watcher) never outlives a
- * program that exits within the grace.
+ * SIGKILL every agent process group still inside its grace and not yet empty:
+ * what a stopped, exited or crashed agent started (a dev server, a watcher)
+ * never outlives a program that exits within the grace.
  */
 export function killPendingProcessGroups(): void {
-  for (const pid of pendingGroupKills) killProcessTree(pid, "SIGKILL");
+  for (const pid of pendingGroupKills) if (processGroupAlive(pid)) killProcessTree(pid, "SIGKILL");
   pendingGroupKills.clear();
+}
+
+/** The agents running now (POSIX): an exit hook kills their groups when this program exits, an uncaught exception included. */
+const liveGroups = new Set<number>();
+let exitHookInstalled = false;
+
+/**
+ * Synchronous, for `process.on("exit")` (which runs on an uncaught exception
+ * too): SIGKILL every live agent's group and every group inside its grace.
+ */
+function killAgentGroupsOnExit(): void {
+  for (const pid of liveGroups) killProcessTree(pid, "SIGKILL");
+  liveGroups.clear();
+  killPendingProcessGroups();
+}
+
+function trackLiveGroup(pid: number): void {
+  if (process.platform === "win32") return;
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.on("exit", killAgentGroupsOnExit);
+  }
+  liveGroups.add(pid);
 }
 
 /**
@@ -252,14 +293,24 @@ export class AcpClient {
       this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL);
       this.handlers.onStderr?.(text);
     });
+    if (child.pid !== undefined) trackLiveGroup(child.pid);
     child.on("exit", (code, signal) => {
       this.exited = true;
       this.exitInfo = { code, signal };
-      // The agent exited or crashed by itself: what it started is still in its group (a dev server, a
-      // watcher). The group still has an id while any member lives, so it is stopped like a disposed one.
-      if (!this.stopped && child.pid !== undefined && process.platform !== "win32") {
-        this.stopped = true;
-        this.killTimer = stopProcessGroup(child.pid);
+      const pid = child.pid;
+      if (pid !== undefined && process.platform !== "win32") {
+        liveGroups.delete(pid);
+        if (!this.stopped) {
+          // The agent exited or crashed by itself: what it started may still be in its group (a dev server,
+          // a watcher), which keeps the group's id while any member lives. An empty group gets no signal.
+          this.stopped = true;
+          if (processGroupAlive(pid)) this.killTimer = stopProcessGroup(pid);
+        } else if (!processGroupAlive(pid)) {
+          // Stopped (dispose) and the whole group is gone already: the delayed SIGKILL is not sent.
+          if (this.killTimer) clearTimeout(this.killTimer);
+          this.killTimer = null;
+          pendingGroupKills.delete(pid);
+        }
       }
       for (const c of this.pendingPermissions) c.abort();
       this.handlers.onExit?.({ code, signal });
