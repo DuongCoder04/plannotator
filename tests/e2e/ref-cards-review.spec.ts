@@ -10,7 +10,10 @@
  * asked before a hover; a ref the forge does not know shows no card at all and
  * stays the plain link it was. In annotate: the same `#12` in a Markdown file
  * shows its card. In code review: a pasted PR link in a changed Markdown
- * file's Read view shows its card.
+ * file's Read view shows its card. The keyboard (plan review): Tab to `#12`
+ * opens its card, Tab moves into it, Escape closes it, returns the focus to
+ * the link and stops there. A touch screen (plan review): a tap follows the
+ * link (the opened tab is stubbed), with no card and no CLI run.
  *
  * Screenshots (light and dark) go to PLANNOTATOR_REF_CARD_REVIEW_SHOTS when it
  * is set. Build the binary first (see inbox.spec.ts), then
@@ -321,5 +324,87 @@ test('code review: a PR link in a changed Markdown file shows its card', async (
     } finally {
       await session.close();
     }
+  }
+});
+
+const ISSUE_12 = 'https://github.com/acme/widgets/issues/12';
+const focusedHref = (page: Page) => page.evaluate(() => (document.activeElement as HTMLAnchorElement | null)?.href ?? null);
+
+test('plan review: the keyboard opens the card on focus, Tab moves into it, Escape closes it and returns to the link', async () => {
+  const session = await start('plan');
+  try {
+    const page = await open(browser, session.url, 'light');
+    await expect(page.locator(`a[href="${ISSUE_12}"]`).first()).toBeVisible();
+    // Tab until the link has the focus (the keyboard's own focus, so :focus-visible).
+    let reached = false;
+    for (let i = 0; i < 80 && !reached; i++) {
+      await page.keyboard.press('Tab');
+      reached = (await focusedHref(page)) === ISSUE_12;
+    }
+    expect(reached, 'Tab reaches the #12 link').toBe(true);
+    const card = page.locator('[data-ref-card]');
+    await expect(card).toContainText('Widgets wobble on Tuesdays');
+    expect(session.forge.calls()).toEqual(['gh number=12']);
+
+    // Tab goes into the card, not past it.
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => !!document.activeElement?.closest('[data-ref-card]'))).toBe(true);
+
+    // Escape closes the card, gives the focus back to the link, and the app's own Escape does not also run.
+    await page.evaluate(() => {
+      const w = window as unknown as { escapes: number };
+      w.escapes = 0;
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') w.escapes++;
+      });
+    });
+    await page.keyboard.press('Escape');
+    await expect(card).toHaveCount(0);
+    expect(await focusedHref(page)).toBe(ISSUE_12);
+    expect(await page.evaluate(() => (window as unknown as { escapes: number }).escapes)).toBe(0);
+    await page.context().close();
+  } finally {
+    await session.close();
+  }
+});
+
+test('plan review on a touch screen: a tap follows the link, shows no card and runs no CLI', async () => {
+  const session = await start('plan');
+  try {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: 'light' });
+    // The tab the tap opens never reaches the real GitHub.
+    await context.route('https://github.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<title>stub</title>' }));
+    const seen: [string, string][] = [
+      ['plannotator-theme', 'light'],
+      ['plannotator-plan-look-choice-resolved', 'true'],
+      ['plannotator-look-feel-announcement-seen', '2'],
+      ['plannotator-edit-mode-announcement-seen', '3'],
+      ['plannotator-announce-tui-herdr-seen', '1'],
+      ['plannotator-announce-ask-session-seen', '1'],
+      ['plannotator-announce-agent-tool-seen', '1'],
+      ['plannotator-permission-mode-configured', 'true'],
+    ];
+    await context.addCookies(seen.map(([name, value]) => ({ name, value, url: session.url })));
+    const page = await context.newPage();
+    await page.goto(session.url);
+    for (let i = 0; i < 6; i++) {
+      await page.waitForTimeout(400);
+      if ((await page.locator('.fixed.inset-0').count()) === 0) break;
+      await page.keyboard.press('Escape');
+    }
+    const issue = page.locator(`a[href="${ISSUE_12}"]`).first();
+    await issue.scrollIntoViewIfNeeded();
+    await expect(issue).toBeVisible();
+    const opened = context.waitForEvent('page');
+    await issue.tap();
+    const tab = await opened;
+    await tab.waitForLoadState();
+    expect(tab.url()).toBe(ISSUE_12);
+    await page.waitForTimeout(800);
+    await expect(page.locator('[data-ref-card]')).toHaveCount(0);
+    expect(session.forge.calls()).toEqual([]);
+    await context.close();
+  } finally {
+    await session.close();
   }
 });
