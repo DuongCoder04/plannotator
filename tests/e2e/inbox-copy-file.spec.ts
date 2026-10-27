@@ -7,7 +7,7 @@
  * desktop and as an iPhone.
  *
  * Proves: the code's top row leads with Copy file at the code's top left,
- * side by side, in full screen and on a phone, never under full screen's
+ * side by side (at 1440 and 1920 wide), in full screen and on a phone, never under full screen's
  * toolbar (top right on a desktop, bottom right on a phone); a press puts the
  * file's exact text on the clipboard (read back from the system clipboard),
  * says Copied and tells the live region, then goes back; a file changed since
@@ -19,7 +19,7 @@
  * Build the binary first (see inbox.spec.ts), then
  * `bunx playwright test -c tests/e2e/playwright.config.ts inbox-copy-file.spec.ts`.
  * PNGs land in PLANNOTATOR_E2E_SHOTS_DIR (default .local/proof/copy-file):
- * {side,full,changed,phone,phone-changed}[-copied]-{light,dark}.
+ * {side,wide,wide-changed,full,changed,phone,phone-changed}[-copied]-{light,dark}.
  */
 
 import { devices, expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
@@ -126,6 +126,12 @@ async function open(page: Page, name: string, view: 'full' | 'side' | null) {
   await expect(page.locator(`[data-attachment-pane="${world.ids[name]}"]`)).toBeVisible();
 }
 
+/** The changed note covers no part of the hint (it did before the row grew under it). */
+async function expectHintClear(page: Page, note: Locator) {
+  const hint = (await row(page).locator('.ib-codehint-t').boundingBox())!;
+  expect(apart(hint, (await note.boundingBox())!), 'the changed note covers the hint').toBe(true);
+}
+
 /** Two boxes share no pixel. */
 function apart(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }): boolean {
   return a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
@@ -154,6 +160,8 @@ async function pressAndRead(page: Page, text: string, shotName?: string) {
     // Both schemes inside the 1.6 s "Copied" shows for.
     for (const scheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+      // Let the scheme repaint first: shot at once, the dark one caught light colours under a wash.
+      await page.waitForTimeout(150);
       await page.screenshot({ path: join(shotsDir, `${shotName}-copied-${scheme}.png`) });
     }
     await expect(copyButton(page)).toHaveText('Copied');
@@ -241,6 +249,35 @@ test('full screen: Copy file stays at the top left, clear of the toolbar at the 
   await pressAndRead(page, MANIFEST, 'full');
 });
 
+test('a wide window: Copy file leads the row side by side and in full screen; a changed file keeps the hint clear', async () => {
+  const page = world.page;
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  try {
+    await open(page, 'manifest.yaml', 'side');
+    await expect(row(page)).toContainText('Click a line number');
+    await expectClear(page, []);
+    await page.mouse.move(900, 900);
+    await shot(page, 'wide');
+    await pressAndRead(page, MANIFEST, 'wide');
+    writeFileSync(join(world.project, 'slack', 'manifest.yaml'), CHANGED);
+    try {
+      await open(page, 'manifest.yaml', 'full');
+      // The same file was open a moment ago; a reload reads it again (a hash change alone does not).
+      await page.reload();
+      const note = page.locator('[data-full-view-changed]');
+      await expect(note).toBeVisible();
+      await expectClear(page, [note, page.locator('[data-full-view-bar]')]);
+      await expectHintClear(page, note);
+      await page.mouse.move(900, 900);
+      await shot(page, 'wide-changed');
+    } finally {
+      writeFileSync(join(world.project, 'slack', 'manifest.yaml'), MANIFEST);
+    }
+  } finally {
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+});
+
 test('an image gets no Copy file', async () => {
   const page = world.page;
   await open(page, 'home.png', 'side');
@@ -256,9 +293,7 @@ test('a changed file in full screen: the row starts below the changed note; the 
     const note = page.locator('[data-full-view-changed]');
     await expect(note).toBeVisible();
     await expectClear(page, [note, page.locator('[data-full-view-bar]')]);
-    // The hint is not under the note either (it was before the row grew under it).
-    const hint = (await row(page).locator('.ib-codehint-t').boundingBox())!;
-    expect(apart(hint, (await note.boundingBox())!)).toBe(true);
+    await expectHintClear(page, note);
     await page.mouse.move(700, 700);
     await shot(page, 'changed');
     await pressAndRead(page, CHANGED, 'changed');
@@ -293,6 +328,7 @@ test('on a phone: Copy file is a 44 px target at the top left, clear of the tool
       const note = page.locator('[data-full-view-changed]');
       await expect(note).toBeVisible();
       await expectClear(page, [note, page.locator('[data-full-view-bar]')]);
+      await expectHintClear(page, note);
       await shot(page, 'phone-changed');
       await pressAndRead(page, CHANGED, 'phone-changed');
     } finally {
