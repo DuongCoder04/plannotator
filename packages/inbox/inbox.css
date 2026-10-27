@@ -2023,7 +2023,19 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 
 /* the code pane: Pierre's File on the page's own background */
 .ib-codeview { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.ib-codehint { flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 16px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent); background: var(--card); }
+.ib-codehint { flex: none; display: flex; align-items: center; gap: 10px; padding: 4px 16px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent); background: var(--card); }
+.ib-codehint-t { min-width: 0; padding-left: 10px; border-left: 1px solid color-mix(in oklch, var(--border) 80%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Copy file (approval "inbox-copy-file"): a quiet labelled button at the code's top left; a check and "Copied" for a moment after a press. */
+.pn-inbox .ib-copyfile { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 24px; padding: 0 8px; margin-left: -8px; border: 0; border-radius: 6px; background: transparent; color: color-mix(in oklch, var(--foreground) 82%, transparent); font-size: var(--ib-fs-12-5, 12.5px); font-weight: 500; white-space: nowrap; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.pn-inbox .ib-copyfile:hover { background: var(--muted); color: var(--foreground); }
+.pn-inbox .ib-copyfile:focus-visible { outline: 2px solid var(--ring, var(--primary)); outline-offset: 1px; }
+.pn-inbox .ib-copyfile.ib-copied { color: var(--success); }
+.pn-inbox .ib-copyfile.ib-copyfail { color: var(--destructive); }
+@media (prefers-reduced-motion: reduce) { .pn-inbox .ib-copyfile { transition: none; } }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .ib-codehint { padding-top: 0; padding-bottom: 0; }
+  .pn-inbox .ib-copyfile { height: 44px; padding: 0 10px; margin-left: -10px; font-size: var(--ib-fs-14, 14px); }
+}
 .ib-codebody { flex: 1; min-height: 0; }
 .ib-att-t.ib-dlcard { max-width: 620px; width: 100%; padding: 14px 16px; gap: 14px; cursor: default; }
 .ib-att-t.ib-dlcard:hover, .ib-att-t.ib-dlcard:active { border-color: var(--border); background: var(--card); transform: none; }
