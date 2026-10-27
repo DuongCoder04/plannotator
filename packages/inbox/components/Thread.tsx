@@ -24,6 +24,7 @@ import { artifactKey, artifactOfFile, newestViewableFile, threadArtifacts } from
 import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import { fullScreenExit, type FrameMove } from '../fullScreenOrigin';
+import { takeArrivalFocus } from '../threadStep';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
 import { agentName, clockTime, dayWords, formatCount, fullTime, plural, whenTime } from '../format';
@@ -2159,6 +2160,24 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     (divider ?? target).scrollIntoView?.({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
     target.querySelector<HTMLElement>('[data-fold-head]')?.focus({ preventScroll: true });
   }, [passedIds]);
+
+  // Opened by Shift+J / Shift+K from inside a thread (App.tsx, threadStep.ts): focus where N puts it, the first
+  // new message, else the newest one, once the messages have drawn.
+  useEffect(() => {
+    const id = thread.thread_id;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (!takeArrivalFocus(id)) return;
+        const body = bodyRef.current;
+        if (body?.querySelector('[data-message-article][data-new]')) return jumpNew();
+        const heads = body ? [...body.querySelectorAll<HTMLElement>('[data-fold-head]')] : [];
+        const last = heads.at(-1) ?? sectionRef.current?.querySelector<HTMLElement>('.ib-subject');
+        last?.focus({ preventScroll: true });
+        last?.scrollIntoView?.({ block: 'nearest' });
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [thread.thread_id, jumpNew]);
 
   // The thread's keys (shortcuts/thread.shortcuts.ts; approval "inbox-keyboard-shortcuts"). j / k move between
   // messages (and the middle fold), n goes to the first new one; R opens the reply box, O the newest file. Enter

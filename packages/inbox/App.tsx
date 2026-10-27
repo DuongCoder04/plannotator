@@ -121,6 +121,7 @@ import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
 import { lastInput } from './lastInput';
 import { backFocusTargets, focusKept, focusLost } from './backFocus';
+import { askArrivalFocus, listOrder as drawnOrder, threadStep } from './threadStep';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -2267,6 +2268,42 @@ function Inbox() {
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
+  /**
+   * Shift+J / Shift+K: the next or previous thread in the list as it shows (threadStep.ts), opened as Enter opens
+   * a row, replacing the open one in history so Back still goes to the list. From the thread focus lands where N
+   * puts it (Thread.tsx takes it); from the list it stays on the rows, on the new one. Not from a file, a guided
+   * review or the Artifacts view.
+   */
+  const threadStepKey = (dir: 1 | -1) => ({
+    when: (event: KeyboardEvent) => {
+      if (!bareKeyAllowed(event)) return false;
+      const now = routeRef.current;
+      if (now.page !== 'inbox' || !now.thread || now.file || now.guide || now.artifacts) return false;
+      const target = keyTarget(event);
+      return !target || target === document.body || !!target.closest('section.ib-pane, .ib-main .ib-lbody');
+    },
+    handle: (event: KeyboardEvent) => {
+      const now = routeRef.current;
+      const body = listBody(rootRef.current);
+      if (!body || !now.thread) return;
+      const step = threadStep(drawnOrder(body), now.thread, dir);
+      if (!step) return say('This thread is not in the list on screen.');
+      if ('end' in step) return say(step.end === 'last' ? 'Last thread' : 'First thread');
+      const fromList = !!keyTarget(event)?.closest('.ib-main .ib-lbody');
+      // Into another section: its name, as the eye sees the band.
+      const section = (id: string) => rowElement(body, id)?.closest('[role="group"]')?.getAttribute('aria-label') ?? null;
+      const into = section(step.to);
+      if (into && into !== section(now.thread)) say(into);
+      askArrivalFocus(fromList ? null : step.to);
+      writeRoute({ page: 'inbox', project: now.project, thread: step.to }, { replace: true });
+      if (fromList) {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const list = listBody(rootRef.current);
+          if (list) rowElement(list, step.to)?.focus({ preventScroll: true });
+        }));
+      }
+    },
+  });
   useShortcutScope({
     scope: inboxThreadShortcuts,
     handlers: {
@@ -2278,6 +2315,8 @@ function Inbox() {
         when: (event) => (threadKey.current = threadKeyAction(event, 'z')) !== null,
         handle: () => threadKey.current?.(),
       },
+      nextThread: threadStepKey(1),
+      previousThread: threadStepKey(-1),
     },
   });
 

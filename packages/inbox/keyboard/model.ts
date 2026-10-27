@@ -65,6 +65,7 @@ export type ModelKey =
   | 'O'
   | 'F'
   | 'J'
+  | 'Shift+J'
   | 'N'
   | '?'
   | '/'
@@ -77,10 +78,10 @@ export type ModelKey =
   | 'singleKeysOff'
   | 'singleKeysOn';
 
-export const MODEL_KEYS: readonly ModelKey[] = ['Escape', 'ArrowDown', 'Enter', 'R', 'O', 'F', 'J', 'N', '?', '/', 'G I', 'G B', 'G S', 'Mod+K', 'Mod+Enter', 'type', 'singleKeysOff', 'singleKeysOn'];
+export const MODEL_KEYS: readonly ModelKey[] = ['Escape', 'ArrowDown', 'Enter', 'R', 'O', 'F', 'J', 'Shift+J', 'N', '?', '/', 'G I', 'G B', 'G S', 'Mod+K', 'Mod+Enter', 'type', 'singleKeysOff', 'singleKeysOn'];
 
 /** The single keys (Single-key shortcuts turns them off): every model key that is one plain key or a sequence of them. */
-export const MODEL_BARE_KEYS: readonly ModelKey[] = ['R', 'O', 'F', 'J', 'N', '?', '/', 'G I', 'G B', 'G S'];
+export const MODEL_BARE_KEYS: readonly ModelKey[] = ['R', 'O', 'F', 'J', 'Shift+J', 'N', '?', '/', 'G I', 'G B', 'G S'];
 
 export const START: KeyState = {
   page: 'inbox',
@@ -217,6 +218,12 @@ export function press(state: KeyState, key: ModelKey): KeyState {
     case 'Enter':
       // On a row: the thread is already open (another row: another thread; the model has one).
       return state;
+    case 'Shift+J':
+      // The next thread (approval amendment 2026-10-27; Shift+K the previous one): as Enter on its row, the list's
+      // order. Not from a file. From the list focus stays on the rows (on the new one); from the thread it lands
+      // where N puts it. The reply box is the thread's: the new thread's starts closed.
+      if (state.file !== 'none') return state;
+      return { ...state, box: false, draft: false, focus: state.focus === 'row' || state.focus === 'band' ? 'row' : 'message' };
     case 'J':
     case 'N':
       // From the thread, or the list beside it (the readFromList extra); never from the file.

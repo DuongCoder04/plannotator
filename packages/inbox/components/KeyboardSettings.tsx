@@ -18,6 +18,8 @@ export function KeyboardSettings() {
   const phone = usePhone();
   if (phone) return null;
   const letters = (['markRead', 'reply', 'nextMessage'] as const).map((action) => bindingOf({ scope: inboxThreadShortcuts, action })).join(', ');
+  // A shifted letter is a single key too (WCAG 2.1.4): it turns off with them.
+  const shifted = words(bindingOf({ scope: inboxThreadShortcuts, action: 'nextThread' }));
   const chords = [bindingOf({ scope: inboxSearchShortcuts, action: 'openSearch' }), bindingOf({ scope: inboxThreadShortcuts, action: 'send' })].map(words).join(', ');
   const map = bindingOf({ scope: inboxAppShortcuts, action: 'openMap' });
   return (
@@ -30,7 +32,7 @@ export function KeyboardSettings() {
               Single-key shortcuts
             </span>
             <span className="ib-desc" id="ib-single-keys-desc">
-              {letters} and the others work when you are not typing. Turn them off if you use speech input or your screen reader&apos;s quick keys. {chords} and Escape always
+              {letters} and the others ({shifted} too) work when you are not typing. Turn them off if you use speech input or your screen reader&apos;s quick keys. {chords} and Escape always
               work.
             </span>
           </span>

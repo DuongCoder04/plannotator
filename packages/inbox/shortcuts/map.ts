@@ -60,6 +60,7 @@ export const MAP_COLUMNS: MapGroup[][] = [
         { keys: [thread('reply')] },
         { label: 'Send the reply', keys: [thread('send')] },
         { label: 'Next or previous message', keys: [thread('nextMessage'), thread('previousMessage')] },
+        { label: 'Next or previous thread', keys: [thread('nextThread'), thread('previousThread')] },
         { keys: [thread('firstNew')] },
         { keys: [thread('openNewest')] },
         { keys: [thread('fullScreen')] },

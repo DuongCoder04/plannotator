@@ -58,6 +58,22 @@ export const inboxThreadShortcuts = defineShortcutScope({
       preventDefault: true,
       displayOrder: 3,
     },
+    nextThread: {
+      // App.tsx: the list's order as shown, folded Quiet left out; no wrap; replaces the thread in history.
+      description: 'Next thread',
+      bindings: ['Shift+J'],
+      section: 'Thread',
+      hint: 'The thread below in the list, opened as Enter does. Back still goes to the list.',
+      preventDefault: true,
+      displayOrder: 3.1,
+    },
+    previousThread: {
+      description: 'Previous thread',
+      bindings: ['Shift+K'],
+      section: 'Thread',
+      preventDefault: true,
+      displayOrder: 3.2,
+    },
     firstNew: {
       description: 'First new message',
       bindings: ['N'],

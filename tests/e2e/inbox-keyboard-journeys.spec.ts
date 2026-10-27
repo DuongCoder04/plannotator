@@ -701,8 +701,51 @@ test('J1: triage the list and open the newest thread', async () => {
   await expect(row(holding)).toBeVisible();
   await press('Home', 'Enter');
   await at('Stopped open', { focus: row(stopped), address: addr(stopped), view: 'thread' });
+
+  // Shift+J / Shift+K: the next and previous thread in the list as it shows (folded Quiet left out), replacing
+  // the open one in history. From the list focus stays on the rows; from the thread it lands where N puts it.
+  const order = await page.evaluate(() => {
+    const ids: string[] = [];
+    for (const el of document.querySelectorAll('.ib-main .ib-lbody [data-thread-id]')) {
+      const id = el.getAttribute('data-thread-id')!;
+      if (!ids.includes(id) && el.getClientRects().length > 0) ids.push(id);
+    }
+    return ids;
+  });
+  expect(order[0]).toBe(stopped);
+  expect(order, 'folded Quiet is not in the order').not.toContain(world.threads.refund);
+  const entries = await page.evaluate(() => history.length);
+  const live = page.locator('[data-inbox-live]');
+  await press('Shift+J');
+  await at('Shift+J from the row', { focus: row(order[1]!), address: addr(order[1]!), view: 'thread' });
+  // On to Rollout (eight messages), into it with J, then Shift+K from inside the thread.
+  const rolloutAt = order.indexOf(world.threads.rollout);
+  expect(rolloutAt).toBeGreaterThan(1);
+  for (let i = 1; i < rolloutAt; i++) await press('Shift+J');
+  await at('Shift+J to Rollout', { focus: row(world.threads.rollout), address: addr(world.threads.rollout), view: 'thread' });
+  await press('j');
+  await expect(inThread()).toBeFocused();
+  await press('Shift+K');
+  const before = order[rolloutAt - 1]!;
+  await at('Shift+K from the thread', { focus: inThread(), address: addr(before), view: 'thread' });
+  await expect(row(before), 'from the thread, focus stays in the thread').not.toBeFocused();
+  for (let i = 0; i < rolloutAt - 1; i++) await press('Shift+K');
+  await expect.poll(hash).toMatch(addr(stopped));
+  await press('Shift+K');
+  await expect(live).toHaveText('First thread');
+  await expect.poll(hash).toMatch(addr(stopped));
+  for (let i = 1; i < order.length; i++) await press('Shift+J');
+  await expect.poll(hash).toMatch(addr(order.at(-1)!));
+  await focusHeld();
+  await press('Shift+J');
+  await expect(live).toHaveText('Last thread');
+  await expect.poll(hash, 'no wrap').toMatch(addr(order.at(-1)!));
+  expect(await page.evaluate(() => history.length), 'Shift+J and Shift+K add no history').toBe(entries);
+  // J and K are still the messages: J stays in this thread.
+  await press('j');
+  await expect.poll(hash).toMatch(addr(order.at(-1)!));
   await page.goBack();
-  await at('Back', { focus: row(stopped), address: addr(null), view: 'list' });
+  await at('Back', { focus: row(order.at(-1)!), address: addr(null), view: 'list' });
 });
 
 test('J2: read a thread and its files, and come back to exactly where you were', async () => {
