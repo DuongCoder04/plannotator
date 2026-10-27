@@ -6,7 +6,12 @@
  * restart and failure dialogs; the What's new page; Settings → About.
  */
 
-import { UPDATE_EXIT_CHECKSUM_MISMATCH, UPDATE_EXIT_DOWNLOAD_FAILED } from '@plannotator/core/update-exit-codes';
+import {
+  UPDATE_EXIT_CHECKSUM_MISMATCH,
+  UPDATE_EXIT_DOWNLOAD_FAILED,
+  UPDATE_OTHER_TMPDIR_COMMAND,
+  updateStagingAdvice,
+} from '@plannotator/core/update-exit-codes';
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Viewer } from '@plannotator/ui/components/Viewer';
 import { ImageResolverContext, type ImageResolution } from '@plannotator/ui/components/ImageResolverContext';
@@ -412,7 +417,7 @@ export function FailedDialog({
   // Downloaded, but the temp folder could not hold it: not a network problem, so no way out by curl either.
   const prepare = couldNotDownload ? details?.failure?.prepare : undefined;
   const sub = prepare
-    ? `Plannotator couldn't prepare the update: ${prepare}. Nothing was changed; Plannotator ${update.current} still works. Free some space there, then try again.`
+    ? `Plannotator couldn't prepare the update: ${prepare}. Nothing was changed; Plannotator ${update.current} still works. ${updateStagingAdvice(prepare)}, then try again.`
     : mismatch
       ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
       : revoked
@@ -428,6 +433,12 @@ export function FailedDialog({
         <>
           <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
+          {prepare && (
+            <>
+              <p className="ib-sum">Or update from a terminal with another temp folder:</p>
+              <CommandRow text={UPDATE_OTHER_TMPDIR_COMMAND} />
+            </>
+          )}
           {couldNotDownload && !revoked && !prepare && (
             <>
               {tls === 'untrusted' && (

@@ -843,8 +843,10 @@ else
   echo "update: nothing ran; nothing was changed"
 fi
 cleanup
-record "$code"
+# The log line first: a reader that sees the new result also finds this run's
+# part of update.log (deriveAutoUpdateNotice tells "prepare" from "download" there).
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] update: install.sh exited $code"
+record "$code"
 rm -f "$PLANNOTATOR_UPDATE_LOCK"
 `;
 

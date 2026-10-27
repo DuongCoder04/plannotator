@@ -67,7 +67,7 @@ export function describeAutoUpdateNotice(notice: AutoUpdateNotice): { title: str
   if (notice.reason === 'prepare') {
     return {
       title: "Couldn't prepare the update",
-      description: 'The temp folder is full or can’t be written. Nothing was changed. Free some space, then: plannotator update',
+      description: 'The temp folder couldn’t hold it. Nothing was changed. Run plannotator update to see why and what to do.',
     };
   }
   if (notice.reason === 'download') {

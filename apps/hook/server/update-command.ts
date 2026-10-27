@@ -43,6 +43,7 @@ import {
   type InstallerLaunch,
 } from "@plannotator/server/auto-update";
 import { stagingFailureIn, tlsFailureIn, withoutLogOnlyLines } from "@plannotator/server/update-log";
+import { UPDATE_OTHER_TMPDIR_COMMAND, updateStagingAdvice } from "@plannotator/core/update-exit-codes";
 import { UPDATE_COMMAND_USAGE } from "./cli";
 
 export interface UpdateCommandDeps {
@@ -188,7 +189,8 @@ export async function runUpdateCommand(args: string[], deps: UpdateCommandDeps):
       // Downloaded, but the temp folder could not hold it: not a network problem.
       err(
         `Couldn't prepare the update: ${staging}. ${current} is still installed and works.\n` +
-          "Free some space there (or set TMPDIR to another folder), then: plannotator update\n" +
+          `${updateStagingAdvice(staging)}, then: plannotator update\n` +
+          `Or use another temp folder:\n  ${UPDATE_OTHER_TMPDIR_COMMAND}\n` +
           `Details: ${autoUpdatePaths(dataDir).log}\n`,
       );
       return 1;

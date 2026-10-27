@@ -282,10 +282,37 @@ test.skipIf(!hasDom)('exit 75 that could not stage the update: the plain reason,
   const text = el.textContent ?? '';
   expect(text).toContain("Plannotator couldn't prepare the update: the temp folder /tmp is full (ENOSPC).");
   expect(text).toContain('Plannotator 0.28.10 still works');
+  expect(text).toContain('Free some space there, then try again.');
+  expect(text).toContain('TMPDIR=/another/folder plannotator update');
   expect(text).not.toContain("couldn't download");
   expect(text).not.toContain('curl -fsSL');
   expect(el.querySelector('[data-failed-release]')).toBeNull();
 });
+
+// Freeing space does not fix permissions or a missing folder: the advice follows the cause.
+for (const [prepare, advice] of [
+  ["the temp folder /tmp can't be written (EACCES)", 'Make it writable, then try again.'],
+  ['the temp folder /tmp does not exist (ENOENT)', 'Create it, then try again.'],
+  ['could not write to the temp folder /tmp (boom)', 'Check that folder, then try again.'],
+] as const) {
+  test.skipIf(!hasDom)(`exit 75 that could not stage the update (${prepare}): advice for that cause, and another temp folder`, () => {
+    const el = render(
+      <FailedDialog
+        update={update('failed')}
+        details={details({ failure: { exit_code: UPDATE_EXIT_DOWNLOAD_FAILED, log: '/home/u/.plannotator/update.log', prepare } })}
+        home="/home/u"
+        onRetry={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    const text = el.textContent ?? '';
+    expect(text).toContain(`Plannotator couldn't prepare the update: ${prepare}.`);
+    expect(text).toContain(advice);
+    expect(text).not.toContain('Free some space');
+    expect(text).toContain('TMPDIR=/another/folder plannotator update');
+    expect(text).not.toContain('curl -fsSL');
+  });
+}
 
 test.skipIf(!hasDom)('any other failure still offers the install script to run by hand', () => {
   const el = render(

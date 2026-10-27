@@ -158,10 +158,28 @@ describe("plannotator update (seams)", () => {
     );
     expect(await run([], { runInstaller })).toBe(1);
     expect(err).toContain("Couldn't prepare the update: the temp folder /tmp/x is full (ENOSPC). 0.28.10 is still installed and works.");
-    expect(err).toContain("Free some space there (or set TMPDIR to another folder), then: plannotator update");
+    expect(err).toContain("Free some space there, then: plannotator update");
+    expect(err).toContain("TMPDIR=/another/folder plannotator update");
     expect(err).not.toContain("Couldn't download");
     expect(err).not.toContain("curl");
   });
+
+  // Permissions or a missing folder are not fixed by freeing space.
+  for (const [reason, advice] of [
+    ["the temp folder /tmp/x can't be written (EACCES)", "Make it writable, then: plannotator update"],
+    ["the temp folder /tmp/x does not exist (ENOENT)", "Create it, then: plannotator update"],
+  ] as const) {
+    test(`a temp folder that ${reason.includes("exist") ? "does not exist" : "can't be written"}: advice for that cause`, async () => {
+      const runInstaller = async (_: unknown, write: (t: string) => void) => (
+        write(`${UPDATE_STAGING_PREFIX}${reason}; nothing was changed\n`), 75
+      );
+      expect(await run([], { runInstaller })).toBe(1);
+      expect(err).toContain(`Couldn't prepare the update: ${reason}.`);
+      expect(err).toContain(advice);
+      expect(err).toContain("TMPDIR=/another/folder plannotator update");
+      expect(err).not.toContain("Free some space");
+    });
+  }
 
   // Before the S3 sync every update printed this; it belongs in update.log only.
   test("the old install script's note stays off the terminal", async () => {
