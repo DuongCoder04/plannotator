@@ -52,9 +52,10 @@
  *   several. Failing that, text that begins exactly ONE choice's label,
  *   followed there by `:` `—` `–` ` - ` or `(` (`Unpin it` for `Unpin it:
  *   the toast says…`), names that choice. Anything else is a suggested
- *   free-text answer. With no such line, a choice whose label ends with a
- *   `(recommended)` / `[recommended]` marker (or whose description is or
- *   starts with one: `Foo — recommended`), as other tools teach, is the
+ *   free-text answer. With no such line (not even an empty one), a choice
+ *   whose label ends with a `(recommended)` / `[recommended]` marker (or
+ *   whose description is the bare word, `Foo — recommended`, or starts with
+ *   a bracketed marker), as other tools teach, is the
  *   recommendation: exactly one such choice on pick one, any on pick any;
  *   the marker leaves the label and the raw label stays an alias. A line right
  *   under it continues it only when it wraps the same sentence (the line
@@ -137,7 +138,9 @@ export interface QuestionChoice {
   aliases?: string[];
   /** `- [x]`: the agent marked this choice as already decided. */
   settled: boolean;
-  /** Named by the block's `Recommended:` line. */
+  /** Named by the block's `Recommended:` line, or, when the block has none,
+   *  by a recommended marker in this choice's label (`Foo (Recommended)`;
+   *  see `questionChoiceWithoutRecommendedMarker`). */
   recommended: boolean;
   /** A picture choice: the choice's first markdown image. The picture picks
    *  the choice; the answer is still the label. Absent otherwise. */
@@ -644,11 +647,11 @@ const readContractLine = (line: string): ContractValue | null => {
 // bracketed `(recommended)` / `[recommended]` at the label's end, optionally
 // in its own emphasis or inside the label's closing emphasis.
 const LABEL_REC_MARKER_RE = /^(.*?\S)\s*([*_]{1,2})?[([]\s*recommended\s*[)\]]\2?([*_]{0,2})\s*$/i;
-// The same marker leading the description (`Foo — recommended`, `Foo —
-// (Recommended) cheap`, `Foo — Recommended: cheap`). A bare word counts only
-// when it ends there or a separator follows, so "recommended by the vendor"
-// stays prose.
-const DESC_REC_MARKER_RE = /^[*_]{0,2}(?:[([]\s*recommended\s*[)\]]|recommended(?=[*_]{0,2}\s*(?:$|[.:;,!—–]|-\s)))[*_]{0,2}\s*(?:[.:;,!—–]|-(?=\s))?\s*([\s\S]*)$/i;
+// The same marker as the description: the bare word alone (`Foo —
+// recommended`), or a bracketed marker leading it (`Foo — (Recommended)
+// cheap`). Words after a bare `Recommended` are prose (`Foo — Recommended:
+// no, too slow`, "recommended by the vendor"), never a marker.
+const DESC_REC_MARKER_RE = /^[*_]{0,2}(?:[([]\s*recommended\s*[)\]][*_]{0,2}\s*([\s\S]*)|recommended[*_]{0,2}[.!]?)$/i;
 
 /**
  * A choice whose label (or the start of its description) carries a
@@ -668,9 +671,9 @@ export const questionChoiceWithoutRecommendedMarker = (
     if (!label) return null;
     return { label, ...(choice.description ? { description: choice.description } : {}) };
   }
-  const inDesc = choice.description?.match(DESC_REC_MARKER_RE);
+  const inDesc = choice.description?.trim().match(DESC_REC_MARKER_RE);
   if (inDesc) {
-    const description = inDesc[1].trim();
+    const description = (inDesc[1] ?? '').trim();
     return { label: choice.label, ...(description ? { description } : {}) };
   }
   return null;
@@ -798,6 +801,9 @@ export const parseQuestionBlock = (
   let recommendation: string | undefined;
   let recommendationWrapped: string | undefined;
   let recommendationOpen = false;
+  // Any `Recommended:` (or arrow) line, even an empty one: a block that has
+  // one never reads a recommended marker in a label.
+  let recommendationLine = false;
   let lastChoice = -1;
   // The plain bullet the next line may continue (CommonMark list-item
   // paragraph rules): an indented line, or an unindented "lazy" line that
@@ -877,6 +883,7 @@ export const parseQuestionBlock = (
     }
     const rec = line.match(RECOMMENDED_RE) ?? line.match(ARROW_RE);
     if (rec) {
+      recommendationLine = true;
       const text = rec[1].replace(/[*_]{1,2}$/, '').trim();
       if (text) {
         recommendation = recommendationWrapped = text;
@@ -1062,7 +1069,7 @@ export const parseQuestionBlock = (
   // stay as written), any number on pick any. The marker leaves the label;
   // the raw label stays an alias, so an answer that quotes it still matches.
   // A label that would then twin another choice's keeps its marker.
-  if (!recommendation && kind !== 'text') {
+  if (!recommendationLine && kind !== 'text') {
     const marked = choices.map((c) => questionChoiceWithoutRecommendedMarker(c));
     const hits = marked.flatMap((m, i) => (m ? [i] : []));
     if (hits.length === 1 || (kind === 'multi' && hits.length > 0)) {

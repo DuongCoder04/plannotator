@@ -39,7 +39,7 @@ describe("a recommendation marked in a choice label, with no Recommended: line",
     ["- [ ] Only block on ours **(Recommended)**", "Only block on ours", undefined],
     ["- [ ] **Only block on ours (recommended)**", "**Only block on ours**", undefined],
     ["- [ ] Only block on ours — recommended", "Only block on ours", undefined],
-    ["- [ ] Only block on ours — Recommended: a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
+    ["- [ ] Only block on ours — (Recommended) a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
     ["- Only block on ours (Recommended) — a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
   ];
   for (const [line, label, description] of marked) {
@@ -87,6 +87,18 @@ describe("a recommendation marked in a choice label, with no Recommended: line",
     expect(recommendedOf(q)).toEqual(["Keep it (recommended)"]);
   });
 
+  test("a bare Recommended followed by words is prose, not a marker", () => {
+    const q = parseQuestionBlock(
+      "question",
+      block(["- [ ] Retry forever — Recommended: no, too slow", "- [ ] Give up after 3 — Recommended, but only for reads"]),
+    )!;
+    expect(q.choices.map((c) => [c.label, c.description])).toEqual([
+      ["Retry forever", "Recommended: no, too slow"],
+      ["Give up after 3", "Recommended, but only for reads"],
+    ]);
+    expect(recommendedOf(q)).toEqual([]);
+  });
+
   test("words that only mention recommending are not a marker", () => {
     const q = parseQuestionBlock(
       "question",
@@ -99,6 +111,14 @@ describe("a recommendation marked in a choice label, with no Recommended: line",
 });
 
 describe("with a Recommended: line, nothing changes", () => {
+  for (const line of ["Recommended:", "**Recommended:**", "->"]) {
+    test(`an empty \`${line}\` line still counts: the marker stays label text`, () => {
+      const q = parseQuestionBlock("question", block(["- [ ] Only block on ours (recommended)", OTHER], ["", line]))!;
+      expect(q.choices[0]!.label).toBe("Only block on ours (recommended)");
+      expect(recommendedOf(q)).toEqual([]);
+    });
+  }
+
   test("the line wins over a marker on another choice, and labels stay as written", () => {
     const q = parseQuestionBlock("question", block(["- [ ] Only block on ours (recommended)", OTHER], ["", "Recommended: Block on any unreadable config"]))!;
     expect(q.choices[0]!.label).toBe("Only block on ours (recommended)");
