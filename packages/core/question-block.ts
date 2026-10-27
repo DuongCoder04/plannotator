@@ -673,7 +673,9 @@ export const questionChoiceWithoutRecommendedMarker = (
   }
   const inDesc = choice.description?.trim().match(DESC_REC_MARKER_RE);
   if (inDesc) {
-    const description = (inDesc[1] ?? '').trim();
+    // What follows the marker, without the separator written after it
+    // (`(Recommended): cheap`, `[recommended] — cheap`, `(Recommended) - cheap`).
+    const description = (inDesc[1] ?? '').trim().replace(/^(?:[:—–]|-(?=\s|$))+\s*/, '').trim();
     return { label: choice.label, ...(description ? { description } : {}) };
   }
   return null;

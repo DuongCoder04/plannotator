@@ -40,6 +40,12 @@ describe("a recommendation marked in a choice label, with no Recommended: line",
     ["- [ ] **Only block on ours (recommended)**", "**Only block on ours**", undefined],
     ["- [ ] Only block on ours — recommended", "Only block on ours", undefined],
     ["- [ ] Only block on ours — (Recommended) a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
+    // The separator written after a bracketed marker leaves with it.
+    ["- [ ] Only block on ours — (Recommended): a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
+    ["- [ ] Only block on ours — [recommended] — a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
+    ["- [ ] Only block on ours — (Recommended) - a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
+    ["- [ ] Only block on ours — (Recommended) –", "Only block on ours", undefined],
+    ["- [ ] Only block on ours — (Recommended) -1 day of retention", "Only block on ours", "-1 day of retention"],
     ["- Only block on ours (Recommended) — a stray file stays a warning", "Only block on ours", "a stray file stays a warning"],
   ];
   for (const [line, label, description] of marked) {
