@@ -80,6 +80,8 @@ import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { agentSwitchTargetLabel, getAgentSwitchDefaults, getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { assertSendOk, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
+import { dismissSendFailureToast, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
 import {
@@ -4392,6 +4394,7 @@ const App: React.FC = () => {
   // a host that would deliver them.
   const handleApprove = async (options?: { discardFeedback?: boolean }): Promise<boolean> => {
     setIsSubmitting(true);
+    let sentFeedback: string | undefined;
     try {
       // Integrations must describe the same document the feedback diff does —
       // mid-edit submits read the live editor buffer, not stale markdown state.
@@ -4473,12 +4476,13 @@ const App: React.FC = () => {
       if (!options?.discardFeedback && (allAnnotations.length > 0 || codeAnnotations.length > 0 || globalAttachments.length > 0 || hasDocAnnotations || editorAnnotations.length > 0 || editsSection || savedChangesSection)) {
         body.feedback = getCurrentFeedbackPayload(checkedSavedFileChanges);
       }
+      sentFeedback = body.feedback;
 
       const res = await fetch('/api/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(body)),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSubmitting(false);
         return false;
@@ -4487,16 +4491,27 @@ const App: React.FC = () => {
         handleStaleRevisionRefusal();
         return false;
       }
+      // A 500 used to fall through to the Approved screen (#1392).
+      assertSendOk(res);
+      dismissSendFailureToast();
       setSubmitted('approved');
       return true;
-    } catch {
+    } catch (error) {
       setIsSubmitting(false);
+      showSendFailureToast({
+        what: 'approval',
+        error,
+        onRetry: () => { void headerHandlersRef.current.handleApprove(options); },
+        // Approve with notes sends the notes as they are: no deny framing.
+        copyText: sentFeedback,
+      });
       return false;
     }
   };
 
   const handleDeny = async (): Promise<boolean> => {
     setIsSubmitting(true);
+    let sentPayload: string | undefined;
     try {
       const checkedSavedFileChanges = await validateSavedFileChangesBeforeSubmit();
       if (checkedSavedFileChanges === null) {
@@ -4505,6 +4520,7 @@ const App: React.FC = () => {
       }
       const planSaveSettings = getPlanSaveSettings();
       const payload = getCurrentFeedbackPayload(checkedSavedFileChanges);
+      sentPayload = payload;
       const res = await fetch('/api/deny', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4519,7 +4535,7 @@ const App: React.FC = () => {
             ...(planSaveSettings.customPath && { customPath: planSaveSettings.customPath }),
           },
         }))
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSubmitting(false);
         return false;
@@ -4528,10 +4544,19 @@ const App: React.FC = () => {
         handleStaleRevisionRefusal();
         return false;
       }
+      // A 500 used to fall through to the Feedback Sent screen (#1392).
+      assertSendOk(res);
+      dismissSendFailureToast();
       setSubmitted('denied');
       return true;
-    } catch {
+    } catch (error) {
       setIsSubmitting(false);
+      showSendFailureToast({
+        what: 'feedback',
+        error,
+        onRetry: () => { void headerHandlersRef.current.handleDeny(); },
+        copyText: sentPayload === undefined ? undefined : wrapCopiedFeedback(sentPayload),
+      });
       return false;
     }
   };
@@ -4565,6 +4590,7 @@ const App: React.FC = () => {
     approvalFraming?: boolean;
   }): Promise<boolean> => {
     setIsSubmitting(true);
+    let sentFeedback: string | undefined;
     try {
       snapshotActiveEditableDocument();
       const checkedSavedFileChanges = await validateSavedFileChangesBeforeSubmit();
@@ -4574,6 +4600,7 @@ const App: React.FC = () => {
       }
       const discard = options?.discardAnnotations === true;
       const feedback = getCurrentFeedbackPayload(checkedSavedFileChanges, options);
+      sentFeedback = feedback;
       const agentFeedbackDelivery = agentTerminalSessionId === null
         ? null
         : buildAgentTerminalDeliveryRecord({
@@ -4614,23 +4641,34 @@ const App: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(body)),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         // Another session owns this address now: nothing was submitted, and
         // the draft must not be saved into that session either.
         setIsSubmitting(false);
         return false;
       }
-      if (!res.ok) throw new Error('Failed to send feedback');
+      assertSendOk(res);
+      dismissSendFailureToast();
       dismissDraft();
       // The completion screen must not claim feedback went out when nothing
       // did: the same predicate the servers use to make this a no-op decision.
       // 'denied' doubles as the "feedback sent" overlay state.
       setSubmitted(isNothingToSendFeedbackBody(body) ? 'done' : 'denied');
       return true;
-    } catch {
+    } catch (error) {
       setIsSubmitting(false);
       scheduleDraftSaveAfterSubmitFailure();
+      showSendFailureToast({
+        what: 'feedback',
+        error,
+        onRetry: () => { void headerHandlersRef.current.handleAnnotateFeedback(options); },
+        // Copy feedback copies what the panel's Copy does; Done with nothing
+        // to send has nothing worth copying.
+        copyText: sentFeedback === undefined || isEmptyFeedbackSentinel(sentFeedback)
+          ? undefined
+          : wrapCopiedFeedback(sentFeedback),
+      });
       return false;
     }
   };
@@ -4643,6 +4681,7 @@ const App: React.FC = () => {
     discardAnnotations?: boolean;
   }): Promise<boolean> => {
     setIsSubmitting(true);
+    let sentFeedback: string | undefined;
     try {
       snapshotActiveEditableDocument();
       const checkedSavedFileChanges = await validateSavedFileChangesBeforeSubmit();
@@ -4656,6 +4695,7 @@ const App: React.FC = () => {
       const feedback = !discard && hasFeedbackToSend
         ? getCurrentFeedbackPayload(checkedSavedFileChanges)
         : '';
+      sentFeedback = feedback;
       const res = await fetch('/api/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4667,18 +4707,25 @@ const App: React.FC = () => {
           codeAnnotations: discard ? [] : codeAnnotations,
           ...getFeedbackMessageScope(),
         }))),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSubmitting(false);
         return false;
       }
-      if (!res.ok) throw new Error('Failed to approve');
+      assertSendOk(res);
+      dismissSendFailureToast();
       dismissDraft();
       setSubmitted('approved');
       return true;
-    } catch {
+    } catch (error) {
       setIsSubmitting(false);
       scheduleDraftSaveAfterSubmitFailure();
+      showSendFailureToast({
+        what: 'approval',
+        error,
+        onRetry: () => { void headerHandlersRef.current.handleAnnotateApprove(options); },
+        copyText: sentFeedback || undefined,
+      });
       return false;
     }
   };

@@ -52,6 +52,8 @@ import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { monoFontStack, normalizeCssFontSize } from '@plannotator/ui/utils/cssFontFamily';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { assertSendOk, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
+import { dismissSendFailureToast, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
@@ -4227,21 +4229,25 @@ const ReviewApp: React.FC = () => {
           annotations: allAnnotations,
           ...(effectiveAgent && { agentSwitch: effectiveAgent }),
         })),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSendingFeedback(false);
         return false;
       }
-      if (res.ok) {
-        setSubmitted('feedback');
-        return true;
-      }
-      throw new Error('Failed to send');
+      assertSendOk(res);
+      dismissSendFailureToast();
+      setSubmitted('feedback');
+      return true;
     } catch (err) {
       console.error('Failed to send feedback:', err);
-      setCopyFeedback('Failed to send');
-      setTimeout(() => setCopyFeedback(null), 2000);
       setIsSendingFeedback(false);
+      showSendFailureToast({
+        what: 'feedback',
+        error: err,
+        onRetry: () => { void retryDecisionRef.current.sendFeedback(); },
+        // The same text the Copy feedback button copies.
+        copyText: feedbackMarkdown,
+      });
       return false;
     }
   }, [feedbackMarkdown, allAnnotations, getDraftGeneration, flushReviewProgress]);
@@ -4288,23 +4294,37 @@ const ReviewApp: React.FC = () => {
           feedbackMarkdown,
           annotations: allAnnotations,
         }))),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsApproving(false);
         return;
       }
-      if (res.ok) {
-        setSubmitted('approved');
-      } else {
-        throw new Error('Failed to send');
-      }
+      assertSendOk(res);
+      dismissSendFailureToast();
+      setSubmitted('approved');
     } catch (err) {
       console.error('Failed to approve:', err);
-      setCopyFeedback('Failed to send');
-      setTimeout(() => setCopyFeedback(null), 2000);
       setIsApproving(false);
+      showSendFailureToast({
+        what: 'approval',
+        error: err,
+        onRetry: () => { void retryDecisionRef.current.approve(options); },
+        // The text this approval carried (the same builder as the POST); a
+        // bare approval has none to copy.
+        copyText: buildReviewApprovalBody({
+          draftGeneration: getDraftGeneration(),
+          note: options?.note,
+          withAnnotations: options?.withAnnotations === true,
+          feedbackMarkdown,
+          annotations: allAnnotations,
+        }).feedback || undefined,
+      });
     }
   }, [getDraftGeneration, feedbackMarkdown, allAnnotations, flushReviewProgress]);
+  // Retry from the failure toast runs the latest handler, so it sends what
+  // the page holds now, the same as pressing the button again would.
+  const retryDecisionRef = useRef({ sendFeedback: handleSendFeedback, approve: handleApprove });
+  retryDecisionRef.current = { sendFeedback: handleSendFeedback, approve: handleApprove };
 
   // --- The unified review decision control, agent mode (spec §3.2/§4) ------
   // One primary, one callback: the header's left segment, the global
