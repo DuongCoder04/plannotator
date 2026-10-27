@@ -1877,7 +1877,7 @@ update_pi_extension_if_present() {
         # have this release yet (a mirror catching up, or npm not published).
         _pi_view=""
         if command -v npm >/dev/null 2>&1; then
-            _pi_view=$(npm view "@plannotator/pi-extension@${_pi_target}" version 2>&1 || true)
+            _pi_view=$(npm view "@plannotator/pi-extension@${_pi_target}" version --fetch-timeout=10000 --fetch-retries=0 2>&1 || true)
         fi
         case "$_pi_view" in
             *E404*) echo "Pi extension: still ${_pi_after} (${_pi_target} is not on your npm registry yet). Run this later: pi update ${PI_EXTENSION_SOURCE}" ;;

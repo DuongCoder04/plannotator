@@ -1276,7 +1276,7 @@ function Update-PiExtensionIfPresent {
         # this release yet (a mirror catching up, or npm not published).
         $view = ""
         if (Get-Command npm -ErrorAction SilentlyContinue) {
-            try { $view = (& npm view "@plannotator/pi-extension@$target" version 2>&1 | Out-String) } catch { $view = "" }
+            try { $view = (& npm view "@plannotator/pi-extension@$target" version --fetch-timeout=10000 --fetch-retries=0 2>&1 | Out-String) } catch { $view = "" }
         }
         if ($view -match 'E404') {
             Write-Host ("Pi extension: still " + $after + " (" + $target + " is not on your npm registry yet). Run this later: pi update " + $piExtensionSource)

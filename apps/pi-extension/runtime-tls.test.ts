@@ -25,15 +25,26 @@ describe("runtimeTlsWarning", () => {
 	test("Node releases without them are named, with the versions to move to", () => {
 		for (const node of ["18.20.4", "20.19.0", "22.23.3", "23.11.0", "24.15.0", "24.22.0", "25.2.1", "26.12.0"]) {
 			expect(runtimeTlsWarning({ node })).toBe(
-				`Plannotator: your Node v${node} is missing the Oct 21 TLS fixes (a compromised certificate authority); update to 22.23.4, 24.22.1 or 26.12.1 or later.`,
+				`Plannotator: your Node v${node} is missing the October 2026 TLS fixes (a compromised certificate authority); update to 22.23.4, 24.22.1 or 26.12.1 or later.`,
 			);
 		}
 	});
 
 	test("on Bun only Bun's version counts, whatever Node version it reports", () => {
-		expect(runtimeTlsWarning({ bun: "1.4.4", node: "24.3.0" })).toBeNull();
-		expect(runtimeTlsWarning({ bun: "1.5.0", node: "20.0.0" })).toBeNull();
-		expect(runtimeTlsWarning({ bun: "1.3.14", node: "24.22.1" })).toContain("your Bun v1.3.14 is missing");
+		expect(runtimeTlsWarning({ bun: "1.4.4", node: "24.3.0" }, "/usr/local/bin/bun")).toBeNull();
+		expect(runtimeTlsWarning({ bun: "1.5.0", node: "20.0.0" }, "/usr/local/bin/bun")).toBeNull();
+		expect(runtimeTlsWarning({ bun: "1.3.14", node: "24.22.1" }, "/usr/local/bin/bun")).toBe(
+			"Plannotator: your Bun v1.3.14 is missing the October 2026 TLS fixes (a compromised certificate authority); update Bun to 1.4.4 or later.",
+		);
+		expect(runtimeTlsWarning({ bun: "1.3.14" }, "C:\\Users\\me\\.bun\\bin\\bun.exe")).toContain("update Bun to 1.4.4");
+	});
+
+	test("Pi's Bun-compiled binary is told to update Pi, not Bun", () => {
+		for (const execPath of ["/Users/me/.pi/bin/pi", "C:\\Program Files\\pi\\pi.exe"]) {
+			expect(runtimeTlsWarning({ bun: "1.3.14", node: "24.3.0" }, execPath)).toBe(
+				"Plannotator: this Pi build runs on Bun v1.3.14, which is missing the October 2026 TLS fixes (a compromised certificate authority); update Pi to a build with Bun 1.4.4 or later.",
+			);
+		}
 	});
 
 	test("an unreadable version is not warned about", () => {
