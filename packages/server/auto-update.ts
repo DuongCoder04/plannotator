@@ -839,7 +839,8 @@ if [ -n "$update_dir" ] && [ -f "$update_dir/install.sh" ]; then
   fi
 else
   code=75
-  echo "update: could not download the update; nothing was changed"
+  # update-prepare already said why (download, certificate, temp folder).
+  echo "update: nothing ran; nothing was changed"
 fi
 cleanup
 record "$code"
