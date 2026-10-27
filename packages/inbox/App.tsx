@@ -23,6 +23,7 @@ import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
 import type { InboxCardWire, InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
 import { DecisionMode } from './decisions/DecisionMode';
 import { DecisionPill, decideEntryShown } from './decisions/entry';
+import { threadDecisions } from './decisions/model';
 import {
   InboxApiError,
   inboxApi,
@@ -491,13 +492,13 @@ function Inbox() {
   /**
    * Decision mode (experimental, approval "inbox-decision-mode"): the
    * projection while the feature is on, and the sitting (open, or tucked
-   * into its pill behind a thread). Off, nothing of it renders.
+   * into its pill behind a thread). Off, nothing of it renders. Thread only
+   * (owner, 2026-10-27): a sitting is one thread's decisions (`thread`), opened
+   * from that thread's open-questions list; there is no global way in.
    */
   const [decisions, setDecisions] = useState<InboxDecision[] | null>(null);
-  const decisionsRef = useRef(decisions);
-  decisionsRef.current = decisions;
-  // `startNonce`: a new start while the sitting is open (another notification) moves it to that card.
-  const [decide, setDecide] = useState<{ tucked: boolean; start: string | null; startNonce: number } | null>(null);
+  // `startNonce`: a new start while the sitting is open moves it to that card.
+  const [decide, setDecide] = useState<{ thread: string; title: string | null; tucked: boolean; start: string | null; startNonce: number } | null>(null);
   /** What opened decision mode: focus goes back there when the sitting ends. */
   const decideOpener = useRef<HTMLElement | null>(null);
   const [decideLeft, setDecideLeft] = useState(0);
@@ -688,35 +689,10 @@ function Inbox() {
     // A click on a notification: the thread opens, and the list on screen catches up, even with a
     // thread open. The one exception to "the list holds still while a thread is open" (settle.ts):
     // the person was away, and the thread notified may not be on screen at all.
-    openThread: (threadId, questionId) => {
-      // With decision mode on, a Stopped notification opens it on that card (approval "inbox-decision-mode"):
-      // the question it notified about, else a Stopped one of that thread. The projection may not have the
-      // new question yet, so it is read once more before giving up on it.
-      const stoppedOf = (list: readonly InboxDecision[] | null) =>
-        (questionId ? list?.find((d) => d.id === questionId && d.question.stopped !== null) : undefined) ??
-        list?.find((d) => d.thread.id === threadId && d.question.stopped !== null);
-      const fallback = () => {
-        writeRoute({ page: 'inbox', project: null, thread: threadId });
-        void refreshList(true);
-      };
-      if (!decisionModeOnRef.current) return fallback();
-      const openOn = (decision: InboxDecision) => {
-        setDecide((current) => ({ tucked: false, start: decision.id, startNonce: (current?.startNonce ?? 0) + 1 }));
-        void refreshDecisions();
-        void refreshList(true);
-      };
-      const known = stoppedOf(decisionsRef.current);
-      if (known) return openOn(known);
-      if (!questionId) return fallback();
-      void inboxApi.decisions().then(
-        (model) => {
-          setDecisions(model.decisions);
-          const found = stoppedOf(model.decisions);
-          if (found) openOn(found);
-          else fallback();
-        },
-        () => fallback(),
-      );
+    // Decision mode is thread only (owner, 2026-10-27): a Stopped notification opens its thread too, never the dialog.
+    openThread: (threadId) => {
+      writeRoute({ page: 'inbox', project: null, thread: threadId });
+      void refreshList(true);
     },
     // A click on a burst's notice: the list at rest, as it now is.
     openList: () => {
@@ -2447,24 +2423,29 @@ function Inbox() {
       setDecide(null);
     }
   }, [decisionModeOn, refreshDecisions]);
-  const decideCount = decisionModeOn ? (decisions?.length ?? 0) : 0;
-  const openDecide = (start: string | null = null) => {
-    const active = document.activeElement;
-    decideOpener.current = active instanceof HTMLElement && active !== document.body ? active : null;
-    setDecide((current) => ({ tucked: false, start, startNonce: (current?.startNonce ?? 0) + 1 }));
+  /** A thread's "Decide these N": decision mode on, no sitting going, and two or more of its decisions waiting. */
+  const decideInThread = (threadId: string) => {
+    if (!decisionModeOn || !decisions || decide) return null;
+    const count = threadDecisions(decisions, threadId).length;
+    return decideEntryShown(count) ? { count, onDecide: () => openDecide(threadId) } : null;
+  };
+  /** The sitting's queue: its thread's decisions only. */
+  const sittingDecisions = useMemo(() => (decisions && decide ? threadDecisions(decisions, decide.thread) : null), [decisions, decide?.thread]);
+  const openDecide = (threadId: string) => {
+    // Opened from the open-questions list, whose row goes with the list: focus comes back to its button.
+    decideOpener.current = document.querySelector<HTMLElement>('section.ib-pane [data-open-questions]');
+    const first = decisions ? threadDecisions(decisions, threadId)[0] : undefined;
+    setDecide((current) => ({ thread: threadId, title: first ? (first.thread.subject ?? first.thread.thread_name) : null, tucked: false, start: null, startNonce: (current?.startNonce ?? 0) + 1 }));
     void refreshDecisions();
   };
-  /** The sitting ended: focus back on what opened it, else on a Decide button still on screen. */
+  /** The sitting ended: focus back on what opened it, else on the thread's open-questions button. */
   const closeDecide = () => {
     setDecide(null);
     void refreshList(true);
     const opener = decideOpener.current;
     decideOpener.current = null;
     requestAnimationFrame(() => {
-      const target =
-        (opener?.isConnected ? opener : null) ??
-        document.querySelector<HTMLElement>('[data-decide-head]') ??
-        document.querySelector<HTMLElement>('[data-decide-nav]');
+      const target = (opener?.isConnected ? opener : null) ?? document.querySelector<HTMLElement>('section.ib-pane [data-open-questions]');
       target?.focus({ preventScroll: true });
     });
   };
@@ -3380,8 +3361,6 @@ function Inbox() {
           pinned={pinsOn ? pinnedIds : undefined}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
-          decideCount={decideEntryShown(decideCount) ? decideCount : 0}
-          onDecide={() => openDecide()}
           phone={phone}
           empty={
             projectAllArchived(filterProject) ? (
@@ -3475,6 +3454,9 @@ function Inbox() {
             onOpenGuide={(messageId) => go({ ...route, guide: messageId })}
             artifacts={route.artifacts === true}
             onArtifacts={(open) => (open ? go({ ...routeRef.current, artifacts: true, msg: null }) : close({ ...routeRef.current, artifacts: false }))}
+            // Decision mode's one way in (thread only): from two of this thread's decisions up, and not while a
+            // sitting is tucked into its pill (the pill's Resume is the way back to it).
+            decide={decideInThread(thread.thread_id)}
             landing={
               route.msg
                 ? {
@@ -3576,8 +3558,6 @@ function Inbox() {
             updated={updated}
             onSearch={(opener) => openSearch(opener)}
             onCompose={(opener) => openCompose({}, opener)}
-            decideCount={decideEntryShown(decideCount) ? decideCount : 0}
-            onDecide={() => openDecide()}
             pins={pinRows}
             openThreadId={route.thread}
             onOpenPin={(row) => (tourRealStep ? endTour('finish', { page: 'inbox', project: null, thread: row.thread_id }) : openPinned(row))}
@@ -3793,7 +3773,8 @@ function Inbox() {
       {decisionModeOn && decide && (
         <DecisionMode
           open={!decide.tucked}
-          decisions={decisions}
+          decisions={sittingDecisions}
+          scope={decide.title}
           rows={latestRows}
           start={decide.start}
           startNonce={decide.startNonce}

@@ -31,6 +31,15 @@ export function emptyQueue(): QueueState {
   return { order: [], cache: new Map(), gone: new Map(), later: new Set(), current: null };
 }
 
+/**
+ * The queue's scope: one thread's decisions, in the projection's order
+ * (thread only, owner 2026-10-27). The queue and its send groups are
+ * unchanged: a group is already one session in one thread.
+ */
+export function threadDecisions(decisions: readonly InboxDecision[], threadId: string): InboxDecision[] {
+  return decisions.filter((decision) => decision.thread.id === threadId);
+}
+
 /** The send group: one reply per agent session per thread (server's `inboxDecisionGroupKey`). */
 export function groupKeyOf(decision: Pick<InboxDecision, 'session' | 'thread'>): string {
   return `${decision.session.key}\u0001${decision.thread.id}`;

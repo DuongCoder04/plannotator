@@ -1,22 +1,29 @@
 /**
- * Decision mode's ways in and its pill (approval "inbox-decision-mode"; experimental).
- * The sidebar's "Decide N" row and the list header's button show only while
- * two or more decisions wait (brief §11 question 7); one decision is answered
- * in its thread as before.
+ * Decision mode's way in and its pill (approval "inbox-decision-mode"; experimental).
+ * Thread only (owner, 2026-10-27: "I thought decides were gonna be integrated
+ * to the thread, not a whole global thing"): the one way in is "Decide these N"
+ * in a thread's open-questions list, shown only while two or more of that
+ * thread's decisions wait; one decision is answered on its card as before.
+ * No global entry: no sidebar row, no list-header button, and a Stopped
+ * notification opens its thread.
  */
 import { useLayoutEffect, useState } from 'react';
 import { formatCount } from '../format';
 
-/** The ways in show from two decisions up. */
+/** The way in shows from two decisions (in the thread) up. */
 export const DECIDE_ENTRY_MIN = 2;
 
 export function decideEntryShown(count: number): boolean {
   return count >= DECIDE_ENTRY_MIN;
 }
 
-/** "Decide 5". */
-export function decideLabel(count: number): string {
-  return `Decide ${formatCount(count)}`;
+/**
+ * The thread's way in: "Decide these 5" when the queue holds exactly the
+ * questions the list shows; "Decide 5 one at a time" when it holds more (the
+ * thread's open action items ride the queue too, and the list leaves them out).
+ */
+export function decideThreadLabel(count: number, listed: number): string {
+  return count === listed ? `Decide these ${formatCount(count)}` : `Decide ${formatCount(count)} one at a time`;
 }
 
 /**
