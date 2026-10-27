@@ -12,9 +12,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { INBOX_BOARD_REQUEST_OPEN, inboxBoardRequestBlock, inboxId, type InboxDraft, type InboxMessage, type InboxThread } from "@plannotator/core/inbox-types";
-import { INBOX_BRIDGE_POLL_PATH, inboxWakeText, parseInboxBridgeCommands } from "@plannotator/shared/inbox/connection";
-import { codexQueueMessage } from "./inbox-codex-wake";
+import { INBOX_BOARD_REQUEST_OPEN, INBOX_CARD_ACTION_ON, inboxBoardRequestBlock, inboxId, type InboxDraft, type InboxMessage, type InboxThread } from "@plannotator/core/inbox-types";
+import { INBOX_BRIDGE_POLL_PATH, inboxWakeText, parseInboxBridgeCommands, type InboxReplyCommand } from "@plannotator/shared/inbox/connection";
+import { INBOX_CODEX_MESSAGE_MAX_BYTES, codexQueueMessage } from "./inbox-codex-wake";
 import { startInboxServer, type InboxServer } from "./inbox";
 
 const roots: string[] = [];
@@ -66,8 +66,8 @@ async function send(server: InboxServer, body: Record<string, unknown>): Promise
   return (await response.json()) as never;
 }
 
-async function readThreadText(client: Client, threadId: string): Promise<string> {
-  const result = (await client.callTool({ name: "read_thread", arguments: { thread_id: threadId, agent_session: "ses-a" } })) as { content: { text: string }[] };
+async function readThreadText(client: Client, threadId: string, session = "ses-a"): Promise<string> {
+  const result = (await client.callTool({ name: "read_thread", arguments: { thread_id: threadId, agent_session: session } })) as { content: { text: string }[] };
   return result.content.map((part) => part.text).join("\n");
 }
 
@@ -106,19 +106,19 @@ describe("Board request", () => {
     expect(count(await readThreadText(client, sent.message.thread_id), INBOX_BOARD_REQUEST_OPEN)).toBe(1);
   });
 
-  test("wait_for_reply hands the message sent with the chip with the block once", async () => {
+  test("wait_for_reply hands the message sent with the chip with the block once in its text, and its JSON keeps the words", async () => {
     const { server, client, project } = await setup(true);
     await poll(server, "ses-a", project);
     const sent = await send(server, { body: WORDS, idempotency_key: "k1", board_request: true });
-    const waitText = async () => {
-      const waited = (await client.callTool({ name: "wait_for_reply", arguments: { thread_id: sent.message.thread_id, agent_session: "ses-a", timeout_seconds: 1 } })) as {
-        content: { text: string }[];
-      };
-      return waited.content.map((part) => part.text).join("\n");
+    const waited = (await client.callTool({ name: "wait_for_reply", arguments: { thread_id: sent.message.thread_id, agent_session: "ses-a", timeout_seconds: 1 } })) as {
+      content: { text: string }[];
+      structuredContent: { reply: { body: string; board_request?: boolean } };
     };
-    const first = await waitText();
+    const first = waited.content.map((part) => part.text).join("\n");
     expect(first).toContain(WORDS);
     expect(count(first, INBOX_BOARD_REQUEST_OPEN)).toBe(1);
+    // The JSON keeps the person's words and a flag, as read_thread's does: a client that prints both reads the block once.
+    expect(waited.structuredContent.reply).toMatchObject({ body: WORDS, board_request: true });
   });
 
   test("of two turns handed in one poll, only the one sent with the chip carries the block", async () => {
@@ -159,5 +159,42 @@ describe("Board request", () => {
     expect(listed.drafts.find((d) => d.id === id)?.board_request).toBe(true);
     const off = await draftOf({ base: on.updated_at });
     expect(off.board_request).toBeUndefined();
+  });
+
+  // Review of #2249: any session may read the thread again (after compaction, or one the thread moved to).
+  // What regresses: a second reader told to create cards while one already links the thread.
+  test.if(INBOX_CARD_ACTION_ON)("a second reader of the thread is told which card already links it, so it makes no other", async () => {
+    const { server, client, project } = await setup(true);
+    await poll(server, "ses-a", project);
+    const sent = await send(server, { body: WORDS, idempotency_key: "k1", board_request: true });
+    const threadId = sent.message.thread_id;
+    expect(await readThreadText(client, threadId, "ses-b")).not.toContain("Already on the Board");
+    const made = (await client.callTool({
+      name: "card",
+      arguments: { op: "create", title: "Fuzzy settings search", thread_id: threadId, project_path: project, agent_session: "ses-a", agent_host: "claude-code" },
+    })) as { structuredContent: { card: { id: string } } };
+    const cardId = made.structuredContent.card.id;
+    const second = await readThreadText(client, threadId, "ses-b");
+    expect(count(second, INBOX_BOARD_REQUEST_OPEN)).toBe(1);
+    expect(second).toContain(`Already on the Board for this thread: ${cardId} (Fuzzy settings search)`);
+  });
+
+  test("Codex's queue cuts a long message's words, never the block after them", async () => {
+    const threadId = inboxId("msg");
+    const long = "word ".repeat(Math.ceil(INBOX_CODEX_MESSAGE_MAX_BYTES / 5) + 100);
+    const command: InboxReplyCommand = {
+      type: "message",
+      id: threadId,
+      thread_id: threadId,
+      reply_to: null,
+      subject: "Long ask",
+      body: `${long}\n\n${inboxBoardRequestBlock(threadId)}`,
+      url: "http://127.0.0.1:1/#thread",
+      new_thread: true,
+    };
+    const queued = codexQueueMessage(command);
+    expect(Buffer.byteLength(queued)).toBeLessThanOrEqual(INBOX_CODEX_MESSAGE_MAX_BYTES);
+    expect(queued).toContain("[Cut here:");
+    expect(count(queued, inboxBoardRequestBlock(threadId))).toBe(1);
   });
 });

@@ -803,13 +803,17 @@ const boardChip = () => dialog()!.querySelector<HTMLButtonElement>('[data-compos
 
 test.skipIf(!hasDom)('Board chip: none while the Board is off', async () => {
   expect((await loopback('/api/inbox/settings', 'POST', JSON.stringify({ board: { on: false } }))).status).toBe(200);
+  // The browser's last choice is on: with the Board off, the chip is still not drawn.
   localStorage.setItem(BOARD_CHOICE_KEY, '1');
-  await poll('ses_chip_off', 'claude-code', projects[0]!);
-  const el = await renderApp();
-  await openCompose(el);
-  await until(() => dialog()!.querySelector('[data-compose-thread-row]') !== null, 'the Thread row');
-  expect(boardChip()).toBeNull();
-  localStorage.removeItem(BOARD_CHOICE_KEY);
+  try {
+    await poll('ses_chip_off', 'claude-code', projects[0]!);
+    const el = await renderApp();
+    await openCompose(el);
+    await until(() => dialog()!.querySelector('[data-compose-thread-row]') !== null, 'the Thread row');
+    expect(boardChip()).toBeNull();
+  } finally {
+    localStorage.removeItem(BOARD_CHOICE_KEY);
+  }
 });
 
 test.skipIf(!hasDom)('Board chip: off by default; on, the Send asks for the Board with the words as typed, the sent message is marked, and the next compose remembers it', async () => {
@@ -821,6 +825,7 @@ test.skipIf(!hasDom)('Board chip: off by default; on, the Send asks for the Boar
   await openCompose(el);
   await until(() => boardChip() !== null, 'the Board chip');
   expect(boardChip()!.getAttribute('aria-pressed')).toBe('false');
+  // The accessible name, pinned on purpose: the approval's name for the control (it holds its visible word, WCAG 2.5.3).
   expect(boardChip()!.getAttribute('aria-label')).toBe('Track on Board');
   act(() => boardChip()!.click());
   expect(boardChip()!.getAttribute('aria-pressed')).toBe('true');

@@ -129,6 +129,8 @@ export interface AgentMessage {
    * the person's words.
    */
   board_request?: true;
+  /** With `board_request`: the live cards that link this thread already (not dropped), for `messageText`. */
+  board_cards?: { id: string; title: string }[];
 }
 
 /** One agent session a person's reply tags, as an agent reads it. */
@@ -521,7 +523,16 @@ export function windowedThread(
   for (const id of full) shown.add(id);
   const formOf = (id: string): AgentMessageForm => (whole.has(id) ? "whole" : personEarlier.has(id) ? "earlier" : "window");
   const caller = input.caller ?? null;
-  const messages = all.filter((m) => full.has(m.id)).map((m) => agentMessage(m, formOf(m.id), caller));
+  // A Board request in full names the cards that link the thread already (review of #2249: no second card on a re-read).
+  const linkedCards = () =>
+    store
+      .listCards({ projectIds: new Set([thread.project.id]) })
+      .filter((card) => card.column !== "dropped" && card.threads.includes(threadId))
+      .map((card) => ({ id: card.id, title: card.title }));
+  const messages = all
+    .filter((m) => full.has(m.id))
+    .map((m) => agentMessage(m, formOf(m.id), caller))
+    .map((m) => (m.board_request ? { ...m, board_cards: linkedCards() } : m));
   const earlier = inRange.filter((m) => !full.has(m.id)).map((m) => agentMessageLine(m, caller));
   const leftOut = all.filter((m) => !shown.has(m.id));
   // The questions of messages left out, without repeating what the reader has:
@@ -648,14 +659,20 @@ export function messageText(message: AgentMessage, context: TranscriptContext): 
   const tagged = taggedWords(message.tagged);
   if (tagged) head.push(tagged);
   const lines = [`[${head.join(" · ")}]`, message.body.trimEnd()];
-  // Compose's Board chip: the request, once, right after the person's words.
-  if (message.board_request) lines.push("", inboxBoardRequestBlock(message.id));
   if (message.questions?.length) lines.push(`Questions: ${message.questions.map((q) => questionWords(q)).join("; ")}`);
   if (message.attachments?.length) {
     lines.push(`Files: ${message.attachments.map((a) => `${a.name} (${a.kind}, ${sizeText(a.size)}): ${a.path}`).join("; ")}`);
   }
   if (message.guide) lines.push(`Guided review: ${message.guide.title}`);
   if (message.ack) lines.push(`👍 ${message.ack.label} (${shortTime(message.ack.at)}): the person read it and needs nothing more.`);
+  // Compose's Board chip: the request, once, after the words and files (the wake's order), and the cards
+  // that link the thread already, so a second reader keeps those current instead of making more.
+  if (message.board_request) {
+    lines.push("", inboxBoardRequestBlock(message.id));
+    if (message.board_cards?.length) {
+      lines.push(`Already on the Board for this thread: ${message.board_cards.map((c) => `${c.id} (${c.title})`).join("; ")}. Keep ${message.board_cards.length === 1 ? "it" : "them"} current; make no other.`);
+    }
+  }
   return lines.join("\n");
 }
 

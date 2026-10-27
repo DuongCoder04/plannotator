@@ -86,14 +86,16 @@ export const INBOX_BOARD_REQUEST_CLOSE = "</plannotator-board-request>";
  * What an agent receives after the words of a message the person sent with
  * compose's Board chip on: the agent makes the card or cards itself, for
  * what was asked (owner, 2026-10-27: "create board card(s) depending on the
- * user ask"), linked to the thread, and keeps them current. The card action
- * of plannotator_inbox is there only while the Board is on and from the
- * session after it was turned on; the CLI covers a session without it.
+ * user ask"), linked to the thread, and keeps them current. Any session may
+ * read it again (read_thread after compaction, a session the thread moved
+ * to), so it makes cards only while none links the thread (review of #2249).
+ * "Your Inbox card tool" fits every host: plannotator_inbox's card action, or
+ * Codex's `card`; the CLI covers a session without either.
  */
 export function inboxBoardRequestBlock(threadId: string): string {
   return [
     INBOX_BOARD_REQUEST_OPEN,
-    `The person turned on Board tracking for this thread. Create Board card(s) for the work they asked for, link each to this thread (thread_id ${threadId}), and keep them current as the work moves. How: your plannotator_inbox tool's card action, or \`plannotator card --help\`.`,
+    `The person turned on Board tracking for this thread (thread_id ${threadId}). If no Board card links it yet (card op list, asked_by anyone, shows them), create card(s) for the work they asked for and link each to it; if one does, keep that one current instead of making another. Keep them current as the work moves. How: your Inbox card tool, or \`plannotator card --help\`.`,
     INBOX_BOARD_REQUEST_CLOSE,
   ].join("\n");
 }

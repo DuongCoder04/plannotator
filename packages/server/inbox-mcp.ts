@@ -445,7 +445,14 @@ function replyResult(store: InboxStore, reply: InboxMessage, base: string, calle
       status: "replied",
       thread_id: reply.thread_id,
       ...(tag ? { tagged_you: true } : {}),
-      reply: { message_id: reply.id, reply_to: reply.reply_to, body, created_at: reply.created_at },
+      // The person's words (and files) as in read_thread's JSON: the Board request is a flag here, the block only in the text.
+      reply: {
+        message_id: reply.id,
+        reply_to: reply.reply_to,
+        body: inboxBodyForAgent(reply, { boardRequest: false }),
+        created_at: reply.created_at,
+        ...(reply.board_request === true ? { board_request: true } : {}),
+      },
       questions,
       cursor,
       url,
