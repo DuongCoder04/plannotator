@@ -101,6 +101,7 @@ import { type AgentJobInfo, REVIEW_OUTPUT_FAILED, getAgentJobAnnotationContext, 
 import { createCommitAvatarResolver } from "@plannotator/shared/commit-avatars";
 import { detectGeneratedFiles, detectGeneratedFilesByName } from "@plannotator/shared/generated-files";
 import { getRepoInfo } from "./repo";
+import { createRefCards, refCardRouteResponse, type RefRunner } from "./ref-cards";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleApiNotFound, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash } from "./draft";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "@plannotator/shared/review-draft";
@@ -211,6 +212,8 @@ export interface ReviewServerOptions {
    * served compressed, as in remote mode (#1617).
    */
   tailnetPublished?: boolean;
+  /** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+  refRunner?: RefRunner;
   /** Raw git diff patch string */
   rawPatch: string;
   /** Git ref used for the diff (e.g., "HEAD", "main..HEAD", "--staged") */
@@ -1896,6 +1899,9 @@ export async function startReviewServer(
   const aiRuntime = aiEnabled ? await createAIRuntime({ getCwd: resolveAgentCwd, sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.tailnetPublished === true ? { tailnet: sessionTailnetGate } : {}) }) : null;
 
   const isRemote = isRemoteSession();
+  // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for, and
+  // never in remote mode or a `--tailscale` session, where other devices could drive the user's gh / glab.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
@@ -3773,6 +3779,10 @@ export async function startReviewServer(
           const updateRoute = handleUpdateRoute(req, url, { port: boundPort, exposed: isRemote || options.tailnetPublished === true, serverSession });
 
           if (updateRoute) return updateRoute;
+
+          // API: a hover card's data for an issue, PR or MR link (GET /api/ref, ref-cards.ts).
+          const refRoute = await refCardRouteResponse(req, url, refCards, { enabled: !isRemote && options.tailnetPublished !== true, serverSession });
+          if (refRoute) return refRoute;
 
 
           // API: Update user config (write-back to ~/.plannotator/config.json)

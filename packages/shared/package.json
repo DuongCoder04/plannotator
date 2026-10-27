@@ -118,6 +118,8 @@
     "./live-proxy-core": "./live-proxy-core.ts",
     "./loopback-host": "./loopback-host.ts",
     "./request-origin": "./request-origin.ts",
+    "./ref-cards": "./ref-cards.ts",
+    "./ref-cards-node": "./ref-cards-node.ts",
     "./request-host": "./request-host.ts",
     "./local-image": "./local-image.ts",
     "./browser-intent": "./browser-intent.ts",
