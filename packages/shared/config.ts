@@ -27,6 +27,7 @@ import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig } f
 import { isFaviconStyle, type FaviconStyle } from './favicon';
 import { isAnnotateAgentTerminalSide, type AnnotateAgentTerminalSide } from './agent-terminal';
 import { parseAgentSwitchConfig, agentSwitchConfigValue, type AgentSwitchConfigValue } from './agent-switch';
+import { INBOX_TOOL_NAME, inboxReminderCustomText, inboxReminderFor } from './inbox/connection';
 export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig, FaviconStyle };
 
 /** Single conventional comment label entry stored in config.json */
@@ -76,6 +77,19 @@ export interface PromptConfig {
     approved?: string;
     approvedWithNotes?: string;
   };
+  /**
+   * The Plannotator Inbox's reminder at session start (approval
+   * "inbox-prompts-page", #2194): `reminder` for every host, and
+   * `runtimes.<claude-code|pi|opencode>.reminder` for one host, which wins.
+   * Set, it REPLACES the built-in line (INBOX_REMINDER_TEXT /
+   * INBOX_REMINDER_TEXT_NO_WAKE); empty, whitespace or longer than
+   * INBOX_REMINDER_MAX_CHARS counts as unset. Whether the reminder is sent at
+   * all stays `inboxReminder`. Read once per session start.
+   */
+  inbox?: {
+    reminder?: string;
+    runtimes?: Partial<Record<InboxToolHost, { reminder?: string }>>;
+  };
 }
 
 const PROMPT_SECTIONS = ["review", "plan", "annotate"] as const;
@@ -102,7 +116,48 @@ export function mergePromptConfig(
     }
   }
 
+  // The Inbox section merges key by key, each host's entry too, so writing one
+  // key keeps the others; a key the write sets to undefined is deleted, and an
+  // entry or section left empty goes with it. Only when the write names
+  // `inbox`: otherwise whatever config.json holds there is kept verbatim.
+  if (partial && Object.prototype.hasOwnProperty.call(partial, "inbox")) {
+    result.inbox = mergeInboxPromptConfig(current?.inbox, partial.inbox);
+    if (Object.values(result).every((value) => value === undefined)) return undefined;
+  }
+
   return result as PromptConfig;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function withoutUndefined(value: Record<string, unknown>): Record<string, unknown> | undefined {
+  const kept = Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined));
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
+function mergeInboxPromptConfig(current: unknown, partial: unknown): PromptConfig["inbox"] {
+  const par = plainRecord(partial);
+  if (!par) return partial as PromptConfig["inbox"];
+  const cur = plainRecord(current) ?? {};
+  const merged: Record<string, unknown> = { ...cur, ...par };
+  if (Object.prototype.hasOwnProperty.call(par, "runtimes")) {
+    const parRuntimes = plainRecord(par.runtimes);
+    if (!parRuntimes) {
+      merged.runtimes = par.runtimes;
+    } else {
+      const runtimes: Record<string, unknown> = { ...plainRecord(cur.runtimes) };
+      for (const [host, entry] of Object.entries(parRuntimes)) {
+        const parEntry = plainRecord(entry);
+        runtimes[host] = parEntry ? withoutUndefined({ ...plainRecord(runtimes[host]), ...parEntry }) : entry;
+      }
+      merged.runtimes = withoutUndefined(runtimes);
+    }
+  } else if (cur.runtimes !== undefined) {
+    merged.runtimes = cur.runtimes;
+  }
+  return withoutUndefined(merged) as PromptConfig["inbox"];
 }
 
 export interface PlannotatorConfig {
@@ -341,10 +396,24 @@ export interface PlannotatorConfig {
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;
    * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
-   * Settings → General → Experimental through POST /api/inbox/settings
+   * Settings → Capabilities → Experimental through POST /api/inbox/settings
    * `{ experimental: { decision_mode } }`.
    */
   experimental?: { decisionMode?: boolean };
+  /**
+   * The Board's one-time first-visit dialog (approval "inbox-board", intro
+   * amendment): `shownAt` once a page on this computer claimed it
+   * (`POST /api/inbox/board/intro`, a compare-and-set), once per machine.
+   */
+  inboxBoardIntro?: { shownAt?: string };
+  /**
+   * The Board (approval "inbox-board", 2026-10-26 amendment): something the
+   * person turns on, off by default. On: the sidebar's Board row and page,
+   * and the Inbox serves the agents' `card` tool. Off: neither, every card
+   * kept. Written by the Inbox's Settings → Capabilities (`POST
+   * /api/inbox/settings` `{ board: { on } }`), read on every request.
+   */
+  inboxBoard?: boolean;
   inboxSound?: {
     enabled?: boolean;
     volume?: number;
@@ -475,6 +544,16 @@ export interface PlannotatorConfig {
    */
   gitRemoteCheck?: boolean;
   /**
+   * Package changes in code review (the table under a changed package.json or
+   * lockfile). `card: false` hides it everywhere, leaving the plain diff
+   * (default true). `lookup: true` lets the review server ask npm for
+   * downloads, license and release dates, sending the names of the changed
+   * public packages to registry.npmjs.org and api.npmjs.org (default false;
+   * the card's "Look up on npm" sets it). PLANNOTATOR_PACKAGE_LOOKUP=0 keeps
+   * the lookup off whatever this says.
+   */
+  packageChanges?: { card?: boolean; lookup?: boolean };
+  /**
    * Display-only hostname for advertised session URLs (issue #657). Lets a
    * remote-mode user hand out a reachable link (e.g. a Tailscale MagicDNS
    * name or tailnet IP) instead of localhost. Host only — the port is chosen
@@ -534,6 +613,31 @@ export function parseReviewAnalysisConfig(value: unknown): PlannotatorConfig["re
     result.callFlow = input.callFlow;
   }
   return result;
+}
+
+/** Parse the server-writable package changes switches: booleans only, or undefined (the route answers 400). */
+export function parsePackageChangesConfig(value: unknown): PlannotatorConfig["packageChanges"] | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const result: NonNullable<PlannotatorConfig["packageChanges"]> = {};
+  for (const key of ["card", "lookup"] as const) {
+    if (input[key] === undefined) continue;
+    if (typeof input[key] !== "boolean") return undefined;
+    result[key] = input[key] as boolean;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/** PLANNOTATOR_PACKAGE_LOOKUP: `0` / `false` / `off` / `disabled` is a hard off; anything else decides nothing. */
+export function parsePackageLookupEnv(env: NodeJS.ProcessEnv = process.env): false | undefined {
+  const v = env.PLANNOTATOR_PACKAGE_LOOKUP?.trim().toLowerCase();
+  return v === "0" || v === "false" || v === "off" || v === "disabled" ? false : undefined;
+}
+
+/** Whether the review server may ask npm about package changes: only after the reviewer said yes. */
+export function resolvePackageLookup(config: PlannotatorConfig, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (parsePackageLookupEnv(env) === false) return false;
+  return coerceConfigBoolean(config.packageChanges?.lookup, false);
 }
 
 // Resolved per call, not at module scope: tests sandbox the data dir by
@@ -790,7 +894,7 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): boolean {
     const plain = (value: unknown): value is Record<string, unknown> =>
       !!value && typeof value === "object" && !Array.isArray(value);
     const merged: Record<string, unknown> = { ...current, ...partial };
-    const nested = (key: "experimental" | "diffOptions" | "theme" | "reviewAnalysis" | "prompts") => {
+    const nested = (key: "experimental" | "diffOptions" | "theme" | "reviewAnalysis" | "prompts" | "packageChanges") => {
       const cur = (current as Record<string, unknown>)[key];
       const par = (partial as Record<string, unknown>)[key];
       if (par === undefined) {
@@ -803,7 +907,7 @@ export function saveConfig(partial: Partial<PlannotatorConfig>): boolean {
       }
       merged[key] = key === "prompts" ? mergePromptConfig(cur as PromptConfig, par as PromptConfig) : { ...cur, ...par };
     };
-    for (const key of ["experimental", "diffOptions", "theme", "reviewAnalysis", "prompts"] as const) nested(key);
+    for (const key of ["experimental", "diffOptions", "theme", "reviewAnalysis", "prompts", "packageChanges"] as const) nested(key);
     writeConfigAtomic(getConfigPath(), JSON.stringify(merged, null, 2) + "\n");
     saved = true;
   } catch (e) {
@@ -852,8 +956,10 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
   agentToolEnv?: boolean;
   agentToolHost?: AgentToolHost;
   agentToolEnabled?: boolean;
+  packageChanges: { card: boolean; lookup: boolean; lookupEnv?: false };
 } {
   const cfg = loadConfig();
+  const packageLookupEnv = parsePackageLookupEnv();
   const autoUpdateEnv = parseAutoUpdateEnv();
   const updateCheckEnv = parseUpdateCheckEnv();
   const agentToolEnv = parseAgentToolEnv();
@@ -889,6 +995,13 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
     updateCheck: coerceConfigBoolean(cfg.updateCheck, true),
     ...(updateCheckEnv !== undefined && { updateCheckEnv }),
     ...agentToolAdvert(cfg, agentToolEnv, agentToolHost),
+    // Always explicit: the lookup is server-enforced, so the page must never
+    // show it on from a stale value. lookupEnv carries the env hard off.
+    packageChanges: {
+      card: coerceConfigBoolean(cfg.packageChanges?.card, true),
+      lookup: resolvePackageLookup(cfg),
+      ...(packageLookupEnv === false && { lookupEnv: false as const }),
+    },
   };
 }
 
@@ -1301,6 +1414,22 @@ export function resolveInboxReminder(
   host: InboxToolHost,
 ): boolean {
   return resolveInboxTool(config, env, host) && (configuredInboxReminder(config, host) ?? true);
+}
+
+/**
+ * The Inbox reminder a `host` session starts with, once resolveInboxReminder
+ * said it gets one: the person's own text from config.json
+ * (`prompts.inbox.runtimes.<host>.reminder`, then `prompts.inbox.reminder`;
+ * `plannotator_inbox` in it renamed to `toolName`), else exactly today's line
+ * (`inboxReminderText(toolName, { wakes })`). Hosts call it once per session
+ * start, with the switch: the line sits in the cached prompt prefix.
+ */
+export function resolveInboxReminderText(
+  config: PlannotatorConfig,
+  host: InboxToolHost,
+  options: { wakes?: boolean; toolName?: string } = {},
+): string {
+  return inboxReminderFor(inboxReminderCustomText(config, host), options.toolName ?? INBOX_TOOL_NAME, { wakes: options.wakes });
 }
 
 /**
