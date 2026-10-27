@@ -445,9 +445,12 @@ const buildMessageAnnotationCounts = (
   return counts;
 };
 
-const draftBannerMessage = (banner: { count: number; timeAgo: string; hasEdits: boolean }): string => {
+const draftBannerMessage = (banner: { count: number; timeAgo: string; hasEdits: boolean; documents?: number }): string => {
+  const onDocuments = banner.documents
+    ? ` (including comments on ${banner.documents} linked document${banner.documents !== 1 ? 's' : ''})`
+    : '';
   const parts = [
-    banner.count > 0 ? `${banner.count} annotation${banner.count !== 1 ? 's' : ''}` : '',
+    banner.count > 0 ? `${banner.count} annotation${banner.count !== 1 ? 's' : ''}${onDocuments}` : '',
     banner.hasEdits ? 'unsent direct edits' : '',
   ].filter(Boolean);
   return `Found ${parts.join(' and ')} from ${banner.timeAgo}. Would you like to restore them?`;
@@ -2776,7 +2779,12 @@ const App: React.FC = () => {
   }, [editableDocuments, getEditedMarkdown]);
 
   // Every other document's comments, saved under that document's own path.
-  const { unbackedPaths: unbackedDraftDocuments, flushPendingWrite: flushDocumentDrafts } = useDocumentDrafts({
+  const {
+    unbackedPaths: unbackedDraftDocuments,
+    flushPendingWrite: flushDocumentDrafts,
+    adoptRestoredCopies: adoptRestoredDocumentCopies,
+    discardCopies: discardDocumentCopies,
+  } = useDocumentDrafts({
     enabled: documentDraftsEnabled && isApiMode && !isSharedSession && !goalSetupMode && !documentReadOnly,
     submitted: !!submitted || isSubmitting,
     activePath: linkedDocHook.filepath,
@@ -3071,7 +3079,7 @@ const App: React.FC = () => {
     };
   }, [resolveSavedFileChangeSource]);
 
-  const handleRestoreDraft = React.useCallback(async () => {
+  const restoreRootDraft = React.useCallback(async (draft: ReturnType<typeof restoreDraft>) => {
     annotationHistory.clear();
     const {
       annotations: restored,
@@ -3080,7 +3088,7 @@ const App: React.FC = () => {
       editedMarkdown,
       editedDocuments,
       savedFileChanges,
-    } = restoreDraft();
+    } = draft;
     if (restoredCode.length > 0) setCodeAnnotations(restoredCode);
     if (restoredGlobal.length > 0) setGlobalAttachments(restoredGlobal);
 
@@ -3202,7 +3210,48 @@ const App: React.FC = () => {
       }, 100);
     }
     scheduleDraftSave();
-  }, [annotationHistory, restoreDraft, validateDraftSavedFileChanges, editStats, isEditingMarkdown, editableDocuments, activeEditableDocument, markdown, applyEditedDocument, repaintHighlights, scheduleDraftSave]);
+  }, [annotationHistory, validateDraftSavedFileChanges, editStats, isEditingMarkdown, editableDocuments, activeEditableDocument, markdown, applyEditedDocument, repaintHighlights, scheduleDraftSave]);
+
+  // Other documents' comments the recovered draft carried (plan review, a URL,
+  // the last message: the server lists their copies, #1545). Each goes back
+  // on its own document, never on the root: into the linked-document store,
+  // so it counts, lists and exports at once and shows when the document is
+  // opened; or, for the document open right now, into the live state.
+  const restoreOtherDocuments = React.useCallback((documents: ReturnType<typeof restoreDraft>['documents']) => {
+    if (documents.length === 0) return;
+    const open = new Set(linkedDocHook.restoreStoredDocuments(documents));
+    for (const doc of documents) {
+      if (!open.has(doc.path)) continue;
+      setAnnotations((prev) => {
+        const held = new Set(prev.map((a) => a.id));
+        const added = doc.annotations.filter((a) => !held.has(a.id));
+        return added.length === 0 ? prev : [...prev, ...added];
+      });
+      setTimeout(() => {
+        viewerRef.current?.clearAllHighlights();
+        viewerRef.current?.applySharedAnnotations(annotationsRef.current.filter(annotationOwnsHighlight));
+      }, 100);
+      setGlobalAttachments((prev) => {
+        const held = new Set(prev.map((g) => g.path));
+        const added = doc.globalAttachments.filter((g) => !held.has(g.path));
+        return added.length === 0 ? prev : [...prev, ...added];
+      });
+    }
+    adoptRestoredDocumentCopies(documents);
+  }, [linkedDocHook.restoreStoredDocuments, adoptRestoredDocumentCopies]);
+
+  const handleRestoreDraft = React.useCallback(async () => {
+    const draft = restoreDraft();
+    await restoreRootDraft(draft);
+    restoreOtherDocuments(draft.documents);
+  }, [restoreDraft, restoreRootDraft, restoreOtherDocuments]);
+
+  // Dismissing a recovered draft discards every document's comments it
+  // offered, not only the root's.
+  const handleDismissDraft = React.useCallback(() => {
+    const offered = dismissDraft();
+    if (offered.length > 0) discardDocumentCopies(offered.map((doc) => doc.path));
+  }, [dismissDraft, discardDocumentCopies]);
 
   // The Viewer ↔ MarkdownEditor swap replaces the content of the scroll
   // container, and a real browser clamps that container to the top as the old
@@ -7543,7 +7592,7 @@ const App: React.FC = () => {
           >
             <ConfirmDialog
               isOpen={!!draftBanner}
-              onClose={dismissDraft}
+              onClose={handleDismissDraft}
               onConfirm={handleRestoreDraft}
               title="Draft Recovered"
               message={draftBanner ? draftBannerMessage(draftBanner) : ''}
@@ -8221,10 +8270,12 @@ const App: React.FC = () => {
             submitted === 'exited' && agentClosed
               ? closedReviewCopy(
                   agentClosed,
-                  // Path-keyed drafts (documentDrafts) follow a local file
-                  // through edits; URL and agent-message drafts do not.
+                  // Path-keyed drafts follow a local file through edits; URL,
+                  // agent-message and plan drafts do not (their linked
+                  // documents have copies too, but the root is keyed by text).
                   liveApp ? 'app'
-                    : documentDraftsEnabled ? (annotateSource === 'folder' ? 'folder' : 'file')
+                    : documentDraftsEnabled && annotateSource === 'folder' ? 'folder'
+                    : documentDraftsEnabled && annotateSource === 'file' && !/^https?:\/\//i.test(sourceFilePath ?? '') ? 'file'
                     : 'document',
                 ).subtitle
             : submitted === 'exited'

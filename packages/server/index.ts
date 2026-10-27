@@ -66,7 +66,8 @@ import { handleHostControl, resolveHostControlToken, type HostControl } from "./
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
-import { readPlanFile } from "@plannotator/shared/doc-resolve";
+import { getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
+import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "@plannotator/shared/annotate-draft";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 
 // Re-export utilities
@@ -223,7 +224,9 @@ export async function startPlannotatorServer(
     status: () => ({
       kind: "plan",
       documents: [],
-      unsentAnnotations: draftKey ? countUnsentDraftComments(loadDraft(draftKey)) : 0,
+      unsentAnnotations: draftKey
+        ? countUnsentDraftComments(loadDraft(draftKey)) + (planDocumentDrafts?.countUnsent(countUnsentDraftComments) ?? 0)
+        : 0,
       decided: decisionSettled || decisionClaimed,
     }),
   };
@@ -248,6 +251,18 @@ export async function startPlannotatorServer(
 
   // --- Plan review mode setup (skip in archive mode) ---
   const draftKey = mode !== "archive" ? contentHash(plan) : "";
+  // Comments on the documents the plan links are saved per document, under
+  // each file's path, and listed in an index beside the plan's draft, so a
+  // reload offers every document's comments on its own document (#1545,
+  // annotate-draft.ts). The plan's own draft is unchanged (/api/draft below).
+  // A document may be saved exactly when /api/doc serves it: inside the
+  // project, or a file the plan links beside its own plan file.
+  const planDocumentDrafts = mode !== "archive"
+    ? createDocumentDraftStore({
+        isAllowed: (path) => isPathAllowed(path, getAllowedRootPaths()) || isPlanLinkedDocPath(path, planFile),
+        indexKey: documentDraftIndexKey(draftKey),
+      })
+    : null;
   const editorAnnotations = mode !== "archive" ? createEditorAnnotationHandler() : null;
   const externalAnnotations = mode !== "archive" ? createExternalAnnotationHandler("plan") : null;
   // Set once bound: "Ask this session" answers only a loopback Host with this port.
@@ -473,7 +488,7 @@ export async function startPlannotatorServer(
                 ...getUpdateAdvert(origin, { exposed: isRemote }),
               });
             }
-            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
+            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(planDocumentDrafts ? { documentDrafts: true } : {}),...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
           }
 
           // API: The live plan revision (open reviews that receive revised plans)
@@ -638,7 +653,37 @@ export async function startPlannotatorServer(
           if (url.pathname === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
             if (req.method === "DELETE") return handleDraftDelete(draftKey, req);
-            return handleDraftLoad(draftKey);
+            // The plan's draft, plus every linked document's saved comments
+            // by path (`documents`) when the index lists any.
+            if (!planDocumentDrafts) return handleDraftLoad(draftKey);
+            const loaded = loadSessionDraftWithDocuments({ patchKey: draftKey }, planDocumentDrafts);
+            if (loaded.found) return Response.json(loaded.draft);
+            return Response.json(
+              { found: false, ...(loaded.draftGeneration !== null ? { draftGeneration: loaded.draftGeneration } : {}) },
+              { status: 404 },
+            );
+          }
+
+          // API: per-document draft copies of the plan's linked documents
+          // (annotate-draft.ts). GET one document's saved comments; POST the
+          // session's documents.
+          if (url.pathname === "/api/draft/document") {
+            if (!planDocumentDrafts) return Response.json({ error: "Not available" }, { status: 404 });
+            if (req.method === "GET") {
+              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
+              return Response.json(result.body, { status: result.status });
+            }
+            if (req.method === "POST") {
+              let body: unknown;
+              try {
+                body = await req.json();
+              } catch {
+                return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+              }
+              const result = planDocumentDrafts.saveDocuments(body);
+              return Response.json(result.body, { status: result.status });
+            }
+            return Response.json({ error: "Method not allowed" }, { status: 405 });
           }
 
           // API: Editor annotations (VS Code extension)
@@ -766,6 +811,7 @@ export async function startPlannotatorServer(
 
             // Clean up draft on successful submit
             deleteDraft(draftKey, draftGeneration);
+            planDocumentDrafts?.settle();
 
             // Use permission mode from client request if provided, otherwise fall back to hook input
             const effectivePermissionMode = requestedPermissionMode || permissionMode;
@@ -816,6 +862,7 @@ export async function startPlannotatorServer(
             archivePlanDecision("denied", feedback);
 
             deleteDraft(draftKey, draftGeneration);
+            planDocumentDrafts?.settle();
             decisionSettled = true;
             resolveDecision({ approved: false, feedback, savedPath, ...(answersOnly ? { answersOnly: true } : {}) });
             return Response.json({ ok: true, savedPath });

@@ -24,7 +24,7 @@ import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVault
 import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
-import { annotateDraftFilePath, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
+import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
 import { isPathAllowed } from "@plannotator/shared/doc-resolve";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
@@ -456,13 +456,18 @@ export async function startAnnotateServer(
   // Drafts are crash recovery, not history, so PLANNOTATOR_ANNOTATE_HISTORY
   // does not govern them (it never governed the content-keyed draft either).
   const draftFilePath = annotateDraftFilePath({ mode, filePath });
+  // A URL or the last message has no file of its own, but its linked
+  // documents do: they get per-document copies plus the index that lets a
+  // reload offer them all, as in plan review (#1545).
+  const rootlessDocuments = annotateSessionHasRootlessDocuments({ mode, filePath });
   const annotateDrafts = createAnnotateDraftSession({
     contentKey: draftKey,
     filePath: draftFilePath,
     documents:
-      draftFilePath !== null || (mode === "annotate-folder" && folderPath) || bundleFiles
+      draftFilePath !== null || (mode === "annotate-folder" && folderPath) || bundleFiles || rootlessDocuments
         ? {
             isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+            ...(rootlessDocuments ? { indexed: true } : {}),
           }
         : null,
   });

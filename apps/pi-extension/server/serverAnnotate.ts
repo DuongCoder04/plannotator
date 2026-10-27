@@ -18,7 +18,7 @@ import { startLiveAppProxyNode } from "../generated/live-proxy-node.ts";
 import type { LiveAppProxy } from "../generated/live-proxy-core.ts";
 
 import { contentHash } from "../generated/draft.ts";
-import { annotateDraftFilePath, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
+import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
 import { isPathAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
@@ -431,13 +431,20 @@ export async function startAnnotateServer(options: {
 		mode: options.mode || "annotate",
 		filePath: options.filePath,
 	});
+	// A URL or the last message has no file of its own, but its linked
+	// documents do: per-document copies plus the index (#1545), as on Bun.
+	const rootlessDocuments = annotateSessionHasRootlessDocuments({
+		mode: options.mode || "annotate",
+		filePath: options.filePath,
+	});
 	const annotateDrafts = createAnnotateDraftSession({
 		contentKey: draftKey,
 		filePath: draftFilePath,
 		documents:
-			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles
+			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles || rootlessDocuments
 				? {
 						isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+						...(rootlessDocuments ? { indexed: true } : {}),
 					}
 				: null,
 	});

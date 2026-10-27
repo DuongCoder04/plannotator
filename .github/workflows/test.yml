@@ -339,6 +339,7 @@ jobs:
           packages/ui/hooks/useAnnotationHighlighter.test.tsx
           packages/ui/hooks/annotationRestoreVerify.test.tsx
           packages/ui/hooks/useAnnotationDraft.seam.test.tsx
+          packages/ui/hooks/useAnnotationDraft.documents.test.tsx
           packages/ui/hooks/useExternalAnnotations.seam.test.tsx
           packages/ui/hooks/useAIChat.seam.test.tsx
           packages/ui/hooks/useAIChat.supersede.test.tsx
@@ -399,6 +400,7 @@ jobs:
           packages/editor/App.markdownUnanchored.test.tsx
           packages/editor/App.restoreAcrossEdit.test.tsx
           packages/editor/App.documentDrafts.test.tsx
+          packages/editor/App.planLinkedDrafts.test.tsx
           packages/editor/App.bundle.test.tsx
           packages/editor/App.bundleBackScroll.test.tsx
           packages/editor/annotationDraftStaleRetry.test.tsx
