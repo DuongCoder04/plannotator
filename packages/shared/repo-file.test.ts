@@ -18,7 +18,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MAX_REPO_FILE_BYTES, isContainedPath, readRepoFile, validateRepoFilePath } from "./repo-file";
+import {
+	MAX_REPO_FILE_BYTES,
+	isContainedPath,
+	readRepoFile,
+	resolveRepoWorkingTreeEntry,
+	validateRepoFilePath,
+} from "./repo-file";
 
 const posixOnly = process.platform === "win32" ? test.skip : test;
 
@@ -99,6 +105,11 @@ describe("readRepoFile containment", () => {
 		expect(validateRepoFilePath("src/foo..bar.ts")).toEqual({ ok: true, path: "src/foo..bar.ts" });
 	});
 
+	posixOnly("keeps a backslash inside a POSIX filename", () => {
+		// Diff expansion must still find a file literally named `a\b.txt`.
+		expect(validateRepoFilePath("src/a\\b.txt")).toEqual({ ok: true, path: "src/a\\b.txt" });
+	});
+
 	test("a sibling directory sharing the root's name prefix is not inside it", () => {
 		expect(isContainedPath("/repo-evil/x", "/repo")).toBe(false);
 		expect(isContainedPath("/repo/x", "/repo")).toBe(true);
@@ -168,5 +179,47 @@ describe("readRepoFile size cap", () => {
 		const result = readRepoFile(root, "src/alpha.ts", { maxBytes: 4 });
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.reason).toBe("too-large");
+	});
+});
+
+describe("resolveRepoWorkingTreeEntry (diff context expansion)", () => {
+	test("returns the checked path of a regular file inside the root", () => {
+		const entry = resolveRepoWorkingTreeEntry(root, "src/alpha.ts");
+		expect(entry).toMatchObject({ ok: true, kind: "file", absolutePath: join(root, "src", "alpha.ts") });
+	});
+
+	posixOnly("refuses a path through a symlinked directory that leaves the root", () => {
+		const entry = resolveRepoWorkingTreeEntry(root, "escape-dir/secret.txt");
+		expect(entry.ok).toBe(false);
+		if (!entry.ok) expect(entry.reason).toBe("outside-root");
+	});
+
+	posixOnly("reads a final symlink as its target string, the way git stores it", () => {
+		// Never followed, so the target's content is not read even when it is
+		// outside the root.
+		expect(resolveRepoWorkingTreeEntry(root, "hosts")).toEqual({
+			ok: true,
+			kind: "symlink",
+			filePath: "hosts",
+			linkTarget: "/etc/hosts",
+		});
+	});
+
+	posixOnly("refuses a FIFO", () => {
+		const fifo = join(root, "pipe-entry");
+		expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+		try {
+			const entry = resolveRepoWorkingTreeEntry(root, "pipe-entry");
+			expect(entry.ok).toBe(false);
+			if (!entry.ok) expect(entry.reason).toBe("not-a-file");
+		} finally {
+			rmSync(fifo, { force: true });
+		}
+	});
+
+	test("refuses a file over the cap", () => {
+		const entry = resolveRepoWorkingTreeEntry(root, "src/alpha.ts", { maxBytes: 4 });
+		expect(entry.ok).toBe(false);
+		if (!entry.ok) expect(entry.reason).toBe("too-large");
 	});
 });

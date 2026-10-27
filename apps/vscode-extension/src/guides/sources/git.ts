@@ -16,6 +16,7 @@ import {
   type ReviewGitRuntime,
 } from "@plannotator/shared/review-core";
 import { parseRemoteHost, parseRemoteUrl } from "@plannotator/shared/repo";
+import { resolveRepoWorkingTreeEntry } from "@plannotator/shared/repo-file";
 import { deriveGuideRepoKeyFallback, deriveGuideRepoKeyFromRemote } from "@plannotator/shared/guide-store";
 import type { Runner } from "./runner";
 
@@ -78,6 +79,9 @@ export function gitRuntime(runner: Runner): ReviewGitRuntime {
       } catch {
         return null;
       }
+    },
+    async checkWorkingTreeEntry(root, path) {
+      return resolveRepoWorkingTreeEntry(root, path);
     },
   };
 }

@@ -16,6 +16,7 @@ import {
 	prepareGitCommand,
 	runGitDiff as runGitDiffCore,
 } from "../generated/review-core.ts";
+import { resolveRepoWorkingTreeEntry } from "../generated/repo-file.ts";
 import {
 	JJ_COLOR_FREE_ARGS,
 	type ReviewJjRuntime,
@@ -211,6 +212,10 @@ export const reviewRuntime: ReviewGitRuntime = {
 	): Promise<GitCommandResult> {
 		const command = prepareGitCommand(args, options, process.env);
 		return runCommand("git", command.args, "git not found", options, command);
+	},
+
+	async checkWorkingTreeEntry(root, path) {
+		return resolveRepoWorkingTreeEntry(root, path);
 	},
 
 	runGitBytes(

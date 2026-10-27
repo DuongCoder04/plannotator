@@ -22,11 +22,13 @@ import {
 	closeSync,
 	constants as fsConstants,
 	fstatSync,
+	lstatSync,
 	openSync,
+	readlinkSync,
 	readSync,
 	realpathSync,
 } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { MAX_REVIEW_FILE_CONTENT_BYTES } from "./review-core";
 
 /**
@@ -108,11 +110,12 @@ export function validateRepoFilePath(
 	if (isAbsolute(rawPath) || normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized)) {
 		return fail("invalid-path", "Path must be relative to the repository");
 	}
-	const segments = normalized.split("/");
-	if (segments.some((segment) => segment === "..")) {
+	if (normalized.split("/").some((segment) => segment === "..")) {
 		return fail("invalid-path", "Invalid path");
 	}
-	const cleaned = segments.filter((segment) => segment.length > 0 && segment !== ".");
+	// Split the returned path on "/" only: on POSIX a backslash is a legal
+	// filename character, so `a\b.txt` must stay one name.
+	const cleaned = rawPath.split("/").filter((segment) => segment.length > 0 && segment !== ".");
 	if (cleaned.length === 0) return fail("invalid-path", "Invalid path");
 	return { ok: true, path: cleaned.join("/") };
 }
@@ -234,4 +237,68 @@ export function readRepoFile(
 	} finally {
 		closeSync(fd);
 	}
+}
+
+export type RepoWorkingTreeEntry =
+	| { ok: true; kind: "symlink"; filePath: string; linkTarget: string }
+	| { ok: true; kind: "file"; filePath: string; absolutePath: string; size: number };
+
+/**
+ * Check one working-tree path for diff context expansion, with git's view of
+ * a symlink: a link's content is its target string, read without following
+ * it. Every directory on the way must resolve inside the root, so a path
+ * through a symlinked directory that points out is refused. Otherwise the
+ * entry must be a regular file no larger than `maxBytes` (default
+ * {@link MAX_REPO_FILE_BYTES}); FIFOs and devices are refused.
+ *
+ * Returns the checked absolute path rather than the content, so each caller
+ * keeps reading through its own runtime (Bun and Node decode a BOM
+ * differently, and diff expansion output must not change).
+ */
+export function resolveRepoWorkingTreeEntry(
+	root: string,
+	rawPath: unknown,
+	options: { maxBytes?: number } = {},
+): RepoWorkingTreeEntry | RepoFileFailure {
+	const maxBytes = options.maxBytes ?? MAX_REPO_FILE_BYTES;
+	const validated = validateRepoFilePath(rawPath);
+	if (!validated.ok) return validated;
+
+	const realRoot = realpathOrNull(root);
+	if (realRoot === null) return fail("not-found", "Repository root is unavailable");
+
+	const candidate = resolve(realRoot, validated.path);
+	const realParent = realpathOrNull(dirname(candidate));
+	if (realParent === null) return fail("not-found", "File not found");
+	if (!isContainedPath(realParent, realRoot)) {
+		return fail("outside-root", "Path is outside the repository");
+	}
+
+	// The parent is real and inside the root, so the leaf is too unless it is
+	// itself a symlink, which is read as its target string, never followed.
+	const leaf = join(realParent, basename(candidate));
+	let stats: ReturnType<typeof lstatSync>;
+	try {
+		stats = lstatSync(leaf);
+	} catch {
+		return fail("not-found", "File not found");
+	}
+	if (stats.isSymbolicLink()) {
+		try {
+			return { ok: true, kind: "symlink", filePath: validated.path, linkTarget: readlinkSync(leaf) };
+		} catch {
+			return fail("not-found", "File could not be read");
+		}
+	}
+	if (!stats.isFile()) return fail("not-a-file", "Path is not a regular file");
+	if (stats.size > maxBytes) {
+		return {
+			ok: false,
+			reason: "too-large",
+			message: `File is too large to open (${stats.size} bytes; the limit is ${maxBytes} bytes)`,
+			size: stats.size,
+			maxBytes,
+		};
+	}
+	return { ok: true, kind: "file", filePath: validated.path, absolutePath: leaf, size: stats.size };
 }
