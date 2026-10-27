@@ -110,6 +110,7 @@
  */
 
 import { sliceText } from "./text-cut";
+import { stripInlineMarkup } from "./inline-markdown";
 import {
   DIRECTIVE_OPEN_RE,
   codeFenceCloseIndex,
@@ -505,14 +506,7 @@ export const recommendationHeadChoice = (
 /** Inline markdown's plain words, normalized: link and wiki-link labels kept,
  *  images and HTML tags out (normalizeQuestionText drops emphasis and code
  *  marks). */
-const plainWords = (value: string): string =>
-  normalizeQuestionText(
-    value
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_m, target: string, label?: string) => label ?? target)
-      .replace(/<\/?[A-Za-z][^>]*>/g, ''),
-  );
+const plainWords = (value: string): string => normalizeQuestionText(stripInlineMarkup(value));
 
 /** The one choice (index) one of whose texts has the same plain words as one
  *  of the candidates, or -1 when none or several do. */
@@ -556,7 +550,8 @@ const matchRecommendation = (
   // No exact match: the plain words of a label written as markdown
   // (`[Pagefind](x.html)` is named by `Pagefind`), only when exactly one
   // choice has them.
-  const plainHit = plainWordsChoice([text, splitLabel(text).label], choices.map((c, i) => [c.label, raws[i], ...(names[i] ?? [])]));
+  const choiceTexts = choices.map((c, i) => [c.label, raws[i], ...(names[i] ?? [])]);
+  const plainHit = plainWordsChoice([text, splitLabel(text).label], choiceTexts);
   if (plainHit !== -1) return [plainHit];
   // Plain bullets only (task lists match exactly as they always have):
   // `b. Default off; …` names the one choice whose label starts `b.` / `b)`,
@@ -580,6 +575,9 @@ const matchRecommendation = (
   const fallbackHit = (candidate: string): number => {
     const lettered = letteredHit(candidate);
     if (lettered !== -1) return lettered;
+    // A part of a pick-any line (`Pagefind and Algolia`) names a markdown label by its plain words too.
+    const plain = plainWordsChoice([candidate, splitLabel(candidate).label], choiceTexts);
+    if (plain !== -1) return plain;
     const hit = headHit(candidate);
     return hit !== -1 ? hit : headHit(splitLabel(candidate).label);
   };
