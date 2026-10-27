@@ -157,19 +157,24 @@ const DECISION_OFF_STYLE: React.CSSProperties = {
  * the card sits in columns of every width), and the footer row wraps whole
  * buttons:
  * - No button's words ever wrap inside it (`whitespace-nowrap`): the row
- *   wraps between buttons instead, so Add note and Skip stay together.
- * - Under 18rem inside the card (a card under about 320 px: a 560 px
- *   column at 200% zoom, a small phone) Accept recommended takes a row of
- *   its own, full width; under 10rem, where even that row may be too
- *   short, its words end in an ellipsis rather than leave the card (its
- *   name stays "Accept recommended"). The words stay one text node: a split
- *   one moved the glyphs of a wide card by a fraction of a pixel.
- * - On a touch screen each button is at least a 44 px target.
- * A footer wide enough for one row draws exactly as before: none of these
- * change a button that fits.
+ *   wraps between buttons instead, and only when they do not fit on one
+ *   row, so Add note and Skip stay together and Accept recommended moves
+ *   down whole, still at the row's end (`ml-auto`).
+ * - Under 10rem inside the card (a card under about 190 px), where a button
+ *   may be wider than the card, Accept recommended and the save bar take a
+ *   row of their own and their words end in an ellipsis rather than leave
+ *   the card (`FOOT_FIT`; the name stays whole). The words stay one text
+ *   node: a split one moved the glyphs of a wide card by a fraction of a
+ *   pixel.
+ * - On a touch screen each button's hit area is at least 44 x 44 px: an
+ *   invisible `before:` box centred on it, as the header's decision tag
+ *   does, so the drawn button does not change. (An ellipsised button clips
+ *   that box to itself.)
+ * A footer that fits on one row draws exactly as before, on any pointer.
  */
-const FOOT_BUTTON = 'whitespace-nowrap pointer-coarse:min-h-11 pointer-coarse:min-w-11';
-const FOOT_PRIMARY = '@max-[18rem]/qcard:basis-full @max-[10rem]/qcard:overflow-hidden @max-[10rem]/qcard:text-ellipsis';
+const FOOT_BUTTON = "whitespace-nowrap pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:left-1/2 pointer-coarse:before:top-1/2 pointer-coarse:before:h-11 pointer-coarse:before:w-full pointer-coarse:before:min-w-11 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']";
+const FOOT_FIT = '@max-[10rem]/qcard:max-w-full @max-[10rem]/qcard:overflow-hidden @max-[10rem]/qcard:text-ellipsis';
+const FOOT_OWN_ROW = '@max-[10rem]/qcard:basis-full';
 
 /** Two answers say the same thing (identity and line ignored). */
 const sameAnswer = (a: QuestionAnswer | null | undefined, b: QuestionAnswer | null | undefined): boolean => {
@@ -1046,18 +1051,18 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               <button
                 type="button"
                 onClick={acceptRecommended}
-                className={cx(FOOT_BUTTON, FOOT_PRIMARY, 'ml-auto rtl:ml-0 rtl:mr-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
+                className={cx(FOOT_BUTTON, FOOT_FIT, FOOT_OWN_ROW, 'ml-auto rtl:ml-0 rtl:mr-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
               >
                 Accept recommended
               </button>
             )
           ) : (
-            <div className="ml-auto rtl:ml-0 rtl:mr-auto flex flex-wrap items-center justify-end gap-1 @max-[18rem]/qcard:basis-full">
+            <div className={cx(FOOT_OWN_ROW, 'ml-auto rtl:ml-0 rtl:mr-auto flex min-w-0 flex-wrap items-center justify-end gap-1')}>
               {offerAccept && (
                 <button
                   type="button"
                   onClick={acceptRecommended}
-                  className={cx(FOOT_BUTTON, 'rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
+                  className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
                 >
                   Accept recommended
                 </button>
@@ -1069,7 +1074,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     type="button"
                     onClick={cancel}
                     disabled={saving}
-                    className={cx(FOOT_BUTTON, 'rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60')}
+                    className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60')}
                   >
                     Cancel
                   </button>
@@ -1078,7 +1083,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     onClick={save}
                     disabled={saving}
                     aria-busy={saving || undefined}
-                    className={cx(FOOT_BUTTON, 'rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60')}
+                    className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60')}
                   >
                     {(typeof saveLabel === 'function' ? saveLabel(question) : saveLabel) || 'Save answer'}
                   </button>

@@ -7,10 +7,11 @@
  * The owner's report: in a narrow column the footer's words broke inside
  * their buttons ("Add / note", "Accept / recommended") and the Accept pill
  * became a tall blob. Now no footer button's words ever wrap inside it: the
- * footer reflows as whole buttons (Add note and Skip stay together, Accept
- * recommended takes its own row, and ends in an ellipsis when even that row
- * is too short, its name unchanged). A card wide enough for one row looks
- * exactly as it did.
+ * footer reflows as whole buttons, and only when they do not fit on one row
+ * (Add note and Skip stay together, Accept recommended moves down whole, and
+ * ends in an ellipsis only when even its own row is too short, its name
+ * unchanged). A footer that fits on one row looks exactly as it did, on a
+ * desktop and on a phone, whose touch targets grow invisibly.
  *
  * Every CLI runs under a temp PLANNOTATOR_DATA_DIR and HOME, opens no browser,
  * and is closed by this test. Build the binary first (see inbox.spec.ts).
@@ -80,11 +81,13 @@ const CARD = 'fieldset[data-question-key]';
 /**
  * What is wrong with the question cards' footers under `scope`: a button
  * whose words take more than one line or overflow it, a button outside its
- * card, a button under `minTarget` px tall, or buttons drawn out of their
- * focus (DOM) order. `oneRow`: every button must also share one row.
+ * card, a hit area under `minTarget` px on a side, buttons drawn out of
+ * their focus (DOM) order (`order`, default true), or a footer split over
+ * rows although its parts fit on one. `oneRow`: every button must share
+ * one row, whatever it measures.
  */
-async function footerProblems(page: Page, options: { scope?: string; minTarget?: number; oneRow?: boolean } = {}): Promise<string[]> {
-  return page.evaluate(({ scope, card, minTarget, oneRow }) => {
+async function footerProblems(page: Page, options: { scope?: string; minTarget?: number; oneRow?: boolean; order?: boolean } = {}): Promise<string[]> {
+  return page.evaluate(({ scope, card, minTarget, oneRow, order }) => {
     const out: string[] = [];
     /** The lines an element's visible words sit on: its text nodes' boxes (an icon is not a line). */
     const textLines = (el: Element): Set<number> => {
@@ -117,27 +120,54 @@ async function footerProblems(page: Page, options: { scope?: string; minTarget?:
         }
         const lines = textLines(button);
         if (lines.size > 1) out.push(`${name} wraps onto ${lines.size} lines`);
-        // Words cut short with an ellipsis (the last resort in a very narrow card) are not words spilling out.
-        if (button.scrollWidth > button.clientWidth + 1 && getComputedStyle(button).textOverflow !== 'ellipsis') out.push(`${name} overflows its button`);
         const box = button.getBoundingClientRect();
+        // The words inside the button (an invisible ::before hit box may reach past it; words cut short with an
+        // ellipsis, the last resort in a very narrow card, are not words spilling out).
+        if (getComputedStyle(button).textOverflow !== 'ellipsis') {
+          const range = document.createRange();
+          range.selectNodeContents(button);
+          const words = [...range.getClientRects()].filter((r) => r.width > 1 && r.height > 1);
+          if (words.some((r) => r.left < box.left - 1 || r.right > box.right + 1)) out.push(`${name} overflows its button`);
+        }
         if (box.right > cardBox.right + 1 || box.left < cardBox.left - 1) out.push(`${name} sits outside the card`);
-        if (minTarget && box.height < minTarget - 0.5) out.push(`${name} is ${Math.round(box.height)} px tall, under ${minTarget}`);
+        if (minTarget) {
+          // The hit area: the button, or the invisible box its ::before draws around it, whichever is larger.
+          const before = getComputedStyle(button, '::before');
+          const hit = before.content !== 'none' && before.position === 'absolute'
+            ? { w: Math.max(box.width, parseFloat(before.width) || 0), h: Math.max(box.height, parseFloat(before.height) || 0) }
+            : { w: box.width, h: box.height };
+          if (hit.h < minTarget - 0.5 || hit.w < minTarget - 0.5) out.push(`${name}: a ${Math.round(hit.w)} × ${Math.round(hit.h)} px target, under ${minTarget}`);
+        }
         boxes.push(box);
       }
       // Reading order: row by row, then along the line (right to left under dir="rtl").
-      for (let i = 1; i < boxes.length; i++) {
+      for (let i = 1; order && i < boxes.length; i++) {
         const a = boxes[i - 1]!;
         const b = boxes[i]!;
         const sameRow = b.top < a.bottom - 2 && b.bottom > a.top + 2;
         const inOrder = sameRow ? (rtl ? b.right <= a.left + 1 : b.left >= a.right - 1) : b.top >= a.bottom - 2;
         if (!inOrder) out.push(`card ${n + 1}: button ${i + 1} is drawn before button ${i}`);
       }
-      // One row: every button's middle within the first button's height.
-      const first = boxes[0];
-      if (oneRow && first && boxes.some((b) => Math.abs(b.top + b.height / 2 - (first.top + first.height / 2)) > first.height / 2)) out.push(`card ${n + 1}: the footer takes more than one row`);
+      // One row: every part's middle within the first part's height. Required when asked, and whenever the
+      // footer's parts (its flex items, through any display: contents box) fit side by side.
+      const parts: HTMLElement[] = [];
+      const collect = (el: HTMLElement) => {
+        for (const child of el.children as HTMLCollectionOf<HTMLElement>) {
+          if (getComputedStyle(child).display === 'contents') collect(child);
+          else if (child.getClientRects().length) parts.push(child);
+        }
+      };
+      collect(foot);
+      const rects = parts.map((p) => p.getBoundingClientRect());
+      const fs = getComputedStyle(foot);
+      const room = foot.clientWidth - parseFloat(fs.paddingLeft) - parseFloat(fs.paddingRight);
+      const need = rects.reduce((sum, r) => sum + r.width, 0) + (parseFloat(fs.columnGap) || 0) * Math.max(0, rects.length - 1);
+      const first = rects[0];
+      const split = !!first && rects.some((b) => Math.abs(b.top + b.height / 2 - (first.top + first.height / 2)) > first.height / 2);
+      if (split && (oneRow || need <= room - 0.5)) out.push(`card ${n + 1}: the footer takes more than one row (its parts need ${Math.round(need)} of ${Math.round(room)} px)`);
     });
     return out;
-  }, { scope: options.scope ?? null, card: CARD, minTarget: options.minTarget ?? 0, oneRow: options.oneRow ?? false });
+  }, { scope: options.scope ?? null, card: CARD, minTarget: options.minTarget ?? 0, oneRow: options.oneRow ?? false, order: options.order ?? true });
 }
 
 /** The Recommended tag in a choice row: one line, inside its row, never alone on a line its label left room on. */
@@ -288,9 +318,10 @@ test('annotate: at every column width the footer buttons keep their words on one
   try {
     const { context, page } = await openReview(browser, session);
     // The owner's column (560 px), narrower ones, and 200% zoom of 560 and 720 (280 and 360 CSS px).
-    for (const width of [200, 240, 280, 320, 360, 400, 480, 560, 720]) {
+    // One row from 300 px up: the footer's parts need about 297 px of card, and fit on one row on main.
+    for (const width of [200, 240, 280, 300, 320, 360, 400, 480, 560, 720]) {
       await cardWidth(page, width);
-      check(await footerProblems(page, { oneRow: width >= 480 }), `cards ${width} px wide`).toEqual([]);
+      check(await footerProblems(page, { oneRow: width >= 300 }), `cards ${width} px wide`).toEqual([]);
       check(await tagProblems(page), `cards ${width} px wide`).toEqual([]);
     }
     // Each way the footer changes, narrow and wide: a note opened (Hide note), a skip (Unskip), a pick, Accept, Other typed.
@@ -359,7 +390,7 @@ test('annotate: at every column width the footer buttons keep their words on one
   }
 });
 
-test('plan review: wide, narrow windows, 200% zoom and a phone; on a phone each footer button is a 44 px target', async ({ browser }) => {
+test('plan review: wide, narrow windows, 200% zoom and phones; a footer that fits keeps one row; on a phone each footer button has a 44 px target', async ({ browser }) => {
   const session = await startReview('plan');
   try {
     for (const value of SCHEMES) {
@@ -367,7 +398,7 @@ test('plan review: wide, narrow windows, 200% zoom and a phone; on a phone each 
       await scheme(page, session.url, value);
       await page.reload();
       await expect(page.locator(CARD)).toHaveCount(4);
-      for (const width of [1440, 1024, 768]) {
+      for (const width of [1440, 1024, 768, 360]) {
         await page.setViewportSize({ width, height: 900 });
         await page.waitForTimeout(200);
         check(await footerProblems(page), `plan review at ${width} px`).toEqual([]);
@@ -384,16 +415,21 @@ test('plan review: wide, narrow windows, 200% zoom and a phone; on a phone each 
       await zoomed.page.locator(CARD).first().scrollIntoViewIfNeeded();
       await shot(zoomed.page, `plan-zoom200-${value}`, `${CARD} >> nth=0`);
       await zoomed.context.close();
-      const phone = await openReview(browser, session, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: value });
-      await scheme(phone.page, session.url, value);
-      await phone.page.reload();
-      await expect(phone.page.locator(CARD)).toHaveCount(4);
-      check(await footerProblems(phone.page, { minTarget: 44 }), 'plan review on a phone').toEqual([]);
-      check(await tagProblems(phone.page), 'plan review on a phone').toEqual([]);
-      await phone.page.locator(CARD).first().scrollIntoViewIfNeeded();
-      await shot(phone.page, `plan-phone-390-${value}`, `${CARD} >> nth=0`);
-      await shot(phone.page, `plan-phone-390-long-${value}`, `${CARD} >> nth=1`);
-      await phone.context.close();
+      // Phones: a 360 px Android, a 375 px iPhone (SE, mini) and a 390 px iPhone. Each card's footer fits on
+      // one row there and keeps it (the footer's parts need about 297 px of card); the touch targets grow
+      // invisibly, so the drawn footer is main's.
+      for (const width of [360, 375, 390]) {
+        const phone = await openReview(browser, session, { viewport: { width, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: value });
+        await scheme(phone.page, session.url, value);
+        await phone.page.reload();
+        await expect(phone.page.locator(CARD)).toHaveCount(4);
+        check(await footerProblems(phone.page, { minTarget: 44, oneRow: true }), `plan review on a ${width} px phone`).toEqual([]);
+        check(await tagProblems(phone.page), `plan review on a ${width} px phone`).toEqual([]);
+        await phone.page.locator(CARD).first().scrollIntoViewIfNeeded();
+        await shot(phone.page, `plan-phone-${width}-${value}`, `${CARD} >> nth=0`);
+        await shot(phone.page, `plan-phone-${width}-long-${value}`, `${CARD} >> nth=1`);
+        await phone.context.close();
+      }
     }
   } finally {
     await session.close();
@@ -435,6 +471,16 @@ test('the Inbox: a thread full width, beside a file, on a phone, and the Decide 
       check(await footerProblems(page, { scope: pane }), 'Inbox thread, full width').toEqual([]);
       await page.locator(`${pane} ${CARD}`).first().scrollIntoViewIfNeeded();
       await shot(page, `inbox-full-${value}`, `${pane} ${CARD} >> nth=0`);
+      // The thread's cards in narrow columns. At 300 px the footer fits and keeps one row. At 280 px it does not:
+      // the Inbox's own footer wraps in reverse (#2206), so Accept recommended goes above Add note and Skip there,
+      // as on main; the reading-order check is off for that.
+      for (const width of [300, 280]) {
+        await cardWidth(page, width, pane);
+        check(await footerProblems(page, { scope: pane, oneRow: width >= 300, order: false }), `Inbox thread, cards ${width} px wide`).toEqual([]);
+        await page.locator(`${pane} ${CARD}`).first().scrollIntoViewIfNeeded();
+        await shot(page, `inbox-card-${width}-${value}`, `${pane} ${CARD} >> nth=0`);
+      }
+      await cardWidth(page, null, pane);
       if (fileId) {
         for (const width of [1440, 1100]) {
           await page.setViewportSize({ width, height: 900 });

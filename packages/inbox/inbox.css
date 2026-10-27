@@ -4401,7 +4401,7 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-headacts { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .pn-inbox .ib-dm-x { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--muted-foreground); }
 .pn-inbox .ib-dm-x:hover { background: var(--muted); color: var(--foreground); }
-.pn-inbox .ib-dm-lnk { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; min-height: 30px; padding: 0 10px; border-radius: 8px; color: var(--foreground); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 500; }
+.pn-inbox .ib-dm-lnk { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border-radius: 8px; color: var(--foreground); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 500; }
 .pn-inbox .ib-dm-lnk:hover:not(:disabled) { background: var(--muted); }
 .pn-inbox .ib-dm-lnk:disabled { opacity: 0.45; }
 .pn-inbox .ib-dm-lnk[aria-pressed="true"], .pn-inbox .ib-dm-lnk[aria-expanded="true"] { background: color-mix(in oklab, var(--primary) 12%, transparent); color: var(--primary); }
