@@ -1,5 +1,5 @@
 /**
- * Hover cards for issue, PR and MR links in plan review and code review,
+ * Hover cards for issue, PR and MR links in plan review, annotate and code review,
  * proved in a real Chromium against the compiled binary. Each session runs in
  * a scratch git repository whose `origin` is github.com/acme/widgets, under a
  * temp PLANNOTATOR_DATA_DIR and HOME, with a scripted `gh` and `glab` first on
@@ -8,8 +8,9 @@
  * Proves, in plan review: the plan's bare `#12` links into the repo and shows
  * its card after the pointer rests on it, read through `gh` once; nothing is
  * asked before a hover; a ref the forge does not know shows no card at all and
- * stays the plain link it was. In code review: a pasted PR link in a changed
- * Markdown file's Read view shows its card.
+ * stays the plain link it was. In annotate: the same `#12` in a Markdown file
+ * shows its card. In code review: a pasted PR link in a changed Markdown
+ * file's Read view shows its card.
  *
  * Screenshots (light and dark) go to PLANNOTATOR_REF_CARD_REVIEW_SHOTS when it
  * is set. Build the binary first (see inbox.spec.ts), then
@@ -121,8 +122,8 @@ interface Session {
   close: () => Promise<void>;
 }
 
-/** Plan review (`plannotator` reading a PermissionRequest on stdin) or `plannotator review`, in a repo whose origin is GitHub. */
-async function start(kind: 'plan' | 'review'): Promise<Session> {
+/** Plan review (`plannotator` reading a PermissionRequest on stdin), `plannotator annotate plan.md` or `plannotator review`, in a repo whose origin is GitHub. */
+async function start(kind: 'plan' | 'annotate' | 'review'): Promise<Session> {
   expect(existsSync(binary), `build the binary first: ${binary}`).toBe(true);
   const root = inboxScratch('plannotator-ref-cards-review-e2e-');
   const dataDir = join(root, 'data');
@@ -139,6 +140,7 @@ async function start(kind: 'plan' | 'review'): Promise<Session> {
   git(cwd, 'add', '-A');
   git(cwd, 'commit', '-qm', 'init');
   if (kind === 'review') writeFileSync(join(cwd, 'doc.md'), DOC_AFTER);
+  if (kind === 'annotate') writeFileSync(join(cwd, 'plan.md'), PLAN);
   const readyFile = join(root, 'ready.jsonl');
   const env = {
     PATH: `${forge.dir}:${process.env.PATH ?? ''}`,
@@ -157,6 +159,8 @@ async function start(kind: 'plan' | 'review'): Promise<Session> {
   let child: ChildProcess;
   if (kind === 'review') {
     child = spawn(binary, ['review'], { env, cwd, stdio: 'ignore' });
+  } else if (kind === 'annotate') {
+    child = spawn(binary, ['annotate', 'plan.md'], { env, cwd, stdio: 'ignore' });
   } else {
     child = spawn(binary, [], { env, cwd, stdio: ['pipe', 'ignore', 'ignore'] });
     child.stdin!.end(
@@ -269,6 +273,27 @@ test('plan review: a #12 in the plan shows its card; an unknown ref shows none',
         await expect(card).toHaveCount(0);
         await expect(unknown).toHaveAttribute('target', '_blank');
       }
+      await page.context().close();
+    } finally {
+      await session.close();
+    }
+  }
+});
+
+test('annotate: a #12 in the Markdown file shows its card', async () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    const session = await start('annotate');
+    try {
+      const page = await open(browser, session.url, scheme);
+      const issue = page.locator('a[href="https://github.com/acme/widgets/issues/12"]').first();
+      await expect(issue).toBeVisible();
+      await page.waitForTimeout(600);
+      expect(session.forge.calls()).toEqual([]);
+      await issue.hover();
+      const card = page.locator('[data-ref-card]');
+      await expect(card).toContainText('Widgets wobble on Tuesdays');
+      expect(session.forge.calls()).toEqual(['gh number=12']);
+      await shot(page, `annotate-issue-${scheme}`);
       await page.context().close();
     } finally {
       await session.close();
