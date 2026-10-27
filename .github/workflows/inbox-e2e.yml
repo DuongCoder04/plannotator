@@ -158,11 +158,6 @@ jobs:
           bun build apps/hook/server/index.ts --compile --no-compile-autoload-bunfig
           --define '__CLI_VERSION__="0.0.0-dev"' --outfile .local/plannotator
 
-      # DIAG (temporary): the shared-events file alone, repeated, before the full proof.
-      - name: DIAG shared events repeated
-        continue-on-error: true
-        run: bunx playwright test -c tests/e2e/playwright.config.ts inbox-shared-events.spec.ts --project chromium --repeat-each 8
-
       - name: Run the Inbox window proof
         run: bun run test:e2e:inbox
 
