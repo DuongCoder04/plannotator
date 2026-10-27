@@ -177,6 +177,18 @@ const sha256 = (text: string) => createHash("sha256").update(text.replace(/\r\n/
 const EARLIER_BLOCK_HASHES = new Set(INBOX_NOTE_EARLIER_BLOCKS.map(sha256));
 const isPlannotatorBlock = (hash: string) => hash === sha256(INBOX_NOTE_BLOCK) || EARLIER_BLOCK_HASHES.has(hash);
 
+/**
+ * Whether a block (by hash) is the one a record owns: the block the record
+ * names, or, when the record names this version, any earlier block exactly as
+ * Plannotator wrote it. The second is a record ahead of its note: refreshInboxNotes
+ * writes the record before the note, so a crash between the two (or a failed
+ * put-back) leaves it. Only Plannotator puts a record ahead of its note, and
+ * only over a block it wrote, so this never takes the person's own text; it
+ * lets the next start refresh the note, and add, status and uninstall read it
+ * as Plannotator's.
+ */
+const ownedBy = (recorded: string, hash: string) => recorded === hash || (recorded === sha256(INBOX_NOTE_BLOCK) && EARLIER_BLOCK_HASHES.has(hash));
+
 /** Where a path leads, as far as it exists (a symlinked folder on its way included). */
 function resolved(path: string): string {
   try {
@@ -362,7 +374,7 @@ export function noteStatus(agent: InboxNoteAgentId, dataDir: string, e: AgentEnv
     const shownThere = displayPath(record.path, e);
     return {
       ...base,
-      state: sha256(block.block) === record.block_sha256 ? "added" : "edited",
+      state: ownedBy(record.block_sha256, sha256(block.block)) ? "added" : "edited",
       reason: `The note is in ${shownThere}, which ${INBOX_AGENT_LABELS[agent]} no longer reads first; turning it off removes it there.`,
     };
   };
@@ -375,7 +387,7 @@ export function noteStatus(agent: InboxNoteAgentId, dataDir: string, e: AgentEnv
   if (found.kind === "damaged") return { ...base, state: "damaged", reason: "the Plannotator section's markers are broken; fix or delete it by hand" };
   const hash = sha256(found.block);
   const owner = record ?? shared.map((id) => readInboxAgentNotes(dataDir).notes[id]).find(Boolean);
-  const untouched = owner ? owner.block_sha256 === hash : isPlannotatorBlock(hash);
+  const untouched = owner ? ownedBy(owner.block_sha256, hash) : isPlannotatorBlock(hash);
   // A block another agent's record owns in this shared file is on for this agent only once it has its own record.
   if (!record && shared.length > 0) return { ...base, state: "absent" };
   return { ...base, state: untouched ? "added" : "edited" };
@@ -420,7 +432,7 @@ export function addInboxNote(agent: InboxNoteAgentId, dataDir: string, e: AgentE
     if (hash === sha256(INBOX_NOTE_BLOCK)) {
       next = original;
       action = notes[agent] || !owner ? "unchanged" : "shared";
-    } else if (owner ? owner.block_sha256 === hash : EARLIER_BLOCK_HASHES.has(hash)) {
+    } else if (owner ? ownedBy(owner.block_sha256, hash) : EARLIER_BLOCK_HASHES.has(hash)) {
       // An older note Plannotator wrote (its record, or with the record lost, a block exactly as an earlier version wrote it).
       next = original.slice(0, found.start) + blockIn(nl) + original.slice(found.end);
       action = "updated";
@@ -511,8 +523,8 @@ export interface RefreshInboxNotesOptions {
  *  - a file several agents' records name (Pi's AGENTS.md a link to Codex's)
  *    is written once, and every record naming it follows;
  *  - the records are written before the file and put back if the file's
- *    write fails, so the two never disagree for long: a record left behind
- *    would read Plannotator's own block as the person's edit.
+ *    write fails; a record left ahead of its note (a crash between the two)
+ *    still owns the earlier block (ownedBy), so the next start repairs it.
  * Never throws for one file: the rest still run. Off with PLANNOTATOR_INBOX_NOTES=0.
  */
 export function refreshInboxNotes(dataDir: string, e: AgentEnvironment, options: RefreshInboxNotesOptions = {}): NoteRefresh[] {
@@ -553,8 +565,10 @@ export function refreshInboxNotes(dataDir: string, e: AgentEnvironment, options:
       }
       return () => {
         file.notes = saved;
-        // Best effort: when this write fails too, the record names this version over the earlier block,
-        // which then reads as edited until the note is added again.
+        // Best effort: when this write fails too (or the process dies before the note's rename), the
+        // record names this version over the earlier block. ownedBy reads that as Plannotator's own, so
+        // the next start refreshes the note and the two agree again; add, status and uninstall meanwhile
+        // treat it as the note Plannotator wrote.
         writeInboxAgentNotes(dataDir, file);
       };
     };
@@ -588,7 +602,7 @@ function refreshNoteFile(path: string, recorded: ReadonlySet<string>, options: R
   if (found.kind === "damaged") return "damaged";
   const hash = sha256(found.block);
   if (hash === sha256(INBOX_NOTE_BLOCK)) return "current";
-  if (!EARLIER_BLOCK_HASHES.has(hash) || !recorded.has(hash)) return "edited";
+  if (!EARLIER_BLOCK_HASHES.has(hash) || ![...recorded].some((r) => ownedBy(r, hash))) return "edited";
   if ((read.mode & 0o200) === 0) return "read-only";
   if (statSync(read.target).nlink > 1) return "hard-linked";
   // The block's own line ending, so the bytes around it never change their ending.
@@ -749,7 +763,7 @@ export function planInboxNoteRemoval(dataDir: string, e: AgentEnvironment, label
       }
       const owners = INBOX_NOTE_AGENT_IDS.filter((id) => records[id]?.path === real);
       const record = owners.map((id) => records[id]).find(Boolean);
-      const edited = record ? sha256(found.block) !== record.block_sha256 : !isPlannotatorBlock(sha256(found.block));
+      const edited = record ? !ownedBy(record.block_sha256, sha256(found.block)) : !isPlannotatorBlock(sha256(found.block));
       const created = record?.created === true || real === resolved(claudeRulesFile(e));
       const how = created ? "created by Plannotator: file removed if empty" : "marked section only";
       items.push({

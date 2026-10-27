@@ -11,8 +11,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { INBOX_AGENT_LABELS } from "@plannotator/core/inbox-types";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
-import { INBOX_NOTE_BLOCK, INBOX_NOTE_EARLIER_BLOCKS, INBOX_NOTE_VERSION, noteStatus, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
+import { addInboxNote, INBOX_NOTE_BLOCK, INBOX_NOTE_EARLIER_BLOCKS, INBOX_NOTE_VERSION, noteStatus, planInboxNoteRemoval, readInboxAgentNotes, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import { createAgentEnvironmentFor, type AgentEnvironment } from "./inbox-agents";
 import { startInboxServer } from "./inbox";
 
@@ -226,6 +227,46 @@ describe("refreshInboxNotes: each case of the file, decided by the markers and t
     v1Records({ codex: path });
     expect(results()).toEqual(["codex:edited"]);
     expect(read(path)).toBe(`${INBOX_NOTE_EARLIER_BLOCKS[1]}\n`);
+  });
+
+  // The state a crash between the record write and the note's rename leaves (or a failed put-back): the
+  // record already names this version, the note is still the earlier block Plannotator wrote.
+  const recordAhead = (path: string) => {
+    mkdirSync(join(dataDir, "inbox"), { recursive: true });
+    writeFileSync(
+      join(dataDir, "inbox", "agent-notes.json"),
+      JSON.stringify({ v: 1, notes: { codex: { path: realpathSync(path), created: false, version: INBOX_NOTE_VERSION, block_sha256: sha(INBOX_NOTE_BLOCK), at: "2026-10-27T00:00:00.000Z" } } }),
+    );
+  };
+
+  test("a record left ahead of its note (a crash between the two writes): still Plannotator's note, and the next start repairs it", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `# Mine\n\n${V1_BLOCK}\n`);
+    recordAhead(path);
+    expect(noteStatus("codex", dataDir, e).state).toBe("added");
+    expect(planInboxNoteRemoval(dataDir, e, INBOX_AGENT_LABELS).items.map((item) => item.describe).join("\n")).not.toContain("you edited it");
+    expect(results()).toEqual(["codex:refreshed"]);
+    expect(read(path)).toBe(`# Mine\n\n${INBOX_NOTE_BLOCK}\n`);
+    expect(noteStatus("codex", dataDir, e).state).toBe("added");
+    expect(results()).toEqual(["codex:current"]);
+  });
+
+  test("a record left ahead of its note: adding the note again updates it, never kept-edited", () => {
+    const path = file(".codex", "AGENTS.md");
+    write(path, `${INBOX_NOTE_EARLIER_BLOCKS[1]}\n`);
+    recordAhead(path);
+    expect(addInboxNote("codex", dataDir, e)).toMatchObject({ ok: true, action: "updated" });
+    expect(read(path)).toBe(`${INBOX_NOTE_BLOCK}\n`);
+  });
+
+  test("a record ahead of a note the person edited: still the person's, left alone", () => {
+    const path = file(".codex", "AGENTS.md");
+    const edited = `${V1_BLOCK.replace("Then keep working.", "Then keep working. Never at night.")}\n`;
+    write(path, edited);
+    recordAhead(path);
+    expect(noteStatus("codex", dataDir, e).state).toBe("edited");
+    expect(results()).toEqual(["codex:edited"]);
+    expect(read(path)).toBe(edited);
   });
 
   test("a file changed between the read and the write: not clobbered; the next start refreshes it with that change kept", () => {
