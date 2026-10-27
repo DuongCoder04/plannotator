@@ -482,6 +482,15 @@ export interface InboxMessage {
    */
   started_by_person?: true;
   /**
+   * On the root of a thread the person started with compose's Board chip on
+   * (approval "inbox-compose-board-chip", 2026-10-27): the person asked the
+   * agent to track the work on the Board. The body stays as typed; what the
+   * agent receives for this message (the delivered turn, wait_for_reply,
+   * read_thread) carries `inboxBoardRequestBlock` after it. Absent on every
+   * other message.
+   */
+  board_request?: true;
+  /**
    * On the root of a thread the person started: who gave it its name, the
    * thread chip (approval "inbox-agent-names-own-thread"). The person may name
    * it in compose; otherwise the first reply from a session that may name it
@@ -1355,6 +1364,14 @@ export interface InboxHealth {
    * Inbox tabs of one browser origin share one stream (packages/inbox/sharedEvents.ts).
    */
   event_streams?: number;
+  /**
+   * This Inbox honours the peek mark on a read_thread list
+   * (`INBOX_PEEK_META_KEY`): no project made for a folder it does not know,
+   * the rows not counted as read (additive). A connection reads the session's
+   * threads only from an Inbox that says so; an older one would make a
+   * project for every folder that compacts or resumes.
+   */
+  peek?: true;
 }
 
 /** What an Inbox window reports about its browser's notification permission for its own origin. */
@@ -1656,20 +1673,57 @@ export interface InboxAgentsModel {
 export type InboxToolHostId = "claude-code" | "pi" | "opencode";
 
 /**
+ * The runtime a polling session runs in, as the window names its fix: Claude
+ * Code, Pi, Oh My Pi (polls as host `pi`, says `plugin.host: "oh-my-pi"`), or
+ * OpenCode 2 (host `opencode`; OpenCode 1 does not poll).
+ */
+export type InboxReloadRuntime = "claude-code" | "pi" | "oh-my-pi" | "opencode";
+
+/**
  * A polling session runs an older Plannotator plugin than a restart would
- * load (`fix: "restart"`), or the installed plugin is itself behind this
- * Inbox's Plannotator, so a restart alone does not help (`fix:
- * "update_plugin"`; Pi: `"update_extension"`, `pi update --extensions` then
- * `/reload`). `loaded` is the version the session runs (null when its
- * connection predates reporting it), `installed` what a restart loads (Pi:
- * the Inbox's own version, which the extension should match).
+ * load (`fix: "restart"`, Claude Code), or the installed plugin is itself
+ * behind this Inbox's Plannotator, so a restart alone does not help (`fix:
+ * "update_plugin"`). Pi, Oh My Pi and OpenCode 2 (packages/server/inbox-restart.ts):
+ * `"reload"` when reloading the host loads newer code than the session runs
+ * (`reload_command`: Pi `/reload`, Oh My Pi `/restart`, OpenCode 2
+ * `opencode2 reload` or `opencode2 plugin update`), `"update_extension"` when
+ * the package on disk is itself behind this Inbox (`update_command`, then
+ * `reload_command`). `loaded` is the version the session runs (null when its
+ * connection predates reporting it), `installed` what a restart loads (Pi with
+ * an older connection: the Inbox's own version, which the extension should match).
  */
 export interface InboxSessionOutdated {
   loaded: string | null;
   installed: string | null;
-  fix: "restart" | "update_plugin" | "update_extension";
-  /** With `update_plugin`: the command that updates the plugin itself. */
+  fix: "restart" | "update_plugin" | "update_extension" | "reload";
+  /** With `update_plugin` / `update_extension`: the command that updates the plugin itself. */
   update_command?: string;
+  /** Which runtime the session runs in (absent from an older Inbox: Claude Code, or Pi for `update_extension`). */
+  runtime?: InboxReloadRuntime;
+  /** What loads the new code in that runtime: `/reload`, `/restart`, `opencode2 reload`. Absent for Claude Code (`/reload-plugins`). */
+  reload_command?: string;
+  /** Typed in the session (`/reload`, `/restart`) or run in a shell (`opencode2 reload`). */
+  reload_where?: "session" | "shell";
+  /** When the reload does not take: `opencode2 service restart`. */
+  fallback_command?: string;
+  /**
+   * OpenCode 2: the config pins this exact spec (`@plannotator/opencode@0.28.20`), so
+   * `opencode2 plugin update` does nothing: the person changes it to `pin_to`, then reloads.
+   */
+  pinned_spec?: string;
+  pin_to?: string;
+  /** OpenCode 2: `all` when the plugin's configured spec is unknown, so `opencode2 plugin update` names no target and updates every outdated plugin. */
+  update_scope?: "all";
+}
+
+/**
+ * The live sessions a reload alone brings up to date, per runtime: the
+ * sidebar's "Reload Claude Code N" ("Reload agents N" when more than one
+ * runtime has some). Additive beside `restart_claude_code`.
+ */
+export interface InboxRestartAgents {
+  total: number;
+  runtimes: Partial<Record<InboxReloadRuntime, number>>;
 }
 
 /** One open session as Settings → Agents lists it. */
@@ -1686,6 +1740,8 @@ export interface InboxOpenSession {
   outdated: InboxSessionOutdated | null;
   /** `cd <folder> && claude --resume <session>` (Claude Code, with a known folder); null otherwise. */
   restart_command: string | null;
+  /** The runtime it runs in (Pi's group holds Oh My Pi sessions too). Absent from an older Inbox. */
+  runtime?: InboxReloadRuntime;
 }
 
 export interface InboxHostSessions {
@@ -1752,10 +1808,33 @@ export type InboxToolCostHost = "pi" | "opencode";
  * lists `card` only while it is on, so what a user gets by default is the
  * entry WITHOUT `card`, and that is the stated cost. With the Board on it is
  * the 10,171 bytes above.
+ * The title rule (approval "inbox-board-amendments-2026-10-27": "2–5 words
+ * naming the work, never a sentence", and link the thread where the person
+ * decides) in the card description and its `title` and `thread_id`
+ * arguments: measured on Pi with the cost test and the Board on, 10,171 →
+ * 10,303 bytes (+132; about +35 tokens, so the rounded, high token figure
+ * stands).
+ * The reply_to check (INBOX_REPLY_TO_CHECK, the misfiled-thread AAR,
+ * 2026-10-27) added one sentence to the agent tool's `reply_to`: measured on
+ * Pi with the cost test, 8,841 → 8,964 bytes (+123; about +30 tokens, so the
+ * rounded token figure stands). With the Board on 10,294 (10,171 + 123,
+ * estimated).
+ * Then the rules agents must get with no setup (the owner, 2026-10-27): the
+ * wake note's "reply_to set to that reply id, never an id from memory",
+ * read_thread's and search's leads (listing every thread, older messages),
+ * `asked_by` and `include_resolved` described, and the Recommended: line in
+ * `body`: measured on Pi, 9,227 bytes (+263, about +70 tokens). With the
+ * Board on 10,557 (10,294 + 263, estimated).
+ * Then the chat-or-Inbox rule in the lead (the owner, 2026-10-27), with the
+ * wake note and get_guide_brief's lead shortened to fit: measured on Pi,
+ * 9,283 bytes (+56); its one wording ("when the person writes in the chat",
+ * "with a blocking question tool (AskUserQuestion or similar)"): 9,298 bytes
+ * (+15). With the Board on 10,760 (the Board title rule's 10,303 + this
+ * branch's 457, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 8841, tokens: 2500 };
+const INBOX_TOOL_COST_NOW = { bytes: 9298, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10171, tokens: 2900 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
@@ -1883,6 +1962,14 @@ export interface InboxDraft {
    * out again from the body when the draft opens).
    */
   thread_name?: string;
+  /**
+   * The Board card it was started for (the opened card's Create thread): the
+   * Send that sends the draft links the new thread to this card. Absent for
+   * any other draft.
+   */
+  card?: { id: string; title: string };
+  /** Compose's Board chip was on (approval "inbox-compose-board-chip"): the Send asks the agent to track the work on the Board. */
+  board_request?: true;
 }
 
 /** A draft's chip: its chosen session is live, has ended, or none was chosen. */

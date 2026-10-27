@@ -145,7 +145,17 @@ import { recordInboxAttachments, sweepStaleInboxSendTemps } from "@plannotator/s
 import { inboxBodyForAgent, inboxUploadAttachments, removeInboxAttachmentFiles, removeInboxUploads } from "@plannotator/shared/inbox/uploads";
 import { createInboxLiveSessions } from "./inbox-sessions";
 import { createInboxCodexWake, type InboxCodexWake } from "./inbox-codex-wake";
-import { claudePluginBehindInbox, claudeRestartCommand, claudeSessionOutdated, CLAUDE_PLUGIN_UPDATE_COMMAND, createClaudePluginInstallReader, piSessionOutdated } from "./inbox-restart";
+import {
+  claudePluginBehindInbox,
+  claudeRestartCommand,
+  claudeSessionOutdated,
+  CLAUDE_PLUGIN_UPDATE_COMMAND,
+  createClaudePluginInstallReader,
+  createOpenCodeSpecReader,
+  createPiPinReader,
+  openCodeSessionOutdated,
+  piSessionOutdated,
+} from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
@@ -179,7 +189,7 @@ import {
   writeInboxAgents,
   type AgentEnvironment,
 } from "./inbox-agents";
-import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, removeInboxNote } from "./inbox-agent-notes";
+import { addInboxNote, INBOX_NOTE_BLOCK, inboxNotesDisabled, markNotesAsked, noteCandidateIds, notesAsked, noteStatus, refreshInboxNotes, removeInboxNote } from "./inbox-agent-notes";
 import {
   displayInboxSubject,
   INBOX_AGENT_IDS,
@@ -273,7 +283,7 @@ export interface InboxServerOptions {
    */
   updates?: Pick<
     InboxUpdatesOptions,
-    "fetchRelease" | "fetchReleaseTag" | "fetchImage" | "whatsNewWaitMs" | "launchInstaller" | "isManaged" | "listSessions" | "now" | "probeVersion"
+    "fetchReleasePage" | "fetchRelease" | "fetchReleaseTag" | "fetchImage" | "whatsNewWaitMs" | "launchInstaller" | "isManaged" | "listSessions" | "now" | "probeVersion"
   >;
   /**
    * The window: the built single-file app (`apps/hook/dist/inbox.html`, which
@@ -283,6 +293,8 @@ export interface InboxServerOptions {
   htmlContent?: string;
   /** Tests: how long a window's record outlives its last event stream (default `WINDOW_GRACE_MS`). */
   windowGraceMs?: number;
+  /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
+  mcpNow?: () => number;
   /**
    * The argv that runs this CLI (the compiled binary's absolute path, or bun
    * plus the entry script), so the window's connect snippets name a command
@@ -483,7 +495,7 @@ const ERROR_STATUS: Record<string, number> = {
   card_person_only: 403,
   // Over your tailnet (packages/server/inbox-tailscale.ts).
   tailscale_env_decides: 409,
-  // Settings → General → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
+  // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
   tailscale_unavailable: 409,
   local_only: 403,
@@ -827,6 +839,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           codexWake.wakes(host, session, meta),
         // The Board: the card tool is listed and served only while the person has it on.
         boardOn,
+        ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );
@@ -841,6 +854,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     notify_reach: windows.reach(notificationsState().enabled),
     // Additive: event streams open now (windows' and the phone door's). Inbox tabs of one origin share one.
     event_streams: openEventStreams,
+    // Additive: read_thread honours the peek mark (the session's thread list after a compaction or resume).
+    peek: true,
   });
 
   /**
@@ -907,6 +922,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       updated: updates.updated(),
       /** Claude Code sessions a restart would bring up to date (inbox-restart.ts): the sidebar's "Reload Claude Code N". Additive. */
       restart_claude_code: live.restartCount(),
+      /** Every runtime's sessions a reload brings up to date (Claude Code, Pi, Oh My Pi, OpenCode 2): "Reload agents N". Additive. */
+      restart_agents: live.restartAgents(),
+      /** Checking for updates has failed for hours: the sidebar's quiet "Can't check for updates". Additive. */
+      update_check_failing: updates.checkFailing(),
       notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
       projects: projectFolders(rows),
       project: projectFilter,
@@ -1059,6 +1078,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     (process.env.PLANNOTATOR_TEST_SANDBOX
       ? createAgentEnvironmentFor({ platform: process.platform, homeDir: join(dataDir, "agents-home"), env: { HOME: join(dataDir, "agents-home"), PATH: "" } })
       : createAgentEnvironment());
+  // The notes the person installed, brought up to this version while untouched (an update reaches
+  // them when the Inbox restarts onto it); an edited, damaged, read-only or busy file is left alone.
+  try {
+    refreshInboxNotes(dataDir, agentEnvironment);
+  } catch {
+    // Never holds up a start.
+  }
   let connecting: Promise<InboxConnectReport> | null = null;
   // The Inbox's stop ends a run still going: its agent CLIs are killed, never left running.
   const connectStop = new AbortController();
@@ -1623,7 +1649,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     text_size: textSizeState(),
     /** The guided review's diff layout (config.json `diffOptions.diffStyle`), shared with code review; null when never chosen. */
     diff_style: diffStyleState(),
-    /** Experimental features, each off unless switched on (Settings → General → Experimental). */
+    /** Experimental features, each off unless switched on (Settings → Capabilities → Experimental). */
     experimental: experimentalState(),
     /** The Board (config.json `inboxBoard`): off unless the person turned it on. */
     board: { on: boardOn() },
@@ -1734,7 +1760,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // `updated` (additive): the "What's new in X" link appears or goes once its notes are fetched or cannot be.
         // `restart_claude_code` (additive): the sidebar's "Reload Claude Code N" follows the sessions as they restart.
         const onStatus = () =>
-          send(`event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount() })}\n\n`);
+          send(
+            `event: status\ndata: ${JSON.stringify({ update: updates.current(), updated: updates.updated(), restart_claude_code: live.restartCount(), restart_agents: live.restartAgents(), update_check_failing: updates.checkFailing() })}\n\n`,
+          );
         statusListeners.add(onStatus);
         // An Inbox window (not the phone's door): counted while its stream is open, with what it reported.
         const windowId = parseWindowId(url.searchParams.get("window"));
@@ -2024,6 +2052,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // ── New message (step 8): the live sessions and the window's two routes (packages/server/inbox-sessions.ts) ──
   // Which polling sessions run an older plugin than a restart loads (inbox-restart.ts).
   const claudePluginInstall = createClaudePluginInstallReader(agentEnvironment);
+  // Pi's settings pin an exact extension version: `pi update --extensions` skips it.
+  const piPinned = createPiPinReader(agentEnvironment);
+  // OpenCode 2's configured spec: `opencode2 plugin update` takes it as its target (only Plannotator), and a pinned one never moves.
+  const openCodeSpec = createOpenCodeSpecReader(agentEnvironment);
   const live = createInboxLiveSessions({
     store,
     serverSession,
@@ -2039,7 +2071,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           changedAt: claudePluginInstall.changedAt,
         });
       }
-      return host === "pi" ? piSessionOutdated(plugin, version) : null;
+      if (host === "pi") return piSessionOutdated(plugin, version, { pinned: piPinned() });
+      return host === "opencode" ? openCodeSessionOutdated(plugin, version, { spec: openCodeSpec() }) : null;
     },
     displayFolder: (path) => displayPath(path, agentEnvironment) ?? path,
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),
@@ -2092,9 +2125,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const autoSendWatch = setInterval(autoSendSweep, options.autoSendSweepMs ?? INBOX_AUTO_SEND_SWEEP_MS);
   (autoSendWatch as { unref?: () => void }).unref?.();
   // The sidebar's "Reload Claude Code N" is pushed as it changes (a session restarts, goes away, or an update lands).
-  let lastRestartCount = 0;
+  let lastRestartCount = "";
   const restartWatch = setInterval(() => {
-    const count = live.restartCount();
+    const count = JSON.stringify(live.restartAgents());
     if (count === lastRestartCount) return;
     lastRestartCount = count;
     for (const listener of statusListeners) listener();
@@ -2134,6 +2167,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     resolveProject,
     readBody: (req) => readBody(req),
     json,
+    boardOn,
   });
   compose.sweep();
   // Reply drafts: the words typed in a thread's reply box, kept per thread (packages/server/inbox-reply-drafts.ts).

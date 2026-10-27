@@ -42,6 +42,10 @@ import {
   INBOX_BRIDGE_POLL_PATH,
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
+  INBOX_TOOL_NAME,
+  inboxHealthPeeks,
+  inboxSessionThreadsParams,
+  inboxSessionThreadsText,
   inboxToolCall,
   inboxToolCallParams,
   inboxToolResultText,
@@ -57,6 +61,8 @@ import {
 
 /** The longest a host's start waits for a running Inbox's `tools/list` (the mod's bound). */
 export const INBOX_DISCOVER_TIMEOUT_MS = 2_000;
+/** The longest the session's thread list may take (the Claude Code mod's bound); past it there is no list. */
+export const INBOX_SESSION_THREADS_TIMEOUT_MS = 1_500;
 /** Poll wait asked of the bridge (the server holds at most 25 s). */
 export const INBOX_POLL_WAIT_MS = 20_000;
 /** After a failed poll: 5 s, doubling to 60 s while the Inbox stays away, never giving up. */
@@ -259,6 +265,30 @@ export class InboxAgentConnection {
     return inboxToolResultText(answer.result);
   }
 
+  /**
+   * The session's open threads as a few short lines (`inboxSessionThreadsText`),
+   * or null: no Inbox has run here, it is not running (it is never started
+   * for this), it did not answer within `timeoutMs`, there is no open
+   * thread, or the Inbox is older than the peek mark (no `peek: true` in its
+   * health: it would make a project for the folder). Read with the peek mark, so the Inbox makes no project and the
+   * rows do not count as the session having read them. Never throws.
+   */
+  async sessionThreads(at: { sessionId: string; cwd: string }, toolName: string = INBOX_TOOL_NAME, timeoutMs = INBOX_SESSION_THREADS_TIMEOUT_MS): Promise<string | null> {
+    const registry = readRegistry(this.dataDir);
+    if (!registry || !at.sessionId || !at.cwd) return null;
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const health = await fetch(`http://127.0.0.1:${registry.port}/api/inbox/health`, { signal });
+      if (health.status !== 200 || !inboxHealthPeeks(await health.json(), registry.serverSession)) return null;
+      const answer = await mcpCall(registry.port, "tools/call", inboxSessionThreadsParams(at.cwd, at.sessionId), signal);
+      if (!answer || !("result" in answer)) return null;
+      const result = answer.result as { isError?: unknown } | undefined;
+      return result?.isError === true ? null : inboxSessionThreadsText(result, toolName);
+    } catch {
+      return null;
+    }
+  }
+
   /** Running: the registry's port answers health with the registry's serverSession. */
   private async isRunning(registry: InboxRegistryView): Promise<boolean> {
     try {
@@ -447,9 +477,24 @@ export interface InboxWakeTarget {
    * The version of Plannotator's plugin or extension this process loaded
    * (Pi: the extension's package.json). Each poll carries it as `plugin:
    * { version }`, so the Inbox can say when the session runs an older one.
-   * Optional: a host without it sends nothing.
+   * Optional: a host without it sends nothing. `plugin` wins when both exist.
    */
   pluginVersion?(): string | null;
+  /**
+   * What this process loaded AND what is on disk now (owner approval
+   * "reload-hosts"): `{ version, on_disk, host }`. `on_disk` is null when the
+   * package is gone from disk (OpenCode 2: its generation folder was
+   * deleted), `host` `oh-my-pi` inside Oh My Pi. Each poll carries it as
+   * `plugin`, so the Inbox can say which command loads the newer code.
+   */
+  plugin?(): InboxLoadedPluginReport | null;
+}
+
+/** A poll's `plugin` as Pi, Oh My Pi and OpenCode 2 send it. */
+export interface InboxLoadedPluginReport {
+  version: string;
+  on_disk: string | null;
+  host?: "pi" | "oh-my-pi";
 }
 
 /**
@@ -634,11 +679,15 @@ export class InboxWake {
     } catch {
       projectPath = null;
     }
-    let pluginVersion: string | null = null;
+    let plugin: InboxLoadedPluginReport | { version: string } | null = null;
     try {
-      pluginVersion = this.target.pluginVersion?.() ?? null;
+      plugin = this.target.plugin?.() ?? null;
+      if (!plugin) {
+        const version = this.target.pluginVersion?.() ?? null;
+        plugin = version ? { version } : null;
+      }
     } catch {
-      pluginVersion = null;
+      plugin = null;
     }
     const response = await this.connection.bridge(
       INBOX_BRIDGE_POLL_PATH,
@@ -652,7 +701,7 @@ export class InboxWake {
         // Tags (approval "inbox-tag-agents"): this connection words a reply it was tagged in truthfully.
         [INBOX_TAGS_POLL_FIELD]: true,
         // What this process loaded (additive): the Inbox says when the session runs an older one.
-        ...(pluginVersion ? { plugin: { version: pluginVersion } } : {}),
+        ...(plugin?.version ? { plugin } : {}),
       },
       signal,
     );
