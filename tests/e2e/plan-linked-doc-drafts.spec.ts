@@ -116,6 +116,7 @@ async function openReview(browser: Browser, url: string): Promise<Page> {
       ['plannotator-theme', 'light'],
       ['plannotator-plan-look-choice-resolved', 'true'],
       ['plannotator-announce-tui-herdr-seen', '1'],
+      ['plannotator-announce-inbox-seen', '1'],
       ['plannotator-announce-ask-session-seen', '1'],
       ['plannotator-announce-agent-tool-seen', '1'],
       ['plannotator-permission-mode-configured', 'true'],
