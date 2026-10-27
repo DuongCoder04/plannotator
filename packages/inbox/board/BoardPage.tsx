@@ -33,6 +33,8 @@ import {
   moveSaid,
   sentTo,
   startBody,
+  youLinkLabel,
+  youThread,
   unseenDrops,
   type BoardView,
 } from './model';
@@ -319,6 +321,7 @@ export function BoardPage(props: BoardPageProps) {
     rowOf: props.rowOf,
     markOf,
     onOpen: (card) => props.onOpenCard(card.id),
+    onOpenThread: props.onOpenThread,
   };
 
   let body: ReactNode;
@@ -498,6 +501,8 @@ interface CardCommon {
   /** The card's lane mark (its linked PR or issue), null when it links neither. */
   markOf: (card: InboxCardWire) => InboxCardMark | null;
   onOpen: (card: InboxCardWire) => void;
+  /** The "You: …" line's way in: the thread where the person makes the call (`youThread`). */
+  onOpenThread: (card: InboxCardWire, threadId: string) => void;
 }
 
 function NewCardButton({ disabled, phone, onOpen }: { disabled: boolean; phone: boolean; onOpen: () => void }) {
@@ -628,7 +633,10 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
  * One card, variant C "Lean": the agent's mark and the title; then "You: …"
  * (the person's columns), "Sent to <agent>" with the delivery tick (a card
  * the person sent, until it moves), or the agent's last word; and how long
- * ago anyone last wrote to it. Bold while unread. A button: it opens the card.
+ * ago anyone last wrote to it. Bold while unread. The title is the button that
+ * opens the card (a click anywhere else on the card does too); "You: …" is its
+ * own button, to the thread where the person makes the call (`youThread`);
+ * with no thread linked it is plain words, and a click on it opens the card.
  */
 function BoardCard({
   card,
@@ -640,6 +648,7 @@ function BoardCard({
   rowOf,
   markOf,
   onOpen,
+  onOpenThread,
   draggable = false,
   dragging = false,
   onDragStart,
@@ -652,6 +661,7 @@ function BoardCard({
   const age = cardAge(card.heard_at, now);
   const mark = markOf(card);
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
+  const thread = line?.you ? youThread(card, rowOf) : null;
   // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
   // on): one line, the age beside the title, never an empty second line.
   const oneLine = !sent && !line && !mark;
@@ -670,6 +680,11 @@ function BoardCard({
       data-open={openId === card.id ? '' : undefined}
       data-sent={sent ? '' : undefined}
       draggable={draggable && !phone ? true : undefined}
+      onClick={(event) => {
+        // The card's buttons do their own thing; a click anywhere else on it opens the card, as its title does.
+        if ((event.target as Element).closest('button, a')) return;
+        onOpen(card);
+      }}
       onDragStart={(event) => {
         if (!draggable || phone) return;
         event.dataTransfer.effectAllowed = 'move';
@@ -678,45 +693,51 @@ function BoardCard({
       }}
       onDragEnd={onDragEnd}
     >
-      <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
-        <span className="ib-bc-top">
-          {card.agent ? (
-            <AuthorMark author={card.agent} />
-          ) : (
-            <span className="ib-mk ib-bc-you" aria-hidden="true">
-              <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
-            </span>
-          )}
+      <span className="ib-bc-top">
+        {card.agent ? (
+          <AuthorMark author={card.agent} />
+        ) : (
+          <span className="ib-mk ib-bc-you" aria-hidden="true">
+            <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
+          </span>
+        )}
+        <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
           <Tip content={card.title} cut>
             <span className="ib-bc-t" dir="auto">
               {card.title}
             </span>
           </Tip>
-          {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
-        </span>
-        {!oneLine && (
-          <span className="ib-bc-bot">
-            <span className="ib-bc-line" dir="auto">
-              {sent ? (
-                <span className="ib-bc-sent">
-                  {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
-                  <span className="ib-bc-sentt">Sent to {sent}</span>
-                </span>
-              ) : line ? (
-                line.you ? (
-                  <>
-                    <b className="ib-bc-youw">You:</b> {line.text}
-                  </>
-                ) : (
-                  line.text
-                )
-              ) : null}
-            </span>
-            {mark && <RefMark mark={mark} />}
-            {ageTip}
+        </button>
+        {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
+      </span>
+      {!oneLine && (
+        <span className="ib-bc-bot">
+          <span className="ib-bc-line" dir="auto">
+            {sent ? (
+              <span className="ib-bc-sent">
+                {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
+                <span className="ib-bc-sentt">Sent to {sent}</span>
+              </span>
+            ) : line ? (
+              line.you && thread ? (
+                <button type="button" className="ib-bc-youlink" data-card-you-link={thread} aria-label={youLinkLabel(line.text)} onClick={() => onOpenThread(card, thread)}>
+                  <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
+                  <Icon name="arrowUpRight" size={12} />
+                </button>
+              ) : line.you ? (
+                // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
+                <>
+                  <b className="ib-bc-youw">You:</b> {line.text}
+                </>
+              ) : (
+                line.text
+              )
+            ) : null}
           </span>
-        )}
-      </button>
+          {mark && <RefMark mark={mark} />}
+          {ageTip}
+        </span>
+      )}
     </li>
   );
 }
