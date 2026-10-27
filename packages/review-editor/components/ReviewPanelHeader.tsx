@@ -130,7 +130,7 @@ const LiveDot: React.FC<{ repo: ReadyRepo | null | undefined }> = ({ repo }) => 
   const text = useLiveTooltip(repo);
   if (!repo || !text) return null;
   return (
-    <Tooltip content={text} side="bottom" delayDuration={150}>
+    <Tooltip content={text} side="bottom">
       <span className="inline-flex items-center" aria-hidden="true" data-repo-listing-dot={repo.live ? 'live' : 'partial'}>
         <span className={`w-1.5 h-1.5 rounded-full ${repo.live ? 'bg-success' : 'border border-warning'}`} />
       </span>
@@ -209,7 +209,7 @@ const GoToFileButton: React.FC<{ onClick: () => void; showKeys: boolean }> = ({ 
   const binding = resolveShortcutBindings(reviewExplorerShortcuts.shortcuts.goToFile)[0] ?? '';
   const keys = formatShortcutBindingTokens(binding);
   return (
-    <Tooltip content={<span>Go to File <span className="opacity-70">{keys.join('')}</span></span>} side="bottom" delayDuration={300}>
+    <Tooltip content={<span>Go to File <span className="opacity-70">{keys.join('')}</span></span>} side="bottom">
       <button
         type="button"
         onClick={onClick}
@@ -406,7 +406,7 @@ export const ReviewPanelHeader: React.FC<{ model: ReviewPanelHeaderModel; width:
               </button>
             );
             return narrow ? (
-              <Tooltip key={view} content={meta.label} side="bottom" delayDuration={300}>
+              <Tooltip key={view} content={meta.label} side="bottom">
                 {button}
               </Tooltip>
             ) : (
