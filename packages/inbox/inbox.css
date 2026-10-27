@@ -4538,11 +4538,13 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-dm-confirm p { margin: 6px 0 14px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); }
 .ib-dm-confirm-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 /* The pill a tucked decision mode leaves above the open thread. */
-.pn-inbox .ib-dm-pill { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 42; translate: -50% 0; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 16px; border-radius: 999px; background: var(--popover); box-shadow: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); }
+.pn-inbox .ib-dm-pill { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 42; translate: -50% 0; display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 16px; border-radius: 999px; background: var(--popover); box-shadow: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); max-width: calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
 .ib-dm-pill b { font-weight: 650; }
-.ib-dm-pill > span { white-space: nowrap; }
+/* A row whose only shrinking part is the thread's subject: on a narrow screen the subject gives way, never the count or Resume. */
+.ib-dm-pill > span { display: flex; align-items: baseline; min-width: 0; white-space: pre; }
+.pn-inbox .ib-dm-pill > .ib-btn { flex: none; }
 /* The sitting's thread, while another is on screen: cut so the pill keeps its Resume in view. */
-.ib-dm-pill-thread { display: inline-block; max-width: min(28ch, 40vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.ib-dm-pill-thread { display: inline-block; flex: 0 1 auto; min-width: 0; max-width: min(28ch, 40vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 /* While the pill floats over a thread, the thread's last lines can still scroll clear of it. */
 .pn-inbox:has(.ib-dm-pill) section.ib-pane .ib-pbody { padding-bottom: 64px; }
 .pn-inbox .ib-dm-pill .ib-btn { height: 30px; border-radius: 999px; }

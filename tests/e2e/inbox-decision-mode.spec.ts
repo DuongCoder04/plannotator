@@ -280,10 +280,15 @@ test('the queue: Stopped first, a pick saves at once, the session replies once a
   expect(world.errors).toEqual([]);
 });
 
+/** Longer than any phone's pill has room for, so the Resume pill has to cut it. */
+const REFUNDS_SUBJECT = 'Refund emails for partial refunds, the JPY rounding rule and the finance export before 4.2 ships';
+
 test('a phone (WebKit, iPhone 15): the card is a full-screen column with 44 px targets', async () => {
   const { claude, pi } = world;
-  const refunds = await claude.send({ project_path: world.billing, subject: 'Refund emails', body: q('Send the partial-refund email?', ['Yes, send it', 'No, not yet'], ['Stopped: the email job waits on this.']) }, { wakes: true });
+  const refunds = await claude.send({ project_path: world.billing, thread: 'refund-emails', subject: REFUNDS_SUBJECT, body: q('Send the partial-refund email?', ['Yes, send it', 'No, not yet'], ['Stopped: the email job waits on this.']) }, { wakes: true });
   await pi.send({ project_path: world.billing, reply_to: refunds.message_id, body: q('Round half-even or half-up for JPY refunds?', ['Half-even — matches Stripe', 'Half-up — what finance does today']) }, { wakes: true });
+  // Its own thread, so the Stripe thread is another one to open while the sitting is tucked.
+  expect(refunds.thread_id).not.toBe(stripeThread);
   const own = await webkit.launch({ args: [] });
   try {
     // Dark first: the light pass then answers (a saved pick is handled, so a later sitting starts after it).
@@ -317,6 +322,22 @@ test('a phone (WebKit, iPhone 15): the card is a full-screen column with 44 px t
           })
           .toBe(true);
         await page.screenshot({ path: join(proofDir, `phone-pill-${scheme}.png`) });
+        // Another thread on screen: the pill names the sitting's thread, and a long subject is what gives way.
+        // The pill stays inside the screen with the count and Resume whole.
+        await page.evaluate((id) => {
+          location.hash = `thread=${id}`;
+        }, stripeThread);
+        const named = pill.locator('[data-decision-pill-thread]');
+        await expect(named).toBeVisible();
+        const viewport2 = page.viewportSize()!;
+        const p = (await pill.boundingBox())!;
+        expect(p.x).toBeGreaterThanOrEqual(8);
+        expect(p.x + p.width).toBeLessThanOrEqual(viewport2.width - 8);
+        expect(await named.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+        await expect(pill).toContainText('left');
+        const resume = (await pill.locator('[data-decision-resume]').boundingBox())!;
+        expect(resume.x + resume.width).toBeLessThanOrEqual(p.x + p.width);
+        await page.screenshot({ path: join(proofDir, `phone-pill-named-${scheme}.png`) });
         await page.locator('[data-decision-resume]').tap();
         await expect(dialog).toBeVisible();
       }
