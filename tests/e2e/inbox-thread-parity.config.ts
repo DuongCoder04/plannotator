@@ -7,9 +7,10 @@
  * PLANNOTATOR_PARITY_OUT (the evidence folder), PLANNOTATOR_PARITY_ROLE
  * (`reference` or `candidate`) and PLANNOTATOR_E2E_BINARY.
  *
- * Projects: desktop 1440 by 900 light and dark, the thread pane at 360 px (a
- * host's sidebar, for the shared parts' container rules), an iPhone 15 in
- * WebKit and a Pixel 7 in Chromium.
+ * Projects: desktop 1440 by 900 light and dark, the thread pane at 360 px
+ * light and dark and at 320 px (a host's sidebar, for the shared parts'
+ * container rules), an iPhone 15 in WebKit light and dark, and a Pixel 7 in
+ * Chromium.
  */
 import { defineConfig, devices } from '@playwright/test';
 import { join, resolve } from 'node:path';
@@ -46,12 +47,17 @@ export default defineConfig({
     timezoneId: 'America/New_York',
     reducedMotion: 'reduce',
     serviceWorkers: 'block',
+    // A click that cannot happen fails with its reason instead of using up the whole test.
+    actionTimeout: 30_000,
   },
   projects: [
     { name: 'desktop-light', use: { ...desktop, colorScheme: 'light' } },
     { name: 'desktop-dark', use: { ...desktop, colorScheme: 'dark' } },
     { name: 'narrow-360', use: { ...desktop, colorScheme: 'light' } },
+    { name: 'narrow-360-dark', use: { ...desktop, colorScheme: 'dark' } },
+    { name: 'narrow-320', use: { ...desktop, colorScheme: 'light' } },
     { name: 'iphone-15', use: { ...devices['iPhone 15'], browserName: 'webkit', colorScheme: 'light' } },
+    { name: 'iphone-15-dark', use: { ...devices['iPhone 15'], browserName: 'webkit', colorScheme: 'dark' } },
     { name: 'pixel-7', use: { ...devices['Pixel 7'], browserName: 'chromium', colorScheme: 'light', launchOptions: { args: CHROMIUM_ARGS } } },
   ],
 });

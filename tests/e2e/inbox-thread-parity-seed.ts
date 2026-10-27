@@ -11,12 +11,13 @@
  * questions, an annotated file, a guided review and one new message; open,
  * picked and text questions with a reply draft; a replaced question and a
  * Re-ask; image, SVG, markdown, HTML and video files; action items; a settled
- * 👍; a reply that tags a second agent; and worst-case text (right to left,
- * long tokens, a table, emoji).
+ * 👍; a reply that tags a second agent; worst-case text (right to left,
+ * long tokens, a table, emoji); and a link choice answered (its raw markdown
+ * in the folded line and "You answered", as today) beside picture choices.
  *
- * Nothing here depends on a live agent connection (busy, queued, Send now,
- * ended): that state lives in the Inbox's memory, never in the data dir, so a
- * copy could not carry it. The DOM tests and the e2e specs cover it.
+ * Live connection state (busy, Undelivered, Send now, restart) lives in the
+ * Inbox's memory, never in the data dir, so a copy cannot carry it: the
+ * capture polls as the seeded sessions itself (`sessions` in seed.json).
  *
  * Writes `<root>/seed.json`: the thread ids by name and `frozenAt`, the
  * instant every capture's page clock is fixed to.
@@ -41,6 +42,8 @@ export interface ParitySeed {
   frozenAt: string;
   /** Thread ids by name, in capture order. */
   threads: Record<string, string>;
+  /** The agent session that asked in a thread, by thread name (the live captures poll as it). */
+  sessions: Record<string, string>;
   /** The binary that wrote the seed. */
   seededBy: string;
 }
@@ -57,6 +60,8 @@ export function parityEnv(home: string, dataDir: string): Record<string, string>
     PLANNOTATOR_INBOX_CONNECT: '0',
     PLANNOTATOR_UPDATE_CHECK: '0',
     PLANNOTATOR_INBOX_PHONES: '0',
+    // No offer to add a note to an agent's instructions (the scratch HOME has a ~/.claude for the restart line).
+    PLANNOTATOR_INBOX_NOTES: '0',
     PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9',
     PLANNOTATOR_UPDATE_API_URL: 'http://127.0.0.1:9/releases/latest',
     PLANNOTATOR_INSTALL_SCRIPT_URL: 'http://127.0.0.1:9/install.sh',
@@ -163,6 +168,27 @@ const WORST = [
   q('Which idempotency key format should the retry worker use?', [`idem_01HZX9QW3E5R7T9Y1U3I5O7P9A1S3D5F7G9H1J3K5L7Z9X1C3V5B7N9M1Q3W5E7R9T1Y3U5I7O9P1A3S5D7F9G1H3J5K7L9`, 'charge id plus attempt number'], ['Stopped: the retry worker cannot ship without this.']),
 ].join('\n');
 
+// Link choices (answered: today's folded line and "You answered" keep the raw markdown) and picture choices
+// (inbox-picture-choices.spec.ts).
+const LINKS = ['Two libraries fit. Pick one and I will wire it in.', '', q('Which search library should the docs use?', ['[Pagefind](https://pagefind.app)', '[Algolia DocSearch](https://docsearch.algolia.com)'])].join('\n');
+const DRAWERS = [
+  'Two drawer designs for checkout.',
+  '',
+  ':::question',
+  'Which checkout drawer should ship?',
+  'Stakes: ships to all of checkout on Thursday; changing it later costs a week of QA.',
+  'Shows: ![Both drawers side by side](shots/both.png)',
+  'Reversible: no — the old drawer code is deleted with the release',
+  '',
+  '- [ ] A · Total on top — ![Drawer A](shots/drawer-a.png) closest to today',
+  '- [ ] B · Total pinned with Pay — ![Drawer B](shots/drawer-b.png) the total never scrolls away',
+  '',
+  'Recommended: B · Total pinned with Pay',
+  '',
+  'Why: on a 320 px screen only B keeps the total next to the button.',
+  ':::',
+].join('\n');
+
 type Sent = { message_id: string; thread_id: string; questions: { key: string; prompt: string; kind: string }[]; attachments?: { id: string }[] };
 const answer = (question: Sent['questions'][number], selected: string[]) => ({ key: question.key, revision: 0, answer: { v: 1, key: question.key, kind: question.kind, prompt: question.prompt, selected } });
 
@@ -202,7 +228,7 @@ export async function seedThreadParity(binary: string, root: string, stop: (data
   writeFileSync(join(billing, 'docs', 'retry-policy.md'), '# Retry policy\n\nFailed refunds are retried with exponential backoff, five times at most.\n\n| Attempt | Delay |\n| --- | --- |\n| 1 | 1 min |\n| 2 | 5 min |\n');
   writeFileSync(join(billing, 'docs', 'retry-dashboard.html'), '<!doctype html><html><head><title>Retry dashboard</title></head><body style="font:16px system-ui;margin:24px"><h1>Retry dashboard</h1><p>1,204 failed payouts in us-east-1.</p></body></html>\n');
   writeFileSync(join(billing, 'docs', 'refund-states.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120"><rect width="240" height="120" fill="#f4f1ea"/><rect x="16" y="40" width="80" height="40" rx="6" fill="#3b82f6"/><rect x="144" y="40" width="80" height="40" rx="6" fill="#16a34a"/><path d="M96 60h48" stroke="#111" stroke-width="3"/></svg>\n');
-  copyFileSync(join(repo, 'packages/review-editor/assets/pr-artifact-icons/image.png'), join(billing, 'shots', 'retry-policy-desktop.png'));
+  for (const name of ['retry-policy-desktop.png', 'both.png', 'drawer-a.png', 'drawer-b.png']) copyFileSync(join(repo, 'packages/review-editor/assets/pr-artifact-icons/image.png'), join(billing, 'shots', name));
   writeFileSync(join(billing, 'shots', 'retry-walkthrough.mp4'), mp4());
 
   const agents: SimAgent[] = [];
@@ -212,6 +238,8 @@ export async function seedThreadParity(binary: string, root: string, stop: (data
     return made;
   };
   const threads: Record<string, string> = {};
+  const sessions: Record<string, string> = {};
+  const sessionOf = async (threadId: string) => ((await get(`/api/inbox/threads/${threadId}`)).thread.messages[0].author.session as string) ?? '';
   try {
     // 1. Folding: seven messages, questions answered, an annotated file, a guided review, one new.
     const claude = await agent('Claude Code', 'claude-code');
@@ -271,7 +299,7 @@ export async function seedThreadParity(binary: string, root: string, stop: (data
     const actor = await agent('Claude Code', 'claude-code');
     threads.actions = ((await actor.send({ project_path: billing, subject: 'Staging secrets and the deploy', body: ACTIONS })) as Sent).thread_id;
 
-    // 6. 👍 Looks good, settled (sent to the agent once its Undo window passed).
+    // 6. 👍 Looks good, settled (sent to the agent once its Undo window passed) and delivered (below).
     const pi = await agent('Pi', 'pi');
     const merged = (await pi.send({ project_path: docs, subject: 'Toast fix merged; CI is green', body: "Merged #1937. CI is green on `main` and the release branch picked it up.\n\nNothing needs you here. Next I'm looking at the stepping bug in full screen." })) as Sent;
     threads.ack = merged.thread_id;
@@ -291,18 +319,31 @@ export async function seedThreadParity(binary: string, root: string, stop: (data
     const worst = await agent('Codex', 'codex');
     threads.worst = ((await worst.send({ project_path: billing, subject: 'Webhook URL, key rotation and the nightly sync (נכשל / فشلت)', body: WORST })) as Sent).thread_id;
 
+    // 9. Choices: a link choice answered, then picture choices open.
+    const chooser = await agent('Claude Code', 'claude-code');
+    const links = (await chooser.send({ project_path: billing, subject: 'Search library and the checkout drawer', body: LINKS })) as Sent;
+    threads.choices = links.thread_id;
+    const linkQuestion = ((await get(`/api/inbox/threads/${links.thread_id}`)).thread.messages[0].questions as { key: string; choices: { label: string }[] }[])[0]!;
+    await post(`/api/inbox/messages/${links.message_id}/reply`, { idempotency_key: 'c1', questions: [answer(links.questions[0]!, [linkQuestion.choices[0]!.label])] });
+    await chooser.readThread(links.thread_id);
+    await chooser.send({ project_path: billing, body: DRAWERS, reply_to: links.message_id });
+
+    for (const name of ['delivery', 'replaced', 'ack']) sessions[name] = await sessionOf(threads[name]!);
+
     // The 👍 settles once its Undo window has passed (the Inbox's sweep); wait so no copy settles it later.
     await until('the 👍 to settle', async () => {
       const t = (await get(`/api/inbox/threads/${merged.thread_id}`)).thread as { messages: { id: string; ack?: { settled_at: string | null } | null }[] };
       return Boolean(t.messages.find((m) => m.id === merged.message_id)?.ack?.settled_at);
     });
+    // Pi picks it up: the pill reads "Delivered to Pi" and the row's tick is Delivered.
+    await pi.waitForReply(merged.thread_id, 20);
   } finally {
     await Promise.all(agents.map((a) => a.close().catch(() => {})));
     await stop(dataDir);
   }
 
   const frozenAt = new Date(Math.ceil((Date.now() + 120_000) / 60_000) * 60_000).toISOString();
-  const seed: ParitySeed = { root, dataDir, frozenAt, threads, seededBy: binary };
+  const seed: ParitySeed = { root, dataDir, frozenAt, threads, sessions, seededBy: binary };
   writeFileSync(join(root, 'seed.json'), JSON.stringify(seed, null, 2));
   return seed;
 }
