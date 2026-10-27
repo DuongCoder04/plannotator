@@ -194,6 +194,9 @@ test.if(hasDom)('the lanes in order, a card’s two lines, bold while unread, no
   expect($('[data-board-link="icebox"]')!.textContent).toBe('Icebox 1');
   expect(cardEl('crd_price')!.querySelector('.ib-bc-line')!.textContent).toBe('You: Read the copy, then say go');
   expect(cardEl('crd_hero')!.querySelector('.ib-bc-line')!.textContent).toBe('Option 3 of 6 rendered');
+  // The title has the whole width: the agent is a small mark at the bottom right, just before the age.
+  expect(cardEl('crd_hero')!.querySelector('.ib-bc-top .ib-mk')).toBeNull();
+  expect([...cardEl('crd_vite')!.querySelectorAll('.ib-bc-bot .ib-bc-meta > *')].map((el) => el.className.split(' ')[0])).toEqual(['ib-bc-mark', 'ib-bc-who', 'ib-bc-age']);
   // Heard after the look: bold. Before it: not.
   expect(cardEl('crd_auto')!.hasAttribute('data-unread')).toBe(true);
   expect(cardEl('crd_hero')!.hasAttribute('data-unread')).toBe(false);

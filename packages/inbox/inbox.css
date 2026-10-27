@@ -4850,15 +4850,19 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-bc-youlink:is(:hover, :focus-visible) .ib-bc-yout { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
 .ib-bc-youlink:is(:hover, :focus-visible) > svg { color: var(--primary); opacity: 1; }
 .ib-bc-youlink:focus-visible { outline: 2px solid var(--ring); outline-offset: 0; }
-.ib-bc-top { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 22px; }
+.ib-bc-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ib-bc-t { min-width: 0; flex: 0 1000000 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--ib-fs-14, 14px); font-weight: 500; color: color-mix(in oklab, var(--foreground) 72%, var(--card)); }
 .ib-bcard[data-unread] .ib-bc-t { font-weight: 650; color: var(--foreground); }
-.ib-bc-agetop { flex: none; margin-left: auto; margin-right: -22px; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
-.ib-bc-you { color: var(--muted-foreground); }
-.ib-bc-bot { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding-left: calc(var(--ib-mark-16) + 8px); font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
+.ib-bc-bot { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .ib-bc-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px; margin: -2px; }
 .ib-bc-youw { color: var(--ib-onyou-fg); font-weight: 600; }
 .ib-bc-age { flex: none; font-size: var(--ib-fs-12-5, 12.5px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The bottom right (owner, 2026-10-27): the link mark, the agent as a small round mark, the age. The title and its line take the whole width. */
+.ib-bc-meta { flex: none; display: inline-flex; align-items: center; gap: 6px; align-self: center; margin-left: auto; }
+.ib-bc-who { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in oklch, var(--muted) 90%, var(--foreground) 4%); }
+.ib-bc-who .ib-mk, .ib-bc-who .ib-mk > svg, .ib-bc-who .ib-mk > img { width: 11px; height: 11px; }
+.ib-bc-who[data-host="you"] { background: none; }
+.ib-bc-who > .ib-bc-yourdot { width: 13px; height: 13px; }
 /* A linked PR's or issue's state (inbox-card-marks): GitHub's Octicon shapes and colours, the dark
    values first and the light ones below; unknown is the same shape, quiet. */
 .pn-inbox {
@@ -4932,8 +4936,6 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   /* A bare "+" (the mock), its hit area still 44 px. */
   .pn-inbox .ib-bnew { width: 44px; height: 44px; padding: 0; justify-content: center; border-color: transparent; background: transparent; box-shadow: none; color: var(--foreground); }
   .ib-bcard { padding: 12px; }
-  .ib-bc-top { padding-right: 0; }
-  .ib-bc-agetop { margin-right: 0; }
   .ib-bc-t { white-space: normal; overflow-wrap: anywhere; font-size: var(--ib-fs-15, 15px); }
   .ib-bdrops { margin: 10px 12px; }
   .ib-bdrops li { flex-wrap: wrap; }

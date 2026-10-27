@@ -630,13 +630,16 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
 };
 
 /**
- * One card, variant C "Lean": the agent's mark and the title; then "You: …"
- * (the person's columns), "Sent to <agent>" with the delivery tick (a card
- * the person sent, until it moves), or the agent's last word; and how long
- * ago anyone last wrote to it. Bold while unread. The title is the button that
- * opens the card (a click anywhere else on the card does too); "You: …" is its
- * own button, to the thread where the person makes the call (`youThread`), or
- * the card when it links none.
+ * One card, variant C "Lean", leaner (owner, 2026-10-27: the agent "should
+ * probably be a small presence circle ... next to the timestamp at the bottom
+ * right"): the title, the whole width; then "You: …" (the person's columns),
+ * "Sent to <agent>" with the delivery tick (a card the person sent, until it
+ * moves), or the agent's last word, on one line; at the bottom right the
+ * linked PR's or issue's mark, the agent's small round mark (a dashed ring for
+ * the person's card) and how long ago anyone last wrote to it. Bold while
+ * unread. The title is the button that opens the card (a click anywhere else
+ * on the card does too); "You: …" is its own button, to the thread where the
+ * person makes the call (`youThread`), or the card when it links none.
  */
 function BoardCard({
   card,
@@ -663,12 +666,21 @@ function BoardCard({
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
   const thread = line?.you ? youThread(card, rowOf) : null;
   // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
-  // on): one line, the age beside the title, never an empty second line.
-  const oneLine = !sent && !line && !mark;
-  const ageTip = (
-    <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
-      <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
-    </Tip>
+  // on): one line, the marks and the age beside the title, never an empty second line.
+  const oneLine = !sent && !line;
+  const owner = cardOwnerName(card);
+  const meta = (
+    <span className="ib-bc-meta">
+      {mark && <RefMark mark={mark} />}
+      <Tip content={owner === 'You' ? 'Your card' : owner}>
+        <span className="ib-bc-who" data-host={card.agent?.kind === 'agent' ? card.agent.host : 'you'}>
+          {card.agent ? <AuthorMark author={card.agent} /> : <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" aria-hidden="true" />}
+        </span>
+      </Tip>
+      <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
+        <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
+      </Tip>
+    </span>
   );
   return (
     <li
@@ -694,13 +706,6 @@ function BoardCard({
       onDragEnd={onDragEnd}
     >
       <span className="ib-bc-top">
-        {card.agent ? (
-          <AuthorMark author={card.agent} />
-        ) : (
-          <span className="ib-mk ib-bc-you" aria-hidden="true">
-            <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
-          </span>
-        )}
         <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
           <Tip content={card.title} cut>
             <span className="ib-bc-t" dir="auto">
@@ -708,7 +713,7 @@ function BoardCard({
             </span>
           </Tip>
         </button>
-        {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
+        {oneLine && meta}
       </span>
       {!oneLine && (
         <span className="ib-bc-bot">
@@ -718,25 +723,22 @@ function BoardCard({
                 {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
                 <span className="ib-bc-sentt">Sent to {sent}</span>
               </span>
-            ) : line ? (
-              line.you ? (
-                <button
-                  type="button"
-                  className="ib-bc-youlink"
-                  data-card-you-link={thread ?? ''}
-                  aria-label={youLinkLabel(line.text, thread)}
-                  onClick={() => (thread ? onOpenThread(card, thread) : onOpen(card))}
-                >
-                  <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
-                  {thread && <Icon name="arrowUpRight" size={12} />}
-                </button>
-              ) : (
-                line.text
-              )
-            ) : null}
+            ) : line?.you ? (
+              <button
+                type="button"
+                className="ib-bc-youlink"
+                data-card-you-link={thread ?? ''}
+                aria-label={youLinkLabel(line.text, thread)}
+                onClick={() => (thread ? onOpenThread(card, thread) : onOpen(card))}
+              >
+                <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
+                {thread && <Icon name="arrowUpRight" size={12} />}
+              </button>
+            ) : (
+              line?.text
+            )}
           </span>
-          {mark && <RefMark mark={mark} />}
-          {ageTip}
+          {meta}
         </span>
       )}
     </li>
