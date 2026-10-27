@@ -64,7 +64,9 @@ export interface ComposeRequest {
   /**
    * A Board card with no thread (its opened card's "Create thread"): the
    * message starts with the card's title, so the thread's subject is the
-   * title, and the window links the sent thread to the card (`ComposeSent.card`).
+   * title, and the window links the sent thread to the card (`ComposeSent.cardId`).
+   * Saved as a draft, the draft keeps the card (`InboxDraft.card`), so sending
+   * it later from Drafts still links the thread.
    */
   card?: { id: string; title: string } | null;
 }
@@ -131,6 +133,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
 
   const [draft, setDraft] = useState<DraftView | null>(request.draft ?? null);
   const [body, setBody] = useState(request.draft?.body ?? request.body ?? (request.card ? `${request.card.title}\n\n` : ''));
+  // The Board card this thread is for (Create thread), kept on its draft so a draft sent later still links it.
+  const card = request.card ?? request.draft?.card ?? null;
   // The thread's name (its chip): follows the message until the person types in it (ThreadNameChip).
   const [nameState, setNameState] = useState<ThreadNameState>(() => threadNameStateOf(request.draft));
   const [chosen, setChosen] = useState<string | null>(opening.chosen);
@@ -283,7 +287,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         ...named,
         ...(draft ? { draft_id: draft.id } : {}),
       });
-      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null, cardId: request.card?.id ?? null });
+      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null, cardId: card?.id ?? null });
     } catch (cause) {
       if (cause instanceof InboxApiError && cause.code === 'session_not_live') {
         void load();
@@ -313,7 +317,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
       const project = target
         ? { id: target.project.id, root: target.project.root, name: target.project.name }
         : (draft?.project ?? (current?.root ? { id: current.id, root: current.root, name: current.name ?? current.root } : null));
-      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName });
+      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName, ...(card ? { card } : {}) });
       setDraft(result.draft);
       setConflict(null);
       return result.draft;
@@ -533,10 +537,10 @@ export function ComposeDialog(props: ComposeDialogProps) {
         </h2>
       )}
       {toRow}
-      {request.card && (
-        <p className="ib-cp-card" data-compose-card={request.card.id}>
+      {card && (
+        <p className="ib-cp-card" data-compose-card={card.id}>
           <span>
-            A thread for the Board card <b dir="auto">{request.card.title}</b>. Sending links it to the card.
+            A thread for the Board card <b dir="auto">{card.title}</b>. Sending links it to the card.
           </span>
         </p>
       )}

@@ -1878,6 +1878,12 @@ export interface InboxDraft {
    * out again from the body when the draft opens).
    */
   thread_name?: string;
+  /**
+   * The Board card it was started for (the opened card's Create thread): the
+   * Send that sends the draft links the new thread to this card. Absent for
+   * any other draft.
+   */
+  card?: { id: string; title: string };
 }
 
 /** A draft's chip: its chosen session is live, has ended, or none was chosen. */
