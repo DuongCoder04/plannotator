@@ -151,6 +151,26 @@ const DECISION_OFF_STYLE: React.CSSProperties = {
   outlineOffset: '-1px',
 };
 
+/**
+ * The footer in a narrow column. The card is a size container
+ * (`@container/qcard`: the card's own width, never the viewport's, because
+ * the card sits in columns of every width), and the footer row wraps whole
+ * buttons:
+ * - No button's words ever wrap inside it (`whitespace-nowrap`): the row
+ *   wraps between buttons instead, so Add note and Skip stay together.
+ * - Under 18rem inside the card (a card under about 320 px: a 560 px
+ *   column at 200% zoom, a small phone) Accept recommended takes a row of
+ *   its own, full width; under 10rem, where even that row may be too
+ *   short, its words end in an ellipsis rather than leave the card (its
+ *   name stays "Accept recommended"). The words stay one text node: a split
+ *   one moved the glyphs of a wide card by a fraction of a pixel.
+ * - On a touch screen each button is at least a 44 px target.
+ * A footer wide enough for one row draws exactly as before: none of these
+ * change a button that fits.
+ */
+const FOOT_BUTTON = 'whitespace-nowrap pointer-coarse:min-h-11 pointer-coarse:min-w-11';
+const FOOT_PRIMARY = '@max-[18rem]/qcard:basis-full @max-[10rem]/qcard:overflow-hidden @max-[10rem]/qcard:text-ellipsis';
+
 /** Two answers say the same thing (identity and line ignored). */
 const sameAnswer = (a: QuestionAnswer | null | undefined, b: QuestionAnswer | null | undefined): boolean => {
   const norm = (x: QuestionAnswer | null | undefined) =>
@@ -640,6 +660,8 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
       ref={cardRef}
       className={cx(
         'question-block my-5 min-w-0 rounded-[10px] border px-3.5 pb-2.5 pt-3',
+        // A size container: the card's own width lays out its footer (FOOT_BUTTON).
+        '@container/qcard',
         // Native radios/checkboxes follow the theme's mode. ThemeProvider marks
         // light mode with `.light` on the root; a host without theme classes
         // keeps the page's own color-scheme.
@@ -985,7 +1007,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
 
       {(!readOnly || hasHostFooter) && (
         <div
-          className="annotation-exclude select-none mt-2 flex items-center gap-1 border-t border-border/55 pt-1.5"
+          className="annotation-exclude select-none mt-2 flex flex-wrap items-center gap-1 border-t border-border/55 pt-1.5"
           data-pinpoint-ignore=""
         >
           {!readOnly && (
@@ -994,6 +1016,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               onClick={toggleNote}
               aria-expanded={noteOpen}
               className={cx(
+                FOOT_BUTTON,
                 'rounded-[5px] px-[7px] py-[3px] text-xs hover:bg-muted hover:text-foreground',
                 noteOpen ? 'text-foreground' : 'text-muted-foreground',
               )}
@@ -1008,6 +1031,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               onClick={toggleSkip}
               aria-pressed={skipped}
               className={cx(
+                FOOT_BUTTON,
                 'rounded-[5px] px-[7px] py-[3px] text-xs hover:bg-muted hover:text-foreground',
                 skipped ? 'text-foreground' : 'text-muted-foreground',
               )}
@@ -1022,18 +1046,18 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               <button
                 type="button"
                 onClick={acceptRecommended}
-                className="ml-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                className={cx(FOOT_BUTTON, FOOT_PRIMARY, 'ml-auto rtl:ml-0 rtl:mr-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
               >
                 Accept recommended
               </button>
             )
           ) : (
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ml-auto rtl:ml-0 rtl:mr-auto flex flex-wrap items-center justify-end gap-1 @max-[18rem]/qcard:basis-full">
               {offerAccept && (
                 <button
                   type="button"
                   onClick={acceptRecommended}
-                  className="rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  className={cx(FOOT_BUTTON, 'rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
                 >
                   Accept recommended
                 </button>
@@ -1045,7 +1069,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     type="button"
                     onClick={cancel}
                     disabled={saving}
-                    className="rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60"
+                    className={cx(FOOT_BUTTON, 'rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60')}
                   >
                     Cancel
                   </button>
@@ -1054,7 +1078,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     onClick={save}
                     disabled={saving}
                     aria-busy={saving || undefined}
-                    className="rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60"
+                    className={cx(FOOT_BUTTON, 'rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60')}
                   >
                     {(typeof saveLabel === 'function' ? saveLabel(question) : saveLabel) || 'Save answer'}
                   </button>
