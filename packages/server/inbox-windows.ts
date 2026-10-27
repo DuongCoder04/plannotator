@@ -124,6 +124,13 @@ export function createInboxWindows(options: { graceMs?: number; now?: () => numb
       allowed_origins: [...new Set(allowed.map((w) => w.origin).filter((o): o is string => o !== null))].sort(),
     };
   };
+  // DIAG (temporary): every change, with the ids that count after it.
+  const trace = process.env.PLANNOTATOR_E2E_WINDOWS_TRACE
+    ? (op: string, id: string, extra: Record<string, unknown> = {}) => {
+        const r = windows.get(id);
+        console.error(`[windows] ${JSON.stringify({ t: Date.now(), op, id: id.slice(0, 8), ...extra, rec: r ? { streams: r.streams, servedBy: r.servedBy?.slice(0, 8) ?? null, gone: r.gone, ended: r.streamEndedAt } : null, counted: [...windows].filter(([, w]) => isOpen(w)).map(([k]) => k.slice(0, 8)) })}`);
+      }
+    : () => {};
   const scheduleDrop = (id: string, record: WindowRecord) => {
     if (record.drop) clearTimeout(record.drop);
     record.drop = setTimeout(() => {
@@ -135,6 +142,7 @@ export function createInboxWindows(options: { graceMs?: number; now?: () => numb
         return;
       }
       windows.delete(id);
+      trace("drop", id);
       changed();
     }, graceMs);
     (record.drop as { unref?: () => void }).unref?.();
@@ -163,6 +171,7 @@ export function createInboxWindows(options: { graceMs?: number; now?: () => numb
         clearTimeout(record.drop);
         record.drop = null;
       }
+      trace("connect", id);
       changed();
       let closed = false;
       return () => {
@@ -180,6 +189,7 @@ export function createInboxWindows(options: { graceMs?: number; now?: () => numb
           (expiry as { unref?: () => void }).unref?.();
           expiries.add(expiry);
         }
+        trace("disconnect", id);
         changed();
       };
     },
@@ -193,14 +203,19 @@ export function createInboxWindows(options: { graceMs?: number; now?: () => numb
       // A report before the stream (or after it closed) is kept for the grace only
       // (a follower's, for as long as its leader is known: see scheduleDrop).
       if (record.streams === 0) scheduleDrop(id, record);
+      trace("report", id);
       changed();
     },
     leave(id) {
       const record = windows.get(id);
-      if (!record || record.gone) return;
+      if (!record || record.gone) {
+        trace("leave-ignored", id);
+        return;
+      }
       record.gone = true;
       // Kept for the grace, so followers it served still count until they report their new leader.
       if (record.streams === 0) scheduleDrop(id, record);
+      trace("leave", id);
       changed();
     },
     reach(enabled) {

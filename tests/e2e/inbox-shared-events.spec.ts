@@ -36,7 +36,7 @@
  */
 
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { removeInboxScratch, stopScratchInbox } from './inbox-scratch';
 import {
@@ -75,6 +75,13 @@ test.afterAll(async () => {
     for (const world of worlds) await closeWorld(world);
   } finally {
     writeFileSync(join(proofDir, 'results-chromium.json'), `${JSON.stringify(results, null, 2)}\n`);
+    // DIAG (temporary): each world's window trace.
+    worlds.forEach((world, i) => {
+      try {
+        const lines = readFileSync(join(world.dataDir, 'inbox', 'inbox.log'), 'utf8').split('\n').filter((l) => l.includes('[windows]'));
+        writeFileSync(join(proofDir, `windows-${process.pid}-${Date.now()}-${i}.log`), `${lines.join('\n')}\n`);
+      } catch {}
+    });
     await removeInboxScratch();
   }
 });
@@ -367,34 +374,93 @@ test('notifications once and the sound once across the tabs; a follower in front
 
 test('notify_reach follows the tabs: open, a follower closes, a follower crashes, the leader closes', async ({ browser }) => {
   const w = await world(browser);
+  // DIAG (temporary): what each tab asked the server, and the count over time.
+  const t0 = Date.now();
+  const diag: string[] = [];
+  const label = new Map<object, string>();
+  const tag = (p: unknown) => label.get(p as object) ?? '?';
+  w.context.on('request', (req) => {
+    const u = req.url();
+    if (!u.includes('/api/inbox/window') && !u.includes('/api/inbox/events')) return;
+    let who = '?';
+    try {
+      who = tag(req.frame().page());
+    } catch {
+      who = 'noframe';
+    }
+    diag.push(`${Date.now() - t0} ${who} ${req.method()} ${u.replace(w.url, '/')} ${req.postData() ?? ''}`);
+  });
   await seed(w);
-  for (let i = 0; i < 4; i++) await openTab(w);
+  for (let i = 0; i < 4; i++) {
+    const { page } = await openTab(w);
+    label.set(page, `T${i}`);
+  }
+  for (const p of w.pages) diag.push(`${tag(p)} id=${(await logOf(p)).find((e) => e.type === 'subscribe')?.window}`);
+  let polling = true;
+  let lastCount = -1;
+  const poller = (async () => {
+    while (polling) {
+      try {
+        const n = (await health(w)).notify_reach.windows;
+        if (n !== lastCount) diag.push(`${Date.now() - t0} windows=${n}`);
+        lastCount = n;
+      } catch {}
+      await new Promise((d) => setTimeout(d, 50));
+    }
+  })();
+  const pagesSeen = [...w.pages];
+  const dump = async (name: string) => {
+    polling = false;
+    await poller;
+    const logs: Record<string, unknown> = {};
+    for (const p of pagesSeen) logs[tag(p)] = await Promise.race([logOf(p), new Promise((d) => setTimeout(() => d('timeout'), 2000))]).catch((e) => String(e));
+    let server: string[] = [];
+    try {
+      server = readFileSync(join(w.dataDir, 'inbox', 'inbox.log'), 'utf8').split('\n').filter((l) => l.includes('[windows]')).map((l) => {
+        const j = JSON.parse(l.slice(l.indexOf('{')));
+        return `${j.t - t0} ${j.op} ${j.id} ${JSON.stringify(j.rec)} counted=${j.counted.join(',')}`;
+      });
+    } catch (e) {
+      server = [String(e)];
+    }
+    writeFileSync(join(proofDir, `diag-reach-${name}-${process.pid}-${Date.now()}.json`), JSON.stringify({ diag, logs, server }, null, 1));
+  };
   const windows = async () => (await health(w)).notify_reach;
+  const timeline: Record<string, number> = {};
+  let dumped = false;
+  try {
   await expect.poll(async () => (await windows()).windows).toBe(4);
   expect((await windows()).allowed).toBe(4);
-  const timeline: Record<string, number> = {};
   let [leader] = await leaders(w.pages);
   const followers = w.pages.filter((p) => p !== leader);
 
   // A follower closes: its pagehide beacon (or the leader, which sees its lock go).
+  diag.push(`${Date.now() - t0} closing follower ${tag(followers[0])}`);
   await followers[0]!.close();
   forget(w, followers[0]!);
   timeline.followerClosedMs = (await waitFor(windows, (r) => r.windows === 3)).ms;
 
   // A follower crashes: no pagehide; the leader sees its lock released.
   const cdp = await w.context.newCDPSession(followers[1]!);
-  void cdp.send('Page.crash').catch(() => {});
+  diag.push(`${Date.now() - t0} crashing ${tag(followers[1])}`);
+  void cdp.send('Page.crash').catch((e) => diag.push(`crash error ${e}`));
   forget(w, followers[1]!);
   timeline.followerCrashedMs = (await waitFor(windows, (r) => r.windows === 2)).ms;
 
   // The leader closes: it stops counting at once, its follower stays counted under the new leader.
   [leader] = await leaders(w.pages);
+  diag.push(`${Date.now() - t0} closing leader ${tag(leader)}`);
   await leader!.close();
   forget(w, leader!);
   timeline.leaderClosedMs = (await waitFor(windows, (r) => r.windows === 1)).ms;
   // And it holds there (never drops to 0 while one tab is open).
+  diag.push(`${Date.now() - t0} hold start`);
   await new Promise((done) => setTimeout(done, 17_000));
-  expect((await windows()).windows).toBe(1);
+  const held = (await windows()).windows;
+  diag.push(`timeline ${JSON.stringify(timeline)}`);
+  dumped = true;
+  await dump(held === 1 ? 'ok' : 'FAIL');
+  expect(held).toBe(1);
   expect(await streams(w)).toBe(1);
   // A new tab joins.
   await openTab(w);
@@ -402,6 +468,11 @@ test('notify_reach follows the tabs: open, a follower closes, a follower crashes
   // A crashed tab is seen when the browser frees its lock: at once on macOS, about 3 s later on GitHub's Linux runners.
   for (const [step, ms] of Object.entries(timeline)) expect(ms).toBeLessThan(step === 'followerCrashedMs' ? 8000 : 3000);
   results.reach = timeline;
+  } catch (e) {
+    diag.push(`threw ${String(e).slice(0, 300)} timeline ${JSON.stringify(timeline)}`);
+    if (!dumped) await dump('THROW').catch(() => {});
+    throw e;
+  }
 });
 
 test('an Inbox restart: every tab reconnects through one stream and keeps getting every record once', async ({ browser }) => {

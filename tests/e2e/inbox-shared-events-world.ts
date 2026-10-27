@@ -141,6 +141,8 @@ export async function newWorld(browser: Browser, options: { binary?: string; noL
     PLANNOTATOR_INBOX_CONNECT: '0',
     PLANNOTATOR_UPDATE_CHECK: '0',
     PLANNOTATOR_INBOX_PHONES: '0',
+    // DIAG (temporary): the server traces every window change to inbox.log.
+    PLANNOTATOR_E2E_WINDOWS_TRACE: '1',
   };
   const chosen = options.binary ?? binary;
   const context = await browser.newContext({ viewport: { width: 1100, height: 760 }, colorScheme: 'light' });
