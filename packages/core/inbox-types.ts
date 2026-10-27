@@ -1745,10 +1745,15 @@ export type InboxToolCostHost = "pi" | "opencode";
  * lists `card` only while it is on, so what a user gets by default is the
  * entry WITHOUT `card`, and that is the stated cost. With the Board on it is
  * the 10,171 bytes above.
+ * The reply_to check (INBOX_REPLY_TO_CHECK, the misfiled-thread AAR,
+ * 2026-10-27) added one sentence to the agent tool's `reply_to`: measured on
+ * Pi with the cost test, 8,841 → 8,964 bytes (+123; about +30 tokens, so the
+ * rounded token figure stands). With the Board on 10,294 (10,171 + 123,
+ * estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 8841, tokens: 2500 };
+const INBOX_TOOL_COST_NOW = { bytes: 8964, tokens: 2500 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10171, tokens: 2900 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10294, tokens: 2900 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

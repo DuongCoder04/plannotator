@@ -143,7 +143,7 @@ test('plannotator inbox connects the agents found; the note is asked once per ag
     await expect(primary).toBeFocused();
     await shot(page, 'checklist-01-several', ['desktop', 'narrow']);
     await dialog.getByRole('button', { name: 'Show the note' }).click();
-    await expect(dialog.locator('.ib-anote-note pre')).toContainText('<!-- plannotator-inbox:start v1');
+    await expect(dialog.locator('.ib-anote-note pre')).toContainText('<!-- plannotator-inbox:start v2 ');
     await shot(page, 'checklist-05-show-note');
     await dialog.getByRole('button', { name: 'Hide the note' }).click();
 
@@ -180,7 +180,7 @@ test('plannotator inbox connects the agents found; the note is asked once per ag
     await shot(page, 'checklist-07-added', ['desktop', 'narrow']);
     await dialog.getByRole('button', { name: 'Done' }).click();
     await expect(dialog).toHaveCount(0);
-    expect(readFileSync(join(fake.home, '.codex', 'AGENTS.md'), 'utf8')).toMatch(/^# My rules\n\nBe brief\.\n\n<!-- plannotator-inbox:start v1 /);
+    expect(readFileSync(join(fake.home, '.codex', 'AGENTS.md'), 'utf8')).toMatch(/^# My rules\n\nBe brief\.\n\n<!-- plannotator-inbox:start v2 /);
     expect(readFileSync(join(fake.home, '.gemini', 'GEMINI.md'), 'utf8')).toContain('## Plannotator Inbox');
     // Claude Code was unticked: no file, and it is answered (asked once).
     expect(existsSync(join(fake.home, '.claude', 'rules', 'plannotator-inbox.md'))).toBe(false);

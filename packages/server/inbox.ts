@@ -293,6 +293,8 @@ export interface InboxServerOptions {
   htmlContent?: string;
   /** Tests: how long a window's record outlives its last event stream (default `WINDOW_GRACE_MS`). */
   windowGraceMs?: number;
+  /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
+  mcpNow?: () => number;
   /**
    * The argv that runs this CLI (the compiled binary's absolute path, or bun
    * plus the entry script), so the window's connect snippets name a command
@@ -837,6 +839,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           codexWake.wakes(host, session, meta),
         // The Board: the card tool is listed and served only while the person has it on.
         boardOn,
+        ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
   );

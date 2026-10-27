@@ -369,6 +369,32 @@ describe.skipIf(!piRuns)("Pi ↔ Plannotator Inbox (the real Pi in RPC mode, a r
 		w.proof("inboxReminder.pi false: the tool, no reminder");
 	}, 180_000);
 
+	// The misfiled-thread AAR (2026-10-27): after a compaction the thread ids must come from the Inbox,
+	// not from the summary. The failure this catches: the reminder Pi sends again after a compaction
+	// without the session's open threads, or with them but read as a look (no project made, no read).
+	test("after a compaction that summarized the reminder away, the reminder comes back with the session's open threads", async () => {
+		const w = world("01c-threads-after-compaction");
+		const m = model(askingScript());
+		startInbox(w);
+		knob(w, true);
+		// Keep nothing but the newest turn, so the compaction summarizes the reminder away.
+		mkdirSync(join(w.root, "pi-agent"), { recursive: true });
+		writeFileSync(join(w.root, "pi-agent", "settings.json"), JSON.stringify({ compaction: { keepRecentTokens: 1 } }));
+		const pi = await openPi(w, m);
+		await ask(pi, "Ask the person which region to use.");
+		const sent = sentFrom(m);
+		await ask(pi, "Go on.");
+		const before = m.requests.length;
+		await pi.client.compact();
+		await ask(pi, "Next step.");
+		const after = m.requests.slice(before).at(-1)!;
+		const reminders = after.messages.map((message) => messageText(message.content)).filter((text) => text.includes(INBOX_REMINDER_TEXT));
+		expect(reminders).toHaveLength(1);
+		expect(reminders[0]).toContain("Your open Plannotator Inbox threads in this project (1).");
+		expect(reminders[0]).toContain(`- ${sent.thread_id} · `);
+		w.proof(`after the compaction, the reminder message reads:\n\n${reminders[0]}`);
+	}, 180_000);
+
 	// #2194: what the model reads at the session's first prompt, on the real Pi.
 	test("prompts.inbox: with none, the reminder message is today's text byte for byte; with Pi's own text, that text replaces it, once, in the same place", async () => {
 		const w = world("01c-reminder-custom");

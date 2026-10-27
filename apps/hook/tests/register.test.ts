@@ -893,6 +893,118 @@ describe('register', () => {
     expect(w.env.has('PLANNOTATOR_INBOX_REMINDER')).toBe(false)
   })
 
+  // --- The session's open threads after a compaction and on a resume (the misfiled-thread AAR) ---
+  //
+  // The failure these catch: after a compaction the conversation holds only
+  // the thread ids the model kept in its own summary, so the thread list must
+  // come from the Inbox, fresh, every compaction; and it must never hold up or
+  // break a compaction or a resume when the Inbox is not there.
+  const TRANSCRIPT = [{ role: 'user', text: 'Ship the journey fixes.', toolUses: [] }]
+  const SUMMARY = [{ role: 'user', text: 'Summary: the journey fixes shipped.', toolUses: [] }]
+  const THREAD_ID = 'msg_01M5WQ58NAVGBFZS4QKFBE1TCC'
+  const LIST = {
+    content: [{ type: 'text', text: '1 thread in work.' }],
+    structuredContent: {
+      threads: [{ thread_id: THREAD_ID, subject: 'ML team journey', thread_name: null, questions: { open: 2, picked: 0 }, unread: true, last_author: 'person', last_at: '2026-10-27T06:24:00.000Z' }],
+      total: 1,
+    },
+  }
+  const THREADS = `Your open Plannotator Inbox threads in this project (1). Before reply_to into a thread you have not read in this context window, call ${INBOX_TOOL} read_thread with no id and match the subject.\n- ${THREAD_ID} · "ML team journey" · 2 open questions · the person wrote something you have not read · last the person 2026-10-27 06:24Z`
+  /** The Inbox of `inbox()`, whose read_thread list answers LIST (once `listed` is true) and records the peeks. */
+  function inboxWithThreads(peeks: any[], state: { listed: boolean; up: boolean } = { listed: true, up: true }) {
+    const base = inbox(TOOLS, [])
+    return (e: any) => {
+      if (!state.up && !e.url.endsWith('/mcp')) return { status: 0, ok: false, headers: {}, text: '' }
+      const body = e.init?.body ? JSON.parse(e.init.body) : undefined
+      if (body?.method === 'tools/call' && body.params?.name === 'read_thread') {
+        peeks.push(body.params)
+        const result = state.listed ? LIST : { content: [{ type: 'text', text: '0 threads.' }], structuredContent: { threads: [], total: 0 } }
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) }
+      }
+      return base(e)
+    }
+  }
+
+  test("before a compaction installs, the reminder variable is made fresh: the reminder, then the session's open threads from a peek", async ($: any, on: any) => {
+    const peeks: any[] = []
+    const state = { listed: true, up: true }
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, state) })
+    on('session.compact', () => ({ messages: SUMMARY }))
+    await $.session.start(SESSION)
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(REMINDER)
+
+    await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(`${REMINDER}\n\n${THREADS}`)
+    // The session's own list, marked as a peek (no project made, not a read).
+    expect(peeks[0]).toEqual({ name: 'read_thread', arguments: { project_path: '/work', agent_session: 'session-1', limit: 5 }, _meta: { 'ai.plannotator/inbox-peek': true } })
+
+    // The next compaction finds no open thread: the reminder alone again, never a stale list.
+    state.listed = false
+    await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(REMINDER)
+
+    // An Inbox that stopped: the reminder alone, and the compaction goes on.
+    state.listed = true
+    state.up = false
+    const done = await $.session.compact({ trigger: 'manual', messages: TRANSCRIPT })
+    expect(done.messages).toEqual(SUMMARY)
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(REMINDER)
+  })
+
+  test('a precompute and a subagent compaction leave the variable alone; a guard that skips classic.* does not stop the list', { plugins: [GUARD] }, async ($: any, on: any) => {
+    const peeks: any[] = []
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks) })
+    on('session.compact', () => ({ messages: SUMMARY }))
+    await $.session.start(SESSION)
+    await $.session.compact({ trigger: 'precompute', messages: TRANSCRIPT })
+    await $.session.compact({ trigger: 'auto', agentId: 'agent-1', messages: TRANSCRIPT })
+    expect(peeks).toEqual([])
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(REMINDER)
+    await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(`${REMINDER}\n\n${THREADS}`)
+  })
+
+  test('the reminder switched off: a compaction asks the Inbox nothing and sets nothing', async ($: any, on: any) => {
+    const peeks: any[] = []
+    const files = withRegistry()
+    files.set('/home/me/.plannotator/config.json', JSON.stringify({ inboxReminder: false }))
+    const w = world(on, { files, fetch: inboxWithThreads(peeks) })
+    on('session.compact', () => ({ messages: SUMMARY }))
+    await $.session.start(SESSION)
+    await $.session.compact({ trigger: 'auto', messages: TRANSCRIPT })
+    expect(peeks).toEqual([])
+    expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBeUndefined()
+  })
+
+  test("a resume gets the session's open threads as SessionStart context; a startup or /clear asks nothing", async ($: any, on: any) => {
+    const peeks: any[] = []
+    world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks) })
+    on('classic.SessionStart', () => ({ additionalContext: ['beneath'] }))
+    await $.session.start(SESSION)
+
+    const startup = await $.classic.SessionStart({ source: 'startup' })
+    const cleared = await $.classic.SessionStart({ source: 'clear' })
+    expect(peeks).toEqual([])
+    expect(startup.additionalContext).toEqual(['beneath'])
+    expect(cleared.additionalContext).toEqual(['beneath'])
+
+    const resumed = await $.classic.SessionStart({ source: 'resume', session_id: 'session-9', cwd: '/work' })
+    expect(resumed.additionalContext).toEqual(['beneath', THREADS])
+    expect(peeks[0].arguments.agent_session).toBe('session-9')
+  })
+
+  test('a resume with no Inbox running, or no open thread: the context is left as it was', async ($: any, on: any) => {
+    const peeks: any[] = []
+    const state = { listed: false, up: true }
+    world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, state) })
+    on('classic.SessionStart', () => ({}))
+    await $.session.start(SESSION)
+    expect((await $.classic.SessionStart({ source: 'resume' })).additionalContext).toBeUndefined()
+    state.up = false
+    state.listed = true
+    expect((await $.classic.SessionStart({ source: 'resume' })).additionalContext).toBeUndefined()
+  })
+
   test('an Inbox found: plannotator_inbox carries exactly the tools its /mcp offers, filled arguments left out', async ($: any, on: any) => {
     const calls: { url: string; body: any }[] = []
     const w = world(on, { files: withRegistry(), fetch: inbox([...TOOLS, GUIDE_TOOL], calls) })

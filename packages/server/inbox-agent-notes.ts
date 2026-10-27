@@ -38,6 +38,7 @@ import {
   type InboxNoteAgentId,
 } from "@plannotator/core/inbox-types";
 import { loadConfig, saveConfig } from "@plannotator/shared/config";
+import { INBOX_REPLY_TO_CHECK } from "@plannotator/shared/inbox/connection";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { describeFsError, readAgentFile, stripJsonComments, withBom, writeAgentFileAtomic } from "./agent-files";
 import {
@@ -55,12 +56,21 @@ import {
   type ConnectOptions,
 } from "./inbox-agents";
 
-export const INBOX_NOTE_VERSION = 1;
-export const INBOX_NOTE_START = `<!-- plannotator-inbox:start v${INBOX_NOTE_VERSION} · added by Plannotator. Remove it in the Inbox's Settings or with \`plannotator uninstall\` -->`;
+/**
+ * v2 (2026-10-27, the misfiled-thread AAR): two lines after v1's, the check
+ * before a reply_to into a thread not read in this context window, and where
+ * a question's recommendation goes. A v1 block Plannotator wrote is brought up
+ * to date the next time the note is added (`--notes`, the Settings switch);
+ * a block the person edited never is.
+ */
+export const INBOX_NOTE_VERSION = 2;
+const noteStart = (version: number) =>
+  `<!-- plannotator-inbox:start v${version} · added by Plannotator. Remove it in the Inbox's Settings or with \`plannotator uninstall\` -->`;
+export const INBOX_NOTE_START = noteStart(INBOX_NOTE_VERSION);
 export const INBOX_NOTE_END = "<!-- plannotator-inbox:end -->";
 
-/** The note (DESIGN.md section 2.3): true with or without the tool, so a session without it is not misled. */
-export const INBOX_NOTE_BODY = [
+/** v1's body, exactly as 0.28.x wrote it: kept so a v1 block with no record still reads as Plannotator's own, untouched. */
+const INBOX_NOTE_BODY_V1 = [
   "## Plannotator Inbox",
   "",
   "The person keeps a Plannotator Inbox on this computer: a window where they read what agents send and answer when they can.",
@@ -68,7 +78,21 @@ export const INBOX_NOTE_BODY = [
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`. When they are here, ask in this chat instead.",
 ].join("\n");
 
+/**
+ * The note (DESIGN.md section 2.3): true with or without the tool, so a
+ * session without it is not misled. Loaded in every session of the agent, so
+ * every line earns its place.
+ */
+export const INBOX_NOTE_BODY = [
+  INBOX_NOTE_BODY_V1,
+  INBOX_REPLY_TO_CHECK,
+  'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
+].join("\n");
+
 export const INBOX_NOTE_BLOCK = `${INBOX_NOTE_START}\n${INBOX_NOTE_BODY}\n${INBOX_NOTE_END}`;
+
+/** Every block an earlier Plannotator wrote, untouched (LF): read as Plannotator's own when no record names it. */
+const INBOX_NOTE_EARLIER_BLOCKS = [`${noteStart(1)}\n${INBOX_NOTE_BODY_V1}\n${INBOX_NOTE_END}`];
 
 export const INBOX_AGENT_NOTES_FILE = "agent-notes.json";
 
@@ -125,6 +149,10 @@ function writeInboxAgentNotes(dataDir: string, file: InboxAgentNotesFile): void 
 }
 
 const sha256 = (text: string) => createHash("sha256").update(text.replace(/\r\n/g, "\n")).digest("hex");
+
+/** A block exactly as some Plannotator wrote it (this version or an earlier one): Plannotator's own, untouched. */
+const EARLIER_BLOCK_HASHES = new Set(INBOX_NOTE_EARLIER_BLOCKS.map(sha256));
+const isPlannotatorBlock = (hash: string) => hash === sha256(INBOX_NOTE_BLOCK) || EARLIER_BLOCK_HASHES.has(hash);
 
 /** Where a path leads, as far as it exists (a symlinked folder on its way included). */
 function resolved(path: string): string {
@@ -324,7 +352,7 @@ export function noteStatus(agent: InboxNoteAgentId, dataDir: string, e: AgentEnv
   if (found.kind === "damaged") return { ...base, state: "damaged", reason: "the Plannotator section's markers are broken; fix or delete it by hand" };
   const hash = sha256(found.block);
   const owner = record ?? shared.map((id) => readInboxAgentNotes(dataDir).notes[id]).find(Boolean);
-  const untouched = owner ? owner.block_sha256 === hash : hash === sha256(INBOX_NOTE_BLOCK);
+  const untouched = owner ? owner.block_sha256 === hash : isPlannotatorBlock(hash);
   // A block another agent's record owns in this shared file is on for this agent only once it has its own record.
   if (!record && shared.length > 0) return { ...base, state: "absent" };
   return { ...base, state: untouched ? "added" : "edited" };
@@ -366,7 +394,8 @@ export function addInboxNote(agent: InboxNoteAgentId, dataDir: string, e: AgentE
     if (hash === sha256(INBOX_NOTE_BLOCK)) {
       next = original;
       action = notes[agent] || !owner ? "unchanged" : "shared";
-    } else if (owner && owner.block_sha256 === hash) {
+    } else if (owner ? owner.block_sha256 === hash : EARLIER_BLOCK_HASHES.has(hash)) {
+      // An older note Plannotator wrote (its record, or with the record lost, a block exactly as an earlier version wrote it).
       next = original.slice(0, found.start) + blockIn(nl) + original.slice(found.end);
       action = "updated";
     } else {
@@ -520,7 +549,7 @@ export function planInboxNoteRemoval(dataDir: string, e: AgentEnvironment, label
       }
       const owners = INBOX_NOTE_AGENT_IDS.filter((id) => records[id]?.path === real);
       const record = owners.map((id) => records[id]).find(Boolean);
-      const edited = sha256(found.block) !== (record?.block_sha256 ?? sha256(INBOX_NOTE_BLOCK));
+      const edited = record ? sha256(found.block) !== record.block_sha256 : !isPlannotatorBlock(sha256(found.block));
       const created = record?.created === true || real === resolved(claudeRulesFile(e));
       const how = created ? "created by Plannotator: file removed if empty" : "marked section only";
       items.push({
