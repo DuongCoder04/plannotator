@@ -2372,7 +2372,7 @@ function Inbox() {
     }
   };
 
-  // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  // Settings → Experimental: decision mode, saved to config.json and applied at once.
   // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
   const toggleBoard = async (next: boolean) => {
     setSettingsError(null);

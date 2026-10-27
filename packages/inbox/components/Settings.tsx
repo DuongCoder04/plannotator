@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { INBOX_SOUND_MAX_VOLUME, INBOX_SOUND_MIN_VOLUME, INBOX_TEXT_SIZES } from '@plannotator/core/inbox-types';
 import type { InboxSound } from '../sound';
-import type { AgentToolHost, SettingsModel } from '../api';
+import type { AgentToolHost, InboxExperimentalSettings, SettingsModel } from '../api';
 import { formatBytes, formatCount, plural, tildePath } from '../format';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon, type IconName } from '../icons';
@@ -34,6 +34,7 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   archived: 'archive',
   storage: 'disk',
   about: 'info',
+  experimental: 'beaker',
 };
 
 /** Projects listed before the rest fold under "N more projects". */
@@ -49,7 +50,7 @@ export interface SettingsPageProps {
   context: ConnectContext | null;
   error: string | null;
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
-  /** Settings → General → Experimental: decision mode's switch. Absent: no Experimental group. */
+  /** Settings → Experimental: decision mode's switch. Absent (or an Inbox that reports no experimental features): no Experimental row. */
   onToggleExperimental?: (next: boolean) => void;
   /** Settings → General → Board: the Board's switch. Absent (or an Inbox without the switch): no Board group. */
   onToggleBoard?: (next: boolean) => void;
@@ -197,12 +198,10 @@ function GeneralSection({
   notifyReach,
   onTestNotification,
   sound,
-  onToggleExperimental,
   onToggleBoard,
   onTakeTour,
   updateRow,
 }: {
-  onToggleExperimental?: (next: boolean) => void;
   onToggleBoard?: (next: boolean) => void;
   onTakeTour?: () => void;
   updateRow?: ReactNode;
@@ -395,34 +394,41 @@ function GeneralSection({
           </div>
         </section>
       )}
-      {settings.experimental && onToggleExperimental && (
-        <section className="ib-sgroup" data-settings-experimental="" aria-labelledby="ib-g-experimental">
-          <h2 id="ib-g-experimental">Experimental</h2>
-          <div className="ib-card">
-            <div className="ib-prow">
-              <span className="ib-txt">
-                <span className="ib-l" id="ib-decision-mode-label">
-                  Decision mode
-                </span>
-                <span className="ib-desc">
-                  {settings.experimental.decision_mode.env !== null
-                    ? `PLANNOTATOR_EXPERIMENTAL turns it ${settings.experimental.decision_mode.env ? 'on' : 'off'}.`
-                    : 'Answer what agents ask across threads, one decision at a time; each agent gets one reply per thread.'}
-                </span>
-              </span>
-              <span className="ib-ctl">
-                <Switch
-                  on={settings.experimental.decision_mode.on}
-                  labelledBy="ib-decision-mode-label"
-                  disabled={settings.experimental.decision_mode.env !== null}
-                  onClick={() => onToggleExperimental(!settings.experimental!.decision_mode.on)}
-                />
-              </span>
-            </div>
-          </div>
-        </section>
-      )}
     </>
+  );
+}
+
+/**
+ * Experimental (the owner, 2026-10-27: "its own page on settings", the last
+ * row of the nav): each experimental feature's switch, off unless turned on,
+ * locked while PLANNOTATOR_EXPERIMENTAL decides. Today one: decision mode.
+ */
+function ExperimentalSection({ experimental, onToggleExperimental }: { experimental: InboxExperimentalSettings; onToggleExperimental: (next: boolean) => void }) {
+  return (
+    <section className="ib-sgroup" data-settings-experimental="" aria-label="Experimental features">
+      <div className="ib-card">
+        <div className="ib-prow">
+          <span className="ib-txt">
+            <span className="ib-l" id="ib-decision-mode-label">
+              Decision mode
+            </span>
+            <span className="ib-desc">
+              {experimental.decision_mode.env !== null
+                ? `PLANNOTATOR_EXPERIMENTAL turns it ${experimental.decision_mode.env ? 'on' : 'off'}.`
+                : 'Answer what agents ask across threads, one decision at a time; each agent gets one reply per thread.'}
+            </span>
+          </span>
+          <span className="ib-ctl">
+            <Switch
+              on={experimental.decision_mode.on}
+              labelledBy="ib-decision-mode-label"
+              disabled={experimental.decision_mode.env !== null}
+              onClick={() => onToggleExperimental(!experimental.decision_mode.on)}
+            />
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -599,14 +605,17 @@ const LEDE: Record<SettingsSection, string> = {
   archived: 'Threads you archived stay out of the list. Unarchive one to put it back and open it.',
   storage: '',
   about: 'The version, and how Plannotator keeps itself up to date.',
+  experimental: 'Features still being tried. Each stays off until you turn it on.',
 };
 
 /**
  * Settings (design of record `.product/approved/inbox-settings-tabs/`,
  * Workspaces' SettingsFrame in the Inbox's scale): a focused page with
- * "← Inbox" on top, a section nav (General, Agents, Devices, Archived,
- * Storage, About) and one section per page at `#settings/<section>`. On a
- * phone, a list of the sections, then one section with "‹ Settings".
+ * "← Inbox" on top, a section nav (General, Agents, Prompts, Devices,
+ * Archived, Storage, About, and Experimental last while there is one) and one
+ * section per page at `#settings/<section>`. On a phone, a list of the
+ * sections (Experimental in a group of its own at the bottom), then one
+ * section with "‹ Settings".
  */
 export function SettingsPage(props: SettingsPageProps) {
   const {
@@ -661,6 +670,17 @@ export function SettingsPage(props: SettingsPageProps) {
     heading.current?.focus();
   }, [section]);
 
+  // Experimental is the nav's last row, shown only while this Inbox reports an experimental feature (an older
+  // Inbox omits `experimental`, and an empty page is worse than no row). Its address still opens on its own.
+  const experimental = settings?.experimental && props.onToggleExperimental ? settings.experimental : null;
+  const sections = SETTINGS_SECTIONS.filter((id) => id !== 'experimental' || experimental !== null);
+  /** The phone's list of sections, in its groups: settings, your data and Plannotator, then Experimental on its own. */
+  const phoneGroups: { label: string; ids: SettingsSection[] }[] = [
+    { label: 'Settings', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) < 4) },
+    { label: 'Your data and Plannotator', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) >= 4 && id !== 'experimental') },
+    { label: 'Experimental', ids: sections.filter((id) => id === 'experimental') },
+  ].filter((group) => group.ids.length > 0);
+
   const devicesDot = devicesNeedAttention(phonesOn ? phones : null, settings?.tailscale);
   const loadFailed = !settings && error !== null;
 
@@ -709,6 +729,8 @@ export function SettingsPage(props: SettingsPageProps) {
         return formatBytes(settings.store.bytes);
       case 'about':
         return settings.version;
+      case 'experimental':
+        return experimental?.decision_mode.on ? 'Decision mode' : 'Off';
     }
   };
 
@@ -724,7 +746,6 @@ export function SettingsPage(props: SettingsPageProps) {
             notifyReach={notifyReach}
             onTestNotification={onTestNotification}
             sound={sound}
-            onToggleExperimental={props.onToggleExperimental}
             onToggleBoard={props.onToggleBoard}
             onTakeTour={props.onTakeTour}
             updateRow={props.updateRow}
@@ -786,6 +807,17 @@ export function SettingsPage(props: SettingsPageProps) {
       case 'about':
         body = about;
         break;
+      case 'experimental':
+        body =
+          experimental && props.onToggleExperimental ? (
+            <ExperimentalSection experimental={experimental} onToggleExperimental={props.onToggleExperimental} />
+          ) : (
+            <div className="ib-card ib-sempty" data-settings-experimental-none="">
+              <Icon name="beaker" />
+              This Inbox has no experimental features. Restart it to update.
+            </div>
+          );
+        break;
     }
   }
 
@@ -808,9 +840,9 @@ export function SettingsPage(props: SettingsPageProps) {
           <SidebarTrigger />
           <h1>Settings</h1>
         </div>
-        {[SETTINGS_SECTIONS.slice(0, 4), SETTINGS_SECTIONS.slice(4)].map((group, i) => (
-          <ul className="ib-card" key={i} aria-label={i === 0 ? 'Settings' : 'Your data and Plannotator'}>
-            {group.map((id) => (
+        {phoneGroups.map((group) => (
+          <ul className="ib-card" key={group.label} aria-label={group.label}>
+            {group.ids.map((id) => (
               <li key={id}>
                 <a href={`#${settingsHash({ section: id })}`} onClick={go(id)} data-settings-link={id}>
                   <span className="ib-tile">
@@ -881,7 +913,7 @@ export function SettingsPage(props: SettingsPageProps) {
                 Settings
               </div>
               <ul>
-                {SETTINGS_SECTIONS.map((id) => (
+                {sections.map((id) => (
                   <li key={id}>
                     <a href={`#${settingsHash({ section: id })}`} aria-current={id === section ? 'page' : undefined} onClick={go(id)} data-settings-link={id}>
                       <Icon name={SECTION_ICON[id]} />

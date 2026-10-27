@@ -286,7 +286,7 @@ export interface SettingsModel {
   };
 }
 
-/** Settings → General → Experimental: each feature's switch, and whether the env var decides it. */
+/** Settings → Experimental: each feature's switch, and whether the env var decides it. */
 export interface InboxExperimentalSettings {
   decision_mode: { on: boolean; env: boolean | null };
 }

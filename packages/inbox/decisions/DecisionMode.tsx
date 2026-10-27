@@ -1,6 +1,6 @@
 /**
  * Decision mode (approval "inbox-decision-mode", direction A "Queue";
- * experimental, off unless Settings → General → Experimental turns it on).
+ * experimental, off unless Settings → Experimental turns it on).
  *
  * One decision at a time in a large dialog, the next peeking behind it, a
  * progress strip of one chip per agent session. Picks save at once through

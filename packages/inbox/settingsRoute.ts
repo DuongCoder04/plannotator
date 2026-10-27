@@ -3,10 +3,12 @@
  * one section per page, `#settings/<section>`, and `#settings/devices/pair`
  * opens Pair a phone. `#settings` alone is General on a desktop and the
  * list of sections on a phone. An unknown section reads as `#settings`, so
- * an old or mistyped link still lands in Settings.
+ * an old or mistyped link still lands in Settings. Experimental is the last
+ * section (the owner, 2026-10-27: its own page, not a group inside General);
+ * its nav row shows only while this Inbox has an experimental feature.
  */
 
-export const SETTINGS_SECTIONS = ['general', 'agents', 'prompts', 'devices', 'archived', 'storage', 'about'] as const;
+export const SETTINGS_SECTIONS = ['general', 'agents', 'prompts', 'devices', 'archived', 'storage', 'about', 'experimental'] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
@@ -17,6 +19,7 @@ export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
   archived: 'Archived',
   storage: 'Storage',
   about: 'About',
+  experimental: 'Experimental',
 };
 
 export interface SettingsAddress {

@@ -160,7 +160,9 @@ test('iPhone (WebKit): the list of sections, a section with ‹ Settings, and Pa
     await page.goto(`${world.url}#settings`);
     const list = page.locator('[data-settings-list]');
     await expect(list.getByRole('heading', { name: 'Settings' })).toBeVisible();
-    await expect(list.getByRole('link')).toHaveCount(7);
+    await expect(list.getByRole('link')).toHaveCount(8);
+    // Experimental is the bottom row, in a group of its own.
+    await expect(list.locator('ul').last().getByRole('link')).toHaveAttribute('data-settings-link', 'experimental');
     await expect(page.locator('.ib-snav')).toHaveCount(0);
     await shot(page, 'phone-1-list');
 
