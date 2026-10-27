@@ -828,6 +828,8 @@ function Inbox() {
     try {
       const next = await inboxApi.list();
       setPageSession(next.serverSession);
+      // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
+      latestRef.current = next;
       setLatest(next);
       if (adopt && slide) armSlide();
       // Show's light for a refresh (clicking Inbox): the rows it brings in, against the list on screen now.
@@ -867,6 +869,24 @@ function Inbox() {
   lookRef.current = look;
   /** Per thread, the furthest look on its way to the server. */
   const seenPosting = useRef(new Map<string, number>());
+  /**
+   * Per thread, the looks this tab has sent (the open look, seen on sight) and
+   * the list read after each, until they land. Mark read waits for them, so it
+   * decides on the state the look gives the thread whenever it is pressed
+   * (markRead.ts `seenHeldInNew`).
+   */
+  const looksInFlight = useRef(new Map<string, Set<Promise<unknown>>>());
+  const trackLook = useCallback((threadId: string, look: Promise<unknown>) => {
+    const looks = looksInFlight.current;
+    const mine = looks.get(threadId) ?? new Set<Promise<unknown>>();
+    looks.set(threadId, mine);
+    mine.add(look);
+    const done = () => {
+      mine.delete(look);
+      if (mine.size === 0 && looks.get(threadId) === mine) looks.delete(threadId);
+    };
+    look.then(done, done);
+  }, []);
   const seenRetries = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const retries = seenRetries.current;
@@ -882,7 +902,7 @@ function Inbox() {
       if ((seenPosting.current.get(threadId) ?? -1) >= through) return;
       seenPosting.current.set(threadId, through);
       const attempt = (tries: number) => {
-        void inboxApi
+        const look = inboxApi
           .seen(threadId, through)
           .then(() => {
             if (seenPosting.current.get(threadId) === through) seenPosting.current.delete(threadId);
@@ -907,10 +927,11 @@ function Inbox() {
             }, SEEN_RETRY_MS * 2 ** tries);
             seenRetries.current.add(timer);
           });
+        trackLook(threadId, look);
       };
       attempt(0);
     },
-    [refreshList],
+    [refreshList, trackLook],
   );
 
   const refreshThread = useCallback(async (threadId: string) => {
@@ -1253,15 +1274,19 @@ function Inbox() {
       closing.current = null;
       if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false);
       // The look covers what this read showed, not a message that lands before the server takes it.
-      await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
-      if (!cancelled) await refreshList(false);
+      const look = (async () => {
+        await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
+        if (!cancelled) await refreshList(false);
+      })();
+      trackLook(threadId, look);
+      await look;
     })();
     return () => {
       cancelled = true;
       if (retry) clearTimeout(retry);
       wakeThreadRetry.current = null;
     };
-  }, [route.thread, threadRetry, refreshThread, refreshList, settleList]);
+  }, [route.thread, threadRetry, refreshThread, refreshList, settleList, trackLook]);
   // The thread landed while focus was in its place: focus goes to its subject, never to the page.
   useLayoutEffect(() => {
     if (!focusThreadSubject.current || !thread || thread.thread_id !== route.thread) return;
@@ -1851,8 +1876,17 @@ function Inbox() {
    * toast a warning with Reply.
    */
   const markRead = async (threadId: string, read: boolean) => {
+    // A look this tab sent and the server has not taken yet: decide on what it gives (a seen update held in New
+    // moves locally), whether Mark read came before the look landed or after.
+    const looks = read ? looksInFlight.current.get(threadId) : undefined;
+    if (looks) await Promise.all(looks);
     const before = rowOf(threadId);
-    if (read && before && seenHeldInNew(before, drawnSection(shownRef.current, threadId))) return moveSeenToQuiet(threadId, before);
+    if (read && before) {
+      const drawn = drawnSection(shownRef.current, threadId);
+      if (seenHeldInNew(before, drawn)) return moveSeenToQuiet(threadId, before);
+      // Once the look landed nothing waits here any more (the thread closed and the list settled, say).
+      if (looks && !canToggleRead(before, drawn)) return;
+    }
     // With a thread open the list holds still: the row moves to Quiet when the list next settles.
     const open = routeRef.current.thread;
     const deferred = open !== null;
@@ -1891,6 +1925,13 @@ function Inbox() {
   };
 
   /**
+   * The drawn order of the rows just before Mark read moved the open thread's
+   * own row out of view (`moveSeenToQuiet`), for that thread only; null after
+   * its Undo. Stepping to the next or previous thread (J/K) starts from the
+   * row's slot in it while the row is not on screen.
+   */
+  const openRowSlot = useRef<{ threadId: string; order: string[] } | null>(null);
+  /**
    * Mark read on a seen update the list still holds in New (markRead.ts
    * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
    * written; its row moves to Quiet now, sliding as the row's hover Mark read
@@ -1900,6 +1941,13 @@ function Inbox() {
     const before = shownRef.current;
     const sections = latestRef.current?.sections;
     if (!before || !sections) return;
+    // The open thread's own row leaves the rows on screen (Quiet is folded) while the thread stays open:
+    // keep the order it was drawn in, so stepping from it (the next or previous thread) can start from
+    // its slot (`rowInSlot`). `listOrder` takes the order after the move.
+    openRowSlot.current =
+      threadId === routeRef.current.thread
+        ? { threadId, order: [...(listBody(rootRef.current)?.querySelectorAll('[data-thread-id]') ?? [])].map((el) => el.getAttribute('data-thread-id')!) }
+        : null;
     armSlide();
     setShown((current) => (current ? settleThread(current, sections, threadId) : current));
     // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
@@ -1911,8 +1959,9 @@ function Inbox() {
       onUndo: () => {
         dismissToast();
         armSlide();
+        if (openRowSlot.current?.threadId === threadId) openRowSlot.current = null;
         setShown((current) => (current ? putRowBack(current, before, threadId) : current));
-        say('Moved back to the top.');
+        say('Moved back.');
       },
     });
   };

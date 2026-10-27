@@ -49,6 +49,8 @@ let pokeStream: (() => void) | null = null;
 let posted: string[] = [];
 /** The JSON bodies the window posted, with their paths. */
 let postedBodies: { path: string; body: Record<string, unknown> }[] = [];
+/** While set, the window's looks (`POST …/seen`) wait for it before they reach the Inbox. */
+let seenGate: Promise<void> | null = null;
 
 function loopback(path: string, method = 'GET', body?: string): Promise<{ status: number; text: string }> {
   return new Promise((done, fail) => {
@@ -85,7 +87,7 @@ async function agentSends(body: string, reply_to?: string): Promise<string> {
   return (JSON.parse(await readLine()) as { sent: string }).sent;
 }
 
-const TESTS = 14;
+const TESTS = 15;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -125,10 +127,12 @@ beforeEach(() => {
   savedFetch = globalThis.fetch;
   posted = [];
   postedBodies = [];
+  seenGate = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? 'GET') === 'POST') {
       posted.push(String(input));
       postedBodies.push({ path: String(input), body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {} });
+      if (seenGate && String(input).endsWith('/seen')) await seenGate;
     }
     const answer = await loopback(String(input), init?.method ?? 'GET', init?.body ? String(init.body) : undefined);
     return new Response(answer.text, { status: answer.status, headers: { 'Content-Type': 'application/json' } });
@@ -564,9 +568,34 @@ test.skipIf(!hasDom)("the toast's Undo puts a held row back between the same nei
   await until(() => sectionOfRow(el, first!) === 'new', 'Undo');
   expect(order(el)).toEqual(before);
   expect(toastEl()).toBeNull();
+  // It came back to its place, not to the top.
+  await until(() => document.querySelector('[data-inbox-live]')?.textContent === 'Moved back.', 'the live region');
   expect(quietCount(el)).toBe('0');
   // Back where it was, it is offered again.
   expect(hoverAction(el, first!)).not.toBeNull();
+});
+
+test.skipIf(!hasDom)('E pressed before the look reaches the server takes the same way: it waits for the look, then moves the row now, writing nothing', async () => {
+  const el = await renderApp(`#project=${world.project}`);
+  const first = world.news[0]!;
+  let release: () => void = () => {};
+  seenGate = new Promise<void>((done) => (release = done));
+  await openRow(el, first, null);
+  await until(() => posted.some((path) => path.endsWith(`/threads/${first}/seen`)), 'the look sent');
+  // The look has not landed: the server still has it in New, unseen.
+  expect(await serverSection(first)).toBe('new');
+  expect(header(el).disabled).toBe(false);
+  pressKey('e');
+  await wait(150);
+  // Mark read waits for the look: nothing written, nothing moved yet.
+  expect(posted.filter((path) => path.endsWith('/read'))).toEqual([]);
+  expect(sectionOfRow(el, first)).toBe('new');
+  release();
+  seenGate = null;
+  await movedNow(el, first, 'E after the look landed');
+  expect(posted.filter((path) => path.endsWith('/read'))).toEqual([]);
+  expect(header(el).getAttribute('aria-pressed')).toBe('false');
+  expect(await serverSection(first)).toBe('quiet');
 });
 
 test.skipIf(!hasDom)('a row already in Quiet offers no Mark read: not in the header, on hover, in the menu, nor E', async () => {
