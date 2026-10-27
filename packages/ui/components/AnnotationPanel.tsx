@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useId } from 'react';
+import React, { createContext, useContext, useMemo, useState, useRef, useEffect, useId } from 'react';
 import { AnnotationType, type Annotation, type Block, type CodeAnnotation, type EditorAnnotation } from '../types';
 import type { MentionSource } from '../utils/mentions';
 import { useMentionAutocomplete } from '../hooks/useMentionAutocomplete';
@@ -16,6 +16,15 @@ import type { AnnotationScope, AnnotationDocumentGroup } from '../utils/annotati
 import type { QuestionPanelRow } from '../utils/questionAnswers';
 import { QuestionsPanelSection } from './QuestionsPanelSection';
 import { HostTitle } from './HostTitle';
+import { isCommentSubmitKey } from '../utils/commentSubmitKey';
+import { useConfigValue } from '../config/useConfig';
+import { imageRegionNumbers, RegionCardInfo, RegionNumber, regionOf } from './ImageRegions';
+
+/** What a region card (#2100) needs from its panel: each region's number on
+ *  its image, and how to load the image for the crop thumbnail. */
+const RegionCardContext = createContext<{ numbers: ReadonlyMap<string, number>; thumbSrc?: (src: string) => string | null }>({
+  numbers: new Map(),
+});
 
 // Card type-word colors. Deletion uses `destructive` (reliably red on every
 // theme, matching the in-document .deletion highlight). Comment uses the
@@ -214,6 +223,13 @@ interface PanelProps {
    * drawn, exactly as before.
    */
   cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean };
+  /**
+   * Comments on part of an image (`imageRegion`, #2100) draw a crop of their
+   * box in place of the quote; this turns an image's src as written into a
+   * URL the browser can load (null: no crop, the file and size still show).
+   * Absent: no crop.
+   */
+  imageRegionSrc?: (src: string) => string | null;
 }
 
 export const AnnotationPanel: React.FC<PanelProps> = ({
@@ -256,7 +272,12 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   title = 'Annotations',
   titleNote,
   cardParts,
+  imageRegionSrc,
 }) => {
+  const regionCards = useMemo(
+    () => ({ numbers: imageRegionNumbers(annotations), thumbSrc: imageRegionSrc }),
+    [annotations, imageRegionSrc],
+  );
   const isMobile = useIsMobile();
   const embedded = presentation === 'embedded';
   const mobilePanel = isMobile && !embedded;
@@ -691,7 +712,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
       </OverlayScrollArea>
 
       {/* Quick Actions Footer */}
-      {headerCount > 0 && (
+      {headerCount > 0 && (onQuickCopy || (sharingEnabled && onShare)) && (
         <div className="border-t border-border/50 px-3 py-2 flex gap-1.5">
           {onQuickCopy && (
             <button
@@ -745,12 +766,12 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
           className="fixed inset-0 z-[59] bg-background/60 backdrop-blur-sm"
           onClick={onClose}
         />
-        {panel}
+        <RegionCardContext.Provider value={regionCards}>{panel}</RegionCardContext.Provider>
       </>
     );
   }
 
-  return panel;
+  return <RegionCardContext.Provider value={regionCards}>{panel}</RegionCardContext.Provider>;
 };
 
 function formatTimestamp(ts: number): string {
@@ -766,8 +787,37 @@ function formatTimestamp(ts: number): string {
   if (hours < 24) return `${hours}h`;
   if (days < 7) return `${days}d`;
 
-  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  // An older date names its year: "Oct 20" alone reads as this October.
+  const date = new Date(ts);
+  const thisYear = date.getFullYear() === new Date(now).getFullYear();
+  return date.toLocaleDateString(
+    undefined,
+    thisYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' },
+  );
 }
+
+/**
+ * A card's "author · time" line. The author truncates (its full name in the
+ * title) while the time never shrinks, so a long name cannot push the time
+ * out; `<bdi>` keeps a right-to-left name from reordering the time around it.
+ * The text reads exactly as before: "Alice (me) · 5m".
+ */
+const CardByline: React.FC<{ author?: string; isMe: boolean; timestamp: number }> = ({ author, isMe, timestamp }) => (
+  <span data-annotation-byline="true" className="flex min-w-0 items-center text-[10px] text-muted-foreground/50">
+    {author ? (
+      <>
+        <HostTitle title={author} cut>
+          <span data-annotation-author="true" className="min-w-0 truncate">
+            <bdi>{author}</bdi>
+          </span>
+        </HostTitle>
+        {isMe ? <span data-annotation-me="true" className="shrink-0 whitespace-pre"> (me)</span> : null}
+        <span className="shrink-0 whitespace-pre"> · </span>
+      </>
+    ) : null}
+    <span data-annotation-time="true" className="shrink-0">{formatTimestamp(timestamp)}</span>
+  </span>
+);
 
 /** Pinned card for committed direct edits: +N/−M summary, expandable unified
  *  diff, and a two-step discard. Not part of the annotation timeline — edits
@@ -900,6 +950,7 @@ const AnnotationEditComposer: React.FC<{
   const mention = useMentionAutocomplete({ text: value, setText: onChange, textareaRef, source: mentionSource });
   const listboxId = `annotation-card-mentions-${useId().replace(/:/g, '')}`;
   const menuOpen = mention.menu !== null;
+  const enterSavesComment = useConfigValue('enterSavesComment');
 
   // Focus-on-open, unchanged: this component mounts exactly when editing starts.
   useEffect(() => {
@@ -914,7 +965,7 @@ const AnnotationEditComposer: React.FC<{
     // (and only a second Escape cancels the edit), and an arrowed-to row
     // takes Enter. Mod+Enter is never consumed by the menu.
     if (mention.onKeyDown(e)) return;
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+    if (isCommentSubmitKey(e, enterSavesComment)) {
       e.preventDefault();
       onSave(mention.mentionIds);
     } else if (e.key === 'Escape') {
@@ -971,6 +1022,11 @@ const AnnotationCard: React.FC<{
 }> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, footer, header, mentionSource, unanchored = false, parts }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(annotation.text || '');
+  // A comment on part of an image (#2100): numbered like its box, with the
+  // crop, file, size and line in place of the quote.
+  const regionCards = useContext(RegionCardContext);
+  const region = regionOf(annotation);
+  const regionNumber = region ? regionCards.numbers.get(annotation.id) : undefined;
 
   // Update editText when annotation.text changes
   useEffect(() => {
@@ -1037,6 +1093,12 @@ const AnnotationCard: React.FC<{
       {/* Header: type word + author · time + actions */}
       <div className="mb-1.5 flex items-center gap-1.5">
         <span className={cn('text-[11px] font-medium', typeColor)}>{typeLabel}</span>
+        {region && regionNumber !== undefined && <RegionNumber n={regionNumber} selected={isSelected} />}
+        {region && (
+          <span data-annotation-region="true" className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-muted text-muted-foreground">
+            Region
+          </span>
+        )}
         {annotation.diffContext && (
           <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-muted text-muted-foreground">
             diff
@@ -1056,9 +1118,7 @@ const AnnotationCard: React.FC<{
             </span>
           </HostTitle>
         )}
-        <span className="text-[10px] text-muted-foreground/50 truncate">
-          {annotation.author ? `${annotation.author}${isMe ? ' (me)' : ''} · ` : ''}{formatTimestamp(annotation.createdA)}
-        </span>
+        <CardByline author={annotation.author} isMe={isMe} timestamp={annotation.createdA} />
         {/* Host header slot (a status stamp etc.) — interactions inside it
             must not toggle card selection, exactly like the footer slot.
             Rendered under readOnly too: its contents are host-owned. */}
@@ -1073,7 +1133,7 @@ const AnnotationCard: React.FC<{
           </div>
         )}
         {!readOnly && (
-          <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             {onEdit && annotation.type !== AnnotationType.DELETION && !isEditing && (
               <HostTitle title="Edit annotation" name>
                 <button
@@ -1103,15 +1163,19 @@ const AnnotationCard: React.FC<{
         isEditing ? (
           editComposer
         ) : (
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">
+          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90">
             {annotation.text}
           </p>
         )
       ) : (
         <>
+          {/* A region shows its crop, file, size and line instead of a quote. */}
+          {region && parts?.quote !== false && (
+            <RegionCardInfo region={region} thumbSrc={regionCards.thumbSrc?.(region.src) ?? null} />
+          )}
           {/* Quote — the annotated text */}
-          {parts?.quote !== false && (
-            <p className="mb-1.5 line-clamp-2 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground/80">
+          {!region && parts?.quote !== false && (
+            <p className="mb-1.5 line-clamp-2 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] leading-relaxed text-muted-foreground/80">
               "{annotation.originalText}"
             </p>
           )}
@@ -1122,7 +1186,7 @@ const AnnotationCard: React.FC<{
               editComposer
             ) : (
               annotation.text && (
-                <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">
+                <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90">
                   {annotation.text}
                 </p>
               )
@@ -1176,6 +1240,7 @@ const CodeAnnotationCard: React.FC<{
 }> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(annotation.text || '');
+  const enterSavesComment = useConfigValue('enterSavesComment');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -1224,11 +1289,9 @@ const CodeAnnotationCard: React.FC<{
       {/* Header: type word + author · time + actions */}
       <div className="mb-1.5 flex items-center gap-1.5">
         <span className="text-[11px] font-medium text-primary">Code</span>
-        <span className="text-[10px] text-muted-foreground/50 truncate">
-          {annotation.author ? `${annotation.author}${isMe ? ' (me)' : ''} · ` : ''}{formatTimestamp(annotation.createdAt)}
-        </span>
+        <CardByline author={annotation.author} isMe={isMe} timestamp={annotation.createdAt} />
         {!readOnly && (
-          <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             {onEdit && !isEditing && (
               <HostTitle title="Edit annotation" name>
                 <button
@@ -1261,7 +1324,7 @@ const CodeAnnotationCard: React.FC<{
       </HostTitle>
 
       {annotation.originalCode && (
-        <p className="mt-1.5 line-clamp-2 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground/80">
+        <p className="mt-1.5 line-clamp-2 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] leading-relaxed text-muted-foreground/80">
           {annotation.originalCode}
         </p>
       )}
@@ -1274,7 +1337,7 @@ const CodeAnnotationCard: React.FC<{
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+              if (isCommentSubmitKey(e, enterSavesComment)) {
                 e.preventDefault();
                 handleSaveEdit();
               } else if (e.key === 'Escape') {
@@ -1294,7 +1357,7 @@ const CodeAnnotationCard: React.FC<{
         </div>
       ) : (
         annotation.text && (
-          <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">
+          <p className="mt-1.5 whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90">
             {annotation.text}
           </p>
         )

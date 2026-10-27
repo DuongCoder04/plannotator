@@ -270,6 +270,7 @@ describe("the device door, on the binary", () => {
       ["POST", "uploads?name=a.txt"],
       ["POST", "markups"],
       ["POST", `messages/${guideMessage}/guide/annotations`],
+      ["POST", `messages/${threadId}/annotations`],
       ["POST", "revoke"],
     ];
     for (const [method, path] of routes) {
@@ -287,7 +288,7 @@ describe("the device door, on the binary", () => {
     const health = await door("health");
     expect(health.status).toBe(200);
     const h = (await health.json()) as Json;
-    expect(Object.keys(h).sort()).toEqual(["app", "notify_reach", "ok", "pid", "serverSession", "update", "version"]);
+    expect(Object.keys(h).sort()).toEqual(["app", "event_streams", "notify_reach", "ok", "pid", "serverSession", "update", "version"]);
     expect(h).toMatchObject({ ok: true, app: "plannotator-inbox", serverSession });
     expect(await (await door("health", { token: null })).json()).toEqual({ error: "This request needs the phone's token.", code: "device_token_missing" });
   });
@@ -307,6 +308,9 @@ describe("the device door, on the binary", () => {
       ["POST", "control/stop"],
       ["GET", "attachments/att_x"],
       ["POST", "projects/prj_x/delete"],
+      // A reply draft is read only on the door (7.62): the phone writes none.
+      ["POST", "threads/msg_x/draft"],
+      ["POST", "threads/msg_x/draft/delete"],
       // Shared drafts stay the window's (never seen by phones) until that is ruled otherwise.
       ["GET", "drafts"],
       ["POST", "drafts/drf_x"],
@@ -336,7 +340,7 @@ describe("the device door, on the binary", () => {
 
   test("7.5 to 7.9: the list, projects, a thread, seen (key required), the event stream", async () => {
     const list = (await (await door("threads")).json()) as Json;
-    expect(Object.keys(list).sort()).toEqual(["cursor", "notice", "project", "projects", "sections", "serverSession", "update", "updated", "version"]);
+    expect(Object.keys(list).sort()).toEqual(["cursor", "notice", "pins", "project", "projects", "restart_agents", "restart_claude_code", "sections", "serverSession", "update", "update_check_failing", "updated", "version"]);
     expect(list.sections.map((s: Json) => s.id)).toEqual(["stopped", "holding", "waiting", "new", "sent", "quiet"]);
     const row = list.sections.flatMap((s: Json) => s.threads).find((t: Json) => t.thread_id === threadId);
     expect(row).toMatchObject({ section: "waiting", unread: true, questions: { open: 2 } });
@@ -646,6 +650,88 @@ describe("the device door, on the binary", () => {
     expect([closed.status, ((await closed.json()) as Json).code]).toEqual([409, "annotation_closed"]);
   });
 
+  test("7.59: a comment on the text of an agent's message, replayed by its key; the window's refusals pass through; removed through 7.18's route", async () => {
+    const comment = (overrides: Json = {}) => ({
+      id: "ann-message-phone",
+      blockId: "block-0",
+      startOffset: 0,
+      endOffset: 5,
+      type: "COMMENT",
+      text: "Say which retries.",
+      originalText: "Retry",
+      createdA: 1,
+      ...overrides,
+    });
+    const route = `messages/${threadId}/annotations`;
+    const key = keys();
+    const saved = await door(route, { body: { idempotency_key: key, annotation: comment() } });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as Json).annotation).toMatchObject({
+      message_id: threadId,
+      attachment_id: "",
+      path: threadId,
+      version: "current",
+      message: { at: expect.any(String) },
+      sent_reply_id: null,
+    });
+    // The same key again: the recorded answer; the changed text is not written.
+    const again = await door(route, { body: { idempotency_key: key, annotation: comment({ text: "changed" }) } });
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    expect(((await again.json()) as Json).annotation.annotation.text).toBe("Say which retries.");
+    // The window's refusals, unchanged: a deletion is not a comment.
+    const deletion = await door(route, { body: { idempotency_key: keys(), annotation: comment({ id: "ann-message-x", type: "DELETION" }) } });
+    expect([deletion.status, ((await deletion.json()) as Json).field]).toEqual([422, "annotation.type"]);
+    // Removed through the attachments' remove route (7.18); then closed to edits.
+    expect((await door("annotations/ann-message-phone/remove", { body: { idempotency_key: keys() } })).status).toBe(200);
+    const closed = await door(route, { body: { idempotency_key: keys(), annotation: comment() } });
+    expect([closed.status, ((await closed.json()) as Json).code]).toEqual([409, "annotation_closed"]);
+  });
+
+  test("7.60: who can be tagged, and a reply that tags a live session, forwarded unchanged; the tagged session is handed it with the tagged wake", async () => {
+    const { token: bridgeToken } = JSON.parse(readFileSync(join(w.dataDir, "inbox", "inbox.json"), "utf8")) as { token: string };
+    const poll = async () =>
+      (await (
+        await fetch(`${base}/api/inbox/bridge/poll`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${bridgeToken}` },
+          body: JSON.stringify({ session: "pi-door", host: "pi", project_path: w.project, waitMs: 0, tags: true }),
+        })
+      ).json()) as { commands: Json[] };
+    await poll();
+    const taggable = (await (await door(`threads/${threadId}/taggable`)).json()) as Json;
+    expect(taggable.sessions.find((s: Json) => s.session === "pi-door")).toMatchObject({ kind: "live", host: "pi", taggable: true, owner: false });
+    const key = keys();
+    const sent = await door(`messages/${threadId}/reply`, { body: { idempotency_key: key, words: "@Pi take the retries.", tags: [{ host: "pi", session: "pi-door", label: "Pi" }] } });
+    expect(sent.status).toBe(200);
+    const reply = ((await sent.json()) as Json).reply;
+    expect(reply.tags).toEqual([{ host: "pi", session: "pi-door", label: "Pi", wakes: true }]);
+    const handed = (await poll()).commands.find((c) => c.id === reply.id);
+    expect(handed).toMatchObject({ tagged: { owner: "Claude Code" } });
+    // The same key again: the recorded answer, nothing new written.
+    const again = await door(`messages/${threadId}/reply`, { body: { idempotency_key: key, words: "@Pi take the retries.", tags: [{ session: "gone" }] } });
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    // A session that is not live: refused, nothing written.
+    const gone = await door(`messages/${threadId}/reply`, { body: { idempotency_key: keys(), words: "x", tags: [{ session: "nobody" }] } });
+    expect([gone.status, ((await gone.json()) as Json).code]).toEqual([409, "session_not_live"]);
+  });
+
+  test("7.63: an action item's Done and its Undo, forwarded unchanged and replayed by key; a question's key is not a door route", async () => {
+    const sent = await agent.send({ project_path: w.project, thread: "door-todo", body: ":::action\nApprove the deploy on Vercel\nWhere: https://vercel.com/acme\n:::" });
+    const listed = (await (await door(`threads/${sent.thread_id}`)).json()) as Json;
+    const todo = listed.thread.messages[0].questions.find((q: Json) => q.kind === "action");
+    expect(todo).toMatchObject({ state: "open", action: { where_url: "https://vercel.com/acme" } });
+    const route = `messages/${sent.message_id}/actions/${todo.key}`;
+    const key = keys();
+    const done = await door(route, { body: { idempotency_key: key, outcome: "done", note: "Approved." } });
+    expect(done.status).toBe(200);
+    expect(((await done.json()) as Json).questions.find((q: Json) => q.key === todo.key)).toMatchObject({ state: "picked", action_result: { outcome: "done", note: "Approved.", by: "person" } });
+    const again = await door(route, { body: { idempotency_key: key, outcome: "cant", note: "changed" } });
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    const undone = await door(route, { body: { idempotency_key: keys(), outcome: null } });
+    expect(((await undone.json()) as Json).questions.find((q: Json) => q.key === todo.key)).toMatchObject({ state: "open", action_result: null });
+    expect((await door(`messages/${sent.message_id}/actions/q-00000000`, { body: { idempotency_key: keys(), outcome: "done" } })).status).toBe(404);
+  });
+
   test("7.12 and 7.13: resolve, then delete the thread", async () => {
     const resolved = await door(`messages/${threadId}/resolve`, { body: { idempotency_key: keys(), resolved: true } });
     expect(((await resolved.json()) as Json).thread.resolved_at).toBeTruthy();
@@ -887,7 +973,7 @@ describe("the device door, in process", () => {
       resetServedHostnamesForTests();
     }
   });
-  test("a phone's Send with words and no pick: without skip_unanswered (or with false) it skips nothing; only skip_unanswered: true skips, which is what an iPhone app older than the words-only rule (#1903) sent", async () => {
+  test("7.11: a phone's Send skips only what the person chose (skip: [keys]); skip_unanswered is ignored; one Send to one session is one reply", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "plannotator-inbox-devices-words-"));
     roots.push(dataDir);
     const inbox = await startInboxServer({ dataDir, binaryPath: null, phones: true, setAsideDelayMs: 60_000 });
@@ -900,11 +986,11 @@ describe("the device door, in process", () => {
         body: JSON.stringify({ code: made.offer.code, name: "iPhone", platform: "ios" }),
       });
       const token = ((await pair.json()) as Json).token as string;
-      const reply = (message: string, body: Json) =>
+      const reply = (message: string, body: Json, key: string = crypto.randomUUID()) =>
         fetch(`${base}/api/inbox/device/messages/${message}/reply`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ idempotency_key: crypto.randomUUID(), ...body }),
+          body: JSON.stringify({ idempotency_key: key, ...body }),
         });
       // One session asks twice in one thread, one open question each: the owner's thread on 0.28.20.
       const ask = (n: number) => {
@@ -913,15 +999,15 @@ describe("the device door, in process", () => {
         const question = (prompt: string) => [":::question", prompt, "", "- [ ] Yes", "- [ ] No", ":::"].join("\n");
         const first = inbox.store.sendMessage({ project_id: project.id, author, body: question("Is this the film you submit?") }).message;
         const second = inbox.store.sendMessage({ project_id: project.id, author, reply_to: first.id, body: question("Is this the film you upload?") }).message;
-        return { first: first.id, second: second.id };
+        return { first: first.id, second: second.id, keys: [inbox.store.questionsOf(first.id)[0]!.key, inbox.store.questionsOf(second.id)[0]!.key] as const };
       };
       const thread = (id: string) => inbox.store.thread(id)!;
       const states = (id: string) => thread(id).messages.flatMap((m) => m.questions ?? []).map((q) => q.state);
       const people = (id: string) => thread(id).messages.filter((m) => m.author.kind === "person");
       const words = "Is there a way to attach video?";
 
-      // The words-only Send the window makes, as a phone that follows #1903 sends it: one reply, to the latest message.
-      for (const [n, extra] of [[0, {}], [1, { skip_unanswered: false }]] as const) {
+      // The default (Keep open): a words-only Send, with or without the old flag, skips nothing. One reply, to the latest message.
+      for (const [n, extra] of [[0, {}], [1, { skip_unanswered: true }]] as const) {
         const t = ask(n);
         expect((await reply(t.second, { words, questions: [], ...extra })).status).toBe(200);
         expect(states(t.first)).toEqual(["open", "open"]);
@@ -931,12 +1017,43 @@ describe("the device door, in process", () => {
         ]);
       }
 
-      // What the iPhone app sent on 0.28.20 (its Keep open defaulted off): a reply to each message, both with skip_unanswered: true.
-      const t = ask(2);
-      expect((await reply(t.first, { words: "", questions: [], skip_unanswered: true })).status).toBe(200);
-      expect((await reply(t.second, { words, questions: [], skip_unanswered: true })).status).toBe(200);
+      // What the iPhone app sent on 0.28.20 (a reply to each message, skip_unanswered: true): now it skips nothing.
+      const old = ask(2);
+      expect((await reply(old.first, { words: "", questions: [], skip_unanswered: true })).status).toBe(422);
+      expect((await reply(old.second, { words, questions: [], skip_unanswered: true })).status).toBe(200);
+      expect(states(old.first)).toEqual(["open", "open"]);
+
+      // The person tapped Skip them: one reply to the latest message, skipping both questions (one names its message).
+      const t = ask(3);
+      const key = crypto.randomUUID();
+      const skipBody = { words, questions: [], skip: [{ message_id: t.first, key: t.keys[0] }, t.keys[1]] };
+      expect((await reply(t.second, skipBody, key)).status).toBe(200);
       expect(states(t.first)).toEqual(["sent", "sent"]);
-      expect(people(t.first).map((m) => m.body.split("\n")[0])).toEqual(["Skipped 1 question.", "Skipped 1 question."]);
+      expect(people(t.first).map((m) => [m.reply_to, m.body.split("\n")[0]])).toEqual([[t.second, "Skipped 2 questions."]]);
+      // Replayed (the door's idempotency log): the same answer, nothing new.
+      const again = await reply(t.second, skipBody, key);
+      expect(again.headers.get("Idempotent-Replayed")).toBe("true");
+      expect(people(t.first)).toHaveLength(1);
+
+      // Answers on both messages: one reply, each answer under its message's id.
+      const both = ask(4);
+      const answer = (k: string) => {
+        const q = [...inbox.store.questionsOf(both.first), ...inbox.store.questionsOf(both.second)].find((x) => x.key === k)!;
+        return { v: 1, key: k, kind: q.kind, prompt: q.prompt, selected: ["Yes"] };
+      };
+      const res = await reply(both.second, {
+        words: "",
+        questions: [
+          { message_id: both.first, key: both.keys[0], revision: 0, answer: answer(both.keys[0]) },
+          { key: both.keys[1], revision: 0, answer: answer(both.keys[1]) },
+        ],
+      });
+      expect(res.status).toBe(200);
+      expect(states(both.first)).toEqual(["sent", "sent"]);
+      const sent = people(both.first);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.body.split("\n")[0]).toBe("Answered 2 questions.");
+      expect(sent[0]!.body).toContain(`### Your message ${both.first}`);
     } finally {
       inbox.stop();
     }
@@ -1056,6 +1173,27 @@ describe("the door's parity routes, in process (7.39 to 7.49)", () => {
     };
     return { root, ledger, inbox, base, token, door, poll };
   };
+
+  test("7.62: a thread's reply draft, read only; the row's unsent rides the list", async () => {
+    const { ledger, inbox, base, door } = await world();
+    const project = inbox.store.ensureProject({ name: "ledger", root: ledger });
+    const asked = inbox.store.sendMessage({ project_id: project.id, author: { kind: "agent", host: "claude-code", session: "ses-d", name: null }, body: "The build is green." }).message;
+    expect(((await (await door(`threads/${asked.id}/draft`)).json()) as Json).draft).toBeNull();
+    const saved = await fetch(`${base}/api/inbox/threads/${asked.id}/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverSession: inbox.serverSession, body: "Ship it, but keep the totals", base: null }),
+    });
+    expect(saved.status).toBe(200);
+    const read = (await (await door(`threads/${asked.id}/draft`)).json()) as Json;
+    expect(read.draft).toMatchObject({ v: 1, thread_id: asked.id, body: "Ship it, but keep the totals" });
+    const list = (await (await door("threads")).json()) as Json;
+    const row = list.sections.flatMap((s: Json) => s.threads).find((r: Json) => r.thread_id === asked.id);
+    expect(row.unsent).toEqual({ reply_at: read.draft.updated_at, picks: 0, comments: 0 });
+    // Writing a draft is the window's: the door has no route for it.
+    const refused = await door(`threads/${asked.id}/draft`, { body: { idempotency_key: "draft-1", body: "x", base: null } });
+    expect(refused.status).toBe(404);
+  });
 
   test("7.39 to 7.41: the live sessions, a thread the phone starts (replayed by its key, refusals unchanged), and Send to another session", async () => {
     const { ledger, inbox, door, poll } = await world();

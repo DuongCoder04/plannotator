@@ -18,6 +18,7 @@ import type { Origin } from "@plannotator/shared/agents";
 import { resolve } from "path";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard";
 import { openEditorDiff } from "./ide";
 import {
@@ -31,6 +32,7 @@ import {
 } from "./integrations";
 import {
   generateSlug,
+  resolveHistorySlug,
   savePlan,
   saveAnnotations,
   saveFinalSnapshot,
@@ -45,7 +47,7 @@ import {
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
-import { agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory } from "./config";
+import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory } from "./config";
 import { getAutoUpdateAdvert, getUpdateAdvert, handleUpdateRoute } from "./auto-update";
 import { appendFeedbackRecord, type FeedbackDecision } from "@plannotator/shared/feedback-archive";
 import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
@@ -72,7 +74,7 @@ export { isRemoteSession, getServerPort } from "./remote";
 export { openBrowser } from "./browser";
 export * from "./integrations";
 export * from "./storage";
-export { handleServerReady, setServerReadyTarget, SESSION_READY_LINE_PREFIX } from "./shared-handlers";
+export { handleServerReady, setServerReadyTailnet, setServerReadyTarget, SESSION_READY_LINE_PREFIX } from "./shared-handlers";
 export { type VaultNode, buildFileTree } from "@plannotator/shared/reference-common";
 
 // --- Types ---
@@ -124,6 +126,17 @@ export interface ServerOptions {
    * host that never revises keeps a tab that never polls.
    */
   planRevisions?: boolean;
+  /**
+   * Whether the host that launched this review delivers notes sent WITH an
+   * approval (`feedback` on /api/approve) to the agent. Advertised on
+   * /api/plan as `approvalNotesSupported`, which gates the decision control's
+   * "Approve with notes" / "Approve with a note…" rows and words the Approve
+   * warning. Set per host, never from the origin's name: the Claude Code mod
+   * (`claude-mod-plan`), OpenCode and Pi deliver them; the classic Claude
+   * Code hook, Gemini CLI, Codex, Copilot CLI and Mistral Vibe drop them.
+   * Default false, so an unknown host is never offered a row that loses text.
+   */
+  approvalNotesSupported?: boolean;
 }
 
 /** What `updatePlan` did with a revised plan pushed into the open review. */
@@ -185,6 +198,7 @@ export async function startPlannotatorServer(
   options: ServerOptions
 ): Promise<ServerResult> {
   const { origin, htmlContent, permissionMode, sharingEnabled = true, shareBaseUrl, pasteApiUrl, onReady, mode, customPlanPath, planFilePath } = options;
+  const approvalNotesSupported = options.approvalNotesSupported === true;
   // `plan`, its slug, file trust and version diff are `let`: a host with
   // `planRevisions` pushes revised plans into the open review (updatePlan).
   let plan = options.plan;
@@ -239,7 +253,12 @@ export async function startPlannotatorServer(
   // Set once bound: "Ask this session" answers only a loopback Host with this port.
   let boundPort: number | undefined;
   const aiRuntime = mode !== "archive" && resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
+  // `slug` dates the archive files under ~/.plannotator/plans/, which is where
+  // listArchivedPlans reads the date back out of the filename. `historySlug`
+  // keys history/{project}/ and deliberately stays on the chain this plan
+  // already started, so a review spanning midnight keeps its version diff.
   let slug = mode !== "archive" ? generateSlug(plan) : "";
+  let historySlug = "";
 
   // Lazy cache for in-session archive browsing (plan review sidebar tab)
   let cachedArchivePlans: ReturnType<typeof listArchivedPlans> | null = null;
@@ -271,15 +290,16 @@ export async function startPlannotatorServer(
   if (mode !== "archive") {
     repoInfo = await getRepoInfo();
     project = (await detectProjectName()) ?? "_unknown";
-    const historyResult = saveToHistory(project, slug, plan);
+    historySlug = resolveHistorySlug(project, slug);
+    const historyResult = saveToHistory(project, historySlug, plan);
     currentPlanPath = historyResult.path;
     previousPlan =
       historyResult.version > 1
-        ? getPlanVersion(project, slug, historyResult.version - 1)
+        ? getPlanVersion(project, historySlug, historyResult.version - 1)
         : null;
     versionInfo = {
       version: historyResult.version,
-      totalVersions: getVersionCount(project, slug),
+      totalVersions: getVersionCount(project, historySlug),
       project,
     };
 
@@ -324,11 +344,12 @@ export async function startPlannotatorServer(
       surface: "plan",
       decision,
       target: {
-        slug,
+        slug: historySlug,
         ...(versionInfo.version > 0
           ? {
               planVersion: versionInfo.version,
-              planVersionFile: getPlanVersionPath(project, slug, versionInfo.version) ?? undefined,
+              planVersionFile:
+                getPlanVersionPath(project, historySlug, versionInfo.version) ?? undefined,
             }
           : {}),
       },
@@ -354,7 +375,7 @@ export async function startPlannotatorServer(
 
   const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills AI SSE streams that stall
@@ -388,7 +409,7 @@ export async function startPlannotatorServer(
             if (isNaN(v) || v < 1) {
               return new Response("Invalid version number", { status: 400 });
             }
-            const content = getPlanVersion(project, slug, v);
+            const content = getPlanVersion(project, historySlug, v);
             if (content === null) {
               return Response.json({ error: "Version not found" }, { status: 404 });
             }
@@ -399,8 +420,8 @@ export async function startPlannotatorServer(
           if (url.pathname === "/api/plan/versions") {
             return Response.json({
               project,
-              slug,
-              versions: listVersions(project, slug),
+              slug: historySlug,
+              versions: listVersions(project, historySlug),
             });
           }
 
@@ -452,7 +473,7 @@ export async function startPlannotatorServer(
                 ...getUpdateAdvert(origin, { exposed: isRemote }),
               });
             }
-            return Response.json({ plan, origin, permissionMode, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(options.planRevisions ? { planRevision } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, isWSL: wslFlag, serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
+            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
           }
 
           // API: The live plan revision (open reviews that receive revised plans)
@@ -504,8 +525,12 @@ export async function startPlannotatorServer(
               return Response.json({ error: "Cross-origin config writes are not allowed" }, { status: 403 });
             }
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
+              const body = (await req.json()) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
               const toSave: Record<string, unknown> = {};
+              // OpenCode's agent switch (#1390): a known shape or nothing is saved.
+              const agentSwitch = agentSwitchConfigToSave(body);
+              if (agentSwitch === null) return Response.json({ error: "Invalid agentSwitch" }, { status: 400 });
+              if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
               if (body.theme !== undefined) toSave.theme = body.theme;
@@ -517,7 +542,7 @@ export async function startPlannotatorServer(
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
               if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
-              if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               if (agentToolSaveFailed(toSave)) return Response.json({ error: "Could not save the setting to config.json." }, { status: 500 });
               return Response.json({ ok: true });
             } catch {
@@ -551,7 +576,7 @@ export async function startPlannotatorServer(
                 return Response.json({ error: "Missing baseVersion" }, { status: 400 });
               }
 
-              const basePath = getPlanVersionPath(project, slug, body.baseVersion);
+              const basePath = getPlanVersionPath(project, historySlug, body.baseVersion);
               if (!basePath) {
                 return Response.json({ error: `Version ${body.baseVersion} not found` }, { status: 404 });
               }
@@ -815,7 +840,7 @@ export async function startPlannotatorServer(
             { status: 500, headers: { "Content-Type": "text/plain" } },
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;
@@ -863,10 +888,11 @@ export async function startPlannotatorServer(
       if (next === plan) return { revision: planRevision, version: versionInfo.version, unchanged: true };
       // Same bookkeeping a resubmission gets from a fresh server.
       slug = generateSlug(next);
-      const historyResult = saveToHistory(project, slug, next);
+      historySlug = resolveHistorySlug(project, slug, { current: historySlug });
+      const historyResult = saveToHistory(project, historySlug, next);
       currentPlanPath = historyResult.path;
-      previousPlan = historyResult.version > 1 ? getPlanVersion(project, slug, historyResult.version - 1) : null;
-      versionInfo = { version: historyResult.version, totalVersions: getVersionCount(project, slug), project };
+      previousPlan = historyResult.version > 1 ? getPlanVersion(project, historySlug, historyResult.version - 1) : null;
+      versionInfo = { version: historyResult.version, totalVersions: getVersionCount(project, historySlug), project };
       plan = next;
       planFile = readPlanFile(planFilePath, plan);
       planRevision += 1;

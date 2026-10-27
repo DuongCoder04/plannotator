@@ -39,6 +39,7 @@ import {
   type InboxWorld,
 } from "../../tests/helpers/inbox-world";
 import { expectMeasuredCost } from "../../tests/helpers/inbox-tool-cost";
+import { openCode2PlanReminder } from "./plan-reminder";
 import { lastMessage, messageText, startScriptedModel, type ScriptedModel, type ScriptedRequest, type ScriptedTurn } from "../../tests/helpers/scripted-model";
 
 const opencodeBin = process.env.OPENCODE2_BIN;
@@ -90,7 +91,11 @@ interface OpenCodeHost {
 }
 
 /** `opencode2 serve` in the world, with the packed plugin installed through a throwaway registry and the scripted model as its provider. */
-async function openOpenCode(w: InboxWorld, m: ScriptedModel): Promise<OpenCodeHost> {
+async function openOpenCode(
+  w: InboxWorld,
+  m: ScriptedModel,
+  setup: { pluginOptions?: Record<string, unknown>; env?: Record<string, string> } = {},
+): Promise<OpenCodeHost> {
   const npmRegistry = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -118,6 +123,7 @@ async function openOpenCode(w: InboxWorld, m: ScriptedModel): Promise<OpenCodeHo
     env: {
       ...process.env,
       ...worldEnv(w),
+      ...setup.env,
       XDG_CONFIG_HOME: path.join(xdg, "config"),
       XDG_DATA_HOME: path.join(xdg, "data"),
       XDG_CACHE_HOME: path.join(xdg, "cache"),
@@ -127,7 +133,7 @@ async function openOpenCode(w: InboxWorld, m: ScriptedModel): Promise<OpenCodeHo
       NPM_CONFIG_REGISTRY: registryUrl,
       npm_config_registry: registryUrl,
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        plugins: [{ package: `${packageJson.name}@${packageJson.version}`, options: { workflow: "manual" } }],
+        plugins: [{ package: `${packageJson.name}@${packageJson.version}`, options: setup.pluginOptions ?? { workflow: "manual" } }],
         providers: {
           scripted: {
             package: "@opencode/ai/providers/openai-compatible",
@@ -352,6 +358,60 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2 ↔ Plannotator Inbox (the
     w.proof(`OpenCode 2 request without the tool: ${without.bodyBytes} bytes; with it: ${withTool.bodyBytes} bytes; the plannotator_inbox entry: ${entry} bytes`);
   }, 900_000);
 
+  test("a long thread read through the tool reaches the model as a windowed transcript, text alone (no JSON after it); search answers one line per message", async () => {
+    const w = createInboxWorld("plannotator-inbox-oc2-", "01c-long-thread", "opencode2");
+    worlds.push(w);
+    knob(w, true);
+    startInbox(w);
+    // Seed 20 rounds as another agent would, over the Inbox's /mcp; the person answers each through the window's route.
+    const mcp = async (name: string, args: Record<string, unknown>) => {
+      const response = await fetch(`http://127.0.0.1:${registry(w).port}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+      });
+      const text = await response.text();
+      return (JSON.parse(text.includes("data:") ? text.split("data:")[1]!.split("\n")[0]! : text) as { result: { structuredContent: { message_id: string; thread_id: string } } }).result.structuredContent;
+    };
+    let threadId = "";
+    let last = "";
+    for (let round = 1; round <= 20; round++) {
+      const reply = last ? await personSends(w, last, `Round ${round - 1}: go ahead.`) : null;
+      const sent = await mcp("send_message", {
+        project_path: w.project,
+        agent_session: "seeder",
+        body: `Round ${round}: the queue drains in order.${round === 13 ? " The flamingo budget is set." : ""}`,
+        ...(reply ? { reply_to: reply } : {}),
+      });
+      threadId = sent.thread_id;
+      last = sent.message_id;
+    }
+    const m = model((request) => {
+      const lastTurn = lastMessage(request);
+      if (lastTurn.role === "user" && lastTurn.text === "Read the long thread.") return { toolCall: { name: "plannotator_inbox", arguments: { action: "read_thread", thread_id: threadId } } };
+      if (lastTurn.role === "user" && lastTurn.text === "Search for flamingo.") return { toolCall: { name: "plannotator_inbox", arguments: { action: "search", query: "flamingo" } } };
+      return null;
+    });
+    const host = await openOpenCode(w, m);
+    const session = await newSession(host);
+    const toolResult = (starts: (text: string) => boolean) =>
+      m.requests.map((request) => lastMessage(request)).find((message) => message.role === "tool" && starts(message.text));
+    await type(host, session, "Read the long thread.");
+    const read = await waitFor("the transcript", () => toolResult((text) => text.startsWith(`Thread ${threadId}`)), 60_000);
+    await idle(host, session);
+    expect(read.text.split("\n")[0]).toBe(`Thread ${threadId} (Round 1: the queue drains in order.): 39 messages, 19 from the person.`);
+    expect(read.text).not.toContain('{"thread"');
+    expect(read.text).toMatch(/\nCursor \d+: read_thread after: \d+ returns only what is new since this read\.$/);
+    expect(Buffer.byteLength(read.text)).toBeLessThan(12_000);
+    await type(host, session, "Search for flamingo.");
+    const found = await waitFor("the search", () => toolResult((text) => text.includes('"flamingo"')), 60_000);
+    await idle(host, session);
+    await host.stop();
+    expect(found.text.split("\n")[0]).toMatch(/^1 message matches "flamingo" in /);
+    expect(found.text).not.toContain('{"query"');
+    w.proof(`read_thread as the model got it:\n${read.text}\n\nsearch:\n${found.text}`);
+  }, 900_000);
+
   test("send_message lands a thread; the person's Send is queued into the idle session once (never steer), Delivered to OpenCode; a typed prompt goes first and takes the wake's turn over", async () => {
     const w = createInboxWorld("plannotator-inbox-oc2-", "02-wake-queue-and-take-over", "opencode2");
     worlds.push(w);
@@ -395,7 +455,9 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2 ↔ Plannotator Inbox (the
     expect(lines[0]).toBe(`Plannotator Inbox: ${SUBJECT} (${replyId})`);
     expect(lines[1]).toBe(INBOX_WAKE_INSTRUCTION);
     const reply = (await thread(w, asked.thread_id)).messages.find((message) => message.id === replyId)!;
-    expect(wake).toBe(inboxWakeText({ id: replyId, subject: SUBJECT, body: reply.body }));
+    expect(wake).toBe(inboxWakeText({ id: replyId, thread_id: asked.thread_id, subject: SUBJECT, body: reply.body }));
+    // The closing line: the thread and the tool as this host registered it (plannotator_inbox).
+    expect(lines.at(-1)).toBe(`[thread ${asked.thread_id} · more: plannotator_inbox read_thread · how it works: plannotator inbox --help]`);
     const rows = wakeRows(host, session);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.delivery).toBe("queue");
@@ -497,5 +559,49 @@ describe.skipIf(!opencodeBin || !tarball)("OpenCode 2 ↔ Plannotator Inbox (the
     expect(named).toBe("Relay retry budget");
     expect((await thread(w, rootId)).subject).toBe("Idea: a retry budget for the relay");
     w.proof(`the wake:\n${wake}\n\nthe agent's reply named the thread "${named}"`);
+  }, 900_000);
+  test("the plan agent under workflow plan-agent: OpenCode 2's Plan mode reminder reaches the model rewritten to ask for submit_plan, and the model's submit_plan opens a review whose approval comes back (#2101)", async () => {
+    const w = createInboxWorld("plannotator-plan-oc2-", "08-plan-mode-reminder", "opencode2");
+    worlds.push(w);
+    const planPort = await freePort();
+    const m = model((request) => {
+      const last = lastMessage(request);
+      if (last.role === "user" && last.text === "Create an execution plan for the refund retries." && request.tools.includes("submit_plan")) {
+        return { toolCall: { name: "submit_plan", arguments: { edits: [{ start: 1, content: "# Refund retries\n\n1. Reuse the idempotency key." }] } } };
+      }
+      return null;
+    });
+    const host = await openOpenCode(w, m, {
+      pluginOptions: { workflow: "plan-agent" },
+      env: { PLANNOTATOR_PORT: String(planPort), PLANNOTATOR_PLAN_TIMEOUT_SECONDS: "600" },
+    });
+    const session = (await host.api<{ data: { id: string } }>("POST", "/api/session", { agent: "plan" })).data.id;
+    await type(host, session, "Create an execution plan for the refund retries.");
+    const asked = await waitFor(
+      "the plan agent's request",
+      () => m.requests.find((request) => request.tools.includes("submit_plan") && lastMessage(request).text === "Create an execution plan for the refund retries."),
+      60_000,
+    );
+    const userTexts = asked.messages.filter((message) => message.role === "user").map((message) => messageText(message.content));
+    const reminder = openCode2PlanReminder(path.join(w.home, ".opencode", "plan"));
+    expect(userTexts).toContain(reminder);
+    expect(userTexts.join("\n")).not.toContain("Discuss the plan with the user directly");
+    expect(userTexts.join("\n")).not.toContain("Do not create or update plan files");
+    w.proof(`the plan agent's request carried, before the prompt:\n${reminder}`);
+
+    await waitFor("the plan review server", async () => (await fetch(`http://127.0.0.1:${planPort}/api/plan`).catch(() => null))?.ok, 60_000);
+    const approved = await fetch(`http://127.0.0.1:${planPort}/api/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(approved.ok).toBe(true);
+    const result = await waitFor(
+      "the submit_plan result at the model",
+      () => m.requests.map((request) => lastMessage(request)).find((message) => message.role === "tool" && /approved/i.test(message.text)),
+      60_000,
+    );
+    await idle(host, session);
+    w.proof(`submit_plan opened the review on port ${planPort}; after Approve the model got:\n${result.text}`);
+
+    // Prompt caching: every later plan-agent request carries the same reminder bytes.
+    const later = m.requests.filter((request) => request.tools.includes("submit_plan")).map((request) => request.messages.filter((message) => message.role === "user").map((message) => messageText(message.content)).filter((text) => text.includes("Plan Mode - System Reminder")));
+    for (const reminders of later) expect(reminders).toEqual([reminder]);
   }, 900_000);
 });

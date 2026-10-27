@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { readInboxAttachmentKind, type InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { ImagePeek, type ImagePeekRow } from '@plannotator/ui/components/ImagePeek';
 import { Tooltip } from '@plannotator/ui/components/Tooltip';
@@ -16,8 +15,6 @@ export interface AttachmentStepperProps {
   steps: readonly AttachmentStep[];
   /** The open file's place in `steps`. */
   index: number;
-  /** Phones: Previous / "3 of 5" / Next as 44 px buttons; the count opens the peek as a bottom sheet. */
-  phone: boolean;
   /** The peek is open. */
   menuOpen: boolean;
   onMenuOpenChange: (open: boolean) => void;
@@ -72,7 +69,7 @@ export function peekSheetHost(near: Element | null): Element | null {
 /**
  * The peek itself (approval "inbox-image-viewer"): the picture list of every
  * file in the thread, the open one ringed. The stepper opens it from its
- * label; full view (approval "inbox-full-view") opens the same list from its
+ * label; full screen (approval "inbox-one-fullscreen") opens the same list from its
  * floating bar's `N/M ⌄`.
  */
 export function FilePeek(props: {
@@ -83,14 +80,54 @@ export function FilePeek(props: {
   annotationCounts: ReadonlyMap<string, number>;
   onClose: (reason: 'key' | 'outside') => void;
   onGo: (index: number) => void;
+  /**
+   * A phone's sheet: ‹ Previous and Next › above the files (the owner's answer
+   * for files a swipe cannot step; shown for every file, so the sheet is the
+   * same everywhere). `onStep` steps (the host closes the sheet); at an end the
+   * button is `aria-disabled`, keeps focus, and `onStep` only says the end.
+   */
+  onStep?: (dir: 1 | -1) => void;
 }) {
-  const { steps, phone } = props;
+  const { steps, phone, index } = props;
   const rows = useMemo(() => peekRows(steps, props.annotationCounts), [steps, props.annotationCounts]);
+  const onStep = props.onStep;
+  const prev = steps[index - 1];
+  const next = steps[index + 1];
+  const header =
+    phone && onStep ? (
+      <div className="ib-peekstep" role="group" aria-label="Step through the files" data-peek-step="">
+        <button
+          type="button"
+          className="ib-peekstep-b"
+          aria-label={prev ? `Previous file: ${prev.attachment.name}` : 'Previous file: this is the first'}
+          aria-disabled={prev ? undefined : true}
+          onClick={() => onStep(-1)}
+          data-peek-step-prev=""
+        >
+          <Icon name="chevL" size={18} />
+          <span>Previous</span>
+        </button>
+        <span className="ib-peekstep-n" aria-hidden="true">
+          {index + 1} of {steps.length}
+        </span>
+        <button
+          type="button"
+          className="ib-peekstep-b"
+          aria-label={next ? `Next file: ${next.attachment.name}` : 'Next file: this is the last'}
+          aria-disabled={next ? undefined : true}
+          onClick={() => onStep(1)}
+          data-peek-step-next=""
+        >
+          <span>Next</span>
+          <Icon name="chevR" size={18} />
+        </button>
+      </div>
+    ) : null;
   return (
     <ImagePeek
       id={props.id}
       rows={rows}
-      current={steps[props.index]?.attachment.id ?? null}
+      current={steps[index]?.attachment.id ?? null}
       label="Files in this thread"
       variant={phone ? 'sheet' : 'popover'}
       onClose={props.onClose}
@@ -99,6 +136,7 @@ export function FilePeek(props: {
         if (at >= 0) props.onGo(at);
       }}
       className={phone ? 'ib-peek-sheet' : ''}
+      sheetHeader={header}
     />
   );
 }
@@ -139,11 +177,11 @@ function StepTip({ text, keys, children }: { text: string; keys: string[]; child
  * button greys with `aria-disabled`, so focus stays on it). The label (Enter,
  * Space or ↓ on it too) opens the peek (approval "inbox-image-viewer", "A ·
  * Peek"): a picture list above the bar, one row per message, the open file
- * ringed; on a phone the count opens it as a bottom sheet. It replaces the
- * older ⌄ list.
+ * ringed. It replaces the older ⌄ list. The stepper is drawn beside the
+ * thread only: full screen (a phone's too) steps from its toolbar.
  */
 export function AttachmentStepper(props: AttachmentStepperProps) {
-  const { steps, index, phone, menuOpen } = props;
+  const { steps, index, menuOpen } = props;
   const total = steps.length;
   const current = steps[index]!;
   const prev = index > 0 ? steps[index - 1]! : null;
@@ -162,8 +200,8 @@ export function AttachmentStepper(props: AttachmentStepperProps) {
   }, [menuOpen]);
 
   const close = (reason: 'key' | 'outside') => {
-    // A press elsewhere on a desktop leaves focus where it went; a phone's sheet backdrop covers everything, so focus goes back to the count.
-    if (reason === 'outside' && !phone) refocus.current = false;
+    // A press elsewhere leaves focus where it went.
+    if (reason === 'outside') refocus.current = false;
     props.onMenuOpenChange(false);
   };
 
@@ -177,56 +215,13 @@ export function AttachmentStepper(props: AttachmentStepperProps) {
     }
   };
 
-  const peek = menuOpen && <FilePeek id={peekId} steps={steps} index={index} phone={phone} annotationCounts={props.annotationCounts} onClose={close} onGo={props.onGo} />;
-  // A phone's sheet covers the window: drawn in the Inbox's root, above the pane.
-  const sheetHost = phone ? peekSheetHost(labelRef.current) : null;
+  const peek = menuOpen && <FilePeek id={peekId} steps={steps} index={index} phone={false} annotationCounts={props.annotationCounts} onClose={close} onGo={props.onGo} />;
 
   const endNote = (
     <span className={`ib-endnote${props.endNote ? ' ib-on' : ''}`} aria-hidden="true" data-step-end-note="">
       {props.endNote}
     </span>
   );
-
-  if (phone) {
-    return (
-      <nav className="ib-stepper ib-stepphone" aria-label="Files in this thread" data-attachment-stepper="">
-        <button type="button" className="ib-stepbig" aria-label={prevLabel} aria-disabled={prev ? undefined : 'true'} onClick={() => props.onStep(-1, 'button')} data-step-prev="">
-          <Icon name="chevL" size={16} />
-          <span className="ib-stepbig-l">Previous</span>
-        </button>
-        <button
-          type="button"
-          ref={labelRef}
-          className="ib-steppos ib-stepmid"
-          aria-haspopup="grid"
-          aria-expanded={menuOpen}
-          aria-controls={menuOpen ? peekId : undefined}
-          aria-label={label}
-          onClick={() => props.onMenuOpenChange(!menuOpen)}
-          onKeyDown={onLabelKey}
-          data-step-label=""
-          data-peek-opener=""
-        >
-          {/* The end note takes the count's place for a moment: in the bar, never over the file. */}
-          {props.endNote ? (
-            <span className="ib-stepn ib-stepnote" aria-hidden="true" data-step-end-note="">
-              {props.endNote}
-            </span>
-          ) : (
-            <span className="ib-stepn">
-              {index + 1} of {total}
-            </span>
-          )}
-          <Icon name="chevD" size={13} />
-        </button>
-        <button type="button" className="ib-stepbig" aria-label={nextLabel} aria-disabled={next ? undefined : 'true'} onClick={() => props.onStep(1, 'button')} data-step-next="">
-          <span className="ib-stepbig-l">Next</span>
-          <Icon name="chevR" size={16} />
-        </button>
-        {peek && sheetHost ? createPortal(<div className="pn-inbox-peek">{peek}</div>, sheetHost) : peek}
-      </nav>
-    );
-  }
 
   return (
     <nav className="ib-stepper" aria-label="Files in this thread" data-attachment-stepper="">

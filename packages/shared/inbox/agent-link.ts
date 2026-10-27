@@ -41,6 +41,7 @@ import {
   INBOX_BRIDGE_EVENT_PATH,
   INBOX_BRIDGE_POLL_PATH,
   INBOX_SEND_NOW_POLL_FIELD,
+  INBOX_TAGS_POLL_FIELD,
   inboxToolCall,
   inboxToolCallParams,
   inboxToolResultText,
@@ -85,8 +86,14 @@ function rememberedToolsFileOf(dataDir: string): string {
   return join(dataDir, "inbox", "connection-tools.json");
 }
 
-function claimDirOf(dataDir: string, replyId: string): string {
-  return join(dataDir, "inbox", "claims", replyId);
+/**
+ * The claim folder of one delivery. A reply that tags agents goes to several
+ * sessions, which may share this data dir (two Pi sessions, Pi and OpenCode):
+ * a tagged session's claim names its session too, so each is delivered once.
+ */
+function claimDirOf(dataDir: string, replyId: string, taggedSession?: string | null): string {
+  const name = taggedSession ? `${replyId}.${taggedSession.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120)}` : replyId;
+  return join(dataDir, "inbox", "claims", name);
 }
 
 /** One session's lease on one host: which of its processes polls and delivers. */
@@ -283,12 +290,7 @@ export class InboxAgentConnection {
 
   /** `plannotator inbox --background`: a one-shot that detaches the Inbox into its own session and waits for it. */
   private async startInbox(): Promise<{ missing: boolean; exitCode: number | null; output: string }> {
-    const candidates = this.options.command
-      ? [this.options.command]
-      : process.env.PLANNOTATOR_BIN?.trim()
-        ? [process.env.PLANNOTATOR_BIN.trim()]
-        : ["plannotator", join(homedir(), ".local", "bin", "plannotator")];
-    for (const command of candidates) {
+    for (const command of plannotatorCommands(this.options.command)) {
       const run = await runOnce(command, ["inbox", "--background"], { ...process.env, PLANNOTATOR_DATA_DIR: this.dataDir });
       if (!run.missing) return run;
     }
@@ -313,15 +315,28 @@ export class InboxAgentConnection {
   }
 }
 
+interface RunOnceResult {
+  missing: boolean;
+  exitCode: number | null;
+  /** Stdout and stderr together, in arrival order. */
+  output: string;
+  /** Stdout alone. */
+  stdout?: string;
+  /** Stderr alone. */
+  stderr?: string;
+}
+
 function runOnce(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<{ missing: boolean; exitCode: number | null; output: string }> {
+): Promise<RunOnceResult> {
   return new Promise((resolve) => {
     let output = "";
+    let stdout = "";
+    let stderr = "";
     let settled = false;
-    const done = (value: { missing: boolean; exitCode: number | null; output: string }) => {
+    const done = (value: RunOnceResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -338,11 +353,61 @@ function runOnce(
       child.kill();
       done({ missing: false, exitCode: null, output: `${output}\n(no answer within ${START_TIMEOUT_MS / 1000} s)` });
     }, START_TIMEOUT_MS);
-    child.stdout?.on("data", (chunk) => (output += String(chunk)));
-    child.stderr?.on("data", (chunk) => (output += String(chunk)));
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+      stderr += String(chunk);
+    });
     child.on("error", (error: NodeJS.ErrnoException) => done({ missing: error.code === "ENOENT", exitCode: null, output: error.message }));
-    child.on("close", (code) => done({ missing: false, exitCode: code, output }));
+    child.on("close", (code) => done({ missing: false, exitCode: code, output, stdout, stderr }));
   });
+}
+
+/** The commands that run Plannotator: PLANNOTATOR_BIN, else `plannotator` on PATH, else ~/.local/bin/plannotator. */
+function plannotatorCommands(command?: string): string[] {
+  if (command) return [command];
+  const bin = process.env.PLANNOTATOR_BIN?.trim();
+  return bin ? [bin] : ["plannotator", join(homedir(), ".local", "bin", "plannotator")];
+}
+
+/**
+ * `/plannotator-inbox` on Pi and OpenCode: `plannotator inbox --open`, which
+ * opens the person's Inbox in the browser (starting a stopped one detached)
+ * and prints its address. Never blocks the session: it returns once the
+ * Inbox answers (at most the CLI's 20 s start wait). `note` is what the CLI
+ * said on stderr, e.g. that no browser opened in a remote session and how to
+ * reach the Inbox from here.
+ */
+export async function openInboxInBrowser(
+  options: { dataDir?: string; command?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ url: string; note?: string } | { error: string }> {
+  const env = { ...(options.env ?? process.env), ...(options.dataDir ? { PLANNOTATOR_DATA_DIR: options.dataDir } : {}) };
+  for (const command of plannotatorCommands(options.command)) {
+    const run = await runOnce(command, ["inbox", "--open"], env);
+    if (run.missing) continue;
+    const url = /https?:\/\/\S+/.exec(run.stdout ?? "")?.[0];
+    if (run.exitCode === 0 && url) {
+      const note = run.stderr?.trim();
+      return note ? { url, note } : { url };
+    }
+    const why = run.output.trim() || `exit ${run.exitCode}`;
+    // A plannotator older than --open (or than the Inbox itself).
+    if (/unknown inbox option: --open|unknown command/i.test(why)) return { error: INBOX_OPEN_UPDATE_TEXT };
+    return { error: `Could not open the Plannotator Inbox: ${why}` };
+  }
+  return { error: "There is no plannotator command on this machine: install Plannotator (https://plannotator.ai/docs/getting-started/installation/)." };
+}
+
+/** An older plannotator answered `/plannotator-inbox` with "Unknown inbox option: --open". */
+export const INBOX_OPEN_UPDATE_TEXT =
+  "The plannotator on PATH is older than /plannotator-inbox. Update it with `plannotator update`, or run `plannotator inbox` in a terminal.";
+
+/** What `/plannotator-inbox` says: where the Inbox is, and the CLI's note when it gave one. */
+export function inboxOpenedText(url: string, note?: string): string {
+  return `Plannotator Inbox: ${url}${note?.trim() ? `\n${note.trim()}` : ""}`;
 }
 
 /** What a host gives one session's wake. */
@@ -378,6 +443,28 @@ export interface InboxWakeTarget {
    * where it wrote.
    */
   projectPath?(): string | null | undefined | Promise<string | null | undefined>;
+  /**
+   * The version of Plannotator's plugin or extension this process loaded
+   * (Pi: the extension's package.json). Each poll carries it as `plugin:
+   * { version }`, so the Inbox can say when the session runs an older one.
+   * Optional: a host without it sends nothing. `plugin` wins when both exist.
+   */
+  pluginVersion?(): string | null;
+  /**
+   * What this process loaded AND what is on disk now (owner approval
+   * "reload-hosts"): `{ version, on_disk, host }`. `on_disk` is null when the
+   * package is gone from disk (OpenCode 2: its generation folder was
+   * deleted), `host` `oh-my-pi` inside Oh My Pi. Each poll carries it as
+   * `plugin`, so the Inbox can say which command loads the newer code.
+   */
+  plugin?(): InboxLoadedPluginReport | null;
+}
+
+/** A poll's `plugin` as Pi, Oh My Pi and OpenCode 2 send it. */
+export interface InboxLoadedPluginReport {
+  version: string;
+  on_disk: string | null;
+  host?: "pi" | "oh-my-pi";
 }
 
 /**
@@ -562,6 +649,16 @@ export class InboxWake {
     } catch {
       projectPath = null;
     }
+    let plugin: InboxLoadedPluginReport | { version: string } | null = null;
+    try {
+      plugin = this.target.plugin?.() ?? null;
+      if (!plugin) {
+        const version = this.target.pluginVersion?.() ?? null;
+        plugin = version ? { version } : null;
+      }
+    } catch {
+      plugin = null;
+    }
     const response = await this.connection.bridge(
       INBOX_BRIDGE_POLL_PATH,
       this.sessionId,
@@ -571,6 +668,10 @@ export class InboxWake {
         started_at: this.startedAt,
         ...(this.busy === null ? {} : { busy: this.busy, idle_since: this.idleSince }),
         ...(this.steerable ? { [INBOX_SEND_NOW_POLL_FIELD]: true } : {}),
+        // Tags (approval "inbox-tag-agents"): this connection words a reply it was tagged in truthfully.
+        [INBOX_TAGS_POLL_FIELD]: true,
+        // What this process loaded (additive): the Inbox says when the session runs an older one.
+        ...(plugin?.version ? { plugin } : {}),
       },
       signal,
     );
@@ -629,7 +730,7 @@ export class InboxWake {
     }
     // The person may have moved to another process since the last tick.
     if (this.disposed || !this.holdLease(Date.now())) return;
-    const claim = claimDirOf(this.connection.dataDir, command.id);
+    const claim = claimDirOf(this.connection.dataDir, command.id, command.tagged ? this.sessionId : null);
     try {
       mkdirSync(join(claim, ".."), { recursive: true, mode: 0o700 });
       mkdirSync(claim, { mode: 0o700 });

@@ -13,6 +13,7 @@ import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-gu
 import {
 	type ArchivedPlan,
 	generateSlug,
+	resolveHistorySlug,
 	getPlanVersion,
 	getPlanVersionPath,
 	getVersionCount,
@@ -49,7 +50,7 @@ import {
 } from "./integrations.ts";
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
 
-import { agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -144,6 +145,12 @@ export async function startPlanReviewServer(options: {
 	 * /api/plan/revision; off by default so a review nobody revises never polls.
 	 */
 	planRevisions?: boolean;
+	/**
+	 * The host delivers notes sent with an approval to the agent. Advertised on
+	 * /api/plan as `approvalNotesSupported` (mirrors the Bun plan server's
+	 * option); absent reads as false in the tab.
+	 */
+	approvalNotesSupported?: boolean;
 }): Promise<PlanServerResult> {
 	const gitUser = detectGitUser();
 	const sharingEnabled =
@@ -183,21 +190,26 @@ export async function startPlanReviewServer(options: {
 	// since replaced is refused (409) instead of approving unseen text.
 	let planRevision = 0;
 	const repoInfo = options.mode !== "archive" ? getRepoInfo() : null;
+	// `slug` dates the archive files under plans/ (today's date, as always);
+	// `historySlug` keys history/{project}/ and stays on the chain this plan
+	// already started, so a review spanning midnight keeps its version diff
+	// (#1679; the Bun server does the same).
 	let slug = options.mode !== "archive" ? generateSlug(options.plan) : "";
 	const project = options.mode !== "archive" ? detectProjectName() : "";
+	let historySlug = options.mode !== "archive" ? resolveHistorySlug(project, slug) : "";
 	let historyResult =
 		options.mode !== "archive"
-			? saveToHistory(project, slug, options.plan)
+			? saveToHistory(project, historySlug, options.plan)
 			: { version: 0, path: "", isNew: false };
 	let previousPlan =
 		options.mode !== "archive" && historyResult.version > 1
-			? getPlanVersion(project, slug, historyResult.version - 1)
+			? getPlanVersion(project, historySlug, historyResult.version - 1)
 			: null;
 	let versionInfo =
 		options.mode !== "archive"
 			? {
 					version: historyResult.version,
-					totalVersions: getVersionCount(project, slug),
+					totalVersions: getVersionCount(project, historySlug),
 					project,
 				}
 			: null;
@@ -223,11 +235,11 @@ export async function startPlanReviewServer(options: {
 			surface: "plan",
 			decision,
 			target: {
-				slug,
+				slug: historySlug,
 				...(version > 0
 					? {
 							planVersion: version,
-							planVersionFile: getPlanVersionPath(project, slug, version) ?? undefined,
+							planVersionFile: getPlanVersionPath(project, historySlug, version) ?? undefined,
 						}
 					: {}),
 			},
@@ -363,7 +375,7 @@ export async function startPlanReviewServer(options: {
 				json(res, { error: "Invalid version number" }, 400);
 				return;
 			}
-			const content = getPlanVersion(project, slug, v);
+			const content = getPlanVersion(project, historySlug, v);
 			if (content === null) {
 				json(res, { error: "Version not found" }, 404);
 				return;
@@ -372,7 +384,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/api/plan/revision" && req.method === "GET" && options.mode !== "archive") {
 			json(res, { revision: planRevision, decided: decisionSettled });
 		} else if (url.pathname === "/api/plan/versions") {
-			json(res, { project, slug, versions: listVersions(project, slug) });
+			json(res, { project, slug: historySlug, versions: listVersions(project, historySlug) });
 		} else if (url.pathname === "/api/plan") {
 			if (options.mode === "archive") {
 				json(res, {
@@ -393,8 +405,11 @@ export async function startPlanReviewServer(options: {
 					serverSession,
 					origin: options.origin ?? "pi",
 					permissionMode: options.permissionMode,
+					approvalNotesSupported: options.approvalNotesSupported === true,
 					previousPlan,
 					versionInfo,
+					// The history file holding this exact plan, so Ask AI can name it by path.
+					...(historyResult.path ? { planPath: historyResult.path } : {}),
 					sharingEnabled,
 					shareBaseUrl,
 					pasteApiUrl,
@@ -425,8 +440,12 @@ export async function startPlanReviewServer(options: {
 				return;
 			}
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
+				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; pfmReminder?: boolean };
 				const toSave: Record<string, unknown> = {};
+				// OpenCode's agent switch (#1390): a known shape or nothing is saved.
+				const agentSwitch = agentSwitchConfigToSave(body);
+				if (agentSwitch === null) return json(res, { error: "Invalid agentSwitch" }, 400);
+				if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.theme !== undefined) toSave.theme = body.theme;
@@ -438,7 +457,7 @@ export async function startPlanReviewServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
-				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
 				json(res, { ok: true });
 			} catch {
@@ -495,7 +514,7 @@ export async function startPlanReviewServer(options: {
 					json(res, { error: "Missing baseVersion" }, 400);
 					return;
 				}
-				const basePath = getPlanVersionPath(project, slug, baseVersion);
+				const basePath = getPlanVersionPath(project, historySlug, baseVersion);
 				if (!basePath) {
 					json(res, { error: `Version ${baseVersion} not found` }, 404);
 					return;
@@ -732,13 +751,15 @@ export async function startPlanReviewServer(options: {
 			}
 			// Same bookkeeping a resubmission gets from a fresh server: slug from
 			// the revised heading, a new history version, and the previous
-			// version of that slug as the diff base.
+			// version of that slug as the diff base. A revision that keeps its
+			// heading stays on this session's history chain.
 			slug = generateSlug(plan);
-			historyResult = saveToHistory(project, slug, plan);
-			previousPlan = historyResult.version > 1 ? getPlanVersion(project, slug, historyResult.version - 1) : null;
+			historySlug = resolveHistorySlug(project, slug, { current: historySlug });
+			historyResult = saveToHistory(project, historySlug, plan);
+			previousPlan = historyResult.version > 1 ? getPlanVersion(project, historySlug, historyResult.version - 1) : null;
 			versionInfo = {
 				version: historyResult.version,
-				totalVersions: getVersionCount(project, slug),
+				totalVersions: getVersionCount(project, historySlug),
 				project,
 			};
 			currentPlan = plan;
@@ -752,6 +773,8 @@ export async function startPlanReviewServer(options: {
 				closeAllFileBrowserWatchers();
 				aiRuntime?.dispose();
 			} finally {
+				// Before closeAllConnections, or a session-closed just sent is lost.
+				externalAnnotations?.endStreams();
 				server.close();
 				// close() only stops the listener; drain browser keep-alive sockets so a
 				// stopped session's connections die immediately instead of at the

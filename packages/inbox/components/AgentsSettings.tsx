@@ -1,9 +1,223 @@
 import { useId, useState, type ReactNode } from 'react';
-import { INBOX_AGENT_LABELS, inboxToolCostText, type InboxAgentId, type InboxAgentRow, type InboxAgentsModel } from '@plannotator/core/inbox-types';
+import {
+  INBOX_AGENT_LABELS,
+  inboxToolCostText,
+  type InboxAgentId,
+  type InboxAgentRow,
+  type InboxAgentsModel,
+  type InboxHostSessions,
+  type InboxOpenSession,
+  type InboxToolHostId,
+} from '@plannotator/core/inbox-types';
 import { inboxApi } from '../api';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon } from '../icons';
 import { ConnectPicker } from './ConnectPicker';
+import { CommandLine, CopyCommand, Fold, OpenCodeQuiet, OpenCodeWords, openCodeCommand, ReloadCopy, ReloadLead, type ReloadSpec } from './RestartNote';
+import type { InboxReloadRuntime } from '@plannotator/core/inbox-types';
+import { clockTime, dayWords, formatCount } from '../format';
+
+/** Whether any host has an open session that needs a restart or an update: Settings' Agents dot. */
+export function agentsNeedRestart(model: InboxAgentsModel | null | undefined): boolean {
+  return Object.values(model?.sessions ?? {}).some((host) => (host?.outdated ?? 0) > 0);
+}
+
+/** "9:14 AM" today, "yesterday, 6:02 PM", "Oct 3, 6:02 PM". */
+function sinceText(iso: string): string {
+  const day = dayWords(iso);
+  const time = clockTime(iso);
+  return day === 'today' ? time : `${day}, ${time}`;
+}
+
+/** The head's state when sessions need something: "Connected · 2 need a reload". */
+function sessionsState(id: InboxToolHostId, sessions: InboxHostSessions | undefined): string | null {
+  if (!sessions || sessions.outdated === 0) return null;
+  const n = sessions.outdated;
+  if (id === 'pi') return n === 1 ? '1 needs a reload' : `${n} need a reload`;
+  if (sessions.sessions.some((s) => s.outdated?.fix === 'update_plugin' || (id === 'opencode' && s.outdated?.fix === 'update_extension'))) return 'plugin needs an update';
+  return n === 1 ? '1 needs a reload' : `${n} need a reload`;
+}
+
+/**
+ * Settings → Agents' "Open sessions" row. For Claude Code sessions on an older
+ * plugin (simplified 2026-10-21, owner: "simple buttons win"): one large line,
+ * "Type /reload-plugins in each of these N Claude Code sessions." with Copy;
+ * then the sessions as a short list; the manual path (/exit and a restart
+ * command per session) folded behind "Still listed after reloading?".
+ */
+function OpenSessions({ id, sessions }: { id: InboxToolHostId; sessions: InboxHostSessions }) {
+  const stale = sessions.sessions.filter((s) => s.outdated);
+  const versions = [...new Set(stale.map((s) => s.plugin))];
+  const what = id === 'pi' ? 'extension' : 'plugin';
+  // OpenCode reports its plugin since "reload-hosts"; an older OpenCode connection says nothing.
+  const reports = id !== 'opencode' || sessions.sessions.some((s) => s.plugin);
+  const older =
+    stale.length === 0
+      ? reports
+        ? ' · up to date'
+        : ''
+      : versions.length === 1 && versions[0]
+        ? ` · ${stale.length} on ${what} ${versions[0]}`
+        : ` · ${stale.length} on an older ${what}`;
+  const runningOnly = id !== 'claude-code' && stale.length === 0 && sessions.sessions[0]?.plugin ? ` · ${what} ${sessions.sessions[0].plugin}` : '';
+  // Pi, Oh My Pi and OpenCode 2 sessions whose connection says which command loads the new code.
+  const reloadable = stale.filter((s) => s.outdated?.runtime && s.outdated.runtime !== 'claude-code');
+  // Pi sessions on a connection older than the on-disk report: the update line, for them alone (beside any reloadable ones).
+  const legacy = id === 'pi' ? stale.filter((s) => !s.outdated?.runtime) : [];
+  let sub: ReactNode = null;
+  if (legacy.length > 0) {
+    const first = legacy[0]!;
+    sub = (
+      <>
+        Run <code>pi update --extensions</code>, then <code>/reload</code> in {legacy.length === 1 ? 'that session' : `each of those ${legacy.length}`}
+        {legacy.length === 1 ? ` (${first.project ?? 'Pi'}, since ${sinceText(first.started_at)})` : ''}.
+      </>
+    );
+  }
+  const reload = id === 'claude-code' && stale.length > 0;
+  const updating = stale.some((s) => s.outdated?.fix === 'update_plugin');
+  return (
+    <div className="ib-agrow" data-agent-sessions={id}>
+      <span className="ib-agk">Open sessions</span>
+      <span className="ib-agv">
+        {formatCount(sessions.running)} running
+        {older}
+        {runningOnly}
+      </span>
+      <span className="ib-agr" />
+      {sub && (
+        <span className="ib-agsub ib-agwarn">
+          <Icon name="refresh" />
+          <span>{sub}</span>
+        </span>
+      )}
+      {reloadable.length > 0 && <HostReload sessions={reloadable} />}
+      {reload && (
+        <div className="ib-rl" data-reload-sessions="">
+          <ReloadLead
+            where={stale.length === 1 ? 'in this Claude Code session' : `in each of these ${stale.length} Claude Code sessions`}
+            updateCommand={updating ? (sessions.update_command ?? null) : null}
+          />
+          <ul className="ib-rw-sess" aria-label="Claude Code sessions on the older plugin">
+            {stale.map((s) => (
+              <li key={s.session}>
+                <SessionRow session={s} />
+              </li>
+            ))}
+          </ul>
+          <Fold question="Still listed after reloading?">
+            <p className="ib-rl-manual" data-restart-fallback="">
+              Type <code>/exit</code> in any session still listed, then run its restart command. <span className="ib-rw-warn">/exit stops a turn it is working on.</span>
+            </p>
+            <ul className="ib-rw-sess" aria-label="Restart commands">
+              {stale.map((s) => (
+                <li key={s.session}>
+                  <SessionRow session={s} restart />
+                </li>
+              ))}
+            </ul>
+          </Fold>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const RUNTIME_LABEL: Record<InboxReloadRuntime, string> = { 'claude-code': 'Claude Code', pi: 'Pi', 'oh-my-pi': 'Oh My Pi', opencode: 'OpenCode' };
+
+/**
+ * Pi, Oh My Pi and OpenCode 2 sessions on older code (owner approval
+ * "reload-hosts"): per runtime and command, one large line with Copy
+ * ("Type /reload in each of these 2 Pi sessions.", "Type /restart in this Oh
+ * My Pi session.", "Run opencode2 reload."), the update first when the
+ * package on disk is behind too (OpenCode 2: `opencode2 plugin update <its
+ * spec>` alone, or the pin to change), then the sessions as a short list.
+ * OpenCode's reload carries one quiet line on what it cancels; its server
+ * restart is folded.
+ */
+function HostReload({ sessions }: { sessions: InboxOpenSession[] }) {
+  const groups = new Map<string, InboxOpenSession[]>();
+  for (const s of sessions) {
+    const o = s.outdated!;
+    const key = `${o.runtime}|${o.reload_command ?? ''}|${o.fix === 'update_extension' ? (o.update_command ?? '') : ''}|${o.pinned_spec ?? ''}`;
+    groups.set(key, [...(groups.get(key) ?? []), s]);
+  }
+  return (
+    <>
+      {[...groups.entries()].map(([key, group]) => {
+        const o = group[0]!.outdated!;
+        const runtime = o.runtime!;
+        const name = RUNTIME_LABEL[runtime];
+        const reload: ReloadSpec = { command: o.reload_command ?? '/reload', where: o.reload_where ?? 'session' };
+        const n = group.length;
+        const where = n === 1 ? `in this ${name} session` : `in each of these ${n} ${name} sessions`;
+        const what = "Plannotator's extension";
+        // OpenCode 2: one short line with its command and Copy (an update reloads by itself), the pin first when there is one.
+        const command =
+          runtime === 'opencode'
+            ? openCodeCommand({ fix: o.fix, updateCommand: o.update_command ?? null, reloadCommand: o.reload_command ?? 'opencode2 reload', pinnedSpec: o.pinned_spec ?? null })
+            : null;
+        return (
+          <div className="ib-rl" data-reload-sessions={runtime} key={key}>
+            {command ? (
+              <>
+                <p className="ib-rl-lead ib-rl-line" data-reload-lead={o.pinned_spec ? 'pin' : 'restart'} data-reload-command={command}>
+                  <span>
+                    <OpenCodeWords command={command} pinnedSpec={o.pinned_spec ?? null} pinTo={o.pin_to ?? null} />
+                  </span>
+                  {!o.pinned_spec && <ReloadCopy command={command} />}
+                </p>
+                <OpenCodeQuiet command={command} updatesAll={o.update_scope === 'all'} className="ib-rl-quiet" />
+              </>
+            ) : (
+              <ReloadLead where={where} updateCommand={o.fix === 'update_extension' ? (o.update_command ?? null) : null} reload={reload} what={what} />
+            )}
+            <ul className="ib-rw-sess" aria-label={`${name} sessions on older code`}>
+              {group.map((s) => (
+                <li key={s.session}>
+                  <SessionRow session={s} />
+                </li>
+              ))}
+            </ul>
+            {command === 'opencode2 reload' && o.fallback_command && (
+              <Fold question="Still listed after reloading?">
+                <div className="ib-rl-manual" data-restart-fallback="">
+                  Restart OpenCode's background server:
+                  <CommandLine text={o.fallback_command} label="Copy the command that restarts OpenCode's background server" />
+                  <span className="ib-rw-warn">It stops any turn an OpenCode session is working on.</span>
+                </div>
+              </Fold>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** One session: its project, since when, idle or working. With `restart`, its Copy restart. */
+function SessionRow({ session, restart }: { session: InboxOpenSession; restart?: boolean }) {
+  const state = session.busy === true ? 'working' : session.busy === false ? 'idle' : null;
+  const meta = [`since ${sinceText(session.started_at)}`, state].filter(Boolean).join(' · ');
+  return (
+    <div className="ib-rw-srow" {...(restart ? { 'data-session-restart': session.session } : { 'data-session-row': session.session })}>
+      <span className="ib-rw-sw">
+        <span className="ib-rw-sp" title={session.folder ?? undefined}>
+          {session.project ?? 'A session'}
+        </span>
+        <span className="ib-rw-sm">{meta}</span>
+      </span>
+      {restart &&
+        (session.restart_command ? (
+          <CopyCommand text={session.restart_command} short="Copy restart" label={`Copy restart: the command that restarts the ${session.project ?? 'Claude Code'} session started ${sinceText(session.started_at)}`} />
+        ) : (
+          <span className="ib-rw-sm">
+            run <code>claude --resume</code> in its folder
+          </span>
+        ))}
+    </div>
+  );
+}
 
 type Change = { reach?: boolean; tool?: boolean; reminder?: boolean; note?: boolean };
 
@@ -49,15 +263,36 @@ function stateOf(row: InboxAgentRow): { text: string; tone: 'on' | 'off' | 'bad'
   }
 }
 
+/**
+ * What happens to the person's reply, for an agent that reaches the Inbox:
+ * Plannotator's own connection puts it into the session as a new turn; an
+ * agent reached through MCP (or OpenCode 1, which has the tool but no wake)
+ * reads it when it next checks. Null when the agent does not reach the Inbox,
+ * or when it is not known (Claude Code on Windows).
+ */
+export function repliesOf(row: InboxAgentRow, platform?: ConnectContext['platform']): { text: string; wakes: boolean } | null {
+  if (!row.reach.on) return null;
+  if (row.reach.kind === 'tool') {
+    if (row.tool?.mod_off) return null;
+    // Claude Code's mod stands down on Windows (no /bin/sh), so nothing wakes it there: say no more than the Reaches row.
+    if (row.id === 'claude-code' && platform === 'windows') return null;
+    if (row.id === 'opencode' && row.plugin?.generation === '1') return { text: "seen when it checks the Inbox; OpenCode 1 can't be woken", wakes: false };
+    return { text: 'arrive as a new turn', wakes: true };
+  }
+  // Codex: the Inbox wakes it itself (`codex queue`) when it found a Codex that can (the server's `wakes`).
+  if (row.reach.kind === 'mcp' && row.wakes === true) return { text: 'arrive as a new turn', wakes: true };
+  if (row.reach.kind === 'mcp') return { text: "seen when it checks the Inbox; it can't be woken", wakes: false };
+  return null;
+}
+
 /** Agents whose instructions live in their own settings, not a file. */
 const NO_NOTE_FILE: Partial<Record<InboxAgentId, string>> = {
-  cursor: 'Cursor keeps its rules in its own settings, so there is no file to add a note to.',
   kiro: 'Kiro CLI has no global instructions file, so there is no file to add a note to.',
 };
 
-function Row({ k, v, r, sub, warn, na }: { k: string; v: ReactNode; r?: ReactNode; sub?: ReactNode; warn?: boolean; na?: boolean }) {
+function Row({ k, v, r, sub, warn, na, data }: { k: string; v: ReactNode; r?: ReactNode; sub?: ReactNode; warn?: boolean; na?: boolean; data?: Record<`data-${string}`, string> }) {
   return (
-    <div className={`ib-agrow${na ? ' ib-agna' : ''}`}>
+    <div className={`ib-agrow${na ? ' ib-agna' : ''}`} {...data}>
       <span className="ib-agk">{k}</span>
       <span className="ib-agv">{v}</span>
       <span className="ib-agr">{r}</span>
@@ -77,16 +312,24 @@ function AgentGroup({
   onChange,
   pending,
   busy,
+  sessions,
+  platform,
 }: {
   row: InboxAgentRow;
+  /** This computer's platform (the window's), for what wakes a session. */
+  platform?: ConnectContext['platform'];
   noteText: string;
   onChange: (change: Change) => void;
   pending: Set<string>;
   busy: boolean;
+  /** Its open sessions that poll the Inbox now (Claude Code, Pi, OpenCode). */
+  sessions?: InboxHostSessions;
 }) {
   const [show, setShow] = useState(false);
   const id = useId();
-  const state = row.detected ? stateOf(row) : { text: 'Not found on this computer', tone: 'off' as const };
+  const base = row.detected ? stateOf(row) : { text: 'Not found on this computer', tone: 'off' as const };
+  const needs = row.id === 'claude-code' || row.id === 'pi' || row.id === 'opencode' ? sessionsState(row.id, sessions) : null;
+  const state = needs ? { text: `${base.text} · ${needs}`, tone: 'bad' as const } : base;
   const next = `${row.label}'s next session`;
   const reach = row.reach;
   const reachValue =
@@ -127,6 +370,7 @@ function AgentGroup({
   const modOff = row.tool?.mod_off === true;
   // Claude Code's MCP entry is one the person added by hand (`claude mcp add`): Plannotator never writes or removes it.
   const handMcp = row.id === 'claude-code' && reach.kind === 'mcp';
+  const replies = repliesOf(row, platform);
   const reachSwitchable = (reach.kind === 'tool' || reach.kind === 'mcp') && reach.state !== 'foreign' && reach.state !== 'unreadable' && !modOff && !handMcp;
   const note = row.note;
   const noteOn = note?.state === 'added' || note?.state === 'edited';
@@ -139,7 +383,9 @@ function AgentGroup({
         ? note.create
           ? 'would create'
           : 'no note yet'
-        : note.state === 'unavailable'
+        : note.state === 'manual'
+          ? 'copy into Settings → Rules'
+          : note.state === 'unavailable'
           ? 'no file yet'
           : ''
     : '';
@@ -148,7 +394,7 @@ function AgentGroup({
       ? note.reason
       : note?.state === 'edited'
       ? "You edited this note, so Plannotator won't update it. Turning it off removes it as you left it."
-      : note?.state === 'unavailable' || note?.state === 'damaged' || note?.state === 'refused'
+      : note?.state === 'manual' || note?.state === 'unavailable' || note?.state === 'damaged' || note?.state === 'refused'
         ? note.reason
         : note?.shared_with && note.shared_with.length > 0
           ? `This file is shared with ${note.shared_with.map((id) => INBOX_AGENT_LABELS[id]).join(' and ')}: one section, kept while either has it on.`
@@ -181,6 +427,7 @@ function AgentGroup({
           ) : null
         }
       />
+      {replies && <Row k="Your replies" v={replies.text} data={{ 'data-agent-replies': replies.wakes ? 'wake' : 'check' }} />}
       {row.tool && reach.kind !== 'tool' && (
         <Row
           k="The Inbox tool"
@@ -222,10 +469,10 @@ function AgentGroup({
             k="Note in its instructions"
             v={
               <>
-                <code>{note.path}</code>
+                {note.path ? <code>{note.path}</code> : row.id === 'cursor' ? 'Cursor User Rules' : null}
                 {noteState && <> · {noteState}</>}
                 <button type="button" className="ib-lnk" aria-expanded={show} aria-controls={`${id}-note`} onClick={() => setShow((open) => !open)}>
-                  {show ? 'Hide' : 'Show'}
+                  {show ? 'Hide' : row.id === 'cursor' ? 'Show note' : 'Show'}
                 </button>
               </>
             }
@@ -238,13 +485,14 @@ function AgentGroup({
               ) : null
             }
             sub={noteSub}
-            warn={(note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
+            warn={(note.state === 'manual' || note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
           />
           {show && (
             <div className="ib-agrow ib-agnote" id={`${id}-note`}>
               <span />
               <div className="ib-cbox">
-                <pre>{noteText}</pre>
+                {row.id === 'cursor' && <p>Copy this text into Cursor Settings → Rules. Plannotator cannot detect, update or remove a copied rule.</p>}
+                <pre>{row.id === 'cursor' ? noteText.split('\n').filter((line) => !line.startsWith('<!-- plannotator-inbox:')).join('\n') : noteText}</pre>
               </div>
             </div>
           )}
@@ -252,6 +500,9 @@ function AgentGroup({
       ) : NO_NOTE_FILE[row.id] ? (
         <Row k="Note in its instructions" v={NO_NOTE_FILE[row.id]} na />
       ) : null}
+      {sessions && sessions.running > 0 && (row.id === 'claude-code' || row.id === 'pi' || row.id === 'opencode') && (
+        <OpenSessions id={row.id} sessions={sessions} />
+      )}
     </div>
   );
 }
@@ -327,7 +578,16 @@ export function AgentsSettings({ model, onModel, context }: { model: InboxAgents
       )}
       <div className="ib-agents">
         {shown.map((row) => (
-          <AgentGroup key={row.id} row={row} noteText={model.note_text} pending={pending} busy={busy.has(row.id)} onChange={(input) => void change(row.id, input)} />
+          <AgentGroup
+            key={row.id}
+            row={row}
+            noteText={model.note_text}
+            pending={pending}
+            busy={busy.has(row.id)}
+            onChange={(input) => void change(row.id, input)}
+            {...(context ? { platform: context.platform } : {})}
+            {...(model.sessions && (row.id === 'claude-code' || row.id === 'pi' || row.id === 'opencode') && model.sessions[row.id] ? { sessions: model.sessions[row.id] } : {})}
+          />
         ))}
         {detected.length === 0 && (
           <div className="ib-agrow ib-agna">
