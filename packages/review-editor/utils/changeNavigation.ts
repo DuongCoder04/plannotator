@@ -1,147 +1,158 @@
+import type { Hunk } from '@pierre/diffs';
+import { getSearchRoots } from './reviewSearchHighlight';
+
 /**
- * Next / previous change (⌥F5 / ⇧⌥F5, approved design record
- * "review-explorer", step 3): walks the runs of changed lines in the view on
- * screen. It reads what Pierre drew (`data-line-type="change-…"` rows inside
- * each `diffs-container`'s shadow root) and, for the Whole file view, the
- * lines its host lists in `data-change-lines`. A run is a block of changed
- * rows; in a split view the two sides of one block are one run.
+ * Jumping to the next / previous change (`N` / `Shift+N`, #1543).
  *
- * The view's reading position is a third of the way down its scroll box: a
- * jump puts the run's first row there, so the next press finds the run after.
- * Views that draw only what is near the screen (All files, a long diff) are
- * scrolled on until a run appears or the view ends.
+ * A "change" is one run of consecutive `-` / `+` lines (Pierre's
+ * `ChangeContent`), not a whole `@@` hunk: one hunk can hold several changes
+ * separated by a few context lines, and with full file context shown they are
+ * what the reviewer scrolls between.
  */
 
-export type ChangeStep = 1 | -1;
-export type ChangeStepResult = 'moved' | 'end';
+export type ChangeSide = 'additions' | 'deletions';
 
-interface Run {
-  top: number;
-  bottom: number;
+export interface DiffChange {
+  /** Unified row index of the change's first line (Pierre's `data-line-index` "u,s"). */
+  unifiedIndex: number;
+  /** Line number of the first line, on `side` (old file for deletions). */
+  lineNumber: number;
+  side: ChangeSide;
 }
 
-const CHANGE_ROW = '[data-line-type="change-addition"], [data-line-type="change-deletion"]';
+export type ChangeHunk = Pick<Hunk, 'additionStart' | 'deletionStart' | 'unifiedLineStart' | 'hunkContent'>;
 
-function pierreRoots(container: HTMLElement): ParentNode[] {
-  const roots: ParentNode[] = [];
-  for (const host of container.querySelectorAll('diffs-container')) {
-    if (host.shadowRoot) roots.push(host.shadowRoot);
-  }
-  return roots;
-}
-
-function changeRows(container: HTMLElement): Element[] {
-  const rows: Element[] = [];
-  const whole = container.querySelectorAll<HTMLElement>('[data-change-lines]');
-  for (const root of pierreRoots(container)) rows.push(...root.querySelectorAll(CHANGE_ROW));
-  for (const host of whole) {
-    const lines = (host.dataset.changeLines ?? '').split(',').map(Number).filter((n) => n > 0);
-    const root = host.querySelector('diffs-container')?.shadowRoot;
-    if (!root) continue;
-    for (const line of lines) {
-      const row = root.querySelector(`[data-line="${line}"]`);
-      if (row) rows.push(row);
+/** Every change of a file diff, in file order. */
+export function listDiffChanges(hunks: readonly ChangeHunk[] | null | undefined): DiffChange[] {
+  const changes: DiffChange[] = [];
+  for (const hunk of hunks ?? []) {
+    let unified = hunk.unifiedLineStart;
+    let oldLine = hunk.deletionStart;
+    let newLine = hunk.additionStart;
+    for (const content of hunk.hunkContent ?? []) {
+      if (content.type === 'context') {
+        unified += content.lines;
+        oldLine += content.lines;
+        newLine += content.lines;
+        continue;
+      }
+      if (content.deletions + content.additions === 0) continue;
+      changes.push(
+        content.deletions > 0
+          ? { unifiedIndex: unified, lineNumber: oldLine, side: 'deletions' }
+          : { unifiedIndex: unified, lineNumber: newLine, side: 'additions' },
+      );
+      unified += content.deletions + content.additions;
+      oldLine += content.deletions;
+      newLine += content.additions;
     }
   }
-  return rows;
+  return changes;
 }
 
-/** Blocks of changed rows, top to bottom, in viewport coordinates. */
-export function changeRuns(container: HTMLElement): Run[] {
-  const rects = changeRows(container)
-    .map((row) => row.getBoundingClientRect())
-    .filter((rect) => rect.height > 0)
-    .sort((a, b) => a.top - b.top);
-  const runs: Run[] = [];
-  for (const rect of rects) {
-    const last = runs[runs.length - 1];
-    if (last && rect.top <= last.bottom + 1) last.bottom = Math.max(last.bottom, rect.bottom);
-    else runs.push({ top: rect.top, bottom: rect.bottom });
+/** Where a change sits relative to the reading line (the middle of the view). */
+export type ChangePlacement = 'before' | 'at' | 'after';
+
+/**
+ * Which change a jump lands on. `current` is the change the last jump landed
+ * on while it is still on screen: stepping from it never depends on where the
+ * scroll could put it (the last change of a file cannot always reach the
+ * middle). Without it, the next change is the first one past the reading line
+ * and the previous one the last before it. Null at either end.
+ */
+export function resolveChangeJump(
+  placements: readonly ChangePlacement[],
+  direction: 'next' | 'prev',
+  current: number | null,
+): number | null {
+  if (placements.length === 0) return null;
+  if (current != null && current >= 0 && current < placements.length) {
+    const target = direction === 'next' ? current + 1 : current - 1;
+    return target >= 0 && target < placements.length ? target : null;
   }
-  return runs;
+  if (direction === 'next') {
+    const index = placements.indexOf('after');
+    return index === -1 ? null : index;
+  }
+  const index = placements.lastIndexOf('before');
+  return index === -1 ? null : index;
 }
 
-function parentAcrossShadow(node: Element): Element | null {
-  if (node.parentElement) return node.parentElement;
-  const root = node.getRootNode();
-  return root instanceof ShadowRoot ? root.host : null;
+/**
+ * The line a jump is measured from. Normally the middle of the view, which
+ * the jump centres a change on. At the top of the scroll it is the top of the
+ * view for `N`, so the first press lands on the first change below the
+ * current position instead of skipping the ones already on screen; at the
+ * bottom it is the bottom of the view for `Shift+N`, likewise.
+ */
+export function readingLineFor(
+  view: { top: number; bottom: number },
+  direction: 'next' | 'prev',
+  scroll: { atTop: boolean; atBottom: boolean },
+): number {
+  if (direction === 'next' && scroll.atTop) return view.top - 1;
+  if (direction === 'prev' && scroll.atBottom) return view.bottom + 1;
+  return (view.top + view.bottom) / 2;
 }
 
-/** The scroll box the view's rows move in. */
-export function changeScroller(container: HTMLElement): HTMLElement | null {
-  const first = changeRows(container)[0] ?? container.querySelector('diffs-container');
-  let node: Element | null = first ?? null;
-  while (node && node !== container.parentElement) {
-    if (node instanceof HTMLElement) {
-      const style = getComputedStyle(node);
-      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
-    }
-    node = parentAcrossShadow(node);
+export function placementOf(
+  rect: { top: number; height: number },
+  readingLine: number,
+): ChangePlacement {
+  const middle = rect.top + rect.height / 2;
+  const slack = Math.max(4, rect.height / 2);
+  if (middle < readingLine - slack) return 'before';
+  if (middle > readingLine + slack) return 'after';
+  return 'at';
+}
+
+/** The rendered first line of a change, inside `root` (shadow roots included). */
+export function findChangeElement(root: ParentNode, change: DiffChange): HTMLElement | null {
+  const selector = `[data-line-type^="change-"][data-line-index^="${change.unifiedIndex},"]`;
+  for (const searchRoot of getSearchRoots(root)) {
+    const el = searchRoot.querySelector?.(selector);
+    if (el instanceof HTMLElement) return el;
   }
   return null;
 }
 
-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+/** The unified rows Pierre has rendered inside `root`, or null when none. */
+export function renderedUnifiedRange(root: ParentNode): { min: number; max: number } | null {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const searchRoot of getSearchRoots(root)) {
+    for (const el of searchRoot.querySelectorAll?.('[data-line-index]') ?? []) {
+      const unified = Number.parseInt(el.getAttribute('data-line-index') ?? '', 10);
+      if (!Number.isFinite(unified)) continue;
+      if (unified < min) min = unified;
+      if (unified > max) max = unified;
+    }
+  }
+  return min === Infinity ? null : { min, max };
+}
 
 /**
- * Moves the view to the next (1) or previous (-1) run. `edge` picks the first
- * or last run regardless of position (a file just opened). Answers `end` when
- * there is none that way, leaving the view where it was.
+ * The jump direction a key asks for: `N` next, `Shift+N` previous (the
+ * `nextChange` / `prevChange` bindings in review-editor/shortcuts.ts). Never
+ * with Mod or Alt, while typing, while an IME composes, or once another
+ * handler took the key.
  */
-export async function stepChange(
-  container: HTMLElement,
-  direction: ChangeStep,
-  options: { edge?: 'first' | 'last'; maxScrolls?: number } = {},
-): Promise<ChangeStepResult> {
-  const scroller = changeScroller(container);
-  // Everything fits on screen: nothing to move to in this view.
-  if (!scroller) return 'end';
-  const startTop = scroller.scrollTop;
-  const anchorOf = () => {
-    const box = scroller.getBoundingClientRect();
-    return box.top + Math.min(scroller.clientHeight, box.height) / 3;
-  };
-  const moveTo = (run: Run) => {
-    scroller.scrollTop += run.top - anchorOf();
-  };
-  if (options.edge) {
-    scroller.scrollTop = options.edge === 'first' ? 0 : scroller.scrollHeight;
-    await nextFrame();
-    await nextFrame();
-    const runs = changeRuns(container);
-    const run = options.edge === 'first' ? runs[0] : runs[runs.length - 1];
-    if (run) {
-      moveTo(run);
-      return 'moved';
-    }
-    if (options.edge === 'last') {
-      scroller.scrollTop = startTop;
-      return 'end';
-    }
-  }
-  const maxScrolls = options.maxScrolls ?? 40;
-  // Positions in the scroll box's content, so scrolling on never skips a run.
-  const contentTop = (viewportTop: number) => viewportTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
-  const threshold = contentTop(anchorOf());
-  for (let attempt = 0; attempt <= maxScrolls; attempt += 1) {
-    const runs = changeRuns(container);
-    const target = direction === 1
-      ? runs.find((run) => contentTop(run.top) > threshold + 2)
-      : [...runs].reverse().find((run) => contentTop(run.top) < threshold - 2);
-    if (target) {
-      moveTo(target);
-      return 'moved';
-    }
-    // Nothing drawn that way: scroll on (a view that draws what is near the
-    // screen draws more), unless the view already ends there.
-    const atEnd = direction === 1
-      ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
-      : scroller.scrollTop <= 0;
-    if (atEnd) break;
-    scroller.scrollTop += direction * Math.max(80, scroller.clientHeight * 0.8);
-    await nextFrame();
-    await nextFrame();
-  }
-  scroller.scrollTop = startTop;
-  return 'end';
+export function changeJumpDirection(event: KeyboardEvent): 'next' | 'prev' | null {
+  if (event.defaultPrevented || event.isComposing) return null;
+  if (event.metaKey || event.ctrlKey || event.altKey) return null;
+  if (event.key !== 'n' && event.key !== 'N') return null;
+  if (isTypingOrigin(event)) return null;
+  return event.shiftKey ? 'prev' : 'next';
+}
+
+/**
+ * True when the key comes from somewhere the person types. Reads
+ * composedPath()[0]: at window level `event.target` is retargeted to a shadow
+ * host, which would hide the Pierre editor's contenteditable.
+ */
+export function isTypingOrigin(event: KeyboardEvent): boolean {
+  const origin = (event.composedPath?.()[0] ?? event.target) as HTMLElement | null;
+  if (!origin || typeof origin !== 'object') return false;
+  const tag = origin.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || origin.isContentEditable === true;
 }

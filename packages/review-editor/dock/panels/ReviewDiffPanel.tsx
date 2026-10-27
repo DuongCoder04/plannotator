@@ -142,9 +142,11 @@ export const ReviewDiffBody: React.FC<{ filePath: string | null; onKeep?: () => 
         imagePreviewAvailable={state.imagePreviewAvailable}
         imageSnapshotId={state.snapshotId}
         contextExpansionAvailable={state.contextExpansionAvailable}
+        packageChangesAvailable={state.contextExpansionAvailable !== false}
         prUrl={state.prMetadata?.url}
         prDiffScope={state.prDiffScope}
         isFocused={isFocusedFile}
+        changeNavigation={isFocusedFile && state.isDiffPanelActive === true}
         diffStyle={state.diffStyle}
         diffOverflow={state.diffOverflow}
         diffIndicators={state.diffIndicators}

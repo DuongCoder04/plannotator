@@ -17,6 +17,7 @@ import type { CallFlowInstallController } from '../hooks/useCallFlowInstall';
 import type { CallFlowAdvert, CallFlowNode } from '@plannotator/shared/call-flow-types';
 import type { CodeFileAnnotationInput } from '@plannotator/ui/components/CodeFilePopout';
 import type { ChangedFileView } from '../components/FileViewSwitch';
+import type { DiagramEngineUrls } from '../utils/diagramEngineContract';
 
 /** One-shot request to open the native code-annotation composer on a source range. */
 export interface LineAnnotationComposeRequest {
@@ -38,6 +39,9 @@ export interface ReviewState {
   rawPatch: string;
   focusedFileIndex: number;
   focusedFilePath: string | null;
+  /** A single-file diff panel is the active dock panel (and the guide is not
+   *  open): the file-level keys (`N` / `Shift+N`) act on the focused file. */
+  isDiffPanelActive?: boolean;
   diffStyle: 'split' | 'unified';
   /** Compact touch shells use a session-only style so desktop preferences stay untouched. */
   onDiffStyleChange: (style: 'split' | 'unified') => void;
@@ -84,6 +88,11 @@ export interface ReviewState {
    *  `markdownPreviewSupported` or has no full contents (static patch): no
    *  preview UI renders anywhere. */
   markdownPreview?: MarkdownPreviewController;
+  /** Where the review server serves the diagram engine (`diagramEngine` on
+   *  `/api/diff`). With it, Mermaid and Graphviz fences in Markdown previews
+   *  and guide overviews draw as diagrams, the engine imported on the first
+   *  such fence; absent, they show as code. */
+  diagramEngine?: DiagramEngineUrls | null;
   /** Commit a comment made by selecting text in a previewed Markdown file
    *  (file-scoped, carries the quote). */
   onAddMarkdownPreviewComment?: (

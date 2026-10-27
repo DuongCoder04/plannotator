@@ -29,15 +29,27 @@ import type { DiffFile, AnnotationScrollTarget } from '../types';
 import type { MarkdownFileView } from '../utils/markdownPreview';
 import { buildFileTree, getVisualFileOrder } from '../utils/buildFileTree';
 import { fileKind } from '@plannotator/core/file-kind';
+import { packageFileKind } from '@plannotator/core/package-changes';
 import { getFileKindOrder } from '../utils/fileKindTree';
 import { buildCodeNavRequest } from '../utils/buildCodeNavRequest';
-import { getDiffSelection, getLineNumberFromNode, getSideFromNode } from '../utils/diffSelection';
+import { getDiffSelection, getLineNumberFromNode, getSideFromNode, snapshotDiffSelection, rangeForGutterClick, type DiffSelectionSnapshot } from '../utils/diffSelection';
 import { isContentConsistentWithPatch } from '../utils/patchConsistency';
 import { hashString } from '../utils/hashString';
 import {
   resolveLineSelectionBehavior,
   type LineSelectionSource,
 } from '../utils/lineSelectionBehavior';
+import {
+  changeJumpDirection,
+  findChangeElement,
+  listDiffChanges,
+  placementOf,
+  readingLineFor,
+  renderedUnifiedRange,
+  resolveChangeJump,
+  type ChangePlacement,
+  type DiffChange,
+} from '../utils/changeNavigation';
 import { isContentlessBinaryPatch, isImagePreviewCandidate, isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
 import { OversizedFileNotice } from './OversizedFileNotice';
 import { ToolbarHost, type ToolbarHostHandle } from './ToolbarHost';
@@ -211,6 +223,12 @@ export interface AllFilesCodeViewProps {
     tooLargeFallback?: React.ReactNode;
     onHeightChange: () => void;
   }) => React.ReactNode;
+  /**
+   * Package changes under a package.json or lockfile header. A render prop
+   * like `renderImagePreview`, so read-only hosts (the guide chain,
+   * guides.show) that leave it unset never fetch or draw it.
+   */
+  renderPackageChanges?: (args: { file: DiffFile; onHeightChange: () => void }) => React.ReactNode;
   /**
    * Rendered Markdown previews. A previewed Markdown file shows its card in
    * the header slot (measured like an image preview) and its item's diff is
@@ -648,6 +666,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   reviewSnapshotId,
   contextExpansionAvailable = true,
   renderImagePreview,
+  renderPackageChanges,
   markdownPreview,
   compactTouchLayout,
   onLineSelection,
@@ -727,6 +746,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   useWorkerPoolThemeSync(pierreTheme.syntaxTheme);
   const viewerRef = useRef<CodeViewHandle<DiffAnnotationMetadata> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const selectionSnapshotRef = useRef<DiffSelectionSnapshot | null>(null);
   // State mirror of the scroll container so the leading-content portal can
   // mount once CodeView has rendered it (a plain ref can't trigger that).
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
@@ -891,12 +911,17 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   // guides.show) the set is empty and nothing below runs.
   const imagePreviewItemIds = useMemo(() => {
     const ids = new Set<string>();
-    if (!renderImagePreview) return ids;
-    for (const [id, file] of itemIdToFile) {
-      if (isImagePreviewCandidate(file.patch, file.path, file.oldPath)) ids.add(id);
+    if (renderImagePreview) {
+      for (const [id, file] of itemIdToFile) {
+        if (isImagePreviewCandidate(file.patch, file.path, file.oldPath)) ids.add(id);
+      }
+    }
+    // Package changes cards are measured the same way.
+    if (renderPackageChanges) {
+      for (const [id, file] of itemIdToFile) if (packageFileKind(file.path)) ids.add(id);
     }
     return ids;
-  }, [itemIdToFile, renderImagePreview]);
+  }, [itemIdToFile, renderImagePreview, renderPackageChanges]);
 
   // Markdown files shown as a rendered preview (see the `markdownPreview` prop).
   const markdownPreviewRef = useRef(markdownPreview);
@@ -1832,9 +1857,34 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   useEffect(() => {
     const root = scrollRef.current;
     if (!root) return;
+    let clearTimer: ReturnType<typeof setTimeout> | null = null;
+    const onPointerDown = () => {
+      if (clearTimer) {
+        clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      selectionSnapshotRef.current = snapshotDiffSelection(root);
+    };
+    const onCancel = () => {
+      selectionSnapshotRef.current = null;
+    };
+    const onPointerUp = () => {
+      clearTimer = setTimeout(() => {
+        selectionSnapshotRef.current = null;
+      }, 200);
+    };
+    root.addEventListener('pointerdown', onPointerDown, true);
+    root.addEventListener('pointercancel', onCancel, true);
+    root.addEventListener('pointerup', onPointerUp, true);
     const handler = () => handleContentTextSelection();
     root.addEventListener('mouseup', handler, true);
-    return () => root.removeEventListener('mouseup', handler, true);
+    return () => {
+      if (clearTimer) clearTimeout(clearTimer);
+      root.removeEventListener('pointerdown', onPointerDown, true);
+      root.removeEventListener('pointercancel', onCancel, true);
+      root.removeEventListener('pointerup', onPointerUp, true);
+      root.removeEventListener('mouseup', handler, true);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileSetKey]);
 
@@ -2280,7 +2330,16 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
 
   const handleGutterUtilityClick = useStableCallback(
     (range: SelectedLineRange, item: CodeViewItem<DiffAnnotationMetadata>) => {
-      handleLineSelectionInteraction('gutter-comment-action', range, item);
+      const snapshot = selectionSnapshotRef.current;
+      selectionSnapshotRef.current = null;
+      let effectiveRange = range;
+      if (snapshot) {
+        const snapshotItemId = snapshot.host ? nodeToItemIdRef.current.get(snapshot.host) : undefined;
+        if (!snapshot.host || !snapshotItemId || snapshotItemId === item.id) {
+          effectiveRange = rangeForGutterClick(range, snapshot);
+        }
+      }
+      handleLineSelectionInteraction('gutter-comment-action', effectiveRange, item);
     },
   );
 
@@ -2577,6 +2636,85 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollTargetAnnotation, filePathToItemId, previewItemIds]);
 
+  // N / Shift+N: the next / previous change across the expanded files (#1543).
+  // CodeView renders only a window of files (and of lines within a file), so a
+  // change off screen is placed by its file's order or by the rendered rows,
+  // and the jump goes through CodeView's own line scroll.
+  const changeCursorRef = useRef<{ itemId: string; unifiedIndex: number } | null>(null);
+  const jumpChange = useStableCallback((direction: 'next' | 'prev'): boolean => {
+    const handle = viewerRef.current;
+    const viewer = handle?.getInstance();
+    if (handle == null || viewer == null) return false;
+    const container = viewer.getContainerElement() ?? scrollRef.current;
+    if (container == null) return false;
+    const view = container.getBoundingClientRect();
+    const scrolled = viewer.getScrollTop();
+    const readingLine = readingLineFor(view, direction, {
+      atTop: scrolled <= 1,
+      atBottom: scrolled + viewer.getHeight() >= viewer.getScrollHeight() - 1,
+    });
+
+    const renderedElements = new Map<string, HTMLElement>();
+    for (const rendered of viewer.getRenderedItems()) {
+      if (rendered.type === 'diff' && rendered.element != null) renderedElements.set(rendered.id, rendered.element);
+    }
+    let firstRendered = Infinity;
+    orderedItemIds.forEach((id, index) => {
+      if (renderedElements.has(id) && index < firstRendered) firstRendered = index;
+    });
+
+    const spots: Array<{ itemId: string; change: DiffChange; placement: ChangePlacement; el: HTMLElement | null }> = [];
+    orderedItemIds.forEach((itemId, index) => {
+      const item = handle.getItem(itemId);
+      if (item == null || item.type !== 'diff' || item.collapsed === true) return;
+      const changes = listDiffChanges(item.fileDiff?.hunks);
+      if (changes.length === 0) return;
+      const element = renderedElements.get(itemId);
+      let rows: { min: number; max: number } | null | undefined;
+      for (const change of changes) {
+        if (element == null) {
+          spots.push({ itemId, change, placement: index < firstRendered ? 'before' : 'after', el: null });
+          continue;
+        }
+        const el = findChangeElement(element, change);
+        if (el != null) {
+          spots.push({ itemId, change, placement: placementOf(el.getBoundingClientRect(), readingLine), el });
+          continue;
+        }
+        // A row of a rendered file outside its rendered lines.
+        if (rows === undefined) rows = renderedUnifiedRange(element);
+        const placement: ChangePlacement = rows != null
+          ? (change.unifiedIndex < rows.min ? 'before' : 'after')
+          : (element.getBoundingClientRect().bottom <= readingLine ? 'before' : 'after');
+        spots.push({ itemId, change, placement, el: null });
+      }
+    });
+    if (spots.length === 0) return false;
+
+    const cursor = changeCursorRef.current;
+    let current: number | null = null;
+    if (cursor != null) {
+      const index = spots.findIndex(
+        (spot) => spot.itemId === cursor.itemId && spot.change.unifiedIndex === cursor.unifiedIndex,
+      );
+      const rect = index === -1 ? null : spots[index].el?.getBoundingClientRect();
+      if (rect && rect.bottom > view.top && rect.top < view.bottom) current = index;
+    }
+    const target = resolveChangeJump(spots.map((spot) => spot.placement), direction, current);
+    // No change that way: leave the key to anyone else.
+    if (target == null) return false;
+    const spot = spots[target];
+    changeCursorRef.current = { itemId: spot.itemId, unifiedIndex: spot.change.unifiedIndex };
+    handle.scrollTo({
+      type: 'line',
+      id: spot.itemId,
+      lineNumber: spot.change.lineNumber,
+      side: spot.change.side,
+      align: 'center',
+    });
+    return true;
+  });
+
   useEffect(() => {
     if (!isActive || readOnly || commentOnly) return;
     const handler = (e: KeyboardEvent) => {
@@ -2592,6 +2730,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           el.isContentEditable)
       )
         return;
+      // N / Shift+N — the next / previous change (the only Shift key here).
+      const changeDirection = changeJumpDirection(e);
+      if (changeDirection) {
+        if (jumpChange(changeDirection)) e.preventDefault();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       if (orderedItemIds.length === 0) return;
 
@@ -2682,6 +2826,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     canStageFiles,
     canStagePath,
     onStage,
+    jumpChange,
   ]);
 
   // --- Markdown view: the editing file, and the file a view key acts on ------
@@ -2862,6 +3007,12 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         {/* A hunkless image chunk previews its Before/After images (#1598)
             when the host opts in; the notices below are its fallback. */}
         {imagePreview}
+        {/* Package changes under a manifest's header. A lockfile's card stays
+            visible while the file is folded (lockfiles seed collapsed as
+            generated files): the card is the readable part of it. */}
+        {renderPackageChanges && (!collapsed || packageFileKind(filePath)?.role === 'lockfile') && packageFileKind(filePath)
+          ? renderPackageChanges({ file, onHeightChange: remeasure })
+          : null}
         {/* Files over the review size cap arrive as a contents-free stub, so
             Pierre renders nothing below the header. Explain why rather than
             leaving a bare header that reads as a broken diff. */}

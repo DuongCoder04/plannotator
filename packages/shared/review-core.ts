@@ -16,6 +16,7 @@ import {
   OVERSIZED_REVIEW_STUB_MARKER,
 } from "./diff-paths";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
+import type { RepoFileFailure, RepoWorkingTreeEntry } from "./repo-file";
 
 import {
   BARE_HEX_SHA_RE,
@@ -275,6 +276,19 @@ export interface ReviewGitRuntime {
   readFileBytes?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
   /** Canonical path with every symlink resolved (null on any error). */
   realPath?: (path: string) => Promise<string | null>;
+  /**
+   * Check one working-tree path for diff context expansion: every directory
+   * on the way resolves inside `root`, a final symlink comes back as its
+   * target string, and anything else must be a regular file under the 5 MB
+   * cap. Every server runtime (Bun, Pi, VS Code) implements it with
+   * `resolveRepoWorkingTreeEntry` from repo-file.ts; it is optional only
+   * because this module also reaches the browser bundle, which cannot import
+   * node:fs. Without it, expansion falls back to the `getFileInfo` checks.
+   */
+  checkWorkingTreeEntry?: (
+    root: string,
+    path: string,
+  ) => Promise<RepoWorkingTreeEntry | RepoFileFailure>;
 }
 
 /** `GitCommandResult` with undecoded stdout, for binary blobs. */
@@ -1168,8 +1182,17 @@ async function buildBoundedTrackedDiff(
   ];
   const rawResult = assertGitSuccess(await runtime.runGit(rawArgs, { cwd }), rawArgs);
   const entries = parseRawDiffEntries(rawResult.stdout);
+  // Set once any side's size is unknown and nothing else bounds it, so the
+  // rendered diff relies on core.bigFileThreshold alone. Git consults that
+  // threshold only when it decides binaryness itself, and a textconv driver
+  // skips that decision and formats the whole converted blob (#1206). Such a
+  // render therefore turns textconv off.
+  let gitBoundOnly = false;
   const render = async (patchArgs: string[]) => {
-    const flags = fileIdentities ? ["--raw", "-z", "--patch", "--no-abbrev"] : [];
+    const flags = [
+      ...(gitBoundOnly && !args.includes("--no-textconv") ? ["--no-textconv"] : []),
+      ...(fileIdentities ? ["--raw", "-z", "--patch", "--no-abbrev"] : []),
+    ];
     const command = [...patchArgs.slice(0, diffIndex + 1), ...flags, ...patchArgs.slice(diffIndex + 1)];
     const result = assertGitSuccess(await runtime.runGit(command, { cwd, config: BOUNDED_DIFF_GIT_CONFIG }), command);
     return fileIdentities ? extractReviewPatch(runtime, result.stdout, fileIdentities, cwd) : result.stdout;
@@ -1226,6 +1249,10 @@ async function buildBoundedTrackedDiff(
       ? await getWorkingTreeFileInfo(runtime, root, entry.newPath)
       : null;
     const newSize = newObjectSize ?? workingTreeInfo?.size ?? null;
+    if ((!isNullObjectId(entry.oldObjectId) && oldSize === null)
+      || (!isNullObjectId(entry.newObjectId) && newSize === null)) {
+      gitBoundOnly = true;
+    }
     if (oldSize === null && newSize === null) continue;
     if ((oldSize ?? 0) <= MAX_REVIEW_FILE_CONTENT_BYTES
       && (newSize ?? 0) <= MAX_REVIEW_FILE_CONTENT_BYTES) {
@@ -2350,6 +2377,13 @@ export interface RepoFileListing {
   live: boolean;
   /** Repository root the paths are relative to (live watching); absent for remote listings. */
   root?: string;
+  /**
+   * Where listed paths are files on disk (the working tree): a path under
+   * `prefix` is `root` joined with the rest. Absent: a single working-tree
+   * listing reads from `root` when `live`. A multi-repo workspace names each
+   * child that lists its working tree, so a child at a commit never reads disk.
+   */
+  diskRoots?: Array<{ prefix: string; root: string }>;
   /** The listing is known to be incomplete (a platform API truncated it). */
   truncated?: boolean;
 }
@@ -2463,6 +2497,14 @@ export async function readDiffSideText(
   // sibling is immune: ref paths are root-relative regardless of cwd.)
   const baseDir = await resolveRepoToplevel(runtime, cwd);
   try {
+    if (runtime.checkWorkingTreeEntry) {
+      // Shared guard (repo-file.ts): a path through a symlinked directory
+      // that points out of the repository reads as null.
+      const entry = await runtime.checkWorkingTreeEntry(baseDir ?? ".", source.path);
+      if (!entry.ok) return null;
+      if (entry.kind === "symlink") return entry.linkTarget;
+      return runtime.readTextFile(entry.absolutePath);
+    }
     const fileInfo = await runtime.getFileInfo(baseDir, source.path);
     if (!fileInfo) return null;
     // Git stores the link destination as the blob contents. Reading the link

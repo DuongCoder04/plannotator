@@ -8,11 +8,17 @@
 import { useEffect, useRef, useState, useCallback, type RefObject } from 'react';
 import Highlighter from '@plannotator/web-highlighter';
 import type { Annotation, EditorMode, HostDraft, ImageAttachment } from '../types';
+import { metaWithBelowTitle, metaWithoutBelowTitle, snapRangeOutOfBelowTitle } from '../utils/belowTitleSlot';
 import { AnnotationType } from '../types';
 import type { QuickLabel } from '../utils/quickLabels';
+import {
+  trimWhitespaceOnlyBoundaryNodes,
+  type SelectedNodeLike,
+} from '../utils/selectionBoundary';
 import { getIdentity } from '../utils/identity';
 import { annotationOwnsHighlight } from '../utils/annotationOwnsHighlight';
 import { transformPlainText } from '../utils/inlineTransforms';
+import { richCopySourceFromRange, type RichCopySource } from '../utils/richClipboard';
 
 // --- Exported state types ---
 
@@ -20,6 +26,9 @@ export interface ToolbarState {
   element: HTMLElement;
   source: any;
   selectionText: string;
+  /** Builds the selection's rich-text copy when the toolbar button is pressed
+   *  (synchronous in the markdown Viewer, a bridge round trip on HTML surfaces). */
+  getRichCopy?: () => RichCopySource | Promise<RichCopySource>;
 }
 
 export interface CommentPopoverState {
@@ -1248,6 +1257,10 @@ export function useAnnotationHighlighter({
       // verdict, so it is neither attempted nor unanchored here (the same
       // rule the raw-HTML pinpoints follow on their surface).
       if (ann.diagramAnchor) return;
+      // A comment on part of an image has no text either: the image viewer
+      // draws its box, and the Viewer reports it unanchored when its image is
+      // gone from the document.
+      if (ann.imageRegion != null) return;
       // An answer to a `:::question` block quotes the prompt but is not a
       // selection: the question block draws it from the annotation, so it is
       // never painted as a highlight (and never reported as unanchored here).
@@ -1286,7 +1299,12 @@ export function useAnnotationHighlighter({
 
       if (ann.startMeta && ann.endMeta) {
         try {
-          highlighter.fromStore(ann.startMeta, ann.endMeta, ann.originalText, ann.id);
+          highlighter.fromStore(
+            metaWithBelowTitle(containerRef.current, ann.startMeta),
+            metaWithBelowTitle(containerRef.current, ann.endMeta),
+            ann.originalText,
+            ann.id,
+          );
           const restoredDoms = highlighter.getDoms(ann.id);
           if (restoredDoms && restoredDoms.length > 0) {
             const restoredText = paintedTextOf(restoredDoms as HTMLElement[]);
@@ -1480,6 +1498,15 @@ export function useAnnotationHighlighter({
       style: { className: 'annotation-highlight' },
     });
 
+    // Chromium can extend a triple-clicked line into empty or indentation nodes of the next block.
+    // Trim only boundary whitespace so spacing inside genuine multi-node selections stays highlighted.
+    // The hook's callback type is `(...args: unknown[]) => SelectedNode[]`; a SelectedNode
+    // structurally satisfies SelectedNodeLike, so the trimmed subset goes back through the
+    // hook's own callback type rather than importing SelectedNode from the package's dist/.
+    type SelectedNodesTap = Parameters<typeof highlighter.hooks.Render.SelectedNodes.tap>[0];
+    highlighter.hooks.Render.SelectedNodes.tap(((...args: unknown[]) =>
+      trimWhitespaceOnlyBoundaryNodes(args[1] as SelectedNodeLike[])) as SelectedNodesTap);
+
     highlighterRef.current = highlighter;
 
     // Stored positions can resolve into chrome the reviewer could never have
@@ -1499,6 +1526,15 @@ export function useAnnotationHighlighter({
 
     highlighter.on(Highlighter.event.CREATE, ({ sources, type }: { sources: any[]; type?: string }) => {
       if (type === 'from-store') return;
+      // Store positions as if a host's `belowTitle` slot were not there, so
+      // its contents never renumber a comment's parent element (identity
+      // when the document has no slot). See utils/belowTitleSlot.
+      for (const created of sources) {
+        const startMeta = metaWithoutBelowTitle(containerRef.current, created.startMeta, 'start');
+        const endMeta = metaWithoutBelowTitle(containerRef.current, created.endMeta, 'end');
+        if (startMeta !== created.startMeta) created.startMeta = startMeta;
+        if (endMeta !== created.endMeta) created.endMeta = endMeta;
+      }
       if (sources.length > 0) {
         const source = sources[0];
         const doms = highlighter.getDoms(source.id);
@@ -1561,10 +1597,24 @@ export function useAnnotationHighlighter({
           } else {
             // Selection mode — show toolbar
             pendingSourceRef.current = source;
+            const marks = [...doms] as HTMLElement[];
+            const selectionText = source.text;
             setToolbarState({
               element: doms[0] as HTMLElement,
               source,
-              selectionText: source.text,
+              selectionText,
+              // Built only when Copy (rich text) is pressed: the pending
+              // highlight's marks still bound the selected words, and the
+              // sanitizer drops the marks themselves.
+              getRichCopy: () => {
+                const first = marks[0];
+                const last = marks[marks.length - 1];
+                if (!first?.isConnected || !last?.isConnected) return null;
+                const range = document.createRange();
+                range.setStartBefore(first);
+                range.setEndAfter(last);
+                return richCopySourceFromRange(range, selectionText);
+              },
             });
           }
         }
@@ -1609,7 +1659,9 @@ export function useAnnotationHighlighter({
         pendingRangeRunsRef.current = null;
         return;
       }
-      if (snapRangeStartPastExcluded(range)) {
+      const snappedOutOfSlot = snapRangeOutOfBelowTitle(container, range);
+      const snappedPastExcluded = snapRangeStartPastExcluded(range);
+      if (snappedOutOfSlot || snappedPastExcluded) {
         selection.removeAllRanges();
         selection.addRange(range);
       }
@@ -1724,6 +1776,7 @@ export function useAnnotationHighlighter({
       // Same fail-closed rule as the pointer-end guard (#881): touch
       // selections settle on block boundaries just as often.
       if (isBlankQuote(sel.toString()) || !isSerializableRange(range)) return false;
+      snapRangeOutOfBelowTitle(containerRef.current, range);
       snapRangeStartPastExcluded(range);
       pendingRangeRunsRef.current = rangeTextPieces(range);
       try {
@@ -1776,6 +1829,7 @@ export function useAnnotationHighlighter({
     // visually hidden type word; snap off it before painting (the caller's own
     // range is left untouched).
     const painted = range.cloneRange();
+    snapRangeOutOfBelowTitle(container, painted);
     snapRangeStartPastExcluded(painted);
     pendingRangeRunsRef.current = rangeTextPieces(painted);
 
