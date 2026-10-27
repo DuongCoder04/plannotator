@@ -25,7 +25,10 @@ export function lastInput(): 'keyboard' | 'pointer' | null {
 let traversedAt = Number.NEGATIVE_INFINITY;
 if (typeof window !== 'undefined') window.addEventListener('popstate', () => (traversedAt = performance.now()), true);
 
-/** A change the page is making now came from Back or Forward (a popstate within the last half second), not a key or a click in the page. */
-export function traversedJustNow(within = 500): boolean {
+/**
+ * A change the page is making now came from Back or Forward (a popstate within the last 1.5 s: a slow machine
+ * draws the page that late), not a key or a click in the page.
+ */
+export function traversedJustNow(within = 1500): boolean {
   return performance.now() - traversedAt < within;
 }

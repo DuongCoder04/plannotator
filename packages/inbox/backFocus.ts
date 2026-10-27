@@ -33,13 +33,16 @@ export function backFocusTargets(to: BackFocusRoute, from: BackFocusRoute): stri
 
 /**
  * Focus the traversal leaves where it is: in the sidebar; in the list when the list is where it went; on the row
- * of the thread it went to. Anything else (a row of another thread, the thread before, a page) moves.
+ * of the thread it went to, or in that thread when it stayed open (a file closed or opened). Anything else (a row
+ * of another thread, the thread before, a page) moves.
  */
-export function focusKept(active: Element | null, to: BackFocusRoute): boolean {
+export function focusKept(active: Element | null, to: BackFocusRoute, from: BackFocusRoute): boolean {
   if (!active || focusLost(active)) return false;
   if (active.closest('.ib-side')) return true;
   if (to.page !== 'inbox') return false;
   if (!to.thread) return !!active.closest('.ib-main .ib-lbody');
+  // Within one thread (a file opened or closed), the thread puts focus back itself: where O was pressed.
+  if (from.page === 'inbox' && from.thread === to.thread && active.closest('section.ib-pane')) return true;
   return active.matches(row(to.thread));
 }
 

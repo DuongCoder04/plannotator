@@ -731,7 +731,7 @@ function Inbox() {
       const place = (always: boolean) => {
         const active = document.activeElement;
         const to = readRoute();
-        if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to)))) return;
+        if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to, from)))) return;
         focusFirst(backFocusTargets(to, from));
       };
       requestAnimationFrame(() => requestAnimationFrame(() => place(true)));
