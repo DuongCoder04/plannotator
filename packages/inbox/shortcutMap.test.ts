@@ -11,7 +11,7 @@ const listed = new Set(MAP_COLUMNS.flat().flatMap((group) => group.rows.flatMap(
 const known = new Set(inboxShortcutRegistry.flatMap((scope) => Object.keys(scope.shortcuts).map((action) => `${scope.id}.${action}`)));
 
 /** Actions on the map that the registry does not have yet, each landing with its key. */
-const HELD = new Set(['inbox-thread.fullScreen']); // F: waits for the full-screen close fix (#2245)
+const HELD = new Set<string>(); // Map rows whose action waits for a fix to land (none now).
 
 test('every registry action has a row on the map', () => {
   expect([...known].filter((id) => !listed.has(id))).toEqual([]);

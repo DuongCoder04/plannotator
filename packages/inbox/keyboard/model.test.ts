@@ -20,9 +20,7 @@ const fromFullScreenStart = [...explore({ ...START, remembered: 'full' }, MAX_KE
 const all = [...reachable, ...fromFullScreenStart];
 
 /** Single keys the model has that the registry does not list yet, each with why. */
-const HELD: Partial<Record<ModelKey, string>> = {
-  F: 'Full screen waits for the full-screen close fix (#2245) to land; the model already has its approved behaviour.',
-};
+const HELD: Partial<Record<ModelKey, string>> = {};
 
 const at = (path: ModelKey[]) => (path.length === 0 ? '(start)' : path.join(' → '));
 const view = (s: KeyState) => ({ page: s.page, thread: s.thread, file: s.file, fullFrom: s.fullFrom, box: s.box, overlay: s.overlay });

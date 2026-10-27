@@ -11,8 +11,8 @@
  * Build it first (see inbox.spec.ts). With INBOX_KEYBOARD_VIDEOS set to a
  * folder, each journey's video and checkpoint pictures are kept there.
  *
- * F (full screen) waits for the full-screen close fix (#2245): until then the
- * journeys reach full screen with the file's Full screen button, by Tab.
+ * F is full screen for now (never saved as the view files open in); S2 also
+ * takes the Full screen button, by Tab, which is a choice that is saved.
  */
 import { devices, expect, test, webkit, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { mkdirSync, renameSync } from 'node:fs';
@@ -239,7 +239,7 @@ async function arrowTo(thread: string): Promise<void> {
 /** Tab (or Shift+Tab) until `target` has focus, at most `max` presses. */
 async function tabTo(target: Locator, { back = false, max = 40 } = {}): Promise<void> {
   for (let i = 0; i < max; i++) {
-    if (await target.evaluate((el) => el === document.activeElement).catch(() => false)) return;
+    if (await target.evaluate((el) => el === document.activeElement, undefined, { timeout: 2000 }).catch(() => false)) return;
     // Tab past the page's last stop leaves the page for the browser's own controls (the page itself in a headless
     // browser): a stop of the browser's, not focus lost, so this is the one press that does not check focus.
     await page.keyboard.press(back ? 'Shift+Tab' : 'Tab');
@@ -352,9 +352,7 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   await focusHeld();
   await expect(page.locator('[data-annotation-row], [data-annotation-id]').filter({ hasText: 'Add the EU hold' }).first()).toBeAttached();
 
-  const fullScreen = pane().locator('[data-full-screen-toggle]');
-  await tabTo(fullScreen, { back: true });
-  await press('Enter');
+  await press('f');
   await expect(page.locator('[data-attachment-pane][data-full-view]')).toBeVisible();
   await expect.poll(hash).toMatch(addr(rollout, { view: 'full' }));
   await focusHeld();
@@ -385,9 +383,10 @@ test('S1: deep work in one thread, a detour, and back', async () => {
 
   // The detour: Checkout, a file, mark read and undo.
   await arrowTo(checkout);
-  // The Full screen button at step 16 was a pick: files now open full screen (its toast says so), so Escape
-  // takes one more press to close Checkout's file.
-  await press('Enter', 'o', ']');
+  // F at step 16 saved nothing: Checkout's file opens beside the thread, as files did before.
+  await press('Enter', 'o');
+  await viewIs('side');
+  await press(']');
   await escapeFile();
   await press('Escape');
   await at('Checkout file and thread closed', { focus: row(checkout), address: addr(null), view: 'list' });
@@ -425,7 +424,23 @@ async function focusedHead(): Promise<Locator> {
 
 /** Whatever has focus inside the open thread (a search result lands on its message, or the thread's Reply). */
 const inThread = () => page.locator('section.ib-pane :focus');
-const decideNav = () => page.locator('[data-decide-nav]');
+/** Decide's one way in (#2241): in a thread, its open-questions list, then "Decide these N". */
+const decideEntry = () => page.locator('[data-thread-decide]');
+const questionsButton = () => page.locator('section.ib-pane [data-open-questions]');
+
+/** Open `thread` (one with open questions) and Decide from it, by keys only. Returns the thread. */
+async function openDecide(thread: string): Promise<string> {
+  await press('g', 'i');
+  await arrowTo(thread);
+  await press('Enter', 'n');
+  await tabTo(questionsButton(), { back: true, max: 60 });
+  await press('Enter');
+  // The list opens as a menu with its first item, "Decide these N", focused.
+  await expect(decideEntry()).toBeFocused();
+  await press('Enter');
+  await expect(decide()).toBeVisible();
+  return thread;
+}
 const decide = () => page.locator('[data-decision-mode]');
 const map = () => page.locator('[data-dialog="shortcut-map"]');
 const searchInput = () => page.locator('dialog[data-search-palette] input');
@@ -507,33 +522,8 @@ test('S2: a morning of triage across the whole Inbox', async () => {
   await press('g', 'i');
   await at('G I from the Board', { focus: firstRow(), address: addr(null), view: 'list' });
 
-  // Decide keeps its own keys: none of the Inbox's single keys acts behind it.
-  await tabTo(decideNav(), { back: true });
-  await press('Enter');
-  await expect(decide()).toBeVisible();
-  await focusHeld();
-  const before = hash();
-  await press('e', 'r', 'o', 'j', '?', '/');
-  await expect(decide()).toBeVisible();
-  await expect(map()).toHaveCount(0);
-  await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
-  expect(hash()).toBe(before);
-  const prompt = await decide().locator('[data-decision-prompt]').innerText();
-  await tabTo(decide().getByRole('radio').first());
-  await press('Space');
-  await expect(decide().locator('[data-decision-prompt]')).not.toHaveText(prompt);
-  // Escape asks first (an answer not sent yet); Escape again lets the question go, focus on Close; then Escape and
-  // Enter on its "Send what you answered" closes it.
-  await press('Escape');
-  await expect(decide().locator('[data-decision-confirm]')).toBeVisible();
-  await press('Escape');
-  await expect(decide().locator('[data-decision-confirm]')).toHaveCount(0);
-  await expect(decide().locator('[data-decision-close]')).toBeFocused();
-  await press('Escape');
-  await expect(decide().locator('[data-decision-send-answered]')).toBeFocused();
-  await press('Enter');
-  await expect(decide()).toBeHidden();
-  await at('Decide closed', { focus: decideNav(), address: addr(null), view: 'list' });
+  // Decide (since #2241) opens only from a thread with two or more decisions waiting; by now none has (Stopped's
+  // are answered), so Decide is J6's.
 
   await press('g', 'i');
   await arrowTo(checkout);
@@ -734,11 +724,44 @@ test('J2: read a thread and its files, and come back to exactly where you were',
   await press(']');
   await expect.poll(fileName).not.toBe(opened);
   expect(await page.evaluate(() => history.length), 'stepping adds no history').toBe(entries);
-  // F (full screen) waits for #2245; the steps that use it come with it.
+
+  // F: full screen, and F again back beside the thread, the same file, focus in its pane.
+  const stepped = await fileName();
+  await press('f');
+  await at('F', { focus: pane(), address: addr(checkout, { view: 'full' }), view: 'full' });
+  expect(await fileName()).toBe(stepped);
+  await press('f');
+  await at('F again', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  expect(await fileName()).toBe(stepped);
+
   await escapeFile();
   await at('closed', { focus: head, address: addr(checkout), view: 'thread' });
   await page.waitForTimeout(600);
   expect(Math.abs((await placeOf(head)) - place), 'the thread is where it was').toBeLessThanOrEqual(2);
+
+  // No file open: F opens the newest one full screen; one Escape closes it, back to where focus was.
+  await press('f');
+  await at('F with no file', { focus: pane(), address: addr(checkout, { view: 'full' }), view: 'full' });
+  expect(await fileName()).toBe(opened);
+  await press('Escape');
+  await at('Escape once', { focus: head, address: addr(checkout), view: 'thread' });
+  // F is never a choice: O still opens files beside the thread.
+  await press('o');
+  await at('O after F', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
+  await escapeFile();
+  // Back retraces each file opened and closed (a close is an entry: Back opens it again, finding F2), newest first:
+  // O's file, F's full screen, the stepped file. F and F again left no entries of their own.
+  const stops: string[] = [];
+  for (let i = 0; i < 20; i++) {
+    await page.goBack();
+    await page.waitForTimeout(250);
+    if (new URL(page.url()).origin !== new URL(world.url).origin) break;
+    await focusHeld();
+    stops.push(hash());
+  }
+  const kind = (h: string) => (!/[#&]file=/.test(h) ? 'thread' : /view=full/.test(h) ? 'full' : 'side');
+  expect(stops.map(kind)).toEqual(['side', 'thread', 'full', 'thread', 'side', 'thread']);
+  expect(stops.every((h) => h.startsWith(`#thread=${checkout}`)), 'every stop is this thread').toBe(true);
 });
 
 test('J3: answer a question and send a reply; letters typed are words', async () => {
@@ -803,13 +826,14 @@ test('J5: jump with G, and come back', async () => {
 
 test('J6: Decide mode stays its own', async () => {
   await load();
-  await press('g', 'i');
+  const decidedIn = await openDecide(world.threads.stopped);
   const entries = await page.evaluate(() => history.length);
-  await tabTo(decideNav(), { back: true });
-  await press('Enter');
-  await expect(decide()).toBeVisible();
   const before = hash();
+  const unread = () => row(decidedIn).evaluate((el) => el.classList.contains('ib-u'));
+  const wasUnread = await unread();
   await press('e', 'r', 'o', 'j', 'Shift+?', '/');
+  // E is Decide's, not Mark read on the thread behind it.
+  expect(await unread(), 'the thread behind Decide was not marked read').toBe(wasUnread);
   await expect(decide()).toBeVisible();
   await expect(map()).toHaveCount(0);
   await expect(page.locator('dialog[data-search-palette]')).toBeHidden();
@@ -824,7 +848,7 @@ test('J6: Decide mode stays its own', async () => {
   await tabTo(decide().locator('[data-decision-keep-draft]'));
   await press('Enter');
   await expect(decide()).toBeHidden();
-  await at('Decide closed', { focus: decideNav(), address: addr(null), view: 'list' });
+  await at('Decide closed', { focus: questionsButton(), address: addr(decidedIn), view: 'thread' });
   expect(await page.evaluate(() => history.length), 'Decide adds no history: Back never reopens it').toBe(entries);
 });
 

@@ -2210,7 +2210,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   };
   /** The file O opens: its tile shows the O keycap. */
   const newestFileId = useMemo(() => newestViewableFile(artifactList)?.attachment.id ?? null, [artifactList]);
-  const openNewestByKey = () => {
+  const openNewestByKey = (view: FileView | null = null) => {
     const newest = newestViewableFile(artifactList);
     if (!newest) {
       announce('No files in this thread.');
@@ -2221,7 +2221,21 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       !file && active instanceof HTMLElement && bodyRef.current?.contains(active)
         ? { el: active, message: active.matches('[data-fold-head]') ? (active.closest('[data-message-article]')?.getAttribute('data-message-article') ?? null) : null }
         : null;
-    openFromMessage(newest.attachment);
+    openFromMessage(newest.attachment, view);
+  };
+  /**
+   * F (approval "inbox-keyboard-shortcuts", temporary: never saved as the view files open in). No file open: the
+   * newest one, full screen. Beside the thread: full screen. In full screen: back the way × goes (beside the thread
+   * when it came from there, else the file closes), so F twice is where the person started.
+   */
+  const fullScreenByKey = () => {
+    if (!file) return openNewestByKey('full');
+    if (!full) {
+      setFull(true);
+      setPaneFocus((n) => n + 1);
+      return;
+    }
+    paneRef.current?.exitFull();
   };
   useShortcutScope({
     scope: inboxThreadShortcuts,
@@ -2244,7 +2258,16 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           const origin = keyOrigin(event);
           return origin === 'thread' || origin === 'row';
         },
-        handle: openNewestByKey,
+        handle: () => openNewestByKey(),
+      },
+      fullScreen: {
+        when: (event) => {
+          // A phone or a stacked window shows files full screen only: there is nothing to switch.
+          if (!bareKeyAllowed(event) || artifactsOn || phone || fileStacked) return false;
+          const origin = keyOrigin(event);
+          return origin === 'thread' || origin === 'row' || origin === 'file';
+        },
+        handle: fullScreenByKey,
       },
     },
   });

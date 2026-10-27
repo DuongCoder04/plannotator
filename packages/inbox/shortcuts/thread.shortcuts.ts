@@ -73,6 +73,15 @@ export const inboxThreadShortcuts = defineShortcutScope({
       preventDefault: true,
       displayOrder: 5,
     },
+    fullScreen: {
+      // Thread.tsx: never saved as the view files open in (only the Full screen button is a choice).
+      description: 'Full screen',
+      bindings: ['F'],
+      section: 'Thread',
+      hint: 'The open file, else the newest one. F again, or Escape, goes back.',
+      preventDefault: true,
+      displayOrder: 6,
+    },
     close: {
       // App.tsx: a guided review, then the Artifacts view, then the thread.
       description: 'Close, one layer at a time',

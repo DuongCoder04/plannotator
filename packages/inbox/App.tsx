@@ -2241,12 +2241,14 @@ function Inbox() {
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
     if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !shortcutPrefs().singleKeys) return null;
     if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || routeRef.current.guide) return null;
+    // Under a dialog (Decide opens over the thread it came from) the letters are the dialog's.
+    if (modalOpen()) return null;
     // Words selected in a message: its toolbar takes the letters (a comment starting with them).
     if (selectionToolbarShowing()) return null;
     const target = event.target instanceof HTMLElement ? event.target : null;
     if (target) {
       if (isEditableTarget(target)) return null;
-      if (target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], iframe, .ib-view, [data-step-guard]')) return null;
+      if (target.closest('dialog, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], iframe, .ib-view, [data-step-guard]')) return null;
     }
     // With a file open beside the thread, only a key aimed at the thread or the list counts.
     if (routeRef.current.file && !target?.closest('section.ib-pane, .ib-listcol')) return null;

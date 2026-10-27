@@ -232,6 +232,8 @@ export interface AttachmentPaneProps {
  */
 export interface AttachmentPaneHandle {
   leave: (to: string | null, go: () => void) => void;
+  /** Out of full screen the way × goes (back beside the thread, or the file closes), asking first about a typed comment. */
+  exitFull: () => void;
 }
 
 /**
@@ -459,7 +461,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   };
   const leaveRef = useRef(leave);
   leaveRef.current = leave;
-  useImperativeHandle(ref, () => ({ leave: (to, go) => leaveRef.current(to, go) }), []);
+  const exitFullRef = useRef<() => void>(() => {});
+  useImperativeHandle(ref, () => ({ leave: (to, go) => leaveRef.current(to, go), exitFull: () => exitFullRef.current() }), []);
 
   const showEnd = (text: string) => {
     setEndNote(text);
@@ -1249,6 +1252,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     const to = props.exitLeavesFor ?? null;
     if (to !== null) leave(to, () => toggleFull(false));
     else toggleFull(false);
+  };
+  exitFullRef.current = () => {
+    if (!props.full || props.fullLocked) return;
+    if (exitCloses) close();
+    else exitFull();
   };
 
   const sentAt = whenTime(attachment.sent_at);
