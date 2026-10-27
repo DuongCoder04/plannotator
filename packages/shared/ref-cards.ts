@@ -26,8 +26,14 @@
  *   (up to `REF_STALE_MAX_MS`). Hovers of one ref share one request; at most
  *   `REF_MAX_CONCURRENT` CLIs run at once. A rate-limit answer stops every
  *   fetch to that host for `REF_RATE_LIMIT_MS`.
+ * - Bounded memory (the Inbox is a long-lived process): at most
+ *   `REF_CACHE_MAX` refs and `REF_REPO_ACCOUNTS_MAX` remembered repo accounts
+ *   (least recently used dropped first), answers no longer worth serving are
+ *   dropped, and at most `REF_MAX_WAITING` lookups wait for a CLI (one past
+ *   that answers `unavailable` at once, without caching it).
  * - Avatars are fetched once from the forge's own avatar hosts and inlined as
- *   data URIs (a window whose CSP takes no remote image can still draw them).
+ *   data URIs (a window whose CSP takes no remote image can still draw them),
+ *   at most `AVATAR_CACHE_MAX` of them and `AVATAR_CACHE_MAX_BYTES` in all.
  */
 
 import {
@@ -53,8 +59,39 @@ export const REF_RATE_LIMIT_MS = 60_000;
 export const REF_TIMEOUT_MS = 8_000;
 export const REF_MAX_CONCURRENT = 2;
 export const REF_AUTH_HOSTS_MS = 5 * 60_000;
+/** Refs kept in the cache (an answer, or a failure being held). */
+export const REF_CACHE_MAX = 500;
+/** Repos whose GitHub account (a token, in memory only) is remembered. */
+export const REF_REPO_ACCOUNTS_MAX = 200;
+/**
+ * Lookups waiting for a free CLI. Above one Board request's links
+ * (`INBOX_CARD_MARKS_MAX`, 200), so the Inbox's marks never reach it.
+ */
+export const REF_MAX_WAITING = 500;
 const AVATAR_MAX_BYTES = 64 * 1024;
-const AVATAR_CACHE_MAX = 500;
+export const AVATAR_CACHE_MAX = 500;
+/** The inlined avatars' data URIs, in all. */
+export const AVATAR_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** Set `key` as the newest entry, then drop the oldest until `max` remain (`onDrop` for each). */
+function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number, onDrop?: (key: K, value: V) => void): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > max) dropOldest(map, onDrop);
+}
+
+function dropOldest<K, V>(map: Map<K, V>, onDrop?: (key: K, value: V) => void): void {
+  const oldest = map.entries().next();
+  if (oldest.done) return;
+  map.delete(oldest.value[0]);
+  onDrop?.(oldest.value[0], oldest.value[1]);
+}
+
+/** Mark `key` as the most recently used. */
+function touch<K, V>(map: Map<K, V>, key: K, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+}
 
 export type RefCli = "gh" | "glab";
 export interface RefCommandResult {
@@ -382,19 +419,35 @@ export interface RefCards {
   get(href: string): Promise<ForgeRefCardResult | null>;
 }
 
+/** How much `createRefCards` holds now (tests and diagnostics). */
+export interface RefCardsSizes {
+  refs: number;
+  retries: number;
+  repoAccounts: number;
+  rateLimitedHosts: number;
+  avatars: number;
+  avatarBytes: number;
+  waiting: number;
+}
+
+/** Thrown by a full queue: answered `unavailable`, never cached. */
+const QUEUE_FULL = Symbol("ref-cards queue full");
+
 export function createRefCards(options: {
   /** How `gh` / `glab` run (Bun: `refCliRunner` in packages/server; Node: `nodeRefCliRunner`). */
   run: RefRunner;
   now?: () => number;
   /** Avatar URL → data URI (default: `fetchAvatarDataUri`). */
   avatar?: (url: string) => Promise<string | null>;
-}): RefCards {
+}): RefCards & { sizes(): RefCardsSizes } {
   const run = options.run;
   const now = options.now ?? Date.now;
   const avatarOf = options.avatar ?? fetchAvatarDataUri;
   const cache = new Map<string, ForgeRefCardResult>();
   const pending = new Map<string, Promise<ForgeRefCardResult>>();
-  const avatars = new Map<string, Promise<string | null>>();
+  /** Avatar URL → its data URI (null: none), with the URI's size once it arrived. */
+  const avatars = new Map<string, { uri: Promise<string | null>; bytes: number }>();
+  let avatarBytes = 0;
   /** host/owner/repo → the env of the GitHub account that could see it. */
   const accountFor = new Map<string, Record<string, string>>();
   const rateLimitedUntil = new Map<string, number>();
@@ -404,8 +457,10 @@ export function createRefCards(options: {
   const waiting: (() => void)[] = [];
 
   const slot = async <T>(job: () => Promise<T>): Promise<T> => {
-    if (running >= REF_MAX_CONCURRENT) await new Promise<void>((r) => waiting.push(r));
-    else running++;
+    if (running >= REF_MAX_CONCURRENT) {
+      if (waiting.length >= REF_MAX_WAITING) throw QUEUE_FULL;
+      await new Promise<void>((r) => waiting.push(r));
+    } else running++;
     try {
       return await job();
     } finally {
@@ -415,18 +470,32 @@ export function createRefCards(options: {
     }
   };
 
+  const dropAvatar = (_url: string, entry: { bytes: number }) => {
+    avatarBytes -= entry.bytes;
+  };
+  const avatarUri = (url: string): Promise<string | null> => {
+    const hit = avatars.get(url);
+    if (hit) {
+      touch(avatars, url, hit);
+      return hit.uri;
+    }
+    const entry = { uri: avatarOf(url).catch(() => null), bytes: 0 };
+    remember(avatars, url, entry, AVATAR_CACHE_MAX, dropAvatar);
+    void entry.uri.then((uri) => {
+      // Counted once it arrived, and only while it is still kept.
+      if (!uri || avatars.get(url) !== entry) return;
+      entry.bytes = uri.length;
+      avatarBytes += entry.bytes;
+      while (avatarBytes > AVATAR_CACHE_MAX_BYTES && avatars.size > 0) dropOldest(avatars, dropAvatar);
+    });
+    return entry.uri;
+  };
+
   const inlineAvatars = async (data: ForgeRefCardData) => {
     const people = [data.author, data.lastComment?.author, ...data.assignees].filter((p): p is ForgeRefPerson => !!p?.avatarUrl);
     await Promise.all(
       people.map(async (p) => {
-        const url = p.avatarUrl!;
-        let hit = avatars.get(url);
-        if (!hit) {
-          hit = avatarOf(url).catch(() => null);
-          avatars.set(url, hit);
-          if (avatars.size > AVATAR_CACHE_MAX) avatars.delete(avatars.keys().next().value!);
-        }
-        p.avatarUrl = await hit;
+        p.avatarUrl = await avatarUri(p.avatarUrl!);
       }),
     );
   };
@@ -478,7 +547,9 @@ export function createRefCards(options: {
     if (now() < (rateLimitedUntil.get(ref.host) ?? 0)) return fail("rate_limited");
     const { cli, args } = queryArgs(ref);
     const repoKey = `${ref.host}/${ref.owner}/${ref.repo}`.toLowerCase();
-    const tries: (Record<string, string> | undefined)[] = [accountFor.get(repoKey)];
+    const known = accountFor.get(repoKey);
+    if (known) touch(accountFor, repoKey, known);
+    const tries: (Record<string, string> | undefined)[] = [known];
     for (let i = 0; i < tries.length; i++) {
       const result = await run(cli, args, tries[i]);
       if (result.exitCode === 0) {
@@ -490,7 +561,7 @@ export function createRefCards(options: {
           if (error === "rate_limited") rateLimitedUntil.set(ref.host, now() + REF_RATE_LIMIT_MS);
           return fail(error === "refused" ? "not_found" : error);
         }
-        if (tries[i]) accountFor.set(repoKey, tries[i]!);
+        if (tries[i]) remember(accountFor, repoKey, tries[i]!, REF_REPO_ACCOUNTS_MAX);
         await inlineAvatars(data);
         return { ok: true, data, fetchedAt: now() };
       }
@@ -508,20 +579,41 @@ export function createRefCards(options: {
     return fail("not_found");
   };
 
+  /**
+   * Drop what would never be served again: answers past REF_STALE_MAX_MS,
+   * failures past REF_FAILURE_MS, retry holds and rate-limit pauses that are
+   * over. Each is the same as no entry, so this changes no answer.
+   */
+  const prune = () => {
+    const t = now();
+    for (const [key, result] of cache) {
+      if (t - result.fetchedAt >= (result.ok ? REF_STALE_MAX_MS : REF_FAILURE_MS)) cache.delete(key);
+    }
+    for (const [key, at] of retryAt) if (t >= at || !cache.has(key)) retryAt.delete(key);
+    for (const [host, until] of rateLimitedUntil) if (t >= until) rateLimitedUntil.delete(host);
+  };
+  const dropRetry = (key: string) => {
+    retryAt.delete(key);
+  };
+
   const refresh = (key: string, ref: ForgeRef): Promise<ForgeRefCardResult> => {
     const inFlight = pending.get(key);
     if (inFlight) return inFlight;
     const job = slot(() => fetchOnce(ref))
-      .catch((): ForgeRefCardResult => fail("unavailable"))
+      .catch((error): ForgeRefCardResult | typeof QUEUE_FULL => (error === QUEUE_FULL ? QUEUE_FULL : fail("unavailable")))
       .then((result) => {
-        // A failure never replaces an answer still worth showing; it only holds off the next refresh.
         const prev = cache.get(key);
-        if (!result.ok && prev?.ok && now() - prev.fetchedAt < REF_STALE_MAX_MS) {
-          retryAt.set(key, now() + REF_FAILURE_MS);
-          return prev;
+        const prevShowable = prev?.ok === true && now() - prev.fetchedAt < REF_STALE_MAX_MS;
+        // Too many lookups waiting: answer at once and keep nothing, so the next hover asks again.
+        if (result === QUEUE_FULL) return prevShowable ? prev! : fail("unavailable");
+        prune();
+        // A failure never replaces an answer still worth showing; it only holds off the next refresh.
+        if (!result.ok && prevShowable) {
+          remember(retryAt, key, now() + REF_FAILURE_MS, REF_CACHE_MAX);
+          return prev!;
         }
         retryAt.delete(key);
-        cache.set(key, result);
+        remember(cache, key, result, REF_CACHE_MAX, dropRetry);
         return result;
       })
       .finally(() => pending.delete(key));
@@ -537,6 +629,7 @@ export function createRefCards(options: {
       const key = forgeRefKey(ref);
       const hit = cache.get(key);
       if (hit) {
+        touch(cache, key, hit);
         const age = now() - hit.fetchedAt;
         if (age < (hit.ok ? REF_FRESH_MS : REF_FAILURE_MS)) return hit;
         if (hit.ok && age < REF_STALE_MAX_MS) {
@@ -545,6 +638,17 @@ export function createRefCards(options: {
         }
       }
       return refresh(key, ref);
+    },
+    sizes() {
+      return {
+        refs: cache.size,
+        retries: retryAt.size,
+        repoAccounts: accountFor.size,
+        rateLimitedHosts: rateLimitedUntil.size,
+        avatars: avatars.size,
+        avatarBytes,
+        waiting: waiting.length,
+      };
     },
   };
 }
@@ -563,9 +667,10 @@ export interface RefCardRouteRequest {
   host: string;
   secFetchSite: string | null;
   /**
-   * False when the session is reachable beyond this computer (remote mode, a
-   * `--tailscale` session): the lookups run with the user's own gh / glab
-   * credentials, so a peer on the network must never be able to drive them.
+   * False when the session is reachable beyond this computer (remote mode) or
+   * the request came from another device (a `--tailscale` session lets only
+   * this machine's tabs and the tailnet owner's through): the lookups run with
+   * the user's own gh / glab credentials, so a peer must never drive them.
    */
   enabled: boolean;
 }
@@ -579,13 +684,13 @@ export interface RefCardRouteAnswer {
  * `GET /api/ref?url=<issue, PR or MR link>`, answered the way the Inbox's
  * `/api/inbox/ref` is: `{ ok: true, data, fetchedAt }` or `{ ok: false, error,
  * fetchedAt }`. Refusals, in order: `404 ref_cards_disabled` when the session
- * is exposed, `405` for anything but GET, `403 cross_origin` for another
+ * is exposed or the request came from another device, `405` for anything but GET, `403 cross_origin` for another
  * site's page, `422 validation_error` for a url that is not such a link (or
  * over 2048 characters). Nothing runs for a refusal.
  */
 export async function handleRefCardRoute(req: RefCardRouteRequest, cards: RefCards): Promise<RefCardRouteAnswer> {
   if (!req.enabled) {
-    return { status: 404, body: { error: "Hover cards are off in a session other devices can reach.", code: "ref_cards_disabled" } };
+    return { status: 404, body: { error: "Hover cards are off for this session or device.", code: "ref_cards_disabled" } };
   }
   if (req.method !== "GET") return { status: 405, body: { error: "Use GET." } };
   if (!isSameOriginOrNoOrigin(req.origin, req.host, req.secFetchSite)) {
