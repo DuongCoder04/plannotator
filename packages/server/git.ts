@@ -6,6 +6,7 @@
  */
 
 import { childEnv } from "@plannotator/shared/child-env";
+import { resolveRepoWorkingTreeEntry } from "@plannotator/shared/repo-file";
 import { lstat, open, readlink, realpath } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
@@ -236,6 +237,9 @@ export async function readFileBytesCapped(path: string, maxBytes: number): Promi
 /** Bun-based git runtime. Exported for use with shared utilities (worktree, etc.) */
 export const runtime: ReviewGitRuntime = {
   runGit,
+  async checkWorkingTreeEntry(root, path) {
+    return resolveRepoWorkingTreeEntry(root, path);
+  },
   runGitBytes,
   readFileBytes: readFileBytesCapped,
   async realPath(path: string): Promise<string | null> {

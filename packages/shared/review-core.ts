@@ -16,6 +16,7 @@ import {
   OVERSIZED_REVIEW_STUB_MARKER,
 } from "./diff-paths";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
+import type { RepoFileFailure, RepoWorkingTreeEntry } from "./repo-file";
 
 import {
   BARE_HEX_SHA_RE,
@@ -275,6 +276,19 @@ export interface ReviewGitRuntime {
   readFileBytes?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
   /** Canonical path with every symlink resolved (null on any error). */
   realPath?: (path: string) => Promise<string | null>;
+  /**
+   * Check one working-tree path for diff context expansion: every directory
+   * on the way resolves inside `root`, a final symlink comes back as its
+   * target string, and anything else must be a regular file under the 5 MB
+   * cap. Every server runtime (Bun, Pi, VS Code) implements it with
+   * `resolveRepoWorkingTreeEntry` from repo-file.ts; it is optional only
+   * because this module also reaches the browser bundle, which cannot import
+   * node:fs. Without it, expansion falls back to the `getFileInfo` checks.
+   */
+  checkWorkingTreeEntry?: (
+    root: string,
+    path: string,
+  ) => Promise<RepoWorkingTreeEntry | RepoFileFailure>;
 }
 
 /** `GitCommandResult` with undecoded stdout, for binary blobs. */
@@ -2476,6 +2490,14 @@ export async function readDiffSideText(
   // sibling is immune: ref paths are root-relative regardless of cwd.)
   const baseDir = await resolveRepoToplevel(runtime, cwd);
   try {
+    if (runtime.checkWorkingTreeEntry) {
+      // Shared guard (repo-file.ts): a path through a symlinked directory
+      // that points out of the repository reads as null.
+      const entry = await runtime.checkWorkingTreeEntry(baseDir ?? ".", source.path);
+      if (!entry.ok) return null;
+      if (entry.kind === "symlink") return entry.linkTarget;
+      return runtime.readTextFile(entry.absolutePath);
+    }
     const fileInfo = await runtime.getFileInfo(baseDir, source.path);
     if (!fileInfo) return null;
     // Git stores the link destination as the blob contents. Reading the link
