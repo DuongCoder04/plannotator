@@ -932,7 +932,10 @@ test('a frame that reached the early channel before the subscription: the report
     };
     unsubscribe = subscribeSharedInboxEvents(w.server.seq, {
       onRecord: () => {},
-      onConnect: () => servedAtConnect.push(inboxEventsServedBy()),
+      onStatus: () => {},
+      onConnect: () => {
+        servedAtConnect.push(inboxEventsServedBy());
+      },
     }, win, env);
     await settle(12);
     expect(servedAtConnect.length).toBeGreaterThanOrEqual(1);
