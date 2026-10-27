@@ -232,6 +232,8 @@ interface Route {
   section?: SettingsSection | null;
   /** `#settings/devices/pair`: Pair a phone is open. */
   pair?: boolean;
+  /** `#settings/experimental` (an old link): Capabilities, landing on its Experimental group. Never written to the address. */
+  experimental?: boolean;
 }
 
 function readRoute(): Route {
@@ -241,7 +243,7 @@ function readRoute(): Route {
 function routeOf(fullHash: string): Route {
   const hash = fullHash.replace(/^#/, '');
   const settingsAt = parseSettingsHash(hash);
-  if (settingsAt) return { page: 'settings', project: null, thread: null, section: settingsAt.section, pair: settingsAt.pair };
+  if (settingsAt) return { page: 'settings', project: null, thread: null, section: settingsAt.section, pair: settingsAt.pair, experimental: settingsAt.experimental };
   const params = new URLSearchParams(hash);
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
@@ -356,6 +358,18 @@ function settleTourEntry(): void {
  * Two paths does not come back here. A cookie, so a port change keeps it.
  */
 const TOUR_DECIDED_COOKIE = 'plannotator-inbox-tour-decided';
+
+/**
+ * `#settings/experimental`, Experimental's own page before it moved into
+ * Capabilities (the owner, 2026-10-27): the address becomes
+ * `#settings/capabilities` in place (no new history entry). True when it
+ * did, so the route keeps landing on the Experimental group.
+ */
+function settleOldExperimental(): boolean {
+  if (!parseSettingsHash(window.location.hash.replace(/^#/, ''))?.experimental) return false;
+  window.history.replaceState(window.history.state, '', `#${settingsHash({ section: 'capabilities' })}`);
+  return true;
+}
 
 /** A `msg=` with no thread to land in (a hand-edited or truncated link) leaves the address bar; the route already ignores it. */
 function stripStrayMsg(): void {
@@ -737,9 +751,11 @@ function Inbox() {
       settleLanding();
       stripStrayMsg();
       settleTourEntry();
-      setRoute(readRoute());
+      const oldExperimental = settleOldExperimental();
+      setRoute(oldExperimental ? { ...readRoute(), experimental: true } : readRoute());
     };
     stripStrayMsg();
+    settleOldExperimental();
     window.addEventListener('hashchange', onHash);
     window.addEventListener('popstate', onHash);
     return () => {
@@ -2379,7 +2395,7 @@ function Inbox() {
     }
   };
 
-  // Settings → General → Experimental: decision mode, saved to config.json and applied at once.
+  // Settings → Capabilities → Experimental: decision mode, saved to config.json and applied at once.
   // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
   const toggleBoard = async (next: boolean) => {
     setSettingsError(null);
@@ -3170,6 +3186,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        landOnExperimental={route.experimental === true}
         onToggleBoard={(next) => void toggleBoard(next)}
         agents={agents}
         onAgents={setAgents}
