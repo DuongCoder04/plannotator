@@ -200,22 +200,22 @@ test.skipIf(!hasDom)('#settings opens General; the nav moves between sections by
   // Experimental's row comes with the settings read (it shows only while the Inbox reports an experimental feature).
   await until(() => navLink(el, 'experimental') !== null && navLink(el, 'capabilities') !== null, 'the Capabilities and Experimental rows');
   const links = [...el.querySelectorAll<HTMLAnchorElement>('.ib-snav a')];
-  // Capabilities after About, then Experimental last (the owner, 2026-10-27: each its own page, not a group inside General).
-  expect(links.map((a) => a.textContent?.trim())).toEqual(['General', 'Agents', 'Prompts', 'Devices', 'Archived', 'Storage', 'About', 'Capabilities', 'Experimental']);
+  // Capabilities right after Devices, Experimental last (the owner, 2026-10-27: each its own page, not a group inside General).
+  expect(links.map((a) => a.textContent?.trim())).toEqual(['General', 'Agents', 'Prompts', 'Devices', 'Capabilities', 'Archived', 'Storage', 'About', 'Experimental']);
   expect(links.map((a) => a.getAttribute('href'))).toEqual([
     '#settings/general',
     '#settings/agents',
     '#settings/prompts',
     '#settings/devices',
+    '#settings/capabilities',
     '#settings/archived',
     '#settings/storage',
     '#settings/about',
-    '#settings/capabilities',
     '#settings/experimental',
   ]);
   // Only Experimental sits below the line.
   expect([...el.querySelectorAll('.ib-snav li.ib-snav-sep a')].map((a) => a.getAttribute('data-settings-link'))).toEqual(['experimental']);
-  for (const section of ['agents', 'prompts', 'devices', 'archived', 'storage', 'about', 'capabilities', 'experimental', 'general'] as const) {
+  for (const section of ['agents', 'prompts', 'devices', 'capabilities', 'archived', 'storage', 'about', 'experimental', 'general'] as const) {
     act(() => navLink(el, section).click());
     await until(() => window.location.hash === `#settings/${section}`, `#settings/${section}`);
     await until(() => navLink(el, section).getAttribute('aria-current') === 'page', `${section} marked current`);
@@ -560,13 +560,15 @@ test.skipIf(!hasDom)('on a phone: #settings is the list of sections; a section o
   expect(el.querySelector('.ib-snav')).toBeNull();
   await until(() => el.querySelector('[data-settings-list] [data-settings-link="experimental"]') !== null && el.querySelector('[data-settings-list] [data-settings-link="capabilities"]') !== null, 'the Capabilities and Experimental rows');
   const links = [...el.querySelectorAll<HTMLAnchorElement>('[data-settings-list] a')];
-  expect(links.map((a) => a.getAttribute('data-settings-link'))).toEqual(['general', 'agents', 'prompts', 'devices', 'archived', 'storage', 'about', 'capabilities', 'experimental']);
-  // Capabilities, then Experimental at the bottom, each in a group of its own, with what is on.
+  expect(links.map((a) => a.getAttribute('data-settings-link'))).toEqual(['general', 'agents', 'prompts', 'devices', 'capabilities', 'archived', 'storage', 'about', 'experimental']);
+  // Capabilities is the last row of the first group, above Archived, Storage and About; Experimental is the bottom group on its own.
   const groups = [...el.querySelectorAll<HTMLUListElement>('[data-settings-list] ul')];
-  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Settings', 'Your data and Plannotator', 'Capabilities', 'Experimental']);
-  expect([...groups.at(-2)!.querySelectorAll('a')].map((a) => a.getAttribute('data-settings-link'))).toEqual(['capabilities']);
-  expect(groups.at(-2)!.querySelector('.ib-v')?.textContent).toBe('Off');
-  act(() => groups.at(-2)!.querySelector<HTMLAnchorElement>('a')!.click());
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Settings', 'Your data and Plannotator', 'Experimental']);
+  expect([...groups[0]!.querySelectorAll('a')].map((a) => a.getAttribute('data-settings-link'))).toEqual(['general', 'agents', 'prompts', 'devices', 'capabilities']);
+  expect([...groups[1]!.querySelectorAll('a')].map((a) => a.getAttribute('data-settings-link'))).toEqual(['archived', 'storage', 'about']);
+  const capabilitiesRow = groups[0]!.querySelector<HTMLAnchorElement>('[data-settings-link="capabilities"]')!;
+  expect(capabilitiesRow.querySelector('.ib-v')?.textContent).toBe('Off');
+  act(() => capabilitiesRow.click());
   await until(() => heading(el) === 'Capabilities', 'Capabilities on a phone');
   expect(window.location.hash).toBe('#settings/capabilities');
   expect(switchNamed(el, 'Board')).not.toBeNull();

@@ -6,11 +6,12 @@
  * an old or mistyped link still lands in Settings. Experimental is the last
  * section (the owner, 2026-10-27: its own page, not a group inside General);
  * its nav row shows only while this Inbox has an experimental feature.
- * Capabilities (the owner, 2026-10-27) comes just before it: the switches
- * that turn a whole feature on or off, today the Board.
+ * Capabilities (the owner, 2026-10-27: "above the archive storage about
+ * stuff") comes right after Devices: the switches that turn a whole feature
+ * on or off, today the Board.
  */
 
-export const SETTINGS_SECTIONS = ['general', 'agents', 'prompts', 'devices', 'archived', 'storage', 'about', 'capabilities', 'experimental'] as const;
+export const SETTINGS_SECTIONS = ['general', 'agents', 'prompts', 'devices', 'capabilities', 'archived', 'storage', 'about', 'experimental'] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {

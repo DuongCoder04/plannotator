@@ -620,9 +620,9 @@ const LEDE: Record<SettingsSection, string> = {
  * Settings (design of record `.product/approved/inbox-settings-tabs/`,
  * Workspaces' SettingsFrame in the Inbox's scale): a focused page with
  * "← Inbox" on top, a section nav (General, Agents, Prompts, Devices,
- * Archived, Storage, About, Capabilities, and Experimental last while there is one) and one
+ * Capabilities, Archived, Storage, About, and Experimental last while there is one) and one
  * section per page at `#settings/<section>`. On a phone, a list of the
- * sections (Capabilities and Experimental each in a group of its own at the bottom), then one
+ * sections (Experimental in a group of its own at the bottom), then one
  * section with "‹ Settings".
  */
 export function SettingsPage(props: SettingsPageProps) {
@@ -684,11 +684,10 @@ export function SettingsPage(props: SettingsPageProps) {
   // Capabilities, the same way: only while the Inbox has a switch for it (an older Inbox has no Board).
   const board = settings?.board && props.onToggleBoard ? settings.board : null;
   const sections = SETTINGS_SECTIONS.filter((id) => (id !== 'experimental' || experimental !== null) && (id !== 'capabilities' || board !== null));
-  /** The phone's list of sections, in its groups: settings, your data and Plannotator, then Capabilities and Experimental each on its own. */
+  /** The phone's list of sections, in its groups: settings (Capabilities last of them), your data and Plannotator, then Experimental on its own. */
   const phoneGroups: { label: string; ids: SettingsSection[] }[] = [
-    { label: 'Settings', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) < 4) },
-    { label: 'Your data and Plannotator', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) >= 4 && id !== 'capabilities' && id !== 'experimental') },
-    { label: 'Capabilities', ids: sections.filter((id) => id === 'capabilities') },
+    { label: 'Settings', ids: sections.filter((id) => SETTINGS_SECTIONS.indexOf(id) <= SETTINGS_SECTIONS.indexOf('capabilities')) },
+    { label: 'Your data and Plannotator', ids: sections.filter((id) => id === 'archived' || id === 'storage' || id === 'about') },
     { label: 'Experimental', ids: sections.filter((id) => id === 'experimental') },
   ].filter((group) => group.ids.length > 0);
 
