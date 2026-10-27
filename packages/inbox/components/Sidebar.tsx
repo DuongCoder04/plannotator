@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { InboxHealth, InboxListRow } from '@plannotator/core/inbox-types';
+import type { InboxHealth, InboxListRow, InboxRestartAgents } from '@plannotator/core/inbox-types';
+import { restartAgentsDescription, restartAgentsLabel, restartAgentsOf } from '../restartAgents';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { ClaudeIcon, CodexIcon, OpenCodeIcon, PiIcon } from '@plannotator/ui/components/icons/AgentIcons';
 import type { ProjectFolder } from '../api';
@@ -59,15 +60,6 @@ export interface SidebarProps {
   /** Compose (a new message to a connected agent): the icon button beside Search. Absent: no button. */
   onCompose?: (opener: HTMLElement) => void;
   /**
-   * Decision mode (experimental): how many decisions wait across threads. The
-   * "Decide N" row shows under Inbox whenever this is above 0 (with
-   * `onDecide`); the caller applies the minimum, passing 0 below two
-   * decisions (`decideEntryShown`, `DECIDE_ENTRY_MIN` in decisions/entry.tsx).
-   * Absent or 0: no row.
-   */
-  decideCount?: number;
-  onDecide?: () => void;
-  /**
    * The threads pinned to the sidebar (approval "inbox-pinned-threads"), in
    * pin order: the Pinned section above Projects. None (or an older Inbox
    * that keeps no pins): no section at all.
@@ -97,9 +89,11 @@ export interface SidebarProps {
    * Claude Code sessions a restart would bring up to date (the list model's
    * `restart_claude_code`): "Reload Claude Code N" under "What's new in X",
    * opening Settings → Agents (owner approval "restart-warning"). It goes away
-   * by itself once they restart. Absent or 0: no row.
+   * by itself once they restart. Absent or 0: no row. `restartAgents` wins
+   * when given (every runtime's count; owner approval "reload-hosts").
    */
   restartClaudeCode?: number;
+  restartAgents?: InboxRestartAgents;
   onRestartSessions?: () => void;
   /**
    * `GET /api/inbox/settings` `mcp_command`, for the absolute `plannotator`
@@ -139,6 +133,7 @@ function useMoreBelow<T extends HTMLElement>(deps: unknown) {
  * in the hover peek, and as the sheet on a phone width, which a pick closes.
  */
 export function Sidebar(props: SidebarProps) {
+  const restartAgents = props.restartAgents ?? restartAgentsOf(undefined, props.restartClaudeCode);
   const firstRun = props.projects.length === 0;
   const { setOpenMobile } = useSidebar();
   const phone = usePhone();
@@ -286,13 +281,6 @@ export function Sidebar(props: SidebarProps) {
           Board
         </button>
       )}
-      {(props.decideCount ?? 0) > 0 && props.onDecide && (
-        <button type="button" className="ib-nav" onClick={pick(props.onDecide)} aria-haspopup="dialog" data-decide-nav="">
-          <Icon name="todo" />
-          Decide
-          <span className="ib-n">{formatCount(props.decideCount ?? 0)}</span>
-        </button>
-      )}
       {(props.draftsCount ?? 0) > 0 && props.onDrafts && (
         <button
           type="button"
@@ -401,9 +389,7 @@ export function Sidebar(props: SidebarProps) {
         {!props.update && props.checkFailing && props.onCheckFailing && (
           <CheckFailingRow failing={props.checkFailing} onOpen={pick(props.onCheckFailing)} />
         )}
-        {(props.restartClaudeCode ?? 0) > 0 && props.onRestartSessions && (
-          <RestartSessionsRow count={props.restartClaudeCode ?? 0} onOpen={pick(props.onRestartSessions)} />
-        )}
+        {restartAgents.total > 0 && props.onRestartSessions && <RestartSessionsRow agents={restartAgents} onOpen={pick(props.onRestartSessions)} />}
         {/* Two controls side by side, never one inside the other: the row opens Settings, the icon flips light and dark. */}
         <div className="ib-setrow">
           <button
@@ -423,18 +409,20 @@ export function Sidebar(props: SidebarProps) {
 }
 
 /**
- * "Reload Claude Code N": the Claude Code sessions still on the plugin from
- * before an update. A real button named by its words and count; what it does
- * is in its description. Opens Settings → Agents, which lists them.
+ * "Reload Claude Code N" (owner approval "restart-warning"), generalized to
+ * every runtime (owner approval "reload-hosts"): the sessions still on the
+ * Plannotator from before an update. One runtime names itself ("Reload Pi",
+ * "Restart Oh My Pi"); more than one reads "Reload agents". A real button
+ * named by its words and count; what it does is in its description. Opens
+ * Settings → Agents, which lists them.
  */
-function RestartSessionsRow({ count, onOpen }: { count: number; onOpen: () => void }) {
-  const why = `${count === 1 ? '1 Claude Code session runs' : `${count} Claude Code sessions run`} the plugin from before the update; /reload-plugins loads the new one. Opens Settings, Agents.`;
+function RestartSessionsRow({ agents, onOpen }: { agents: InboxRestartAgents; onOpen: () => void }) {
   return (
-    <button type="button" className="ib-nav ib-quiet ib-rw-restart" data-restart-sidebar={count} onClick={onOpen}>
+    <button type="button" className="ib-nav ib-quiet ib-rw-restart" data-restart-sidebar={agents.total} onClick={onOpen}>
       <Icon name="refresh" />
-      <span className="ib-rw-label">Reload Claude Code</span>
-      <span className="ib-n">{formatCount(count)}</span>
-      <span className="ib-sr">. {why}</span>
+      <span className="ib-rw-label">{restartAgentsLabel(agents)}</span>
+      <span className="ib-n">{formatCount(agents.total)}</span>
+      <span className="ib-sr">. {restartAgentsDescription(agents)}</span>
     </button>
   );
 }
