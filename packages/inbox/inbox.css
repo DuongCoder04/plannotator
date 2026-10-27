@@ -1045,6 +1045,106 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 /* The choices are a grid: its one column takes the card's width, not the longest choice's. */
 .ib-body [data-question-key] > :is([role="radiogroup"], [role="group"]) { grid-template-columns: minmax(0, 1fr); }
 .ib-qfoot-st { font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; }
+/* The card's footer (ui's QuestionBlock: Add note, Skip, then Accept recommended and the host's status in one
+   right-aligned box). No button ever shrinks or breaks a word ("Acce pt reco mme nded" on a phone); when the row
+   cannot hold the buttons and the status, the status takes a line of its own ABOVE the buttons (wrap-reverse,
+   the thread foot's pattern), never between them. The right-aligned box is unwrapped (display: contents) so its
+   two parts wrap apart; its first part keeps the right alignment. On one line nothing moves. */
+.pn-inbox .question-block > div.border-t { flex-wrap: wrap-reverse; row-gap: 4px; }
+.pn-inbox .question-block > div.border-t > div.ml-auto { display: contents; }
+.pn-inbox .question-block > div.border-t > div.ml-auto > :first-child { margin-left: auto; }
+.pn-inbox .question-block > div.border-t button { white-space: nowrap; flex-shrink: 0; }
+.pn-inbox .question-block > div.border-t [data-question-host-footer] { flex: 0 1 auto; min-width: 0; }
+.pn-inbox .question-block > div.border-t .ib-qfoot-st { white-space: normal; }
+/* The card's radios and checkboxes, drawn by the page: WebKit's native dark-scheme control is a solid near-black
+   disc whether picked or not (the owner's iPhone), so picked and unpicked read alike. Unpicked: a hollow ring
+   on the card; picked: the accent's ring with its dot (radio), or the accent filled with a check (checkbox).
+   The size and place stay ui's (15 px, 20 px on a phone); a checkbox has the "Other…" box's 3 px corner. Only
+   on a touch screen (pointer: coarse) or in iOS and iPadOS WebKit (-webkit-touch-callout: a trackpad iPad's
+   primary pointer is fine): a desktop, a touch laptop and desktop Safari keep the system's control, as before.
+   Forced colours keep it everywhere. */
+/* drawn-controls:start */
+@media (pointer: coarse) {
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    box-sizing: border-box;
+    border: 1.5px solid color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+    border-radius: 50%;
+    background-color: transparent;
+    color: var(--primary-foreground);
+    transition: border-color 120ms ease-out, background-color 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"] { border-radius: 3px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"])::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    transform: scale(0);
+    transition: transform 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]::before {
+    width: 10px;
+    height: 10px;
+    border-radius: 0;
+    background: currentColor;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked { border-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]:checked { background-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked::before { transform: scale(1); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
+}
+/* drawn-controls:end */
+/* The same rules for iPadOS and iOS WebKit, whose primary pointer is fine with a trackpad (CSS cannot join a
+   media query and @supports with OR). Keep the two blocks equal: questionCardPhone.test.tsx checks it. */
+@supports (-webkit-touch-callout: none) {
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    box-sizing: border-box;
+    border: 1.5px solid color-mix(in oklab, var(--muted-foreground) 80%, transparent);
+    border-radius: 50%;
+    background-color: transparent;
+    color: var(--primary-foreground);
+    transition: border-color 120ms ease-out, background-color 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"] { border-radius: 3px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"])::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    transform: scale(0);
+    transition: transform 120ms ease-out;
+  }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]::before {
+    width: 10px;
+    height: 10px;
+    border-radius: 0;
+    background: currentColor;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked { border-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]:checked { background-color: var(--primary); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):checked::before { transform: scale(1); }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]):disabled { opacity: 0.6; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pn-inbox .question-block input[data-question-control], .pn-inbox .question-block input[data-question-control]::before { transition: none; }
+}
+@media (forced-colors: active) {
+  .pn-inbox .question-block input[data-question-control]:is([type="radio"], [type="checkbox"]) { -webkit-appearance: auto; appearance: auto; }
+}
 
 /* empty state and the connect picker: one vertical rhythm between the heading, the cards, Other agents and the tabs */
 .ib-empty { --ib-rhythm: 26px; display: flex; flex-direction: column; gap: var(--ib-rhythm); padding: 34px 40px 60px 100px; max-width: 900px; }
@@ -2376,6 +2476,15 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-body [data-question-part="choice"] { font-size: var(--ib-fs-15, 15px); }
   .ib-body [data-question-key] input[type="text"] { min-height: 40px; }
   .ib-body [data-question-key] > [data-pinpoint-ignore]:last-child > button, .ib-body [data-question-key] > [data-pinpoint-ignore]:last-child > div > button { min-height: 44px; padding-left: 10px; padding-right: 10px; font-size: var(--ib-fs-14, 14px); }
+  /* The footer on a touch phone: the buttons and the status never fit one row, so the status leads on its own
+     line and the buttons follow it in reading order (one that does not fit goes to the next line, below). A
+     narrow desktop window keeps the base rule (one row when it fits, else the status above, wrap-reverse). */
+  @media (pointer: coarse) {
+    .pn-inbox .question-block > div.border-t { flex-wrap: wrap; column-gap: 4px; }
+    .pn-inbox .question-block > div.border-t > div.ml-auto > [data-question-host-footer] { order: -1; flex-basis: 100%; margin-left: 0; padding: 2px 0 0 4px; }
+  }
+  .pn-inbox .question-block input[data-question-control][type="radio"]::before { width: 10px; height: 10px; }
+  .pn-inbox .question-block input[data-question-control][type="checkbox"]::before { width: 12px; height: 12px; }
   .ib-atts.ib-tiles { grid-template-columns: minmax(0, 1fr); }
   .ib-att-t, .ib-pane.ib-withfile .ib-att-t, .ib-att-t.ib-guide { min-width: 0; width: 100%; min-height: 56px; }
   .ib-waitfoot button { min-height: 44px; }
@@ -3144,6 +3253,10 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-cp-foot, .ib-cp-ask { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 10px 12px 10px 10px; border-top: 1px solid var(--ib-line); flex: none; flex-wrap: wrap; }
 .ib-cp-foot .ib-sp, .ib-cp-ask .ib-sp { flex: 1; }
 .ib-cp-ask { background: var(--ib-band); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 550; padding-left: 16px; border-radius: 0 0 10px 10px; }
+/* The reply box's attach button (a phone only): the compose paperclip's look, a 44 px target. */
+.pn-inbox .ib-rattach { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border-radius: 9px; color: var(--muted-foreground); cursor: pointer; position: relative; }
+.pn-inbox .ib-rattach:hover, .pn-inbox .ib-rattach:focus-within { background: var(--muted); color: var(--foreground); }
+.pn-inbox .ib-rattach:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
 .pn-inbox .ib-cp-clip { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 7px; color: var(--muted-foreground); cursor: pointer; position: relative; }
 .pn-inbox .ib-cp-clip:hover, .pn-inbox .ib-cp-clip:focus-within { background: var(--muted); color: var(--foreground); }
 .ib-cp-savedline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
@@ -3796,6 +3909,12 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
 .ib-rl-lead { margin: 0; color: var(--foreground); font-size: var(--ib-fs-14, 14px); font-weight: 550; min-width: 0; }
 .ib-rl .ib-rl-lead { font-size: var(--ib-fs-15, 15px); }
 .ib-rl-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+/* OpenCode's one quiet line under its command (approval "reload-hosts"). */
+.ib-rl-quiet { margin: 0; color: var(--muted-foreground); font-weight: 400; }
+/* The pinned card's Copy, right after the value it copies. */
+.ib-rl-inline-copy { display: inline-flex; vertical-align: middle; font-weight: 400; }
+/* A long OpenCode command or spec breaks rather than overflow a phone. */
+.ib-rl-line code.ib-rl-wrap, .pn-inbox .ib-undl .ib-m-why code.ib-rl-wrap { white-space: normal; overflow-wrap: anywhere; }
 .ib-rl-line code { font-family: var(--font-mono); font-size: 0.93em; font-weight: 600; padding: 1px 5px; border-radius: 5px; background: color-mix(in oklch, var(--foreground) 8%, transparent); white-space: nowrap; }
 ol.ib-rl-two { padding: 0 0 0 20px; list-style: decimal; display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
 ol.ib-rl-two > li { min-width: 0; }
@@ -3954,7 +4073,18 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-act-undo:hover { text-decoration: underline; text-underline-offset: 2px; }
 .pn-inbox .ib-chk-panel { padding: 0 12px 12px 38px; min-width: 0; }
 .pn-inbox .ib-chk-panel[hidden] { display: none; }
-.pn-inbox .ib-chk-why { margin: 0 0 6px; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; color: color-mix(in oklch, var(--muted-foreground) 55%, var(--foreground)); white-space: pre-line; overflow-wrap: anywhere; }
+/* The why, drawn as markdown (ContextMarkdown, as a question's context): kept at the card's size and spacing;
+   a long command, path or URL wraps rather than widening the card on a phone. */
+.pn-inbox .ib-chk-why { margin: 0 0 6px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.5; color: color-mix(in oklch, var(--muted-foreground) 55%, var(--foreground)); overflow-wrap: anywhere; }
+.pn-inbox .ib-chk-why :is(p, li, blockquote, [data-rich-list-level], [data-rich-list-level] > span) { font-size: inherit; line-height: inherit; color: inherit; }
+.pn-inbox .ib-chk-why article > * { margin-top: 0; margin-bottom: 6px; }
+.pn-inbox .ib-chk-why article > :last-child { margin-bottom: 0; }
+.pn-inbox .ib-chk-why [data-pinpoint-group="list"] { padding-top: 0; padding-bottom: 0; }
+.pn-inbox .ib-chk-why [data-rich-list-level] { margin-top: 2px; margin-bottom: 2px; gap: 8px; }
+.pn-inbox .ib-chk-why :is(a, code) { overflow-wrap: anywhere; word-break: break-word; }
+.pn-inbox .ib-chk-why :not(pre) > code { font-size: 0.92em; padding: 0 4px; }
+.pn-inbox .ib-chk-why pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.pn-inbox .ib-chk-do code { font-size: 0.88em; padding: 0 4px; overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-holds { margin: 0 0 8px; font-size: var(--ib-fs-13, 13px); line-height: 1.45; color: var(--ib-badge-hold-fg, var(--foreground)); overflow-wrap: anywhere; }
 .pn-inbox .ib-chk-holds b { font-weight: 600; }
 .pn-inbox .ib-chk-holds[data-action-stopped] { color: var(--ib-badge-stop-fg, var(--foreground)); }
@@ -4039,6 +4169,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-undl .ib-m-why > span { margin-right: 6px; }
 .pn-inbox .ib-undl .ib-m-why code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em; padding: 1px 5px; border-radius: 5px; background: color-mix(in oklch, var(--foreground) 7%, transparent); color: var(--foreground); white-space: nowrap; }
 .pn-inbox .ib-undl .ib-m-whybox .ib-rl-lead, .pn-inbox .ib-undl .ib-m-whybox .ib-rl-fold { padding-left: 20px; }
+/* OpenCode's one quiet line (approval "reload-hosts"): under the lead, in its column and tone. */
+.pn-inbox .ib-undl .ib-m-whybox > .ib-rw-after { padding-left: 20px; margin: 0; color: var(--muted-foreground); line-height: 1.7; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox .ib-delivered.ib-undl { width: 100%; flex-wrap: wrap; padding: 10px 10px 10px 12px; }
   .pn-inbox .ib-delivered.ib-undl .ib-dl-main { flex: 1 1 100%; }

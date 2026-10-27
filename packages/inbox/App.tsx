@@ -110,6 +110,8 @@ import { boardViewOf, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { CardsModel, DraftView, UpdateCheckFailing } from './api';
+import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
+import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
 
@@ -605,7 +607,7 @@ function Inbox() {
   /** This run started on a newer version: the sidebar's "What's new in X" link. */
   const [updated, setUpdated] = useState<string | null>(null);
   // Claude Code sessions a /reload-plugins would bring up to date: the sidebar's "Reload Claude Code N" (owner approval "restart-warning").
-  const [restartClaudeCode, setRestartClaudeCode] = useState(0);
+  const [restartAgents, setRestartAgents] = useState<InboxRestartAgents>(NO_RESTART_AGENTS);
   /** The update control's dialogs and what they read (GET /api/inbox/update). */
   const [updateDialog, setUpdateDialog] = useState<null | 'update' | 'restart' | 'failed'>(null);
   const [updateDetails, setUpdateDetails] = useState<UpdateDetails | null>(null);
@@ -833,7 +835,7 @@ function Inbox() {
       const keep = adopt && refresh?.keepOpen ? routeRef.current.thread : null;
       setUpdate(next.update);
       setUpdated(next.updated ?? null);
-      setRestartClaudeCode(next.restart_claude_code ?? 0);
+      setRestartAgents(restartAgentsOf(next.restart_agents, next.restart_claude_code));
       setCheckFailing(next.update_check_failing ?? null);
       // Held: the order waits for an action, but each row's own state (a delivery, an agent's read) follows at once.
       setShown((current) =>
@@ -1175,10 +1177,10 @@ function Inbox() {
           if (pinsTimer) clearTimeout(pinsTimer);
           pinsTimer = setTimeout(() => void refreshList(false), 60);
         },
-        onStatus: (next, nextUpdated, nextRestart, nextFailing) => {
+        onStatus: (next, nextUpdated, nextRestart, nextAgents, nextFailing) => {
           setUpdate(next);
           if (nextUpdated !== undefined) setUpdated(nextUpdated);
-          if (nextRestart !== undefined) setRestartClaudeCode(nextRestart);
+          if (nextAgents !== undefined || nextRestart !== undefined) setRestartAgents(restartAgentsOf(nextAgents, nextRestart));
           if (nextFailing !== undefined) setCheckFailing(nextFailing);
         },
         // Whether any open Inbox tab can show a notification (Settings → General).
@@ -3595,7 +3597,7 @@ function Inbox() {
             onUpdate={pressUpdate}
             onWhatsNew={(version) => (tourRealStep ? endTour('finish', { page: 'whats-new', project: null, thread: null, version }) : openWhatsNew(version))}
             // Not on a page opened over the tailnet: Settings → Agents is local only there.
-            restartClaudeCode={settings && settings.via !== 'tailnet' ? restartClaudeCode : 0}
+            restartAgents={settings && settings.via !== 'tailnet' ? restartAgents : NO_RESTART_AGENTS}
             checkFailing={pageCheckFailing}
             onCheckFailing={() => leave({ page: 'settings', project: null, thread: null, section: 'about' })}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
