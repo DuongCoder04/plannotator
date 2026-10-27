@@ -177,7 +177,7 @@ test("plannotator inbox --notes adds only the notes named, starts nothing, and a
   expect(result.stderr).toContain("Plannotator can't see, update or remove that copy.");
   expect(result.stderr).toContain("Codex: Added a marked section to ~/.codex/AGENTS.md.");
   expect(result.stderr).toContain("Gemini CLI: Created ~/.gemini/GEMINI.md.");
-  expect(readFileSync(join(w.home, ".codex", "AGENTS.md"), "utf8")).toContain("<!-- plannotator-inbox:start v1");
+  expect(readFileSync(join(w.home, ".codex", "AGENTS.md"), "utf8")).toContain("<!-- plannotator-inbox:start v3 ");
   expect(existsSync(join(w.home, ".pi"))).toBe(false);
   expect(existsSync(join(w.home, ".cursor"))).toBe(false);
   expect(existsSync(join(w.home, ".plannotator", "inbox", "inbox.json"))).toBe(false);

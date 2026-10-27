@@ -211,15 +211,16 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   await page.mouse.move(0, 0);
   await shot('1.2-first-run-first-step');
 
-  // One rhythm: the same gap between the heading, the step, Try it, the fold and the tour's quiet line
+  // One rhythm: the same gap between the heading, the step, the line saying which agents a reply wakes, Try it, the fold and the tour's quiet line
   // (the tour was decided before this Inbox started: "Take the 2-minute tour" ends the screen).
   await expect(empty.locator('[data-tour-again]')).toBeVisible();
   const boxes = await empty.evaluate((el) =>
     [...el.children].filter((child) => !child.classList.contains('ib-sr')).map((child) => child.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })),
   );
   const gaps = boxes.slice(1).map((box, i) => Math.round(box.top - boxes[i]!.bottom));
-  expect(gaps.length).toBe(4);
+  expect(gaps.length).toBe(5);
   expect(new Set(gaps).size).toBe(1);
+  await expect(empty.locator('[data-wake-note]')).toContainText('Claude Code, Pi and OpenCode 2');
 
   // Every other agent or editor, folded at the end: the picker without Plannotator's three hosts.
   const byHand = empty.getByRole('button', { name: 'Another agent or editor', exact: true });
@@ -237,7 +238,7 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   const command = `codex mcp add plannotator-inbox -- ${binary} inbox mcp`;
   const panel = page.getByRole('tabpanel', { name: 'Codex' });
   await expect(panel.locator('pre')).toHaveText(command);
-  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after.']);
+  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after. With Codex 0.149 or later, your replies come back into the Codex thread by themselves.']);
   await expect(panel.getByText('Another way', { exact: false })).toBeVisible();
   await expect(panel.getByText('Codex', { exact: true })).toHaveCount(0);
   await shot('1.3-first-run-codex');
@@ -393,7 +394,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await pane.getByText('Yes', { exact: true }).click();
   await expect(pane.getByText(/^Picked .* · in your draft$/)).toHaveCount(2);
   // "Draft" replaces "Not sent" (approval "inbox-reply-drafts").
-  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft 2 picks');
+  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
   // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
@@ -546,7 +547,7 @@ test('Settings: in sections; Settings → Agents switches apply to the next sess
   // A focused page (design of record inbox-settings-tabs): General first, the section nav beside it.
   await expect(page.getByRole('heading', { name: 'General', level: 1 })).toBeVisible();
   const nav = page.getByRole('navigation', { name: 'Settings sections' });
-  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Devices', 'Archived', 'Storage', 'About']);
+  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Prompts', 'Devices', 'Capabilities', 'Archived', 'Storage', 'About']);
   await nav.getByRole('link', { name: 'Agents' }).click();
   await expect(page).toHaveURL(/#settings\/agents$/);
   await expect(nav.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page');

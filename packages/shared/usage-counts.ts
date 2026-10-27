@@ -922,11 +922,13 @@ export function describeUsageCounts(deps: UsageCountsDeps & { version: string | 
 /**
  * Turn counts off or on in config.json, for every feature or one. Off also
  * deletes the unsent counts. On never overrides the env's hard off, and never
- * stands in for the notice.
+ * stands in for the notice. `saved` is false when config.json was not
+ * written (saveConfig refuses a file it cannot read): the caller must say so.
+ * Off deletes the unsent counts either way, the direction the person asked for.
  */
-export function setUsageCounts(on: boolean, options: { feature?: string; dataDir?: string } = {}): PlannotatorConfig["usageCounts"] {
+export function setUsageCounts(on: boolean, options: { feature?: string; dataDir?: string } = {}): { saved: boolean; usageCounts: PlannotatorConfig["usageCounts"] } {
   const next = nextUsageCountsConfig(loadConfig().usageCounts, on, options.feature);
-  saveConfig({ usageCounts: next });
+  const saved = saveConfig({ usageCounts: next });
   if (!on) forgetUsageCounts({ dataDir: options.dataDir, feature: options.feature });
-  return next;
+  return { saved, usageCounts: next };
 }

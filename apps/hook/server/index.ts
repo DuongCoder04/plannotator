@@ -76,9 +76,11 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
 import {
   startPlannotatorServer as startPlannotatorServerUnguarded,
   handleServerReady,
+  setServerReadyTailnet,
   setServerReadyTarget,
 } from "@plannotator/server";
 import {
@@ -98,7 +100,7 @@ import {
   handleGoalSetupServerReady,
 } from "@plannotator/server/goal-setup";
 import { type DiffType, detectManagedVcs, prepareLocalReviewDiff, gitRuntime } from "@plannotator/server/vcs";
-import { loadConfig, resolveDefaultDiffType, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
+import { loadConfig, resolveAIEnabled, resolveDefaultDiffType, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
 import { formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory, type ParsedReviewArgs } from "@plannotator/shared/review-args";
 import { resolveReviewOpenState, type ReviewOpenState } from "@plannotator/shared/review-open-state";
 import { listBranches, type AvailableBranches } from "@plannotator/shared/review-core";
@@ -121,10 +123,12 @@ import { annotateBundleRoot } from "@plannotator/shared/annotate-bundle";
 import { stripAtPrefix } from "@plannotator/shared/at-reference";
 import { plannotatorBundleSubject } from "@plannotator/shared/plannotator-tool";
 import { createWorktreePool, type WorktreePool, type PoolEntry } from "@plannotator/shared/worktree-pool";
-import { parsePRUrl, checkPRAuth, fetchPR, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
+import { parsePRUrl, checkPRAuth, fetchPR, type PRAuthResult, getCliName, getCliInstallUrl, getMRLabel, getMRNumberLabel, getDisplayRepo, getPlatformLabel, getPRNumber, getPRHeadFetchSpec, getPRCloneCommand } from "@plannotator/server/pr";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { announceTailscaleSession, enableTailscaleServe } from "@plannotator/server/tailscale-serve";
-import { discardEnvPullSessionBridgeConfig, takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
+import { takeEnvPullSessionBridgeConfig } from "@plannotator/server/ai-runtime";
+import { readTailnetOwner, setSessionTailnetOwner, setSessionTailnetServedUrl } from "@plannotator/server/session-tailnet";
+import { scrubModSessionEnv } from "./mod-session-env";
 import { resolveAnnotateTarget } from "./annotate-resolution";
 import { annotateDecisionTarget, reviewDecisionTarget, takeHostReviewId, targetText } from "./decision-target";
 import { formatSessionsJson, formatSessionsTable } from "./sessions-output";
@@ -149,7 +153,7 @@ import {
   BRIDGE_SCRIPT,
   LIVE_BRIDGE_BOOTSTRAP,
 } from "@plannotator/ui/components/html-viewer/bridge-script";
-import { rmSync, realpathSync, existsSync } from "fs";
+import { rmSync, realpathSync, existsSync, readFileSync } from "fs";
 import { parseRemoteUrl } from "@plannotator/shared/repo";
 import {
   composePlanDeniedMessage,
@@ -158,7 +162,7 @@ import {
 } from "@plannotator/shared/prompts";
 import { buildReviewOutput, supportsReviewApprovalNotes } from "./review-output";
 import { registerSession, unregisterSession, listSessions, type SessionInfo } from "@plannotator/server/sessions";
-import { enableAutoUpdateNotice, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
+import { enableAutoUpdateNotice, isManagedBinary, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
 import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
@@ -222,6 +226,7 @@ import { ensureInboxRunning, runInboxCommand, selfCommand as inboxSelfCommand } 
 import { runCardCommand } from "./card-command";
 import { runTelemetryCommand } from "./telemetry-command";
 import { formatInboxHelp } from "./inbox-help";
+import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { isAgentSdkEntrypoint } from "@plannotator/shared/t3-hook-command";
 import {
@@ -241,18 +246,28 @@ import {
   supportsAnnotateClientLease,
 } from "./annotate-output";
 
-// Embed the built HTML at compile time
-// @ts-ignore - Bun import attribute for text
-import planHtml from "../dist/index.html" with { type: "text" };
-const planHtmlContent = planHtml as unknown as string;
+// The built pages, embedded at compile time as files and read into a string
+// when a server first needs one (then kept). Not `type: "text"`: from Bun 1.4
+// that stores each page as its own embedded file, in UTF-16 when it holds any
+// character past Latin-1 (these do), so the three ~20 MB pages cost twice
+// their size in the binary (+64 MB, #2215). As files they are stored as built.
+// The read is from the binary's embedded files, which Bun holds from startup:
+// replacing the binary (the installer renames a new one over it) does not
+// change what a running process reads (smoke-binaries checks this).
+// @ts-ignore - Bun import attribute for file
+import planHtmlPath from "../dist/index.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import reviewHtmlPath from "../dist/review.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import inboxHtmlPath from "../dist/inbox.html" with { type: "file" };
 
-// @ts-ignore - Bun import attribute for text
-import reviewHtml from "../dist/review.html" with { type: "text" };
-const reviewHtmlContent = reviewHtml as unknown as string;
-
-// @ts-ignore - Bun import attribute for text
-import inboxHtml from "../dist/inbox.html" with { type: "text" };
-const inboxHtmlContent = inboxHtml as unknown as string;
+function embeddedPage(path: unknown): () => string {
+  let html: string | undefined;
+  return () => (html ??= readFileSync(path as string, "utf8"));
+}
+const planHtmlContent = embeddedPage(planHtmlPath);
+const reviewHtmlContent = embeddedPage(reviewHtmlPath);
+const inboxHtmlContent = embeddedPage(inboxHtmlPath);
 
 // Code review's diagram engine: embedded too, read on first need.
 import { loadEmbeddedDiagramEngine } from "./diagram-engine";
@@ -280,6 +295,9 @@ takeHostResultPath();
 takeHostMessagesPath();
 // The `pn-` id a host gave this review, for the `sessions/` registry.
 const hostReviewId = takeHostReviewId();
+// What the Claude Code mod sets for its plugin's own hooks (the Inbox reminder):
+// nothing this process starts, Claude agent jobs included, may inherit it.
+scrubModSessionEnv();
 
 const rawArgs = process.argv.slice(2);
 // The Board's cards from a shell (unreleased, HIDDEN_SUBCOMMANDS): a thin
@@ -395,11 +413,12 @@ if (tailscaleFlag) {
   // suppresses a config-file urlHost, avoiding the misleading
   // "set PLANNOTATOR_REMOTE=1" local-session warning mid --tailscale run.
   process.env.PLANNOTATOR_URL_HOST = "";
-  // "Ask this session" stays off in a tailnet-published session, as it is in
-  // remote mode: the session is reachable from other devices. Taking the
-  // host's bridge config here discards it for the whole process (a plain
-  // take would only cache it for createAIRuntime to serve anyway).
-  discardEnvPullSessionBridgeConfig();
+  // "Ask this session" stays ON (#2166): the host's bridge config is kept
+  // (taken at the top of this file), and the servers answer it only for a tab
+  // on this machine and for the Tailscale login that owns it
+  // (packages/server/session-tailnet.ts). Everyone else on the tailnet gets
+  // the review and Ask AI through the SDKs, as before. Remote mode is
+  // unchanged: it still turns the bridge off.
 }
 
 /**
@@ -421,6 +440,21 @@ if (tailscaleFlag) {
  * annotate subcommand, so review sessions always take the exit-1 leg).
  */
 async function handleTailscaleReady(port: number): Promise<void> {
+  // A host handed this CLI an "Ask this session" bridge: say who may use it
+  // over the tailnet (the owner of this machine) before the address exists.
+  // A plain `--tailscale` run (no bridge) asks Tailscale nothing more.
+  const bridged = resolveAIEnabled() && takeEnvPullSessionBridgeConfig() !== undefined;
+  let askOverTailnet = false;
+  if (bridged) {
+    const owner = readTailnetOwner();
+    setSessionTailnetOwner(owner.login);
+    askOverTailnet = owner.login !== null;
+    process.stderr.write(
+      owner.login !== null
+        ? `[plannotator] Ask this session: on here, and over your tailnet for ${owner.login} only.\n`
+        : `[plannotator] Ask this session: on this computer only (${owner.reason}); other devices get Ask AI without it.\n`,
+    );
+  }
   let url: string;
   try {
     ({ url } = enableTailscaleServe(port));
@@ -433,6 +467,8 @@ async function handleTailscaleReady(port: number): Promise<void> {
       }),
     );
   }
+  setSessionTailnetServedUrl(url);
+  setServerReadyTailnet({ ask: askOverTailnet });
   await announceTailscaleSession(url, port);
 }
 
@@ -580,8 +616,11 @@ if (isVersionInvocation(args)) {
   process.exit(0);
 }
 
+/** The person turned the Inbox's Board on (config.json `inboxBoard`): only then does either help mention cards. */
+const boardOnForHelp = () => INBOX_CARD_ACTION_ON && loadConfig().inboxBoard === true;
+
 if (isTopLevelHelpInvocation(args)) {
-  console.log(formatTopLevelHelp());
+  console.log(formatTopLevelHelp({ board: boardOnForHelp() }));
   process.exit(0);
 }
 
@@ -594,7 +633,7 @@ if (helpSubcommand) {
   // `inbox --help` is the Plannotator Inbox guide for agents (inbox-help.ts).
   console.log(
     helpSubcommand === "inbox"
-      ? formatInboxHelp({ command: inboxSelfCommand(), dataDir: getPlannotatorDataDir() })
+      ? formatInboxHelp({ command: inboxSelfCommand(), dataDir: getPlannotatorDataDir(), board: boardOnForHelp() })
       : formatSubcommandHelp(helpSubcommand),
   );
   process.exit(0);
@@ -603,6 +642,20 @@ if (helpSubcommand) {
 exitOnUnknownSubcommand(args);
 
 // Read a caller-supplied unified diff for static patch mode (`--patch-file`).
+/**
+ * The active gh account could not see the PR and another signed-in account
+ * can (#2157): say which one on stderr and answer that account's token env,
+ * which this PR's own checkout steps (clone, git fetches) add to their env.
+ * It is never put in process.env: the review's gh calls get it per repo from
+ * the provider, and agent jobs from their launch PR (agent-jobs.ts), so the
+ * browser opener, the update wrapper, Ask AI providers and gh calls for
+ * another repo never see it. gh's own setting is never changed.
+ */
+function noteGhAccountForThisRun(access: PRAuthResult): Record<string, string> | undefined {
+  if (access.notice) console.error(access.notice);
+  return access.childEnv;
+}
+
 // "-" means stdin; file paths resolve against the given cwd. A read failure
 // is a startup failure: exit 1 like every other review startup failure.
 async function readStaticPatch(patchFile: string, cwd: string): Promise<{ rawPatch: string; gitRef: string }> {
@@ -716,7 +769,7 @@ if (args[0] === "install-runtime") {
 // (inbox/inbox.json). Dispatched before the session registry and the
 // auto-update trigger below, which belong to review sessions.
 if (args[0] === "inbox") {
-  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent });
+  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent() });
 }
 
 if (isInteractiveNoArgInvocation(args, process.stdin.isTTY)) {
@@ -746,6 +799,7 @@ process.on("exit", () => {
       current: getCliVersion(),
       enabled: resolveUpdateCheck(loadConfig()),
       now: Date.now(),
+      managed: isManagedBinary(process.execPath),
     });
     if (line) process.stderr.write(`${line}\n`);
   } catch {}
@@ -1008,7 +1062,7 @@ if (args[0] === "sessions") {
   const server = await startGoalSetupServer({
     bundle,
     origin: detectedOrigin,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleGoalSetupServerReady(url, isRemote, port);
     },
@@ -1107,8 +1161,10 @@ if (args[0] === "sessions") {
     const cliName = getCliName(prRef);
     const cliUrl = getCliInstallUrl(prRef);
 
+    // The token of the gh account chosen for this PR, for its checkout steps below (#2157).
+    let ghAccountEnv: Record<string, string> | undefined;
     try {
-      await checkPRAuth(prRef);
+      ghAccountEnv = noteGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // REST-only platforms (Bitbucket) have no CLI to be missing; their auth
@@ -1202,7 +1258,9 @@ if (args[0] === "sessions") {
         ): Promise<{ exitCode: number; stderr: string }> => {
           const proc = Bun.spawn(cmd, {
             cwd: opts.cwd,
-            env: opts.env,
+            // The chosen gh account's token goes last, so a GH_TOKEN the
+            // person exported can't override it for this PR's checkout.
+            env: ghAccountEnv ? childEnv({ ...opts.env, ...ghAccountEnv }) : (opts.env ?? childEnv()),
             stdout: "ignore",
             stderr: "pipe",
           });
@@ -1301,14 +1359,14 @@ if (args[0] === "sessions") {
           if (isSameRepo) {
             try {
               for (const entry of worktreePool?.entries() ?? []) {
-                Bun.spawnSync(["git", "worktree", "remove", "--force", entry.path], { cwd: repoDir });
+                Bun.spawnSync(["git", "worktree", "remove", "--force", entry.path], { cwd: repoDir, env: childEnv() });
               }
             } catch {}
             // Clear any registration left by a worktree add that completed
             // after the kill (or by a not-ready entry the loop can't see).
-            try { Bun.spawnSync(["git", "worktree", "prune"], { cwd: repoDir }); } catch {}
+            try { Bun.spawnSync(["git", "worktree", "prune"], { cwd: repoDir, env: childEnv() }); } catch {}
           }
-          try { Bun.spawnSync(["rm", "-rf", warmupSessionDir]); } catch {}
+          try { Bun.spawnSync(["rm", "-rf", warmupSessionDir], { env: childEnv() }); } catch {}
         });
 
         console.error(isSameRepo
@@ -1434,7 +1492,7 @@ if (args[0] === "sessions") {
     // The approved branch below prints result.feedback after the prompt, so
     // this CLI's origins may see approve-carrying menu items (spec §6.4).
     approvalNotesSupported: supportsReviewApprovalNotes(detectedOrigin),
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     tailnetPublished: tailscaleFlag,
     onCleanup: worktreeCleanup,
@@ -1729,7 +1787,7 @@ if (args[0] === "sessions") {
     convertHtml: renderMarkdownFlag,
     agentCwd: projectRoot,
     project: annotateProject,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
       if (tailscaleFlag) {
@@ -2011,7 +2069,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     recentMessages: pickerMessages,
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
@@ -2072,7 +2130,7 @@ if (args[0] === "sessions") {
     mode: "archive",
     sharingEnabled,
     shareBaseUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
     },
@@ -2133,7 +2191,7 @@ if (args[0] === "sessions") {
     sharingEnabled: bridgeSharingEnabled,
     shareBaseUrl: bridgeShareBaseUrl,
     pasteApiUrl: bridgePasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: async (url, isRemote, port) => {
       await handleServerReady(url, isRemote, port);
@@ -2247,7 +2305,7 @@ if (args[0] === "sessions") {
     console.error(`Fetching ${getMRLabel(prRef)} ${getMRNumberLabel(prRef)} from ${getDisplayRepo(prRef)}...`);
 
     try {
-      await checkPRAuth(prRef);
+      noteGhAccountForThisRun(await checkPRAuth(prRef));
     } catch (err) {
       const cliName = getCliName(prRef);
       console.error(err instanceof Error ? err.message : `${cliName} auth check failed`);
@@ -2371,7 +2429,7 @@ if (args[0] === "sessions") {
     // never trick an old bridge into dropping a reviewer's note.
     approvalNotesSupported:
       supportsReviewApprovalNotes("opencode") && input.supportsApprovalNotes === true,
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: (url, isRemote, port) => {
@@ -2485,7 +2543,7 @@ if (args[0] === "sessions") {
       hook: false,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
     },
@@ -2548,7 +2606,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 
@@ -2653,7 +2711,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
 
@@ -2744,7 +2802,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
       if (isRemote && sharingEnabled) {
@@ -2862,7 +2920,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
 
@@ -2932,7 +2990,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
         if (isRemote && sharingEnabled) {
@@ -3026,7 +3084,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 

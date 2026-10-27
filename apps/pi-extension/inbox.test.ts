@@ -219,7 +219,9 @@ describe.skipIf(!piRuns)("Pi ↔ Plannotator Inbox (the real Pi in RPC mode, a r
 		await ask(silent, "hello");
 		expect(m.requests.at(-1)?.tools).not.toContain("plannotator_inbox");
 		expect(existsSync(join(w.dataDir, "inbox"))).toBe(false);
-		expect(silent.events.filter((event) => event.type === "extension_ui_request" && event.method === "notify")).toEqual([]);
+		// The Inbox says nothing; the runtime TLS warning (runtime-tls.ts) is not the Inbox's and depends on the Node running the test.
+		const isRuntimeWarning = (event: { message?: unknown }) => typeof event.message === "string" && event.message.includes("TLS fixes");
+		expect(silent.events.filter((event) => event.type === "extension_ui_request" && event.method === "notify" && !isRuntimeWarning(event))).toEqual([]);
 		w.proof(`switch on, no inbox/inbox.json: tools sent to the model = ${JSON.stringify(m.requests.at(-1)?.tools)}; no inbox folder, no notice`);
 		await silent.client.stop();
 
@@ -367,6 +369,67 @@ describe.skipIf(!piRuns)("Pi ↔ Plannotator Inbox (the real Pi in RPC mode, a r
 		expect(m.requests.at(-1)?.tools).toContain("plannotator_inbox");
 		expect(carrying(m.requests.at(-1)!)).toEqual([]);
 		w.proof("inboxReminder.pi false: the tool, no reminder");
+	}, 180_000);
+
+	// The misfiled-thread AAR (2026-10-27): after a compaction the thread ids must come from the Inbox,
+	// not from the summary. The failure this catches: the reminder Pi sends again after a compaction
+	// without the session's open threads, or with them but read as a look (no project made, no read).
+	test("after a compaction that summarized the reminder away, the reminder comes back with the session's open threads", async () => {
+		const w = world("01c-threads-after-compaction");
+		const m = model(askingScript());
+		startInbox(w);
+		knob(w, true);
+		// Keep nothing but the newest turn, so the compaction summarizes the reminder away.
+		mkdirSync(join(w.root, "pi-agent"), { recursive: true });
+		writeFileSync(join(w.root, "pi-agent", "settings.json"), JSON.stringify({ compaction: { keepRecentTokens: 1 } }));
+		const pi = await openPi(w, m);
+		await ask(pi, "Ask the person which region to use.");
+		const sent = sentFrom(m);
+		await ask(pi, "Go on.");
+		const before = m.requests.length;
+		await pi.client.compact();
+		await ask(pi, "Next step.");
+		const after = m.requests.slice(before).at(-1)!;
+		const reminders = after.messages.map((message) => messageText(message.content)).filter((text) => text.includes(INBOX_REMINDER_TEXT));
+		expect(reminders).toHaveLength(1);
+		expect(reminders[0]).toContain("Your open Plannotator Inbox threads in this project (1).");
+		expect(reminders[0]).toContain(`- ${sent.thread_id} · `);
+		w.proof(`after the compaction, the reminder message reads:\n\n${reminders[0]}`);
+	}, 180_000);
+
+	// #2194: what the model reads at the session's first prompt, on the real Pi.
+	test("prompts.inbox: with none, the reminder message is the built-in text byte for byte; with Pi's own text, that text replaces it, once, in the same place", async () => {
+		const w = world("01c-reminder-custom");
+		const m = model(askingScript());
+		startInbox(w);
+		const reminderOf = (request: ScriptedRequest, text: string) => request.messages.filter((message) => messageText(message.content) === text);
+		const MAIN = INBOX_REMINDER_TEXT;
+
+		// Other prompts set, but no usable prompts.inbox: the very same message.
+		writeFileSync(join(w.dataDir, "config.json"), JSON.stringify({ inboxTool: { pi: true }, prompts: { review: { denied: "Check." }, inbox: { reminder: "  " } } }));
+		const plain = await openPi(w, m);
+		await ask(plain, "hello");
+		const first = m.requests.at(-1)!;
+		expect(reminderOf(first, MAIN)).toHaveLength(1);
+		expect(reminderOf(first, INBOX_REMINDER_TEXT)).toHaveLength(1);
+		await plain.client.stop();
+
+		const own = "Plannotator Inbox is on, but you are a worker session: report upstream first. Use plannotator_inbox only when that session is gone.";
+		writeFileSync(join(w.dataDir, "config.json"), JSON.stringify({ inboxTool: { pi: true }, prompts: { inbox: { reminder: "Shared.", runtimes: { pi: { reminder: own } } } } }));
+		const custom = await openPi(w, m);
+		const from = m.requests.length;
+		await ask(custom, "first");
+		await ask(custom, "second");
+		const [a, b] = [m.requests[from]!, m.requests.at(-1)!];
+		expect(reminderOf(a, own)).toHaveLength(1);
+		expect(a.messages.filter((message) => messageText(message.content).includes(INBOX_REMINDER_TEXT))).toEqual([]);
+		expect(a.messages.filter((message) => messageText(message.content).includes("Shared."))).toEqual([]);
+		// The same place as the built-in line: the message the first request carried, kept in place.
+		expect(a.messages.findIndex((message) => messageText(message.content) === own)).toBe(first.messages.findIndex((message) => messageText(message.content) === MAIN));
+		expect(b.messages.slice(0, a.messages.length)).toEqual(a.messages);
+		expect(reminderOf(b, own)).toHaveLength(1);
+		w.proof(`Pi with prompts.inbox.runtimes.pi.reminder: the first request carries\n${own}\nonce, where the built-in line was; the second keeps it in place`);
+		await custom.client.stop();
 	}, 180_000);
 
 	test("the person's Send wakes the asking Pi session once, as a follow-up: the stable header, the fixed line, the reply verbatim; Delivered to Pi; the answer lands in the same thread", async () => {

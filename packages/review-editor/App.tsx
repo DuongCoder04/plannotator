@@ -29,7 +29,8 @@ import {
 import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
 import { useUpdateToast } from '@plannotator/ui/hooks/useUpdateToast';
 import { useUpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
-import { parseUpdateAdvert, type UpdateAdvert } from '@plannotator/ui/utils/updateNotice';
+import { adoptPackageChangesConfig, usePackageChangesSetting } from '@plannotator/ui/hooks/usePackageChangesSetting';
+import { parseUpdateAdvert, parseUpdateCheckFailing, type UpdateAdvert, type UpdateCheckFailingAdvert } from '@plannotator/ui/utils/updateNotice';
 import { claimAutoUpdateNotice, describeAutoUpdateNotice, parseAutoUpdateNotice, type AutoUpdateNotice } from '@plannotator/ui/utils/autoUpdateNotice';
 import { storage } from '@plannotator/ui/utils/storage';
 import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay';
@@ -51,6 +52,8 @@ import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { monoFontStack, normalizeCssFontSize } from '@plannotator/ui/utils/cssFontFamily';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
+import { assertSendOk, throwUnreachable } from '@plannotator/ui/utils/sendFailure';
+import { dismissSendFailureToast, sendSettled, sendStarted, showSendFailureToast } from '@plannotator/ui/components/SendFailureToast';
 import { ServerSessionReplacedBanner } from '@plannotator/ui/components/ServerSessionReplacedBanner';
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
@@ -231,6 +234,7 @@ import { DEMO_GUIDE_ID } from './demoGuide';
 import { buildPRArtifacts } from './utils/prArtifacts';
 import { useMarkdownPreview, useMarkdownPreviewKeys } from './hooks/useMarkdownPreview';
 import { setExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtensions';
+import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import {
   submitPlatformReviewTargets,
 } from './utils/platformReviewSubmission';
@@ -243,6 +247,10 @@ import {
 } from './utils/reviewSubmissionRecovery';
 
 declare const __APP_VERSION__: string;
+
+// Plannotator's own code review: the selection toolbar's Copy copies rich
+// text; @plannotator/ui hosts keep plain Copy unless they opt in.
+configurePlannotatorUI({ richCopy: true });
 
 function getReviewRecoveryStorage(): ReviewRecoveryStorage | null {
   try {
@@ -285,8 +293,9 @@ function getFileTabTitle(filePath: string): string {
 // diff switch, PR response) also resets the session staging overrides, so
 // snapshot ≡ effective when the order is computed. Do NOT call this
 // mid-session to re-sort on stage/unstage: live staged display belongs to
-// useGitAdd's effective stagedFiles set (see AGENTS.md), and the file order
-// deliberately stays stable until the next refresh.
+// useGitAdd's effective stagedFiles set (see "Staging display invariant" in
+// docs/agent-guides/code-review.md), and the file order deliberately stays
+// stable until the next refresh.
 function orderFilesBySections(files: DiffFile[], sections?: SinceBaseSections | null): DiffFile[] {
   if (!sections) return files;
   const rank = (file: DiffFile): number => {
@@ -671,6 +680,10 @@ const ReviewApp: React.FC = () => {
   const [isApproving, setIsApproving] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
   const [submitted, setSubmitted] = useState<'approved' | 'feedback' | 'exited' | false>(false);
+  // A decided review has nothing left to retry: take any send failure down.
+  useEffect(() => {
+    if (submitted) dismissSendFailureToast();
+  }, [submitted]);
   // The agent that opened this review closed it (POST /api/host/close); the
   // reviewer's unsent comments stay in the draft for a reopen.
   const [agentClosed, setAgentClosed] = useState<{ unsentAnnotations: number } | null>(null);
@@ -859,12 +872,15 @@ const ReviewApp: React.FC = () => {
   // The server's update advert (the machine's once-a-day check): the Options
   // dot, the menu's command and the toast. The browser never asks GitHub.
   const [updateAdvert, setUpdateAdvert] = useState<UpdateAdvert | null>(null);
-  const updateInfo = useUpdateCheck(updateAdvert);
+  // Checking for updates has failed for hours: the Options menu says so, with the command.
+  const [updateCheckFailing, setUpdateCheckFailing] = useState<UpdateCheckFailingAdvert | null>(null);
+  const updateInfo = useUpdateCheck(updateAdvert, updateCheckFailing);
   // True when the compiled CLI will install new releases itself (#1634); the
   // "new version available" toast is then redundant and stays hidden.
   const [autoUpdateActive, setAutoUpdateActive] = useState(false);
   // The update-notice switch for Settings: present when the server reports it.
   const updateCheckSetting = useUpdateCheckSetting();
+  const packageChangesSetting = usePackageChangesSetting();
   // One-time notice after a background auto-update (#1634); the compiled
   // CLI's server attaches it to the initial payload.
   const [autoUpdateNotice, setAutoUpdateNotice] = useState<AutoUpdateNotice | undefined>();
@@ -1593,6 +1609,9 @@ const ReviewApp: React.FC = () => {
   // Initial panel creation happens in the effect below once dockApi is set.
   const handleDockReady = useCallback((event: DockviewReadyEvent) => {
     setDockApi(event.api);
+    // A new dock has no panels. It is new after the dock remounted (a diff
+    // with 0 files unmounts it), so the initial panel must open again here.
+    needsInitialDiffPanel.current = true;
 
     // Sync activeFileIndex when user switches between dock tabs
     event.api.onDidActivePanelChange((panel) => {
@@ -2195,6 +2214,16 @@ const ReviewApp: React.FC = () => {
     return () => controller.abort();
   }, [applyCallFlowAdvert, applySemanticDiffAdvert, callFlowEnabled, isLoading, semanticDiffEnabled]);
 
+  // The dock is mounted only while the diff has files (see the render below).
+  // A diff with 0 files unmounts it and disposes its API. Forget that API, or
+  // the next diff with files runs the effect below against the disposed dock
+  // (before the new dock's onReady state lands), spends its one-shot flag
+  // there, and the new dock stays empty: files in the tree, a blank pane.
+  const dockMounted = files.length > 0;
+  useEffect(() => {
+    if (!dockMounted) setDockApi(null);
+  }, [dockMounted]);
+
   // Open the All files overview on first load. Semantic diff stays available via
   // the file-tree nav entry, but it's no longer the default landing view.
   useEffect(() => {
@@ -2339,7 +2368,7 @@ const ReviewApp: React.FC = () => {
         snapshotId?: string;
         serverConfig?: Record<string, unknown> & { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean };
         autoUpdateNotice?: unknown;
-        updateAvailable?: unknown;
+        updateAvailable?: unknown; updateCheckFailing?: unknown;
         autoUpdateSupported?: boolean;
         autoUpdateActive?: boolean;
       }) => {
@@ -2355,7 +2384,9 @@ const ReviewApp: React.FC = () => {
         setAutoUpdateActive(data.autoUpdateActive === true);
         setAutoUpdateNotice(parseAutoUpdateNotice(data.autoUpdateNotice));
         setUpdateAdvert(parseUpdateAdvert(data.updateAvailable));
+        setUpdateCheckFailing(parseUpdateCheckFailing(data.updateCheckFailing));
         updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
+        adoptPackageChangesConfig(data.serverConfig as Record<string, unknown> | undefined);
         setSnapshotId(data.snapshotId);
         setAiEnabled(data.aiEnabled !== false);
         const apiFiles = orderFilesBySections(parseDiffToFiles(data.rawPatch), data.sections);
@@ -4187,6 +4218,7 @@ const ReviewApp: React.FC = () => {
   // state (spec §3.2).
   const handleSendFeedback = useCallback(async (): Promise<boolean> => {
     setIsSendingFeedback(true);
+    sendStarted();
     try {
       await flushReviewProgress();
       const agentSwitchSettings = getAgentSwitchSettings('review');
@@ -4202,22 +4234,28 @@ const ReviewApp: React.FC = () => {
           annotations: allAnnotations,
           ...(effectiveAgent && { agentSwitch: effectiveAgent }),
         })),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSendingFeedback(false);
         return false;
       }
-      if (res.ok) {
-        setSubmitted('feedback');
-        return true;
-      }
-      throw new Error('Failed to send');
+      await assertSendOk(res);
+      setSubmitted('feedback');
+      return true;
     } catch (err) {
       console.error('Failed to send feedback:', err);
-      setCopyFeedback('Failed to send');
-      setTimeout(() => setCopyFeedback(null), 2000);
       setIsSendingFeedback(false);
+      showSendFailureToast({
+        what: 'feedback',
+        error: err,
+        onRetry: () => { void retryDecisionRef.current.sendFeedback(); },
+        // What the Copy feedback button copies, read when clicked: what
+        // Retry would send now.
+        copyText: () => retryDecisionRef.current.feedbackMarkdown,
+      });
       return false;
+    } finally {
+      sendSettled();
     }
   }, [feedbackMarkdown, allAnnotations, getDraftGeneration, flushReviewProgress]);
 
@@ -4251,6 +4289,7 @@ const ReviewApp: React.FC = () => {
   // mounting the App.
   const handleApprove = useCallback(async (options?: { note?: string; withAnnotations?: boolean }) => {
     setIsApproving(true);
+    sendStarted();
     try {
       await flushReviewProgress();
       const res = await fetch('/api/feedback', {
@@ -4263,23 +4302,46 @@ const ReviewApp: React.FC = () => {
           feedbackMarkdown,
           annotations: allAnnotations,
         }))),
-      });
+      }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsApproving(false);
         return;
       }
-      if (res.ok) {
-        setSubmitted('approved');
-      } else {
-        throw new Error('Failed to send');
-      }
+      await assertSendOk(res);
+      setSubmitted('approved');
     } catch (err) {
       console.error('Failed to approve:', err);
-      setCopyFeedback('Failed to send');
-      setTimeout(() => setCopyFeedback(null), 2000);
       setIsApproving(false);
+      showSendFailureToast({
+        what: 'approval',
+        error: err,
+        onRetry: () => { void retryDecisionRef.current.approve(options); },
+        // The approval's text as Retry would send it now; a bare approval
+        // has none to copy.
+        copyText: options?.note?.trim() || options?.withAnnotations
+          ? () => retryDecisionRef.current.approvalFeedback(options)
+          : undefined,
+      });
+    } finally {
+      sendSettled();
     }
   }, [getDraftGeneration, feedbackMarkdown, allAnnotations, flushReviewProgress]);
+  // The failure toast's Retry and Copy feedback read the page when clicked:
+  // Retry runs the latest handler, Copy copies what that handler would send.
+  const latestDecision = {
+    sendFeedback: handleSendFeedback,
+    approve: handleApprove,
+    feedbackMarkdown,
+    approvalFeedback: (options?: { note?: string; withAnnotations?: boolean }) => buildReviewApprovalBody({
+      draftGeneration: 0, // not part of the text
+      note: options?.note,
+      withAnnotations: options?.withAnnotations === true,
+      feedbackMarkdown,
+      annotations: allAnnotations,
+    }).feedback,
+  };
+  const retryDecisionRef = useRef(latestDecision);
+  retryDecisionRef.current = latestDecision;
 
   // --- The unified review decision control, agent mode (spec §3.2/§4) ------
   // One primary, one callback: the header's left segment, the global
@@ -5979,6 +6041,7 @@ const ReviewApp: React.FC = () => {
             gitUser={gitUser}
             autoUpdateSetting={autoUpdateSetting}
             updateCheckSetting={updateCheckSetting.setting}
+            packageChangesSetting={packageChangesSetting}
             agentToolSetting={agentTool.setting}
             onAgentToolChange={agentTool.save}
             externalOpen={openSettingsMenu}

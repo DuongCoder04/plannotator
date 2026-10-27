@@ -15,6 +15,7 @@ import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
@@ -68,11 +69,12 @@ import { isWSL } from "./browser";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
+import { sessionTailnetAudience, sessionTailnetGate } from "./session-tailnet";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { createHtmlAssetRegistry, framedDocumentNotFound } from "./html-assets";
-import { createBunAgentTerminalBridge } from "./agent-terminal";
+import { createBunAgentTerminalBridge, type AgentTerminalSocketData } from "./agent-terminal";
 import { startLiveAppProxy, type LiveAppProxy } from "./live-proxy";
 import {
   buildLiveAppUrl,
@@ -580,7 +582,7 @@ export async function startAnnotateServer(
   const externalAnnotations = createExternalAnnotationHandler("plan");
   // Set once bound: "Ask this session" answers only a loopback Host with this port.
   let boundPort: number | undefined;
-  const aiRuntime = resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
+  const aiRuntime = resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.tailnetPublished === true ? { tailnet: sessionTailnetGate } : {}) }) : null;
   const htmlAssets = createHtmlAssetRegistry({ folderPath: mode === "annotate-folder" ? folderPath : undefined });
   const agentTerminal = await createBunAgentTerminalBridge({
     enabled: supportsAnnotateAgentTerminalMode(mode),
@@ -808,7 +810,7 @@ export async function startAnnotateServer(
   const serverSession = createServerSessionNonce();
   const sessionMismatch = () => Response.json(serverSessionMismatchBody(), { status: 409 });
   const alreadyDecided = () =>
-    Response.json({ error: "This review session has already been decided." }, { status: 409 });
+    Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
 
   // Last-client abandonment lease: once the tab's client-lease stream
   // disconnects (as reported by the transport) and stays disconnected for the
@@ -870,7 +872,7 @@ export async function startAnnotateServer(
 
   const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve<AgentTerminalSocketData>(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills AI SSE streams that stall
@@ -891,6 +893,7 @@ export async function startAnnotateServer(
             token: hostControlToken,
             getServerPort: () => boundPort,
             control: hostControl,
+            ...(options.tailnetPublished === true ? { fromThisMachine: (r: Request) => sessionTailnetAudience(r) === "local" } : {}),
           });
           if (hostControlResponse) return hostControlResponse;
 
@@ -1179,7 +1182,7 @@ export async function startAnnotateServer(
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
               if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
               if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
-              if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               if (agentToolSaveFailed(toSave)) return Response.json({ error: "Could not save the setting to config.json." }, { status: 500 });
               return Response.json({ ok: true });
             } catch {
@@ -1610,7 +1613,7 @@ export async function startAnnotateServer(
             { status: 500, headers: { "Content-Type": "text/plain" } },
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;

@@ -239,6 +239,10 @@ test('Z takes it back; no page errors', async () => {
   const ack = page.locator('section.ib-pane [data-ack]');
   await ack.click();
   await expect(ack).toHaveAttribute('aria-pressed', 'true');
+  // The button is pressed once the thread is read again, but the toast (whose Undo Z runs)
+  // shows only after the list read that follows it (App.tsx `acknowledge`): a Z pressed in
+  // between does nothing. Wait for the Undo, as a person reads the toast before pressing Z.
+  await expect(page.locator('[data-toast-undo]')).toBeVisible();
   await page.locator('body').press('z');
   await expect(ack).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('[data-ack-pill]')).toHaveCount(0);

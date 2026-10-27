@@ -457,7 +457,7 @@ export async function startPlanReviewServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
-				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
 				json(res, { ok: true });
 			} catch {
@@ -773,6 +773,8 @@ export async function startPlanReviewServer(options: {
 				closeAllFileBrowserWatchers();
 				aiRuntime?.dispose();
 			} finally {
+				// Before closeAllConnections, or a session-closed just sent is lost.
+				externalAnnotations?.endStreams();
 				server.close();
 				// close() only stops the listener; drain browser keep-alive sockets so a
 				// stopped session's connections die immediately instead of at the
