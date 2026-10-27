@@ -8,6 +8,8 @@
     "./diff-paths": "./diff-paths.ts",
     "./diff-files": "./diff-files.ts",
     "./file-kind": "./file-kind.ts",
+    "./package-changes": "./package-changes.ts",
+    "./package-changes-npm": "./package-changes-npm.ts",
     "./guide": "./guide.ts",
     "./guide-format": "./guide-format.ts",
     "./guide-prompt": "./guide-prompt.ts",

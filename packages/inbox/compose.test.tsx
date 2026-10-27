@@ -222,7 +222,11 @@ test.skipIf(!hasDom)('no live agent: Send sends nothing and says so; Escape asks
   act(() => (dialog()!.querySelector('[data-compose-discard]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'compose closed');
   expect(await drafts()).toEqual([]);
-  expect(el.querySelector('[data-drafts-nav]')).toBeNull();
+  // The Drafts row counts only the seeded world's unsent replies (a picked
+  // question waits there), never the discarded message. Bun 1.3 passed a
+  // failing `.toBeNull()` here when the element was too big to print.
+  const { replies } = JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies?: unknown[] };
+  expect(el.querySelector('[data-drafts-nav] .ib-n')?.textContent ?? '0').toBe(String(replies?.length ?? 0));
 });
 
 test.skipIf(!hasDom)('Keep draft: the sidebar\'s Drafts row and the Drafts page list it with its chip; delete has Undo', async () => {
