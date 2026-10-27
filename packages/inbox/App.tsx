@@ -84,7 +84,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
-import { canToggleRead, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
+import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
@@ -1877,9 +1877,14 @@ function Inbox() {
    */
   const markRead = async (threadId: string, read: boolean) => {
     // A look this tab sent and the server has not taken yet: decide on what it gives (a seen update held in New
-    // moves locally), whether Mark read came before the look landed or after.
+    // moves locally), whether Mark read came before the look landed or after. Never longer than
+    // MARK_READ_LOOK_WAIT_MS: a look that stalls leaves the thread New on the server, so Mark read writes.
     const looks = read ? looksInFlight.current.get(threadId) : undefined;
-    if (looks) await Promise.all(looks);
+    if (looks) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(looks), new Promise<void>((done) => (timer = setTimeout(done, MARK_READ_LOOK_WAIT_MS)))]);
+      clearTimeout(timer);
+    }
     const before = rowOf(threadId);
     if (read && before) {
       const drawn = drawnSection(shownRef.current, threadId);
@@ -1925,13 +1930,6 @@ function Inbox() {
   };
 
   /**
-   * The drawn order of the rows just before Mark read moved the open thread's
-   * own row out of view (`moveSeenToQuiet`), for that thread only; null after
-   * its Undo. Stepping to the next or previous thread (J/K) starts from the
-   * row's slot in it while the row is not on screen.
-   */
-  const openRowSlot = useRef<{ threadId: string; order: string[] } | null>(null);
-  /**
    * Mark read on a seen update the list still holds in New (markRead.ts
    * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
    * written; its row moves to Quiet now, sliding as the row's hover Mark read
@@ -1941,13 +1939,6 @@ function Inbox() {
     const before = shownRef.current;
     const sections = latestRef.current?.sections;
     if (!before || !sections) return;
-    // The open thread's own row leaves the rows on screen (Quiet is folded) while the thread stays open:
-    // keep the order it was drawn in, so stepping from it (the next or previous thread) can start from
-    // its slot (`rowInSlot`). `listOrder` takes the order after the move.
-    openRowSlot.current =
-      threadId === routeRef.current.thread
-        ? { threadId, order: [...(listBody(rootRef.current)?.querySelectorAll('[data-thread-id]') ?? [])].map((el) => el.getAttribute('data-thread-id')!) }
-        : null;
     armSlide();
     setShown((current) => (current ? settleThread(current, sections, threadId) : current));
     // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
@@ -1959,7 +1950,6 @@ function Inbox() {
       onUndo: () => {
         dismissToast();
         armSlide();
-        if (openRowSlot.current?.threadId === threadId) openRowSlot.current = null;
         setShown((current) => (current ? putRowBack(current, before, threadId) : current));
         say('Moved back.');
       },

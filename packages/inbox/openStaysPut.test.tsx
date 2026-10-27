@@ -24,6 +24,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { InboxListSection } from '@plannotator/core/inbox-types';
+import { MARK_READ_LOOK_WAIT_MS } from './markRead';
 import { PHONE_QUERY } from './phone';
 import { rowInSlot, SETTLE_BEAT_MS, SHOW_LIT_AFTER_SLIDE_MS, SHOW_LIT_MS } from './settle';
 
@@ -87,7 +88,7 @@ async function agentSends(body: string, reply_to?: string): Promise<string> {
   return (JSON.parse(await readLine()) as { sent: string }).sent;
 }
 
-const TESTS = 15;
+const TESTS = 16;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -597,6 +598,24 @@ test.skipIf(!hasDom)('E pressed before the look reaches the server takes the sam
   expect(header(el).getAttribute('aria-pressed')).toBe('false');
   expect(await serverSection(first)).toBe('quiet');
 });
+
+test.skipIf(!hasDom)('a look that never lands holds Mark read back only so long: past the wait, E writes as usual', async () => {
+  const el = await renderApp(`#project=${world.project}`);
+  const first = world.news[0]!;
+  // The look stalls: its request never answers.
+  seenGate = new Promise<void>(() => {});
+  await openRow(el, first, null);
+  await until(() => posted.some((path) => path.endsWith(`/threads/${first}/seen`)), 'the look sent');
+  pressKey('e');
+  await wait(MARK_READ_LOOK_WAIT_MS / 2);
+  expect(posted.filter((path) => path.endsWith('/read'))).toEqual([]);
+  // Past the wait the thread is still New on the server: Mark read writes, and the row waits for the settle.
+  await until(() => posted.includes(`/api/inbox/threads/${first}/read`), 'the Mark read write');
+  await until(() => toastEl()?.textContent?.includes('Marked read') === true, 'the toast');
+  expect(toastEl()!.textContent).toContain('Moves to Quiet');
+  expect(sectionOfRow(el, first)).toBe('new');
+  await until(() => header(el).getAttribute('aria-pressed') === 'true', 'the pressed header');
+}, 15_000);
 
 test.skipIf(!hasDom)('a row already in Quiet offers no Mark read: not in the header, on hover, in the menu, nor E', async () => {
   const el = await renderApp(`#project=${world.project}`);

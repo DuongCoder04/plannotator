@@ -14,6 +14,12 @@ import { agentName, plural } from './format';
 /** How long the Undo toast stays (the server's set-aside note waits a little longer). */
 export const MARK_READ_UNDO_MS = 7_000;
 
+/**
+ * How long Mark read waits for a look this tab sent to land before it decides
+ * (App.tsx `markRead`): past it, it decides on the state it has.
+ */
+export const MARK_READ_LOOK_WAIT_MS = 1_500;
+
 /** Something here waits on the person: a question, or news they have not looked at. */
 export const waitsOnPerson = inboxRowWaitsOnPerson;
 
