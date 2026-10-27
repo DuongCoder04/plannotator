@@ -820,7 +820,7 @@ export const inboxApi = {
   // The ACP runner (packages/server/inbox-acp-runner.ts): sessions the Inbox runs itself (Grok Build).
   /** The agents the Inbox can start and the folders it can start them in; an older Inbox answers 404. */
   runAgents: () => get<InboxRunAgentsModel>('/api/inbox/acp'),
-  /** Compose's "Start a new … session": the session, then the thread addressed to it. */
+  /** Compose's "New … session": the session, then the thread addressed to it. */
   startRun: (input: Omit<StartThreadInput, 'to'> & { agent: InboxRunAgentId; project_id: string }) =>
     post<{ thread_id: string; message: InboxMessage; project?: { id: string; name: string; root: string }; replayed: boolean; run?: { key: string; agent: InboxRunAgentId } }>('/api/inbox/acp/start', { ...input }),
   runStatus: (key: string) => get<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}`),

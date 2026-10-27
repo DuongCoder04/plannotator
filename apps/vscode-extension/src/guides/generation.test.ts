@@ -114,8 +114,20 @@ const ch1 = { mcp: { name: "guide_add_chapter", args: { title: "The retry budget
 const ch2 = { mcp: { name: "guide_add_chapter", args: { title: "Delivery loop learns to back off", overview: "The loop backs off." } } };
 const place = (file: string, chapter: string, extra: Record<string, unknown> = {}) => ({ mcp: { name: "guide_place_file", args: { file, chapter, summary: `What ${file} does.`, ...extra } } });
 
+/** The fake agent's stubborn grandchildren (they ignore SIGTERM): killed after each test whatever it asserted, so a failing test never leaves one running. */
+const stubborn = new Set<number>();
+
 describe("guide generation over ACP", () => {
-  afterEach(() => {});
+  afterEach(() => {
+    for (const pid of stubborn) {
+      try {
+        process.kill(pid, "SIGKILL"); // own grandchild (the fake agent's), never anything else
+      } catch {
+        // Already gone.
+      }
+    }
+    stubborn.clear();
+  });
 
   it("runs a whole guide: messages, tool calls, a permission, builder calls with a refused one, cost, finish", async () => {
     const w = world([
@@ -300,6 +312,7 @@ describe("guide generation over ACP", () => {
     await gen.run();
     const pid = w.log().find((e) => e.event === "stubborn")?.pid as number;
     expect(typeof pid).toBe("number");
+    stubborn.add(pid);
     expect(await gone(pid, 6000)).toBe(true);
   });
 
@@ -313,6 +326,7 @@ describe("guide generation over ACP", () => {
       pid = w.log().find((e) => e.event === "stubborn")?.pid;
     }
     expect(pid).toBeDefined();
+    stubborn.add(pid!);
     gen.kill();
     expect(await gone(pid!, 1500)).toBe(true);
     await running;

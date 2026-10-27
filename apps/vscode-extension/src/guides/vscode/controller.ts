@@ -11,7 +11,7 @@ import { createGuideHtml, guideExportFilename, resolveGuideViewerAssets } from "
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/core/guide-viewer-manifest";
 import { findSavedGuideById } from "@plannotator/shared/guide-store";
 import { readGuideInstructions } from "@plannotator/shared/guide-instructions-store";
-import { AcpClient } from "@plannotator/acp-client/client";
+import { AcpClient, killPendingProcessGroups } from "@plannotator/acp-client/client";
 import {
   CLAUDE_CODE,
   CUSTOM_AGENT_ID,
@@ -1735,6 +1735,8 @@ export class GuidesController implements vscode.Disposable {
     // VS Code is closing: no grace period for the agent or anything it started.
     this.run?.gen.kill();
     this.asks.kill();
+    // An agent stopped, exited or crashed earlier whose group still waits out its grace: killed now too.
+    killPendingProcessGroups();
     for (const d of this.disposables) d.dispose();
   }
 }

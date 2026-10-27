@@ -37,7 +37,7 @@ afterAll(() => removeStubbedHtml(stubs));
 const roots: string[] = [];
 const servers: InboxServer[] = [];
 const restoreEnv: (() => void)[] = [];
-/** The hanging agents' pids: killed after each test whatever it asserted, so a failing test never leaves one running. */
+/** The hanging agents' and stubborn grandchildren's pids: killed after each test whatever it asserted, so a failing test never leaves one running. */
 const hangPids = new Set<number>();
 afterEach(async () => {
   for (const server of servers.splice(0)) server.stop();
@@ -242,6 +242,13 @@ function hangingAgent(dir: string): { launch: { command: string; args: string[];
   };
 }
 
+/** The fake agent's stubborn grandchild (it ignores SIGTERM), killed after the test whatever it asserted. */
+async function stubbornOf(w: World): Promise<number> {
+  const pid = await until(() => w.log().find((e) => e.event === "stubborn")?.pid as number | undefined, "the stubborn grandchild");
+  hangPids.add(pid);
+  return pid;
+}
+
 /** The fake answers with the Inbox's own send_message (asking permission first, as Grok does), then says a word. */
 const answersInInbox = (body: string): Step[] => [
   { mcp: { name: "send_message", server: "plannotator-inbox", ask: true, args: { body, reply_to: "$REPLY_TO" } } },
@@ -344,7 +351,7 @@ describe("the ACP runner", () => {
     const w = await world({ turns: [[{ spawnStubborn: true }, { sleep: 60_000 }]] });
     const started = await startRun(w);
     const key = started.run.key;
-    const stubborn = await until(() => w.log().find((e) => e.event === "stubborn")?.pid as number | undefined, "the stubborn child");
+    const stubborn = await stubbornOf(w);
     const agentPid = await until(() => w.server.runner.pids()[0], "the agent's pid");
     await w.restart();
     await until(() => !alive(agentPid) && !alive(stubborn), "the agent and its grandchild to be gone", 10_000);
@@ -466,6 +473,34 @@ describe("the ACP runner", () => {
     await startRun(w);
     const started = await until(() => hang.read(), "the agent to start");
     expect(started.env).toEqual({ PLANNOTATOR_SESSION_TAG: null, PI_SESSION_ID: null, CODEX_THREAD_ID: null, CLAUDECODE: null, KEEP_ME: "yes" });
+  }, 60_000);
+
+  test("18: the agent exits or crashes by itself: what it started (a grandchild that ignores SIGTERM) is killed with its group", async () => {
+    for (const code of [1, 0]) {
+      const w = await world({ turns: [[{ spawnStubborn: true }, { exit: code }]] });
+      const started = await startRun(w);
+      const stubborn = await stubbornOf(w);
+      const run = await ended(w, started.run.key, 1);
+      expect(run.turn!.outcome).toBe("failed");
+      // SIGTERM to the group as the agent exits, SIGKILL 3 s later: nothing it started outlives it.
+      await until(() => !alive(stubborn), `the grandchild to be gone after exit ${code}`, 8_000);
+    }
+  }, 60_000);
+
+  test("19: the Inbox stops inside a stopped agent's grace: what it started is killed now, not left behind when the SIGKILL timer never fires", async () => {
+    const w = await world({ turns: [[{ spawnStubborn: true }, { sleep: 60_000 }]] });
+    const started = await startRun(w);
+    const stubborn = await stubbornOf(w);
+    await until(async () => (await status(w, started.run.key)).state === "working", "the turn working");
+    expect((await post(w, `/api/inbox/acp/${started.run.key}/stop`, {})).status).toBe(200);
+    // Past Stop's 1.5 s grace the process is disposed: SIGTERM to its group, SIGKILL due 3 s later.
+    const run = await ended(w, started.run.key, 1);
+    expect(run.turn!.outcome).toBe("stopped");
+    expect(alive(stubborn)).toBe(true);
+    // The Inbox stops inside that grace: the grandchild is killed at once, well before the timer would.
+    w.server.stop();
+    servers.splice(servers.indexOf(w.server), 1);
+    await until(() => !alive(stubborn), "the grandchild to be killed with the Inbox", 1_500);
   }, 60_000);
 
   test("12: the agent crashes mid-turn: the turn fails in plain words, nothing is sent again, and the next reply starts a new process", async () => {

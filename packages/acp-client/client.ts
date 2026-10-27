@@ -104,6 +104,35 @@ const STDERR_TAIL = 8 * 1024;
 const KILL_GRACE_MS = 3000;
 
 /**
+ * Process groups sent SIGTERM whose SIGKILL is still waiting out the grace
+ * (the timer is unref'd, so it never fires once the program exits):
+ * `killPendingProcessGroups` kills them now, for a program about to exit.
+ */
+const pendingGroupKills = new Set<number>();
+
+/** SIGTERM a group now, SIGKILL it after the grace (or at once through `killPendingProcessGroups`). */
+function stopProcessGroup(pid: number): ReturnType<typeof setTimeout> {
+  killProcessTree(pid, "SIGTERM");
+  pendingGroupKills.add(pid);
+  const timer = setTimeout(() => {
+    pendingGroupKills.delete(pid);
+    killProcessTree(pid, "SIGKILL");
+  }, KILL_GRACE_MS);
+  timer.unref?.();
+  return timer;
+}
+
+/**
+ * SIGKILL every agent process group still inside its grace: what a stopped,
+ * exited or crashed agent started (a dev server, a watcher) never outlives a
+ * program that exits within the grace.
+ */
+export function killPendingProcessGroups(): void {
+  for (const pid of pendingGroupKills) killProcessTree(pid, "SIGKILL");
+  pendingGroupKills.clear();
+}
+
+/**
  * What the client offers the agent: terminal sign-in, so it can list its login
  * commands. No file system or terminal: the agents Guides starts all bring
  * their own, and an agent that does not see these uses its own tools.
@@ -226,6 +255,12 @@ export class AcpClient {
     child.on("exit", (code, signal) => {
       this.exited = true;
       this.exitInfo = { code, signal };
+      // The agent exited or crashed by itself: what it started is still in its group (a dev server, a
+      // watcher). The group still has an id while any member lives, so it is stopped like a disposed one.
+      if (!this.stopped && child.pid !== undefined && process.platform !== "win32") {
+        this.stopped = true;
+        this.killTimer = stopProcessGroup(child.pid);
+      }
       for (const c of this.pendingPermissions) c.abort();
       this.handlers.onExit?.({ code, signal });
       for (const w of this.exitWaiters.splice(0)) w();
@@ -408,9 +443,7 @@ export class AcpClient {
       killProcessTree(pid, "SIGKILL");
       return;
     }
-    killProcessTree(pid, "SIGTERM");
-    this.killTimer = setTimeout(() => killProcessTree(pid, "SIGKILL"), KILL_GRACE_MS);
-    this.killTimer.unref?.();
+    this.killTimer = stopProcessGroup(pid);
   }
 
   /** Kill the agent and everything it started now (VS Code is shutting down). */
@@ -420,6 +453,7 @@ export class AcpClient {
     if (pid === undefined) return;
     this.stopped = true;
     if (this.killTimer) clearTimeout(this.killTimer);
+    pendingGroupKills.delete(pid);
     killProcessTree(pid, "SIGKILL");
   }
 

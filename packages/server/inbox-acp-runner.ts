@@ -39,7 +39,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RequestPermissionRequest, RequestPermissionResponse, SessionNotification } from "@agentclientprotocol/sdk";
-import { AcpClient, AcpStartAbortedError, type AgentLaunch } from "@plannotator/acp-client/client";
+import { AcpClient, AcpStartAbortedError, killPendingProcessGroups, type AgentLaunch } from "@plannotator/acp-client/client";
 import { GROK, resolveAgentLaunch, type AgentDescriptor } from "@plannotator/acp-client/agents";
 import { ownToolAutoAllow, type OwnTools } from "@plannotator/acp-client/permission-policy";
 import {
@@ -447,7 +447,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       proc.idleTimer = null;
       return proc.client;
     }
-    if (proc?.starting) return proc.starting;
+    // A start being aborted (Stop, the Inbox's stop) is never handed to a turn that arrives meanwhile.
+    if (proc?.starting && !proc.abort.signal.aborted) return proc.starting;
     // Recorded before anything is awaited: a second turn arriving meanwhile waits for this one process.
     const mine: AgentProcess = { client: null, starting: null, abort: new AbortController(), idleTimer: null };
     processes.set(agent.id, mine);
@@ -948,6 +949,9 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
       void proc.starting?.then((client) => client.kill()).catch(() => {});
     }
     processes.clear();
+    // A process stopped (Stop's grace, the idle stop) or exited by itself whose group still waits out its
+    // grace: the SIGKILL timer never fires once the Inbox exits, so what it started is killed now.
+    killPendingProcessGroups();
   };
 
   return {
