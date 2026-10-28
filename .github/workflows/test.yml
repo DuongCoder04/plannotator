@@ -878,33 +878,3 @@ jobs:
             Set-Content -Path $hostsFile -Value $original -NoNewline
             ipconfig /flushdns | Out-Null
           }
-
-  # One check that stands for the whole workflow: green only when every job
-  # above succeeded. It runs even when one of them failed, so a failure is
-  # reported here too. It does not run in a cancelled run (a PR run superseded
-  # by a newer push), so that run takes no runner slot only to report a
-  # failure. A branch rule or a merge script can require this one name
-  # instead of tracking every lane.
-  all-green:
-    name: Test (all green)
-    if: ${{ !cancelled() }}
-    needs:
-      - checks
-      - unit
-      - dom
-      - opencode-v2
-      - guides-show
-      - uninstall-windows
-      - qwen-installers-windows
-      - pi-extension-ai-runtime-windows
-      - install-cmd-windows
-      - install-ps1-windows
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Every job succeeded
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: |
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
-          jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null
