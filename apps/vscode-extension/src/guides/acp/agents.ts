@@ -22,7 +22,7 @@
 import { findExecutable } from "../sources/runner";
 import type { ManagedAdapterSpec, ManagedLaunch } from "./adapters";
 import { isSameProgram, type SameProgramCheck, type SameProgramSignature } from "./same-program";
-import { readEffortSelect, readModelSelect, type ConfigChoice, type ConfigSelect } from "./client";
+import { readEffortSelect, readModelSelect, type AgentLaunch, type ConfigChoice, type ConfigSelect } from "./client";
 import type { AuthMethod, SessionConfigOption } from "@agentclientprotocol/sdk";
 
 export interface AgentDescriptor {
@@ -274,8 +274,10 @@ export type AdapterResolution =
       args: string[];
       env?: Record<string, string>;
       source: "setting" | "path" | "managed";
-      /** The agent's own CLI was not found, so its adapter runs the copy it brings (shown once). */
-      notice?: string;
+      /** For an adapter that runs the agent's CLI (`cli`): which copy it runs, for the log on each launch. */
+      cliLog?: string;
+      /** Guides pointed the adapter at the user's CLI: added to a failure before the session starts (an older CLI). */
+      startHint?: string;
     }
   | {
       ok: false;
@@ -312,35 +314,66 @@ export function resolveAgentLaunch(
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   platform: NodeJS.Platform = process.platform,
   sameProgram: SameProgramCheck = isSameProgram,
-  env: Record<string, string | undefined> = process.env,
+  cliChoice: CliChoice = {},
 ): AdapterResolution {
   const launch = resolveAdapter(agent, override, find, managed, platform, sameProgram);
-  return launch.ok ? withAgentCli(agent, launch, find, env) : launch;
+  return launch.ok ? withAgentCli(agent, launch, find, platform, cliChoice) : launch;
+}
+
+/** How an adapter's agent CLI is chosen (`withAgentCli`). */
+export interface CliChoice {
+  /** The environment the adapter inherits: a variable already set there is kept. Default: this process's. */
+  env?: Record<string, string | undefined>;
+  /** `plannotator.guides.useInstalledCli` (default on); off: the adapter runs its own copy. */
+  useInstalled?: boolean;
 }
 
 /**
  * Point the adapter at the user's own CLI (`claude`, `codex`), found the same
  * way as the adapter (PATH plus the usual install folders), so a guide runs
- * the Claude or Codex the user installed, configured and signed in to. A
- * variable the user already set is left alone. When the CLI is not found the
- * adapter runs the copy it brings, as it did before: someone who uses only
- * the Claude Code VS Code extension has no `claude` on PATH, and their guides
- * keep working. The answer then carries a notice that says so.
+ * the Claude or Codex the user installed and configured. A variable the user
+ * already set is left alone, and `useInstalled: false` keeps the adapter's
+ * own copy. When the CLI is not found the adapter runs the copy it brings, as
+ * it did before: someone who uses only the Claude Code VS Code extension has
+ * no `claude` on PATH, and their guides keep working.
+ *
+ * Windows: only an `.exe` is used; a `.cmd` / `.bat` (what npm installs:
+ * `%APPDATA%\npm\claude.cmd`) keeps the adapter's own copy. claude-agent-acp
+ * 0.91.0 starts the path without a shell (the SDK's spawn, the `--cli`
+ * sign-in, `auth status`), which Node refuses for a `.cmd`. codex-acp 2.2.2
+ * starts its app-server through cross-spawn, but its `cli` subcommand uses
+ * `shell: true` with the path unquoted, which breaks on a path with spaces.
  */
 export function withAgentCli(
   agent: AgentDescriptor,
   launch: Extract<AdapterResolution, { ok: true }>,
   find: (name: string) => string | null,
-  env: Record<string, string | undefined> = process.env,
+  platform: NodeJS.Platform = process.platform,
+  choice: CliChoice = {},
 ): Extract<AdapterResolution, { ok: true }> {
   const cli = agent.cli;
-  if (!cli || env[cli.env]?.trim()) return launch;
+  if (!cli) return launch;
+  const env = choice.env ?? process.env;
+  const own = `the copy of ${cli.label} that comes with ${agent.label}'s ACP adapter`;
+  const mine = env[cli.env]?.trim();
+  if (mine) return { ...launch, cliLog: `${agent.label} runs ${mine} (${cli.env}, set in your environment).` };
+  if (choice.useInstalled === false) return { ...launch, cliLog: `${agent.label} runs ${own} (plannotator.guides.useInstalledCli is off).` };
   const found = find(cli.command);
-  if (found) return { ...launch, env: { ...launch.env, [cli.env]: found } };
+  if (!found) return { ...launch, cliLog: `\`${cli.command}\` is not on PATH, so ${agent.label} runs ${own}. Install the ${cli.label} CLI to use your own version.` };
+  if (platform === "win32" && !/\.exe$/i.test(found)) {
+    return { ...launch, cliLog: `${found} is not an .exe, which the adapter cannot start on Windows, so ${agent.label} runs ${own}. Install ${cli.label}'s native ${cli.command}.exe, or set ${cli.env} to an .exe, to use your own.` };
+  }
   return {
     ...launch,
-    notice: `${cli.label} (\`${cli.command}\`) is not on PATH, so Guided Reviews runs the copy of ${cli.label} that comes with its ACP adapter. Install ${cli.label} and sign in to use your own, or set ${cli.env} to its path.`,
+    env: { ...launch.env, [cli.env]: found },
+    cliLog: `${agent.label} runs your ${cli.command} at ${found} (${cli.env}).`,
+    startHint: `Guided Reviews ran your ${cli.command} at ${found}; it may be older than ${agent.label}'s ACP adapter expects. Update it, or turn off plannotator.guides.useInstalledCli to use ${own}.`,
   };
+}
+
+/** What `AcpClient.start` needs to start a resolved agent in `cwd`. */
+export function agentLaunchFor(launch: Extract<AdapterResolution, { ok: true }>, cwd: string): AgentLaunch {
+  return { command: launch.command, args: launch.args, cwd, ...(launch.env && { env: launch.env }), ...(launch.startHint && { startHint: launch.startHint }) };
 }
 
 function resolveAdapter(
