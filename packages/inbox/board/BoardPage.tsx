@@ -442,7 +442,7 @@ export function BoardPage(props: BoardPageProps) {
 
   return (
     <section ref={pageRef} className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view} data-card-open={open ? '' : undefined}>
-      <div className="ib-bhead">
+      <div className="ib-bhead" data-narrow={narrowHead && !phone ? '' : undefined}>
         <SidebarTrigger />
         {view !== 'lanes' && !phone ? (
           <>
