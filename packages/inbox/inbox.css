@@ -966,6 +966,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 /* Short of room, the row shortens before the status wraps above the buttons (footFit.ts `fitWholeFootRow`,
    one step per token of `data-fit`). The words it drops (.ib-fl) leave only the eye, so names, descriptions
    and the text itself keep them. */
+/* Step 0: the keycaps go first; they are for the eye only (aria-keyshortcuts and the map keep the key). */
+.ib-footrow[data-fit~="keys"] .ib-btn-kbd { display: none; }
 .ib-footrow[data-fit~="skip"] .ib-skipchip .ib-fl,
 .ib-footrow[data-fit~="edit"] [data-edit-draft] .ib-fl,
 .ib-footrow[data-fit~="draft"] .ib-draft-foot .ib-st { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
@@ -2344,7 +2346,7 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 .pn-inbox .ib-ract { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: none; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 8px; border-radius: var(--ib-pill-s, 7px); border: 1px solid var(--ib-float-line-s, var(--border)); background: var(--card); font-size: var(--ib-fs-12-5, 12.5px); font-weight: 550; color: var(--foreground); box-shadow: var(--ib-float-s, 0 4px 12px -6px rgba(0, 0, 0, 0.3)); }
 .pn-inbox .ib-ract:hover { background: var(--ib-ract-hover-s, color-mix(in oklch, var(--muted) 60%, var(--card))); }
 .pn-inbox { --ib-ract-hover-s: var(--ib-soft-hover) color-mix(in oklch, var(--muted) 40%, var(--card)); }
-.ib-rw:hover .ib-ract, .ib-rw:has(:focus-visible) .ib-ract { display: inline-flex; }
+.ib-rw:hover .ib-ract, .ib-rw:has(:focus-visible) .ib-ract, .ib-rw[data-action-focus] .ib-ract { display: inline-flex; }
 .ib-rw:hover:has(.ib-ract) .ib-row :is(.ib-t, .ib-c, .ib-mcol), .ib-rw:has(:focus-visible):has(.ib-ract) .ib-row :is(.ib-t, .ib-c, .ib-mcol) { visibility: hidden; }
 .ib-rw:hover:has(.ib-ract) .ib-nrow .ib-l1 :is(.ib-t, .ib-c), .ib-rw:has(:focus-visible):has(.ib-ract) .ib-nrow .ib-l1 :is(.ib-t, .ib-c) { visibility: hidden; }
 /* Beside a thread the action sits on line 1, no taller than that line (14 px text at its normal leading, plus
@@ -5529,6 +5531,36 @@ dialog.ib-dlg.ib-bi { width: min(560px, calc(100vw - 32px)); }
   .pm-ag .ib-desc a { display: inline-flex; align-items: center; min-height: 44px; margin: -12px 0; }
 }
 
+/* ── The shortcut map (components/ShortcutMap.tsx) and its sidebar button ── */
+.pn-inbox dialog.ib-dlg.ib-map, dialog.ib-dlg.ib-map { width: min(820px, calc(100vw - 32px)); }
+.ib-map .ib-dlg-in { padding: 20px 22px 0; }
+.ib-map-head h2 { font-size: var(--ib-fs-15, 15px); }
+.pn-inbox .ib-map-x { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--ib-r8-s, 6px); color: var(--muted-foreground); background: none; border: 0; cursor: pointer; }
+.pn-inbox .ib-map-x:hover { background: var(--muted); color: var(--foreground); }
+.ib-map-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; margin-top: 6px; }
+.ib-map .ib-map-group h3 { text-transform: none; letter-spacing: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); margin: 18px 0 4px; }
+.ib-map-group dl { margin: 0; }
+.ib-map-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 31px; border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent); }
+.ib-map-row:last-child { border-bottom: 0; }
+.ib-map-row dt { font-size: var(--ib-fs-13, 13px); }
+.ib-map-row dd { margin: 0; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ib-mapkeys { display: inline-flex; align-items: center; gap: 4px; }
+.ib-mapor { font-size: var(--ib-fs-11, 11px); color: var(--muted-foreground); }
+.ib-map-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px -22px 0; padding: 12px 22px; border-top: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 45%, transparent); }
+.ib-map-hints { display: inline-flex; align-items: center; gap: 10px; font-size: var(--ib-fs-13, 13px); cursor: pointer; }
+.pn-inbox .ib-map-set, .ib-dlg .ib-map-set { margin-top: 0; color: var(--muted-foreground); font-weight: 450; font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-setrow > .ib-nav.ib-has-keys { padding-right: 70px; }
+.pn-inbox .ib-keys-tg { position: absolute; right: 33px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--ib-r8-s, 6px); color: var(--muted-foreground); }
+.pn-inbox .ib-keys-tg:hover { background: var(--ib-side-menu-s, var(--muted)); color: var(--foreground); }
+.pn-inbox .ib-keys-tg:focus-visible { outline-offset: 0; }
+.ib-keys-tg .ib-ic { width: 16px; height: 16px; }
+@media (max-width: 720px) { .ib-map-cols { grid-template-columns: 1fr; } }
+/* Keycaps inside buttons and tiles (shortcuts/hint.tsx): quiet, after the label. */
+.pn-inbox .ib-btn .ib-btn-kbd { margin-left: 2px; padding: 0 4px; line-height: 15px; font-size: var(--ib-fs-10-5, 10.5px); }
+.pn-inbox .ib-att-t .ib-att-kbd { margin-left: auto; margin-right: 6px; align-self: center; font-size: var(--ib-fs-10-5, 10.5px); line-height: 15px; }
+.pn-inbox .ib-att-t .ib-att-kbd + .ib-open { margin-left: 0; }
+/* A keycap's text (shortcuts/hint.tsx ShortcutHint): drawn from the attribute, never part of its button's words. */
+kbd[data-keycap]::after { content: attr(data-keycap); }
 /* Sidebar → Feedback (components/FeedbackDialog.tsx): the message, an optional category and email, the line
    saying what is sent, then Prompt your agent to send feedback, Cancel and Send; a short "sent" state. On a phone the
    dialog is a bottom sheet (the sheet corner on top, the safe area below), 44 px targets. */

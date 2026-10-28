@@ -65,6 +65,8 @@ import { MarkupPicture } from './Markup';
 import { isWordlessMarkup, MARKUP_ONLY_TEXT } from '../markup';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
+import { ShortcutHint, withShortcut } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import { inOverlay, isComposingKey, isEditableTarget, keyTarget, modalOpen } from '../shortcuts/guards';
 import { escapeRung, type EscapeRung } from '../escapeLadder';
 import { storage } from '@plannotator/ui/utils/storage';
@@ -242,6 +244,8 @@ export interface AttachmentPaneProps {
  */
 export interface AttachmentPaneHandle {
   leave: (to: string | null, go: () => void) => void;
+  /** Out of full screen the way × goes (back beside the thread, or the file closes), asking first about a typed comment. */
+  exitFull: () => void;
 }
 
 /**
@@ -476,7 +480,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   };
   const leaveRef = useRef(leave);
   leaveRef.current = leave;
-  useImperativeHandle(ref, () => ({ leave: (to, go) => leaveRef.current(to, go) }), []);
+  const exitFullRef = useRef<() => void>(() => {});
+  useImperativeHandle(ref, () => ({ leave: (to, go) => leaveRef.current(to, go), exitFull: () => exitFullRef.current() }), []);
 
   const showEnd = (text: string) => {
     setEndNote(text);
@@ -827,6 +832,23 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         handle: () => {
           if (escapeNext.current) climb(escapeNext.current);
         },
+      },
+    },
+  });
+
+  // Beside the thread, an Escape nothing else used closes the file (approval "inbox-keyboard-shortcuts": Escape
+  // takes off the top layer). Last of all: on the window, bubbling, after the ladder, the thread and every control.
+  useShortcutScope({
+    scope: inboxFileViewerShortcuts,
+    handlers: {
+      escape: {
+        when: (event) => {
+          if (full || props.fullLocked || linkedTop || event.defaultPrevented || paneEscapes.has(event) || isComposingKey(event) || modalOpen()) return false;
+          if (document.querySelector(SELF_CLOSING_DRAFTS)) return false;
+          const target = keyTarget(event);
+          return !(target && (isEditableTarget(target) || inOverlay(target) || target.closest('[role="menu"], [role="listbox"], [aria-expanded="true"]')));
+        },
+        handle: () => close(),
       },
     },
   });
@@ -1254,6 +1276,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     if (to !== null) leave(to, () => toggleFull(false));
     else toggleFull(false);
   };
+  exitFullRef.current = () => {
+    if (!props.full || props.fullLocked) return;
+    if (exitCloses) close();
+    else exitFull();
+  };
 
   const sentAt = whenTime(attachment.sent_at);
   /** An image the message's text shows (approval "inbox-image-viewer"). */
@@ -1516,7 +1543,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   {!folded && 'Side by side'}
                 </button>
               </Tip>
-              <Tip content="Full screen: files open this way until you choose again">
+              {/* F names full screen here (approved hint placement); the key, unlike this button, saves nothing. */}
+              <Tip content={withShortcut('Full screen: files open this way until you choose again', { scope: inboxThreadShortcuts, action: 'fullScreen' })}>
                 <button type="button" className="ib-seg-o" aria-pressed="false" onClick={() => toggleFull()} aria-label={folded ? 'Full screen' : undefined} data-full-screen-toggle="">
                   <Icon name="frame" size={14} />
                   {!folded && 'Full screen'}
@@ -2006,8 +2034,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           {chip?.note && <span className="ib-fvchip-note">{chip.note}</span>}
           {multi && !phone && (
             <span className="ib-fvchip-keys">
-              <kbd>[</kbd>
-              <kbd>]</kbd>
+              <ShortcutHint scope={inboxFileViewerShortcuts} action="previous" className="" />
+              <ShortcutHint scope={inboxFileViewerShortcuts} action="next" className="" />
             </span>
           )}
         </div>
