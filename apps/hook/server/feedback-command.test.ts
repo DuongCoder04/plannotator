@@ -1,0 +1,137 @@
+/**
+ * `plannotator feedback` as real processes against a local fake endpoint
+ * (PLANNOTATOR_FEEDBACK_URL; never the real Worker): it sends the message,
+ * the category and contact when given, the version, the OS name and
+ * `surface: "cli"`, and nothing else; prints "Sent"; exits 1 with the reason
+ * when the endpoint refuses or is unreachable, 2 on bad usage (sending
+ * nothing), and answers --help without sending. Every process gets a temp
+ * HOME and data dir, no browser, no update check and no Inbox connect.
+ */
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
+import { NO_BROWSER } from "../../../tests/helpers/no-browser";
+import { formatTopLevelHelp } from "./cli";
+import { parseFeedbackCommand } from "./feedback-command";
+
+const entry = resolve(import.meta.dir, "index.ts");
+const roots: string[] = [];
+const fakes: ReturnType<typeof Bun.serve>[] = [];
+let stubs: string[] = [];
+
+beforeAll(() => {
+  // The CLI imports the built HTML; these tests never read the pages.
+  stubs = stubHookDistHtml();
+});
+afterAll(() => {
+  removeStubbedHtml(stubs);
+});
+afterEach(() => {
+  for (const fake of fakes.splice(0)) fake.stop(true);
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function fakeEndpoint(status = 201) {
+  const received: { method: string; path: string; body: unknown }[] = [];
+  const fake = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      received.push({ method: req.method, path: new URL(req.url).pathname, body: await req.json().catch(() => null) });
+      return Response.json(status < 300 ? { ok: true } : { error: "message is required" }, { status });
+    },
+  });
+  fakes.push(fake);
+  return { url: `http://127.0.0.1:${fake.port}/feedback`, received };
+}
+
+async function run(args: string[], feedbackUrl: string) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-feedback-cli-")));
+  roots.push(root);
+  const home = join(root, "home");
+  const proc = Bun.spawn([process.execPath, entry, "feedback", ...args], {
+    cwd: root,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: home,
+      TMPDIR: tmpdir(),
+      PLANNOTATOR_DATA_DIR: join(home, ".plannotator"),
+      PLANNOTATOR_BROWSER: NO_BROWSER,
+      BROWSER: NO_BROWSER,
+      NO_BROWSER,
+      PLANNOTATOR_INBOX_CONNECT: "0",
+      PLANNOTATOR_UPDATE_CHECK: "0",
+      PLANNOTATOR_FEEDBACK_URL: feedbackUrl,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  return { stdout, stderr, code };
+}
+
+describe("plannotator feedback (processes)", () => {
+  test("sends the words, category, contact, version, OS and surface; prints Sent", async () => {
+    const endpoint = fakeEndpoint();
+    const result = await run(["The Inbox is great, but the list jumps on reload", "--category", "bug", "--contact=me@example.com"], endpoint.url);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe("Sent");
+    expect(endpoint.received).toHaveLength(1);
+    expect(endpoint.received[0]!.method).toBe("POST");
+    const body = endpoint.received[0]!.body as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["category", "contact", "message", "os", "surface", "version"]);
+    // A source run has no baked version: `dev`.
+    expect(body).toMatchObject({ message: "The Inbox is great, but the list jumps on reload", category: "bug", contact: "me@example.com", version: "dev", surface: "cli" });
+  }, 30_000);
+
+  test("a refusal exits 1 with the reason on stderr", async () => {
+    const endpoint = fakeEndpoint(400);
+    const result = await run(["hi"], endpoint.url);
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain("Sent");
+    expect(result.stderr).toContain("Not sent: message is required");
+  }, 30_000);
+
+  test("an unreachable endpoint exits 1", async () => {
+    const endpoint = fakeEndpoint();
+    fakes.pop()!.stop(true);
+    const result = await run(["hi"], endpoint.url);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Could not reach the feedback service.");
+  }, 30_000);
+
+  test("bad usage exits 2 and sends nothing; --help sends nothing", async () => {
+    const endpoint = fakeEndpoint();
+    expect((await run([], endpoint.url)).code).toBe(2);
+    expect((await run(["hi", "--category", "rant"], endpoint.url)).code).toBe(2);
+    expect((await run(["hi", "--unknown"], endpoint.url)).code).toBe(2);
+    const help = await run(["--help"], endpoint.url);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain('plannotator feedback "<message>"');
+    expect(endpoint.received).toHaveLength(0);
+  }, 60_000);
+});
+
+describe("parseFeedbackCommand", () => {
+  test("joins loose words into one message and reads both flag forms", () => {
+    expect(parseFeedbackCommand(["two", "words", "--category=idea"])).toEqual({ ok: true, help: false, message: "two words", category: "idea", contact: null });
+    expect(parseFeedbackCommand(["--contact", "@me", "hi"])).toEqual({ ok: true, help: false, message: "hi", category: null, contact: "@me" });
+  });
+
+  test("after --, a flag-looking word is part of the message", () => {
+    expect(parseFeedbackCommand(["--", "--help", "is", "confusing"])).toEqual({ ok: true, help: false, message: "--help is confusing", category: null, contact: null });
+  });
+
+  test("refuses an empty or over-long message and a flag with no value", () => {
+    expect(parseFeedbackCommand(["   "]).ok).toBe(false);
+    expect(parseFeedbackCommand(["x".repeat(4001)]).ok).toBe(false);
+    expect(parseFeedbackCommand(["hi", "--category"]).ok).toBe(false);
+    expect(parseFeedbackCommand(["hi", "--contact"]).ok).toBe(false);
+  });
+
+  test("is listed in the top-level help", () => {
+    expect(formatTopLevelHelp()).toContain("plannotator feedback");
+  });
+});

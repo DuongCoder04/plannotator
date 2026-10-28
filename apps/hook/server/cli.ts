@@ -168,6 +168,7 @@ export function formatTopLevelHelp(options: { board?: boolean } = {}): string {
     "  plannotator inbox [--background | --no-open | --open] [--tailscale]",
     "  plannotator inbox mcp",
     ...(options.board === true ? ["  plannotator card <create|move|say|link|ship|drop|list> ..."] : []),
+    '  plannotator feedback "<message>" [--category <bug|idea|other>] [--contact <text>]',
     "  plannotator update [--check]",
     "  plannotator uninstall [--purge] [--yes] [--dry-run]",
     "  plannotator improve-context",
@@ -222,6 +223,30 @@ export const CARD_COMMAND_USAGE = [
   "When a card waits on the person, link the Inbox thread where they make the call (--thread), so \"You: …\" opens it.",
   "Works only while the person has the Board on (Inbox Settings → Capabilities); off, it exits 1 with board_off.",
   "Run 'plannotator inbox --help' for the full guide (its card section, shown while the Board is on).",
+].join("\n");
+
+/**
+ * `plannotator feedback` (feedback-command.ts): sends the person's feedback
+ * about Plannotator to its maintainers. The Inbox's Feedback dialog copies a
+ * prompt that tells an agent to use it.
+ */
+export const FEEDBACK_COMMAND_USAGE = [
+  "Usage:",
+  '  plannotator feedback "<message>" [--category <bug|idea|other>] [--contact <how to reach you>]',
+  "",
+  "Sends feedback about Plannotator to its maintainers and prints \"Sent\".",
+  "What is sent: the message, the category and contact if given, the Plannotator",
+  "version and the OS name (macOS, Linux, Windows). Nothing else: no files, no",
+  "paths, no session content, no machine id.",
+  "",
+  "Agents: send only the person's own feedback. Show them the exact text (and",
+  "category and contact) first, and run this only after they say yes.",
+  "",
+  "Options:",
+  "  --category <c>   bug, idea or other",
+  "  --contact <text> An email or handle the person chose to give (optional)",
+  "",
+  "The message is 1 to 4000 characters. Exit 0 sent, 1 not sent (the reason on stderr), 2 bad usage.",
 ].join("\n");
 
 /**
@@ -456,6 +481,7 @@ export const SUBCOMMAND_HELP: Record<string, string> = {
   // The Board's cards; and, unreleased (HIDDEN_SUBCOMMANDS), the opt-in T3 Code connection.
   t3: T3_CLI_USAGE,
   card: CARD_COMMAND_USAGE,
+  feedback: FEEDBACK_COMMAND_USAGE,
   "t3-hook": [
     "Usage:",
     "  plannotator t3-hook install --settings <settings.json> --executable <plannotator>",

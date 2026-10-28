@@ -1,0 +1,27 @@
+name = "plannotator-feedback"
+main = "targets/cloudflare.ts"
+compatibility_date = "2024-12-01"
+
+# Owner-deployed only: nothing in CI creates, migrates or deploys this Worker.
+#
+# PLACEHOLDER: run `bun run db:create` once, then paste the `database_id` it
+# prints here. Until then `wrangler deploy` fails, which is intended.
+[[d1_databases]]
+binding = "FEEDBACK_DB"
+database_name = "plannotator-feedback"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# Cloudflare's rate limiting binding, keyed by the caller's IP (counted by
+# Cloudflare, never stored by this Worker). 5 submissions per IP per 60 s:
+# the owner's call. `namespace_id` is any integer unique in the account.
+[[ratelimits]]
+name = "FEEDBACK_RATE_LIMITER"
+namespace_id = "2401"
+simple = { limit = 5, period = 60 }
+
+[vars]
+# Optional: more browser origins allowed to POST, comma separated, besides
+# localhost / 127.0.0.1 / [::1] (any port) and https://*.ts.net, which are
+# always allowed. Requests with no Origin (the Inbox's server, the CLI) are
+# always allowed.
+# ALLOWED_ORIGINS = ""
