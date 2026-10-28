@@ -447,6 +447,7 @@ jobs:
           packages/ui/aiProviderConfigPersistence.test.tsx
           packages/ui/components/sidebar/SidebarContainer.mobile.test.tsx
           packages/ui/components/sidebar/FileBrowser.fileLimit.test.tsx
+          packages/ui/components/sidebar/FileBrowser.hover.test.tsx
           packages/ui/components/ui/mobile-foundation.test.tsx
           packages/ui/components/Settings.vim.test.tsx
           packages/ui/components/Settings.annotateParity.test.tsx
@@ -457,6 +458,7 @@ jobs:
           packages/ui/components/Settings.experimental.test.tsx
           packages/ui/components/Settings.reviewDefaults.test.tsx
           packages/ui/components/Settings.gridChoice.test.tsx
+          packages/ui/components/Settings.notion.test.tsx
           packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
           packages/ui/config/documentFontSetting.test.ts
