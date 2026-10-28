@@ -294,6 +294,9 @@ jobs:
           packages/review-editor/App.emptyDiffSwitch.test.tsx
           packages/review-editor/App.planLookTwoTabs.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
+          packages/review-editor/components/AnnotationToolbar.askOnly.test.tsx
+          apps/vscode-extension/src/guides/reader/lines.test.ts
+          apps/vscode-extension/src/guides/webview/diagram-loader.test.ts
           packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
           packages/review-editor/components/FileHeader.edit.test.tsx
           packages/review-editor/edit/useEditSession.recovery.test.tsx
@@ -458,6 +461,7 @@ jobs:
           packages/ui/components/Settings.documentTextSize.test.tsx
           packages/ui/components/Settings.experimental.test.tsx
           packages/ui/components/Settings.gridChoice.test.tsx
+          packages/ui/components/Settings.notion.test.tsx
           packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
           packages/ui/config/documentFontSetting.test.ts
