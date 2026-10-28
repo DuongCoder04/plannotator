@@ -122,7 +122,7 @@ interface AppHeaderProps {
   /** Present when the server advertises the auto-update setting; Settings shows its switch. */
   autoUpdateSetting?: { env?: boolean };
   updateCheckSetting?: UpdateCheckSetting;
-  /** "Keep Plannotator's cookies to itself" (#2184); Settings shows its row when present. */
+  /** "Open Plannotator at plannotator.localhost" (#2184); Settings shows its row when present. */
   cookieHostSetting?: CookieHostSetting;
   /** The `plannotator` agent tool switch (parseAgentToolSetting of serverConfig); Settings shows its row. */
   agentToolSetting?: AgentToolSetting;

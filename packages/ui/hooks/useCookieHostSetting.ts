@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 
 /**
- * "Keep Plannotator's cookies to itself" (#2184) for Settings → General: on
+ * "Open Plannotator at plannotator.localhost" (#2184) for Settings → General: on
  * writes `urlHost: "plannotator.localhost"` to config.json, off removes it.
  * The server sends it as `serverConfig.cookieHost` only for a local session
  * (never remote mode or `--tailscale`), and writes it with POST /api/config.
@@ -20,9 +20,9 @@ export interface CookieHostSetting {
 }
 
 /**
- * The cookie switch's one sub line: where Plannotator opens in the state
- * shown, or why the switch is locked. `inbox` adds that the Inbox's
- * notifications need allowing once at the new address.
+ * The cookie switch's one sub line: what it does, or why the switch is
+ * locked. `inbox` adds that the Inbox's notifications need allowing once at
+ * the new address.
  */
 export function cookieHostDescription(
   setting: Pick<CookieHostSetting, 'on' | 'env' | 'urlHost'>,
@@ -35,9 +35,7 @@ export function cookieHostDescription(
   }
   if (setting.urlHost !== undefined) return `config.json sets urlHost to ${setting.urlHost}; this switch never replaces it.`;
   const notifications = options.inbox ? ' Notifications need allowing once there.' : '';
-  return setting.on
-    ? `On: Plannotator opens at plannotator.localhost from the next start. This browser's own preferences start fresh once.${notifications}`
-    : `Off: Plannotator opens at localhost. On moves it to plannotator.localhost from the next start.${notifications}`;
+  return `Keeps Plannotator's cookies away from your other localhost apps. Starts from the next session; this browser's preferences start fresh once.${notifications}`;
 }
 
 interface CookieHostState {

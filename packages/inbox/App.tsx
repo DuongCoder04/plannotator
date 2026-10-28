@@ -2508,7 +2508,7 @@ function Inbox() {
     }
   };
 
-  // Settings → General: "Keep Plannotator's cookies to itself" (#2184), saved to config.json; applies from the next start.
+  // Settings → General: "Open Plannotator at plannotator.localhost" (#2184), saved to config.json; applies from the next start.
   const toggleCookieHost = async (next: boolean) => {
     setSettingsError(null);
     setSettings((current) => (current?.cookie_host ? { ...current, cookie_host: { ...current.cookie_host, on: next } } : current));

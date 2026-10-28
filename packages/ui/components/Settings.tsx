@@ -140,7 +140,7 @@ interface SettingsProps {
    *  useUpdateCheckSetting); `env` is PLANNOTATOR_UPDATE_CHECK when it overrides the
    *  config file. Hosts that omit it get no row. */
   updateCheckSetting?: UpdateCheckSetting;
-  /** "Keep Plannotator's cookies to itself" (#2184, useCookieHostSetting): present
+  /** "Open Plannotator at plannotator.localhost" (#2184, useCookieHostSetting): present
    *  only when the server reports it (a local session). Hosts that omit it get no row. */
   cookieHostSetting?: CookieHostSetting;
   /** Code review's package changes switches (usePackageChangesSetting). Hosts that omit it get no rows. */
@@ -1701,7 +1701,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </>
                     )}
 
-                    {/* Keep Plannotator's cookies to itself (#2184): writes or
+                    {/* Open Plannotator at plannotator.localhost (#2184): writes or
                         removes urlHost "plannotator.localhost" in config.json.
                         Locked while PLANNOTATOR_URL_HOST is set or config.json
                         holds another urlHost, which it never replaces. */}
@@ -1713,7 +1713,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                             checked={cookieHostSetting.on}
                             onChange={(v) => cookieHostSetting.onChange(v)}
                             disabled={cookieHostSetting.env !== undefined || cookieHostSetting.urlHost !== undefined}
-                            label="Keep Plannotator's cookies to itself"
+                            label="Open Plannotator at plannotator.localhost"
                             description={cookieHostDescription(cookieHostSetting)}
                           />
                           {cookieHostSetting.error && (

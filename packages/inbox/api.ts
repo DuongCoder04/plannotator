@@ -285,7 +285,7 @@ export interface SettingsModel {
   /** The Board (config.json `inboxBoard`): off unless the person turned it on. Absent from an Inbox before the switch (the Board is then always there). */
   board?: { on: boolean };
   /**
-   * Settings → General: "Keep Plannotator's cookies to itself" (#2184): config.json
+   * Settings → General: "Open Plannotator at plannotator.localhost" (#2184): config.json
    * `urlHost: "plannotator.localhost"`. `env` is PLANNOTATOR_URL_HOST and `url_host`
    * another config.json `urlHost`; either locks it. Absent through the tailnet
    * and from an older Inbox.

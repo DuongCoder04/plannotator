@@ -54,7 +54,7 @@ export interface SettingsPageProps {
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
   /** Settings → Capabilities → Experimental: decision mode's switch. Absent (or an Inbox that reports no experimental features): no Experimental group. */
   onToggleExperimental?: (next: boolean) => void;
-  /** Settings → General: "Keep Plannotator's cookies to itself" (#2184). Absent: no row. */
+  /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184). Absent: no row. */
   onToggleCookieHost?: (next: boolean) => void;
   /** `#settings/experimental` (an old link): Capabilities scrolls to its Experimental group and focuses its heading. */
   landOnExperimental?: boolean;
@@ -109,7 +109,7 @@ export interface SettingsPageProps {
 }
 
 /**
- * "Keep Plannotator's cookies to itself" (#2184), the switch plan review,
+ * "Open Plannotator at plannotator.localhost" (#2184), the switch plan review,
  * code review and annotate show in their Settings too: config.json
  * `urlHost: "plannotator.localhost"`. Locked (with the reason) while
  * PLANNOTATOR_URL_HOST is set or config.json holds another `urlHost`, which it
@@ -125,7 +125,7 @@ function CookieHostGroup({ cookieHost, onToggle }: { cookieHost: InboxCookieHost
         <div className="ib-prow">
           <span className="ib-txt">
             <span className="ib-l" id="ib-cookie-host-label">
-              Keep Plannotator's cookies to itself
+              Open Plannotator at plannotator.localhost
             </span>
             <span className="ib-desc">{cookieHostDescription({ on: cookieHost.on, env: cookieHost.env ?? undefined, urlHost: cookieHost.url_host ?? undefined }, { inbox: true })}</span>
           </span>

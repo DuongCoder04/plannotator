@@ -1004,7 +1004,7 @@ export function getServerConfig(
       lookup: resolvePackageLookup(cfg),
       ...(packageLookupEnv === false && { lookupEnv: false as const }),
     },
-    // Settings' "Keep Plannotator's cookies to itself" (#2184), only where the server says it is local.
+    // Settings' "Open Plannotator at plannotator.localhost" (#2184), only where the server says it is local.
     ...(options.cookieHost === true && { cookieHost: cookieHostState(cfg) }),
   };
 }
@@ -1715,7 +1715,7 @@ export function resolveLocalUrlHostname(config: PlannotatorConfig): string | und
   return host !== undefined && isLocalhostSubdomain(host) ? host.toLowerCase() : undefined;
 }
 
-/** The name Settings' "Keep Plannotator's cookies to itself" switch writes as `urlHost`. */
+/** The name Settings' "Open Plannotator at plannotator.localhost" switch writes as `urlHost`. */
 export const ISOLATED_COOKIE_HOST = "plannotator.localhost";
 
 /**

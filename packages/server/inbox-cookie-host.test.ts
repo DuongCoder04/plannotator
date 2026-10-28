@@ -1,5 +1,5 @@
 /**
- * The Inbox's Settings → General "Keep Plannotator's cookies to itself"
+ * The Inbox's Settings → General "Open Plannotator at plannotator.localhost"
  * (#2184): GET /api/inbox/settings carries `cookie_host`, POST `{ cookie_host }`
  * writes or removes config.json `urlHost: "plannotator.localhost"`, never
  * replaces another `urlHost`, and is locked while PLANNOTATOR_URL_HOST is set.

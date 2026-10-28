@@ -1,5 +1,5 @@
 /**
- * Settings → General's "Keep Plannotator's cookies to itself" (#2184) in the
+ * Settings → General's "Open Plannotator at plannotator.localhost" (#2184) in the
  * Inbox window: the row follows `cookie_host` from GET /api/inbox/settings,
  * a click asks to flip it, and it is locked (with what holds it) while
  * PLANNOTATOR_URL_HOST is set or config.json holds another urlHost. A
@@ -79,7 +79,7 @@ describe('Inbox Settings: the cookie switch', () => {
     render({ on: false, env: null, url_host: null }, toggles);
     expect(group()?.getAttribute('data-settings-cookie-host')).toBe('off');
     const label = document.getElementById(toggle()!.getAttribute('aria-labelledby')!);
-    expect(label?.textContent).toContain('cookies');
+    expect(label?.textContent).toBe('Open Plannotator at plannotator.localhost');
     expect(group()?.textContent).toContain('plannotator.localhost');
     expect(group()?.textContent).toContain('Notifications need allowing once');
     act(() => toggle()?.click());

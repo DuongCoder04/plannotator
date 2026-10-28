@@ -32,7 +32,7 @@ Plannotator keeps your preferences in cookies. A browser sends a cookie set on
 other local apps receive Plannotator's cookies too. To keep them to Plannotator,
 give it a dedicated address, `plannotator.localhost`:
 
-- In Settings → General, turn on **Keep Plannotator's cookies to itself** (in
+- In Settings → General, turn on **Open Plannotator at plannotator.localhost** (in
   plan review, code review, annotate, or the Inbox). This writes the setting
   below to config.json.
 - Or add `"urlHost": "plannotator.localhost"` to `~/.plannotator/config.json`.

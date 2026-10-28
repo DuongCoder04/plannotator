@@ -529,7 +529,7 @@ const ERROR_STATUS: Record<string, number> = {
   tailscale_env_decides: 409,
   // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
-  // Settings → General → "Keep Plannotator's cookies to itself" (#2184): locked by the env var or another urlHost.
+  // Settings → General → "Open Plannotator at plannotator.localhost" (#2184): locked by the env var or another urlHost.
   cookie_host_env_decides: 409,
   cookie_host_url_host_in_use: 409,
   tailscale_unavailable: 409,
@@ -1594,7 +1594,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
 
   /**
-   * "Keep Plannotator's cookies to itself" (#2184): config.json `urlHost:
+   * "Open Plannotator at plannotator.localhost" (#2184): config.json `urlHost:
    * "plannotator.localhost"`, shared with plan review, code review and
    * annotate. `env` is PLANNOTATOR_URL_HOST when set and `url_host` another
    * config.json `urlHost`: either locks the switch. Applies from the next start.
@@ -1708,7 +1708,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     sound: soundState(),
     /** Settings → About: update notices and automatic updates. */
     updates: updatesState(),
-    /** Settings → General: "Keep Plannotator's cookies to itself" (#2184); only for a page on this computer. */
+    /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184); only for a page on this computer. */
     ...(via === "local" ? { cookie_host: cookieHostWire() } : {}),
     /** Plannotator's appearance (config.json `theme`), shared with plan review; null when never chosen. */
     theme: themeState(),

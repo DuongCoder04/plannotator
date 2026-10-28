@@ -1,5 +1,5 @@
 /**
- * "Keep Plannotator's cookies to itself" (#2184) through the Pi (node:http)
+ * "Open Plannotator at plannotator.localhost" (#2184) through the Pi (node:http)
  * servers, the mirror of packages/server/cookie-host-config.test.ts: POST
  * /api/config `{ cookieHost }` writes or removes `urlHost:
  * "plannotator.localhost"`, never replaces another `urlHost`, is refused and

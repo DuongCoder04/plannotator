@@ -1,5 +1,5 @@
 /**
- * "Keep Plannotator's cookies to itself" (#2184) through the Bun servers:
+ * "Open Plannotator at plannotator.localhost" (#2184) through the Bun servers:
  * POST /api/config `{ cookieHost }` writes or removes `urlHost:
  * "plannotator.localhost"`, never replaces another `urlHost` (a tailnet name,
  * `auto`, an IP), is locked while PLANNOTATOR_URL_HOST is set, and is refused
