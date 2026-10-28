@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import type { TailscaleRunner } from "@plannotator/shared/tailscale";
+import { describeTailscaleFailure, type TailscaleRunner } from "@plannotator/shared/tailscale";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { takeDownInboxTailscale } from "./inbox-tailscale";
 
@@ -458,7 +458,8 @@ describe("Inbox over your tailnet", () => {
     const state = inbox.tailscale.state();
     expect(state.on).toBe(true);
     expect(state.url).toBeNull();
-    expect(state.error).toContain("Tailscale is turned off on this computer");
+    // Tailscale's reason, as describeTailscaleFailure words it, reaches the window.
+    expect(state.error).toContain(describeTailscaleFailure({ status: 1, stdout: "", stderr: "Tailscale is stopped." }));
     expect(inbox.tailscale.listenerPort()).toBeNull();
     expect(registryOf(dataDir).tailscale).toMatchObject({ url: null, error: state.error });
     const settings = (await (await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/settings`)).json()) as Json;

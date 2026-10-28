@@ -115,7 +115,7 @@ export function explainTailscaleSetup(result: TailscaleRunResult): string | unde
     return (
       "Tailscale Serve is off for your tailnet. That is a Tailscale setting, not a Plannotator bug.\n" +
       (link
-        ? `Turn it on here, then try again: ${link}`
+        ? `Turn it on at ${link} then try again.`
         : "Turn on HTTPS Certificates in the Tailscale admin console (https://login.tailscale.com/admin/dns), then try again.")
     );
   }
