@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./agents": "./agents.ts",
+    "./product-feedback": "./product-feedback.ts",
     "./inbox-acp": "./inbox-acp.ts",
     "./diff-paths": "./diff-paths.ts",
     "./diff-files": "./diff-files.ts",
@@ -18,6 +19,7 @@
     "./guide-builder": "./guide-builder.ts",
     "./guide-builder-tools": "./guide-builder-tools.ts",
     "./diff-type": "./diff-type.ts",
+    "./update-exit-codes": "./update-exit-codes.ts",
     "./review-prompt": "./review-prompt.ts",
     "./annotatable": "./annotatable.ts",
     "./annotation-threads": "./annotation-threads.ts",

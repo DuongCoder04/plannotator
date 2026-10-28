@@ -37,7 +37,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, drawnSection, filterSections, heldNotice, markHeldRowArchived, putRowBack, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -75,6 +75,8 @@ import { TOUR_FIT_LINES, TOUR_FIT_TITLE, TourIntro } from './tour/Fit';
 import { TOUR_FIRST_QUESTION_PROMPT, TOUR_PROJECT_ID, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCanForward, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded, type TourUi } from './tour/model';
 import { ThreadWait } from './components/ThreadWait';
 import { AgentNoteDialog } from './components/AgentNoteDialog';
+import { FeedbackDialog } from './components/FeedbackDialog';
+import { feedbackCopiedToast, feedbackPrompt } from './feedbackPrompt';
 import { cardReport, noteQuestionRows } from './agents';
 import type { InboxAgentRow, InboxAgentsModel, InboxConnectReport, InboxTourChange, InboxTourState } from '@plannotator/core/inbox-types';
 import { SettingsPage } from './components/Settings';
@@ -87,7 +89,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
-import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
+import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
@@ -631,6 +633,8 @@ function Inbox() {
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The one-time sound dialog: open on this load, or shown on it (then the notification ask line waits for another load). */
   const [soundDialog, setSoundDialog] = useState<'none' | 'open' | 'shown'>('none');
+  /** Sidebar → Feedback (components/FeedbackDialog.tsx): open only on the person's click. */
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const soundDialogAsked = useRef(false);
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -814,13 +818,15 @@ function Inbox() {
   /**
    * The list on screen catches up: with the person's own reads and actions
    * (`own`: closing a thread; agent activity still waits behind "N new"), or
-   * with everything (`all`: Show, another folder or page).
+   * with everything (`all`: Show, another folder or page). `opening`: the
+   * thread a covered list settles behind (a phone, a stacked window), which
+   * settles as it now is, like the thread just closed.
    */
   const settleList = useCallback(
-    (what: 'own' | 'all', slide: boolean) => {
+    (what: 'own' | 'all', slide: boolean, opening?: OpenThread) => {
       cancelSettle();
       // The thread just closed settles as it now is, an arrival there included (held.ts settleOwn).
-      const closed = closing.current;
+      const closed = opening ?? closing.current;
       closing.current = null;
       const next = latestRef.current;
       if (!next) return;
@@ -839,6 +845,8 @@ function Inbox() {
     try {
       const next = await inboxApi.list();
       setPageSession(next.serverSession);
+      // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
+      latestRef.current = next;
       setLatest(next);
       if (adopt && slide) armSlide();
       // Show's light for a refresh (clicking Inbox): the rows it brings in, against the list on screen now.
@@ -878,6 +886,24 @@ function Inbox() {
   lookRef.current = look;
   /** Per thread, the furthest look on its way to the server. */
   const seenPosting = useRef(new Map<string, number>());
+  /**
+   * Per thread, the looks this tab has sent (the open look, seen on sight) and
+   * the list read after each, until they land. Mark read waits for them, so it
+   * decides on the state the look gives the thread whenever it is pressed
+   * (markRead.ts `seenHeldInNew`).
+   */
+  const looksInFlight = useRef(new Map<string, Set<Promise<unknown>>>());
+  const trackLook = useCallback((threadId: string, look: Promise<unknown>) => {
+    const looks = looksInFlight.current;
+    const mine = looks.get(threadId) ?? new Set<Promise<unknown>>();
+    looks.set(threadId, mine);
+    mine.add(look);
+    const done = () => {
+      mine.delete(look);
+      if (mine.size === 0 && looks.get(threadId) === mine) looks.delete(threadId);
+    };
+    look.then(done, done);
+  }, []);
   const seenRetries = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const retries = seenRetries.current;
@@ -893,7 +919,7 @@ function Inbox() {
       if ((seenPosting.current.get(threadId) ?? -1) >= through) return;
       seenPosting.current.set(threadId, through);
       const attempt = (tries: number) => {
-        void inboxApi
+        const look = inboxApi
           .seen(threadId, through)
           .then(() => {
             if (seenPosting.current.get(threadId) === through) seenPosting.current.delete(threadId);
@@ -918,10 +944,11 @@ function Inbox() {
             }, SEEN_RETRY_MS * 2 ** tries);
             seenRetries.current.add(timer);
           });
+        trackLook(threadId, look);
       };
       attempt(0);
     },
-    [refreshList],
+    [refreshList, trackLook],
   );
 
   const refreshThread = useCallback(async (threadId: string) => {
@@ -1271,17 +1298,26 @@ function Inbox() {
         opened = landed();
       }
       closing.current = null;
-      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false);
+      // The thread opening settles as it now is too: an agent message the list
+      // held there is the person's to read now, not news for "N new". Held,
+      // its row kept the state the list showed (Quiet, say) and Back, which
+      // settles nothing when every message is seen, left it there with its
+      // questions open.
+      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false, { threadId });
       // The look covers what this read showed, not a message that lands before the server takes it.
-      await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
-      if (!cancelled) await refreshList(false);
+      const look = (async () => {
+        await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
+        if (!cancelled) await refreshList(false);
+      })();
+      trackLook(threadId, look);
+      await look;
     })();
     return () => {
       cancelled = true;
       if (retry) clearTimeout(retry);
       wakeThreadRetry.current = null;
     };
-  }, [route.thread, threadRetry, refreshThread, refreshList, settleList]);
+  }, [route.thread, threadRetry, refreshThread, refreshList, settleList, trackLook]);
   // The thread landed while focus was in its place: focus goes to its subject, never to the page.
   useLayoutEffect(() => {
     if (!focusThreadSubject.current || !thread || thread.thread_id !== route.thread) return;
@@ -1341,11 +1377,18 @@ function Inbox() {
     requestAnimationFrame(() => requestAnimationFrame(keepFocus));
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
-      // when a message arrived there that they did not see: it comes back
-      // unread, in the section its state gives it (held.ts settleThread).
+      // when a message arrived there that they did not see, or when it now
+      // waits on them and is drawn in another group (an agent asked while it
+      // was open): it takes the section its state gives it (held.ts
+      // settlesOnBack, settleThread).
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
-      if (next && next.unseen > 0) setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
+        // Back put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect):
+        // after a key, and after a stacked window's Back by mouse (#1866 hands that focus to the row too); never after a phone's tap.
+        if (lastInput() === 'keyboard' || !isPhone()) refocusRow.current = closed;
+        setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      }
       return;
     }
     if (prefersReducedMotion()) settleList('own', false);
@@ -1926,7 +1969,22 @@ function Inbox() {
    * toast a warning with Reply.
    */
   const markRead = async (threadId: string, read: boolean) => {
+    // A look this tab sent and the server has not taken yet: decide on what it gives (a seen update held in New
+    // moves locally), whether Mark read came before the look landed or after. Never longer than
+    // MARK_READ_LOOK_WAIT_MS: a look that stalls leaves the thread New on the server, so Mark read writes.
+    const looks = read ? looksInFlight.current.get(threadId) : undefined;
+    if (looks) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(looks), new Promise<void>((done) => (timer = setTimeout(done, MARK_READ_LOOK_WAIT_MS)))]);
+      clearTimeout(timer);
+    }
     const before = rowOf(threadId);
+    if (read && before) {
+      const drawn = drawnSection(shownRef.current, threadId);
+      if (seenHeldInNew(before, drawn)) return moveSeenToQuiet(threadId, before);
+      // Once the look landed nothing waits here any more (the thread closed and the list settled, say).
+      if (looks && !canToggleRead(before, drawn)) return;
+    }
     // With a thread open the list holds still: the row moves to Quiet when the list next settles.
     const open = routeRef.current.thread;
     const deferred = open !== null;
@@ -1961,6 +2019,33 @@ function Inbox() {
             },
           }
         : {}),
+    });
+  };
+
+  /**
+   * Mark read on a seen update the list still holds in New (markRead.ts
+   * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
+   * written; its row moves to Quiet now, sliding as the row's hover Mark read
+   * does. Undo puts it back where it was drawn.
+   */
+  const moveSeenToQuiet = (threadId: string, row: InboxListRow) => {
+    const before = shownRef.current;
+    const sections = latestRef.current?.sections;
+    if (!before || !sections) return;
+    armSlide();
+    setShown((current) => (current ? settleThread(current, sections, threadId) : current));
+    // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
+    const { lead, detail } = markReadToast(row, 'list');
+    showToast({
+      lead,
+      detail,
+      icon: 'check',
+      onUndo: () => {
+        dismissToast();
+        armSlide();
+        setShown((current) => (current ? putRowBack(current, before, threadId) : current));
+        say('Moved back.');
+      },
     });
   };
 
@@ -2242,15 +2327,15 @@ function Inbox() {
   // An open file (its viewer, the stepping bar, the guard row) and a guided
   // review own the keyboard: E and Z stand down there, and while the sound
   // dialog is up.
-  const keysRef = useRef({ markRead, toast, thread, soundDialog, agentNoteOpen: false });
-  keysRef.current = { markRead, toast, thread, soundDialog, agentNoteOpen: typeof agentNote === 'object' };
+  const keysRef = useRef({ markRead, toast, thread, soundDialog, agentNoteOpen: false, feedbackOpen: false });
+  keysRef.current = { markRead, toast, thread, soundDialog, agentNoteOpen: typeof agentNote === 'object', feedbackOpen };
   /**
    * What E or Z does now, or null when it stands down (the rules: guards.ts
    * for typing, composition and repeat; the rest is the thread's own).
    */
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
     if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !singleKeysLive()) return null;
-    if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || routeRef.current.guide) return null;
+    if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || keysRef.current.feedbackOpen || routeRef.current.guide) return null;
     // Under a dialog (Decide opens over the thread it came from) the letters are the dialog's.
     if (modalOpen()) return null;
     // Words selected in a message: its toolbar takes the letters (a comment starting with them).
@@ -2273,7 +2358,7 @@ function Inbox() {
     const threadId = rowId ?? (open && open.thread_id === routeRef.current.thread ? open.thread_id : null);
     if (!threadId) return null;
     const row = rowOf(threadId);
-    if (!row || !canToggleRead(row)) return null;
+    if (!row || !canToggleRead(row, drawnSection(shownRef.current, threadId))) return null;
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
@@ -3188,6 +3273,8 @@ function Inbox() {
   // The last order that drew the open thread's row, kept when that row leaves the rows on screen: J / K step from its slot.
   const openSlot = useRef<{ thread: string; order: string[] } | null>(null);
   const focusAfterShow = useRef(false);
+  /** The row Back over a covered list focused (a key, or a stacked window's mouse Back), which its settle redraws in another group. */
+  const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
     const from = slideFrom.current;
@@ -3212,9 +3299,14 @@ function Inbox() {
     const shownAll = focusAfterShow.current;
     focusAfterShow.current = false;
     const gone = listFocus.current;
+    const refocus = refocusRow.current;
+    refocusRow.current = null;
     const active = document.activeElement;
     const lost = !active || active === document.body;
-    if (body && lost && shownAll) {
+    const moved = body && refocus ? rowElement(body, refocus) : null;
+    if (moved && lost) {
+      moved.focus({ preventScroll: true });
+    } else if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
     } else if (body && lastInput() === 'keyboard' && gone && lost && rowElement(body, gone)) {
@@ -3609,6 +3701,7 @@ function Inbox() {
             thread={thread}
             sent={openThreadRow?.sent ?? null}
             row={openThreadRow}
+            drawn={drawnSection(shown, thread.thread_id)}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
             onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
@@ -3694,7 +3787,7 @@ function Inbox() {
             lookSeq={look?.threadId === thread.thread_id ? look.seq : undefined}
             seenThrough={look?.threadId === thread.thread_id ? look.through : null}
             onSeen={(through) => seenOnSight(thread.thread_id, through)}
-            covered={!!route.guide || updateDialog !== null || soundDialog === 'open' || agentNoteOpen || compose !== null}
+            covered={!!route.guide || updateDialog !== null || soundDialog === 'open' || agentNoteOpen || feedbackOpen || compose !== null}
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
@@ -3807,6 +3900,7 @@ function Inbox() {
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
             onShortcuts={() => setMapOpen(true)}
+            onFeedback={() => setFeedbackOpen(true)}
           />
           )
         }
@@ -3866,6 +3960,22 @@ function Inbox() {
             setSoundDialog('shown');
             void sound.setEnabled(false).then((saved) => showToast(saved ? { icon: 'mute', lead: 'Sound off' } : { icon: 'warn', lead: 'Sound setting not saved' }, 4200));
           }}
+        />
+      )}
+      {feedbackOpen && (
+        <FeedbackDialog
+          version={latest?.version ?? settings?.version ?? 'dev'}
+          phone={phone}
+          onSend={async (input) => {
+            await inboxApi.sendFeedback(input);
+          }}
+          onCopyPrompt={(draft) => {
+            // The copy starts inside the click (the clipboard needs it); the dialog closes so the toast is in view.
+            const copied = copyTextToClipboard(feedbackPrompt(settings?.mcp_command ?? null, draft));
+            setFeedbackOpen(false);
+            void copied.then((ok) => showToast(feedbackCopiedToast(ok), ok ? 6000 : 4200));
+          }}
+          onClose={() => setFeedbackOpen(false)}
         />
       )}
       {typeof agentNote === 'object' && agents && (

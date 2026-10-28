@@ -15,6 +15,8 @@ interface ToolbarProps {
   onRedo?: () => void;
   onClear: () => void;
   onSave: () => void;
+  /** The key named in the ✓'s title: Escape by default; Enter where Escape cancels (`escapeCancels`). */
+  saveKey?: 'Escape' | 'Enter';
 }
 
 const PenIcon = () => (
@@ -107,6 +109,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onRedo,
   onClear,
   onSave,
+  saveKey = 'Escape',
 }) => {
   const currentSizeIndex = STROKE_SIZES.indexOf(strokeSize);
   const canDecrease = currentSizeIndex > 0;
@@ -265,7 +268,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       <button
         type="button"
         onClick={onSave}
-        title="Save (Esc)"
+        title={saveKey === 'Enter' ? 'Save (Enter)' : 'Save (Esc)'}
         aria-label="Save"
         className="shrink-0 p-1.5 rounded transition-colors bg-success text-success-foreground hover:opacity-90"
       >
