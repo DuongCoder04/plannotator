@@ -26,7 +26,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const FAKE_AGENT_BINS = ["codex", "gemini", "devin", "amp", "cline", "pi", "opencode", "cursor-agent", "kiro-cli"] as const;
+export const FAKE_AGENT_BINS = ["codex", "gemini", "qwen", "devin", "amp", "cline", "pi", "opencode", "cursor-agent", "kiro-cli"] as const;
 export type FakeAgentBin = (typeof FAKE_AGENT_BINS)[number];
 
 export interface FakeAgents {
@@ -67,13 +67,15 @@ const list = (v) => (v || "").split(",").filter(Boolean);
 if (args[0] === "--fake-grandchild") setTimeout(() => {}, 30000);
 else start();
 function start() {
+  // FAKE_AGENT_CWD_LOG: every run (--version too) with the folder it ran in.
+  if (process.env.FAKE_AGENT_CWD_LOG) fs.appendFileSync(process.env.FAKE_AGENT_CWD_LOG, JSON.stringify({ name, args, cwd: process.cwd() }) + "\n");
   // Each real CLI's --version line (FAKE_<NAME>_VERSION overrides it), answered before anything is recorded.
   if (args[0] === "--version") {
     if (list(process.env.FAKE_AGENT_HANG_VERSION).includes(name)) {
       setInterval(() => {}, 1000);
       return;
     }
-    const versions = { codex: "codex-cli 0.160.0", gemini: "0.43.0", devin: "devin 2026.7.16 (4723f912)", amp: "0.0.1781669741-g230fdd (released 2026-06-17)", pi: "0.99.1" };
+    const versions = { codex: "codex-cli 0.160.0", gemini: "0.43.0", qwen: "0.26.2", devin: "devin 2026.7.16 (4723f912)", amp: "0.0.1781669741-g230fdd (released 2026-06-17)", pi: "0.99.1" };
     const override = process.env["FAKE_" + name.toUpperCase().replace(/-/g, "_") + "_VERSION"];
     process.stdout.write((override !== undefined ? override : versions[name] || "1.0.0") + "\n");
     process.exit(0);
@@ -157,6 +159,30 @@ function main() {
     case "gemini":
       jsonAgent(path.join(fakeHome, ".gemini", "settings.json"), "mcpServers", 4, 5);
       break;
+    case "qwen": {
+      // As Qwen Code 0.26 does: it writes back every server as it resolved them, $VAR and \${VAR} filled in from
+      // its environment (so Plannotator never runs it on settings.json), and logs a failed write and exits 0.
+      const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
+      const file = path.join(home, "settings.json");
+      const config = readJson(file);
+      const resolve = (v) =>
+        typeof v === "string"
+          ? v.replace(/\$\{(\w+)\}|\$(\w+)/g, (m, a, b) => process.env[a || b] ?? m)
+          : Array.isArray(v) ? v.map(resolve) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)])) : v;
+      const servers = resolve(config.mcpServers || {});
+      if (args[1] === "add") {
+        const words = args.slice(5);
+        servers[args[4]] = { command: words[0], args: words.slice(1) };
+      } else if (args[1] === "remove") delete servers[args[args.length - 1]];
+      config.mcpServers = servers;
+      try {
+        fs.mkdirSync(home, { recursive: true });
+        fs.writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+      } catch (error) {
+        process.stderr.write("Error saving user settings file: " + error.message + "\n");
+      }
+      break;
+    }
     case "devin":
       jsonAgent(path.join(xdg, "devin", "config.json"), "mcpServers", 4, 5);
       break;

@@ -71,6 +71,7 @@ Agents use it from their next session. PLANNOTATOR_INBOX_CONNECT=0 skips this st
 | Pi without the extension | Pi 0.99 or later on your `PATH` (older Pi has no `pi mcp`: connect it by hand) | `pi mcp add plannotator-inbox` |
 | Codex | `codex` 0.35 or later on your `PATH` (older Codex has no `codex mcp add`, and a `~/.codex` or `$CODEX_HOME` folder without the CLI: connect it by hand) | `codex mcp add plannotator-inbox` (the Codex app and IDE extension share it) |
 | Gemini CLI | `gemini` 0.1.19 or later on your `PATH` (older has no `gemini mcp add`: connect it by hand; `$GEMINI_CLI_HOME` honored) | `gemini mcp add -s user plannotator-inbox` |
+| Qwen Code | `qwen` on your `PATH`, or a `~/.qwen` or `$QWEN_HOME` folder | one `plannotator-inbox` key in Qwen's `settings.json` |
 | Windsurf / Devin, Amp | `devin` or `amp` on your `PATH` | the agent's own `mcp add plannotator-inbox` |
 | Cursor, Kiro | `~/.cursor` exists or `cursor` / `cursor-agent` is on your `PATH`; `~/.kiro` exists or `kiro-cli` is on your `PATH` | one `plannotator-inbox` key in `~/.cursor/mcp.json` or `~/.kiro/settings/mcp.json` |
 | The Claude app | its settings folder exists | one key in `claude_desktop_config.json` (restart the Claude app) |
@@ -83,6 +84,7 @@ Each entry runs `<your plannotator binary> inbox mcp`. The agent uses it from it
 - An existing `plannotator-inbox` entry that runs something else is never replaced.
 - In a JSON file only that one entry is added; every other byte of the file stays as it was, and removing it gives the file back exactly as it was (an empty file stays empty; a file Plannotator created is deleted). A file Plannotator cannot edit that way (comments, a duplicate key) is left as it was, and the terminal says why.
 - Editors (VS Code, Zed, JetBrains, Goose) are never changed. Settings has a one-click link or a snippet for each.
+- Qwen Code's `settings.json` may hold comments: Plannotator keeps every one, and adds only its own entry. It never uses `qwen mcp add`, which writes your other servers back with their `${VAR}` values filled in (a token kept in your environment would end up in the file). A file that is not valid JSON or is read-only is left as it was, and the terminal says why. A relative `QWEN_HOME` names a different folder in each project, so you connect Qwen Code by hand then. If the Inbox starts with another `QWEN_HOME` than the one Qwen Code was connected in, Plannotator leaves both folders as they are and tells you once. **Settings → Agents** shows Qwen Code off there, with the folder it is connected in; turn it on to move it. If the new folder's settings.json can't take it, nothing changes and the reason is shown.
 - `PLANNOTATOR_INBOX_CONNECT=0` skips this step.
 - `plannotator uninstall` removes every entry it recorded adding (never one you added yourself). `--dry-run` lists them first. If its record (`~/.plannotator/inbox/agents.json`) is gone, it removes none: an entry that runs this Plannotator is named with how to remove it, since you may have added it by hand.
 
@@ -95,6 +97,7 @@ The first time you open the Inbox after it connected your agents, a dialog asks 
 | Claude Code | `~/.claude/rules/plannotator-inbox.md` (a file of its own) |
 | Codex | `~/.codex/AGENTS.override.md` when you have one, else `~/.codex/AGENTS.md` |
 | Gemini CLI | `~/.gemini/GEMINI.md` (or your `context.fileName`) |
+| Qwen Code | `~/.qwen/QWEN.md` (or your `context.fileName`; in `$QWEN_HOME` when set) |
 | Pi | the one instructions file Pi reads in `~/.pi/agent/` |
 | OpenCode | `~/.config/opencode/AGENTS.md`, only when you already have it: creating it would stop OpenCode 1 reading your `~/.claude/CLAUDE.md` |
 | Cursor | Customize → Rules in the Cursor app (you copy it by hand; Cursor has no global rules file) |
@@ -306,7 +309,7 @@ claude mcp add --scope user plannotator-inbox -- plannotator inbox mcp
 codex mcp add plannotator-inbox -- plannotator inbox mcp
 ```
 
-The Inbox's first-run screen and **Settings** give the exact command or install link for each client, with the absolute path of your `plannotator` binary filled in. The list covers Claude Code, the Claude app, Codex, Cursor, VS Code, Windsurf / Devin, Gemini CLI, Goose, Amp, Cline, Pi, OpenCode, Zed, Kiro, JetBrains, and any other MCP client. Apps started from the Dock may not see your shell's `PATH`, which is why the commands use the full path.
+The Inbox's first-run screen and **Settings** give the exact command or install link for each client, with the absolute path of your `plannotator` binary filled in. The list covers Claude Code, the Claude app, Codex, Cursor, VS Code, Windsurf / Devin, Gemini CLI, Qwen Code, Goose, Amp, Cline, Pi, OpenCode, Zed, Kiro, JetBrains, and any other MCP client. Apps started from the Dock may not see your shell's `PATH`, which is why the commands use the full path.
 
 **Codex** needs no plugin: with Codex 0.149 or later, connected through `plannotator inbox mcp`, your reply arrives in the Codex thread that asked as a new turn by itself (in the TUI, the Codex app and the IDE extension; a one-shot `codex exec` run is not woken, its agent waits for the reply instead). The Inbox puts it there with `codex queue`: an idle thread starts the turn within about a second, a busy one gets it when its current turn ends (never in the middle of one), and a thread whose Codex is closed gets it when you resume it. The Inbox finds `codex` on its `PATH`, else the ChatGPT or Codex app's own Codex. While it queues, your reply is an argument of the `codex queue` command, so for that moment it shows in the process list. The line under your reply says "Queued for Codex; it gets this as its next turn." until the thread's next turn uses the Inbox; there is no **Send now** for Codex. If Codex does not know the thread (it was deleted, or Codex uses another `CODEX_HOME` than the Inbox), the reply is saved for the next agent, as for a session that has ended. If handing it to Codex took too long (30 seconds), the Inbox does not try again, so it never arrives twice, and the line says the reply is saved for the agent's next read. If the Inbox finds no `codex` at all, the reply waits, and goes the next time something happens in the Inbox once a Codex is there.
 
