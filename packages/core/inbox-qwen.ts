@@ -5,7 +5,7 @@
  * packages/shared/inbox/qwen-sessions.ts).
  *
  * Qwen Code reaches the Inbox through MCP (the stdio shim, which the connect
- * step adds with `qwen mcp add -s user`). It tells the processes it starts
+ * step adds to Qwen's settings.json). It tells the processes it starts
  * which session they belong to (`QWEN_CODE_SESSION_ID`), and each running
  * session publishes a record at `$QWEN_HOME/sessions/<pid>.json` whose
  * `sessionId` follows `/clear` and `/resume` (Qwen's cross-session protocol,
@@ -26,8 +26,19 @@ export const INBOX_QWEN_HOST = "qwen";
 /** How the person sees a Qwen Code session. */
 export const INBOX_QWEN_NAME = "Qwen Code";
 
-/** Qwen Code's MCP client name (`initialize`'s `clientInfo.name`). */
-export const INBOX_QWEN_MCP_CLIENT = "qwen-code-mcp-client";
+/**
+ * Qwen Code's MCP client names (`initialize`'s `clientInfo.name`): a session
+ * connects as `qwen-cli-mcp-client-<server name>`
+ * (`qwen-cli-mcp-client-plannotator-inbox` here); its older one-shot
+ * connection is `qwen-code-mcp-client`.
+ */
+export const INBOX_QWEN_MCP_CLIENT_PREFIX = "qwen-cli-mcp-client-";
+export const INBOX_QWEN_MCP_CLIENT_LEGACY = "qwen-code-mcp-client";
+
+/** Whether an MCP client name is Qwen Code's. */
+export function isQwenMcpClient(name: string | null | undefined): boolean {
+  return typeof name === "string" && (name === INBOX_QWEN_MCP_CLIENT_LEGACY || (name.startsWith(INBOX_QWEN_MCP_CLIENT_PREFIX) && name.length > INBOX_QWEN_MCP_CLIENT_PREFIX.length));
+}
 
 /** The environment variable Qwen Code sets to its session id in the processes it starts (MCP servers, hooks, shell commands). */
 export const INBOX_QWEN_SESSION_ENV = "QWEN_CODE_SESSION_ID";
@@ -96,7 +107,8 @@ export function qwenRecordFilePid(name: string): { pid: number; shared: boolean 
  * One registry record, checked as Qwen's readers check it: schema version 1,
  * `pid` equal to the file name's, a session id of the right shape. Fields of
  * the wrong shape are dropped (a bad `ipcToken` makes the record unreachable,
- * never an auth line with junk in it). Null when the record is not usable.
+ * never an auth line with junk in it; a bad `kind` reads as `tui`, as Qwen
+ * reads it). Null when the record is not usable.
  */
 export function parseQwenSessionRecord(value: unknown, file: { pid: number; shared: boolean }): InboxQwenSessionRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -104,8 +116,8 @@ export function parseQwenSessionRecord(value: unknown, file: { pid: number; shar
   if (record.schemaVersion !== INBOX_QWEN_REGISTRY_SCHEMA) return null;
   if (record.pid !== file.pid) return null;
   if (!isQwenSessionId(record.sessionId)) return null;
-  const kind = record.kind === undefined ? "tui" : typeof record.kind === "string" && /^[a-z0-9-]{1,16}$/.test(record.kind) ? record.kind : null;
-  if (kind === null) return null;
+  // As Qwen's own reader: a `kind` of the wrong shape is dropped, and a record without one is a terminal session.
+  const kind = typeof record.kind === "string" && /^[a-z][a-z0-9-]{0,15}$/.test(record.kind) ? record.kind : "tui";
   const ipcPath = typeof record.ipcPath === "string" && record.ipcPath.startsWith("/") && record.ipcPath.length < 1024 && !record.ipcPath.includes("\u0000") ? record.ipcPath : null;
   const ipcToken = typeof record.ipcToken === "string" && /^[0-9a-f]{64}$/i.test(record.ipcToken) ? record.ipcToken : null;
   // A token of the wrong shape: the inbox wants one, and this one would never pass, so the record cannot be messaged.

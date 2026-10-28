@@ -67,6 +67,8 @@ const list = (v) => (v || "").split(",").filter(Boolean);
 if (args[0] === "--fake-grandchild") setTimeout(() => {}, 30000);
 else start();
 function start() {
+  // FAKE_AGENT_CWD_LOG: every run (--version too) with the folder it ran in.
+  if (process.env.FAKE_AGENT_CWD_LOG) fs.appendFileSync(process.env.FAKE_AGENT_CWD_LOG, JSON.stringify({ name, args, cwd: process.cwd() }) + "\n");
   // Each real CLI's --version line (FAKE_<NAME>_VERSION overrides it), answered before anything is recorded.
   if (args[0] === "--version") {
     if (list(process.env.FAKE_AGENT_HANG_VERSION).includes(name)) {
@@ -196,12 +198,16 @@ function main() {
       jsonAgent(path.join(fakeHome, ".gemini", "settings.json"), "mcpServers", 4, 5);
       break;
     case "qwen": {
-      // Qwen Code keeps the rest of settings.json, and logs a failed write and exits 0 (its settings writer does).
-      // FAKE_QWEN_BREAK=1 leaves the file half written; FAKE_QWEN_DROP=1 writes only the Inbox's server.
+      // As Qwen Code 0.26 does: it writes back every server as it resolved them, $VAR and \${VAR} filled in from
+      // its environment (so Plannotator never runs it on settings.json), and logs a failed write and exits 0.
       const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
       const file = path.join(home, "settings.json");
       const config = readJson(file);
-      const servers = process.env.FAKE_QWEN_DROP === "1" ? {} : config.mcpServers || {};
+      const resolve = (v) =>
+        typeof v === "string"
+          ? v.replace(/\$\{(\w+)\}|\$(\w+)/g, (m, a, b) => process.env[a || b] ?? m)
+          : Array.isArray(v) ? v.map(resolve) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)])) : v;
+      const servers = resolve(config.mcpServers || {});
       if (args[1] === "add") {
         const words = args.slice(5);
         servers[args[4]] = { command: words[0], args: words.slice(1) };
@@ -209,8 +215,7 @@ function main() {
       config.mcpServers = servers;
       try {
         fs.mkdirSync(home, { recursive: true });
-        const text = JSON.stringify(config, null, 2) + "\n";
-        fs.writeFileSync(file, process.env.FAKE_QWEN_BREAK === "1" ? text.slice(0, Math.floor(text.length / 2)) : text);
+        fs.writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
       } catch (error) {
         process.stderr.write("Error saving user settings file: " + error.message + "\n");
       }

@@ -38,15 +38,15 @@ describe('connect snippets', () => {
     expect(goose.searchParams.getAll('arg')).toEqual(['inbox', 'mcp']);
   });
 
-  // After NonoElRobot's fork (c6a02a0): the command Plannotator's own connect step runs, and the same entry by hand.
-  test('the Qwen Code snippet runs the stdio entry through qwen mcp add, keeping a spaced path one word', () => {
+  // After NonoElRobot's fork (c6a02a0): the settings.json entry, never `qwen mcp add` (it writes the other servers' ${VAR} values out).
+  test('the Qwen Code panel gives the settings.json entry with the stdio command, and no qwen mcp add', () => {
     const panel = harnessPanel('qwen', ctx('/Users/a b/.local/bin/plannotator'));
-    expect(panel.artefacts[0]).toEqual({ kind: 'code', text: "qwen mcp add -s user plannotator-inbox '/Users/a b/.local/bin/plannotator' inbox mcp" });
-    const manual = panel.another?.body;
-    expect(manual?.kind).toBe('code');
-    if (manual?.kind === 'code') {
-      expect(JSON.parse(manual.text)).toEqual({ mcpServers: { 'plannotator-inbox': { command: '/Users/a b/.local/bin/plannotator', args: ['inbox', 'mcp'] } } });
+    const entry = panel.artefacts[0];
+    expect(entry?.kind).toBe('code');
+    if (entry?.kind === 'code') {
+      expect(JSON.parse(entry.text)).toEqual({ mcpServers: { 'plannotator-inbox': { command: '/Users/a b/.local/bin/plannotator', args: ['inbox', 'mcp'] } } });
     }
+    expect(JSON.stringify(panel)).not.toContain('qwen mcp add');
   });
 
   test('every harness has a panel, and every JSON snippet parses', () => {

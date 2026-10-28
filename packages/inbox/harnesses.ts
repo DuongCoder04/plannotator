@@ -197,14 +197,11 @@ export function harnessPanel(id: HarnessId, ctx: ConnectContext): HarnessPanel {
         note: 'Adds it to Gemini CLI in every project.',
       };
     case 'qwen':
-      // After NonoElRobot's fork (c6a02a0): the command, and the settings.json entry by hand.
+      // After NonoElRobot's fork (c6a02a0): the settings.json entry. Not `qwen mcp add`: it writes the
+      // other servers back with their ${VAR} values filled in, so a token kept in the environment lands in the file.
       return {
-        artefacts: [{ kind: 'code', text: `qwen mcp add -s user ${SERVER} ${cmd}` }],
-        note: 'Adds it to Qwen Code in every project.',
-        another: {
-          summary: 'add it to ~/.qwen/settings.json by hand',
-          body: { kind: 'code', label: '~/.qwen/settings.json', text: mcpServersSnippet(ctx) },
-        },
+        artefacts: [{ kind: 'code', label: '~/.qwen/settings.json', text: mcpServersSnippet(ctx) }],
+        note: "Merge it into mcpServers in Qwen Code's settings.json ($QWEN_HOME/settings.json when you set QWEN_HOME). It applies in every project.",
       };
     case 'goose':
       return {
