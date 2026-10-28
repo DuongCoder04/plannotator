@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { DiffLineBgIntensity } from '@plannotator/shared/config';
 import { useTheme } from '@plannotator/ui/components/ThemeProvider';
 import { useConfigValue } from '@plannotator/ui/config';
+import { buildPierreFontCSS } from '../utils/pierreFontCss';
 
 /**
  * The (colorTheme, mode) -> Shiki theme mapping moved to
@@ -242,11 +243,7 @@ export function usePierreTheme(options?: {
       const primary = styles.getPropertyValue('--primary').trim();
       if (!bg || !fg) return;
 
-      const fontCSS = fontFamily || fontSize ? `
-          pre, code, [data-line-content], [data-column-number] {
-            ${fontFamily ? `font-family: '${fontFamily}', monospace !important;` : ''}
-            ${fontSize ? `font-size: ${fontSize} !important; line-height: 1.5 !important;` : ''}
-          }` : '';
+      const fontCSS = buildPierreFontCSS(fontFamily, fontSize);
 
       setPierreTheme({
         type: resolvedMode,
@@ -275,6 +272,13 @@ export function usePierreTheme(options?: {
           [data-diff-type='split'][data-overflow='scroll'] > [data-code][data-additions] [data-content] {
             min-width: 0 !important;
           }
+          /* Pierre's own horizontal scrollbar sits at the bottom of each
+             file's content, which is off-screen on any diff taller than the
+             panel (#1048). DiffHScrollbar replaces it, pinned to the file
+             header, so suppress this one. Height only — the vertical width
+             is already 0 upstream. */
+          [data-code] { scrollbar-width: none !important; }
+          [data-code]::-webkit-scrollbar { height: 0 !important; }
           .pn-token-hover {${tokenHoverUnderlineCss(primary || 'oklch(0.70 0.20 280)')}
           }
           .pn-token-nav {

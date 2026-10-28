@@ -1,5 +1,5 @@
 ---
-description: Open interactive code review for current changes or a PR URL; --base <ref> / --diff-type <type> pin the session's opening diff (session-only, git-only)
+description: Open interactive code review for current changes, another directory, or a PR URL; --base <ref> / --diff-type <type> pin the session's opening diff (session-only, git-only)
 allowed-tools: shell(plannotator:*)
 ---
 
@@ -9,4 +9,4 @@ allowed-tools: shell(plannotator:*)
 
 ## Your task
 
-If the review above contains feedback or annotations, address them. If no changes were requested, acknowledge and continue.
+If the review above contains feedback or annotations, address them. If no changes were requested, acknowledge and continue. If the session closes without feedback (the output is "Review session closed without feedback." or empty), acknowledge it in one sentence and stop. Do not begin any work: closing the session is not approval.

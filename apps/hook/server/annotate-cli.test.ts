@@ -20,16 +20,21 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
+import { NO_BROWSER } from "../../../tests/helpers/no-browser";
+import {
+  closeServer,
+  deniedLowPort,
+  occupyConsecutivePorts,
+  reserveFreePort,
+} from "../../../tests/helpers/live-port";
 
 const serverDir = import.meta.dir;
 const cliEntry = join(serverDir, "index.ts");
-const distDir = join(serverDir, "..", "dist");
-const distFiles = ["index.html", "review.html"];
 
 let fixtureDir: string;
 let dataDir: string;
-const createdDistFiles: string[] = [];
-let createdDistDir = false;
+let stubs: string[] = [];
 
 function runAnnotate(args: string[], envOverrides: Record<string, string> = {}): {
   exitCode: number;
@@ -59,17 +64,7 @@ function runAnnotate(args: string[], envOverrides: Record<string, string> = {}):
 }
 
 beforeAll(() => {
-  if (!existsSync(distDir)) {
-    mkdirSync(distDir, { recursive: true });
-    createdDistDir = true;
-  }
-  for (const file of distFiles) {
-    const path = join(distDir, file);
-    if (!existsSync(path)) {
-      writeFileSync(path, "<!-- test placeholder -->");
-      createdDistFiles.push(path);
-    }
-  }
+  stubs = stubHookDistHtml();
 
   fixtureDir = mkdtempSync(join(tmpdir(), "plannotator-annotate-cli-"));
   dataDir = join(fixtureDir, ".plannotator-data");
@@ -89,12 +84,8 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(fixtureDir, { recursive: true, force: true });
-  for (const path of createdDistFiles) {
-    rmSync(path, { force: true });
-  }
-  if (createdDistDir) {
-    rmSync(distDir, { recursive: true, force: true });
-  }
+  // Only the stubs this file wrote; never the dist folder (a build may be writing into it).
+  removeStubbedHtml(stubs);
 });
 
 describe("annotate CLI single-token failures stay legacy", () => {
@@ -250,4 +241,207 @@ describe("plannotator annotate: live app remote hard-off (CLI layer)", () => {
       app.stop(true);
     }
   });
+});
+
+describe("annotate CLI on an occupied fixed port", () => {
+  // Remote mode binds one fixed port, so a second concurrent session finds it
+  // taken. That is a startup failure with one clean line, never a stack trace.
+  async function runOnOccupiedPort(extraArgs: string[]) {
+    const blocker = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch: () => new Response("busy") });
+    try {
+      const child = Bun.spawn([process.execPath, cliEntry, "annotate", "notes.md", ...extraArgs], {
+        cwd: fixtureDir,
+        env: {
+          ...process.env,
+          PLANNOTATOR_CWD: fixtureDir,
+          PLANNOTATOR_DATA_DIR: dataDir,
+          PLANNOTATOR_REMOTE: "1",
+          PLANNOTATOR_PORT: String(blocker.port),
+          PLANNOTATOR_BROWSER: NO_BROWSER,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const exitCode = await child.exited;
+      return {
+        port: blocker.port,
+        exitCode,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      };
+    } finally {
+      blocker.stop(true);
+    }
+  }
+
+  test("exits 1 with one line naming the port and PLANNOTATOR_PORT, no stack", async () => {
+    const result = await runOnOccupiedPort([]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`port ${result.port} (PLANNOTATOR_PORT) is already in use`);
+    // Only the usual "Resolved:" note precedes it; the failure itself is one line.
+    expect(result.stderr.trim().split("\n").filter((line) => !line.startsWith("Resolved:"))).toHaveLength(1);
+    expect(result.stderr).not.toMatch(/\n\s+at /);
+    expect(result.stdout).toBe("");
+  }, 20_000);
+
+  test("is a gate startup failure (exit 2) under a strict annotate gate", async () => {
+    const result = await runOnOccupiedPort(["--gate", "--json", "--require-approval"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("is already in use");
+    expect(result.stdout).toBe("");
+  }, 20_000);
+});
+
+describe("annotate CLI when the live proxy cannot bind (PLANNOTATOR_LIVE_PORT)", () => {
+  // `plannotator annotate http://localhost:<app>` starts a loopback proxy on
+  // PLANNOTATOR_LIVE_PORT. When no port there can be used, that is a startup
+  // failure: one clean stderr line, never a stack trace. The fake app lives in
+  // this process, so the CLI is spawned asynchronously.
+  async function runLive(livePort: string, extraArgs: string[] = []) {
+    const app = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("<html><head></head><body>app</body></html>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    });
+    // The editor gets a port of its own: a random one could be a port the
+    // test just freed (some systems hand ports out in order).
+    const editorPort = await reserveFreePort();
+    try {
+      const child = Bun.spawn(
+        [process.execPath, cliEntry, "annotate", `http://localhost:${app.port}/`, ...extraArgs],
+        {
+          cwd: fixtureDir,
+          env: {
+            ...process.env,
+            PLANNOTATOR_CWD: fixtureDir,
+            PLANNOTATOR_DATA_DIR: dataDir,
+            PLANNOTATOR_REMOTE: "0",
+            PLANNOTATOR_PORT: String(editorPort),
+            PLANNOTATOR_LIVE_PORT: livePort,
+            NO_BROWSER,
+            PLANNOTATOR_BROWSER: NO_BROWSER,
+            PLANNOTATOR_INBOX_CONNECT: "0",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const exitCode = await child.exited;
+      return {
+        exitCode,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      };
+    } finally {
+      app.stop(true);
+    }
+  }
+
+  function failureLines(stderr: string): string[] {
+    // Only the usual "Resolved:" note may precede the failure.
+    return stderr.trim().split("\n").filter((line) => line && !line.startsWith("Resolved:"));
+  }
+
+  test("every port busy exits 1 with one line, no stack", async () => {
+    const { start, servers } = await occupyConsecutivePorts(2);
+    try {
+      const result = await runLive(`${start}-${start + 1}`);
+      expect(result.exitCode).toBe(1);
+      expect(failureLines(result.stderr)).toEqual([
+        `Plannotator: live app proxy every port in PLANNOTATOR_LIVE_PORT ${start}-${start + 1} is already in use. Close another live annotation session or set PLANNOTATOR_LIVE_PORT to a different port or range.`,
+      ]);
+      expect(result.stderr).not.toMatch(/\n\s+at /);
+      expect(result.stdout).toBe("");
+    } finally {
+      await Promise.all(servers.map(closeServer));
+    }
+  }, 20_000);
+
+  test("is a gate startup failure (exit 2) under a strict annotate gate", async () => {
+    const { start, servers } = await occupyConsecutivePorts(1);
+    try {
+      const result = await runLive(String(start), ["--gate", "--json", "--require-approval"]);
+      expect(result.exitCode).toBe(2);
+      expect(failureLines(result.stderr)).toEqual([
+        `Plannotator: live app proxy port ${start} (PLANNOTATOR_LIVE_PORT) is already in use. Close another live annotation session or set PLANNOTATOR_LIVE_PORT to a different port or range.`,
+      ]);
+      expect(result.stdout).toBe("");
+    } finally {
+      await Promise.all(servers.map(closeServer));
+    }
+  }, 20_000);
+
+  test("a port this user may not bind is one line too (skipped as root)", async () => {
+    const denied = await deniedLowPort();
+    if (denied === null) {
+      console.log("skip: no denied low port here (root, or low ports are open)");
+      return;
+    }
+    const result = await runLive(String(denied));
+    expect(result.exitCode).toBe(1);
+    expect(failureLines(result.stderr)).toEqual([
+      `Plannotator: live app proxy port ${denied} (PLANNOTATOR_LIVE_PORT) could not be used (EACCES: permission denied). Ports below 1024 usually need root. Set PLANNOTATOR_LIVE_PORT to a different port or range.`,
+    ]);
+    expect(result.stderr).not.toMatch(/\n\s+at /);
+  }, 20_000);
+});
+
+/**
+ * The stdout contract for the always-printed session URL (#1134).
+ *
+ * `--json`, `--hook` and `--gate` put the decision on stdout for an agent to
+ * parse, so the ready line stays on stderr. Checked through a real session:
+ * the bytes an agent reads are the process's, not one function's. The gate
+ * never settles by itself here (no client connects), so the test ends the
+ * child it started once the ready line is out.
+ */
+describe("annotate CLI keeps stdout clean while a session is live", () => {
+  async function runUntilReady(args: string[]): Promise<{ stdout: string; stderr: string }> {
+    const child = Bun.spawn([process.execPath, cliEntry, "annotate", ...args], {
+      cwd: fixtureDir,
+      env: {
+        ...process.env,
+        PLANNOTATOR_CWD: fixtureDir,
+        PLANNOTATOR_DATA_DIR: dataDir,
+        PLANNOTATOR_REMOTE: "0",
+        PLANNOTATOR_BROWSER: NO_BROWSER,
+        PLANNOTATOR_AI: "disabled",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const sinks = { stdout: "", stderr: "" };
+    const drain = async (stream: ReadableStream<Uint8Array>, key: "stdout" | "stderr") => {
+      const decoder = new TextDecoder();
+      try {
+        for await (const chunk of stream) sinks[key] += decoder.decode(chunk, { stream: true });
+      } catch {
+        // The child ends mid-read; what arrived is enough.
+      }
+    };
+    const drained = Promise.all([drain(child.stdout, "stdout"), drain(child.stderr, "stderr")]);
+    const deadline = Date.now() + 30_000;
+    while (!sinks.stderr.includes("Plannotator session ready: ") && Date.now() < deadline) {
+      await Bun.sleep(50);
+    }
+    // Give a launch-failure line, or a stray stdout write, its moment.
+    await Bun.sleep(300);
+    child.kill();
+    await child.exited;
+    await drained;
+    return sinks;
+  }
+
+  test.each([
+    ["--gate --json", ["notes.md", "--gate", "--json"]],
+    ["--hook", ["notes.md", "--hook"]],
+    ["--gate", ["notes.md", "--gate"]],
+  ])("%s: the ready line goes to stderr, stdout stays empty", async (_label, args) => {
+    const result = await runUntilReady(args as string[]);
+    // Literal text, not the exported constant.
+    expect(result.stderr).toMatch(/\n {2}Plannotator session ready: http:\/\/localhost:\d+\n/);
+    expect(result.stdout).toBe("");
+  }, 40_000);
 });

@@ -66,6 +66,7 @@ export const {
   prepareLocalReviewDiff,
   runVcsDiff,
   getVcsFileContentsForDiff,
+  getVcsFileBytesForDiff,
   getVcsDiffFingerprint,
   canStageFiles,
   stageFile,
@@ -100,9 +101,11 @@ export type {
 
 export {
   JJ_TRUNK_REVSET,
+  jjCommitRevset,
   jjCompareTargetRevset,
   jjLineBaseRevset,
   parseCommitDiffType,
+  parseJjCommitDiffType,
   parseRemoteBookmark,
   parseWorktreeDiffType,
   validateFilePath,

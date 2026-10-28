@@ -22,6 +22,7 @@ import {
 	buildFileTree,
 	isFileBrowserExcludedPath,
 } from "../generated/reference-common.ts";
+import { explicitFileBrowserMaxFiles, listFileBrowserFiles } from "../generated/file-browser-files.ts";
 import {
 	filterWorkspaceStatusForDirectory,
 	getWorkspaceStatusForDirectory,
@@ -36,6 +37,7 @@ import {
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "../generated/resolve-file.ts";
+import { diagramRenderKindForPath, isDiagramRenderKind } from "../generated/annotatable.ts";
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
@@ -54,6 +56,7 @@ import { parseCodePath, type ParsedCodePath } from "../generated/code-file.ts";
 import { htmlToMarkdown } from "../generated/html-to-markdown.ts";
 import { disabledSourceSave, type SourceFileSnapshot, type SourceSaveCapability } from "../generated/source-save.ts";
 import {
+	createBundleSourceSaveCapability,
 	createSourceSaveCapability,
 	createSourceSaveCapabilityFromSnapshot,
 	readSourceFileSnapshot,
@@ -70,7 +73,7 @@ import { preloadFile } from "@pierre/diffs/ssr";
  * included, for legacy shape parity — see serverAnnotate.ts). Mirrors
  * packages/server/reference-handlers.ts.
  */
-export type FolderAnnotateHistory = Omit<AnnotateHistoryResult, "diffCurrent">;
+export type FolderAnnotateHistory = Omit<AnnotateHistoryResult, "diffCurrent" | "isNew">;
 
 type Res = ServerResponse;
 
@@ -85,6 +88,9 @@ export interface HandleDocOptions {
 	rewriteHtml?: (html: string, filepath: string) => string;
 	sourceSaveFilePath?: string;
 	sourceSaveFolderPath?: string;
+	/** A review of several files: the real paths of its own files that source save may write
+	 *  (`resolveBundleSourceSavePaths`). Every other document stays read-only. */
+	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
 	/**
@@ -170,7 +176,9 @@ function applyDocOptions<T extends Record<string, unknown>>(
 	if (
 		options.annotateHistory &&
 		typeof data.filepath === "string" &&
-		data.renderAs === "markdown" &&
+		// Diagram sources (.mmd/.dot) take the markdown branch's raw text, so
+		// they keep per-file version history exactly like a .txt.
+		(data.renderAs === "markdown" || isDiagramRenderKind(data.renderAs)) &&
 		data.isConverted !== true &&
 		typeof data.markdown === "string" &&
 		isAnnotatableTextPath(data.filepath)
@@ -182,7 +190,7 @@ function applyDocOptions<T extends Record<string, unknown>>(
 		}
 	}
 	if (typeof data.filepath !== "string") {
-		return (options.sourceSaveFolderPath || options.sourceSaveFilePath
+		return (options.sourceSaveFolderPath || options.sourceSaveFilePath || options.sourceSaveBundlePaths
 			? { ...next, sourceSave: disabledSourceSave("not-local-file") }
 			: next) as DocOptionsResult<T>;
 	}
@@ -198,6 +206,13 @@ function applyDocOptions<T extends Record<string, unknown>>(
 			? createSourceSaveCapabilityFromSnapshot("single-file", data.filepath, sourceSnapshot)
 			: createSourceSaveCapability("single-file", data.filepath);
 		if (sourcePath && doc.enabled && sourcePath === doc.path) {
+			options.onSourceDocumentServed?.(doc.path);
+			return { ...next, sourceSave: doc } as DocOptionsResult<T>;
+		}
+	}
+	if (options.sourceSaveBundlePaths) {
+		const doc = createBundleSourceSaveCapability(data.filepath, options.sourceSaveBundlePaths, sourceSnapshot);
+		if (doc?.enabled) {
 			options.onSourceDocumentServed?.(doc.path);
 			return { ...next, sourceSave: doc } as DocOptionsResult<T>;
 		}
@@ -269,7 +284,11 @@ function readDocument(res: Res, path: string, convert: boolean, options: HandleD
 			}
 			return;
 		}
-		jsonDoc(res, { markdown: snapshot.text, filepath: path, renderAs: "markdown" }, options, undefined, snapshot);
+		// A diagram source is served as its raw text with the engine named in
+		// `renderAs`; the editor renders it through the same DiagramBlock a
+		// ```mermaid fence uses instead of the markdown pipeline.
+		const diagramKind = diagramRenderKindForPath(path);
+		jsonDoc(res, { markdown: snapshot.text, filepath: path, renderAs: diagramKind ?? "markdown" }, options, undefined, snapshot);
 	} catch {
 		json(res, { error: "Failed to read file" }, 500);
 	}
@@ -490,15 +509,19 @@ export async function handleFileBrowserRequest(res: Res, url: URL): Promise<void
 		return;
 	}
 	try {
-		const files = new Set<string>();
-		const diskFiles: string[] = [];
-		walkMarkdownFiles(resolvedDir, resolvedDir, diskFiles);
-		for (const file of diskFiles) files.add(file);
 		const workspaceStatus = filterWorkspaceStatusForDirectory(await getWorkspaceStatusForDirectory(resolvedDir), resolvedDir, includeWorkspaceFile);
-		for (const file of getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile)) {
-			files.add(file);
-		}
-		json(res, { tree: buildFileTree([...files].sort()), workspaceStatus });
+		// Pi's file browser had no cap: it applies one only when
+		// PLANNOTATOR_FILE_BROWSER_MAX_FILES is set, and lists every file otherwise.
+		const listing = await listFileBrowserFiles(resolvedDir, {
+			seed: getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile),
+			limit: explicitFileBrowserMaxFiles(),
+		});
+		json(res, {
+			tree: buildFileTree(listing.files),
+			workspaceStatus,
+			truncated: listing.truncated,
+			...(Number.isFinite(listing.limit) ? { fileLimit: listing.limit } : {}),
+		});
 	} catch {
 		json(res, { error: "Failed to list directory files" }, 500);
 	}

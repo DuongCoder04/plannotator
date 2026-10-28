@@ -7,13 +7,20 @@ import { setFileTreeBackend, type FileTreeBackend } from './hooks/useFileBrowser
 import { setDraftTransport, type DraftTransport } from './hooks/useAnnotationDraft';
 import { setExternalAnnotationTransport, type ExternalAnnotationTransport } from './hooks/useExternalAnnotations';
 import { setAITransport, type AITransport } from './hooks/useAIChat';
-import { setSkillCatalogTransport, setSkillContentTransport, type SkillCatalogTransport, type SkillContentTransport } from './utils/skillCatalog';
+import { setSkillCatalogExportRegistration, setSkillCatalogTransport, setSkillContentTransport, type SkillCatalogTransport, type SkillContentTransport } from './utils/skillCatalog';
 import { setWebMcpPolicy, type WebMcpPolicy } from './webmcp/policy';
 import { setMathRendererLoader, type MathRenderer, type MathRendererLoader } from './utils/math';
 import { setIdentityGenerator, type IdentityGenerator } from './utils/generateIdentity';
+import { setAlertIconRenderer, type AlertIconRenderer } from './components/blocks/AlertBlock';
+import { setSkillInstructionsDestination } from './components/SkillReferenceMenu';
+import { setFenceThemeResolver, type FenceThemeResolver } from './utils/syntaxTheme';
 import { configStore } from './config';
 import type { ServerSyncFn } from './config/configStore';
 import type { ExternalAnnotationEvent, VaultNode } from './types';
+import { setComponentTooltips } from './components/HostTitle';
+import { setRichCopyEnabled } from './utils/richCopyPolicy';
+import { setDigitHexIssueRefs } from './components/InlineMarkdown';
+import { setRefCardTransport, type RefCardTransport } from './utils/refCard';
 
 // One-stop type barrel: every seam contract a host implements is importable
 // from this module, next to configurePlannotatorUI itself.
@@ -38,6 +45,9 @@ export type {
   MathRenderer,
   MathRendererLoader,
   IdentityGenerator,
+  AlertIconRenderer,
+  FenceThemeResolver,
+  RefCardTransport,
 };
 
 type ExternalAnnotationBase = { id: string; source?: string };
@@ -62,6 +72,19 @@ export interface PlannotatorUIConfig {
   skillCatalogTransport?: SkillCatalogTransport;
   /** Human-only skill contents request for feedback injection. Default: `GET /api/skills/content?name=` on the page origin. */
   skillContentTransport?: SkillContentTransport;
+  /**
+   * Register the fetched skill catalog for the per-comment feedback export
+   * (each comment's "Skills referenced" list). Default: true. A host that
+   * composes one block per message itself passes false, so a comment's
+   * `$name` stays plain text in its export.
+   */
+  skillReferenceExport?: boolean;
+  /**
+   * What a composer's "Includes skill instructions" line says a human-only
+   * skill's instructions go with. Default: "your feedback". The Plannotator
+   * Inbox, where a comment rides a reply, says "your reply".
+   */
+  skillInstructionsDestination?: string;
   serverSync?: ServerSyncFn;
   /**
    * WebMCP provider policy: `{ enabled, namePrefix }`. Default: enabled
@@ -85,6 +108,50 @@ export interface PlannotatorUIConfig {
    * dictionary by importing `@plannotator/ui/utils/identity-tater`.
    */
   identityGenerator?: IdentityGenerator;
+  /**
+   * Resolve a GitHub alert title line's `<!-- icon: name -->` to a React node.
+   * Default: null for every name, so alerts keep the type's own icon exactly as
+   * today; the package bundles no icon set. A host with one registers a renderer.
+   */
+  alertIconRenderer?: AlertIconRenderer;
+  /**
+   * Pick the Shiki theme code fences render in, per (palette id, resolved
+   * mode). Return `undefined` to keep the default resolution (the palette's
+   * `SHIKI_THEME_MAP` entry, else `pierre-dark` / `pierre-light`). Applies to
+   * every fence-style surface (Viewer fences, the code-file hover preview, the
+   * plan diff view, code review suggestion snippets); the code-review diff
+   * pane keeps its own pair. An unknown theme name renders plain text.
+   */
+  fenceTheme?: FenceThemeResolver;
+  /**
+   * Draw ui's own hover text (the annotation panel's and toolbar's buttons, a
+   * question card's decision tag, a host-resolved local link's
+   * `LocalLinkResolution.title`) as ui's `Tooltip` instead of a native
+   * `title` (`components/HostTitle`). Default: false, native titles exactly
+   * as before. The Plannotator Inbox passes true.
+   */
+  componentTooltips?: boolean;
+  /**
+   * Render a digit-only 6/8-digit `#123456` (word boundary, no leading zero)
+   * as an issue ref instead of a hex colour swatch, when a ref link can be
+   * built (a repo on a known forge). Default: false, swatches exactly as
+   * before. The Plannotator Inbox passes true (#1932).
+   */
+  digitHexIssueRefs?: boolean;
+  /**
+   * Make the selection toolbar's Copy button (Viewer and HtmlViewer) copy rich
+   * text: text/html plus text/plain in one clipboard write, and show Copy
+   * where `hideCopyButton` hid it (the Viewer on desktop). Default: false,
+   * Copy exactly as before. Plannotator's plan review, annotate, code review
+   * and Inbox pass true (#1972, `utils/richCopyPolicy`).
+   */
+  richCopy?: boolean;
+  /**
+   * Fetch an issue / PR / MR hover card's data (`components/RefHoverCard`).
+   * Default: none, so no card is drawn and nothing is requested. The
+   * Plannotator Inbox passes one over its `/api/inbox/ref` route.
+   */
+  refCardTransport?: RefCardTransport;
   /** Re-hydrate settings from the installed (SYNCHRONOUS) storageBackend after install. */
   loadSettingsFromBackend?: boolean;
 }
@@ -101,10 +168,18 @@ export function configurePlannotatorUI(config: PlannotatorUIConfig): void {
   if (config.aiTransport) setAITransport(config.aiTransport);
   if (config.skillCatalogTransport) setSkillCatalogTransport(config.skillCatalogTransport);
   if (config.skillContentTransport) setSkillContentTransport(config.skillContentTransport);
+  if (config.skillReferenceExport !== undefined) setSkillCatalogExportRegistration(config.skillReferenceExport);
+  if (config.skillInstructionsDestination) setSkillInstructionsDestination(config.skillInstructionsDestination);
   if (config.serverSync) configStore.setServerSync(config.serverSync);
   if (config.webmcp) setWebMcpPolicy(config.webmcp);
   if (config.mathRendererLoader) setMathRendererLoader(config.mathRendererLoader);
   if (config.identityGenerator) setIdentityGenerator(config.identityGenerator);
+  if (config.alertIconRenderer) setAlertIconRenderer(config.alertIconRenderer);
+  if (config.fenceTheme) setFenceThemeResolver(config.fenceTheme);
+  if (config.componentTooltips !== undefined) setComponentTooltips(config.componentTooltips);
+  if (config.digitHexIssueRefs !== undefined) setDigitHexIssueRefs(config.digitHexIssueRefs);
+  if (config.richCopy !== undefined) setRichCopyEnabled(config.richCopy);
+  if (config.refCardTransport) setRefCardTransport(config.refCardTransport);
   // Re-hydrate AFTER storageBackend is installed (load-bearing order — gated last).
   if (config.loadSettingsFromBackend) configStore.loadFromBackend();
 }

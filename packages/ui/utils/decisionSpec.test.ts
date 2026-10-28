@@ -14,6 +14,23 @@ function allInputs(): DecisionSpecInput[] {
         for (const approvalNotesSupported of [false, true])
           for (const count of [0, 1, 3])
             inputs.push({ app, gate, count, hasFeedback, approvalNotesSupported });
+  // #1057: the plan arm, across its own facts (answers, edits, hand-off agent).
+  for (const hasFeedback of [false, true])
+    for (const approvalNotesSupported of [false, true])
+      for (const count of [0, 1, 3])
+        for (const answers of [0, 1, count])
+          for (const directEdits of [false, true])
+            for (const approveTarget of [undefined, 'build'])
+              inputs.push({
+                app: 'plan', gate: true, count, hasFeedback, approvalNotesSupported,
+                plan: {
+                  answers: Math.min(answers, count),
+                  directEdits,
+                  answersOnly: count > 0 && Math.min(answers, count) === count && !directEdits,
+                  agentName: 'Claude Code',
+                  approveTarget,
+                },
+              });
   return inputs;
 }
 
@@ -147,12 +164,15 @@ describe('buildDecisionSpec invariants', () => {
       const spec = buildDecisionSpec(input);
       expect(spec.primary.id).toBe('primary');
       expect(itemIds(spec)).not.toContain('primary');
-      // The header shows Send Feedback XOR a positive finish, never both.
-      const positiveLabels = ['Done', 'Approve'];
-      if (spec.primary.label === 'Send Feedback') {
-        expect(positiveLabels).not.toContain(spec.primary.label);
+      // The header shows a send XOR a positive finish, never both. Plan's
+      // Approve may name OpenCode's hand-off agent ("Approve → build").
+      const sendLabels = ['Send Feedback', 'Send answers'];
+      const isPositive = (label: string) => label === 'Done' || label === 'Approve' || label.startsWith('Approve → ');
+      if (sendLabels.includes(spec.primary.label)) {
+        expect(isPositive(spec.primary.label)).toBe(false);
+        expect(spec.primary.icon).toBe('send');
       } else {
-        expect(positiveLabels).toContain(spec.primary.label);
+        expect(isPositive(spec.primary.label)).toBe(true);
       }
     }
   });
@@ -187,11 +207,12 @@ describe('buildDecisionSpec invariants', () => {
     const inputs: DecisionSpecInput[] = [
       ...allInputs(),
       ...([0, 1, 3] as const).flatMap((count) =>
-        [false, true].map((selfAuthored): DecisionSpecInput => ({
-          app: 'review', gate: true, count, hasFeedback: count > 0,
-          approvalNotesSupported: false,
-          platform: { label: 'GitHub', mrLabel: 'PR', selfAuthored },
-        }))),
+        [false, true].flatMap((selfAuthored) =>
+          [undefined, true, false].map((requestChangesSupported): DecisionSpecInput => ({
+            app: 'review', gate: true, count, hasFeedback: count > 0,
+            approvalNotesSupported: false,
+            platform: { label: 'GitHub', mrLabel: 'PR', selfAuthored, requestChangesSupported },
+          })))),
       ...allInputs().map((input) => ({ ...input, feedbackDelivered: true })),
     ];
     for (const input of inputs) {
@@ -221,12 +242,13 @@ describe('buildDecisionSpec invariants', () => {
     }
   });
 
-  // Guards a stale count in the label after an annotation is deleted.
-  it('interpolates the live count into the pill and the discard copy', () => {
+  // Guards a stale count in the discard copy after an annotation is deleted,
+  // and pins that the primary label itself never carries a count.
+  it('interpolates the live count into the discard copy, never the primary', () => {
     const zero = buildDecisionSpec({
       app: 'annotate', gate: false, count: 0, hasFeedback: true, approvalNotesSupported: false,
     });
-    expect(zero.primary.count).toBeUndefined();
+    expect('count' in zero.primary).toBe(false);
     // Nothing to discard at zero — no discard item with a lying "0 annotations".
     expect(itemIds(zero)).not.toContain('discard-and-finish');
 
@@ -249,7 +271,8 @@ describe('buildDecisionSpec invariants', () => {
     const three = buildDecisionSpec({
       app: 'review', gate: true, count: 3, hasFeedback: true, approvalNotesSupported: true,
     });
-    expect(three.primary.count).toBe(3);
+    expect('count' in three.primary).toBe(false);
+    expect(three.primary.label).toBe('Send Feedback');
     const discard = three.items.find((item) => item.id === 'discard-and-finish')!;
     expect(discard.label).toContain('3');
     expect(discard.confirm!.title).toContain('3');
@@ -325,11 +348,184 @@ describe('buildDecisionSpec platform arm (PR6, §3.4)', () => {
     }
   });
 
+  // #1611: GitHub refuses REQUEST_CHANGES on your own PR exactly like
+  // APPROVE, so when the platform has the review, Request changes… mutes with
+  // its own reason and a live neutral "Comment…" row keeps the empty state
+  // from becoming a dead end.
+  it('mutes Request changes on your own PR where the platform supports it, keeping a live Comment row', () => {
+    const own = buildDecisionSpec({
+      ...platformInput(0, true),
+      platform: { label: 'GitHub', mrLabel: 'PR', selfAuthored: true, requestChangesSupported: true },
+    });
+    const request = own.items.find((item) => item.id === 'request-changes');
+    expect(request?.muted).toBe(true);
+    expect(request?.subtitle).toContain("You can't request changes on your own PR");
+    const comment = own.items.find((item) => item.id === 'note-with-feedback');
+    expect(comment).toBeDefined();
+    expect(comment?.muted).toBeUndefined();
+    expect(own.items.some((item) => !item.muted)).toBe(true);
+
+    const other = buildDecisionSpec({
+      ...platformInput(0, false),
+      platform: { label: 'GitHub', mrLabel: 'PR', selfAuthored: false, requestChangesSupported: true },
+    });
+    expect(other.items.find((item) => item.id === 'request-changes')?.muted).toBeUndefined();
+    expect(itemIds(other)).not.toContain('note-with-feedback');
+  });
+
+  // A platform without a request-changes review (GitLab) must not promise one:
+  // both request-changes rows say they post as a comment, and nothing mutes
+  // on self-authorship because a comment on your own MR is allowed.
+  it('says Request changes posts as a comment where the platform has no such review', () => {
+    for (const count of [0, 3]) {
+      for (const selfAuthored of [false, true]) {
+        const spec = buildDecisionSpec({
+          ...platformInput(count, selfAuthored),
+          platform: { label: 'GitLab', mrLabel: 'MR', selfAuthored, requestChangesSupported: false },
+        });
+        const row = spec.items.find((item) => item.id === (count === 0 ? 'request-changes' : 'note-with-feedback'));
+        expect(row?.subtitle).toContain('GitLab has no request-changes review');
+        expect(row?.muted).toBeUndefined();
+      }
+    }
+  });
+
   // The platform posts to the forge API natively, so the approve rows must
   // not gate on the agent-transport advert (the §3.4 "irrelevant" ruling).
   it('ignores approvalNotesSupported', () => {
     const base = platformInput(3, false);
     expect(buildDecisionSpec({ ...base, approvalNotesSupported: true }))
       .toEqual(buildDecisionSpec(base));
+  });
+});
+
+describe('buildDecisionSpec plan arm (#1057)', () => {
+  const plan = (over: Partial<NonNullable<DecisionSpecInput['plan']>> = {}) => ({
+    answers: 0, directEdits: false, answersOnly: false, agentName: 'Claude Code', ...over,
+  });
+  const labels = (spec: DecisionSpec) => spec.items.map((item) => item.label);
+
+  // The approved proposal's first state: one Approve control, Request changes
+  // behind the caret. A host that drops notes on approval gets no
+  // "Approve with a note…" (it would lose the note).
+  it('nothing to send: Approve primary; Request changes; Approve with a note only where delivered', () => {
+    const classic = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: false, approvalNotesSupported: false, plan: plan(),
+    });
+    expect(classic.primary.label).toBe('Approve');
+    expect(classic.primary.tone).toBe('success');
+    expect(itemIds(classic)).toEqual(['request-changes']);
+    expect(classic.items[0].composer).toBeDefined();
+
+    const pi = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: false, approvalNotesSupported: true, plan: plan({ agentName: 'Pi' }),
+    });
+    expect(itemIds(pi)).toEqual(['note-with-approval', 'request-changes']);
+  });
+
+  // OpenCode: the primary names the agent approval hands off to; a long name
+  // is cut so the header never grows past it.
+  it('names the hand-off agent on Approve and Approve with notes', () => {
+    const empty = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: false, approvalNotesSupported: true,
+      plan: plan({ agentName: 'OpenCode', approveTarget: 'build' }),
+    });
+    expect(empty.primary.label).toBe('Approve → build');
+    const withNotes = buildDecisionSpec({
+      app: 'plan', gate: true, count: 2, hasFeedback: true, approvalNotesSupported: true,
+      plan: plan({ agentName: 'OpenCode', approveTarget: 'build' }),
+    });
+    expect(labels(withNotes)).toContain('Approve with notes → build');
+    const long = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: false, approvalNotesSupported: true,
+      plan: plan({ approveTarget: 'a-very-long-custom-agent-name-indeed' }),
+    });
+    expect(long.primary.label.length).toBeLessThanOrEqual('Approve → '.length + 24);
+    expect(long.primary.label.endsWith('…')).toBe(true);
+  });
+
+  // With comments the primary flips to Send Feedback (the issue's ask), and
+  // the approve-away rows follow the advert: Approve with notes where the
+  // host delivers notes, else only the discard row whose subtitle and
+  // confirm say why.
+  it('feedback: Send Feedback primary; approve rows follow approvalNotesSupported', () => {
+    const pi = buildDecisionSpec({
+      app: 'plan', gate: true, count: 3, hasFeedback: true, approvalNotesSupported: true, plan: plan({ agentName: 'Pi' }),
+    });
+    expect(pi.primary.label).toBe('Send Feedback');
+    expect(itemIds(pi)).toEqual(['note-with-feedback', 'approve-with-notes', 'discard-and-finish']);
+    expect(labels(pi)).toEqual(['Send with a note…', 'Approve with notes', 'Approve, discard 3 annotations…']);
+
+    const claude = buildDecisionSpec({
+      app: 'plan', gate: true, count: 3, hasFeedback: true, approvalNotesSupported: false, plan: plan(),
+    });
+    expect(itemIds(claude)).toEqual(['note-with-feedback', 'discard-and-finish']);
+    const discard = claude.items[1];
+    expect(discard.subtitle).toContain('Claude Code');
+    expect(discard.confirm!.message).toContain('Claude Code');
+    expect(discard.confirm!.message).toContain('Send Feedback');
+    expect(discard.confirm!.confirmText).toBe('Discard & approve'); // frozen copy
+    expect(discard.dividerBefore).toBe(true);
+  });
+
+  // Answers only: the primary is Send answers and every row counts answers,
+  // not annotations. Mixing answers with comments switches back.
+  it('answers only: Send answers; rows count answers; mixed reads Send Feedback', () => {
+    const answers = buildDecisionSpec({
+      app: 'plan', gate: true, count: 2, hasFeedback: true, approvalNotesSupported: true,
+      plan: plan({ answers: 2, answersOnly: true, agentName: 'Pi' }),
+    });
+    expect(answers.primary.label).toBe('Send answers'); // frozen copy
+    expect(labels(answers)).toEqual(['Send answers with a note…', 'Approve with notes', 'Approve, discard 2 answers…']);
+    expect(answers.items[1].subtitle).toContain('2 answers');
+
+    const mixed = buildDecisionSpec({
+      app: 'plan', gate: true, count: 3, hasFeedback: true, approvalNotesSupported: false,
+      plan: plan({ answers: 2 }),
+    });
+    expect(mixed.primary.label).toBe('Send Feedback');
+    expect(labels(mixed)).toContain('Approve, discard 2 answers and 1 annotation…');
+    expect(mixed.items.at(-1)!.confirm!.message).toContain('use Send Feedback');
+  });
+
+  // Direct edits are feedback with no annotation count: approving away still
+  // has a row (never a dead end on a host that drops notes), named for what
+  // it drops.
+  it('edits only: a discard row that names the edits', () => {
+    const spec = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: true, approvalNotesSupported: false,
+      plan: plan({ directEdits: true }),
+    });
+    expect(spec.primary.label).toBe('Send Feedback');
+    expect(labels(spec)).toEqual(['Send with a note…', 'Approve, discard direct edits…']);
+  });
+
+  it('singular feedback reads as one thing', () => {
+    const spec = buildDecisionSpec({
+      app: 'plan', gate: true, count: 1, hasFeedback: true, approvalNotesSupported: true, plan: plan(),
+    });
+    expect(spec.items[1].subtitle).toContain('1 annotation rides along');
+    expect(spec.items[2].confirm!.message).toContain('without it');
+  });
+
+  // Saved file changes are already on disk: approving drops nothing, the
+  // agent just isn't told, so the row and its confirm must not say "discard".
+  it('saved file changes only: the approve-away row says the agent is not told', () => {
+    const notice = "Your saved file change is already on disk. The agent won't be told about it.";
+    const spec = buildDecisionSpec({
+      app: 'plan', gate: true, count: 0, hasFeedback: true, approvalNotesSupported: false,
+      plan: plan({ savedFilesOnly: notice }),
+    });
+    const row = spec.items.find((item) => item.id === 'discard-and-finish')!;
+    expect(row.label).not.toContain('discard');
+    expect(row.confirm!.title).not.toContain('Discard');
+    expect(row.confirm!.message).toBe(notice);
+  });
+
+  // A host that never passes the plan facts still gets a coherent plan arm.
+  it('plan facts absent: defaults, no throw', () => {
+    const spec = buildDecisionSpec({ app: 'plan', gate: true, count: 2, hasFeedback: true, approvalNotesSupported: false });
+    expect(spec.primary.label).toBe('Send Feedback');
+    expect(itemIds(spec)).toEqual(['note-with-feedback', 'discard-and-finish']);
   });
 });

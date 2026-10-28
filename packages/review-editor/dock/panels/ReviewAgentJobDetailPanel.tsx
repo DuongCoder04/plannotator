@@ -145,6 +145,11 @@ export const ReviewAgentJobDetailPanel: React.FC<IDockviewPanelProps> = (props) 
           )}
           <CopyButton text={fullCommand} variant="inline" label="Command" />
         </div>
+        {job.warning && (
+          <p role="status" data-agent-job-warning className="mt-2 rounded bg-warning/10 border border-warning/30 px-3 py-2 text-xs text-foreground/80 whitespace-pre-wrap break-words">
+            {job.warning}
+          </p>
+        )}
         {/* Prompt disclosures in header */}
         {userMessage && (
           <div className="mt-3 space-y-1.5">
@@ -533,7 +538,7 @@ function AnnotationRow({ annotation: ann, dismissed, onClick }: {
           <span className="px-1 py-0.5 rounded text-[10px] uppercase tracking-wider bg-muted text-muted-foreground/60">dismissed</span>
         )}
         {!dismissed && copyText && (
-          <span className="ml-auto opacity-0 group-hover/finding:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+          <span className="ml-auto opacity-0 group-hover/finding:opacity-100 group-focus-within/finding:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
             <CopyButton text={copyText} variant="inline" />
           </span>
         )}

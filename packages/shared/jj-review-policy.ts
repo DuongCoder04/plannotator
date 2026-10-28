@@ -1,4 +1,4 @@
-import type { DiffType } from "./review-core";
+import { parseJjCommitDiffType, type DiffType } from "./review-core";
 import type { ProviderReviewOpenStateInput, ReviewOpenState } from "./review-open-state";
 import type { VcsReviewPolicy } from "./vcs-review-policy";
 
@@ -26,7 +26,7 @@ export const jjReviewPolicy: VcsReviewPolicy = {
     capabilities: { statusSections: false, staging: false, compareTarget: true },
   },
   ownsDiffType(diffType: string): diffType is DiffType {
-    return JJ_DIFF_TYPES.has(diffType);
+    return JJ_DIFF_TYPES.has(diffType) || parseJjCommitDiffType(diffType) !== null;
   },
   resolveDefault(value) {
     return typeof value === "string" && JJ_DIFF_TYPES.has(value)
