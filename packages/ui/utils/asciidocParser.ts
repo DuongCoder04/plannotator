@@ -18,6 +18,11 @@ import type { AlertKind, Block } from '../types';
  * title are not shown. Anything unrecognized stays visible as text.
  */
 
+// Lines that start a block of their own and so end a description's text:
+// list markers, a lone `+`, delimiters, attribute lists, comments, macros.
+const DEFINITION_STOP_RE =
+  /^(?:(?:[*.]{1,5}|-|\d+\.)\s|\+$|(?:-{4,}|\.{4,}|={4,}|\*{4,}|_{4,}|\+{4,}|\|={3,}|--|```.*)$|\[.*\]$|\/\/|[a-z][\w-]*::\S*\[)/;
+
 const ADMONITION_KINDS = new Set(['note', 'tip', 'important', 'warning', 'caution']);
 
 /** Block metadata from attribute/anchor lines (`[source,js]`, `[NOTE]`,
@@ -142,7 +147,7 @@ interface TableCell {
 // `.2+` (rowspan), `^.^` (align), `a` (style). Mid-line it needs whitespace
 // before it, so a one-letter cell (`|a|b`) stays a cell.
 const CELL_SPEC = String.raw`(?:(\d+)\*)?(?:(\d+)(?:\.\d+)?\+|\.\d+\+)?(?:[<^>])?(?:\.[<^>])?[adehlmsv]?$`;
-const LEADING_SPEC_RE = new RegExp(`^()${CELL_SPEC}`);
+const LEADING_SPEC_RE = new RegExp(`^(\\s*)${CELL_SPEC}`);
 const CELL_END_SPEC_RE = new RegExp(`(\\s)${CELL_SPEC}`);
 // Highest `N*` repeat honored; a larger one is a typo, not a table.
 const MAX_CELL_REPEAT = 100;
@@ -425,7 +430,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
       if (named.has('cols')) m.cols = named.get('cols');
       if (ADMONITION_KINDS.has(style.toLowerCase()) && style === style.toUpperCase()) {
         m.admonition = style.toLowerCase() as AlertKind;
-      } else if (style || rest.length > 0) {
+      } else if (style || (first === '' && rest.length > 0)) {
         // `[,ruby]` is the shorthand for `[source,ruby]`.
         m.style = style ? style.toLowerCase() : 'source';
         if (m.style === 'source') m.language = rest[0] || named.get('language') || undefined;
@@ -520,7 +525,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
         i + 1 < lines.length &&
         lines[i + 1].trim() !== '' &&
         !/^(\S.*?)(?::{2,4}|;;)(?:\s|$)/.test(lines[i + 1].trim()) &&
-        !/^(?:[*.+[|=_`/-]|\d+\.\s|[a-z][\w-]*::)/.test(lines[i + 1].trim())
+        !DEFINITION_STOP_RE.test(lines[i + 1].trim())
       ) {
         definition.push(lines[++i].trim());
       }
@@ -532,9 +537,12 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
     // Block title `.Title` → bold caption paragraph.
     const title = trimmed.match(/^\.([^\s.].*)$/);
     if (title && buffer.length === 0) {
-      // Attributes above the title still belong to the block below it.
+      // Attributes above the title still belong to the block below it, and a
+      // `+` above it still attaches that block to the list.
       if (pendingMeta) pendingMeta.startLine = lineNum + 1;
+      const attached = listContinuation;
       push({ type: 'paragraph', content: `**${transpileInline(title[1].trim(), attrs)}**`, startLine: lineNum });
+      listContinuation = attached;
       continue;
     }
 

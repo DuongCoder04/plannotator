@@ -488,4 +488,23 @@ describe('parseAsciidocToBlocks — real-world structure', () => {
     const blocks = parse('[source,java]\n.Example\n----\nint x;\n----');
     expect(blocks.map((b) => [b.type, b.startLine])).toEqual([['paragraph', 2], ['code', 3]]);
   });
+
+  test('an indented table row keeps its leading cell spec', () => {
+    expect(parse('|===\n  |Col1 |Col2\n\n  a|foo |bar\n  2+|wide\n|===')[0].content).toBe(
+      '| Col1 | Col2 |\n| --- | --- |\n| foo | bar |\n| wide |  |',
+    );
+  });
+
+  test('a role-only attribute list does not make a code block', () => {
+    expect(parse('[.lead,someflag]\nPara.')[0]).toMatchObject({ type: 'paragraph', content: 'Para.' });
+  });
+
+  test('a definition line starting with inline markup stays in the definition', () => {
+    expect(types(parse('Term::\n`code` does x\n*bold* too'))).toEqual(['list-item']);
+  });
+
+  test('numbering continues past an attached block that has a title', () => {
+    const items = parse('. one\n. two\n+\n.Example\n----\ncode\n----\n. three').filter((b) => b.type === 'list-item');
+    expect(items.map((b) => b.orderedStart)).toEqual([undefined, undefined, 3]);
+  });
 });
