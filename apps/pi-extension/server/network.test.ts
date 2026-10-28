@@ -529,6 +529,9 @@ describe("pi darwin configured browser launch", () => {
 	// The other half of the decision table: widening the script branch must not
 	// swallow app names or .app bundles, which only `open -a` can launch.
 	test("an app name or .app bundle still launches through open -a", async () => {
+		// Once, before the loop: a second clearEnv() would save the first pass's
+		// PLANNOTATOR_BROWSER as the value afterEach restores, leaking it.
+		clearEnv();
 		for (const value of ["Google Chrome", "/Applications/Firefox.app"]) {
 			const dir = mkdtempSync(join(tmpdir(), "plannotator-pi-darwin-"));
 			const log = join(dir, "open.txt");
@@ -536,7 +539,6 @@ describe("pi darwin configured browser launch", () => {
 			const originalPath = process.env.PATH;
 			try {
 				process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
-				clearEnv();
 				mockDarwin();
 				process.env.PLANNOTATOR_BROWSER = value;
 
