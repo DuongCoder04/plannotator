@@ -37,7 +37,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, drawnSection, filterSections, heldNotice, markHeldRowArchived, putRowBack, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -87,7 +87,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
-import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
+import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
@@ -837,6 +837,8 @@ function Inbox() {
     try {
       const next = await inboxApi.list();
       setPageSession(next.serverSession);
+      // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
+      latestRef.current = next;
       setLatest(next);
       if (adopt && slide) armSlide();
       // Show's light for a refresh (clicking Inbox): the rows it brings in, against the list on screen now.
@@ -876,6 +878,24 @@ function Inbox() {
   lookRef.current = look;
   /** Per thread, the furthest look on its way to the server. */
   const seenPosting = useRef(new Map<string, number>());
+  /**
+   * Per thread, the looks this tab has sent (the open look, seen on sight) and
+   * the list read after each, until they land. Mark read waits for them, so it
+   * decides on the state the look gives the thread whenever it is pressed
+   * (markRead.ts `seenHeldInNew`).
+   */
+  const looksInFlight = useRef(new Map<string, Set<Promise<unknown>>>());
+  const trackLook = useCallback((threadId: string, look: Promise<unknown>) => {
+    const looks = looksInFlight.current;
+    const mine = looks.get(threadId) ?? new Set<Promise<unknown>>();
+    looks.set(threadId, mine);
+    mine.add(look);
+    const done = () => {
+      mine.delete(look);
+      if (mine.size === 0 && looks.get(threadId) === mine) looks.delete(threadId);
+    };
+    look.then(done, done);
+  }, []);
   const seenRetries = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const retries = seenRetries.current;
@@ -891,7 +911,7 @@ function Inbox() {
       if ((seenPosting.current.get(threadId) ?? -1) >= through) return;
       seenPosting.current.set(threadId, through);
       const attempt = (tries: number) => {
-        void inboxApi
+        const look = inboxApi
           .seen(threadId, through)
           .then(() => {
             if (seenPosting.current.get(threadId) === through) seenPosting.current.delete(threadId);
@@ -916,10 +936,11 @@ function Inbox() {
             }, SEEN_RETRY_MS * 2 ** tries);
             seenRetries.current.add(timer);
           });
+        trackLook(threadId, look);
       };
       attempt(0);
     },
-    [refreshList],
+    [refreshList, trackLook],
   );
 
   const refreshThread = useCallback(async (threadId: string) => {
@@ -1276,15 +1297,19 @@ function Inbox() {
       // questions open.
       if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false, { threadId });
       // The look covers what this read showed, not a message that lands before the server takes it.
-      await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
-      if (!cancelled) await refreshList(false);
+      const look = (async () => {
+        await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
+        if (!cancelled) await refreshList(false);
+      })();
+      trackLook(threadId, look);
+      await look;
     })();
     return () => {
       cancelled = true;
       if (retry) clearTimeout(retry);
       wakeThreadRetry.current = null;
     };
-  }, [route.thread, threadRetry, refreshThread, refreshList, settleList]);
+  }, [route.thread, threadRetry, refreshThread, refreshList, settleList, trackLook]);
   // The thread landed while focus was in its place: focus goes to its subject, never to the page.
   useLayoutEffect(() => {
     if (!focusThreadSubject.current || !thread || thread.thread_id !== route.thread) return;
@@ -1881,7 +1906,22 @@ function Inbox() {
    * toast a warning with Reply.
    */
   const markRead = async (threadId: string, read: boolean) => {
+    // A look this tab sent and the server has not taken yet: decide on what it gives (a seen update held in New
+    // moves locally), whether Mark read came before the look landed or after. Never longer than
+    // MARK_READ_LOOK_WAIT_MS: a look that stalls leaves the thread New on the server, so Mark read writes.
+    const looks = read ? looksInFlight.current.get(threadId) : undefined;
+    if (looks) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(looks), new Promise<void>((done) => (timer = setTimeout(done, MARK_READ_LOOK_WAIT_MS)))]);
+      clearTimeout(timer);
+    }
     const before = rowOf(threadId);
+    if (read && before) {
+      const drawn = drawnSection(shownRef.current, threadId);
+      if (seenHeldInNew(before, drawn)) return moveSeenToQuiet(threadId, before);
+      // Once the look landed nothing waits here any more (the thread closed and the list settled, say).
+      if (looks && !canToggleRead(before, drawn)) return;
+    }
     // With a thread open the list holds still: the row moves to Quiet when the list next settles.
     const open = routeRef.current.thread;
     const deferred = open !== null;
@@ -1916,6 +1956,33 @@ function Inbox() {
             },
           }
         : {}),
+    });
+  };
+
+  /**
+   * Mark read on a seen update the list still holds in New (markRead.ts
+   * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
+   * written; its row moves to Quiet now, sliding as the row's hover Mark read
+   * does. Undo puts it back where it was drawn.
+   */
+  const moveSeenToQuiet = (threadId: string, row: InboxListRow) => {
+    const before = shownRef.current;
+    const sections = latestRef.current?.sections;
+    if (!before || !sections) return;
+    armSlide();
+    setShown((current) => (current ? settleThread(current, sections, threadId) : current));
+    // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
+    const { lead, detail } = markReadToast(row, 'list');
+    showToast({
+      lead,
+      detail,
+      icon: 'check',
+      onUndo: () => {
+        dismissToast();
+        armSlide();
+        setShown((current) => (current ? putRowBack(current, before, threadId) : current));
+        say('Moved back.');
+      },
     });
   };
 
@@ -2226,7 +2293,7 @@ function Inbox() {
     const threadId = rowId ?? (open && open.thread_id === routeRef.current.thread ? open.thread_id : null);
     if (!threadId) return null;
     const row = rowOf(threadId);
-    if (!row || !canToggleRead(row)) return null;
+    if (!row || !canToggleRead(row, drawnSection(shownRef.current, threadId))) return null;
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
@@ -3476,6 +3543,7 @@ function Inbox() {
             thread={thread}
             sent={openThreadRow?.sent ?? null}
             row={openThreadRow}
+            drawn={drawnSection(shown, thread.thread_id)}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
             onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
