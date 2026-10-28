@@ -7,7 +7,8 @@
  * registry action is in no row, so a new key cannot be left off the map.
  *
  * A native modal (Updates.tsx `Modal`): focus stays inside, Escape or `?`
- * closes it, focus goes back to what opened it. Not on a phone.
+ * closes it, focus goes back to what opened it. On the phone layout there is
+ * no button: `?` opens it (a narrow desktop window, a phone's hardware keyboard).
  */
 import { Icon } from '../icons';
 import { mapColumns, present, type MapRow } from '../shortcuts/map';

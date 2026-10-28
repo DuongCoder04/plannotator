@@ -117,7 +117,7 @@ export function stepKeyIntent(event: KeyboardEvent, context: StepKeyContext): 1 
   const bracket = key === ']' || key === '[';
   const arrow = key === 'ArrowRight' || key === 'ArrowLeft';
   if (!bracket && !arrow) return null;
-  // `[` `]` are single keys: off with Single-key shortcuts and on a phone (WCAG 2.1.4). The arrows stay.
+  // `[` `]` are single keys: off with Single-key shortcuts and on a touch phone (WCAG 2.1.4). The arrows stay.
   if (bracket && !singleKeysLive()) return null;
   if (isComposingKey(event) || isRepeatKey(event)) return null;
   if (hasCommandModifier(event)) return null;

@@ -5,17 +5,18 @@
  * focused component's first). The registry already refuses a binding whose
  * modifiers differ from the key's (`E` never matches ⌘E or ⌥E).
  */
-import { isPhone } from '../phone';
+import { isTouchPhone } from '../phone';
 import { selectionToolbarShowing } from '../selectionToolbar';
 import { shortcutPrefs } from './prefs';
 
 /**
- * Whether single keys (letters, Shift+J / Shift+K, `[` `]`, `?`, `/`) act at all: Single-key shortcuts on, and not a phone
- * layout (`PHONE_QUERY`, the one that also hides every keycap and the shortcut map's button), so a key never works
- * where nothing shows it. A desktop window narrower than 768 px is that layout too: no keycaps, no map, no letters.
+ * Whether single keys (letters, J / K and Shift+J / Shift+K, `[` `]`, `/`, G) act at all: Single-key shortcuts on,
+ * and not a real touch phone (`isTouchPhone`: the phone layout with a coarse pointer and no hover). A desktop window
+ * narrower than 768 px draws the phone layout (no keycaps, no map button) but keeps every key, as on main; `?`
+ * works on a touch phone too, for a hardware keyboard (design §5.4; `bareKeyAllowed`'s `onTouchPhone`).
  */
-export function singleKeysLive(prefs: { singleKeys: boolean } = shortcutPrefs()): boolean {
-  return prefs.singleKeys && !isPhone();
+export function singleKeysLive(prefs: { singleKeys: boolean } = shortcutPrefs(), { onTouchPhone = false } = {}): boolean {
+  return prefs.singleKeys && (onTouchPhone || !isTouchPhone());
 }
 
 /**
@@ -88,11 +89,12 @@ export function isBareBinding(binding: string): boolean {
  * key's repeat, with ⌘ / Ctrl / Alt, from inside a dialog, menu, listbox or a
  * file's frame, under a modal, while words selected in a message show their
  * toolbar (a printable key starts a comment there), after something else used
- * the key, or when Single-key shortcuts is off. A scope adds its own rules
+ * the key, when Single-key shortcuts is off, or on a touch phone (unless
+ * `onTouchPhone`: `?`). A scope adds its own rules
  * (the tour's replay, a guided review) on top.
  */
-export function bareKeyAllowed(event: KeyboardEvent, prefs: { singleKeys: boolean } = shortcutPrefs()): boolean {
-  if (!singleKeysLive(prefs)) return false;
+export function bareKeyAllowed(event: KeyboardEvent, prefs: { singleKeys: boolean } = shortcutPrefs(), { onTouchPhone = false } = {}): boolean {
+  if (!singleKeysLive(prefs, { onTouchPhone })) return false;
   if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || hasCommandModifier(event)) return false;
   const target = keyTarget(event);
   if (target) {

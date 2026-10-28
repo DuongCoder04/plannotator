@@ -1,10 +1,11 @@
 /**
  * Settings → General → Keyboard (approval "inbox-keyboard-shortcuts"): the
  * two keyboard settings, both on by default, kept in this window's cookies
- * (shortcuts/prefs.ts). Not on a phone: it has no keyboard to set.
+ * (shortcuts/prefs.ts). Not on a touch phone, where single keys are off (`isTouchPhone`); a narrow desktop window
+ * keeps its keys, so it keeps the setting too.
  */
 import { formatShortcutBindingText, getShortcutPlatform } from '@plannotator/ui/shortcuts';
-import { usePhone } from '../phone';
+import { useTouchPhone } from '../phone';
 import { inboxAppShortcuts } from '../shortcuts/app.shortcuts';
 import { bindingOf } from '../shortcuts/hint';
 import { setKeyHints, setSingleKeys, useShortcutPrefs } from '../shortcuts/prefs';
@@ -15,8 +16,8 @@ const words = (binding: string) => formatShortcutBindingText(binding, getShortcu
 
 export function KeyboardSettings() {
   const prefs = useShortcutPrefs();
-  const phone = usePhone();
-  if (phone) return null;
+  const touchPhone = useTouchPhone();
+  if (touchPhone) return null;
   const letters = (['markRead', 'reply', 'nextThread'] as const).map((action) => bindingOf({ scope: inboxThreadShortcuts, action })).join(', ');
   // A shifted letter is a single key too (WCAG 2.1.4): it turns off with them.
   const shifted = words(bindingOf({ scope: inboxThreadShortcuts, action: 'nextMessage' }));

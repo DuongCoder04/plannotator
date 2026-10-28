@@ -2337,17 +2337,18 @@ function Inbox() {
 
   // The window's keys (shortcuts/app.shortcuts.ts; approval "inbox-keyboard-shortcuts"): `?` opens the shortcut
   // map; G then I, B or S go to the Inbox, the Board, Settings, focus landing on what is there (never on the page).
-  // Single keys, so none while typing or under a dialog (guards.ts), nor over the tour's replay, nor on a phone.
+  // Single keys, so none while typing or under a dialog (guards.ts), nor over the tour's replay, nor on a touch
+  // phone, except `?`: a phone with a hardware keyboard still opens the map (design §5.4).
   const [mapOpen, setMapOpen] = useState(false);
-  const appKeyAllowed = (event: KeyboardEvent) => bareKeyAllowed(event) && routeRef.current.page !== 'tour' && !isPhone();
+  const appKeyAllowed = (event: KeyboardEvent, onTouchPhone = false) => bareKeyAllowed(event, undefined, { onTouchPhone }) && routeRef.current.page !== 'tour';
   /** Focus the first of `selectors` on screen once the page it is on has drawn (two frames: the route, then its layout). */
   const focusSoon = (selectors: readonly string[]) => requestAnimationFrame(() => requestAnimationFrame(() => focusFirst(selectors)));
   useShortcutScope({
     scope: inboxAppShortcuts,
     handlers: {
-      openMap: { when: appKeyAllowed, handle: () => setMapOpen(true) },
+      openMap: { when: (event) => appKeyAllowed(event, true), handle: () => setMapOpen(true) },
       goInbox: {
-        when: appKeyAllowed,
+        when: (event) => appKeyAllowed(event),
         handle: () => {
           const now = routeRef.current;
           if (now.page !== 'inbox') leave({ page: 'inbox', project: null, thread: null });
@@ -2363,7 +2364,7 @@ function Inbox() {
         },
       },
       goSettings: {
-        when: appKeyAllowed,
+        when: (event) => appKeyAllowed(event),
         handle: () => {
           if (routeRef.current.page !== 'settings') leave({ page: 'settings', project: null, thread: null });
           else focusSoon(['.ib-spage h1']);
@@ -3804,7 +3805,7 @@ function Inbox() {
       >
         <main className="ib-main">{main}</main>
       </SidebarShell>
-      {mapOpen && !phone && (
+      {mapOpen && (
         <ShortcutMap
           onClose={() => setMapOpen(false)}
           onSettings={() => {

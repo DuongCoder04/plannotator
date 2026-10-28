@@ -1075,11 +1075,11 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
   await expect(page.locator('[data-toast-undo]')).toBeVisible();
 });
 
-// ── A phone: no shortcut keys at all (J1 and J8 the other way round) ──
+// ── A touch phone: no single keys but `?` (J1 and J8 the other way round); a narrow desktop window keeps them ──
 
-/** Every single key, pressed in `p`'s list and then in an open thread: none acts, none is drawn. */
+/** Every single key but `?`, pressed in `p`'s list and then in an open thread: none acts, none is drawn. */
 async function singleKeysDoNothing(p: Page): Promise<void> {
-  const keys = ['e', 'z', 'r', 'o', 'f', 'j', 'k', 'n', 'Shift+J', 'Shift+K', '[', ']', 'Shift+?', '/', 'g', 'i', 'g', 'b', 'g', 's'];
+  const keys = ['e', 'z', 'r', 'o', 'f', 'j', 'k', 'n', 'Shift+J', 'Shift+K', '[', ']', '/', 'g', 'i', 'g', 'b', 'g', 's'];
   const pressAll = async () => {
     for (const key of keys) {
       await p.keyboard.press(key);
@@ -1114,9 +1114,14 @@ async function singleKeysDoNothing(p: Page): Promise<void> {
   await expect(p.locator('[data-attachment-pane]'), 'O and F opened no file').toHaveCount(0);
   expect(await p.evaluate((id) => [...document.querySelectorAll(`[data-thread-id="${id}"]`)].some((el) => el.classList.contains('ib-u')), world.threads.checkout), 'E marked nothing').toBe(unread);
   await quiet('the thread');
+  // `?` still opens the map: a phone with a hardware keyboard (design §5.4).
+  await p.keyboard.press('Shift+?');
+  await expect(p.locator('[data-dialog="shortcut-map"]'), '? opens the map').toBeVisible();
+  await p.keyboard.press('Escape');
+  await expect(p.locator('[data-dialog="shortcut-map"]')).toHaveCount(0);
 }
 
-test('a phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no single key acts, in the list or a thread', async () => {
+test('a touch phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no single key acts but ?, in the list or a thread', async () => {
   const own: Browser = await webkit.launch({ args: [] });
   try {
     const phoneContext = await own.newContext({ ...devices['iPhone 15'] });
@@ -1127,10 +1132,52 @@ test('a phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no single
   }
 });
 
-test('a desktop window narrower than 768 px is the phone layout: no keycaps, no map, and no single key acts', async () => {
+test('a desktop window narrower than 768 px keeps every single key (the phone layout, no keycaps): J, E, Z, ], ?', async () => {
   const narrow: BrowserContext = await page.context().browser()!.newContext({ viewport: { width: 600, height: 900 } });
   try {
-    await singleKeysDoNothing(await narrow.newPage());
+    const p = await narrow.newPage();
+    const { checkout } = world.threads;
+    await p.goto(world.url);
+    await expect(p.locator('.ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first()).toBeVisible();
+    const order = await p.evaluate(() => {
+      const ids: string[] = [];
+      for (const el of document.querySelectorAll('.ib-main .ib-lbody [data-thread-id]')) {
+        const id = el.getAttribute('data-thread-id')!;
+        if (!ids.includes(id) && el.getClientRects().length > 0) ids.push(id);
+      }
+      return ids;
+    });
+    const next = order[order.indexOf(checkout) + 1]!;
+    expect(next, 'checkout has a thread after it').toBeTruthy();
+    await p.goto(`${world.url}#thread=${checkout}`);
+    await expect(p.locator('section.ib-pane')).toBeVisible();
+    await p.locator('section.ib-pane h2.ib-subject').focus();
+    // No keycaps and no keyboard button: the phone layout draws none.
+    await expect(p.locator('kbd[data-shortcut-hint]').filter({ visible: true })).toHaveCount(0);
+    await expect(p.locator('[data-shortcut-map-button]').filter({ visible: true })).toHaveCount(0);
+    // O opens a file, ] steps to the next.
+    await p.keyboard.press('o');
+    const file = p.locator('[data-attachment-pane]').filter({ visible: true });
+    await expect(file).toBeVisible();
+    const opened = await file.getAttribute('aria-label');
+    await p.keyboard.press(']');
+    await expect.poll(() => file.getAttribute('aria-label')).not.toBe(opened);
+    // Escape walks out of the file (one rung at a time, as escapeFile).
+    for (let i = 0; i < 4 && (await file.count()) > 0; i++) await p.keyboard.press('Escape');
+    await expect(file).toHaveCount(0);
+    // E marks the thread read (the toast offers Undo), Z undoes it.
+    await p.locator('section.ib-pane h2.ib-subject').focus();
+    await p.keyboard.press('e');
+    await expect(p.locator('[data-toast-undo]')).toBeVisible();
+    await p.keyboard.press('z');
+    await expect(p.locator('[data-toast-undo]')).toHaveCount(0);
+    // J opens the next thread.
+    await p.locator('section.ib-pane h2.ib-subject').focus();
+    await p.keyboard.press('j');
+    await expect.poll(() => new URL(p.url()).hash).toBe(`#thread=${next}`);
+    // ? opens the map.
+    await p.keyboard.press('Shift+?');
+    await expect(p.locator('[data-dialog="shortcut-map"]')).toBeVisible();
   } finally {
     await narrow.close();
   }
