@@ -36,7 +36,7 @@ const UPDATED_WHILE_OPEN_SCRIPT = `<script>(function(){
 var shown=false;
 function show(page){if(page)document.documentElement.style.colorScheme="light dark";if(shown)return;shown=true;var p=document.createElement("p");p.setAttribute("role","alert");p.id="plannotator-updated";p.textContent=${JSON.stringify(UPDATED_WHILE_OPEN_MESSAGE)};p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;color-scheme:light dark;background:Canvas;color:CanvasText;z-index:2147483647";(document.body||document.documentElement).prepend(p)}
 function entry(){return document.querySelector('script[type="module"][src^="/assets/"]')}
-function check(page){var s=entry();if(s)fetch(s.src,{method:"HEAD",cache:"no-store"}).then(function(r){if(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||""))show(page)},function(){})}
+function check(page){var s=entry();if(s)fetch(s.src,{method:"HEAD",cache:"no-store",redirect:"manual"}).then(function(r){if(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||""))show(page)},function(){})}
 addEventListener("error",function(e){if(e.target===entry())check(true)},true);
 addEventListener("vite:preloadError",function(){check(false)});
 })()</script>`;
