@@ -191,6 +191,7 @@ jobs:
       # What the binaries embed, for smoke-binaries to compare each served page
       # with byte for byte. Its own artifact: never a release asset.
       - name: Record embedded page digests
+        shell: bash
         run: bun scripts/page-digests.ts apps/hook/dist/index.html apps/hook/dist/review.html apps/hook/dist/inbox.html apps/hook/dist/diagram-engine/*.js | tee page-digests.txt
 
       - name: Upload embedded page digests
