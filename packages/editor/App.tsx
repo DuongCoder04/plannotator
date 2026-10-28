@@ -6,8 +6,8 @@
 // registered here: since Mermaid 12 (ELK layout by default) it loads on the
 // first diagram through `utils/mermaid`'s own `import('mermaid')`, so a plan
 // with no diagram never pays for it in a chunked build (the share portal, any
-// @plannotator/ui host). The single-file builds still inline it through
-// `inlineDynamicImports`. Guarded by tests/entry-assets.test.ts; do not drop
+// @plannotator/ui host), nor in the single-file builds, which pack it as a
+// chunk served on request. Guarded by tests/entry-assets.test.ts; do not drop
 // or reorder any of these lines.
 import '@plannotator/ui/utils/math-eager';
 import '@plannotator/ui/utils/identity-tater';

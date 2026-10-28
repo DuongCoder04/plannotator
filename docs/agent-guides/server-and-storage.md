@@ -16,6 +16,8 @@ During normal plan review, an Archive sidebar tab provides the same browsing via
 
 ## Server API
 
+**The app and its chunks (plan, review, annotate and goal-setup servers; Bun and Pi).** A route no handler claims answers the app page (SPA). Under `/assets/` it answers instead the chunk or asset packed behind the page with exactly that name (`openPackedApp` in `packages/shared/packed-app.ts`; Pi's `serveApp` in `apps/pi-extension/server/helpers.ts`): `GET` / `HEAD` only (else `405`), from memory with no filesystem path, its own `Content-Type`, immutable caching (names carry Vite's content hash), `nosniff`, same-origin CORP; any other name `404`. Remote and `--tailscale` sessions compress text chunks like the page (#1617). Code review's `/assets/diagram-engine/` route answers before it.
+
 ### Plan Server (`packages/server/index.ts`)
 
 | Endpoint              | Method | Purpose                                    |
