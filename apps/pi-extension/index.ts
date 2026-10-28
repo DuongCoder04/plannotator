@@ -67,6 +67,7 @@ import {
 	notifyCurrentPiSession,
 	type PiSessionIdentity,
 	registerCurrentPiSession,
+	resolveIdleDeliveryOptions,
 	sendUserMessageToCurrentPiSession,
 	withCurrentPiSessionFallbackHeader,
 } from "./current-pi-session.ts";
@@ -319,6 +320,7 @@ function trySendUserMessageToDifferentCurrentSession(
 
 function sendUserMessageWithCurrentSessionFallback(
 	pi: ExtensionAPI,
+	ctx: ExtensionContext,
 	content: Parameters<ExtensionAPI["sendUserMessage"]>[0],
 	options: Parameters<ExtensionAPI["sendUserMessage"]>[1],
 	errorMessage: string,
@@ -327,7 +329,7 @@ function sendUserMessageWithCurrentSessionFallback(
 	if (trySendUserMessageToDifferentCurrentSession(content, options, errorMessage, origin)) return;
 
 	try {
-		pi.sendUserMessage(content, options);
+		pi.sendUserMessage(content, resolveIdleDeliveryOptions(ctx, options));
 		return;
 	} catch (err) {
 		if (trySendUserMessageToDifferentCurrentSession(content, options, errorMessage, origin)) return;
@@ -1080,6 +1082,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 					const label = result.feedback ? `Approved with notes${commentCountSuffix(result.annotations)}` : "Approved";
 					sendUserMessageWithCurrentSessionFallback(
 						pi,
+						ctx,
 						withDecisionHeading(tracked, label, composeReviewApprovedMessage("pi", result.feedback, loadConfig())),
 						{ deliverAs: "followUp" },
 						errors.send,
@@ -1104,6 +1107,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 					: `Changes requested${commentCountSuffix(result.annotations)}`;
 				sendUserMessageWithCurrentSessionFallback(
 					pi,
+					ctx,
 					withDecisionHeading(tracked, label, reviewFeedback),
 					{ deliverAs: "followUp" },
 					errors.send,
@@ -1434,6 +1438,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 							const { getAnnotateApprovedPrompt } = await loadPlannotatorPrompts();
 							sendUserMessageWithCurrentSessionFallback(
 								pi,
+								ctx,
 								withDecisionHeading(tracked, "Approved", getAnnotateApprovedPrompt("pi", loadConfig())),
 								{ deliverAs: "followUp" },
 								errors.send,
@@ -1467,6 +1472,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 				const label = `${outcome.promptKind === "approved-with-notes" ? "Approved with notes" : "Feedback"}${commentCountSuffix(result.annotations)}`;
 				sendUserMessageWithCurrentSessionFallback(
 					pi,
+					ctx,
 					withDecisionHeading(tracked, label, prompt),
 					{ deliverAs: "followUp" },
 					errors.send,
@@ -1533,6 +1539,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 							const { getAnnotateApprovedPrompt } = await loadPlannotatorPrompts();
 							sendUserMessageWithCurrentSessionFallback(
 								pi,
+								ctx,
 								withDecisionHeading(tracked, "Approved", getAnnotateApprovedPrompt("pi", loadConfig())),
 								{ deliverAs: "followUp" },
 								errors.send,
@@ -1567,6 +1574,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 				const label = `${outcome.promptKind === "approved-with-notes" ? "Approved with notes" : "Feedback"}${commentCountSuffix(result.annotations)}`;
 				sendUserMessageWithCurrentSessionFallback(
 					pi,
+					ctx,
 					withDecisionHeading(tracked, label, prompt),
 					{ deliverAs: "followUp" },
 					errors.send,
@@ -2142,7 +2150,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 
 		const send = (text: string) => {
 			try {
-				pi.sendUserMessage(text, { deliverAs: "followUp" });
+				pi.sendUserMessage(text, resolveIdleDeliveryOptions(ctx, { deliverAs: "followUp" }));
 			} catch (err) {
 				reportBackgroundError(ctx, "Plannotator could not deliver the plan decision", err);
 			}

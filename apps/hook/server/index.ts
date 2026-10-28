@@ -169,7 +169,7 @@ import {
   buildPlanFileRule,
 } from "@plannotator/shared/prompts";
 import { buildReviewOutput, supportsReviewApprovalNotes } from "./review-output";
-import { registerSession, unregisterSession, listSessions, type SessionInfo } from "@plannotator/server/sessions";
+import { registerSession, unregisterSession, listSessions, listInProcessSessions, type SessionInfo } from "@plannotator/server/sessions";
 import { enableAutoUpdateNotice, isManagedBinary, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
@@ -425,11 +425,12 @@ if (tailscaleFlag) {
     );
   }
   process.env.PLANNOTATOR_REMOTE = "0";
-  // urlHost is irrelevant here — the advertised URL comes from tailscale
-  // serve, and the session is local-bound. An empty-but-set env var also
-  // suppresses a config-file urlHost, avoiding the misleading
+  // urlHost and publicUrl are irrelevant here — the advertised URL comes from
+  // tailscale serve, and the session is local-bound. An empty-but-set env var
+  // also suppresses the config-file key, avoiding the misleading
   // "set PLANNOTATOR_REMOTE=1" local-session warning mid --tailscale run.
   process.env.PLANNOTATOR_URL_HOST = "";
+  process.env.PLANNOTATOR_PUBLIC_URL = "";
   // "Ask this session" stays ON (#2166): the host's bridge config is kept
   // (taken at the top of this file), and the servers answer it only for a tab
   // on this machine and for the Tailscale login that owns it
@@ -983,14 +984,17 @@ if (args[0] === "sessions") {
   // SESSION DISCOVERY MODE
   // ============================================
 
+  // Both lists remove stale entries as they read. OpenCode's in-process
+  // servers are listed too, newest first with the rest.
+  const sessions = [...listSessions(), ...(await listInProcessSessions("opencode"))].sort(
+    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+  );
+
   if (args.includes("--clean")) {
-    // Force cleanup: list sessions (which auto-removes stale entries)
-    const sessions = listSessions();
     console.error(`Cleaned up stale sessions. ${sessions.length} active session(s) remain.`);
     process.exit(0);
   }
 
-  const sessions = listSessions();
   const sessionsJson = jsonFlag;
 
   if (sessions.length === 0) {

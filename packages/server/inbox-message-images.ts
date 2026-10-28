@@ -21,7 +21,7 @@
 
 import { createHash } from "node:crypto";
 import { isInboxId } from "@plannotator/core/inbox-types";
-import { INBOX_MESSAGE_IMAGE_CSP, inboxMessageImageRefsInOrder, readInboxMessageImageAsync } from "@plannotator/shared/inbox/message-images";
+import { INBOX_MESSAGE_IMAGE_CSP, inboxMessageImageRefsInOrder, readInboxMessageImageAsync, type InboxMessageImageResult } from "@plannotator/shared/inbox/message-images";
 import { captureInboxInlineImages, yieldToLoop } from "@plannotator/shared/inbox/inline-images";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 
@@ -63,6 +63,11 @@ export async function inboxMessageImageRoute(req: Request, url: URL, store: Inbo
     // An agent's images come from anywhere; a person's own message (a phone, the relay, a tailnet login) from its project.
     anywhere: message.author.kind === "agent",
   });
+  return inboxImageResponse(req, result);
+}
+
+/** Safe image bytes and cache validators shared by message bodies and Markdown attachments. */
+export function inboxImageResponse(req: Request, result: InboxMessageImageResult): Response {
   if (!result.ok) return refuse(result.status, result.code, result.error);
   // The validator is the SHA-256 of the bytes served (read once, at most the
   // cap), so it changes whenever the file does. `no-cache`: the file lives on
