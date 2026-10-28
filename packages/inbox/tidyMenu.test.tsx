@@ -45,13 +45,11 @@ function plan(count: number): InboxTidyPlan {
       count === 0
         ? []
         : [{ session: 'ses-c', host: 'codex', name: 'Codex', reach: 'wakes', items: [{ thread_id: 'msg_x', subject: 'Theme pass', project: { id: 'prj_x', name: 'herdr' }, reasons: ['you wrote last'] }] }],
-    ended: [],
-    unsent_picks: 0,
     run: RUN,
   } as InboxTidyPlan;
 }
 
-const controller = (p: InboxTidyPlan): TidyController => ({ surface: 'list', scope: null, plan: p, run: p.run, start: async () => null, dismiss: () => {}, refresh: () => {} });
+const controller = (p: InboxTidyPlan): TidyController => ({ surface: 'list', scope: null, plan: p, run: p.run, start: async () => null, refresh: () => {} });
 
 async function settle() {
   await act(async () => {

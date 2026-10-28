@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Menu } from '@base-ui/react/menu';
 import { Popover } from '@base-ui/react/popover';
-import type { InboxMessageWire, InboxTidyPlan, InboxTidyRun, InboxTidyRunAgent } from '@plannotator/core/inbox-types';
+import type { InboxTidyPlan, InboxTidyRun, InboxTidyRunAgent } from '@plannotator/core/inbox-types';
 import { inboxApi } from '../api';
 import { formatCount } from '../format';
 import { HostMark, Icon } from '../icons';
+import { Tip } from './Tip';
 
 /**
- * Tidy (owner-approved design, 2026-10-28): the ⋮ menu in the list's and the
- * Board's header holds "Tidy N" and "Refresh". Tidy opens a small popover
- * (a sheet on a phone): one checkbox per agent with its count, one Tidy
- * button, the reasons, ended sessions and unsent picks behind Details. A run
- * shows as one quiet line at the top of the list. No shortcut, no schedule.
+ * Tidy (owner-approved design, 2026-10-28, simplified the same day: "quiet,
+ * elegant"): the ⋮ menu in the list's and the Board's header holds "Tidy N"
+ * and "Refresh". Tidy opens a small popover (a sheet on a phone): one
+ * checkbox per agent with its count and one Tidy button. During and after a
+ * run the same popover shows where each agent stands. In a thread, a Tidy
+ * note is one quiet line. No banner, no shortcut, no schedule.
  */
 
 export type TidySurface = 'list' | 'board';
@@ -20,29 +22,18 @@ export interface TidyController {
   surface: TidySurface;
   scope: string | null;
   plan: InboxTidyPlan | null;
-  /** The last run, unless the person closed its line. */
+  /** The last run (within a day), or null. */
   run: InboxTidyRun | null;
   start: (sessions: readonly string[], key: string) => Promise<string | null>;
-  dismiss: () => void;
   refresh: () => void;
 }
 
-const DISMISSED_KEY = 'plannotator-inbox-tidy-closed';
 /** How long the window polls a run's progress. */
 const TIDY_POLL_MS = 10 * 60_000;
-
-function readDismissed(): string | null {
-  try {
-    return localStorage.getItem(DISMISSED_KEY);
-  } catch {
-    return null;
-  }
-}
 
 /** Reads who Tidy would ask in `scope` again whenever `version` changes (a list or Board read), and every few seconds while a run is under way. */
 export function useTidy(scope: string | null, surface: TidySurface, version: unknown, enabled = true): TidyController {
   const [plan, setPlan] = useState<InboxTidyPlan | null>(null);
-  const [dismissed, setDismissed] = useState<string | null>(() => readDismissed());
   const seq = useRef(0);
   const refresh = useCallback(() => {
     const mine = ++seq.current;
@@ -58,7 +49,7 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
     const timer = setTimeout(refresh, 250);
     return () => clearTimeout(timer);
   }, [refresh, version, enabled]);
-  const run = plan?.run && plan.run.id !== dismissed ? plan.run : null;
+  const run = plan?.run ?? null;
   // Poll while a run goes, for 10 minutes at most: an agent that cannot say it
   // is done (Codex, MCP only) would otherwise keep it going all day. List and
   // Board reads (`version`) still read it after that.
@@ -79,7 +70,6 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
     async (sessions: readonly string[], key: string): Promise<string | null> => {
       try {
         const answer = await inboxApi.startTidy({ sessions, idempotency_key: key, project: scope, surface });
-        setDismissed(null);
         setPlan((current) => (current ? { ...current, run: answer.run } : current));
         refresh();
         return null;
@@ -89,19 +79,10 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
     },
     [scope, surface, refresh],
   );
-  const dismiss = useCallback(() => {
-    const id = plan?.run?.id ?? null;
-    setDismissed(id);
-    try {
-      if (id) localStorage.setItem(DISMISSED_KEY, id);
-    } catch {
-      // Private mode: closed for this tab only.
-    }
-  }, [plan?.run?.id]);
-  return { surface, scope, plan, run, start, dismiss, refresh };
+  return { surface, scope, plan, run, start, refresh };
 }
 
-/** The run the menu and the popover show: only while nothing new is offered (new work shows the plan, the run stays on the line). */
+/** The run the menu and the popover show: only while nothing new is offered (new work shows the plan). */
 const shownRun = (tidy: TidyController): InboxTidyRun | null => (tidy.run && (tidy.plan?.count ?? 0) === 0 ? tidy.run : null);
 
 /** "Tidy · 3/4" while a run shows. */
@@ -111,20 +92,7 @@ const runLabel = (run: InboxTidyRun) => `Tidy · ${run.done}/${run.agents.length
  * The header's ⋮: Tidy (with its count, or the run's progress) and Refresh.
  * `className` places it in its header (the list's or the Board's).
  */
-export function TidyMenu({
-  tidy,
-  phone,
-  onRefresh,
-  onSetAside,
-  className,
-}: {
-  tidy: TidyController;
-  phone: boolean;
-  onRefresh: () => void;
-  /** Ended sessions' threads: Mark read on them, with one Undo (the host's toast). Absent: not offered. */
-  onSetAside?: (threadIds: readonly string[]) => void;
-  className: string;
-}) {
+export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyController; phone: boolean; onRefresh: () => void; className: string }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [popOpen, setPopOpen] = useState(false);
@@ -176,7 +144,7 @@ export function TidyMenu({
           {phone && <Popover.Backdrop className="ib-pm-scrim" />}
           <Popover.Positioner className="ib-tidy-pos" anchor={trigger} side="bottom" align="end" sideOffset={6} data-phone={phone ? '' : undefined}>
             <Popover.Popup className="ib-tidy" aria-label="Tidy" finalFocus={trigger} data-tidy-popover="">
-              {popOpen && <TidyPanel tidy={tidy} onSetAside={onSetAside} onDone={() => setPopOpen(false)} />}
+              {popOpen && <TidyPanel tidy={tidy} onDone={() => setPopOpen(false)} />}
             </Popover.Popup>
           </Popover.Positioner>
         </Popover.Portal>
@@ -187,10 +155,9 @@ export function TidyMenu({
 
 const plural = (n: number, one: string, many = `${one}s`) => `${formatCount(n)} ${n === 1 ? one : many}`;
 
-function TidyPanel({ tidy, onSetAside, onDone }: { tidy: TidyController; onSetAside?: (threadIds: readonly string[]) => void; onDone: () => void }) {
+function TidyPanel({ tidy, onDone }: { tidy: TidyController; onDone: () => void }) {
   const { plan } = tidy;
   const run = shownRun(tidy);
-  const [details, setDetails] = useState(false);
   const [off, setOff] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -208,7 +175,6 @@ function TidyPanel({ tidy, onSetAside, onDone }: { tidy: TidyController; onSetAs
   const agents = plan.agents;
   const picked = agents.filter((a) => !off.has(a.session));
   const allThreads = agents.every((a) => a.items.every((i) => i.thread_id !== null));
-  const later = agents.filter((a) => a.reach === 'next_call');
   return (
     <>
       <div className="ib-tidy-top">
@@ -233,64 +199,17 @@ function TidyPanel({ tidy, onSetAside, onDone }: { tidy: TidyController; onSetAs
               />
               <HostMark host={agent.host} />
               <span className="ib-tidy-nm">{agent.name}</span>
-              <em>
-                {agent.reach === 'next_call' && <Icon name="clock" size={13} />}
-                {formatCount(agent.items.length)}
-              </em>
+              <em>{formatCount(agent.items.length)}</em>
             </label>
-            {details && (
-              <ul className="ib-tidy-det">
-                {agent.items.map((item) => (
-                  <li key={item.thread_id ?? item.subject}>
-                    <b dir="auto">{item.subject}</b> · {item.reasons.join(' · ')}
-                  </li>
-                ))}
-              </ul>
-            )}
           </li>
         ))}
       </ul>
-      {details && (
-        <>
-          {plan.ended.length > 0 && (
-            <div className="ib-tidy-note" data-tidy-ended="">
-              {plural(plan.ended.length, 'thread')} · session ended
-              {onSetAside && (
-                <button
-                  type="button"
-                  className="ib-btn ib-sm"
-                  onClick={() => {
-                    onSetAside(plan.ended.map((t) => t.thread_id));
-                    onDone();
-                  }}
-                >
-                  Set aside
-                </button>
-              )}
-            </div>
-          )}
-          {plan.unsent_picks > 0 && (
-            <div className="ib-tidy-note" data-tidy-picks="">
-              {plural(plan.unsent_picks, 'unsent pick')} · left for you
-            </div>
-          )}
-          {later.map((agent) => (
-            <div key={agent.session} className="ib-tidy-note">
-              <Icon name="clock" size={13} /> {agent.name}: at its next Inbox call
-            </div>
-          ))}
-        </>
-      )}
       {error && (
         <p className="ib-tidy-err" role="alert">
           {error}
         </p>
       )}
       <div className="ib-tidy-bot">
-        <button type="button" className="ib-tidy-more" aria-expanded={details} onClick={() => setDetails((d) => !d)} data-tidy-details="">
-          <Icon name="chevR" size={14} />
-          Details
-        </button>
         <button
           type="button"
           className="ib-btn ib-pri ib-sm"
@@ -333,7 +252,7 @@ function RunPanel({ run }: { run: InboxTidyRun }) {
     <>
       <div className="ib-tidy-top">
         <b>{runLabel(run)}</b>
-        <span>{plural(run.updated, 'thread')} updated</span>
+        {run.updated > 0 && <span>{plural(run.updated, 'thread')} updated</span>}
       </div>
       <ul className="ib-tidy-ags">
         {run.agents.map((agent) => (
@@ -349,36 +268,18 @@ function RunPanel({ run }: { run: InboxTidyRun }) {
   );
 }
 
-/** The one quiet line at the top of the list while (and after) a run goes. */
-export function TidyLine({ tidy }: { tidy: TidyController }) {
-  const { run } = tidy;
-  if (!run) return null;
+/** A Tidy note in its thread: one quiet line, "Tidy sent to Claude Code · 8:54 AM". */
+export function TidyNote({ agent, time, fullWhen }: { agent: string; time: string; fullWhen: string }) {
   return (
-    <div className="ib-tidyline" role="status" data-tidy-line="">
-      <Icon name="todo" size={15} />
-      <span className="ib-tidyline-t">
-        {runLabel(run)}
-        {run.updated > 0 && <span> · {plural(run.updated, 'thread')} updated</span>}
+    <p className="ib-tidy-mark" data-tidy-note="">
+      <Icon name="todo" size={14} />
+      <span>
+        Tidy sent to {agent}
+        {' · '}
+        <Tip content={fullWhen}>
+          <span data-full-when="">{time}</span>
+        </Tip>
       </span>
-      <button type="button" aria-label="Close" onClick={tidy.dismiss} data-tidy-line-close="">
-        <Icon name="x" size={14} />
-      </button>
-    </div>
-  );
-}
-
-/** A Tidy note in its thread: one quiet line, what was sent behind a fold. */
-export function TidyNote({ message, agent }: { message: InboxMessageWire; agent: string }) {
-  return (
-    <div className="ib-reask" data-tidy-note="">
-      <p className="ib-reask-l">
-        <Icon name="todo" size={15} />
-        <span>Tidy sent to {agent}</span>
-      </p>
-      <details className="ib-reask-d">
-        <summary>What was sent</summary>
-        <pre>{`Plannotator Inbox: Tidy (${message.id})\n${message.body}`}</pre>
-      </details>
-    </div>
+    </p>
   );
 }

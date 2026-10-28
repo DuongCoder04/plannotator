@@ -2,8 +2,7 @@
  * Tidy's routes (owner-approved design, 2026-10-28; packages/core/inbox-tidy.ts):
  *
  * - `GET /api/inbox/tidy?project=&surface=list|board`: who Tidy would ask in
- *   the list's (or the Board's) scope, the threads whose session ended, the
- *   unsent picks it leaves, and the last run's progress.
+ *   the list's (or the Board's) scope, and the last run's progress.
  * - `POST /api/inbox/tidy { sessions, idempotency_key, project?, surface? }`:
  *   asks the named sessions (each must still be in the plan), writing each
  *   one's Tidy notes. A replay of the key answers the run it wrote.
@@ -81,8 +80,6 @@ export function createInboxTidy(deps: InboxTidyDeps) {
         reach: agent.reach,
         items: agent.items.map((item) => ({ thread_id: item.thread_id, subject: item.subject, project: item.project, reasons: item.reasons })),
       })),
-      ended: found.ended,
-      unsent_picks: found.unsent_picks,
       run: runNow(reachOf),
     };
   };

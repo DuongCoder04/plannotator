@@ -20,7 +20,7 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
-import { TidyLine, TidyMenu, type TidyController } from './Tidy';
+import { TidyMenu, type TidyController } from './Tidy';
 
 export interface InboxListProps {
   title: string;
@@ -91,8 +91,6 @@ export interface InboxListProps {
    * at the top of the list. Absent: no menu.
    */
   tidy?: TidyController;
-  /** Tidy's Set aside: Mark read on the ended sessions' threads, with one Undo. */
-  onSetAside?: (threadIds: readonly string[]) => void;
 }
 
 /**
@@ -651,7 +649,6 @@ export function InboxList(props: InboxListProps) {
             phone={isMobile}
             className="ib-lhead-more"
             onRefresh={() => props.onRefresh?.()}
-            onSetAside={props.onSetAside}
           />
         )}
       </div>
@@ -677,7 +674,6 @@ export function InboxList(props: InboxListProps) {
           held={props.selectedThreadId !== null}
         >
           {props.ask}
-          {props.tidy && <TidyLine tidy={props.tidy} />}
           {props.notice && (
             <button type="button" className="ib-notice" onClick={props.onShowNew} data-inbox-notice="">
               <Icon name="inbox" size={15} />

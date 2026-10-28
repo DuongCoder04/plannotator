@@ -3537,6 +3537,11 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           // The day too when it is not today, and the whole moment on hover.
           const time = whenTime(message.created_at);
           const fullWhen = fullTime(message.created_at);
+          // A Tidy note: one quiet line in place of the message.
+          if (message.tidy) {
+            before.push(<TidyNote key={message.id} agent={message.to ? toName(message, message.to) : 'the agent'} time={time} fullWhen={fullWhen} />);
+            return before;
+          }
           const open = one || !fold.folded.has(message.id);
           if (!open) {
             const holdings = holdingsOf(message, {
@@ -3742,9 +3747,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     )}
                   </div>
                 )}
-                {message.tidy ? (
-                  <TidyNote message={message} agent={message.to ? toName(message, message.to) : 'the agent'} />
-                ) : (message.reask?.length ?? 0) > 0 ? (
+                {(message.reask?.length ?? 0) > 0 ? (
                   <ReaskNote
                     message={message}
                     agent={message.to ? toName(message, message.to) : reaskNoteAgent(askedBy(message)?.author, asker)}

@@ -8,13 +8,14 @@
  *
  * Claude Code owes the person a reply (they wrote last 45 min ago) in a
  * thread whose Board card has not moved in 3 days, and has a question the
- * person picked but did not send (theirs to send: only counted); Pi has a
- * question open 4 h; an ended session has one open 5 h. The list's ⋮ reads
- * "Tidy 2"; the popover lists Claude Code and Pi; Details
- * names the ended session and the unsent pick. The Board's ⋮ asks only the
- * card's owner. Tidy wakes each agent once, the rows do not move, the pick is
- * not sent; Claude Code answers and Pi, idle after delivery, shows "Nothing
- * to change".
+ * person picked but did not send (theirs to send: never listed); Pi has a
+ * question open 4 h; an ended session has one open 5 h (never offered). The
+ * list's ⋮ reads "Tidy 2"; the popover is the agents, their counts and one
+ * Tidy button. The Board's ⋮ asks only the card's owner. Tidy wakes each
+ * agent once, shows no banner, the rows do not move, the pick is not sent;
+ * progress is in the popover: Claude Code answers ("1 thread updated") and
+ * Pi, idle after delivery, reads "Nothing to change". The thread note is one
+ * line.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * PNGs (1440 and 390, light and dark) land in .local/proof/tidy/ (or
@@ -228,7 +229,7 @@ test.afterAll(async () => {
   }
 });
 
-test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents; Details names the ended session and the unsent pick', async () => {
+test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents, never the ended session', async () => {
   const { page } = world;
   await page.goto(world.url);
   const trigger = page.locator('.ib-lhead [data-tidy-menu]');
@@ -248,19 +249,15 @@ test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents; 
   await expect(pop.locator(`[data-tidy-agent="${CLAUDE.session}"]`)).toContainText('Claude Code1');
   await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toContainText('Pi1');
   await expect(pop.locator(`[data-tidy-agent="${ENDED.session}"]`)).toHaveCount(0);
-  await expect(pop.locator('[data-tidy-ended]')).toHaveCount(0);
+  // Nothing else in it: the agents, their counts, one Tidy button.
+  await expect(pop.getByRole('button')).toHaveCount(1);
   await shot(page, 'list-popover-1440');
-  await pop.locator('[data-tidy-details]').click();
-  await expect(pop.locator('[data-tidy-ended]')).toContainText('1 thread · session ended');
-  await expect(pop.locator('[data-tidy-picks]')).toHaveText('1 unsent pick · left for you');
-  await expect(pop.locator('.ib-tidy-det').first()).toContainText('Hover cards on review surfaces');
-  await shot(page, 'list-popover-details-1440');
   await page.keyboard.press('Escape');
   await expect(pop).toHaveCount(0);
   await expect(trigger).toBeFocused();
 });
 
-test('the Board: its ⋮ asks only the agent whose card has not moved, about that card and its thread', async () => {
+test('the Board: its ⋮ asks only the agent whose card has not moved', async () => {
   const { page } = world;
   await page.goto(`${world.url}#board`);
   const trigger = page.locator('.ib-bhead [data-tidy-menu]');
@@ -273,8 +270,6 @@ test('the Board: its ⋮ asks only the agent whose card has not moved, about tha
   const pop = page.locator('[data-tidy-popover]');
   await expect(pop.locator(`[data-tidy-agent="${CLAUDE.session}"]`)).toContainText('Claude Code1');
   await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toHaveCount(0);
-  await pop.locator('[data-tidy-details]').click();
-  await expect(pop.locator('.ib-tidy-det')).toContainText('card idle');
   await shot(page, 'board-popover-1440');
   await page.keyboard.press('Escape');
 });
@@ -300,8 +295,6 @@ test('a phone: the ⋮ and the popover as a bottom sheet, on the list and the Bo
     expect(sheet!.x).toBeLessThanOrEqual(8.5);
     expect(sheet!.width).toBeGreaterThan(360);
     await shot(page, 'list-popover-390');
-    await pop.locator('[data-tidy-details]').click();
-    await shot(page, 'list-popover-details-390');
     await page.keyboard.press('Escape');
     await page.goto(`${world.url}#board`);
     const boardTrigger = page.locator('.ib-bhead [data-tidy-menu]');
@@ -318,7 +311,22 @@ test('a phone: the ⋮ and the popover as a bottom sheet, on the list and the Bo
   }
 });
 
-test('Tidy: one wake per agent, the rows stay put, the pick is not sent; an answer counts and an idle agent reads Nothing to change', async () => {
+/** Opens ⋮ → Tidy and answers the popover. */
+async function openTidy(page: Page) {
+  await page.locator('.ib-lhead [data-tidy-menu]').click();
+  await page.locator('[data-tidy-item]').click();
+  const pop = page.locator('[data-tidy-popover]');
+  await expect(pop).toBeVisible();
+  return pop;
+}
+
+/** Shows every message of the open thread (a long thread folds its middle). */
+async function expandThread(page: Page) {
+  const expand = page.locator('section.ib-pane').getByRole('button', { name: 'Expand all messages' });
+  if ((await expand.count()) > 0) await expand.click();
+}
+
+test('Tidy: one wake per agent, no banner, the rows stay put, the pick is not sent; progress in the popover', async () => {
   const { page } = world;
   const [claude, pi] = world.connections as [Connection, Connection];
   await page.goto(world.url);
@@ -330,13 +338,9 @@ test('Tidy: one wake per agent, the rows stay put, the pick is not sent; an answ
   const releaseBefore = (await threadMessages(world.t.release.thread))[0]!.questions!;
   expect(releaseBefore[0]!.state).toBe('picked');
 
-  await page.locator('.ib-lhead [data-tidy-menu]').click();
-  await page.locator('[data-tidy-item]').click();
-  await page.locator('[data-tidy-go]').click();
+  const start = await openTidy(page);
+  await start.locator('[data-tidy-go]').click();
   await expect(page.locator('[data-tidy-popover]')).toHaveCount(0);
-  const line = page.locator('.ib-lbody [data-tidy-line]');
-  await expect(line).toBeVisible();
-  await expect(line).toContainText(/Tidy · [0-2]\/2/);
 
   // Each live agent is handed one Tidy wake, worded for it.
   const claudeWake = await waitFor('the Tidy wake for Claude Code', () => claude.commands.find((c) => c.tidy === true));
@@ -349,9 +353,10 @@ test('Tidy: one wake per agent, the rows stay put, the pick is not sent; an answ
   expect(pi.commands.filter((c) => c.tidy === true)).toHaveLength(1);
   expect(inboxWakeText(piWake)).not.toContain('Hover cards');
 
-  // The rows did not move, nor change, for the notes.
+  // No banner; the rows did not move, nor change, for the notes.
   await page.waitForTimeout(800);
   expect(await rows(page)).toEqual(before);
+  await expect(page.locator('.ib-lbody').getByText(/Tidy ·/)).toHaveCount(0);
   // The unsent pick was not sent: still a pick, and no answer from the person.
   const release = await threadMessages(world.t.release.thread);
   expect(release[0]!.questions![0]!.state).toBe('picked');
@@ -361,9 +366,14 @@ test('Tidy: one wake per agent, the rows stay put, the pick is not sent; an answ
   // The ended session's thread got nothing.
   expect((await threadMessages(world.t.ended.thread)).some((m) => m.tidy)).toBe(false);
 
-  // The menu reads the run's progress while it goes.
+  // While it goes: the menu item reads its progress, the popover each agent's state.
   await page.locator('.ib-lhead [data-tidy-menu]').click();
-  await expect(page.locator('[data-tidy-item]')).toHaveText(/^Tidy · [0-2]\/2$/);
+  await expect(page.locator('[data-tidy-item]')).toHaveText(/^Tidy · [0-1]\/2$/);
+  await page.locator('[data-tidy-item]').click();
+  const during = page.locator('[data-tidy-popover]');
+  await expect(during.locator(`[data-tidy-run-agent="${CLAUDE.session}"]`)).toBeVisible();
+  await expect(during.locator('[data-tidy-go]')).toHaveCount(0);
+  await shot(page, 'run-popover-1440');
   await page.keyboard.press('Escape');
 
   // Claude Code answers in the hover thread; Pi, idle after delivery, writes nothing.
@@ -376,49 +386,39 @@ test('Tidy: one wake per agent, the rows stay put, the pick is not sent; an answ
   pi.idleSince = Date.now();
   pi.busy = false;
 
-  await expect(line).toContainText('Tidy · 2/2', { timeout: 20_000 });
-  await expect(line).toContainText('1 thread updated');
-  await shot(page, 'progress-line-1440');
   await page.locator('.ib-lhead [data-tidy-menu]').click();
+  await expect(page.locator('[data-tidy-item]')).toHaveText('Tidy · 2/2', { timeout: 20_000 });
   await page.locator('[data-tidy-item]').click();
-  const pop = page.locator('[data-tidy-popover]');
-  await expect(pop.locator(`[data-tidy-run-agent="${PI.session}"]`)).toContainText('Nothing to change');
-  await expect(pop.locator(`[data-tidy-run-agent="${CLAUDE.session}"]`)).toContainText('1 thread updated');
-  await shot(page, 'progress-popover-1440');
+  const after = page.locator('[data-tidy-popover]');
+  await expect(after.locator(`[data-tidy-run-agent="${PI.session}"]`)).toContainText('Nothing to change');
+  await expect(after.locator(`[data-tidy-run-agent="${CLAUDE.session}"]`)).toContainText('1 thread updated');
+  await shot(page, 'run-popover-done-1440');
   await page.keyboard.press('Escape');
 
-  // The note in its thread: one quiet line, what was sent folded.
+  // The note in its thread: one quiet line, nothing to open.
   await page.goto(`${world.url}#thread=${world.t.hover.thread}`);
-  // Four messages: the note sits in the folded middle.
-  await page.locator('section.ib-pane').getByRole('button', { name: 'Expand all messages' }).click();
+  await expandThread(page);
   const note = page.locator('section.ib-pane [data-tidy-note]');
-  await expect(note.locator('.ib-reask-l')).toHaveText('Tidy sent to Claude Code');
-  await expect(note.locator('pre')).toBeHidden();
+  await expect(note).toHaveText(/^Tidy sent to Claude Code · \d{1,2}:\d{2} [AP]M$/);
+  await expect(note.locator('summary, pre, button')).toHaveCount(0);
+  await note.scrollIntoViewIfNeeded();
   await shot(page, 'thread-note-1440');
-  await note.locator('summary').click();
-  await expect(note.locator('pre')).toContainText('Plannotator Inbox: Tidy (');
-  await shot(page, 'thread-note-open-1440');
-
-  // The line closes for good.
-  await page.goto(world.url);
-  await page.locator('.ib-lbody [data-tidy-line-close]').click();
-  await expect(page.locator('[data-tidy-line]')).toHaveCount(0);
-  await page.reload();
-  await expect(page.locator(`.ib-lbody [data-thread-id="${world.t.deploy.thread}"]`).first()).toBeVisible();
-  await expect(page.locator('[data-tidy-line]')).toHaveCount(0);
   expect(world.errors).toEqual([]);
 });
 
-test('a phone after the run: the progress line and the thread note', async ({ browser }: { browser: Browser }) => {
+test('a phone after the run: the run in the popover and the thread note', async ({ browser }: { browser: Browser }) => {
   const { defaultBrowserType: _, ...iphone } = devices['iPhone 13'];
   const context = await browser.newContext({ ...iphone, colorScheme: 'light', reducedMotion: 'reduce' });
   try {
     const page = await context.newPage();
     await page.goto(world.url);
-    await expect(page.locator('[data-tidy-line]')).toBeVisible();
-    await shot(page, 'progress-line-390');
+    await expect(page.locator(`.ib-lbody [data-thread-id="${world.t.deploy.thread}"]`).first()).toBeVisible();
+    const pop = await openTidy(page);
+    await expect(pop.locator(`[data-tidy-run-agent="${PI.session}"]`)).toContainText('Nothing to change');
+    await shot(page, 'run-popover-done-390');
+    await page.keyboard.press('Escape');
     await page.goto(`${world.url}#thread=${world.t.hover.thread}`);
-    await page.getByRole('button', { name: 'Expand all messages' }).click();
+    await expandThread(page);
     await expect(page.locator('[data-tidy-note]')).toBeVisible();
     await page.locator('[data-tidy-note]').scrollIntoViewIfNeeded();
     await shot(page, 'thread-note-390');

@@ -61,8 +61,6 @@ export interface InboxTidyPlanAgent extends Omit<InboxTidyAgent, "items"> {
 
 export interface InboxTidyPlanResult {
   agents: InboxTidyPlanAgent[];
-  ended: { thread_id: string; subject: string }[];
-  unsent_picks: number;
 }
 
 /** "45 min", "6 h", "2 days". */
@@ -89,15 +87,13 @@ function oneLine(text: string, max: number): string {
 const hostName = (host: string | null | undefined): string => (host ? (INBOX_HOST_NAMES[host] ?? host) : "An agent");
 
 /**
- * Who Tidy would ask in scope, with what each wake lists; the threads whose
- * session ended (to set aside); and the person's unsent picks (left for
- * them). Sessions in their cool-down are left out.
+ * Who Tidy would ask in scope, with what each wake lists. A session that
+ * ended is not offered; sessions in their cool-down are left out. The
+ * person's unsent picks are never listed (theirs to send).
  */
 export function inboxTidyPlan(store: InboxStore, options: InboxTidyOptions): InboxTidyPlanResult {
   const { now, projectId } = options;
   const agents = new Map<string, InboxTidyPlanAgent>();
-  const ended = new Map<string, string>();
-  let picks = 0;
   const projectName = (id: string) => store.project(id)?.name ?? "";
 
   const itemOf = (session: string, host: string | null, name: string, reach: InboxTidyReach, key: string, make: () => PlanItem): PlanItem => {
@@ -145,14 +141,11 @@ export function inboxTidyPlan(store: InboxStore, options: InboxTidyOptions): Inb
       };
     });
 
-  /** Lists a signal for `session`, or the thread under ended when the session cannot be asked. */
+  /** Lists a signal for `session`; a session that cannot be asked (ended) is not offered. */
   const signal = (who: { session: string | null; host: string | null; name: string }, threadId: string, messages: readonly InboxMessage[], reason: string, lines: string[]) => {
     if (!inScope(who.session)) return;
     const reach = who.session ? options.reachOf(who.session) : null;
-    if (!who.session || !reach) {
-      ended.set(threadId, store.threadSubject(threadId) ?? "(no subject)");
-      return;
-    }
+    if (!who.session || !reach) return;
     const item = threadItem(who.session, who.host, who.name, reach, threadId, messages);
     item.reasons.push(reason);
     item.lines.push(...lines);
@@ -189,7 +182,6 @@ export function inboxTidyPlan(store: InboxStore, options: InboxTidyOptions): Inb
     for (const message of messages) {
       if (message.author.kind !== "agent") continue;
       for (const q of store.questionsOf(message.id)) {
-        if (q.state === "picked" && q.answer) picks += 1;
         if (q.state !== "open" || q.orphaned || reasked.has(`${message.id}/${q.key}`)) continue;
         const age = now - Date.parse(message.created_at);
         if (age < INBOX_TIDY_OPEN_ITEM_MS) continue;
@@ -260,8 +252,6 @@ export function inboxTidyPlan(store: InboxStore, options: InboxTidyOptions): Inb
 
   return {
     agents: [...agents.values()].sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name)),
-    ended: [...ended].filter(([id]) => ![...agents.values()].some((a) => a.items.some((i) => i.thread_id === id))).map(([thread_id, subject]) => ({ thread_id, subject })),
-    unsent_picks: picks,
   };
 }
 

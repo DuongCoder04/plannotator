@@ -53,7 +53,7 @@ import {
   stopSettle,
   type SettleSnapshot,
 } from './settle';
-import { formatCount, tildePath } from './format';
+import { tildePath } from './format';
 import { inboxImageSrcResolver } from './images';
 import { shellLine, type ConnectContext } from './harnesses';
 import { Sidebar } from './components/Sidebar';
@@ -2238,36 +2238,6 @@ function Inbox() {
   };
 
   /**
-   * Tidy's Set aside: Mark read on the threads whose session ended, one
-   * toast with one Undo for all of them.
-   */
-  const setAside = async (threadIds: readonly string[]) => {
-    const done: string[] = [];
-    try {
-      for (const id of threadIds) {
-        await inboxApi.markRead(id, true);
-        done.push(id);
-      }
-    } catch (cause) {
-      showError(cause);
-    }
-    await afterWrite();
-    if (done.length === 0) return;
-    showToast({
-      lead: `Set aside ${done.length === 1 ? '1 thread' : `${formatCount(done.length)} threads`}`,
-      icon: 'check',
-      onUndo: () => {
-        void (async () => {
-          for (const id of done) await inboxApi.markRead(id, false).catch(() => {});
-          await afterWrite();
-          dismissToast();
-          say('Moved back.');
-        })();
-      },
-    });
-  };
-
-  /**
    * Settings' Unarchive: the thread goes back to the list, in whatever
    * section its state puts it, and opens there (owner ruling 2026-10-12).
    */
@@ -3443,7 +3413,6 @@ function Inbox() {
         }}
         onSeeDrops={seeDrops}
         tidy={boardTidy}
-        onSetAside={(ids) => void setAside(ids)}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
         onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
@@ -3531,7 +3500,6 @@ function Inbox() {
           onRowAction={rowAction}
           pinned={pinsOn ? pinnedIds : undefined}
           tidy={listTidy}
-          onSetAside={(ids) => void setAside(ids)}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
           phone={phone}

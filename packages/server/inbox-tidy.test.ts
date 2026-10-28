@@ -103,7 +103,9 @@ describe("Tidy: who gets asked", () => {
     expect(later.agents.map((a) => a.session)).toEqual(["ses-live"]);
     const threads = later.agents[0]!.items.map((i) => i.thread_id).sort();
     expect(threads).toEqual([asked.thread_id, update.thread_id].sort());
-    expect(later.ended.map((t) => t.thread_id)).toEqual([gone.thread_id]);
+    // The session that ended is not offered, nor its thread listed anywhere.
+    expect(later.agents.flatMap((a) => a.items.map((i) => i.thread_id))).not.toContain(gone.thread_id);
+    expect("ended" in later).toBe(false);
   });
 
   test("scope follows the project filter", async () => {
@@ -158,8 +160,6 @@ describe("Tidy: asking", () => {
     clock.behind = 0;
     await poll(server, "ses-a", billing, { busy: true });
     const before = (await rows(server)).map((r) => [r.thread_id, r.section, r.last_at]);
-    const asked = await plan(server);
-    expect(asked.unsent_picks).toBe(1);
 
     const response = await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" });
     expect(response.status).toBe(200);

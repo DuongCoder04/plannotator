@@ -83,10 +83,6 @@ export interface InboxTidyPlan {
   /** Items across `agents` (threads, and cards without a thread). */
   count: number;
   agents: InboxTidyAgent[];
-  /** Threads whose session ended: listed apart, offered to set aside (Mark read). */
-  ended: { thread_id: string; subject: string }[];
-  /** Picks the person made and did not send, in scope: Tidy leaves them. */
-  unsent_picks: number;
   /** The last run (within INBOX_TIDY_RUN_SHOWN_MS), or null. */
   run: InboxTidyRun | null;
 }
