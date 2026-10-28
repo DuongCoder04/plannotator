@@ -47,11 +47,14 @@ import {
   type VimVisualBlockState,
   type VimVisualState,
 } from '../utils/vimNavigation';
+import { scrollVimTargetIntoView } from '../utils/vimScroll';
 import { useVimDocumentFocus } from './useVimDocumentFocus';
 
 /** Inputs required by the Markdown semantic Vim controller. */
 export interface UseVimSelectionOptions {
   readonly containerRef: RefObject<HTMLElement | null>;
+  /** The element that actually scrolls (ScrollViewportContext value). */
+  readonly scrollViewport?: HTMLElement | null;
   readonly enabled: boolean;
   readonly hudEnabled: boolean;
   readonly blocked: boolean;
@@ -225,6 +228,27 @@ function applyVisualBlockSelection(
 }
 
 /**
+ * Clear the page selection only when it touches the viewer's own document.
+ *
+ * A page has ONE selection, so an unconditional `removeAllRanges()` also kills
+ * a selection the user just made somewhere else (another panel of a host app,
+ * the annotation sidebar). A selection belongs to the viewer when its anchor or
+ * focus lies inside the container; with no container nothing is cleared.
+ */
+function clearSelectionWithin(container: HTMLElement | null | undefined): void {
+  if (!container) return;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const { anchorNode, focusNode } = selection;
+  if (
+    (anchorNode && container.contains(anchorNode))
+    || (focusNode && container.contains(focusNode))
+  ) {
+    selection.removeAllRanges();
+  }
+}
+
+/**
  * Own semantic block navigation and precise text selection while the rendered
  * document has focus.
  *
@@ -234,6 +258,7 @@ function applyVisualBlockSelection(
  */
 export function useVimSelection({
   containerRef,
+  scrollViewport,
   enabled,
   hudEnabled,
   blocked,
@@ -257,6 +282,11 @@ export function useVimSelection({
   const pointerFocusRef = useRef(false);
   const restoringFocusRef = useRef(false);
 
+  // Read the live scroll viewport without adding a dependency to every
+  // navigation callback below.
+  const scrollViewportRef = useRef(scrollViewport);
+  scrollViewportRef.current = scrollViewport;
+
   const setState = useCallback((next: VimSelectionState) => {
     stateRef.current = next;
     setStateValue(next);
@@ -278,24 +308,33 @@ export function useVimSelection({
     const container = containerRef.current;
     if (!container) return null;
     const graph = buildSemanticTargetGraph(container);
-    const initial = findInitialSemanticTarget(graph);
+    const initial = findInitialSemanticTarget(graph, scrollViewportRef.current);
     if (!initial) return null;
     const next: VimBlockState = { phase: 'block', targetKey: initial.key };
     setState(next);
-    window.getSelection()?.removeAllRanges();
-    initial.element.scrollIntoView({ block: 'nearest' });
+    clearSelectionWithin(container);
+    scrollVimTargetIntoView(initial.element, scrollViewportRef.current);
     return next;
   }, [containerRef, setState]);
 
+  // Whether vim was on since the last reset. The disabled branch below resets
+  // only when vim actually goes from on to off: on a mount where vim was never
+  // on there is nothing to reset, and `window.getSelection()` in
+  // `clearSelectionWithin` forces a layout on every document open.
+  const wasEnabledRef = useRef(enabled);
+
   useEffect(() => {
     if (!enabled) {
+      if (!wasEnabledRef.current) return;
+      wasEnabledRef.current = false;
       setState(createInitialVimSelectionState());
       setFocused(false);
       setHelpOpen(false);
       setHudCommand(null);
-      window.getSelection()?.removeAllRanges();
+      clearSelectionWithin(containerRef.current);
       return;
     }
+    wasEnabledRef.current = true;
     if (!focused) return;
     if (restoringFocusRef.current) {
       restoringFocusRef.current = false;
@@ -357,9 +396,9 @@ export function useVimSelection({
 
   const setSemanticTarget = useCallback((target: SemanticTarget) => {
     setState(semanticStateForTarget(target));
-    window.getSelection()?.removeAllRanges();
-    target.element.scrollIntoView({ block: 'nearest' });
-  }, [setState]);
+    clearSelectionWithin(containerRef.current);
+    scrollVimTargetIntoView(target.element, scrollViewportRef.current);
+  }, [containerRef, setState]);
 
   const updateTextState = useCallback((
     graph: SemanticTargetGraph,
@@ -373,9 +412,9 @@ export function useVimSelection({
       normalized.cursor,
       normalized.phase === 'visual' ? normalized.anchor : null,
     );
-    resolveTextPosition(graph.container, normalized.cursor)
-      ?.node.parentElement
-      ?.scrollIntoView({ block: 'nearest' });
+    const cursorParent = resolveTextPosition(graph.container, normalized.cursor)
+      ?.node.parentElement;
+    if (cursorParent) scrollVimTargetIntoView(cursorParent, scrollViewportRef.current);
   }, [setState]);
 
   const enterTextAtTarget = useCallback((
@@ -420,7 +459,7 @@ export function useVimSelection({
     if (!getTextElementBounds(graph.container, block.element)) return false;
     setState(next);
     applyVisualBlockSelection(graph, next);
-    block.element.scrollIntoView({ block: 'nearest' });
+    scrollVimTargetIntoView(block.element, scrollViewportRef.current);
     return true;
   }, [setState]);
 
@@ -652,7 +691,12 @@ export function useVimSelection({
     if (key === 'G') {
       updateTextState(graph, {
         ...current,
-        cursor: moveTextPosition(graph.container, current.cursor, 'document-end'),
+        cursor: moveTextPosition(
+          graph.container,
+          current.cursor,
+          'document-end',
+          scrollViewportRef.current,
+        ),
       });
       return true;
     }
@@ -678,7 +722,12 @@ export function useVimSelection({
           graph,
           current.targetKey,
           nativePosition
-            ?? moveTextPosition(graph.container, current.cursor, fallback),
+            ?? moveTextPosition(
+              graph.container,
+              current.cursor,
+              fallback,
+              scrollViewportRef.current,
+            ),
           direction,
         ),
       });
@@ -686,7 +735,12 @@ export function useVimSelection({
     }
     const motion = motionFromTextKey(key);
     if (!motion) return false;
-    const nextPosition = moveTextPosition(graph.container, current.cursor, motion);
+    const nextPosition = moveTextPosition(
+      graph.container,
+      current.cursor,
+      motion,
+      scrollViewportRef.current,
+    );
     updateTextState(graph, {
       ...current,
       cursor: motion === 'block-backward' || motion === 'block-forward'
@@ -730,7 +784,7 @@ export function useVimSelection({
       };
       setState(nextState);
       applyVisualBlockSelection(graph, nextState);
-      next.element.scrollIntoView({ block: 'nearest' });
+      scrollVimTargetIntoView(next.element, scrollViewportRef.current);
       return true;
     }
     if (key === 'o') {
@@ -792,13 +846,13 @@ export function useVimSelection({
           setSemanticTarget(parent);
         } else {
           setState(createInitialVimSelectionState());
-          window.getSelection()?.removeAllRanges();
+          clearSelectionWithin(graph.container);
         }
         return;
       }
       case 'block':
         setState(createInitialVimSelectionState());
-        window.getSelection()?.removeAllRanges();
+        clearSelectionWithin(graph.container);
     }
   }, [setSemanticTarget, setState, updateTextState]);
 
@@ -814,12 +868,13 @@ export function useVimSelection({
           graph.container,
           current.cursor,
           end ? 'document-end' : 'document-start',
+          scrollViewportRef.current,
         ),
       });
       return true;
     }
     const currentTarget = resolveSemanticTarget(graph, targetKeyForState(current))
-      ?? findInitialSemanticTarget(graph);
+      ?? findInitialSemanticTarget(graph, scrollViewportRef.current);
     if (!currentTarget) return false;
     setSemanticTarget(moveSemanticTarget(
       graph,
@@ -1016,7 +1071,7 @@ export function useVimSelection({
   const onMouseDown = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     if (!enabled || isDocumentKeyboardControl(event.target)) return;
     setState(createInitialVimSelectionState());
-    window.getSelection()?.removeAllRanges();
+    clearSelectionWithin(event.currentTarget);
     if (document.activeElement !== event.currentTarget) {
       pointerFocusRef.current = true;
       event.currentTarget.focus({ preventScroll: true });

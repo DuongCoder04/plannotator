@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { computePlanDiff, computeInlineDiff } from "./planDiffEngine";
+import type { InlineDiffToken } from "./planDiffEngine";
 import { parseMarkdownToBlocks } from "./parser";
 
 describe("computePlanDiff — block-level behavior", () => {
@@ -35,6 +36,42 @@ describe("computePlanDiff — block-level behavior", () => {
     expect(mods[0].oldContent).toContain("old");
     expect(mods[0].content).toContain("new");
     expect(stats.modifications).toBe(1);
+  });
+});
+
+describe("computePlanDiff — a quote holding a code fence diffs as one unit", () => {
+  // Each diff chunk renders as its own quote. Line-level diffing split an
+  // edit inside a quoted fence into chunks holding half a fence each, so one
+  // chunk opened a fence it never closed and rendered the prose after it as
+  // code.
+  const OLD = "# Plan\n\n> Steps:\n>\n> ```\n> step one\n> step two\n> ```\n>\n> Done.\n\nAfter.\n";
+  const NEW = OLD.replace("step two", "step 2");
+  const fenceLines = (text: string) => text.split("\n").filter((line) => /^\s*(>\s?)+`{3,}/.test(line)).length;
+
+  test("the edit is one modified quote, both sides whole", () => {
+    const { blocks } = computePlanDiff(OLD, NEW);
+    const changed = blocks.filter((b) => b.type !== "unchanged");
+    expect(changed).toHaveLength(1);
+    expect(changed[0].type).toBe("modified");
+    for (const side of [changed[0].oldContent!, changed[0].content]) {
+      const parsed = parseMarkdownToBlocks(side, { frontmatter: false });
+      expect(parsed.map((b) => b.type)).toEqual(["blockquote"]);
+      const inner = parseMarkdownToBlocks(parsed[0].content, { frontmatter: false });
+      expect(inner.map((b) => b.type)).toEqual(["paragraph", "code", "paragraph"]);
+    }
+  });
+
+  test("no chunk holds an unclosed quoted fence", () => {
+    const { blocks } = computePlanDiff(OLD, NEW);
+    for (const block of blocks) {
+      expect(fenceLines(block.content) % 2).toBe(0);
+      if (block.oldContent) expect(fenceLines(block.oldContent) % 2).toBe(0);
+    }
+  });
+
+  test("a quote without a fence still diffs line by line", () => {
+    const { blocks } = computePlanDiff("> one\n> two\n> three\n", "> one\n> 2\n> three\n");
+    expect(blocks.map((b) => b.type)).toEqual(["unchanged", "modified", "unchanged"]);
   });
 });
 
@@ -161,7 +198,7 @@ describe("computeInlineDiff — token content", () => {
 
 // Helper to build a unified <ins>/<del>-wrapped string from a computeInlineDiff
 // result for readable assertions in tests below.
-function unify(result: { tokens: import("./planDiffEngine").InlineDiffToken[] }) {
+function unify(result: { tokens: InlineDiffToken[] }) {
   return result.tokens
     .map((t) => {
       if (t.type === "added") return `<ins>${t.value}</ins>`;

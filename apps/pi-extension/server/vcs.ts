@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readlinkSync } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import {
 	type DiffResult,
 	type DiffType,
+	type GitBytesCommandResult,
 	type GitCommandResult,
 	type GitCommandOptions,
 	type GitContext,
@@ -14,7 +16,9 @@ import {
 	prepareGitCommand,
 	runGitDiff as runGitDiffCore,
 } from "../generated/review-core.ts";
+import { readFileCapped } from "../generated/repo-file.ts";
 import {
+	JJ_COLOR_FREE_ARGS,
 	type ReviewJjRuntime,
 } from "../generated/jj-core.ts";
 import {
@@ -26,10 +30,47 @@ import {
 	createGitProvider,
 	createJjProvider,
 	createVcsApi,
+	resolveAvailableDiffType,
 	resolveInitialDiffType,
 } from "../generated/vcs-core.ts";
 
-function runCommand(
+/**
+ * Process-group leaders of commands started with `interaction: "forbid"`
+ * (#1553). Mirrors packages/server/git.ts: those run detached so a timeout can
+ * kill the whole transport tree, but a server exiting mid-flight left the
+ * git/ssh pair orphaned — the parent-side timer dies with the parent, so
+ * nothing was ever going to reap them.
+ *
+ * POSIX only: the negative-pid group signal has no Windows equivalent, and the
+ * timeout path already special-cases win32 with taskkill.
+ */
+const isolatedProcessGroups = new Set<number>();
+let isolatedExitHookInstalled = false;
+
+function reapIsolatedProcessGroups(): void {
+	for (const pid of isolatedProcessGroups) {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			// Already gone, or the leader exited between the last read and here.
+		}
+	}
+	isolatedProcessGroups.clear();
+}
+
+function trackIsolatedProcessGroup(pid: number): () => void {
+	if (process.platform === "win32") return () => {};
+	if (!isolatedExitHookInstalled) {
+		isolatedExitHookInstalled = true;
+		// "exit" only: it runs on every process.exit(), and the callback must be
+		// synchronous — process.kill is.
+		process.on("exit", reapIsolatedProcessGroups);
+	}
+	isolatedProcessGroups.add(pid);
+	return () => isolatedProcessGroups.delete(pid);
+}
+
+async function runCommand(
 	command: string,
 	args: string[],
 	notFoundMessage: string,
@@ -38,6 +79,34 @@ function runCommand(
 	commandEnvironment?: NodeJS.ProcessEnv,
 	isolateProcessGroup = preparedGitCommand?.isolateProcessGroup ?? false,
 ): Promise<GitCommandResult> {
+	const result = await runCommandBytes(
+		command,
+		args,
+		notFoundMessage,
+		options,
+		preparedGitCommand,
+		commandEnvironment,
+		isolateProcessGroup,
+	);
+	return {
+		...result,
+		stdout: Buffer.from(result.stdout.buffer, result.stdout.byteOffset, result.stdout.byteLength).toString("utf-8"),
+	};
+}
+
+/**
+ * The shared spawn: stdout comes back undecoded, so binary blobs (image
+ * previews) survive intact; `runCommand` decodes it for every text caller.
+ */
+function runCommandBytes(
+	command: string,
+	args: string[],
+	notFoundMessage: string,
+	options?: GitCommandOptions,
+	preparedGitCommand?: PreparedGitCommand,
+	commandEnvironment?: NodeJS.ProcessEnv,
+	isolateProcessGroup = preparedGitCommand?.isolateProcessGroup ?? false,
+): Promise<GitBytesCommandResult> {
 	return new Promise((resolve) => {
 		const proc = spawn(command, args, {
 			cwd: options?.cwd,
@@ -46,6 +115,10 @@ function runCommand(
 			stdio: [options?.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
+
+		const untrack = isolateProcessGroup && proc.pid
+			? trackIsolatedProcessGroup(proc.pid)
+			: undefined;
 
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		if (options?.timeoutMs) {
@@ -62,7 +135,7 @@ function runCommand(
 					const killed = spawnSync(
 						"taskkill.exe",
 						["/pid", String(proc.pid), "/t", "/f"],
-						{ stdio: "ignore", windowsHide: true },
+						{ env: process.env, stdio: "ignore", windowsHide: true },
 					);
 					if (killed.status === 0) return;
 				}
@@ -72,24 +145,64 @@ function runCommand(
 
 		const stdoutChunks: Buffer[] = [];
 		const stderrChunks: Buffer[] = [];
-		proc.stdout!.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+		// Stop buffering AND kill at `maxOutputBytes`, so a command that can emit
+		// an entire repository tree bounds real memory growth instead of being
+		// measured and rejected after it is already held in full.
+		let stdoutBytes = 0;
+		let truncated = false;
+		proc.stdout!.on("data", (chunk: Buffer) => {
+			if (truncated) return;
+			stdoutBytes += chunk.byteLength;
+			if (
+				options?.maxOutputBytes !== undefined &&
+				stdoutBytes > options.maxOutputBytes
+			) {
+				truncated = true;
+				proc.kill("SIGKILL");
+				return;
+			}
+			stdoutChunks.push(chunk);
+		});
 		proc.stderr!.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-		if (options?.stdin !== undefined) proc.stdin!.end(options.stdin);
+		if (options?.stdin !== undefined) {
+			// A timeout-killed process can reject the stdin write while close is
+			// already being handled. Do not let that secondary EPIPE escape.
+			proc.stdin!.on("error", () => {});
+			proc.stdin!.end(options.stdin);
+		}
 
 		proc.on("close", (code) => {
 			if (timer) clearTimeout(timer);
+			untrack?.();
 			resolve({
-				stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
+				stdout: new Uint8Array(Buffer.concat(stdoutChunks)),
 				stderr: Buffer.concat(stderrChunks).toString("utf-8"),
 				exitCode: code ?? 1,
+				...(truncated ? { truncated: true } : {}),
 			});
 		});
 
 		proc.on("error", () => {
 			if (timer) clearTimeout(timer);
-			resolve({ stdout: "", stderr: notFoundMessage, exitCode: 1 });
+			untrack?.();
+			resolve({ stdout: new Uint8Array(0), stderr: notFoundMessage, exitCode: 1 });
 		});
 	});
+}
+
+/**
+ * `reviewRuntime` with `extraEnv` added to every git child's environment
+ * (after the process env, so it wins). A GitHub PR checkout uses it to run
+ * its fetches as the gh account chosen for that PR (#2157), so git through
+ * gh's credential helper gets that account's token; nothing else does.
+ */
+export function reviewRuntimeWithEnv(extraEnv: Record<string, string>): ReviewGitRuntime {
+	const run = (args: string[], options?: GitCommandOptions): Promise<GitCommandResult> => {
+		const environment = { ...process.env, ...extraEnv };
+		const command = prepareGitCommand(args, options, environment);
+		return runCommand("git", command.args, "git not found", options, command, environment);
+	};
+	return { ...reviewRuntime, runGit: run };
 }
 
 export const reviewRuntime: ReviewGitRuntime = {
@@ -101,9 +214,44 @@ export const reviewRuntime: ReviewGitRuntime = {
 		return runCommand("git", command.args, "git not found", options, command);
 	},
 
+	runGitBytes(
+		args: string[],
+		options?: GitCommandOptions,
+	): Promise<GitBytesCommandResult> {
+		const command = prepareGitCommand(args, options, process.env);
+		return runCommandBytes("git", command.args, "git not found", options, command);
+	},
+
 	async readTextFile(path: string): Promise<string | null> {
+		// Capped and non-blocking (repo-file.ts): a FIFO swapped in after the
+		// caller's lstat cannot block Pi's event loop.
+		const read = await readFileCapped(path);
+		return read.ok ? read.content : null;
+	},
+
+	async readFileBytes(path: string, maxBytes: number): Promise<Uint8Array | null> {
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
 		try {
-			return readFileSync(path, "utf-8");
+			handle = await open(path, "r");
+			const { size } = await handle.stat();
+			const buffer = new Uint8Array(Math.min(size, maxBytes) + 1);
+			let offset = 0;
+			while (offset < buffer.byteLength) {
+				const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, null);
+				if (bytesRead === 0) break;
+				offset += bytesRead;
+			}
+			return buffer.subarray(0, offset);
+		} catch {
+			return null;
+		} finally {
+			await handle?.close().catch(() => {});
+		}
+	},
+
+	async realPath(path: string): Promise<string | null> {
+		try {
+			return await realpath(path);
 		} catch {
 			return null;
 		}
@@ -140,7 +288,13 @@ export const jjRuntime: ReviewJjRuntime = {
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number },
 	): Promise<GitCommandResult> {
-		return runCommand("jj", args, "jj not found", options);
+		return runCommand("jj", [...JJ_COLOR_FREE_ARGS, ...args], "jj not found", options);
+	},
+	runJjBytes(
+		args: string[],
+		options?: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number },
+	): Promise<GitBytesCommandResult> {
+		return runCommandBytes("jj", [...JJ_COLOR_FREE_ARGS, ...args], "jj not found", options);
 	},
 };
 
@@ -164,7 +318,7 @@ export const gitButlerRuntime: ReviewGitButlerRuntime = {
 };
 
 const api = createVcsApi([
-	createJjProvider(jjRuntime),
+	createJjProvider(jjRuntime, reviewRuntime),
 	createGitButlerProvider(gitButlerRuntime),
 	createGitProvider(reviewRuntime),
 ]);
@@ -178,14 +332,17 @@ export const {
 	prepareLocalReviewDiff,
 	runVcsDiff,
 	getVcsFileContentsForDiff,
+	getVcsFileBytesForDiff,
 	getVcsDiffFingerprint,
 	canStageFiles,
 	stageFile,
 	unstageFile,
 	resolveVcsCwd,
+	vcsSupportsSnapshot,
+	materializeVcsSnapshot,
 } = api;
 
-export { resolveInitialDiffType };
+export { resolveAvailableDiffType, resolveInitialDiffType };
 export type { VcsSelection };
 
 export function getGitContext(cwd?: string): Promise<GitContext> {

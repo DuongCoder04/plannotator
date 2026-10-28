@@ -2,51 +2,17 @@ import { useState, useEffect } from 'react';
 import type { DiffLineBgIntensity } from '@plannotator/shared/config';
 import { useTheme } from '@plannotator/ui/components/ThemeProvider';
 import { useConfigValue } from '@plannotator/ui/config';
+import { buildPierreFontCSS } from '../utils/pierreFontCss';
 
-export const SHIKI_THEME_MAP: Record<string, { dark: string | null; light: string | null }> = {
-  'andromeeda': { dark: 'andromeeda', light: null },
-  'aurora-x': { dark: 'aurora-x', light: null },
-  'ayu-dark': { dark: 'ayu-dark', light: null },
-  'catppuccin': { dark: 'catppuccin-mocha', light: 'catppuccin-latte' },
-  'colorblind': { dark: 'pierre-dark-protanopia-deuteranopia', light: 'pierre-light-protanopia-deuteranopia' },
-  'dark-plus': { dark: 'dark-plus', light: 'light-plus' },
-  'dracula': { dark: 'dracula', light: null },
-  'everforest': { dark: 'everforest-dark', light: 'everforest-light' },
-  'everforest-hard': { dark: 'everforest-dark', light: 'everforest-light' },
-  'everforest-soft': { dark: 'everforest-dark', light: 'everforest-light' },
-  'github': { dark: 'github-dark', light: 'github-light' },
-  'gruvbox': { dark: 'gruvbox-dark-medium', light: 'gruvbox-light-medium' },
-  'houston': { dark: 'houston', light: null },
-  'kanagawa-dragon': { dark: 'kanagawa-dragon', light: null },
-  'kanagawa-lotus': { dark: null, light: 'kanagawa-lotus' },
-  'kanagawa-wave': { dark: 'kanagawa-wave', light: null },
-  'laserwave': { dark: 'laserwave', light: null },
-  'material': { dark: 'material-theme', light: 'material-theme-lighter' },
-  'min': { dark: 'min-dark', light: 'min-light' },
-  'monokai-pro': { dark: 'monokai', light: null },
-  'night-owl': { dark: 'night-owl', light: null },
-  'nord': { dark: 'nord', light: null },
-  'one-dark-pro': { dark: 'one-dark-pro', light: null },
-  'one-light': { dark: null, light: 'one-light' },
-  'plastic': { dark: 'plastic', light: null },
-  'poimandres': { dark: 'poimandres', light: null },
-  'red': { dark: 'red', light: null },
-  'rose-pine': { dark: 'rose-pine', light: 'rose-pine-dawn' },
-  'slack': { dark: 'slack-dark', light: 'slack-ochin' },
-  'snazzy-light': { dark: null, light: 'snazzy-light' },
-  'solarized': { dark: 'solarized-dark', light: 'solarized-light' },
-  'synthwave-84': { dark: 'synthwave-84', light: null },
-  'tokyo-night': { dark: 'tokyo-night', light: null },
-  'vesper': { dark: 'vesper', light: null },
-  'vitesse': { dark: 'vitesse-dark', light: 'vitesse-light' },
-  'vitesse-black': { dark: 'vitesse-black', light: null },
-};
-
-export function resolveSyntaxTheme(colorTheme: string, mode: 'dark' | 'light'): { dark: string; light: string } | undefined {
-  const map = SHIKI_THEME_MAP[colorTheme];
-  if (!map || !map[mode]) return undefined;
-  return { dark: map.dark || 'pierre-dark', light: map.light || 'pierre-light' };
-}
+/**
+ * The (colorTheme, mode) -> Shiki theme mapping moved to
+ * `@plannotator/ui/utils/syntaxTheme` so the plan editor's markdown fences
+ * resolve the same theme this diff pane does. Re-exported here because it is
+ * the import path the review editor has always used.
+ */
+import { resolveSyntaxTheme } from '@plannotator/ui/utils/syntaxTheme';
+import { tokenHoverUnderlineCss } from '../components/tokenHoverStyles';
+export { SHIKI_THEME_MAP, resolveSyntaxTheme } from '@plannotator/ui/utils/syntaxTheme';
 
 export interface PierreTheme {
   type: 'dark' | 'light';
@@ -205,11 +171,46 @@ export function buildLineBgOverrides(intensity: DiffLineBgIntensity, mode: 'ligh
   `;
 }
 
-export function usePierreTheme(options?: { fontFamily?: string; fontSize?: string; showFileHeader?: boolean }): PierreTheme {
+/**
+ * Pierre's gutter comment button (`[data-utility-button]`) is `1lh` square —
+ * 20px at the default line height — plus a 4px leftward bleed on its invisible
+ * `::before`. On compact touch that button is the ONLY way to open the composer
+ * for a preserved range, so it has to meet the same 44px standard
+ * `[data-pn-touch-target]` enforces everywhere else in the shell.
+ *
+ * The glyph keeps its size; only the `::before` hit area grows, centred on the
+ * button, to `max(44px, its previous size)`. `--pn-touch-target` is a custom
+ * property on `:root` and custom properties inherit across the shadow boundary,
+ * so the token still drives the number inside Pierre's shadow DOM.
+ *
+ * Injected conditionally rather than through the `html:has([data-pn-compact-
+ * touch-layout])` gate: this CSS is applied INSIDE Pierre's shadow root, where
+ * a selector rooted at `html` matches nothing. A `@media (pointer: coarse)`
+ * query is not a substitute either — the shell's compact classification is
+ * deliberately not "any coarse pointer is present", so a desktop with a
+ * touchscreen must not pick this up.
+ */
+const COMPACT_TOUCH_GUTTER_UTILITY_CSS = `
+  [data-utility-button]::before {
+    inset: 50% auto auto 50%;
+    width: max(var(--pn-touch-target, 2.75rem), calc(100% + 4px));
+    height: max(var(--pn-touch-target, 2.75rem), 100%);
+    transform: translate(-50%, -50%);
+  }
+`;
+
+export function usePierreTheme(options?: {
+  fontFamily?: string;
+  fontSize?: string;
+  showFileHeader?: boolean;
+  compactTouchLayout?: boolean;
+}): PierreTheme {
   const { colorTheme, resolvedMode } = useTheme();
   const fontFamily = options?.fontFamily;
   const fontSize = options?.fontSize;
   const showFileHeader = options?.showFileHeader ?? false;
+  const compactTouchLayout = options?.compactTouchLayout === true;
+  const compactTouchCSS = compactTouchLayout ? COMPACT_TOUCH_GUTTER_UTILITY_CSS : '';
   const lineBgIntensity = useConfigValue('diffLineBgIntensity');
 
   const [pierreTheme, setPierreTheme] = useState<PierreTheme>(() => {
@@ -227,6 +228,7 @@ export function usePierreTheme(options?: { fontFamily?: string; fontSize?: strin
       [data-separator='line-info'], [data-separator='line-info-basic'] { height: 24px !important; }
       [data-separator='line-info'] { margin-block: 4px !important; }
       ${buildLineBgOverrides(lineBgIntensity, resolvedMode ?? 'dark')}
+      ${compactTouchCSS}
     `};
   });
 
@@ -241,11 +243,7 @@ export function usePierreTheme(options?: { fontFamily?: string; fontSize?: strin
       const primary = styles.getPropertyValue('--primary').trim();
       if (!bg || !fg) return;
 
-      const fontCSS = fontFamily || fontSize ? `
-          pre, code, [data-line-content], [data-column-number] {
-            ${fontFamily ? `font-family: '${fontFamily}', monospace !important;` : ''}
-            ${fontSize ? `font-size: ${fontSize} !important; line-height: 1.5 !important;` : ''}
-          }` : '';
+      const fontCSS = buildPierreFontCSS(fontFamily, fontSize);
 
       setPierreTheme({
         type: resolvedMode,
@@ -274,16 +272,21 @@ export function usePierreTheme(options?: { fontFamily?: string; fontSize?: strin
           [data-diff-type='split'][data-overflow='scroll'] > [data-code][data-additions] [data-content] {
             min-width: 0 !important;
           }
-          .pn-token-hover {
-            text-decoration: underline;
-            text-decoration-color: ${primary || 'oklch(0.70 0.20 280)'};
-            text-decoration-thickness: 1.5px;
-            text-underline-offset: 2px;
-            cursor: pointer;
+          /* Pierre's own horizontal scrollbar sits at the bottom of each
+             file's content, which is off-screen on any diff taller than the
+             panel (#1048). DiffHScrollbar replaces it, pinned to the file
+             header, so suppress this one. Height only — the vertical width
+             is already 0 upstream. */
+          [data-code] { scrollbar-width: none !important; }
+          [data-code]::-webkit-scrollbar { height: 0 !important; }
+          .pn-token-hover {${tokenHoverUnderlineCss(primary || 'oklch(0.70 0.20 280)')}
           }
           .pn-token-nav {
             text-decoration-thickness: 2px;
-            cursor: pointer;
+            /* Pierre's [data-*] selectors outrank a bare class inside the
+               shadow root, so the pointer needs the same !important the
+               neighboring overrides use, or the I-beam wins. */
+            cursor: pointer !important;
             opacity: 0.85;
           }
 
@@ -333,10 +336,12 @@ export function usePierreTheme(options?: { fontFamily?: string; fontSize?: strin
           ${fontCSS}
 
           ${buildLineBgOverrides(lineBgIntensity, resolvedMode)}
+
+          ${compactTouchCSS}
         `,
       });
     });
-  }, [resolvedMode, colorTheme, fontFamily, fontSize, showFileHeader, lineBgIntensity]);
+  }, [resolvedMode, colorTheme, fontFamily, fontSize, showFileHeader, lineBgIntensity, compactTouchCSS]);
 
   return pierreTheme;
 }

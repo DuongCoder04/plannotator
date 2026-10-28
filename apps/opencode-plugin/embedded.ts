@@ -8,6 +8,7 @@ import {
   getAnnotateMessageFeedbackPrompt,
 } from "@plannotator/shared/prompts";
 import { deliverOpenCodePrompt } from "./prompt-delivery-error";
+import type { SessionBridge } from "@plannotator/ai/session-bridge";
 
 export interface EmbeddedPlanReviewInput {
   client: any;
@@ -17,8 +18,12 @@ export interface EmbeddedPlanReviewInput {
   pasteApiUrl?: string;
   htmlContent: string;
   timeoutSeconds: number | null;
-  abortSignal: AbortSignal;
+  abortSignal?: AbortSignal;
   logReady: (url: string, isRemote: boolean, port: number) => void;
+  /** "Ask this session": in-process bridge to the session (quick answers while the plan waits). */
+  sessionBridge?: SessionBridge;
+  /** The host can register the `plannotator` tool: serverConfig advertises its switch. */
+  opencodeToolCapable?: boolean;
 }
 
 export interface EmbeddedPlanReviewResult {
@@ -26,6 +31,7 @@ export interface EmbeddedPlanReviewResult {
   feedback?: string;
   savedPath?: string;
   agentSwitch?: string;
+  answersOnly?: boolean;
 }
 
 async function loadPlanServer() {
@@ -43,6 +49,8 @@ export async function deliverEmbeddedAnnotateMessagePrompt(input: {
   sessionId: string;
   approved: boolean;
   feedback: string;
+  /** The agent that wrote the annotated message, when known and addressable (#1612). */
+  agent?: string;
 }): Promise<void> {
   const text = input.approved
     ? getAnnotateApprovedWithNotesPrompt("opencode", undefined, {
@@ -57,6 +65,7 @@ export async function deliverEmbeddedAnnotateMessagePrompt(input: {
     prompt: {
       path: { id: input.sessionId },
       body: {
+        ...(input.agent && { agent: input.agent }),
         parts: [{ type: "text", text }],
       },
     },
@@ -69,7 +78,7 @@ export async function deliverEmbeddedAnnotateMessagePrompt(input: {
 export async function runEmbeddedPlanReview(
   input: EmbeddedPlanReviewInput,
 ): Promise<EmbeddedPlanReviewResult> {
-  input.abortSignal.throwIfAborted();
+  input.abortSignal?.throwIfAborted();
   const { startPlannotatorServer, handleServerReady } = await loadPlanServer();
   const server = await startPlannotatorServer({
     plan: input.planContent,
@@ -79,8 +88,16 @@ export async function runEmbeddedPlanReview(
     pasteApiUrl: input.pasteApiUrl,
     htmlContent: input.htmlContent,
     opencodeClient: input.client,
+    sessionBridge: input.sessionBridge,
+    // submit_plan's executor delivers an approval's feedback as the
+    // approved-with-notes prompt.
+    approvalNotesSupported: true,
+    ...(input.opencodeToolCapable ? { opencodeToolCapable: true } : {}),
     onReady: async (url, isRemote, port) => {
-      await handleServerReady(url, isRemote, port);
+      // announce: false. This runs in OpenCode's own process, sharing stderr
+      // with its TUI renderer, and input.logReady already shows the URL (a
+      // toast on OpenCode 1, a transcript notice on OpenCode 2).
+      await handleServerReady(url, isRemote, port, { announce: false });
       input.logReady(url, isRemote, port);
     },
   });
@@ -111,12 +128,13 @@ export async function handleEmbeddedCommand(
     client: any;
     htmlContent: string;
     reviewHtmlContent: string;
+    reviewDiagramEngineDir?: string;
     getSharingEnabled: () => Promise<boolean>;
     getShareBaseUrl: () => string | undefined;
     getPasteApiUrl: () => string | undefined;
     directory?: string;
   },
-): Promise<{ approved?: boolean; feedback?: string | null }> {
+): Promise<{ approved?: boolean; feedback?: string | null; agent?: string }> {
   const {
     handleReviewCommand,
     handleAnnotateCommand,

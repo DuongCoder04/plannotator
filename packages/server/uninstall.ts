@@ -6,6 +6,7 @@
  * data. Purge removes the known Plannotator data inventory while preserving
  * unknown top-level entries rather than guessing that custom files are ours.
  */
+import { childPath } from "@plannotator/shared/child-env";
 import {
   existsSync,
   lstatSync,
@@ -28,6 +29,15 @@ import {
   resolve,
 } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { parseT3HookCommand, T3_SETTINGS_BACKUP_SUFFIX } from "@plannotator/shared/t3-hook-command";
+import { runningT3Workers, stopT3Workers } from "@plannotator/shared/t3-workers";
+import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/inbox/registry";
+import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
+import { takeDownInboxTailscale } from "./inbox-tailscale";
+import { agentHomeAllowed, forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
+import { qwenTrustRemoval, type QwenRevokeResult } from "./inbox-qwen-trust";
+import { planInboxNoteRemoval } from "./inbox-agent-notes";
+import { INBOX_AGENT_LABELS, type InboxAgentId } from "@plannotator/core/inbox-types";
 import {
   applyEdits,
   createScanner,
@@ -43,6 +53,22 @@ const CORE_SKILLS = [
   "plannotator-last",
 ] as const;
 
+// The knowledge-layer CLI reference skill (apps/skills/core/plannotator).
+// Installed to the same two scopes as CORE_SKILLS, but kept out of that list:
+// it never had a legacy slash command or a Codex-home era, so it must not
+// join LEGACY_COMMAND_NAMES (a user's own ~/.claude/commands/plannotator.md
+// would be collateral) or STALE_CODEX_SKILLS.
+const KNOWLEDGE_SKILLS = [
+  "plannotator",
+] as const;
+
+// /plannotator-inbox (apps/skills/{claude,core}/plannotator-inbox): installed
+// to the Claude and shared-agent scopes, ~/.kiro/skills and $VIBE_HOME/skills,
+// plus an OpenCode command stub and a Gemini command. Kept out of
+// CORE_SKILLS for the same reason as the knowledge skill: it never had a
+// legacy ~/.claude/commands file or a Codex-home era.
+const INBOX_SKILL = "plannotator-inbox";
+
 const EXTRA_SKILLS = [
   "plannotator-compound",
   "plannotator-setup-goal",
@@ -57,9 +83,34 @@ const LEGACY_COMMAND_NAMES = [
 const KIRO_SKILLS = [
   "plannotator-review",
   "plannotator-annotate",
+  INBOX_SKILL,
+  // The knowledge skill installs into ~/.kiro/skills like the action skills.
+  // Safe to name here: this list only ever removes ~/.kiro/skills/<name>
+  // directories, never a command file a user may own.
+  "plannotator",
   "plannotator-setup-goal",
   "plannotator-visual-explainer",
   "plannotator-archive",
+] as const;
+
+// Installed by scripts/install.sh to $VIBE_HOME/skills (same names as the
+// core skills plus the knowledge skill; the dirs are installer-created, so
+// removing them by name cannot touch a user's own skill).
+const VIBE_SKILLS = [
+  "plannotator-review",
+  "plannotator-annotate",
+  "plannotator-last",
+  INBOX_SKILL,
+  "plannotator",
+] as const;
+
+// Installed by the install scripts to $QWEN_HOME/skills (default ~/.qwen/skills)
+// from apps/qwen-code/skills. Removed by name, like the Vibe skills: only the
+// installer creates these folders there.
+const QWEN_SKILLS = [
+  "plannotator-review",
+  "plannotator-annotate",
+  "plannotator-last",
 ] as const;
 
 const STALE_CODEX_SKILLS = [
@@ -76,7 +127,11 @@ const STALE_SHARED_SKILLS = [
 const PURGE_OWNED_TOP_LEVEL = [
   "plans",
   "history",
+  "feedback",
+  "inbox",
+  "t3-code",
   "drafts",
+  "review-progress",
   "active",
   "hooks",
   "compound",
@@ -93,24 +148,93 @@ const PURGE_OWNED_TOP_LEVEL = [
   "codex-review-schema.json",
   "tour-schema.json",
   "guide-schema.json",
+  "update-state.json",
+  "update-result.json",
+  "update.lock",
+  "update.log",
+  "update.log.1",
+  "update-notes",
+  "install-flags.json",
 ] as const;
 
-const WINDOWS_PATH_SCRIPT = [
+/**
+ * Best-effort WM_SETTINGCHANGE broadcast that runs AFTER the registry write.
+ *
+ * `[Environment]::SetEnvironmentVariable(..., 'User')` performs this broadcast
+ * itself, synchronously, per top-level window and without SMTO_ABORTIFHUNG, so
+ * one orphaned or hung GUI process can stall it past the uninstaller's 15 s
+ * command timeout and turn a completed PATH edit into a killed PowerShell and
+ * exit 124. Here the broadcast is decoupled from the edit: SMTO_ABORTIFHUNG
+ * (0x2) skips windows Windows already considers hung, the per-window timeout
+ * is short, the whole thing is wrapped in try/catch, and the script exits 0
+ * explicitly so nothing about the broadcast can reach the exit code.
+ *
+ * The DllImport attribute needs double quotes, which the `-Command` one-liners
+ * avoid on purpose (the script travels as a single argv element on Windows),
+ * so they are assembled from `[char]34` at runtime.
+ */
+const WINDOWS_PATH_BROADCAST_STATEMENTS = [
+  "$q=[char]34",
+  "$sig='[DllImport('+$q+'user32.dll'+$q+',CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint msg,UIntPtr wParam,string lParam,uint flags,uint timeout,out UIntPtr result);'",
+  "try{Add-Type -Namespace Plannotator -Name PathBroadcast -MemberDefinition $sig; $r=[UIntPtr]::Zero; [void][Plannotator.PathBroadcast]::SendMessageTimeout([IntPtr]0xffff,0x1A,[UIntPtr]::Zero,'Environment',0x2,1000,[ref]$r)}catch{}",
+  "exit 0",
+] as const;
+
+/**
+ * Removes exactly one entry from the HKCU user PATH through the registry API.
+ *
+ * The value is read unexpanded (`DoNotExpandEnvironmentNames`) and written back
+ * with its original kind (REG_EXPAND_SZ on most systems), so `%VARS%` in other
+ * entries survive byte for byte. Exit 3 means "not present or unchanged"; on
+ * success the ORIGINAL value is echoed as one JSON string on stdout so the
+ * caller can roll back. The echo is written before the broadcast, so stdout
+ * carrying that JSON proves the registry write completed.
+ *
+ * @internal Exported only so the PowerShell syntax can be regression-tested.
+ */
+export const WINDOWS_PATH_SCRIPT = [
   "$ErrorActionPreference='Stop'",
-  "$p=[Environment]::GetEnvironmentVariable('Path','User')",
+  "$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment',$true)",
+  "if($null -eq $k){exit 3}",
+  "$p=$k.GetValue('Path',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
   "if($null -eq $p){exit 3}",
+  "$p=[string]$p",
+  "$kind=$k.GetValueKind('Path')",
   "$t=$env:PLANNOTATOR_UNINSTALL_PATH.Trim().TrimEnd('\\')",
   "$kept=@($p -split ';' | Where-Object { $_.Trim().TrimEnd('\\') -ine $t })",
   "$n=$kept -join ';'",
   "if($n -eq $p){exit 3}",
-  "[Environment]::SetEnvironmentVariable('Path',$n,'User')",
+  "$k.SetValue('Path',$n,$kind)",
+  "$k.Close()",
   "Write-Output (ConvertTo-Json -Compress -InputObject $p)",
+  ...WINDOWS_PATH_BROADCAST_STATEMENTS,
 ].join("; ");
 
-const WINDOWS_PATH_RESTORE_SCRIPT = [
+/**
+ * Line the restore script prints right after its registry write and before the
+ * broadcast, so the caller can tell a completed restore from one that never
+ * reached the write even when the process was killed or died afterwards.
+ */
+const WINDOWS_PATH_RESTORED_SENTINEL = "PLANNOTATOR_PATH_RESTORED";
+
+/**
+ * Writes the echoed original PATH back with the kind the value currently has
+ * (the kind the removal preserved), falling back to REG_EXPAND_SZ when the
+ * value is gone entirely. Same decoupled broadcast as the removal.
+ *
+ * @internal Exported only so the PowerShell syntax can be regression-tested.
+ */
+export const WINDOWS_PATH_RESTORE_SCRIPT = [
   "$ErrorActionPreference='Stop'",
   "$original=$env:PLANNOTATOR_UNINSTALL_ORIGINAL_PATH",
-  "[Environment]::SetEnvironmentVariable('Path',$original,'User')",
+  "$k=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment',$true)",
+  "if($null -eq $k){$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')}",
+  "$kind=[Microsoft.Win32.RegistryValueKind]::ExpandString",
+  "try{$kind=$k.GetValueKind('Path')}catch{}",
+  "$k.SetValue('Path',$original,$kind)",
+  "$k.Close()",
+  `Write-Output '${WINDOWS_PATH_RESTORED_SENTINEL}'`,
+  ...WINDOWS_PATH_BROADCAST_STATEMENTS,
 ].join("; ");
 
 /** @internal Exported only so the Windows worker syntax can be regression-tested. */
@@ -194,7 +318,7 @@ type MutableUninstallResult = {
 type HookCleanupSpec = {
   readonly event: string;
   readonly matcher?: string;
-  readonly suffix: "" | "improve-context";
+  readonly suffix: "" | "improve-context" | "t3-hook";
 };
 
 type HookCleanupPolicy = {
@@ -234,7 +358,7 @@ export function createDefaultUninstallEnvironment(): UninstallEnvironment {
     dataDir: getPlannotatorDataDir(),
     execPath: process.execPath,
     env,
-    which: (command) => Bun.which(command),
+    which: (command) => Bun.which(command, { PATH: childPath() }),
     runCommand: defaultRunCommand,
     scheduleWindowsSelfDelete: defaultScheduleWindowsSelfDelete,
   };
@@ -287,10 +411,76 @@ export async function runPlannotatorUninstall(
     };
   }
 
+  // A running Inbox writes into inbox/ until it exits: purge stops it first,
+  // over its own token-guarded stop route (registry pid as the fallback).
+  let inboxBlocksPurge = false;
+  let othersInbox = false;
+  if (request.purge && !dataDirSafetyIssue) {
+    if (request.dryRun) {
+      const status = await inboxStatus(state.dataDir);
+      if (status.state === "running") {
+        state.planned.push(`Stop the running Plannotator Inbox (pid ${status.entry.pid})`);
+      }
+    } else {
+      const stopped = await stopInbox(state.dataDir);
+      if (stopped.state === "stopped") {
+        state.removed.push(`Stopped the running Plannotator Inbox (pid ${stopped.pid})`);
+      } else if (stopped.state === "not_running" && stopped.stale?.reason === "not_ours") {
+        // A copied data dir: its record names another data dir's Inbox, which refused the stop and
+        // runs on. Both tailnet mappings the record names are that Inbox's, so they stay up too.
+        othersInbox = true;
+        state.warnings.push(`This data dir's record named the Plannotator Inbox of another data dir (pid ${stopped.stale.pid}); it was left running.`);
+      } else if (stopped.state === "still_running") {
+        inboxBlocksPurge = true;
+        state.errors.push(
+          `The Plannotator Inbox (pid ${stopped.pid}) is still running; quit it and run uninstall --purge again.`,
+        );
+      }
+    }
+    // "Reach from my tailnet": a mapping a crashed Inbox left behind (a clean stop already took its own down).
+    if (!inboxBlocksPurge && !othersInbox && readInboxRegistry(state.dataDir)?.tailnet) {
+      if (request.dryRun) {
+        state.planned.push(`Take down the Plannotator Inbox's tailnet address (tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT})`);
+      } else {
+        const tailnet = takeDownInboxTailnet(state.dataDir);
+        if (tailnet === "removed") state.removed.push(`Took down the Plannotator Inbox's tailnet address (tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT})`);
+        if (tailnet === "failed") state.warnings.push(`Could not check or remove the Inbox's tailnet address; run: tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT} off`);
+      }
+    }
+    // "Over your tailnet": the window's mapping a crashed Inbox left behind (a clean stop, including the stop above, takes its own down).
+    const kept = inboxBlocksPurge || othersInbox ? undefined : readInboxRegistry(state.dataDir)?.tailscale;
+    if (kept?.https_port && kept.proxy_port) {
+      if (request.dryRun) {
+        state.planned.push(`Take down the Plannotator Inbox's tailnet address (tailscale serve --https=${kept.https_port})`);
+      } else {
+        const result = takeDownInboxTailscale(state.dataDir);
+        if (result === "removed") state.removed.push(`Took down the Plannotator Inbox's tailnet address (tailscale serve --https=${kept.https_port})`);
+        if (result === "failed") state.warnings.push(`Could not check or remove the Inbox's tailnet address; run: tailscale serve --https=${kept.https_port} off`);
+      }
+    }
+  }
+
+  // The opt-in T3 Code connection's workers run from the binary being removed
+  // and write into t3-code/: stop them (reviews stay open). Nothing to do for
+  // anyone who never connected T3.
+  if (request.dryRun) {
+    for (const worker of await runningT3Workers(state.dataDir)) {
+      state.planned.push(`Stop the T3 Code companion for thread ${worker.thread} (pid ${worker.pid})`);
+    }
+  } else {
+    for (const worker of await stopT3Workers(state.dataDir)) {
+      if (worker.state === "stopped") state.removed.push(`Stopped the T3 Code companion for thread ${worker.entry.thread} (pid ${worker.entry.pid})`);
+      if (worker.state === "still_running") state.warnings.push(`The T3 Code companion for thread ${worker.entry.thread} (pid ${worker.entry.pid}) did not stop; quit it before deleting ${join(state.dataDir, "t3-code")}.`);
+    }
+  }
+
   const paths = resolveOwnedPaths(environment);
 
   await removeHostPlugins(request, environment, paths, state);
   removeHostConfigEntries(request, environment, paths, state);
+  // Plain uninstall too: with the binary gone, an agent's plannotator-inbox
+  // entry would fail to start at every launch.
+  await removeInboxAgentConnections(request, environment, state);
   removeInstalledFiles(request, environment, paths, state);
   if (dataDirSafetyIssue) {
     state.warnings.push(
@@ -312,7 +502,7 @@ export async function runPlannotatorUninstall(
       // Keep this block synchronous: no host command or other awaited work may
       // reopen a path-swap window after the destructive-boundary revalidation.
       removeInstallerData(request, state);
-      if (request.purge) purgeLocalData(request, state);
+      if (request.purge && !inboxBlocksPurge) purgeLocalData(request, state);
     }
   }
 
@@ -367,6 +557,77 @@ export function formatUninstallResult(result: UninstallResult): string {
   return lines.join("\n");
 }
 
+/** The agents' boundary (inbox-agents.ts) over uninstall's own. */
+function agentEnvironmentOf(environment: UninstallEnvironment): AgentEnvironment {
+  return {
+    platform: environment.platform,
+    homeDir: environment.homeDir,
+    env: environment.env,
+    which: (command) => environment.which(command),
+    run: async (argv) => {
+      const result = await environment.runCommand(argv[0]!, argv.slice(1));
+      return { exitCode: result.exitCode, timedOut: result.timedOut, stdout: result.stdout ?? "", stderr: "" };
+    },
+  };
+}
+
+/**
+ * The `plannotator-inbox` MCP entries `plannotator inbox` added to the
+ * agents on this computer (inbox-agents.ts): only the recorded ones that still
+ * run Plannotator. An entry the person changed to run something else is theirs
+ * and is named; so is one that runs this binary but has no record (agents.json
+ * lost), which the person may have added by hand. A failure is a warning,
+ * never a reason to keep the CLI.
+ */
+async function removeInboxAgentConnections(
+  request: UninstallRequest,
+  environment: UninstallEnvironment,
+  state: MutableUninstallResult,
+): Promise<void> {
+  const agents = agentEnvironmentOf(environment);
+  // With no record (agents.json lost), an entry that runs exactly this binary is named, never removed.
+  const plan = planInboxAgentRemoval(state.dataDir, agents, [environment.execPath, "inbox", "mcp"]);
+  // The notes (inbox-agent-notes.ts): only the marked section, as the person left it.
+  const notes = planInboxNoteRemoval(state.dataDir, agents, INBOX_AGENT_LABELS);
+  // Plannotator's trusted-sender token in Qwen Code (inbox-qwen-trust.ts): revoked in Qwen, whoever added the MCP entry.
+  const trust = agentHomeAllowed(agents) ? qwenTrustRemoval(state.dataDir, agents) : null;
+  for (const skipped of [...plan.skipped, ...notes.skipped]) state.warnings.push(`Skipped: ${skipped}.`);
+  if (request.dryRun) {
+    for (const item of plan.items) state.planned.push(item.describe);
+    for (const note of notes.items) state.planned.push(note.describe);
+    if (trust?.runnable) state.planned.push(trust.describe);
+    else if (trust) state.warnings.push(`Skipped: ${trust.describe}: qwen is not on PATH; run \`${trust.manual}\`.`);
+    return;
+  }
+  if (trust) {
+    // Never stops the uninstall: the entries and the binary go whatever happens to the grant.
+    const result = await trust.apply().catch((error: unknown): QwenRevokeResult => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error), manual: trust.manual, held: true }));
+    if (result.kind === "revoked") state.removed.push(trust.describe);
+    else if (result.kind === "forgotten") state.warnings.push(`Plannotator forgot ${trust.describe}, but qwen is not on PATH, so the grant may still be in Qwen Code; run \`${result.manual}\`.`);
+    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}.${result.held ? " Run" : " Plannotator no longer uses it; run"} \`${result.manual}\` to remove it.`);
+  }
+  for (const note of notes.items) {
+    const result = note.apply();
+    if (result.ok) state.removed.push(note.describe);
+    else state.warnings.push(`Could not remove the note in ${note.path}: ${result.reason}.`);
+  }
+  const removed: InboxAgentId[] = [];
+  const kept = new Set<InboxAgentId>();
+  for (const item of plan.items) {
+    const problem = await item.apply();
+    if (problem) {
+      state.warnings.push(`Could not remove ${item.describe}: ${problem}.`);
+      kept.add(item.agent);
+      continue;
+    }
+    state.removed.push(item.describe);
+    removed.push(item.agent);
+  }
+  // A plain uninstall keeps the data: forget these records so a reinstall connects them again. An agent with an
+  // entry left (one of two a move left could not go) keeps its whole record, so the next uninstall tries again.
+  if (!request.purge) forgetInboxAgents(state.dataDir, removed.filter((id) => !kept.has(id)));
+}
+
 function formatUninstallRetryCommand(request: UninstallRequest): string {
   return request.purge
     ? "plannotator uninstall --purge"
@@ -391,6 +652,8 @@ function resolveOwnedPaths(environment: UninstallEnvironment) {
   const codexDir = env.CODEX_HOME || join(homeDir, ".codex");
   const factoryDir = env.FACTORY_CONFIG_DIR || join(homeDir, ".factory");
   const copilotDir = env.COPILOT_HOME || join(homeDir, ".copilot");
+  const vibeDir = env.VIBE_HOME || join(homeDir, ".vibe");
+  const qwenDir = resolveQwenDir(env.QWEN_HOME, homeDir);
   const xdgConfigDir = env.XDG_CONFIG_HOME || join(homeDir, ".config");
   const xdgCacheDir = env.XDG_CACHE_HOME || join(homeDir, ".cache");
   const configDirs = uniquePaths([
@@ -413,6 +676,8 @@ function resolveOwnedPaths(environment: UninstallEnvironment) {
     codexDir,
     factoryDir,
     copilotDir,
+    vibeDir,
+    qwenDir,
     configDirs,
     xdgCacheDir,
     windowsInstallDir,
@@ -495,6 +760,14 @@ async function removeHostPlugins(
       ),
     },
     {
+      // The installers add it with `qwen extensions install`; Qwen's own
+      // command removes it from its extension store.
+      label: "Qwen Code extension plannotator",
+      command: "qwen",
+      args: ["extensions", "uninstall", "plannotator"],
+      installed: existsSync(join(paths.qwenDir, "extensions", "plannotator", "qwen-extension.json")),
+    },
+    {
       label: "VS Code extension backnotprop.plannotator-webview",
       command: "code",
       args: ["--uninstall-extension", "backnotprop.plannotator-webview"],
@@ -543,6 +816,7 @@ function removeHostConfigEntries(
     [
       { event: "PermissionRequest", matcher: "ExitPlanMode", suffix: "" },
       { event: "PreToolUse", matcher: "EnterPlanMode", suffix: "improve-context" },
+      { event: "PreToolUse", matcher: "Bash", suffix: "t3-hook" },
     ],
     paths.binaryPaths,
     environment.platform,
@@ -551,10 +825,13 @@ function removeHostConfigEntries(
       removeFileWhenEmpty: false,
     },
     "managed Claude Code hooks",
-    `Make ${join(paths.claudeDir, "settings.json")} a readable, writable strict JSON object. Remove only Plannotator command hooks from hooks.PermissionRequest entries whose matcher is "ExitPlanMode" and hooks.PreToolUse entries whose matcher is "EnterPlanMode", then save the file.`,
+    `Make ${join(paths.claudeDir, "settings.json")} a readable, writable strict JSON object. Remove only Plannotator command hooks from hooks.PermissionRequest entries whose matcher is "ExitPlanMode", hooks.PreToolUse entries whose matcher is "EnterPlanMode", and Plannotator t3-hook commands in Bash entries, then save the file.`,
     request,
     state,
   );
+  // The backup `t3-hook install` (install.sh --with-t3) made before its first
+  // change to settings.json. The name is Plannotator's own; nothing else writes it.
+  removePath(join(paths.claudeDir, `settings.json${T3_SETTINGS_BACKUP_SUFFIX}`), request, state);
 
   cleanupHooksJson(
     join(paths.codexDir, "hooks.json"),
@@ -584,6 +861,8 @@ function removeHostConfigEntries(
     state,
   );
 
+  cleanupVibeHooks(join(paths.vibeDir, "hooks.toml"), request, state);
+
   for (const configDir of paths.configDirs) {
     for (const name of ["opencode.json", "opencode.jsonc"]) {
       cleanupOpenCodeConfig(
@@ -601,7 +880,7 @@ function removeInstalledFiles(
   paths: ReturnType<typeof resolveOwnedPaths>,
   state: MutableUninstallResult,
 ): void {
-  for (const skill of CORE_SKILLS) {
+  for (const skill of [...CORE_SKILLS, INBOX_SKILL, ...KNOWLEDGE_SKILLS]) {
     removePath(
       join(paths.claudeDir, "skills", skill),
       request,
@@ -625,7 +904,7 @@ function removeInstalledFiles(
 
   cleanupStaleSkillLayout(
     join(paths.claudeDir, "skills", "core"),
-    CORE_SKILLS,
+    [...CORE_SKILLS, ...KNOWLEDGE_SKILLS],
     request,
     state,
   );
@@ -648,6 +927,18 @@ function removeInstalledFiles(
     );
   }
 
+  for (const skill of VIBE_SKILLS) {
+    removePath(
+      join(paths.vibeDir, "skills", skill),
+      request,
+      state,
+    );
+  }
+
+  for (const skill of QWEN_SKILLS) {
+    removePath(join(paths.qwenDir, "skills", skill), request, state);
+  }
+
   for (const command of LEGACY_COMMAND_NAMES) {
     removePath(
       join(paths.claudeDir, "commands", `${command}.md`),
@@ -662,11 +953,31 @@ function removeInstalledFiles(
       );
     }
   }
+  // The /plannotator-inbox OpenCode stub the installer writes (never a Claude command).
+  for (const configDir of paths.configDirs) {
+    removePath(join(configDir, "opencode", "commands", `${INBOX_SKILL}.md`), request, state);
+  }
+
+  // @plannotator/opencode's postinstall writes the knowledge skill here so
+  // OpenCode's `{skill,skills}/**/SKILL.md` scan under its config dir finds it.
+  // Skills only — the sibling commands/ sweep above is driven by
+  // LEGACY_COMMAND_NAMES precisely so a user's own commands/plannotator.md
+  // stays out of scope.
+  for (const skill of KNOWLEDGE_SKILLS) {
+    for (const configDir of paths.configDirs) {
+      removePath(
+        join(configDir, "opencode", "skills", skill),
+        request,
+        state,
+      );
+    }
+  }
 
   for (const command of [
     "plannotator-review",
     "plannotator-annotate",
     "plannotator-last",
+    INBOX_SKILL,
   ]) {
     removePath(
       join(environment.homeDir, ".gemini", "commands", `${command}.toml`),
@@ -729,6 +1040,20 @@ function removeInstalledFiles(
     removePath(cachePath, request, state);
   }
 
+  // OpenCode 2 caches npm plugins at <cache>/opencode/npm/<name>@<spec>/
+  // (packages/util/src/npm.ts), i.e. npm/@plannotator/opencode@latest.
+  for (const cacheRoot of uniquePaths([
+    paths.xdgCacheDir,
+    join(environment.homeDir, ".cache"),
+  ])) {
+    cleanupDirectoryEntriesWithPrefix(
+      join(cacheRoot, "opencode", "npm", "@plannotator"),
+      "opencode",
+      request,
+      state,
+    );
+  }
+
   cleanupDirectoryEntriesWithPrefix(
     join(environment.homeDir, ".bun", "install", "cache", "@plannotator"),
     "opencode",
@@ -748,6 +1073,7 @@ function removeInstallerData(
   const sidecarPaths = [
     join(state.dataDir, "vendor", "sem"),
     join(state.dataDir, "vendor", "agent-terminal"),
+    join(state.dataDir, "vendor", "call-flow"),
   ];
   const hadManagedSidecar = sidecarPaths.some(pathExists);
   for (const path of sidecarPaths) {
@@ -756,11 +1082,21 @@ function removeInstallerData(
   if (hadManagedSidecar) {
     removeEmptyOwnedParent(
       join(state.dataDir, "vendor"),
-      ["sem", "agent-terminal"],
+      ["sem", "agent-terminal", "call-flow"],
       request,
       state,
     );
   }
+  // `usage-counts/` is left over from the usage counts for experimental
+  // features, removed before they counted anything (approval
+  // "remove-usage-counts"); v0.28.33's hidden `plannotator telemetry` could
+  // still make it. Every uninstall removes it, purge or not. config.json keys
+  // that command wrote (`usageCounts`) stay with the config and are ignored.
+  removePath(join(state.dataDir, "usage-counts"), request, state);
+  // The installers keep the Qwen Code extension's source here (Qwen reads it
+  // only to install or update); the extension itself goes with `qwen
+  // extensions uninstall` above.
+  removePath(join(state.dataDir, "qwen-code"), request, state);
 }
 
 function purgeLocalData(
@@ -794,7 +1130,7 @@ function purgeLocalData(
           name === "vendor" &&
           directoryContainsOnly(
             join(state.dataDir, "vendor"),
-            ["sem", "agent-terminal"],
+            ["sem", "agent-terminal", "call-flow"],
           )
         ),
     );
@@ -859,26 +1195,41 @@ async function removeWindowsPathEntry(
     ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PATH_SCRIPT],
     { PLANNOTATOR_UNINSTALL_PATH: paths.windowsInstallDir },
   );
-  if (result.exitCode === 0) {
+  // The script echoes the original PATH only after the registry write
+  // succeeded, so a parseable echo proves the edit happened however the
+  // process ended afterwards: killed by the timeout while broadcasting, or
+  // taken down by a native fault inside Add-Type / SendMessageTimeout that no
+  // try/catch can intercept and that exits with an NTSTATUS code.
+  const echoedOriginalPath = parseEchoedWindowsPath(result.stdout);
+  if (result.exitCode === 0 || echoedOriginalPath !== null) {
     state.removed.push(label);
-    try {
-      const originalPath: unknown = JSON.parse(result.stdout?.trim() ?? "");
-      if (typeof originalPath !== "string") throw new Error("not a string");
-      return originalPath;
-    } catch {
-      state.errors.push(
-        `Removed ${paths.windowsInstallDir} from the Windows user PATH but could not capture the original PATH for safe rollback.`,
-      );
+    if (result.exitCode !== 0) {
       state.warnings.push(
-        `The Plannotator CLI remains at ${environment.execPath}, but its Windows PATH entry was removed without a usable backup. Run that full path to retry, then restore PATH manually if needed.`,
+        `Removed ${paths.windowsInstallDir} from the Windows user PATH, but notifying open windows of the change ${result.timedOut ? "timed out" : `failed (exit ${result.exitCode})`}; new terminals pick up the change after you sign in again.`,
       );
     }
+    if (echoedOriginalPath !== null) return echoedOriginalPath;
+    state.errors.push(
+      `Removed ${paths.windowsInstallDir} from the Windows user PATH but could not capture the original PATH for safe rollback.`,
+    );
+    state.warnings.push(
+      `The Plannotator CLI remains at ${environment.execPath}, but its Windows PATH entry was removed without a usable backup. Run that full path to retry, then restore PATH manually if needed.`,
+    );
   } else if (result.exitCode !== 3) {
     state.errors.push(
-      `Could not remove ${paths.windowsInstallDir} from the Windows user PATH.`,
+      `Could not remove ${paths.windowsInstallDir} from the Windows user PATH (${result.timedOut ? "command timed out" : `exit ${result.exitCode}`}).`,
     );
   }
   return null;
+}
+
+function parseEchoedWindowsPath(stdout: string | undefined): string | null {
+  try {
+    const originalPath: unknown = JSON.parse(stdout?.trim() ?? "");
+    return typeof originalPath === "string" ? originalPath : null;
+  } catch {
+    return null;
+  }
 }
 
 async function removeBinaries(
@@ -969,14 +1320,25 @@ async function restoreWindowsPathEntry(
     ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PATH_RESTORE_SCRIPT],
     { PLANNOTATOR_UNINSTALL_ORIGINAL_PATH: originalPath },
   );
-  if (result.exitCode !== 0) {
+  // Same proof as the removal: the sentinel is printed only after the
+  // registry write, so its presence means the restore completed even if the
+  // broadcast then timed out or faulted.
+  const restored = (result.stdout ?? "")
+    .split(/\r?\n/)
+    .some((line) => line.trim() === WINDOWS_PATH_RESTORED_SENTINEL);
+  if (result.exitCode !== 0 && !restored) {
     state.errors.push(
-      `Could not restore ${paths.windowsInstallDir} to the Windows user PATH after self-delete scheduling failed.`,
+      `Could not restore ${paths.windowsInstallDir} to the Windows user PATH after self-delete scheduling failed (${result.timedOut ? "command timed out" : `exit ${result.exitCode}`}).`,
     );
     state.warnings.push(
       `The Plannotator CLI remains at ${environment.execPath}, but its Windows PATH entry could not be restored. Run that full path to retry, then restore PATH manually if needed.`,
     );
     return;
+  }
+  if (result.exitCode !== 0) {
+    state.warnings.push(
+      `Restored ${paths.windowsInstallDir} to the Windows user PATH, but notifying open windows of the change ${result.timedOut ? "timed out" : `failed (exit ${result.exitCode})`}; new terminals pick up the change after you sign in again.`,
+    );
   }
 
   const label = `Windows user PATH entry ${paths.windowsInstallDir}`;
@@ -1111,6 +1473,95 @@ function cleanupCodexConfig(
 
   if (!isInstallerTemplate) return;
   removePath(filePath, request, state, recovery);
+}
+
+const VIBE_MANAGED_START = "# >>> plannotator-managed-vibe-hooks";
+const VIBE_MANAGED_END = "# <<< plannotator-managed-vibe-hooks";
+
+/**
+ * Strip the installer's managed hook block from $VIBE_HOME/hooks.toml.
+ *
+ * The block is delimited by the plannotator-managed-vibe-hooks markers; only
+ * lines between them (markers included) are ours, so everything else stays.
+ * When nothing recognizable remains, the file is deleted; when a managed
+ * start marker exists with no end marker, the whole tail from the marker is
+ * treated as ours (the installer always writes both markers, so this is
+ * corrupt-input handling) and the file is kept only if content survives.
+ */
+function cleanupVibeHooks(
+  filePath: string,
+  request: UninstallRequest,
+  state: MutableUninstallResult,
+): void {
+  if (!existsSync(filePath)) return;
+  const recovery = {
+    manualCleanup: `Make ${filePath} readable and writable. Remove the lines between and including the "${VIBE_MANAGED_START}" and "${VIBE_MANAGED_END}" markers; keep every other hook. Delete the file only if nothing remains.`,
+  };
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch (error) {
+    reportHostCleanupFailure(
+      `Could not inspect ${filePath}`,
+      formatError(error),
+      recovery,
+      request,
+      state,
+    );
+    return;
+  }
+
+  const lines = content.split(/\r?\n/);
+  const nextLines: string[] = [];
+  let skipping = false;
+  let sawStart = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!skipping && trimmed.startsWith(VIBE_MANAGED_START)) {
+      skipping = true;
+      sawStart = true;
+      continue;
+    }
+    if (skipping) {
+      if (trimmed.startsWith(VIBE_MANAGED_END)) {
+        skipping = false;
+      }
+      continue;
+    }
+    nextLines.push(line);
+  }
+
+  if (!sawStart) return;
+
+  const remaining = nextLines.filter((line) => line.trim().length > 0);
+  if (remaining.length === 0) {
+    removePath(filePath, request, state, recovery);
+    return;
+  }
+
+  const label = "Plannotator Vibe plan-review hook";
+  if (request.dryRun) {
+    state.planned.push(`${label} in ${filePath}`);
+    return;
+  }
+
+  const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
+  try {
+    writeFileSync(
+      filePath,
+      nextLines.join(lineEnding).replace(/\s+$/, lineEnding),
+      "utf8",
+    );
+    state.removed.push(`${label} in ${filePath}`);
+  } catch (error) {
+    reportHostCleanupFailure(
+      `Could not rewrite ${filePath}`,
+      formatError(error),
+      recovery,
+      request,
+      state,
+    );
+  }
 }
 
 function cleanupGeminiSettings(
@@ -1677,7 +2128,7 @@ function removePath(
 function isManagedHook(
   value: unknown,
   binaryPaths: readonly string[],
-  suffix: "" | "improve-context",
+  suffix: "" | "improve-context" | "t3-hook",
   platform: NodeJS.Platform,
   allowRelocatedBinary = false,
 ): boolean {
@@ -1687,6 +2138,10 @@ function isManagedHook(
   }
 
   const command = hook.command.trim();
+  if (suffix === "t3-hook") {
+    const parsed = parseT3HookCommand(command);
+    return parsed !== undefined && (parsed.executable === "plannotator" || binaryPaths.some((path) => sameCommand(parsed.executable, path, platform)));
+  }
   const expectedBare = suffix ? `plannotator ${suffix}` : "plannotator";
   if (command === expectedBare) return true;
 
@@ -1783,6 +2238,19 @@ function hasInstalledPlugin(filePath: string, pluginId: string): boolean {
   const plugins = parsed ? asRecord(parsed.plugins) : null;
   const installs = plugins?.[pluginId];
   return Array.isArray(installs) && installs.length > 0;
+}
+
+/**
+ * Qwen Code's user folder: $QWEN_HOME (the folder itself, a leading ~
+ * expanded, a relative path taken from the current folder) or ~/.qwen, as in
+ * Qwen's Storage.getGlobalQwenDir.
+ */
+function resolveQwenDir(qwenHome: string | undefined, homeDir: string): string {
+  const value = qwenHome?.trim();
+  if (!value) return join(homeDir, ".qwen");
+  if (value === "~") return homeDir;
+  if (value.startsWith("~/") || value.startsWith("~\\")) return join(homeDir, value.slice(2));
+  return resolve(value);
 }
 
 function hasPiPackage(filePath: string): boolean {
@@ -2087,7 +2555,7 @@ async function defaultScheduleWindowsSelfDelete(
   target: string,
   parent: string | null,
 ): Promise<boolean> {
-  const powershell = Bun.which("powershell.exe") || Bun.which("pwsh.exe");
+  const powershell = Bun.which("powershell.exe", { PATH: childPath() }) || Bun.which("pwsh.exe", { PATH: childPath() });
   if (!powershell) return false;
 
   try {

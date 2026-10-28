@@ -4,6 +4,7 @@ import { DiffViewer } from '../../components/DiffViewer';
 import { useReviewState } from '../ReviewStateContext';
 import { getReviewDiffPanelFilePath, type ReviewDiffPanelParams } from '../reviewPanelTypes';
 import { annotationMatchesPrScope } from '../../utils/annotationScope';
+import { fileKind } from '@plannotator/core/file-kind';
 
 /**
  * Thin adapter between dockview's panel API and the existing DiffViewer.
@@ -44,6 +45,11 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
     [state.aiMessages, file]
   );
 
+  const reviewFilePaths = useMemo(
+    () => new Set(state.files.map((candidate) => candidate.path)),
+    [state.files]
+  );
+
   const searchMatchesForFile = useMemo(
     () =>
       file && isFocusedFile
@@ -73,9 +79,14 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         status={file.status}
         reviewBase={state.reviewBase}
         reviewSnapshotId={state.feedbackDiffContext?.snapshotId}
+        imagePreviewAvailable={state.imagePreviewAvailable}
+        imageSnapshotId={state.snapshotId}
+        contextExpansionAvailable={state.contextExpansionAvailable}
+        packageChangesAvailable={state.contextExpansionAvailable !== false}
         prUrl={state.prMetadata?.url}
         prDiffScope={state.prDiffScope}
         isFocused={isFocusedFile}
+        changeNavigation={isFocusedFile && state.isDiffPanelActive === true}
         diffStyle={state.diffStyle}
         diffOverflow={state.diffOverflow}
         diffIndicators={state.diffIndicators}
@@ -89,6 +100,7 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         selectedAnnotationId={state.selectedAnnotationId}
         scrollTargetAnnotation={state.scrollTargetAnnotation}
         pendingSelection={state.pendingSelection}
+        compactTouchLayout={state.isCompactTouchLayout}
         onLineSelection={state.onLineSelection}
         onAddAnnotation={state.onAddAnnotation}
         onAddFileComment={state.onAddFileComment}
@@ -96,7 +108,10 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         onSelectAnnotation={state.onSelectAnnotation}
         onDeleteAnnotation={state.onDeleteAnnotation}
         isViewed={state.viewedFiles.has(file.path)}
+        isGenerated={state.generatedFiles.has(file.path)}
+        isTest={fileKind(file.path, state.generatedFiles) === 'test'}
         onToggleViewed={() => state.onToggleViewed(file.path)}
+        showViewedControls={state.showViewedControls}
         isStaged={state.stagedFiles.has(file.path)}
         isStaging={state.stagingFile === file.path}
         onStage={() => state.onStage(file.path)}
@@ -105,6 +120,7 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         // alone would offer a no-op Git Add on them that flips local state.
         // Mirrors the `a` shortcut and the all-files header.
         canStage={state.canStagePath ? state.canStagePath(file.path) : state.canStageFiles}
+        showStageControls={state.showStageControls}
         stageError={state.stageError}
         searchQuery={state.isSearchPending ? '' : state.debouncedSearchQuery}
         searchMatches={searchMatchesForFile}
@@ -122,6 +138,16 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         onClickAIMarker={state.onClickAIMarker}
         aiHistoryMessages={isFocusedFile ? state.aiHistoryForSelection : []}
         onCodeNavRequest={state.onCodeNavRequest}
+        onTokenHoverEnter={state.onTokenHoverEnter}
+        onTokenHoverLeave={state.onTokenHoverLeave}
+        reviewFilePaths={reviewFilePaths}
+        onOpenReviewFile={state.openDiffFile}
+        markdownPreviewSupported={!!state.markdownPreview}
+        markdownView={state.markdownPreview ? state.markdownPreview.viewOf(file.path) : 'source'}
+        markdownViewDisabledReason={state.markdownPreview?.lockReason(file.path) ?? null}
+        onMarkdownViewChange={state.markdownPreview
+          ? (view, how) => (how === 'chosen' ? state.markdownPreview!.choose : state.markdownPreview!.show)(file.path, view)
+          : undefined}
       />
     </div>
   );

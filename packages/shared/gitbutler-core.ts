@@ -11,7 +11,11 @@ import { basename, resolve } from "node:path";
 
 import {
   type DiffResult,
+  type DiffSide,
+  type DiffSideSource,
+  type DiffSideSources,
   type DiffType,
+  type FileBytesRead,
   type GitCommandOptions,
   type GitCommandResult,
   type GitContext,
@@ -21,6 +25,7 @@ import {
   getWorkingTreeDiffFromBase,
   hashFingerprintPart,
   MAX_REVIEW_FILE_CONTENT_BYTES,
+  readDiffSideBytes,
   runBoundedTrackedDiff,
   validateFilePath,
 } from "./review-core";
@@ -41,6 +46,32 @@ const STATUS_TIMEOUT_MS = 30_000;
 const VERSION_TIMEOUT_MS = 5_000;
 const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const STATUS_CACHE_MS = 1_000;
+
+/**
+ * GitButler has shipped two spellings of the global JSON output flag:
+ * 0.21.x accepts only `--format json` (gitbutlerapp/gitbutler#14061) while
+ * 0.22.0+ accepts only `--json` (gitbutlerapp/gitbutler#15026), and each
+ * release rejects the other spelling as an unknown argument. The primary
+ * spelling matches GITBUTLER_MIN_VERSION; when a status call fails with
+ * clap's unexpected-argument rejection for the exact flag we passed, the
+ * other spelling is tried once. Any other failure propagates unchanged.
+ */
+interface GitButlerStatusSyntax {
+  args: readonly string[];
+  /** The flag clap names in its unexpected-argument rejection. */
+  flag: string;
+  label: string;
+}
+
+const GITBUTLER_STATUS_SYNTAXES: readonly [GitButlerStatusSyntax, GitButlerStatusSyntax] = [
+  { args: ["--format", "json", "status"], flag: "--format", label: "but --format json status" },
+  { args: ["--json", "status"], flag: "--json", label: "but --json status" },
+];
+
+/** Narrow sniff for clap rejecting exactly the JSON flag this syntax passed. */
+function isUnexpectedArgumentRejection(result: GitCommandResult, flag: string): boolean {
+  return result.exitCode !== 0 && result.stderr.includes(`unexpected argument '${flag}'`);
+}
 
 /** Runtime operations needed by the shared GitButler provider. */
 export interface ReviewGitButlerRuntime extends ReviewGitRuntime {
@@ -67,7 +98,7 @@ export interface GitButlerStack {
   branches: GitButlerBranch[];
 }
 
-/** Validated subset of `but --format json status`. */
+/** Validated subset of `but --format json status` (0.21.x) / `but --json status` (0.22.0+). */
 export interface GitButlerStatus {
   mergeBase: GitButlerCommit;
   stacks: GitButlerStack[];
@@ -153,12 +184,15 @@ function parseStack(value: unknown, path: string): GitButlerStack {
 }
 
 /** Parse and validate the status fields Plannotator relies on. Unknown fields are allowed. */
-export function parseGitButlerStatus(output: string): GitButlerStatus {
+export function parseGitButlerStatus(
+  output: string,
+  commandLabel = GITBUTLER_STATUS_SYNTAXES[0].label,
+): GitButlerStatus {
   let decoded: unknown;
   try {
     decoded = JSON.parse(output);
   } catch {
-    throw new GitButlerContractError("GitButler returned invalid JSON from `but --format json status`.");
+    throw new GitButlerContractError(`GitButler returned invalid JSON from \`${commandLabel}\`.`);
   }
 
   const root = requireRecord(decoded, "root");
@@ -202,6 +236,8 @@ function versionAtLeast(actual: ParsedVersion, minimum: ParsedVersion): boolean 
 }
 
 const versionChecks = new WeakMap<ReviewGitButlerRuntime, Promise<void>>();
+/** Index into GITBUTLER_STATUS_SYNTAXES of the spelling this runtime's CLI last accepted. */
+const statusSyntaxPreferences = new WeakMap<ReviewGitButlerRuntime, 0 | 1>();
 const statusCaches = new WeakMap<
   ReviewGitButlerRuntime,
   Map<string, { expiresAt: number; inFlight: boolean; status: Promise<GitButlerStatus> }>
@@ -255,17 +291,42 @@ async function loadStatus(runtime: ReviewGitButlerRuntime, cwd: string): Promise
   if (existing && (existing.inFlight || existing.expiresAt > now)) return existing.status;
 
   const status = (async () => {
-    const result = await runtime.runBut(["--format", "json", "status"], {
+    const preferredIndex = statusSyntaxPreferences.get(runtime) ?? 0;
+    let syntaxIndex = preferredIndex;
+    let syntax = GITBUTLER_STATUS_SYNTAXES[syntaxIndex];
+    let result = await runtime.runBut([...syntax.args], {
       cwd,
       timeoutMs: STATUS_TIMEOUT_MS,
     });
+    if (isUnexpectedArgumentRejection(result, syntax.flag)) {
+      // This CLI does not know this spelling of the JSON flag; try the other
+      // spelling exactly once. Only clap's unexpected-argument rejection for
+      // the flag we passed triggers the retry — a real status failure must
+      // keep failing loudly below.
+      syntaxIndex = preferredIndex === 0 ? 1 : 0;
+      const fallback = GITBUTLER_STATUS_SYNTAXES[syntaxIndex];
+      const retried = await runtime.runBut([...fallback.args], {
+        cwd,
+        timeoutMs: STATUS_TIMEOUT_MS,
+      });
+      if (isUnexpectedArgumentRejection(retried, fallback.flag)) {
+        throw new GitButlerContractError(
+          `GitButler rejected both \`${syntax.label}\` and \`${fallback.label}\`; ` +
+          `Plannotator requires GitButler ${GITBUTLER_MIN_VERSION} or newer.`,
+        );
+      }
+      syntax = fallback;
+      result = retried;
+    }
     if (result.exitCode !== 0) {
       const detail = result.stderr.trim();
       throw new GitButlerContractError(
-        `GitButler status failed${detail ? `: ${detail}` : ` with exit code ${result.exitCode}`}`,
+        `GitButler status (\`${syntax.label}\`) failed${detail ? `: ${detail}` : ` with exit code ${result.exitCode}`}`,
       );
     }
-    return parseGitButlerStatus(result.stdout);
+    const parsed = parseGitButlerStatus(result.stdout, syntax.label);
+    statusSyntaxPreferences.set(runtime, syntaxIndex);
+    return parsed;
   })();
   const entry = { expiresAt: 0, inFlight: true, status };
   cache.set(cwd, entry);
@@ -718,29 +779,33 @@ async function readWorkingTreeFile(
   return runtime.readTextFile(fullPath);
 }
 
-/** Resolve full old/new file content for expandable GitButler diffs. */
-export async function getGitButlerFileContentsForDiff(
+/**
+ * Which object each side of a changed file is for a GitButler view: the one
+ * table behind both hunk expansion (text) and the image preview (bytes).
+ */
+async function resolveGitButlerSideSources(
   runtime: ReviewGitButlerRuntime,
   diffType: DiffType,
   filePath: string,
   oldPath?: string,
   cwd?: string,
-): Promise<{ oldContent: string | null; newContent: string | null }> {
+): Promise<DiffSideSources | null> {
   validateFilePath(filePath);
   const oldFilePath = oldPath ?? filePath;
   validateFilePath(oldFilePath);
 
   const parsed = parseGitButlerDiffType(diffType);
-  if (!parsed) return { oldContent: null, newContent: null };
+  if (!parsed) return null;
   const root = await getActiveWorkspaceRoot(runtime, cwd);
-  if (!root) return { oldContent: null, newContent: null };
+  if (!root) return null;
   const status = await loadStatus(runtime, root);
 
   if (parsed.kind === "workspace") {
     await validateWorkspaceMergeBase(runtime, status.mergeBase.commitId, root);
     return {
-      oldContent: await gitShow(runtime, status.mergeBase.commitId, oldFilePath, root),
-      newContent: await readWorkingTreeFile(runtime, root, filePath),
+      cwd: root,
+      old: { kind: "object", rev: status.mergeBase.commitId, path: oldFilePath },
+      new: { kind: "worktree", path: filePath },
     };
   }
 
@@ -752,11 +817,56 @@ export async function getGitButlerFileContentsForDiff(
     const resolved = await resolvedBranchRange(runtime, status, parsed.branchName, root);
     if (resolved) range = resolved;
   }
-  if (!range) return { oldContent: null, newContent: null };
+  if (!range) return null;
   return {
-    oldContent: await gitShow(runtime, range.base, oldFilePath, root),
-    newContent: await gitShow(runtime, range.tip, filePath, root),
+    cwd: root,
+    old: { kind: "object", rev: range.base, path: oldFilePath },
+    new: { kind: "object", rev: range.tip, path: filePath },
   };
+}
+
+async function readGitButlerSideText(
+  runtime: ReviewGitButlerRuntime,
+  source: DiffSideSource | null,
+  root: string,
+): Promise<string | null> {
+  if (!source) return null;
+  return source.kind === "object"
+    ? gitShow(runtime, source.rev, source.path, root)
+    : readWorkingTreeFile(runtime, root, source.path);
+}
+
+/** Resolve full old/new file content for expandable GitButler diffs. */
+export async function getGitButlerFileContentsForDiff(
+  runtime: ReviewGitButlerRuntime,
+  diffType: DiffType,
+  filePath: string,
+  oldPath?: string,
+  cwd?: string,
+): Promise<{ oldContent: string | null; newContent: string | null }> {
+  const sources = await resolveGitButlerSideSources(runtime, diffType, filePath, oldPath, cwd);
+  if (!sources?.cwd) return { oldContent: null, newContent: null };
+  return {
+    oldContent: await readGitButlerSideText(runtime, sources.old, sources.cwd),
+    newContent: await readGitButlerSideText(runtime, sources.new, sources.cwd),
+  };
+}
+
+/** One side of a GitButler view as raw bytes for the image preview. */
+export async function getGitButlerFileBytesForDiff(
+  runtime: ReviewGitButlerRuntime,
+  diffType: DiffType,
+  filePath: string,
+  oldPath: string | undefined,
+  side: DiffSide,
+  maxBytes: number,
+  cwd?: string,
+): Promise<FileBytesRead> {
+  const sources = await resolveGitButlerSideSources(runtime, diffType, filePath, oldPath, cwd);
+  if (!sources) return { kind: "unavailable" };
+  const source = side === "old" ? sources.old : sources.new;
+  if (!source) return { kind: "missing" };
+  return readDiffSideBytes(runtime, source, maxBytes, sources.cwd);
 }
 
 /** Fingerprint the exact visible GitButler patch for the freshness endpoint. */

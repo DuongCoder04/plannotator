@@ -4,6 +4,7 @@
 
 /* Theme files — each defines .theme-{name} (dark) and .theme-{name}.light */
 @import "./themes/plannotator.css";
+@import "./themes/plannotator-graphite.css";
 @import "./themes/claude-plus.css";
 @import "./themes/soft-pop.css";
 @import "./themes/adwaita.css";
@@ -56,6 +57,28 @@
 @import "./themes/simple.css";
 @import "./themes/neutral.css";
 @import "./print.css";
+
+/* Skill-reference composer input (CommentPopover). The textarea's own glyphs
+ * are transparent — a mirrored aria-hidden overlay behind it paints the text,
+ * with reference tokens in the theme's primary color. The caret and the
+ * selection stay on the textarea: the caret takes the foreground token, and
+ * the selection uses a translucent primary wash so the overlay text stays
+ * readable through it. During IME composition `.pn-ref-composing` restores
+ * the native text so composition underlines render normally. */
+.pn-ref-input {
+  color: transparent;
+  caret-color: var(--foreground);
+}
+.pn-ref-input::selection {
+  background: color-mix(in oklab, var(--primary) 30%, transparent);
+  color: transparent;
+}
+.pn-ref-input.pn-ref-composing {
+  color: inherit;
+}
+.pn-ref-input.pn-ref-composing::selection {
+  color: inherit;
+}
 
 /* Live Vim HUD target — mirrors the four-corner treatment used in the
  * product demo while measuring the real semantic target/caret/range. */
@@ -219,6 +242,68 @@
 
 .vim-announcement-dialog {
   animation: vim-announcement-dialog-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* First-run terminal-tools announcement: same entrance as the Vim one, and
+ * under reduced motion the panel still fades in, it just does not travel. */
+.terminal-tools-announcement-backdrop {
+  animation: vim-announcement-backdrop-in 160ms ease-out both;
+}
+
+.terminal-tools-announcement-dialog {
+  animation: vim-announcement-dialog-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-tools-announcement-dialog {
+    animation: vim-announcement-backdrop-in 160ms ease-out both;
+  }
+}
+
+/* The "New · Watch:" corner block on the announcement footage, flush to the
+ * frame's top-left edge. Colors come from the dialog's own --announce-brand*
+ * variables (Herdr Annotate's badge palette, deliberately not app tokens); the
+ * periwinkle edge runs only along the two sides that meet the footage. The
+ * sheen is a slow diagonal highlight across the whole block every 4s, never a
+ * blink; the dialog drops the --sheen class under reduced motion and the media
+ * query below is the backstop. */
+.terminal-tools-announcement-tag {
+  position: absolute;
+  overflow: hidden;
+  background: var(--announce-brand, #312b52);
+  color: var(--announce-brand-text, #c9c6f1);
+  border-right: 1px solid color-mix(in srgb, var(--announce-brand-accent, #B9C0FF) 55%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--announce-brand-accent, #B9C0FF) 55%, transparent);
+  box-shadow:
+    2px 2px 0 rgba(0, 0, 0, 0.18),
+    4px 6px 18px rgba(0, 0, 0, 0.32);
+}
+
+.terminal-tools-announcement-tag--sheen::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    color-mix(in srgb, var(--announce-brand-accent, #B9C0FF) 34%, transparent) 50%,
+    transparent 62%
+  );
+  transform: translateX(-100%);
+  animation: terminal-tools-announcement-sheen 4s ease-in-out infinite;
+}
+
+@keyframes terminal-tools-announcement-sheen {
+  0% { transform: translateX(-100%); }
+  45%, 100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-tools-announcement-tag--sheen::after {
+    animation: none;
+    display: none;
+  }
 }
 
 .vim-announcement-switch {
@@ -605,6 +690,14 @@
    * the surface/sidebar-aware components expect. Themes that pin explicit
    * values (e.g. "simple") override these. */
   :root {
+    /* Mobile browser environment. Safe areas are CSS-owned because they are
+     * available before React mounts; the observed viewport values are written
+     * by useViewportEnvironment and fall back cleanly in the utilities below. */
+    --pn-safe-top: env(safe-area-inset-top, 0px);
+    --pn-safe-right: env(safe-area-inset-right, 0px);
+    --pn-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --pn-safe-left: env(safe-area-inset-left, 0px);
+    --pn-touch-target: 2.75rem;
     --surface-0: color-mix(in oklch, var(--muted) 40%, var(--background));
     --surface-1: var(--muted);
     --surface-2: color-mix(in oklch, var(--muted) 70%, var(--foreground));
@@ -627,6 +720,14 @@
     --card-ring: rgba(255, 255, 255, 0.08);
     --card-shadow:
       0 0 0 1px var(--card-ring), 0 1px 3px 0 rgba(0, 0, 0, 0.2), 0 2px 8px -2px rgba(0, 0, 0, 0.3);
+    /* Floating surfaces with no border (the tooltip): a faint ring in the
+     * shadow plus a soft drop. The ink is the background taken toward black in
+     * its own hue (the Inbox's Soft float shadow, same formula). Hosts override
+     * --float-shadow to restyle every borderless float at once. */
+    --float-shadow-ink: var(--background);
+    --float-shadow:
+      0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent),
+      0 16px 40px -10px color-mix(in oklch, var(--float-shadow-ink) 70%, transparent);
   }
 
   html {
@@ -668,10 +769,42 @@
     --card-shadow:
       0 0 0 1px var(--card-ring), 0 1px 3px 0 rgba(0, 0, 0, 0.04),
       0 2px 8px -2px rgba(0, 0, 0, 0.06);
+    --float-shadow-ink: var(--foreground);
+    --float-shadow:
+      0 0 0 1px color-mix(in oklch, var(--border) 70%, transparent),
+      0 12px 32px -8px color-mix(in oklch, var(--float-shadow-ink) 22%, transparent);
+  }
+
+  @supports (color: oklch(from red l c h)) {
+    :root:not(.light) {
+      --float-shadow-ink: oklch(from var(--background) calc(l * 0.2) calc(c * 0.5) h);
+    }
   }
 
   * {
     border-color: var(--border);
+  }
+}
+
+/* Inter's stylistic sets: ss01 (open digits), ss02 (disambiguation: I, l, 0)
+ * and cv01 (alternate one), set on body with font-feature-settings. That
+ * property is inherited by every font on the page, and feature tags mean
+ * different things in each font. On macOS, iOS and Windows that is the look
+ * users know (SF Pro, the system-ui themes' font, draws an open 4 and
+ * straight 6 and 9 with them), so it stays. On desktop Linux, Ubuntu Mono, the
+ * monospace fallback that code review diffs and gutters reach, draws ss02 as
+ * superscript digits (#1961). There (`pn-os-linux`, put on <html> before the
+ * first paint by ThemeProvider: see markRootPlatform in utils/platform.ts) the
+ * sets are named for Inter's families and applied with
+ * font-variant-alternates instead: a named value applies only to text a listed
+ * family renders, so monospace text, Pierre's diffs (inside their shadow
+ * roots), system-ui themes and any fallback font get none of them. */
+@font-feature-values "Inter Variable", "Inter", "InterVariable" {
+  @styleset {
+    pn-inter: 1 2;
+  }
+  @character-variant {
+    pn-inter-one: 1;
   }
 }
 
@@ -680,6 +813,243 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-feature-settings: "ss01", "ss02", "cv01";
+}
+
+:root.pn-os-linux body {
+  font-feature-settings: normal;
+  font-variant-alternates: styleset(pn-inter) character-variant(pn-inter-one);
+}
+
+/* Safari extends the page canvas beneath its floating browser controls. The
+ * plan document is a card-colored nested scroller, so leaving the outer canvas
+ * on `--background` produces an opaque dark band around those controls. Match
+ * the browser canvas to the active surface while preserving the incumbent
+ * background for grid, HTML, Review, loading, and non-editor consumers. */
+html:has([data-pn-browser-canvas="card"]),
+body:has([data-pn-browser-canvas="card"]) {
+  background-color: var(--card);
+}
+
+html:has([data-pn-browser-canvas="background"]),
+body:has([data-pn-browser-canvas="background"]) {
+  background-color: var(--background);
+}
+
+/* Mobile Safari only collapses its browser controls for page scrolling; it
+ * deliberately leaves them expanded when a gesture scrolls a nested element.
+ * Plan opts compact coarse-pointer layouts into document scrolling while the
+ * fixed application-stage architecture remains unchanged everywhere else. */
+html:has([data-pn-document-scroll="true"]),
+body:has([data-pn-document-scroll="true"]) {
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: auto;
+}
+
+body:has([data-pn-document-scroll="true"]) > #root {
+  height: auto;
+  overflow: visible;
+}
+
+.pn-app-viewport[data-pn-document-scroll="true"] {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* The application stage owns the top and lateral safe areas. Bottom-edge
+ * surfaces opt into `.pn-safe-bottom` themselves so the home-indicator inset
+ * is never counted twice. The ordered height declarations preserve desktop
+ * behavior and old-browser support before the observer publishes a value. */
+.pn-app-viewport {
+  box-sizing: border-box;
+  height: 100vh;
+  height: 100dvh;
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: var(--pn-safe-top);
+  padding-right: var(--pn-safe-right);
+  padding-left: var(--pn-safe-left);
+}
+
+.pn-safe-top {
+  padding-top: var(--pn-safe-top);
+}
+
+.pn-safe-inline {
+  padding-right: var(--pn-safe-right);
+  padding-left: var(--pn-safe-left);
+}
+
+.pn-safe-bottom {
+  padding-bottom: var(--pn-safe-bottom);
+}
+
+.pn-viewport-bounded {
+  max-height: calc(
+    var(--pn-viewport-height, 100vh) - var(--pn-safe-top) - var(--pn-safe-bottom)
+  );
+}
+
+/* Portaled overlays cannot inherit the application root's safe-area padding.
+ * This utility gives them the same observed visible stage without assuming
+ * that the software keyboard is a rectangular bottom inset. */
+.pn-visible-viewport-overlay {
+  position: fixed;
+  top: var(--pn-viewport-offset-top, 0px);
+  left: var(--pn-viewport-offset-left, 0px);
+  box-sizing: border-box;
+  width: var(--pn-viewport-width, 100vw);
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: max(1rem, var(--pn-safe-top));
+  padding-right: max(1rem, var(--pn-safe-right));
+  padding-bottom: max(1rem, var(--pn-safe-bottom));
+  padding-left: max(1rem, var(--pn-safe-left));
+}
+
+/* Full-stage compact surfaces (for example the Plan navigator) use the same
+ * observed visual viewport as portaled dialogs without inheriting their 1rem
+ * ornamental margin. The stage owns its safe areas and contains scroll-chain
+ * gestures so the document beneath it does not move at a list boundary. */
+.pn-visible-viewport-stage {
+  position: fixed;
+  top: var(--pn-viewport-offset-top, 0px);
+  left: var(--pn-viewport-offset-left, 0px);
+  box-sizing: border-box;
+  width: var(--pn-viewport-width, 100vw);
+  height: var(--pn-viewport-height, 100vh);
+  padding-top: var(--pn-safe-top);
+  padding-right: var(--pn-safe-right);
+  padding-bottom: var(--pn-safe-bottom);
+  padding-left: var(--pn-safe-left);
+  overscroll-behavior: contain;
+}
+
+/* The navigator reuses information-dense desktop browser content, but its
+ * interactive rows become physical controls on touch. Scope both the 44px
+ * target and the TOC's legible type lift to the compact stage only. */
+[data-pn-plan-navigator="true"] button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
+[data-pn-plan-navigator="true"] nav button {
+  font-size: 0.8125rem;
+}
+
+[data-pn-plan-navigator="true"] .file-browser-filter-field {
+  height: var(--pn-touch-target);
+}
+
+[data-pn-plan-navigator="true"] .file-browser-filter-clear {
+  min-inline-size: var(--pn-touch-target);
+}
+
+/* Compact Plan auxiliary stages reuse dense desktop panel contents, but every
+ * nested action remains a physical touch control. This selector is stage-only,
+ * so the incumbent desktop panel geometry stays pixel-identical. */
+[data-pn-compact-plan-stage="true"] button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
+/* Existing expanded composers keep their 85dvh desktop proportion. Compact
+ * and touch layouts use the full safe visible stage so the keyboard cannot
+ * strand the footer below an ornamental desktop margin. */
+.pn-responsive-composer-dialog {
+  width: 100%;
+  height: min(36rem, 85vh);
+  height: min(36rem, 85dvh);
+  max-width: 42rem;
+  max-height: 100%;
+}
+
+@media (pointer: coarse), (max-width: 639px), (max-height: 419px) {
+  .pn-responsive-composer-dialog {
+    height: 100%;
+  }
+
+  /* Code review often promotes a line selection straight into the expanded
+   * composer. Keep its idle surface proportional to the content instead of
+   * covering the whole phone; once the keyboard reduces the visible viewport,
+   * the same cap naturally yields to all available space. Plan's explicit
+   * expanded-composer treatment remains unchanged. */
+  .pn-responsive-composer-dialog.pn-review-composer-dialog {
+    height: min(28rem, 100%);
+  }
+}
+
+/* iOS zooms focused text controls below 16px. Scope the correction to
+ * user-authored primary inputs so labels, counters, and diff text stay at the
+ * established desktop scale. The mirror selector keeps skill-token glyphs
+ * metrically identical to the transparent textarea above it. */
+@media (pointer: coarse), (max-width: 639px) {
+  [data-pn-mobile-editable],
+  [data-pn-mobile-editable-mirror] {
+    font-size: 1rem !important;
+  }
+}
+
+/* Shared controls keep their incumbent visual density but gain a physical
+ * 44px target inside the canonical compact touch shell. The root marker comes
+ * from the same JS media query that owns scroll and shell composition, so a
+ * secondary touchscreen cannot reclassify a fine-primary-pointer desktop.
+ * Selecting from `html` also reaches portaled controls outside the app root. */
+html:has([data-pn-compact-touch-layout='true']) [data-pn-touch-target] {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-touch-target][data-pn-touch-target-icon] {
+  min-inline-size: var(--pn-touch-target);
+}
+
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-compact-diff-options]
+  button {
+  min-block-size: var(--pn-touch-target);
+  touch-action: manipulation;
+}
+
+/* The selection toolbar packs its controls at desktop density (2px gaps), so
+ * 44px targets alone would still leave adjacent destructive and comment
+ * actions a mis-tap apart. Space them only inside the compact scope. */
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-annotation-toolbar-row] {
+  gap: 0.5rem;
+}
+
+/* Percentages in translate use the toolbar's own width. Correct only its
+ * horizontal overflow; leave the existing transform animation untouched. */
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-annotation-toolbar-centered='true'] {
+  translate: clamp(
+    calc(var(--pn-viewport-offset-left, 0px) + var(--pn-safe-left, 0px) - var(--pn-annotation-toolbar-anchor-x) + 50%),
+    0px,
+    calc(var(--pn-viewport-offset-left, 0px) + var(--pn-viewport-width, 100vw) - var(--pn-safe-right, 0px) - var(--pn-annotation-toolbar-anchor-x) - 50%)
+  ) 0;
+}
+
+html:has([data-pn-compact-touch-layout='true'])
+  [data-pn-touch-target]:not(:disabled):not([aria-disabled='true']):active {
+  filter: brightness(0.92);
+  transition: filter 100ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:has([data-pn-compact-touch-layout='true'])
+    [data-pn-touch-target]:not(:disabled):not([aria-disabled='true']):active {
+    filter: brightness(0.9);
+    transition: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .plan-look-choice-option[aria-pressed='false']:hover {
+    border-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+    background: color-mix(in srgb, var(--muted) 35%, transparent);
+  }
 }
 
 .math-inline {
@@ -1330,6 +1700,31 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   padding-left: 0.6rem;
   color: var(--muted-foreground);
 }
+/* GFM tables in Ask AI answers. The chat panel is narrow, so a wide table
+   scrolls sideways inside itself instead of widening the message. */
+.ai-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.95em;
+}
+.ai-markdown th,
+.ai-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.ai-markdown th {
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+  font-weight: 600;
+}
+.ai-markdown th[align="center"],
+.ai-markdown td[align="center"] { text-align: center; }
+.ai-markdown th[align="right"],
+.ai-markdown td[align="right"] { text-align: right; }
 
 /* Annotation highlights — shared by the plan editor and the code-review
    description annotations. (Moved here from packages/editor/index.css so both
@@ -1388,6 +1783,87 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
 .annotation-highlight:hover {
   filter: brightness(1.2);
   cursor: pointer;
+}
+
+/* Document text size (Settings → Display → Text size, #2066; see
+   utils/documentTextSize). The app sets data-doc-text-size and
+   --doc-text-scale (size / 15) on the document element only away from the
+   default, so at the default none of this applies and the document draws
+   exactly as it always has. Scoped to the blocks of a document container
+   (data-doc-text-root: the Viewer's article and the plan diff's): every block
+   carries data-block-id, the plan diff's blocks data-diff-block-index, the
+   frontmatter card and the raw diff data-doc-text. So the header, panels,
+   badges, menus and popovers keep their size; diagrams draw themselves and the
+   table / diagram popouts are app chrome, so both are left out. Named sizes
+   scale through Tailwind's type scale, the inherited size through each block
+   root, the renderers' fixed sizes one by one (sizes under 12 px, the card's
+   pills and the diff gutters, stay as they are), and the list markers,
+   checkboxes and the question card's controls with the text they sit beside.
+   Unlayered, so it outranks Tailwind's utilities, except the inherited size,
+   which sits in the base layer so a block's own size class still wins. */
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *) {
+  --text-xs: max(11px, calc(0.75rem * var(--doc-text-scale, 1)));
+  --text-sm: calc(0.875rem * var(--doc-text-scale, 1));
+  --text-base: calc(1rem * var(--doc-text-scale, 1));
+  --text-lg: calc(1.0625rem * var(--doc-text-scale, 1));
+  --text-xl: calc(1.1875rem * var(--doc-text-scale, 1));
+  --text-2xl: calc(1.375rem * var(--doc-text-scale, 1));
+  --text-3xl: calc(1.625rem * var(--doc-text-scale, 1));
+  --text-4xl: calc(1.875rem * var(--doc-text-scale, 1));
+  --text-5xl: calc(2rem * var(--doc-text-scale, 1));
+}
+@layer base {
+  /* The size a block inherits (a list row and its marker, an alert's title):
+     only on the outermost block, so a nested one never compounds it. */
+  [data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *):not(:is([data-block-id], [data-diff-block-index], [data-doc-text]) *) {
+    font-size: calc(1em * var(--doc-text-scale, 1));
+  }
+}
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text], [data-block-id] *, [data-diff-block-index] *, [data-doc-text] *):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *).text-\[15px\] {
+  font-size: calc(15px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text], [data-block-id] *, [data-diff-block-index] *, [data-doc-text] *):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *).text-\[13\.5px\] {
+  font-size: calc(13.5px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text], [data-block-id] *, [data-diff-block-index] *, [data-doc-text] *):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *).text-\[13px\] {
+  font-size: calc(13px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text], [data-block-id] *, [data-diff-block-index] *, [data-doc-text] *):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *).text-\[12\.5px\] {
+  font-size: calc(12.5px * var(--doc-text-scale, 1));
+}
+/* Fenced code (`pre code.pn-code`, 0.8125rem in the app's stylesheet). */
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *) pre code.pn-code {
+  font-size: calc(0.8125rem * var(--doc-text-scale, 1));
+}
+/* A question card's context (QuestionContext's own stylesheet). */
+[data-doc-text-size] [data-doc-text-root] [data-block-id] .question-context :is(p, .text-sm) {
+  font-size: calc(13px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] [data-block-id] .question-context :is(h1, h2) {
+  font-size: calc(14px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] [data-block-id] .question-context h3 {
+  font-size: calc(13.5px * var(--doc-text-scale, 1));
+}
+/* List markers (ListMarker): the numeral's column and the task circle. */
+[data-doc-text-size] [data-doc-text-root] [data-list-numeral] {
+  min-width: calc(1.5rem * var(--doc-text-scale, 1)) !important;
+}
+[data-doc-text-size] [data-doc-text-root] [data-list-check] {
+  width: calc(1rem * var(--doc-text-scale, 1));
+  height: calc(1rem * var(--doc-text-scale, 1));
+  margin-top: calc(3px * var(--doc-text-scale, 1));
+}
+/* A question card's choice controls (QuestionBlock), beside 13.5 px text. */
+[data-doc-text-size] [data-doc-text-root] [data-question-control] {
+  width: calc(15px * var(--doc-text-scale, 1));
+  height: calc(15px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] [data-question-control]:is(input) {
+  margin-top: calc(3px * var(--doc-text-scale, 1));
+}
+[data-doc-text-size] [data-doc-text-root] [data-question-control]:not(input) {
+  font-size: calc(11px * var(--doc-text-scale, 1));
 }
 
 /* Reduced motion: Base UI popups (dialogs, menus, popovers, tooltips) animate

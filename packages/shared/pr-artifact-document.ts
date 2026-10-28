@@ -1,4 +1,5 @@
 import type { PRContext, PRMetadata, PRRuntime } from './pr-types';
+import { ghAccountTokenFor } from './pr-github-account';
 
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 64 * 1024 * 1024;
@@ -8,6 +9,15 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const AUTH_CACHE_MS = 5 * 60 * 1000;
 const PRIVATE_IPV4_RE = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
 const PRIVATE_IPV6_RE = /^\[(?:::1|::ffff:|fe80:|fc|fd)/i;
+/**
+ * A GitLab upload secret is 32 lowercase hex characters and the filename is a single path
+ * segment. Matching a looser shape would let a link in an attacker-authored MR body steer
+ * the rewritten, credentialed GET at an arbitrary `/api/v4/...` path, leaving the safety of
+ * that request to GitLab's router rather than to this allowlist.
+ */
+const GITLAB_UPLOAD_RE = /^\/uploads\/([0-9a-f]{32})\/([^/]+)$/;
+/** Provider sign-in entry points. Landing here means our credentials were not accepted. */
+const SIGN_IN_PATH_RE = /^\/(?:users\/(?:sign_in|auth)|login|session|oauth\/authorize)(?:\/|$)/;
 
 interface ProviderAuthCacheEntry {
   readonly expiresAt: number;
@@ -141,14 +151,44 @@ function isGitLabArtifactHost(url: URL, metadata: Extract<PRMetadata, { platform
     || url.pathname.startsWith(`${projectPath}/-/blob/`);
 }
 
+function gitlabProjectPath(metadata: Extract<PRMetadata, { platform: 'gitlab' }>): string {
+  return metadata.projectPath.replace(/^\/+|\/+$/g, '');
+}
+
+/**
+ * GitLab serves `/uploads/<secret>/<file>` from a Rails web route that only honors
+ * session cookies — a `PRIVATE-TOKEN` request is redirected to the sign-in page, so the
+ * link is unreadable from a CLI. The uploads REST API serves the same bytes for a token,
+ * so route upload links through it.
+ */
+function gitlabUploadApiUrl(
+  url: URL,
+  metadata: Extract<PRMetadata, { platform: 'gitlab' }>,
+): URL | null {
+  const projectPath = gitlabProjectPath(metadata);
+  const projectPrefix = `/${projectPath}`;
+  const uploadPath = url.pathname.startsWith(`${projectPrefix}/uploads/`)
+    ? url.pathname.slice(projectPrefix.length)
+    : url.pathname;
+  const match = GITLAB_UPLOAD_RE.exec(uploadPath);
+  if (match === null) return null;
+  const [, secret, filename] = match;
+  return new URL(
+    `${url.origin}/api/v4/projects/${encodeURIComponent(projectPath)}/uploads/${secret}/${filename}${url.search}`,
+  );
+}
+
 function isProviderArtifactUrl(url: URL, metadata: PRMetadata): boolean {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  // Bitbucket artifact documents are not supported yet: no URL is a provider artifact.
+  if (metadata.platform === 'bitbucket') return false;
   return metadata.platform === 'github'
     ? isGitHubArtifactHost(url, metadata)
     : isGitLabArtifactHost(url, metadata);
 }
 
 function providerContentUrl(url: URL, metadata: PRMetadata): URL {
+  if (metadata.platform === 'bitbucket') return url;
   if (metadata.platform === 'github') {
     const metadataOrigin = providerOrigin(metadata);
     if (isSameOrigin(url, metadataOrigin)) {
@@ -169,6 +209,9 @@ function providerContentUrl(url: URL, metadata: PRMetadata): URL {
     }
     return url;
   }
+
+  const uploadUrl = gitlabUploadApiUrl(url, metadata);
+  if (uploadUrl !== null) return uploadUrl;
 
   const blobMarker = '/-/blob/';
   if (url.pathname.includes(blobMarker)) {
@@ -233,12 +276,18 @@ function mayFollowProviderRedirect(currentUrl: URL, nextUrl: URL): boolean {
 }
 
 async function providerAuthHeaders(runtime: PRRuntime, metadata: PRMetadata): Promise<Record<string, string>> {
+  // The review runs as another signed-in gh account (#2157): send its token, not the active one's.
+  if (metadata.platform === 'github') {
+    const chosen = ghAccountTokenFor(metadata);
+    if (chosen) return { Authorization: `Bearer ${chosen}` };
+  }
   const cacheKey = `${metadata.platform}:${metadata.host.toLowerCase()}`;
   const cached = providerAuthCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
   const promise = (async (): Promise<Record<string, string>> => {
     try {
+      if (metadata.platform === 'bitbucket') return {};
       const command = metadata.platform === 'github' ? 'gh' : 'glab';
       const args = metadata.platform === 'github'
         ? ['auth', 'token', '--hostname', metadata.host]
@@ -268,6 +317,32 @@ function shouldSendProviderAuth(url: URL, metadata: PRMetadata): boolean {
   if (metadata.platform === 'gitlab' || metadataOrigin !== 'https://github.com') return false;
   return origin === 'https://raw.githubusercontent.com'
     || origin === 'https://private-user-images.githubusercontent.com';
+}
+
+/**
+ * Our credentials were not accepted. Name the command that fixes it: the alternative is a
+ * bare transport status, which reads as a broken artifact rather than a missing login.
+ */
+function providerAuthRequiredError(metadata: PRMetadata): PRArtifactDocumentError {
+  const loginHint = metadata.platform === 'github'
+    ? `gh auth login --hostname ${metadata.host}`
+    : metadata.platform === 'bitbucket'
+      ? 'set PLANNOTATOR_BITBUCKET_TOKEN'
+      : `glab auth login --hostname ${metadata.host}`;
+  return new PRArtifactDocumentError(
+    `Artifact host requires authentication: run \`${loginHint}\``,
+    401,
+  );
+}
+
+/**
+ * A direct refusal carries the same diagnosis as a sign-in redirect: GitLab's `/api/v4`
+ * routes answer 401/403 as JSON instead of redirecting to a login page. GitHub's 403 is
+ * excluded because it also covers rate limiting and SSO enforcement, where a login hint
+ * would point at the wrong problem.
+ */
+function isProviderAuthRefusal(status: number, metadata: PRMetadata): boolean {
+  return status === 401 || (status === 403 && metadata.platform === 'gitlab');
 }
 
 function responseContentLength(response: Response): number | undefined {
@@ -316,6 +391,38 @@ async function readBytesWithLimit(response: Response, maxBytes: number): Promise
     offset += chunk.byteLength;
   }
   return content;
+}
+
+/**
+ * The GitLab uploads API answers every file with `application/octet-stream`. Responses are
+ * served with `nosniff`, so an unrefined type would stop images and video from rendering.
+ *
+ * Deliberately no `html` or `js`: naming an active type here buys nothing, because an HTML
+ * artifact is read through the document route, which always serves `text/plain`. Leaving
+ * them in would make the safety of the media route depend on its CSP header forever.
+ */
+const EXTENSION_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  avif: 'image/avif',
+  css: 'text/css',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  json: 'application/json',
+  md: 'text/markdown',
+  mov: 'video/quicktime',
+  mp4: 'video/mp4',
+  pdf: 'application/pdf',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  txt: 'text/plain',
+  webm: 'video/webm',
+  webp: 'image/webp',
+};
+
+function refineOpaqueContentType(contentType: string, url: URL): string {
+  if (contentType !== 'application/octet-stream') return contentType;
+  const extension = url.pathname.split('.').pop()?.toLowerCase() ?? '';
+  return EXTENSION_CONTENT_TYPES[extension] ?? contentType;
 }
 
 function isValidRangeHeader(range: string | undefined): range is string {
@@ -377,8 +484,13 @@ async function fetchArtifactContent(
   const providerHeaders = await providerAuthHeaders(runtime, metadata);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  let currentUrl = providerContentUrl(new URL(rawUrl), metadata);
-  currentUrl.hash = '';
+  const requestedUrl = new URL(rawUrl);
+  requestedUrl.hash = '';
+  // Kept so a 404 from the rewritten uploads API can be told apart from a 404 anywhere else.
+  const uploadApiUrl = metadata.platform === 'gitlab'
+    ? gitlabUploadApiUrl(requestedUrl, metadata)
+    : null;
+  let currentUrl = providerContentUrl(requestedUrl, metadata);
   try {
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
       const response = await fetch(currentUrl, {
@@ -401,15 +513,33 @@ async function fetchArtifactContent(
         if (!mayFollowProviderRedirect(currentUrl, nextUrl)) {
           throw new PRArtifactDocumentError('Artifact document redirected to a blocked address', 403);
         }
+        // A sign-in hop returns HTTP 200 with a login/SSO page. Following it would render
+        // that page as the artifact, so fail loudly instead.
+        if (SIGN_IN_PATH_RE.test(nextUrl.pathname)) {
+          throw providerAuthRequiredError(metadata);
+        }
         currentUrl = nextUrl;
         continue;
       }
       if (!response.ok) {
         await response.body?.cancel();
+        // `GET /projects/:id/uploads/:secret/:filename` landed in GitLab 17.4. An older
+        // self-hosted instance has no such route, while the original web route still reads
+        // a public project anonymously, so retry that route once before giving up. The
+        // retry is same-origin, so it carries credentials on the usual terms.
+        if (response.status === 404 && uploadApiUrl !== null && currentUrl.href === uploadApiUrl.href) {
+          currentUrl = requestedUrl;
+          continue;
+        }
+        if (isProviderAuthRefusal(response.status, metadata)) {
+          throw providerAuthRequiredError(metadata);
+        }
         throw new PRArtifactDocumentError(`Artifact host returned HTTP ${response.status}`, 502);
       }
-      const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim()
-        || 'text/plain';
+      const contentType = refineOpaqueContentType(
+        response.headers.get('content-type')?.split(';', 1)[0]?.trim() || 'text/plain',
+        currentUrl,
+      );
       const shouldRewriteCss = contentType === 'text/css' && options.sourceUrl !== undefined;
       let content = await readBytesWithLimit(
         response,

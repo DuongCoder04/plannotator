@@ -26,6 +26,9 @@ export const AGENT_CONFIG = {
   'pi':          { name: 'Pi',          badge: 'bg-violet-500/15 text-violet-400', aiProviderTypes: ['pi-sdk'] },
   'codex':       { name: 'Codex',       badge: 'bg-purple-500/15 text-purple-400', aiProviderTypes: ['codex-sdk'] },
   'gemini-cli':  { name: 'Gemini CLI', badge: 'bg-sky-500/15 text-sky-400' },
+  'oh-my-pi':    { name: 'Oh My Pi',    badge: 'bg-fuchsia-500/15 text-fuchsia-400' },
+  'mistral-vibe': { name: 'Mistral Vibe', badge: 'bg-rose-500/15 text-rose-400' },
+  'qwen-code':   { name: 'Qwen Code',   badge: 'bg-indigo-500/15 text-indigo-400' },
 } as const satisfies Record<string, AgentConfigEntry>;
 
 /** All recognized origin values. */

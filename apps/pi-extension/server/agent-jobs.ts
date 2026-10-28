@@ -9,6 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { spawn, execFileSync, execFile, type ChildProcess } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -23,15 +24,24 @@ import {
 	AGENT_HEARTBEAT_COMMENT,
 	AGENT_HEARTBEAT_INTERVAL_MS,
 } from "../generated/agent-jobs.ts";
-import { formatClaudeLogEvent } from "../generated/claude-review.ts";
+import { resolveGuideLaunchInstructions } from "../generated/guide-instructions-store.ts";
+import { gitColorFreeEnvironment } from "../generated/review-core.ts";
+import { ghAccountEnvForPRUrl } from "../generated/pr-github-account.ts";
+import type { GuideLaunchReview } from "../generated/guide-format.ts";
+import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "../generated/claude-review.ts";
 import {
 	MARKER_ENGINES,
 	formatMarkerLogEvent,
+	resolveMarkerBinary,
+	withMarkerBinary,
 	type MarkerEngine,
 	type MarkerEngineId,
 	type MarkerModel,
 } from "../generated/marker-review.ts";
 import { json, parseBody } from "./helpers.ts";
+import { crossOriginRefusalBody } from "../generated/request-origin.ts";
+import { checkServerSession, serverSessionMismatchBody } from "../generated/server-session.ts";
+import { isSameOriginRequest } from "./request-origin-guard.ts";
 
 // ---------------------------------------------------------------------------
 // Route prefixes
@@ -59,15 +69,32 @@ const SERVER_BUILT_PROVIDERS: ReadonlySet<string> = new Set([
 // which() helper for Node.js
 // ---------------------------------------------------------------------------
 
-export function whichCmd(cmd: string): boolean {
+/** Where `cmd` is on the live PATH (the first match), or null. */
+export function whichPath(cmd: string): string | null {
 	try {
 		const bin = process.platform === "win32" ? "where" : "which";
-		execFileSync(bin, [cmd], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-		return true;
+		// Pass the live env explicitly: under Bun, execFileSync without `env` looks
+		// the binary up on the STARTUP PATH, not the current process.env.PATH.
+		const out = execFileSync(bin, [cmd], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], env: process.env });
+		return out.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
 	} catch {
-		return false;
+		return null;
 	}
 }
+
+export function whichCmd(cmd: string): boolean {
+	return whichPath(cmd) !== null;
+}
+
+/**
+ * A marker engine's CLI by its own name, or another name it is installed under
+ * only when that is the same CLI (Cursor's `agent`, never another program named
+ * `agent`, such as Grok Build's).
+ */
+const markerBinary = (engine: MarkerEngine) => resolveMarkerBinary(engine, whichPath);
+// The check of a second name may run its `--version` (asynchronously, 2 s at
+// most, once per file), so marker availability settles a moment after the
+// handler is made: every reader awaits `capabilitiesReady`.
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -75,8 +102,20 @@ export function whichCmd(cmd: string): boolean {
 
 export interface AgentJobHandlerOptions {
 	mode: "plan" | "review" | "annotate";
+	/**
+	 * Returns the server's base URL for spawned subprocesses (e.g.,
+	 * "http://127.0.0.1:12345"). Late-bound. Jobs run on the same machine, so
+	 * this must stay loopback-reachable regardless of any advertised-URL host
+	 * override.
+	 */
 	getServerUrl: () => string;
 	getCwd: () => string;
+	/**
+	 * This server's stale-tab nonce, read per request (late-bound: the review
+	 * server makes it after this handler). A launch whose body, or a kill whose
+	 * `?serverSession=` query, names a different one is refused with 409.
+	 */
+	getServerSession?: () => string;
 	/** Build the command server-side for a given provider. */
 	buildCommand?: (provider: string, config?: Record<string, unknown>) => Promise<{
 		command: string[];
@@ -117,9 +156,14 @@ export interface AgentJobHandlerOptions {
 		 *  AgentJobInfo so guide persistence labels the envelope with the context
 		 *  the guide was generated against (see AgentJobInfo.guideContext). */
 		guideContext?: AgentJobInfo["guideContext"];
+		/** Launch-time review (patch + labels + source) the guide describes (guide
+		 *  provider only). Kept server-side like changedFilesSnapshot — NEVER on
+		 *  AgentJobInfo, which is broadcast over SSE — and handed to
+		 *  onJobComplete for persistence beside the guide (portable export). */
+		launchReview?: GuideLaunchReview;
 	} | null>;
 	/** Called when a job completes successfully — parse results and push annotations. */
-	onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string; changedFilesSnapshot?: string[] }) => void | Promise<void>;
+	onJobComplete?: (job: AgentJobInfo, meta: { outputPath?: string; stdout?: string; cwd?: string; changedFilesSnapshot?: string[]; launchReview?: GuideLaunchReview }) => void | Promise<void>;
 }
 
 /**
@@ -131,9 +175,9 @@ export interface AgentJobHandlerOptions {
  * fails or the CLI is unauthenticated / has no providers configured — the UI falls
  * back to the engine's default picker. Account/config-specific, so never hardcoded.
  */
-async function discoverMarkerModels(engine: MarkerEngine): Promise<MarkerModel[]> {
+async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
 	try {
-		const { stdout } = await execFileAsync(engine.binary, engine.modelsArgv, {
+		const { stdout } = await execFileAsync(program, engine.modelsArgv, {
 			timeout: 5000,
 			encoding: "utf8",
 		});
@@ -150,6 +194,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 	const jobs = new Map<string, { info: AgentJobInfo; proc: ChildProcess | null }>();
 	const jobOutputPaths = new Map<string, string>();
 	const jobChangedFilesSnapshots = new Map<string, string[]>();
+	const jobLaunchReviews = new Map<string, GuideLaunchReview>();
 	const subscribers = new Set<ServerResponse>();
 	let version = 0;
 
@@ -163,33 +208,40 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			name: "Guided Review",
 			// Guided Review also runs on the marker engines (Cursor, OpenCode, Pi) —
 			// same review-mode + binary-on-PATH gating as their own capability
-			// entries below (NOTE: cursor's binary is `agent`).
-			available:
-				whichCmd("claude") ||
-				whichCmd("codex") ||
-				(mode === "review" && Object.values(MARKER_ENGINES).some((engine) => whichCmd(engine.binary))),
+			// entries below (Cursor: `cursor-agent`, or Cursor's own `agent`).
+			available: whichCmd("claude") || whichCmd("codex"),
 		},
 	];
 	// Marker engines (Cursor, OpenCode, Pi) — same shape, one loop. Available
-	// only in review mode when the binary is on PATH (NOTE: cursor's binary is `agent`).
+	// only in review mode when the binary is on PATH (Cursor: `cursor-agent`, or
+	// Cursor's own `agent`).
 	// Model catalogs are discovered LAZILY (see buildCapabilitiesResponse) so a
 	// slow/unauthenticated `<binary> models` spawn never blocks startup.
 	for (const engine of Object.values(MARKER_ENGINES)) {
 		capabilities.push({
 			id: engine.id,
 			name: engine.name,
-			available: mode === "review" && whichCmd(engine.binary),
+			available: false,
 		});
 	}
+	const capabilitiesReady: Promise<void> = mode !== "review"
+		? Promise.resolve()
+		: Promise.all(Object.values(MARKER_ENGINES).map(async (engine) => {
+				const found = await markerBinary(engine).catch(() => null);
+				if (!found) return;
+				for (const c of capabilities) if (c.id === engine.id || c.id === "guide") c.available = true;
+			})).then(() => undefined);
 
 	const markerModelsCache = new Map<string, MarkerModel[]>();
 	async function buildCapabilitiesResponse(): Promise<AgentCapabilities> {
+		await capabilitiesReady;
 		const providers = await Promise.all(capabilities.map(async (c) => {
 			const engine = MARKER_ENGINES[c.id as MarkerEngineId];
 			if (!engine || !c.available) return c;
 			let models = markerModelsCache.get(engine.id);
 			if (!models) {
-				models = await discoverMarkerModels(engine);
+				const program = await markerBinary(engine);
+				models = program ? await discoverMarkerModels(engine, program.name) : [];
 				markerModelsCache.set(engine.id, models);
 			}
 			return { ...c, models };
@@ -218,7 +270,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 		command: string[],
 		label: string,
 		outputPath?: string,
-		spawnOptions?: { captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean; thinking?: string; prUrl?: string; diffScope?: string; diffContext?: AgentJobInfo["diffContext"]; reviewProfileId?: string; reviewProfileLabel?: string; changedFilesSnapshot?: string[]; guideContext?: AgentJobInfo["guideContext"] },
+		spawnOptions?: { captureStdout?: boolean; stdinPrompt?: string; cwd?: string; prompt?: string; engine?: string; model?: string; effort?: string; reasoningEffort?: string; fastMode?: boolean; thinking?: string; prUrl?: string; diffScope?: string; diffContext?: AgentJobInfo["diffContext"]; reviewProfileId?: string; reviewProfileLabel?: string; changedFilesSnapshot?: string[]; guideContext?: AgentJobInfo["guideContext"]; launchReview?: GuideLaunchReview },
 	): AgentJobInfo {
 		const source = jobSource(id);
 
@@ -261,8 +313,21 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 				],
 				env: {
 					...process.env,
+					// The agent runs `git diff` / `git log` itself through a pipe; keep a
+					// user's `color.diff = always` from filling its context with ANSI
+					// escapes (#1661).
+					...gitColorFreeEnvironment(process.env),
+					// PWD must name the spawn cwd, not the server's own directory (#1609):
+					// OpenCode 1.x resolves its session directory as `process.env.PWD ??
+					// process.cwd()`, so an inherited PWD would silently run the agent in
+					// the server's directory instead of the review's (PR pool checkouts,
+					// worktrees, workspace roots). A shell sets PWD to its cwd; so do we.
+					PWD: resolvePath(spawnCwd),
 					PLANNOTATOR_AGENT_SOURCE: source,
 					PLANNOTATOR_API_URL: getServerUrl(),
+					// A GitHub PR the active gh account can't see runs as the signed-in
+					// account chosen for its repo (#2157); a job for any other PR gets nothing.
+					...ghAccountEnvForPRUrl(spawnOptions?.prUrl),
 				},
 			});
 
@@ -279,6 +344,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			if (outputPath) jobOutputPaths.set(id, outputPath);
 			if (spawnOptions?.cwd) jobOutputPaths.set(`${id}:cwd`, spawnOptions.cwd);
 			if (spawnOptions?.changedFilesSnapshot) jobChangedFilesSnapshots.set(id, spawnOptions.changedFilesSnapshot);
+			if (spawnOptions?.launchReview) jobLaunchReviews.set(id, spawnOptions.launchReview);
 			broadcast({ type: "job:started", job: { ...info } });
 
 			// --- Stdout capture (Claude/Cursor stream-json) ---
@@ -374,10 +440,17 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					entry.info.error = stderrBuf;
 				}
 
+				// #1627: a Claude job whose every shell command was refused (sandbox that
+				// cannot start, under dontAsk) otherwise finishes looking normal.
+				if (captureStdout && (provider === "claude" || spawnOptions?.engine === "claude") && detectClaudeShellBlocked(stdoutBuf, allowedToolsOf(entry.info.command), disallowedToolsOf(entry.info.command))) {
+					entry.info.warning = CLAUDE_SHELL_BLOCKED_WARNING;
+				}
+
 				// Ingest results before broadcasting completion
 				const jobOutputPath = jobOutputPaths.get(id);
 				const jobCwd = jobOutputPaths.get(`${id}:cwd`);
 				const changedFilesSnapshot = jobChangedFilesSnapshots.get(id);
+				const launchReview = jobLaunchReviews.get(id);
 				if (exitCode === 0 && options.onJobComplete) {
 					try {
 						await options.onJobComplete(entry.info, {
@@ -385,6 +458,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							stdout: captureStdout ? stdoutBuf : undefined,
 							cwd: jobCwd,
 							changedFilesSnapshot,
+							launchReview,
 						});
 					} catch (err) {
 						// Claude/Codex REVIEW jobs stay fail-open by design: annotations may
@@ -409,6 +483,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 				jobOutputPaths.delete(id);
 				jobOutputPaths.delete(`${id}:cwd`);
 				jobChangedFilesSnapshots.delete(id);
+				jobLaunchReviews.delete(id);
 				broadcast({ type: "job:completed", job: { ...entry.info } });
 			});
 
@@ -452,6 +527,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 		jobOutputPaths.delete(id);
 		jobOutputPaths.delete(`${id}:cwd`);
 		jobChangedFilesSnapshots.delete(id);
+		jobLaunchReviews.delete(id);
 		broadcast({ type: "job:completed", job: { ...entry.info } });
 		return true;
 	}
@@ -508,6 +584,26 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			if (url.pathname === CAPABILITIES && req.method === "GET") {
 				json(res, await buildCapabilitiesResponse());
 				return true;
+			}
+
+			// Launching and killing jobs start and stop processes on this machine:
+			// another site's page is refused (the servers also do this before any
+			// route), and a kill from a stale tab too. A launch's session is checked
+			// on its body. Mirrors packages/server/agent-jobs.ts.
+			if ((url.pathname === JOBS || url.pathname.startsWith(JOBS + "/")) && (req.method === "POST" || req.method === "DELETE")) {
+				if (!isSameOriginRequest(req)) {
+					json(res, crossOriginRefusalBody(), 403);
+					return true;
+				}
+				const expected = options.getServerSession?.();
+				if (
+					req.method === "DELETE" &&
+					expected !== undefined &&
+					checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, expected) === "mismatch"
+				) {
+					json(res, serverSessionMismatchBody(), 409);
+					return true;
+				}
 			}
 
 			// --- SSE stream ---
@@ -573,8 +669,14 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					const KNOWN_JOB_FIELDS = new Set([
 						"provider", "command", "label",
 						"engine", "model", "reasoningEffort", "effort", "thinking", "fastMode",
-						"reviewProfileId", "repairOf",
+						"reviewProfileId", "repairOf", "instructions",
+						"serverSession",
 					]);
+					const expectedSession = options.getServerSession?.();
+					if (expectedSession !== undefined && checkServerSession(body, expectedSession) === "mismatch") {
+						json(res, serverSessionMismatchBody(), 409);
+						return true;
+					}
 					if (body && typeof body === "object") {
 						const unknown = Object.keys(body).filter((k) => !KNOWN_JOB_FIELDS.has(k));
 						if (unknown.length > 0) {
@@ -590,6 +692,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					let outputPath: string | undefined;
 
 					// Validate provider is a known, available capability
+					await capabilitiesReady;
 					const cap = capabilities.find((c) => c.id === provider);
 					if (!cap || !cap.available) {
 						json(res, { error: `Unknown or unavailable provider: ${provider}` }, 400);
@@ -627,6 +730,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					let jobReviewProfileLabel: string | undefined;
 					let jobChangedFilesSnapshot: string[] | undefined;
 					let jobGuideContext: AgentJobInfo["guideContext"] | undefined;
+					let jobLaunchReview: GuideLaunchReview | undefined;
 					const jobId = crypto.randomUUID();
 					if (options.buildCommand) {
 						// Thread config from POST body to buildCommand
@@ -639,6 +743,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 						if (body.fastMode === true) config.fastMode = true;
 						if (typeof body.reviewProfileId === "string") config.reviewProfileId = body.reviewProfileId;
 						if (typeof body.repairOf === "string") config.repairOf = body.repairOf;
+						// Guide extra instructions (#1265): explicit launch text wins,
+						// else the server-stored standing instructions apply; neither
+						// yields text and launches build the exact same prompts as before.
+						const launchInstructions = provider === "guide"
+							? resolveGuideLaunchInstructions(body.instructions)
+							: undefined;
+						if (launchInstructions !== undefined) config.instructions = launchInstructions;
 						const built = await options.buildCommand(provider, Object.keys(config).length > 0 ? config : undefined);
 						if (built) {
 							command = built.command;
@@ -661,6 +772,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							jobReviewProfileLabel = built.reviewProfileLabel;
 							jobChangedFilesSnapshot = built.changedFilesSnapshot;
 							jobGuideContext = built.guideContext;
+							jobLaunchReview = built.launchReview;
 						}
 					}
 
@@ -668,6 +780,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 						json(res, { error: 'Missing "command" array' }, 400);
 						return true;
 					}
+
+					// A marker engine starts by the name its CLI was found under
+					// (Cursor's `agent` only when it is Cursor's), never another
+					// program of that name. Guide jobs carry the engine on jobEngine.
+					const spawnEngine = MARKER_ENGINES[provider as MarkerEngineId]
+						?? (jobEngine ? MARKER_ENGINES[jobEngine as MarkerEngineId] : undefined);
+					if (spawnEngine) command = withMarkerBinary(command, spawnEngine, await markerBinary(spawnEngine));
 
 					const job = spawnJob(jobId, provider, command, label, outputPath, {
 						captureStdout,
@@ -687,6 +806,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 						reviewProfileLabel: jobReviewProfileLabel,
 						changedFilesSnapshot: jobChangedFilesSnapshot,
 						guideContext: jobGuideContext,
+						launchReview: jobLaunchReview,
 					});
 					json(res, { job }, 201);
 				} catch (err) {

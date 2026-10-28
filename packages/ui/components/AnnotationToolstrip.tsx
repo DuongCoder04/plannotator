@@ -1,8 +1,9 @@
-import React, { useState, useRef, useLayoutEffect, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { EditorMode, InputMethod } from '../types';
 import { TaterSpritePullup } from './TaterSpritePullup';
 
-interface AnnotationToolstripProps {
+/** Props for the shared annotation input and action mode toolstrip. */
+export interface AnnotationToolstripProps {
   inputMethod: InputMethod;
   onInputMethodChange: (method: InputMethod) => void;
   mode: EditorMode;
@@ -25,8 +26,25 @@ interface AnnotationToolstripProps {
    * narrow and leaves room for the diff badges.
    */
   iconOnly?: boolean;
+  /**
+   * Hide the drag/pinpoint input group entirely. Live app sessions are
+   * pinpoint-only, so the switch would be a dead control there.
+   */
+  hideInputMethodSwitch?: boolean;
+  /**
+   * Omit only the Quick Label action. Defaults to false so existing consumers
+   * retain the complete action-mode group.
+   */
+  hideQuickLabel?: boolean;
+  /**
+   * Omit only the Redline action. Defaults to false. For a host whose
+   * composer is its own (the Inbox surface on a phone draws Select, Pinpoint,
+   * Markup and Comment).
+   */
+  hideRedline?: boolean;
 }
 
+/** Render the shared input-method and annotation-mode controls. */
 export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
   inputMethod,
   onInputMethodChange,
@@ -36,6 +54,9 @@ export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
   compact = false,
   showHelpLink = true,
   iconOnly = false,
+  hideInputMethodSwitch = false,
+  hideQuickLabel = false,
+  hideRedline = false,
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [helpTab, setHelpTab] = useState<'selection' | 'plannotator'>('selection');
@@ -50,6 +71,7 @@ export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
     <>
       <div className={`flex items-center flex-wrap ${compact ? 'gap-1' : 'gap-1.5'}`}>
         {/* Input method group */}
+        {!hideInputMethodSwitch && (
         <div className="inline-flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5 border border-border/30">
           <ToolstripButton
             active={inputMethod === 'drag'}
@@ -89,6 +111,7 @@ export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
             }
           />
         </div>
+        )}
 
         {/* Action mode group */}
         <div className="inline-flex items-center gap-0.5 bg-muted/50 rounded-lg p-0.5 border border-border/30">
@@ -120,6 +143,7 @@ export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
               </svg>
             }
           />
+          {!hideRedline && (
           <ToolstripButton
             active={mode === 'redline'}
             onClick={() => onModeChange('redline')}
@@ -134,20 +158,23 @@ export const AnnotationToolstrip: React.FC<AnnotationToolstripProps> = ({
               </svg>
             }
           />
-          <ToolstripButton
-            active={mode === 'quickLabel'}
-            onClick={() => onModeChange('quickLabel')}
-            label="Label"
-            color="warning"
-            mounted={mounted}
-            compact={compact}
-            iconOnly={iconOnly}
-            icon={
-              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            }
-          />
+          )}
+          {!hideQuickLabel && (
+            <ToolstripButton
+              active={mode === 'quickLabel'}
+              onClick={() => onModeChange('quickLabel')}
+              label="Label"
+              color="warning"
+              mounted={mounted}
+              compact={compact}
+              iconOnly={iconOnly}
+              icon={
+                <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              }
+            />
+          )}
         </div>
 
         {/* Help */}
@@ -264,10 +291,26 @@ const ICON_SIZE = 28;       // collapsed button width (px)
 const H_PAD = 10;           // horizontal padding when expanded (px) — matches px-2.5
 const GAP = 6;              // gap between icon and label (px) — matches gap-1.5
 const ICON_INNER = 14;      // icon element width (px)
+const COLLAPSED_PAD = (ICON_SIZE - ICON_INNER) / 2;
 const DURATION = 180;       // transition ms
+const EASE = 'cubic-bezier(0.25, 0.46, 0.45, 0.94)';
 
 /* ─── Button ─── */
 
+/**
+ * One toolstrip button: the icon, and a label that slides out beside it.
+ *
+ * The width comes from layout, never from a JS measurement. A hidden copy of
+ * the label sits in a one-column grid whose column animates `0fr` -> `1fr`, so
+ * the button's shrink-to-fit width runs from the icon-only 28 px to the icon,
+ * the gap and the label; the side padding animates 7 -> 10 px with it. The
+ * width at every frame matches the explicit-width version this replaced
+ * (28 + (12 + label) x progress, same 180 ms curve). The visible label is
+ * positioned beside the icon and clipped by the button's own edge, as before:
+ * a grid track laid out at a fraction of its width reveals its content more
+ * slowly than the button grows, so the label is not drawn inside it.
+ * Reading `offsetWidth` per button forced a layout on every document open.
+ */
 const ToolstripButton: React.FC<{
   active: boolean;
   onClick: () => void;
@@ -279,17 +322,8 @@ const ToolstripButton: React.FC<{
   iconOnly?: boolean;
 }> = ({ active, onClick, icon, label, color, mounted, compact = false, iconOnly = false }) => {
   const [hovered, setHovered] = useState(false);
-  const [labelWidth, setLabelWidth] = useState(0);
-  const measureRef = useRef<HTMLSpanElement>(null);
   const styles = colorStyles[color];
   const [isTouchDevice] = useState(() => 'ontouchstart' in window || navigator.maxTouchPoints > 0);
-
-  // Measure label text width synchronously before first paint
-  useLayoutEffect(() => {
-    if (measureRef.current) {
-      setLabelWidth(measureRef.current.offsetWidth);
-    }
-  }, [label]);
 
   // iconOnly: never expand (mobile sticky lane).
   // compact: only active expands (sm+ sticky lane — shows current mode).
@@ -299,8 +333,7 @@ const ToolstripButton: React.FC<{
     : compact
       ? active
       : (active || hovered || isTouchDevice);
-  const expandedWidth = H_PAD + ICON_INNER + GAP + labelWidth + H_PAD;
-  const currentWidth = expanded ? expandedWidth : ICON_SIZE;
+  const pad = expanded ? H_PAD : COLLAPSED_PAD;
 
   const colorClass = active
     ? styles.active
@@ -308,12 +341,9 @@ const ToolstripButton: React.FC<{
       ? styles.hover
       : styles.inactive;
 
+  const slide = (property: string) => `${property} ${DURATION}ms ${EASE}`;
   const transition = mounted
-    ? `width ${DURATION}ms cubic-bezier(0.25, 0.46, 0.45, 0.94), background-color ${DURATION}ms ease, color ${DURATION}ms ease, box-shadow ${DURATION}ms ease`
-    : 'none';
-
-  const innerTransition = mounted
-    ? `padding-left ${DURATION}ms cubic-bezier(0.25, 0.46, 0.45, 0.94)`
+    ? `${slide('padding-inline-start')}, ${slide('padding-inline-end')}, background-color ${DURATION}ms ease, color ${DURATION}ms ease, box-shadow ${DURATION}ms ease`
     : 'none';
 
   return (
@@ -321,34 +351,37 @@ const ToolstripButton: React.FC<{
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`relative flex items-center h-7 rounded-md overflow-hidden ${colorClass}`}
-      style={{ width: currentWidth, transition }}
+      aria-pressed={active}
+      className={`relative flex items-center h-7 rounded-md overflow-hidden whitespace-nowrap ${colorClass}`}
+      style={{ paddingInlineStart: pad, paddingInlineEnd: pad, transition }}
     >
-      {/* Inner flex container — fixed layout, no layout-shifting properties animated */}
-      <div
-        className="flex items-center whitespace-nowrap"
-        style={{ paddingLeft: expanded ? H_PAD : (ICON_SIZE - ICON_INNER) / 2, gap: GAP, transition: innerTransition }}
-      >
-        {icon}
-        <span
-          className="text-xs font-medium"
-          style={{
-            opacity: expanded ? 1 : 0,
-            transition: mounted ? `opacity ${expanded ? DURATION : DURATION * 0.6}ms ease ${expanded ? '60ms' : '0ms'}` : 'none',
-          }}
-        >
-          {label}
-        </span>
-      </div>
-
-      {/* Hidden measurement span — rendered offscreen to get label pixel width */}
+      {icon}
+      {/* The label people see, beside the icon, clipped at the button's edge. */}
       <span
-        ref={measureRef}
-        className="text-xs font-medium absolute pointer-events-none"
-        style={{ visibility: 'hidden', position: 'absolute', left: -9999 }}
-        aria-hidden
+        className="absolute inset-y-0 flex items-center text-xs font-medium"
+        style={{
+          insetInlineStart: pad + ICON_INNER + GAP,
+          opacity: expanded ? 1 : 0,
+          transition: mounted
+            ? `${slide('inset-inline-start')}, opacity ${expanded ? DURATION : DURATION * 0.6}ms ease ${expanded ? '60ms' : '0ms'}`
+            : 'none',
+        }}
       >
         {label}
+      </span>
+      {/* The width: a hidden copy of the gap and label in a column that
+          animates 0fr -> 1fr. min-width 0 and overflow hidden let it reach 0. */}
+      <span
+        aria-hidden
+        style={{
+          display: 'grid',
+          gridTemplateColumns: expanded ? '1fr' : '0fr',
+          transition: mounted ? slide('grid-template-columns') : 'none',
+        }}
+      >
+        <span style={{ minWidth: 0, overflow: 'hidden', visibility: 'hidden' }}>
+          <span className="block text-xs font-medium" style={{ paddingInlineStart: GAP }}>{label}</span>
+        </span>
       </span>
     </button>
   );

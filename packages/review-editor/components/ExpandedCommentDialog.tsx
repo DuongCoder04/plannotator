@@ -2,6 +2,8 @@ import React, { useRef } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import { useReviewAnnotationToolbarShortcuts } from '@plannotator/ui/shortcuts';
+import { useConfigValue } from '@plannotator/ui/config';
+import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
 
 interface ExpandedCommentDialogProps {
   title: string;
@@ -14,6 +16,10 @@ interface ExpandedCommentDialogProps {
   onSubmit: () => void;
   onCollapse: () => void;
   onCancel: () => void;
+  autoFocus?: boolean;
+  collapsible?: boolean;
+  onEditSuggestion?: () => void;
+  hasSuggestedCode?: boolean;
 }
 
 export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
@@ -27,11 +33,16 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
   onSubmit,
   onCollapse,
   onCancel,
+  autoFocus = true,
+  collapsible = true,
+  onEditSuggestion,
+  hasSuggestedCode = false,
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const askAIEnabled = aiAvailable && !!onAskAI && commentText.trim().length > 0;
   const submitLabel = isEditing ? 'Update' : 'Add Comment';
+  const enterSavesComment = useConfigValue('enterSavesComment');
 
   useReviewAnnotationToolbarShortcuts({
     target: 'document',
@@ -69,31 +80,37 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
     >
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-[1999] bg-background/80 backdrop-blur-sm" />
-        <Dialog.Popup
-          ref={dialogRef}
-          aria-modal="true"
-          initialFocus={() => {
-            const textarea = textareaRef.current;
-            if (textarea) {
-              textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+        <div className="pn-visible-viewport-overlay z-[2000] pointer-events-none flex items-center justify-center">
+          <Dialog.Popup
+            ref={dialogRef}
+            aria-modal="true"
+            initialFocus={autoFocus
+              ? () => {
+                  const textarea = textareaRef.current;
+                  if (textarea) {
+                    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+                  }
+                  return textarea;
+                }
+              : false
             }
-            return textarea;
-          }}
-          finalFocus={false}
-          className="fixed left-1/2 top-1/2 z-[2000] w-[calc(100vw-2rem)] max-w-2xl h-[min(36rem,85dvh)] max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden bg-popover border border-border rounded-xl shadow-2xl flex flex-col"
-        >
+            finalFocus={false}
+            className="pn-responsive-composer-dialog pn-review-composer-dialog relative pointer-events-auto overflow-hidden bg-popover border border-border rounded-xl shadow-2xl flex flex-col"
+          >
           <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border/50">
             <Dialog.Title className="text-xs font-normal text-muted-foreground truncate">{title}</Dialog.Title>
             <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={onCollapse}
-                className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                title="Collapse"
-                aria-label="Collapse expanded comment"
-              >
-                <CollapseIcon />
-              </button>
+              {collapsible && (
+                <button
+                  type="button"
+                  onClick={onCollapse}
+                  className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  title="Collapse"
+                  aria-label="Collapse expanded comment"
+                >
+                  <CollapseIcon />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onCancel}
@@ -108,16 +125,25 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
 
           <div className="px-4 py-3 min-h-0 flex-1 flex">
             <textarea
+              data-pn-mobile-editable="true"
               ref={textareaRef}
               value={commentText}
               onChange={(event) => setCommentText(event.target.value)}
+              onKeyDown={(event) => {
+                // Mod+Enter is the shortcut scope's (above). A plain Enter saves
+                // only with "Enter saves a comment" on; Shift+Enter stays a newline.
+                if (event.metaKey || event.ctrlKey) return;
+                if (!isCommentSubmitKey(event, enterSavesComment)) return;
+                event.preventDefault();
+                if (canSubmit) onSubmit();
+              }}
               placeholder="Leave feedback..."
               className="w-full h-full min-h-0 max-h-full bg-muted text-sm leading-relaxed placeholder:text-muted-foreground resize-y focus:outline-none rounded-lg border-0 px-3 py-2"
             />
           </div>
 
-          <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-t border-border/50">
-            <div>
+          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-border/50">
+            <div className="flex flex-wrap items-center gap-3">
               {aiAvailable && (
                 <button
                   type="button"
@@ -130,15 +156,26 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
                   Ask AI
                 </button>
               )}
+              {onEditSuggestion && (
+                <button
+                  type="button"
+                  onClick={onEditSuggestion}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {hasSuggestedCode ? 'Edit suggestion' : 'Suggest code'}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onCollapse}
-                className="review-toolbar-btn"
-              >
-                Collapse
-              </button>
+              {collapsible && (
+                <button
+                  type="button"
+                  onClick={onCollapse}
+                  className="review-toolbar-btn"
+                >
+                  Collapse
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onSubmit}
@@ -149,7 +186,8 @@ export const ExpandedCommentDialog: React.FC<ExpandedCommentDialogProps> = ({
               </button>
             </div>
           </div>
-        </Dialog.Popup>
+          </Dialog.Popup>
+        </div>
       </Dialog.Portal>
     </Dialog.Root>
   );

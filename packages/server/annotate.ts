@@ -11,24 +11,40 @@
  *   PLANNOTATOR_PORT   - Fixed port or inclusive range (default: random locally, 19432 for remote)
  */
 
-import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort } from "./remote";
+import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
+import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
+import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
+import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
+import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import type { Origin } from "@plannotator/shared/agents";
-import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
+import { handleImage, handleUpload, handleServerReady, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
-import { handleFileBrowserFilesStream } from "./reference-watch";
-import { resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
-import { contentHash, deleteDraft } from "./draft";
+import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
+import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
+import { contentHash } from "./draft";
+import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
+import { isPathAllowed } from "@plannotator/shared/doc-resolve";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
-import { computeAnnotateHistory, deriveAnnotateHistorySlug, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
+import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
+import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "@plannotator/shared/annotate-live-version";
 import { htmlDiff } from "@plannotator/shared/html-diff";
-import { disabledSourceSave, type SourceSaveRequest } from "@plannotator/shared/source-save";
+import {
+  disabledSourceSave,
+  sourceSaveCrossOriginResponse,
+  sourceSaveDecidedResponse,
+  type SourceSaveRequest,
+} from "@plannotator/shared/source-save";
 import { getAnnotateReferenceRootPaths } from "@plannotator/shared/annotate-reference-roots-node";
 import { getAnnotateFileFeedbackTemplate, getAnnotateMessageFeedbackTemplate } from "@plannotator/shared/prompts";
 import {
 	createSourceSaveCapability,
 	createSourceSaveCapabilityFromText,
 	readSourceFileSnapshot,
+	resolveBundleSourceSavePaths,
+	resolveBundleSourceSaveTarget,
 	resolveFolderSourceFile,
 	resolveFolderSourceFileForSave,
 	saveSourceFileAtomic,
@@ -42,18 +58,40 @@ import {
   createAnnotateClientLeaseTracker,
   type AnnotateClientLeaseStreamSession,
 } from "@plannotator/shared/annotate-client-lease";
-import { createAnnotateDecisionSettler } from "@plannotator/shared/annotate-decision";
-import { saveConfig, detectGitUser, getServerConfig, loadConfig, resolveAIEnabled, resolveAnnotateHistory } from "./config";
+import { createAnnotateDecisionSettler, isNothingToSendFeedbackBody } from "@plannotator/shared/annotate-decision";
+import { agentSwitchConfigToSave, agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveAnnotateHistory, resolveFeedbackHistory } from "./config";
+import { getAutoUpdateAdvert, getUpdateAdvert, handleUpdateRoute } from "./auto-update";
+import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } from "@plannotator/shared/feedback-archive";
+import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { existsSync } from "fs";
 import { dirname, resolve as resolvePath } from "path";
 import { isWithinDirectory } from "@plannotator/shared/html-assets-node";
 import { isWSL } from "./browser";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
-import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
-import { isAIEndpointPath, type AIEndpoints } from "@plannotator/ai";
-import { createHtmlAssetRegistry } from "./html-assets";
-import { createBunAgentTerminalBridge } from "./agent-terminal";
+import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
+import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
+import { sessionTailnetAudience, sessionTailnetGate } from "./session-tailnet";
+import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
+import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
+import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
+import { createHtmlAssetRegistry, framedDocumentNotFound } from "./html-assets";
+import { createBunAgentTerminalBridge, type AgentTerminalSocketData } from "./agent-terminal";
+import { startLiveAppProxy, type LiveAppProxy } from "./live-proxy";
+import {
+  buildLiveAppUrl,
+  buildLiveEditorOrigins,
+  composeLiveBridgeJs,
+  liveAppDraftIdentity,
+} from "@plannotator/shared/live-proxy-core";
+import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
+import { annotateDiagramRenderKind } from "@plannotator/shared/annotatable";
+import {
+  annotateBundleDocumentCounts,
+  annotateBundleRoot,
+  type AnnotateBundleFile,
+} from "@plannotator/shared/annotate-bundle";
+import { readFileSync } from "fs";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -63,6 +101,14 @@ export { handleServerReady as handleAnnotateServerReady } from "./shared-handler
 // --- Types ---
 
 export interface AnnotateServerOptions {
+  /** "Ask this session": the host bridge to the agent session that opened this annotation (see packages/ai/session-bridge.ts). */
+  sessionBridge?: SessionBridge;
+  /**
+   * The token `/api/host/status` and `/api/host/close` accept (see
+   * packages/shared/host-control.ts). Default: the pull-bridge token the host
+   * launched the CLI with; off in remote mode either way.
+   */
+  hostControlToken?: string;
   /** Markdown content of the file to annotate. Empty when rendering raw HTML. */
   markdown: string;
   /** Original file path (for display purposes) */
@@ -71,8 +117,32 @@ export interface AnnotateServerOptions {
   htmlContent: string;
   /** Origin identifier for UI customization */
   origin?: Origin;
-  /** UI mode: "annotate" for files, "annotate-last" for last agent message, "annotate-folder" for folders */
-  mode?: "annotate" | "annotate-last" | "annotate-folder";
+  /** UI mode: "annotate" for files, "annotate-last" for last agent message,
+   *  "annotate-folder" for folders, "annotate-app" for live local apps,
+   *  "annotate-bundle" for several files reviewed as one (`bundleFiles`) */
+  mode?: "annotate" | "annotate-last" | "annotate-folder" | "annotate-app" | "annotate-bundle";
+  /**
+   * `annotate-bundle`: the files, in the order they should be read (two or
+   * more, absolute paths; resolveAnnotateBundleFiles builds this). The
+   * session is folder-like but restricted to this explicit list: /api/plan
+   * carries it as `bundle`, and `/api/doc` serves these files and what they
+   * link to under the single-file rule (each file's own directory plus the
+   * working directory). `filePath` should be the bundle root.
+   */
+  bundleFiles?: AnnotateBundleFile[];
+  /**
+   * Live local app annotation (mode "annotate-app"): the server starts a
+   * loopback reverse proxy mirroring targetUrl and serves the composed
+   * bridge body from it. The caller supplies the bridge sources (this
+   * package deliberately does not import @plannotator/ui); the server owns
+   * the per-session token. Refused outright in remote mode.
+   */
+  liveApp?: {
+    targetUrl: string;
+    bridgeScript: string;
+    bridgeBootstrap: string;
+    annotationCss: string;
+  };
   /** Folder path when annotating a directory (used as projectRoot for file browser) */
   folderPath?: string;
   /**
@@ -101,7 +171,10 @@ export interface AnnotateServerOptions {
    * Whether this transport can safely resolve an abandoned gate automatically.
    * Only local direct structured annotate gates (`--gate --json`, not `--hook`,
    * not remote/shared) qualify — see supportsAnnotateClientLease in
-   * apps/hook/server/annotate-output.ts.
+   * apps/hook/server/annotate-output.ts. The server additionally forces this
+   * off while `tailnetPublished` is set: `--tailscale` counts as local to the
+   * CLI predicate, but the session is reached through the serve proxy, whose
+   * disconnects would read as abandonment exactly like a remote tunnel's.
    */
   clientLeaseSupported?: boolean;
   /**
@@ -119,15 +192,28 @@ export interface AnnotateServerOptions {
   convertHtml?: boolean;
   /** CWD where the optional annotate agent terminal should launch. Defaults to process.cwd(). */
   agentCwd?: string;
+  /**
+   * The session is loopback-bound but published across the user's tailnet
+   * (--tailscale). Gates the agent terminal behind the same
+   * PLANNOTATOR_AGENT_TERMINAL_REMOTE opt-in remote mode uses: the PTY token
+   * is not an auth boundary against network peers (wsPath ships in the
+   * /api/plan capability payload), so tailnet reachability implies terminal
+   * reachability.
+   */
+  tailnetPublished?: boolean;
+  /** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+  refRunner?: RefRunner;
   /** Project name for keying per-file version history (powers the annotate version diff). */
   project?: string;
   /** Called when server starts with the URL, remote status, and port */
-  onReady?: (url: string, isRemote: boolean, port: number) => void;
+  onReady?: (url: string, isRemote: boolean, port: number) => void | Promise<void>;
 }
 
 export interface AnnotateServerResult {
   /** The port the server is running on */
   port: number;
+  /** The live proxy port, when annotating a running app. */
+  liveProxyPort?: number;
   /** The full URL to access the server */
   url: string;
   /** Whether running in remote mode */
@@ -140,12 +226,54 @@ export interface AnnotateServerResult {
     approved?: boolean;
     selectedMessageId?: string;
     feedbackScope?: "message" | "messages";
+    /** A Done with nothing to send (see isNothingToSendFeedbackBody): the
+     *  feedback is still the legacy zero-state sentence. */
+    nothingToSend?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
   }>;
   /** Stop the server */
   stop: () => void;
+  /** Host-only status and close, called in-process by a host that runs this server itself. */
+  hostControl: HostControl;
 }
 
 // --- Server Implementation ---
+
+/**
+ * Run shutdown disposal steps with per-step isolation, then close the
+ * listener. One throwing step (agent-terminal teardown is historically
+ * fragile, #1314) must never skip the steps after it — before this guard, a
+ * throw mid-sequence orphaned the live proxy's listener and its upstream
+ * WebSockets. Failures are reported through `log` (stderr by default) with
+ * the step's name; `closeListener` runs unconditionally, even against a
+ * pathological throw outside the steps.
+ */
+export function runGuardedShutdown(
+  steps: ReadonlyArray<readonly [name: string, dispose: () => void]>,
+  closeListener: () => void,
+  log: (message: string, error: unknown) => void = (message, error) =>
+    console.error(message, error),
+): void {
+  try {
+    for (const [name, dispose] of steps) {
+      try {
+        dispose();
+      } catch (error) {
+        log(`[plannotator] annotate shutdown: ${name} disposal failed:`, error);
+      }
+    }
+  } finally {
+    closeListener();
+  }
+}
+
+// Stable identity for a live app session's annotation draft — moved to the
+// shared live-proxy core so the Pi mirror keys drafts identically; re-exported
+// here for existing import sites.
+export { liveAppDraftIdentity } from "@plannotator/shared/live-proxy-core";
 
 /**
  * Start the Annotate server
@@ -173,19 +301,72 @@ export async function startAnnotateServer(
     pasteApiUrl,
     gate = false,
     approvalNotesSupported = false,
-    clientLeaseSupported = false,
     clientLeaseTestOverrides,
     rawHtml,
     renderHtml = false,
     convertHtml = false,
     agentCwd,
     project,
+    liveApp,
     onReady,
   } = options;
 
+  // Several files reviewed as one (`annotate-bundle`): the explicit, ordered
+  // list, and the deepest directory containing them all (labels and the
+  // `base` for /api/doc). Every other mode has no bundle.
+  const bundleFiles = mode === "annotate-bundle" ? [...(options.bundleFiles ?? [])] : null;
+  if (bundleFiles && bundleFiles.length < 2) {
+    throw new Error("An annotate bundle needs at least two files");
+  }
+  const bundlePaths = bundleFiles ? bundleFiles.map((file) => file.path) : [];
+  const bundleRoot = bundleFiles ? annotateBundleRoot(bundlePaths) : null;
+
+  // Effective client-lease capability. A --tailscale session forces local
+  // mode, so the CLI-side supportsAnnotateClientLease predicate reads it as
+  // local — but every client reaches it through the tailscale serve proxy,
+  // and a proxy/network disconnect longer than the grace period would
+  // auto-dismiss a live review. Same rationale that keeps the capability off
+  // for remote/shared sessions; this is the single decision point both the
+  // /api/plan advert and the SSE endpoint below read.
+  const clientLeaseSupported =
+    (options.clientLeaseSupported ?? false) && options.tailnetPublished !== true;
+
+  // Remote hard-off, defense in depth behind the CLI check: a live proxy
+  // relays the user's authenticated dev app, so it must never coexist with a
+  // beyond-loopback annotate bind. No override env var exists on purpose.
+  // A --tailscale session forces local mode but is reachable across the
+  // tailnet through the serve proxy, so it is exposure all the same (the
+  // annotate agent terminal treats tailnet publication identically).
+  if (liveApp && (isRemoteSession() || options.tailnetPublished === true)) {
+    throw new Error(
+      options.tailnetPublished === true && !isRemoteSession()
+        ? "Live app annotation is unavailable in tailnet-published sessions"
+        : "Live app annotation is unavailable in remote mode",
+    );
+  }
+
   const isRemote = isRemoteSession();
+  // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for, and
+  // never in remote mode. In a `--tailscale` session only this machine's tabs and the tailnet owner's get
+  // them (`refCardsTailnetAllowed`): other devices must not drive the user's gh / glab.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
+  // The app page is served compressed only to sessions reachable from another
+  // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
+  const compressAppHtml = isRemote || options.tailnetPublished === true;
   const wslFlag = await isWSL();
   const gitUser = detectGitUser();
+
+  // Diagram sources (.mmd/.mermaid/.dot/.gv) render through the diagram
+  // engine rather than the markdown pipeline: the document body stays the raw
+  // file text and /api/plan names the engine in `renderAs`. Session-level and
+  // path-only (see annotateDiagramRenderKind), so raw-HTML, converted, URL,
+  // folder, message and live-app sessions are untouched.
+  const diagramRenderKind = annotateDiagramRenderKind({
+    filePath,
+    mode,
+    renderHtml,
+    sourceConverted,
+  });
 
   // Per-file version history → powers the native version diff in annotate mode.
   // Unlike the plan flow (slug = first-heading + date), annotate keys history by
@@ -194,12 +375,20 @@ export async function startAnnotateServer(
   // when rendering HTML. Only single local files (not URLs/folders/messages).
   const annotateProjectName = project ?? "_unknown";
   const annotateHistoryEnabled = resolveAnnotateHistory(loadConfig());
+  // Single local file sessions are the only ones this eager gate covers.
+  // URL, agent-message, and live-app sessions never write session content to
+  // the data dir. Folder sessions do participate in per-file version history,
+  // but lazily through /api/doc (see computeFolderAnnotateHistory below), not
+  // here. The durable submit records stay single-local-file only. The
+  // mode === "annotate" check is deliberate and explicit: "annotate-app"
+  // (whose filePath is URL-shaped anyway) must never become history-eligible
+  // by accident.
+  const singleFileLocalAnnotate = mode === "annotate" && !/^https?:\/\//i.test(filePath);
   let annotateHistory: AnnotateHistoryResult | null = null;
   {
     const historyContent = renderHtml && rawHtml ? rawHtml : markdown;
     const eligible =
-      mode === "annotate" &&
-      !/^https?:\/\//i.test(filePath) &&
+      singleFileLocalAnnotate &&
       historyContent.length > 0 &&
       annotateHistoryEnabled;
     // History is an enhancement, never a gate: a read-only/full data dir
@@ -229,18 +418,245 @@ export async function startAnnotateServer(
     folderAnnotateHistoryCache.set(resolvedFilePath, result);
     return result;
   }
+  // A bundle saves each file's version history when the review opens (the
+  // same per-file pipeline and memo folder sessions run on first view), so a
+  // file the reviewer never opens still gets its version. Text files only,
+  // as in folder sessions: raw HTML and converted HTML keep no history here.
+  if (bundleFiles && annotateHistoryEnabled) {
+    for (const file of bundleFiles) {
+      if (file.renderAs === "html" || !isAnnotatableTextPath(file.path)) continue;
+      try {
+        computeFolderAnnotateHistory(file.path, readFileSync(file.path, "utf-8"));
+      } catch {
+        // Unreadable now: /api/doc reports the problem when it is opened.
+      }
+    }
+  }
+  // Draft identity. Content-derived for the modes that HAVE content, and
+  // path-derived for the modes that do not.
+  //
+  // A live app session has no document body at all: annotate-app resolves
+  // `markdown` to "" by construction, because the page lives behind the
+  // proxy rather than in a string the server holds. Hashing that empty body
+  // gave EVERY live session on the machine the one hash of "", so two
+  // sessions against different dev servers shared a single draft slot and
+  // deterministically overwrote each other's in-progress annotations. The
+  // session's target is its identity here, exactly as the folder path is the
+  // folder session's identity.
   const draftSource =
-    mode === "annotate-folder" && folderPath
-      ? `folder:${resolvePath(folderPath)}`
-      : renderHtml && rawHtml ? rawHtml : markdown;
+    mode === "annotate-app" && liveApp
+      ? `annotate-app\0${liveAppDraftIdentity(liveApp.targetUrl)}`
+      : mode === "annotate-folder" && folderPath
+        ? `folder:${resolvePath(folderPath)}`
+        : bundleFiles
+          // A bundle is its ordered list: the same files in the same order
+          // reopen the same session draft (bundle-level notes), and each
+          // file's comments also follow the file through its path copy.
+          ? `bundle:\0${bundlePaths.join("\0")}`
+          : renderHtml && rawHtml ? rawHtml : markdown;
   const draftKey = contentHash(draftSource);
+  // Drafts follow the file as well as its text (annotate-draft.ts): a single
+  // local file is also saved under its path, and the documents a local-file
+  // or folder session holds comments on are each saved under their own path,
+  // so the comments come back after an agent edits the file and the review
+  // is reopened. URL, live-app and agent-message sessions have no file path.
+  // Drafts are crash recovery, not history, so PLANNOTATOR_ANNOTATE_HISTORY
+  // does not govern them (it never governed the content-keyed draft either).
+  const draftFilePath = annotateDraftFilePath({ mode, filePath });
+  // A URL or the last message has no file of its own, but its linked
+  // documents do: they get per-document copies plus the index that lets a
+  // reload offer them all, as in plan review (#1545).
+  const rootlessDocuments = annotateSessionHasRootlessDocuments({ mode, filePath });
+  const annotateDrafts = createAnnotateDraftSession({
+    contentKey: draftKey,
+    filePath: draftFilePath,
+    documents:
+      draftFilePath !== null || (mode === "annotate-folder" && folderPath) || bundleFiles || rootlessDocuments
+        ? {
+            isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+            ...(rootlessDocuments ? { indexed: true } : {}),
+          }
+        : null,
+  });
+
+  // Durable submit records (#678): the caller consuming waitForDecision() may
+  // be gone (agent-side timeout) by the time the reviewer clicks submit —
+  // settling the promise then deleting the draft would leave the submitted
+  // feedback existing nowhere. persistAnnotateSubmission writes the record to
+  // {DATA_DIR}/history/{project}/{slug}/submissions/{timestamp}.md (next to
+  // the file's annotate version history) BEFORE the draft delete.
+  //
+  // annotateHistory opt-out policy: PLANNOTATOR_ANNOTATE_HISTORY=0 means "do
+  // not write annotated content to the data dir", and submitted feedback
+  // quotes that content, so the record is skipped and the legacy submit
+  // behavior (draft deleted) is preserved unchanged. A missing/timed-out
+  // consumer is not detectable in-process (the server cannot know its caller
+  // stopped reading), so there is no narrower condition to key off.
+  //
+  // Scope: identical to the version-history gate above — single local files
+  // only. annotate-last / URL / folder sessions never wrote submit
+  // records and still do not: their submissions quote agent messages or
+  // fetched pages, which this record was never meant to persist. (Folder
+  // sessions do write lazy per-file version history via /api/doc; that is
+  // a separate, documented pipeline with its own gate.)
+  //
+  // Returns whether the draft delete may proceed: true when the record was
+  // written, when there was no user content to lose, or when the session
+  // does not persist; false only when a durable write was expected and
+  // failed — the draft then stays behind as the recovery copy.
+  // --- Durable feedback archive --------------------------------------------
+  //
+  // Unlike the legacy #678 record above, the archive covers EVERY annotate
+  // session type (single file, folder, URL, live app, agent message): it
+  // stores what the reviewer submitted, not a copy of the annotated document.
+  // That is a deliberate, release-noted behavior change — with defaults, URL /
+  // annotate-last / live-app / folder submissions now leave a durable record
+  // for the first time.
+  //
+  // Both gates apply. PLANNOTATOR_ANNOTATE_HISTORY=0 still means "no annotate
+  // content in the data dir at all", and submitted feedback quotes that
+  // content, so it suppresses archive records for every annotate surface and
+  // the documented fully-stateless annotate session stays verbatim true.
+  const annotateFeedbackSurface: FeedbackSurface =
+    mode === "annotate-app"
+      ? "annotate-app"
+      : mode === "annotate-last"
+        ? "annotate-last"
+        : mode === "annotate-folder"
+          ? "annotate-folder"
+          : bundleFiles
+            ? "annotate-bundle"
+            : singleFileLocalAnnotate
+            ? "annotate"
+            : "annotate-url";
+
+  const archiveAnnotateDecision = (
+    feedbackText: string,
+    annotationList: unknown[],
+    decision: FeedbackDecision,
+  ): boolean => {
+    if (!resolveFeedbackHistory(loadConfig())) return true;
+    if (!annotateHistoryEnabled) return true;
+    const isUrlTarget = /^https?:\/\//i.test(filePath);
+    return (
+      appendFeedbackRecord({
+        project: annotateProjectName,
+        origin,
+        surface: annotateFeedbackSurface,
+        decision,
+        target:
+          mode === "annotate-app" && liveApp
+            ? { url: liveApp.targetUrl }
+            : bundleFiles
+              ? { documents: annotateBundleDocumentCounts(bundlePaths, annotationList) }
+              : isUrlTarget
+              ? { url: filePath }
+              : mode === "annotate-last"
+                ? { filePath }
+                : { filePath: resolvePath(filePath) },
+        feedback: feedbackText,
+        annotations: annotationList,
+      }) !== null
+    );
+  };
+
+  const persistSubmittedDecision = (
+    feedback: unknown,
+    annotations: unknown,
+    approved: boolean,
+  ): boolean => {
+    // Defensive: /api/feedback does not type-validate its body (unlike
+    // /api/approve), and a malformed value must degrade to the legacy
+    // behavior (settle + delete draft + 200), never throw into a 500.
+    const feedbackText = typeof feedback === "string" ? feedback : "";
+    const annotationList = Array.isArray(annotations) ? annotations : [];
+    const hasContent = feedbackText.trim().length > 0 || annotationList.length > 0;
+    const archived = archiveAnnotateDecision(
+      feedbackText,
+      annotationList,
+      approved ? (hasContent ? "approved-with-notes" : "approved") : "feedback",
+    );
+    // Legacy #678 record: unchanged scope (single local files with content).
+    let legacyDurable = true;
+    if (hasContent && annotateHistoryEnabled && singleFileLocalAnnotate) {
+      legacyDurable =
+        persistAnnotateSubmission({
+          project: annotateProjectName,
+          sessionPath: resolvePath(filePath),
+          feedback: feedbackText,
+          annotations: annotationList,
+          approved,
+        }) !== null;
+    }
+    // A failed write only holds the draft back when there was content to lose.
+    return legacyDurable && (archived || !hasContent);
+  };
   const externalAnnotations = createExternalAnnotationHandler("plan");
-  const aiRuntime = resolveAIEnabled() ? await createAIRuntime() : null;
-  const htmlAssets = createHtmlAssetRegistry();
+  // Set once bound: "Ask this session" answers only a loopback Host with this port.
+  let boundPort: number | undefined;
+  const aiRuntime = resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.tailnetPublished === true ? { tailnet: sessionTailnetGate } : {}) }) : null;
+  const htmlAssets = createHtmlAssetRegistry({ folderPath: mode === "annotate-folder" ? folderPath : undefined });
   const agentTerminal = await createBunAgentTerminalBridge({
     enabled: supportsAnnotateAgentTerminalMode(mode),
     cwd: agentCwd ?? process.cwd(),
+    tailnetPublished: options.tailnetPublished === true,
   });
+
+  // The fallback is silent to the reviewer, so the reason is logged once per
+  // process: a genuine bug in the read must not hide behind the snapshot.
+  let rootHtmlUnreadableWarned = false;
+  const warnRootHtmlUnreadable = (path: string, err: unknown) => {
+    if (rootHtmlUnreadableWarned) return;
+    rootHtmlUnreadableWarned = true;
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[plannotator] could not read the HTML root ${path}; serving the startup snapshot instead: ${message}`);
+  };
+
+  // A local rendered-HTML root is served from its CURRENT bytes, not the
+  // startup snapshot: the reviewer can Refresh in-app or reload the tab after
+  // an agent edits the file, and both /api/plan and /api/share-html must then
+  // describe the page the annotations were placed on. The snapshot is only
+  // the fallback when the file is gone or has grown past the annotate cap.
+  const rootHtmlSourcePath =
+    renderHtml && rawHtml && !/^https?:\/\//i.test(filePath) ? resolvePath(filePath) : null;
+  type RootHtmlRead =
+    | { kind: "current"; html: string }
+    | { kind: "snapshot"; reason: "missing" | "too-large" | "unreadable" };
+  async function readRootHtml(): Promise<RootHtmlRead | null> {
+    if (!rootHtmlSourcePath) return null;
+    // A present-but-unreadable root (permissions revoked, the path replaced
+    // by a directory) is the same fallback as a missing one: the startup
+    // snapshot, with its version diff. The read must never throw out of a
+    // request handler, which would turn a tab reload into a 500.
+    try {
+      const file = Bun.file(rootHtmlSourcePath);
+      if (!(await file.exists())) return { kind: "snapshot", reason: "missing" };
+      if (file.size > MAX_ANNOTATABLE_FILE_BYTES) return { kind: "snapshot", reason: "too-large" };
+      return { kind: "current", html: await file.text() };
+    } catch (err) {
+      warnRootHtmlUnreadable(rootHtmlSourcePath, err);
+      return { kind: "snapshot", reason: "unreadable" };
+    }
+  }
+
+  // The in-app Refresh re-reads the root through /api/doc. For the ROOT
+  // document only (linked docs are unchanged), the response also carries the
+  // version-diff fields /api/plan serves, recomputed against the bytes just
+  // read, so a refresh keeps the "Show changes" toggle exactly like a reload.
+  const rootHistory = annotateHistory;
+  const rootHtmlVersionDiff =
+    rootHtmlSourcePath && rootHistory
+      ? {
+          path: rootHtmlSourcePath,
+          compute: (currentHtml: string) => ({
+            previousPlan: rootHistory.previousPlan,
+            versionInfo: rootHistory.versionInfo,
+            ...(rootHistory.previousPlan
+              ? { diffHtml: htmlAssets.rewriteHtml(htmlDiff(rootHistory.previousPlan, currentHtml), filePath) }
+              : {}),
+          }),
+        }
+      : undefined;
 
   async function loadShareHtml(pathParam: string | null): Promise<Response> {
     if (/^https?:\/\//i.test(filePath)) {
@@ -257,9 +673,16 @@ export async function startAnnotateServer(
     }
 
     try {
-      const html = renderHtml && rawHtml && requestedPath === sourcePath
-        ? rawHtml
-        : await Bun.file(requestedPath).text();
+      let html: string;
+      if (rootHtmlSourcePath && requestedPath === rootHtmlSourcePath) {
+        const read = await readRootHtml();
+        if (read?.kind === "snapshot" && read.reason === "too-large") {
+          return Response.json({ error: "File too large to share (max 2MB)" }, { status: 413 });
+        }
+        html = read?.kind === "current" ? read.html : rawHtml!;
+      } else {
+        html = await Bun.file(requestedPath).text();
+      }
       return Response.json({ shareHtml: htmlAssets.inlineHtml(html, requestedPath) });
     } catch {
       return Response.json({ error: "Failed to prepare share HTML" }, { status: 500 });
@@ -269,7 +692,8 @@ export async function startAnnotateServer(
   function isAllowedHtmlSharePath(targetPath: string): boolean {
     const roots = new Set<string>([process.cwd()]);
     if (folderPath) roots.add(folderPath);
-    if (!/^https?:\/\//i.test(filePath)) roots.add(dirname(filePath));
+    for (const path of bundlePaths) roots.add(dirname(path));
+    if (!bundleFiles && !/^https?:\/\//i.test(filePath)) roots.add(dirname(filePath));
     for (const root of roots) {
       if (isWithinDirectory(targetPath, root)) return true;
     }
@@ -285,13 +709,24 @@ export async function startAnnotateServer(
       ? initialSingleFileSourceSave.path
       : resolveUserPath(filePath)
     : null;
+  // The file a live version save (#2037) reads and keys history by: the same
+  // resolved path the open-time save used, so both land in one history.
+  const liveVersionFilePath = annotateLiveVersionFilePath({
+    sourceSaveEligible: singleFileSourceSaveEligible && singleFileLocalAnnotate,
+    resolvedFilePath: resolvePath(filePath),
+    realFilePath: initialSingleFileSourcePath,
+  });
+  // A review of several files: Edit Mode may write exactly the bundle's own
+  // files (real paths, captured now, as a single-file session captures its
+  // one file), never a document they link to.
+  const bundleSourceSavePaths = bundleFiles ? resolveBundleSourceSavePaths(bundlePaths) : null;
   const openedSourceFilePaths = new Set<string>();
   if (initialSingleFileSourcePath) openedSourceFilePaths.add(initialSingleFileSourcePath);
   const getPrimarySource = () => {
     if (mode === "annotate-last") {
       return { plan: markdown, sourceSave: disabledSourceSave("message-mode") };
     }
-    if (mode === "annotate-folder") {
+    if (mode === "annotate-folder" || bundleFiles) {
       return { plan: markdown, sourceSave: disabledSourceSave("folder-mode") };
     }
     if (renderHtml && rawHtml) {
@@ -337,6 +772,7 @@ export async function startAnnotateServer(
     filePath,
     folderPath,
     initialSingleFileSourcePath,
+    bundlePaths,
   });
 
   // Detect repo info (cached for this session)
@@ -350,6 +786,13 @@ export async function startAnnotateServer(
     approved?: boolean;
     selectedMessageId?: string;
     feedbackScope?: "message" | "messages";
+    /** A Done with nothing to send (see isNothingToSendFeedbackBody): the
+     *  feedback is still the legacy zero-state sentence. */
+    nothingToSend?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
   }) => void;
   const decisionPromise = new Promise<{
     feedback: string;
@@ -358,6 +801,13 @@ export async function startAnnotateServer(
     approved?: boolean;
     selectedMessageId?: string;
     feedbackScope?: "message" | "messages";
+    /** A Done with nothing to send (see isNothingToSendFeedbackBody): the
+     *  feedback is still the legacy zero-state sentence. */
+    nothingToSend?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
   }>((resolve) => {
     resolveDecision = resolve;
   });
@@ -366,8 +816,13 @@ export async function startAnnotateServer(
   // lease below race, and a producer that loses must not delete the reviewer's
   // draft or report success for an outcome the caller never received.
   const decision = createAnnotateDecisionSettler(resolveDecision!);
+  // Stale-tab guard (packages/core/server-session.ts): advertised on
+  // /api/plan and echoed by every decision; a different nonce is refused with
+  // 409 session_mismatch before anything settles. Missing is accepted.
+  const serverSession = createServerSessionNonce();
+  const sessionMismatch = () => Response.json(serverSessionMismatchBody(), { status: 409 });
   const alreadyDecided = () =>
-    Response.json({ error: "This review session has already been decided." }, { status: 409 });
+    Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
 
   // Last-client abandonment lease: once the tab's client-lease stream
   // disconnects (as reported by the transport) and stays disconnected for the
@@ -385,8 +840,51 @@ export async function startAnnotateServer(
     { graceMs: clientLeaseGraceMs },
   );
 
+  // Host-only session control (packages/shared/host-control.ts): the agent
+  // that opened this session can ask what it holds and close it. Closing is
+  // the reviewer's Close, marked closedBy "agent", WITHOUT deleting the draft
+  // or archiving a decision the reviewer never made.
+  const hostControlToken = resolveHostControlToken(options.hostControlToken);
+  const hostDocuments = (): string[] =>
+    mode === "annotate-last"
+      ? []
+      : mode === "annotate-folder" && folderPath
+        ? [folderPath]
+        : bundleFiles
+          ? [...bundlePaths]
+          : mode === "annotate-app" && liveApp
+          ? [liveApp.targetUrl]
+          : filePath ? [filePath] : [];
+  const hostControl: HostControl = {
+    status: () => ({
+      kind: mode === "annotate-last" ? "annotate-last" : "annotate",
+      documents: hostDocuments(),
+      unsentAnnotations: annotateDrafts.countUnsent(countUnsentDraftComments),
+      decided: decision.isSettled(),
+    }),
+    close: () => {
+      const unsentAnnotations = annotateDrafts.countUnsent(countUnsentDraftComments);
+      if (!decision.settle({ feedback: "", annotations: [], exit: true, closedBy: "agent", unsentAnnotations })) {
+        return { closed: false, reason: "decided" };
+      }
+      // Nothing is deleted, and a save still in flight from the tab lands:
+      // the draft, its path copy and the document copies are all kept.
+      annotateDrafts.closeKeepingDraft();
+      clientLease.cancel();
+      externalAnnotations.broadcast(hostSessionClosedEvent(unsentAnnotations));
+      return { closed: true, unsentAnnotations };
+    },
+  };
+
+  // Live app session state, populated after the annotate port is known (the
+  // editor origins carry the port) and before onReady advertises the URL.
+  let liveProxy: LiveAppProxy | null = null;
+  let liveSessionToken = "";
+  let liveAppUrl = "";
+
+  const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve<AgentTerminalSocketData>(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills AI SSE streams that stall
@@ -394,7 +892,22 @@ export async function startAnnotateServer(
         idleTimeout: 0,
 
         async fetch(req, server) {
+          // Host allowlist first, before any route (request-host-guard.ts).
+          const hostRefusal = requestHostGuard.check(req);
+          if (hostRefusal) return hostRefusal;
+          // Then no write from another site, before any route (request-origin-guard.ts).
+          const originRefusal = refuseCrossOriginWrite(req);
+          if (originRefusal) return originRefusal;
+
           const url = new URL(req.url);
+
+          const hostControlResponse = handleHostControl(req, url, {
+            token: hostControlToken,
+            getServerPort: () => boundPort,
+            control: hostControl,
+            ...(options.tailnetPublished === true ? { fromThisMachine: (r: Request) => sessionTailnetAudience(r) === "local" } : {}),
+          });
+          if (hostControlResponse) return hostControlResponse;
 
           if (agentTerminal.matches(url.pathname)) {
             if (agentTerminal.capability.enabled && agentTerminal.upgrade(req, server)) {
@@ -407,14 +920,64 @@ export async function startAnnotateServer(
           }
 
           // API: Get plan content (reuse /api/plan so the plan editor UI works)
+          if (url.pathname === "/api/plan" && req.method === "GET" && mode === "annotate-app" && liveApp) {
+            // Live app session: no rawHtml, no renderAs, no version fields,
+            // sharing off. The client frames appUrl (the loopback proxy) and
+            // authenticates the bridge with liveToken.
+            return Response.json({
+              plan: "",
+              origin,
+              mode,
+              filePath,
+              sourceInfo: sourceInfo ?? liveApp.targetUrl,
+              appUrl: liveAppUrl,
+              targetUrl: liveApp.targetUrl,
+              liveToken: liveSessionToken,
+              serverSession,
+              gate,
+              approvalNotesSupported,
+              clientLease: clientLeaseSupported
+                ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
+                : { enabled: false as const },
+              sharingEnabled: false,
+              convertHtml: false,
+              repoInfo,
+              projectRoot: process.cwd(),
+              isWSL: wslFlag,
+              serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge)),
+              ...getAutoUpdateAdvert(),
+              ...getUpdateAdvert(origin, { exposed: isRemote || options.tailnetPublished === true }),
+              agentTerminal: agentTerminal.capability,
+              feedbackTemplates: {
+                fileFeedback: getAnnotateFileFeedbackTemplate(origin),
+                messageFeedback: getAnnotateMessageFeedbackTemplate(origin),
+              },
+            });
+          }
+
           if (url.pathname === "/api/plan" && req.method === "GET") {
-            const displayRawHtml = renderHtml && rawHtml ? htmlAssets.rewriteHtml(rawHtml, filePath) : undefined;
+            // Local rendered-HTML roots serve their current bytes (see
+            // readRootHtml); every other session serves what it started with.
+            const rootRead = await readRootHtml();
+            const servedHtml = rootRead?.kind === "current" ? rootRead.html : rawHtml;
+            // The version-diff fields describe the SAVED baseline: previousPlan
+            // and versionInfo name the version history saved at startup, which
+            // stays the correct "previous version" however often the file is
+            // edited afterwards. When the served bytes differ from the startup
+            // snapshot the diff is RECOMPUTED against them (htmlDiff is pure,
+            // and a GET never writes history), so a tab reload after an agent
+            // edit keeps the "Show changes" toggle instead of losing it for
+            // the rest of the session. The in-app Refresh reads the same
+            // fields off /api/doc (rootHtmlVersionDiff), so refresh and
+            // reload converge on the same state.
+            const servedIsSnapshot = servedHtml === rawHtml;
+            const displayRawHtml = renderHtml && servedHtml ? htmlAssets.rewriteHtml(servedHtml, filePath) : undefined;
             // For HTML, render the version diff as the real page with inline
             // <ins>/<del> highlights (tag-aware htmlDiff), asset-rewritten the
             // same way as the live page so it renders identically.
             const diffHtml =
-              renderHtml && rawHtml && annotateHistory?.previousPlan
-                ? htmlAssets.rewriteHtml(htmlDiff(annotateHistory.previousPlan, rawHtml), filePath)
+              renderHtml && servedHtml && annotateHistory?.previousPlan
+                ? htmlAssets.rewriteHtml(htmlDiff(annotateHistory.previousPlan, servedHtml), filePath)
                 : undefined;
             const primarySource = getPrimarySource();
             return Response.json({
@@ -425,12 +988,13 @@ export async function startAnnotateServer(
               sourceInfo,
               sourceConverted: sourceConverted ?? false,
               sourceSave: primarySource.sourceSave,
+              serverSession,
               gate,
               approvalNotesSupported,
               clientLease: clientLeaseSupported
                 ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
                 : { enabled: false as const },
-              renderAs: displayRawHtml ? 'html' as const : 'markdown' as const,
+              renderAs: displayRawHtml ? 'html' as const : diagramRenderKind ?? ('markdown' as const),
               ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               ...(diffHtml ? { diffHtml } : {}),
               convertHtml,
@@ -438,16 +1002,30 @@ export async function startAnnotateServer(
                 ? {
                     previousPlan: annotateHistory.previousPlan,
                     versionInfo: annotateHistory.versionInfo,
-                    diffCurrent: annotateHistory.diffCurrent,
+                    diffCurrent: servedIsSnapshot || !servedHtml ? annotateHistory.diffCurrent : servedHtml,
                   }
                 : {}),
+              // The editor may save a disk change as a version (#2037); absent
+              // when history is off or the file is not Markdown/text.
+              ...(liveVersionFilePath && annotateHistoryEnabled ? { liveVersions: true } : {}),
               sharingEnabled,
               shareBaseUrl,
               pasteApiUrl,
               repoInfo,
-              projectRoot: folderPath || process.cwd(),
+              projectRoot: folderPath || bundleRoot || process.cwd(),
+              // The bundle's files in review order (annotate-bundle only).
+              ...(bundleFiles ? { bundle: bundleFiles } : {}),
               isWSL: wslFlag,
-              serverConfig: getServerConfig(gitUser),
+              // Extra extensions the user registered as markdown (#1307).
+              // The renderer needs them to linkify relative/wiki links to
+              // sibling docs the same way it linkifies .md ones.
+              markdownExtensions: getExtraMarkdownExtensions(),
+              // Per-document draft copies (/api/draft/document): absent means
+              // the client keeps every comment in the session draft only.
+              ...(annotateDrafts.documentsEnabled ? { documentDrafts: true } : {}),
+              serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge)),
+              ...getAutoUpdateAdvert(),
+              ...getUpdateAdvert(origin, { exposed: isRemote || options.tailnetPublished === true }),
               agentTerminal: agentTerminal.capability,
               ...(recentMessages ? { recentMessages } : {}),
               // Resolved copy-wrapper templates (config-aware, placeholders
@@ -531,6 +1109,32 @@ export async function startAnnotateServer(
             });
           }
 
+          // API: save the file as it is on disk now as a version (#2037).
+          // The editor posts here once an agent's edit to the open file has
+          // settled, naming the source hash of the text it shows; the server
+          // reads the file itself and saves it only when the bytes still have
+          // that hash. Single local Markdown/text sessions only, and never
+          // with PLANNOTATOR_ANNOTATE_HISTORY=0 (annotate-live-version.ts).
+          if (url.pathname === ANNOTATE_LIVE_VERSION_PATH && req.method === "POST") {
+            // A body that is not JSON reads as {} (Pi's parseBody does the
+            // same), so both runtimes answer it with one 400.
+            let body: unknown;
+            try {
+              body = await req.json();
+            } catch {
+              body = {};
+            }
+            const outcome = saveAnnotateLiveVersion(body, {
+              serverSession,
+              historyEnabled: annotateHistoryEnabled,
+              resolvedFilePath: liveVersionFilePath,
+              project: annotateProjectName,
+            });
+            // Later /api/plan reads (a tab reload) describe the new version.
+            if (outcome.status === 200) annotateHistory = outcome.history;
+            return Response.json(outcome.body, { status: outcome.status });
+          }
+
           if (url.pathname === "/api/share-html" && req.method === "GET") {
             return loadShareHtml(url.searchParams.get("path"));
           }
@@ -542,7 +1146,7 @@ export async function startAnnotateServer(
             if (/^https?:\/\//i.test(filePath)) {
               return Response.json({ available: false, apps: [] });
             }
-            return handleOpenInApps();
+            return handleOpenInApps({ exposed: options.tailnetPublished === true });
           }
 
           // API: Open the annotated file in an app. A URL source has no local
@@ -556,19 +1160,49 @@ export async function startAnnotateServer(
                 { status: 400 },
               );
             }
-            return handleOpenIn(req, { resolveRoot: getReferenceRootPaths });
+            return handleOpenIn(req, { resolveRoot: getReferenceRootPaths, serverSession, exposed: options.tailnetPublished === true });
           }
+
+          // API: Update now (the update toast and the Options menu): the install script, once.
+
+          const updateRoute = handleUpdateRoute(req, url, { port: boundPort, exposed: isRemote || options.tailnetPublished === true, serverSession });
+
+          if (updateRoute) return updateRoute;
+
+          // API: a hover card's data for an issue, PR or MR link (GET /api/ref, ref-cards.ts).
+          const refRoute = await refCardRouteResponse(req, url, refCards, {
+            enabled: isRemote ? false : options.tailnetPublished === true ? refCardsTailnetAllowed : true,
+            serverSession,
+          });
+          if (refRoute) return refRoute;
+
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
           if (url.pathname === "/api/config" && req.method === "POST") {
+            if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+              return Response.json({ error: "Cross-origin config writes are not allowed" }, { status: 403 });
+            }
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
               const toSave: Record<string, unknown> = {};
+              // OpenCode's agent switch (#1390): a known shape or nothing is saved.
+              const agentSwitch = agentSwitchConfigToSave(body);
+              if (agentSwitch === null) return Response.json({ error: "Invalid agentSwitch" }, { status: 400 });
+              if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
+              if (body.theme !== undefined) toSave.theme = body.theme;
+              if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
+              if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;
+              if (typeof body.updateCheck === "boolean") toSave.updateCheck = body.updateCheck;
+              // The agent tool switch: boolean only; it applies to the next session.
+              if (typeof body.agentTool === "boolean") toSave.agentTool = body.agentTool;
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
-              if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
+              if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
+              if (agentToolSaveFailed(toSave)) return Response.json({ error: "Could not save the setting to config.json." }, { status: 500 });
               return Response.json({ ok: true });
             } catch {
               return Response.json({ error: "Invalid request" }, { status: 400 });
@@ -591,7 +1225,10 @@ export async function startAnnotateServer(
             const docUrl = new URL(req.url);
             let changed = false;
             if (!docUrl.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
-              docUrl.searchParams.set("base", mode === "annotate-folder" && folderPath ? folderPath : dirname(filePath));
+              docUrl.searchParams.set(
+                "base",
+                mode === "annotate-folder" && folderPath ? folderPath : bundleRoot ?? dirname(filePath),
+              );
               changed = true;
             }
             if (convertHtml && !docUrl.searchParams.has("convert")) {
@@ -605,16 +1242,23 @@ export async function startAnnotateServer(
                 ? initialSingleFileSourcePath ?? filePath
                 : undefined,
               sourceSaveFolderPath: mode === "annotate-folder" ? folderPath : undefined,
+              sourceSaveBundlePaths: bundleSourceSavePaths ?? undefined,
               onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
               rootPaths: getReferenceRootPaths(),
               annotateHistory:
-                mode === "annotate-folder" && annotateHistoryEnabled
+                (mode === "annotate-folder" || bundleFiles) && annotateHistoryEnabled
                   ? { compute: computeFolderAnnotateHistory }
                   : undefined,
+              rootHtmlVersionDiff,
             });
           }
 
           if (url.pathname === "/api/source/save" && req.method === "POST") {
+            // Edit Mode writes the reviewer's files, so a page on another site
+            // must never reach this (a preflight-free text/plain POST would).
+            if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+              return Response.json(sourceSaveCrossOriginResponse(), { status: 403 });
+            }
             let body: SourceSaveRequest;
             try {
               body = (await req.json()) as SourceSaveRequest;
@@ -623,6 +1267,15 @@ export async function startAnnotateServer(
                 { ok: false, code: "invalid-request", message: "Invalid JSON body." },
                 { status: 400 },
               );
+            }
+            // Stale-tab guard: a tab left open on a reused port must not write
+            // files for a session it never showed. Missing is accepted.
+            if (checkServerSession(body, serverSession) === "mismatch") return sessionMismatch();
+            // Once the review is decided (feedback, approve, Close, or the
+            // agent's close) a tab left open can no longer write the files:
+            // the agent may already be editing them itself.
+            if (decision.isSettled()) {
+              return Response.json(sourceSaveDecidedResponse(), { status: 409 });
             }
 
             if (typeof body.text !== "string" || typeof body.baseHash !== "string") {
@@ -648,6 +1301,8 @@ export async function startAnnotateServer(
               ) {
                 targetPath = null;
               }
+            } else if (bundleSourceSavePaths && typeof body.path === "string") {
+              targetPath = resolveBundleSourceSaveTarget(body.path, bundleSourceSavePaths);
             }
 
             if (!targetPath) {
@@ -661,6 +1316,7 @@ export async function startAnnotateServer(
               allowMissingBase: body.allowMissingBase === true,
               missingBaseEol: body.baseEol,
               allowedRoot: mode === "annotate-folder" ? folderPath : undefined,
+              allowedFiles: bundleSourceSavePaths ?? undefined,
             });
             const status = result.ok
               ? 200
@@ -682,6 +1338,16 @@ export async function startAnnotateServer(
           // API: Detect Obsidian vaults
           if (url.pathname === "/api/obsidian/vaults") {
             return handleObsidianVaults();
+          }
+
+          // API: Global skill catalog for comment skill references
+          if (url.pathname === "/api/skills" && req.method === "GET") {
+            return handleReferenceSkills();
+          }
+
+          // API: SKILL.md contents for a referenced human-only skill
+          if (url.pathname === "/api/skills/content" && req.method === "GET") {
+            return handleReferenceSkillContent(req);
           }
 
           // API: List Obsidian vault files as a tree
@@ -713,9 +1379,54 @@ export async function startAnnotateServer(
 
           // API: Annotation draft persistence
           if (url.pathname === "/api/draft") {
-            if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey, req);
-            return handleDraftLoad(draftKey);
+            if (req.method === "POST") {
+              try {
+                // Refusals (decided, or stale with a path copy) are shaped by
+                // annotate-draft.ts; see saveRequest.
+                const result = annotateDrafts.saveRequest(await req.json());
+                return Response.json(result.body, { status: result.status });
+              } catch (err) {
+                const message = err instanceof Error ? err.message : "Failed to save draft";
+                console.error(`[draft] save failed: ${message}`);
+                return Response.json({ error: message }, { status: 500 });
+              }
+            }
+            if (req.method === "DELETE") {
+              annotateDrafts.remove(readDraftGenerationFromUrl(req));
+              return Response.json({ ok: true });
+            }
+            const loaded = annotateDrafts.load();
+            if (loaded.found) return Response.json(loaded.draft);
+            return Response.json(
+              { found: false, ...(loaded.draftGeneration !== null ? { draftGeneration: loaded.draftGeneration } : {}) },
+              { status: 404 },
+            );
+          }
+
+          // API: per-document draft copies (annotate-draft.ts). GET one
+          // document's saved comments; POST the session's documents.
+          if (url.pathname === "/api/draft/document") {
+            if (req.method === "GET") {
+              // A read marks the copy as this session's (and lists it in a
+              // rootless session's index): a decision then clears it, so it
+              // gets the writes' cross-site guard.
+              if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+                return Response.json(crossOriginRefusalBody(), { status: 403 });
+              }
+              const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
+              return Response.json(result.body, { status: result.status });
+            }
+            if (req.method === "POST") {
+              let body: unknown;
+              try {
+                body = await req.json();
+              } catch {
+                return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
+              }
+              const result = annotateDrafts.saveDocuments(body);
+              return Response.json(result.body, { status: result.status });
+            }
+            return Response.json({ error: "Method not allowed" }, { status: 405 });
           }
 
           // API: Client-lease SSE — see packages/shared/annotate-client-lease.ts.
@@ -771,7 +1482,7 @@ export async function startAnnotateServer(
             }
             const handler = aiRuntime.endpoints[url.pathname as keyof AIEndpoints];
             if (handler) {
-              if (url.pathname === AI_QUERY_ENDPOINT) {
+              if (isLongLivedAIEndpointPath(url.pathname)) {
                 server.timeout(req, 0);
               }
               return handler(req);
@@ -781,10 +1492,17 @@ export async function startAnnotateServer(
 
           // API: Exit annotation session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
+            // Exit posts carry no body: the nonce rides the query string.
+            if (checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, serverSession) === "mismatch") {
+              return sessionMismatch();
+            }
             if (!decision.settle({ feedback: "", annotations: [], exit: true })) {
               return alreadyDecided();
             }
-            deleteDraft(draftKey, readDraftGenerationFromUrl(req));
+            // Decision-only line — a dismissal has no content, so a failed
+            // write must not change the legacy draft behavior.
+            archiveAnnotateDecision("", [], "dismissed");
+            annotateDrafts.settle(readDraftGenerationFromUrl(req));
             clientLease.cancel();
             return Response.json({ ok: true });
           }
@@ -815,6 +1533,7 @@ export async function startAnnotateServer(
             ) {
               return Response.json({ error: "Invalid approval body." }, { status: 400 });
             }
+            if (checkServerSession(body, serverSession) === "mismatch") return sessionMismatch();
 
             const approvalWon = decision.settle({
               feedback: (body.feedback as string | undefined) || "",
@@ -834,7 +1553,14 @@ export async function startAnnotateServer(
                     : undefined,
             });
             if (!approvalWon) return alreadyDecided();
-            deleteDraft(draftKey, readDraftGenerationFromBody(body));
+            // Approve-with-notes carries user content — make it durable before
+            // the draft (the reviewer's only other copy) is deleted (#678).
+            const approvalDurable = persistSubmittedDecision(
+              (body.feedback as string | undefined) || "",
+              (body.annotations as unknown[] | undefined) || [],
+              true,
+            );
+            if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
             clientLease.cancel();
             return Response.json({ ok: true });
           }
@@ -849,15 +1575,25 @@ export async function startAnnotateServer(
                 feedbackScope?: "message" | "messages";
                 draftGeneration?: number;
               };
+              if (checkServerSession(body, serverSession) === "mismatch") return sessionMismatch();
 
               const feedbackWon = decision.settle({
                 feedback: body.feedback || "",
                 annotations: body.annotations || [],
                 selectedMessageId: body.selectedMessageId,
                 feedbackScope: body.feedbackScope,
+                ...(isNothingToSendFeedbackBody(body) && { nothingToSend: true }),
               });
               if (!feedbackWon) return alreadyDecided();
-              deleteDraft(draftKey, readDraftGenerationFromBody(body));
+              // Make the submitted feedback durable BEFORE deleting the draft:
+              // the decision promise's consumer may have timed out, and this
+              // record is then the only surviving copy (#678).
+              const feedbackDurable = persistSubmittedDecision(
+                body.feedback || "",
+                body.annotations || [],
+                false,
+              );
+              if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
               clientLease.cancel();
 
               return Response.json({ ok: true });
@@ -872,7 +1608,7 @@ export async function startAnnotateServer(
 
           // API: Save notes to external integrations (Obsidian, Bear, Octarine)
           if (url.pathname === "/api/save-notes" && req.method === "POST") {
-            return handleSaveNotes(req);
+            return handleSaveNotes(req, { serverSession });
           }
 
           // Favicon
@@ -883,10 +1619,15 @@ export async function startAnnotateServer(
             return handleApiNotFound(url.pathname);
           }
 
+          // Nested-document guard: a request the browser will render inside a
+          // frame must never receive the editor app. Relative embeds are
+          // anchored at their own directory by the asset-route <base href>, so
+          // anything reaching here names a file that genuinely is not there.
+          const framedMiss = framedDocumentNotFound(req, url);
+          if (framedMiss) return framedMiss;
+
           // Serve embedded HTML for all other routes (SPA)
-          return new Response(htmlContent, {
-            headers: { "Content-Type": "text/html" },
-          });
+          return appHtmlResponse(req, htmlContent, compressAppHtml);
         },
         websocket: agentTerminal.websocket,
 
@@ -897,32 +1638,95 @@ export async function startAnnotateServer(
             { status: 500, headers: { "Content-Type": "text/plain" } },
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;
-  const serverUrl = `http://localhost:${port}`;
+  boundPort = port;
+  const serverUrl = buildAdvertisedUrl(port);
 
   // The cache warm must never gate the listening socket. Its async filesystem
   // walk yields between directories while requests remain serviceable.
   void warmFileListCache(process.cwd(), "code");
 
-  // Notify caller that server is ready
+  const stop = () => {
+    // Every disposal step is guarded individually (runGuardedShutdown):
+    // agent-terminal teardown is historically fragile (#1314), and in a flat
+    // sequence one throwing step would skip everything after it — notably
+    // liveProxy.stop(), orphaning the live proxy's listener and its upstream
+    // WebSockets. A failed step is reported and the rest still run; the
+    // listener itself closes regardless.
+    runGuardedShutdown(
+      [
+        ["file browser watchers", () => closeAllFileBrowserWatchers()],
+        ["client lease", () => {
+          clientLease.cancel();
+          clientLease.closeSessions();
+        }],
+        ["AI runtime", () => aiRuntime?.dispose()],
+        ["agent terminal", () => agentTerminal.dispose()],
+        ["live proxy", () => liveProxy?.stop()],
+      ],
+      () => server.stop(),
+    );
+  };
+
+  if (liveApp) {
+    // Compose the proxy-served bridge body via the shared assembly (config
+    // prelude with the token this server owns, both editor origin forms
+    // with the localhost one first to match the advertised URL, then the
+    // bootstrap that installs the CSS, then the bridge itself).
+    liveSessionToken = randomBytes(16).toString("hex");
+    const editorOrigins = buildLiveEditorOrigins(port);
+    try {
+      liveProxy = startLiveAppProxy({
+        targetUrl: liveApp.targetUrl,
+        editorOrigins,
+        bridgeJs: composeLiveBridgeJs({
+          token: liveSessionToken,
+          editorOrigins,
+          annotationCss: liveApp.annotationCss,
+          bridgeBootstrap: liveApp.bridgeBootstrap,
+          bridgeScript: liveApp.bridgeScript,
+        }),
+      });
+    } catch (error) {
+      stop();
+      throw error;
+    }
+    // Advertise the proxy under the LOCALHOST spelling, carrying the target
+    // URL's own path and query (see buildLiveAppUrl in live-proxy-core for
+    // the same-site/cookie rationale). PLANNOTATOR_URL_HOST is still never
+    // applied here.
+    liveAppUrl = buildLiveAppUrl(liveProxy.port, liveApp.targetUrl);
+  }
+
+  // Start the likely encoding now (gzip for plain-http remote mode, brotli
+  // behind tailscale serve) so the first load does not wait for it.
+  if (compressAppHtml) {
+    prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(options.tailnetPublished === true));
+  }
+
+  // Notify caller that server is ready. An async ready handler that rejects
+  // (e.g. --tailscale publishing failed) must stop the server and propagate:
+  // firing-and-forgetting it would leave an unhandled rejection while the
+  // loopback server keeps listening and the session hangs forever.
   if (onReady) {
-    onReady(serverUrl, isRemote, port);
+    try {
+      await onReady(serverUrl, isRemote, port);
+    } catch (error) {
+      stop();
+      throw error;
+    }
   }
 
   return {
     port,
+    liveProxyPort: liveProxy?.port,
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
-    stop: () => {
-      clientLease.cancel();
-      clientLease.closeSessions();
-      aiRuntime?.dispose();
-      agentTerminal.dispose();
-      server.stop();
-    },
+    stop,
+    hostControl,
   };
 }

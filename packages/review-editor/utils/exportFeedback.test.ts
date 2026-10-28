@@ -15,6 +15,16 @@ const ann = (overrides: Partial<CodeAnnotation> = {}): CodeAnnotation => ({
   ...overrides,
 });
 
+const targetWithoutInlineAnchor = (filePath: string, line: number) => ({
+  treePath: 'checkout:0/existing:0',
+  entry: 'checkout()',
+  label: 'existing()',
+  filePath,
+  lineStart: line,
+  lineEnd: line,
+  side: 'new' as const,
+});
+
 const prMeta: PRMetadata = {
   platform: "github",
   host: "github.com",
@@ -31,6 +41,81 @@ const prMeta: PRMetadata = {
 };
 
 describe("exportReviewFeedback", () => {
+  it("keeps every Shift-clicked Call Flow target in one native annotation", () => {
+    const result = exportReviewFeedback([ann({
+      callFlowTargets: [{
+        treePath: 'checkout:0/save:0',
+        entry: 'checkout()',
+        label: 'saveOrder()',
+        filePath: 'src/order.ts',
+        lineStart: 10,
+        lineEnd: 10,
+        side: 'new',
+      }, {
+        treePath: 'checkout:0/publish:1',
+        entry: 'checkout()',
+        label: 'publishReceipt()',
+        filePath: 'src/events.ts',
+        lineStart: 22,
+        lineEnd: 24,
+        side: 'new',
+      }],
+    })]);
+
+    expect(result).toContain('`checkout()` → `saveOrder()` — `src/order.ts:L10`');
+    expect(result).toContain('`checkout()` → `publishReceipt()` — `src/events.ts:L22-L24`');
+    expect(result.match(/This looks wrong/g)).toHaveLength(1);
+  });
+
+  it("exports file-scoped out-of-hunk Call Flow feedback without inventing an inline line", () => {
+    const result = exportReviewFeedback([ann({
+      scope: 'file',
+      lineStart: 1,
+      lineEnd: 1,
+      callFlowTargets: [targetWithoutInlineAnchor('src/index.ts', 200)],
+    })]);
+
+    expect(result).toContain('### File Comment');
+    expect(result).toContain('`src/index.ts:L200`');
+    expect(result).not.toContain('### Line 1');
+  });
+
+  it("exports a source-less structural Call Flow step as general feedback", () => {
+    const result = exportReviewFeedback([ann({
+      scope: 'general',
+      filePath: '',
+      lineStart: 0,
+      lineEnd: 0,
+      callFlowTargets: [{
+        treePath: 'checkout:0/branch:0',
+        entry: 'checkout()',
+        label: 'if (authorized)',
+        side: 'new',
+      }],
+    })]);
+
+    expect(result).toContain('## General');
+    expect(result).toContain('`checkout()` → `if (authorized)` — `inferred step`');
+  });
+
+  it("exports exact raw CallDiff lines as review-scoped feedback", () => {
+    const result = exportReviewFeedback([ann({
+      scope: 'general',
+      filePath: '',
+      lineStart: 0,
+      lineEnd: 0,
+      callFlowTargets: [{
+        treePath: 'raw:11',
+        entry: 'Raw CallDiff output',
+        label: '- existingCall()',
+        rawLine: 12,
+        side: 'old',
+      }],
+    })]);
+
+    expect(result).toContain('`Raw CallDiff output` → `- existingCall()` — `raw CallDiff line 12`');
+  });
+
   it("local mode: uses generic header, no PR content", () => {
     const result = exportReviewFeedback([ann()]);
     expect(result).toStartWith("# Code Review Feedback\n\n");
@@ -249,6 +334,16 @@ describe("exportReviewFeedback", () => {
     expect(highlighted).toBeGreaterThan(note);
   });
 
+  it("fences quoted code with more backticks than any run in it, so a ``` line in the code cannot end the quote", () => {
+    const result = exportReviewFeedback([
+      ann({ text: "Fix the example", selectedText: "Example:\n```\nnpm i\n```", originalCode: "a ```` b", suggestedCode: "no ticks" }),
+    ]);
+    expect(result).toContain("**Highlighted text:**\n````\nExample:\n```\nnpm i\n```\n````\n");
+    expect(result).toContain("**Replaces:**\n`````\na ```` b\n`````\n");
+    // Code without a backtick run keeps the three-backtick fence, byte for byte.
+    expect(result).toContain("**Suggested code:**\n```\nno ticks\n```\n");
+  });
+
   it("omits the Highlighted text block when there is no selectedText", () => {
     const result = exportReviewFeedback([ann()]);
     expect(result).not.toContain("**Highlighted text:**");
@@ -408,6 +503,22 @@ describe("exportReviewFeedback", () => {
     expect(result).not.toContain("anchored");
   });
 
+  it("labels a jj revision by its short change id; git keeps the 7-char sha", () => {
+    const id = "0123456789abcdef0123456789abcdef01234567";
+    const jj = exportReviewFeedback([ann({ commitSha: id })], undefined, {
+      mode: `jj-commit:${id}`,
+      commitSubject: "trim fields",
+      commitShortId: "kmqzsnwp",
+    });
+    expect(jj).toContain("**Diff:** Commit `kmqzsnwp` — trim fields");
+    // The same short id on a git commit is ignored: git labels stay unchanged.
+    const git = exportReviewFeedback([ann({ commitSha: id })], undefined, {
+      mode: `commit:${id}`,
+      commitShortId: "kmqzsnwp",
+    });
+    expect(git).toContain("**Diff:** Commit `0123456`");
+  });
+
   it("labels commit-anchored annotations exported under a different diff", () => {
     const sha = "0123456789abcdef0123456789abcdef01234567";
     const result = exportReviewFeedback(
@@ -517,5 +628,36 @@ describe("buildProseFeedback — artifact annotations", () => {
     expect(output).toContain("Hero image — Pin at 25%, 40%");
     expect(output).toContain("Regarding an artifact in the PR description.");
     expect(output).toContain("Crop this more tightly.");
+  });
+});
+
+describe("comments made in a Markdown preview", () => {
+  it("export under their file with the quoted text and where it was in the rendered diff", () => {
+    const output = exportReviewFeedback([
+      ann({
+        id: "md-1",
+        scope: "file",
+        filePath: "docs/guide.md",
+        lineStart: 1,
+        lineEnd: 1,
+        text: "Link the installer page.",
+        markdownPreview: { originalText: "new installer\nfrom the website", view: "diff", diffContext: "removed" },
+      }),
+    ]);
+    expect(output).toContain("## docs/guide.md");
+    expect(output).toContain("> new installer\n> from the website");
+    expect(output).toContain("in removed text");
+    expect(output).toContain("Link the installer page.");
+    // Not presented as an ordinary file comment or a line comment.
+    expect(output).not.toContain("File Comment");
+    expect(output).not.toContain("Line 1");
+  });
+
+  it("say nothing about the section when it was unchanged or made in the whole file", () => {
+    const output = exportReviewFeedback([
+      ann({ id: "md-2", scope: "file", filePath: "docs/guide.md", text: "Fine.", markdownPreview: { originalText: "stays", view: "whole" } }),
+    ]);
+    expect(output).toContain("> stays");
+    expect(output).not.toContain("_(in ");
   });
 });

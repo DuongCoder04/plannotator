@@ -12,7 +12,7 @@ import Footer from '../components/Footer.astro';
     <div class="max-w-3xl mx-auto px-8 pt-20 pb-16">
       <article class="prose">
         <h1>Privacy Policy</h1>
-        <p class="text-sm text-muted-foreground">Last updated: July 31, 2026</p>
+        <p class="text-sm text-muted-foreground">Last updated: October 11, 2026</p>
 
         <p><strong>Plannotator does not collect usage telemetry or analytics.</strong> Plans, documents, diffs, annotations, drafts, history, and configuration stay on your machine by default. Some features contact GitHub, your Git remote, a URL you ask Plannotator to fetch, an AI provider, or a hosted sharing service. Those boundaries are described below.</p>
 
@@ -25,14 +25,16 @@ import Footer from '../components/Footer.astro';
         <ul>
           <li>plan and annotate version history</li>
           <li>annotation drafts and saved review decisions</li>
+          <li>a durable archive of the feedback you submit, under <code>~/.plannotator/feedback/</code></li>
           <li>configuration, session records, guide history, and diagnostic logs</li>
         </ul>
+        <p>The feedback archive is on by default. Every plan decision, code review submission, and annotate submission is recorded locally so a review is not lost when an agent times out or a terminal is closed. Each record holds your own review text, the document or code excerpts it quotes, and annotation metadata; it does not hold the diff itself. Nothing prunes the directory, so records are kept until you delete them. Set <code>PLANNOTATOR_FEEDBACK_HISTORY=0</code> to never write it, and delete <code>~/.plannotator/feedback/</code> (or one project subdirectory inside it) to forget what is there. Like the rest of this data, it stays on your machine and is never sent to the Plannotator project owner.</p>
         <p>Some UI preferences are stored as functional browser cookies. Plannotator does not send this local review data to the Plannotator project owner as telemetry or analytics.</p>
 
         <h2>3. Automatic network requests</h2>
 
         <h3>GitHub release check</h3>
-        <p>Each time a plan review, annotate, archive, share-portal, or code-review app surface loads, it makes one GET request to GitHub's public latest-release API to check whether a newer Plannotator version exists. The request has no plan, document, diff, annotation, or usage-event payload. The Plannotator project owner does not receive usage analytics from this check. GitHub receives an ordinary web request and may process information such as your IP address, user agent, and request origin under GitHub's privacy practices. There is currently no configuration or environment-variable opt-out. Dismissing an update notice only hides that release notice; it does not stop later checks.</p>
+        <p>Plannotator checks whether a newer version exists by sending one HEAD request to GitHub's public "latest release" page (<code>github.com/backnotprop/plannotator/releases/latest</code>), reading the version from where it redirects, at most about once every ten minutes per computer, and when the Inbox starts or its page is reloaded (at most once a minute). Only when that page cannot be reached does it ask GitHub's public latest-release API instead, at most once an hour (when GitHub answers that its rate limit is reached, Plannotator waits until the time GitHub names, up to six hours, or six hours when it names none). When it finds a newer version, the Inbox also asks the API once for that release's notes. The request comes from the Plannotator program on your computer, not from the review page in your browser. It carries no plan, document, diff, annotation, version number, or usage data, and the Plannotator project owner receives no analytics from it. GitHub receives an ordinary web request and may process information such as your IP address and user agent under GitHub's privacy practices. To turn the check off, set <code>PLANNOTATOR_UPDATE_CHECK=0</code>, add <code>&#123; "updateCheck": false &#125;</code> to <code>~/.plannotator/config.json</code>, or switch off "Tell me when a new version is out" in Settings. Running <code>plannotator update</code> always checks, because you asked it to.</p>
 
         <h3>Installer downloads</h3>
         <p>The install scripts download the selected Plannotator binary and checksum from GitHub Releases. When installing the latest version, they first query GitHub's API to resolve the release tag. If available, a token from <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code>, or <code>gh auth token</code> is sent to that API. Pinning <code>--version</code> skips only the release-resolution API call; the binary and checksum still come from GitHub Releases.</p>
@@ -52,7 +54,7 @@ import Footer from '../components/Footer.astro';
 
         <h3>Ask AI and review agents</h3>
         <p>Ask AI, Guided Review, Code Tour, and review agents use an AI provider or agent CLI that you select and have already configured. A request can include your question, selected text, and relevant plan, document, repository, or diff context. Plannotator does not route this AI content through a Plannotator-operated model proxy, but the selected provider may process or retain it under your account and that provider's policy. Claude Ask AI allows WebSearch by default, so a question can also send a search query to Anthropic's search service and return third-party web results.</p>
-        <p>Review-agent permissions depend on the selected engine. Claude allows file-reading tools and Git or forge command patterns intended for inspection, while denying direct file-writing tools, WebFetch, WebSearch, and general-purpose shells; some allowed Git and forge patterns are broader than a strict read-only subcommand list. Copilot denies its direct write tool and specific high-risk version-control and forge operations, allows Git and forge command families, and auto-denies other shell tools. Codex runs in its <code>--full-auto</code> workspace-write sandbox. Cursor runs in ask mode with its sandbox enabled by default unless you opt out. OpenCode's plan agent and Pi retain shell access under their own CLI and runtime controls; Pi removes its direct edit and write tools but does not remove Bash. Plannotator tells every engine not to modify files or post comments, but those prompt instructions are not the same as structural enforcement.</p>
+        <p>Review-agent permissions depend on the selected engine. Claude allows file-reading tools and Git or forge command patterns intended for inspection, while denying direct file-writing tools, WebFetch, WebSearch, and general-purpose shells; some allowed Git and forge patterns are broader than a strict read-only subcommand list. Copilot denies its direct write tool and specific high-risk version-control and forge operations, allows Git and forge command families, and auto-denies other shell tools. Codex runs with <code>--approve-for-me</code>, which uses its workspace-write sandbox and automatic approval review. Cursor runs in ask mode with its sandbox enabled by default unless you opt out. OpenCode's plan agent and Pi retain shell access under their own CLI and runtime controls; Pi removes its direct edit and write tools but does not remove Bash. Plannotator tells every engine not to modify files or post comments, but those prompt instructions are not the same as structural enforcement.</p>
 
         <h3>Share links</h3>
         <p>Open source asynchronous link sharing remains available for compatibility but is moving to deprecated support. Workspaces is the primary direction for team sharing. No removal date has been announced.</p>
@@ -84,6 +86,8 @@ import Footer from '../components/Footer.astro';
           <li>Set <code>PLANNOTATOR_SHARE=disabled</code> to hide the open source sharing controls.</li>
           <li>Set <code>PLANNOTATOR_JINA=0</code> or use <code>--no-jina</code> to prevent URL annotation from using Jina. The requested URL is still fetched directly.</li>
           <li>Set <code>PLANNOTATOR_AI=disabled</code> to disable the in-app AI and review-agent surfaces.</li>
+          <li>Set <code>PLANNOTATOR_FEEDBACK_HISTORY=0</code> to stop archiving submitted feedback locally, or delete <code>~/.plannotator/feedback/</code> to remove what has been archived.</li>
+          <li>Set <code>PLANNOTATOR_REVIEW_PROGRESS=0</code> to stop code review saving which files you marked viewed (records include repository file paths), or delete <code>~/.plannotator/review-progress/</code> to remove saved progress.</li>
           <li>Self-host the share portal and paste service, or do not use link sharing.</li>
           <li>Do not send a share link through a service you do not trust with the content or key in that link.</li>
           <li>The automatic GitHub release check currently has no opt-out setting.</li>
@@ -96,7 +100,7 @@ import Footer from '../components/Footer.astro';
         <h2>9. Contact and privacy requests</h2>
         <p>
           <strong>Michael Ramos</strong><br />
-          Email: <a href="mailto:backnotprop@gmail.com">backnotprop@gmail.com</a>
+          Email: <a href="mailto:ramos@plannotator.ai">ramos@plannotator.ai</a>
         </p>
         <p>You may ask for access to, correction of, or deletion of personal information we hold about you. We generally cannot identify or recover hash-fragment content, local files, or encrypted paste content from the decryption key because we do not receive that key.</p>
 

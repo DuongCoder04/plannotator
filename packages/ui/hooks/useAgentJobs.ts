@@ -12,6 +12,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { AgentJobInfo, AgentJobEvent, AgentCapabilities } from '../types';
+import { noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '../utils/serverSession';
 
 const POLL_INTERVAL_MS = 500;
 const STREAM_URL = '/api/agents/jobs/stream';
@@ -37,6 +38,9 @@ export type AgentLaunchParams = {
    *  schema-capable engine and starts a new, normal guide job rather than
    *  mutating the failed one in place. */
   repairOf?: string;
+  /** Reviewer-supplied extra instructions (#1265), appended to the Guided
+   *  Review organizer prompt. Guide launches only; other providers ignore it. */
+  instructions?: string;
 };
 
 /** Does a job belong to the given review context? Jobs launched against a PR
@@ -270,9 +274,11 @@ export function useAgentJobs(
       const res = await fetch(JOBS_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        // The stale-tab guard (a no-op for a host that never adopted a session).
+        body: JSON.stringify(withServerSession(params)),
       });
       if (!res.ok) {
+        await noteServerSessionMismatch(res);
         throw new Error(await readResponseError(res));
       }
 
@@ -286,9 +292,10 @@ export function useAgentJobs(
 
   const killJob = useCallback(async (id: string) => {
     try {
-      await fetch(`${JOBS_URL}/${encodeURIComponent(id)}`, {
+      const res = await fetch(withServerSessionQuery(`${JOBS_URL}/${encodeURIComponent(id)}`), {
         method: 'DELETE',
       });
+      await noteServerSessionMismatch(res);
     } catch {
       // SSE will reconcile
     }
@@ -296,7 +303,8 @@ export function useAgentJobs(
 
   const killAll = useCallback(async () => {
     try {
-      await fetch(JOBS_URL, { method: 'DELETE' });
+      const res = await fetch(withServerSessionQuery(JOBS_URL), { method: 'DELETE' });
+      await noteServerSessionMismatch(res);
     } catch {
       // SSE will reconcile
     }

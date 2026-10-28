@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import {
+  isOversizedReviewStubPatch,
+  OVERSIZED_REVIEW_STUB_LIMIT_LABEL,
+} from "./diff-paths";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -7,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -15,24 +20,33 @@ import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import {
   detectRemoteDefaultInfo,
+  nextRemoteBaseCheckInterval,
+  REMOTE_BASE_CHECK_INTERVAL_MS,
+  REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
   getDefaultBranch,
   getFileContentsForDiff,
+  getGitSnapshotMaterializationPatch,
   getGitContext,
   getGitDiffFingerprint,
   getWorkingTreeDiffFromBase,
   gitAddFile,
   gitResetFile,
   isBinaryPatchFile,
+  commitFamilyId,
   isSameCwdCommitSwitch,
   listPatchFiles,
   listRecentCommits,
   MAX_REVIEW_FILE_CONTENT_BYTES,
   parseCommitDiffType,
+  parseJjCommitDiffType,
   parseWorktreeDiffType,
+  GIT_COLOR_FREE_ARGS,
   prepareGitCommand,
   runGitDiff,
   splitPorcelainRename,
   type DiffType,
+  type GitCommandOptions,
+  type GitCommandResult,
   type ReviewGitRuntime,
 } from "./review-core";
 
@@ -133,6 +147,40 @@ function makeRuntime(baseCwd: string): ReviewGitRuntime {
   };
 }
 
+/**
+ * Like `makeRuntime`, but routes every command through `prepareGitCommand`
+ * and forwards the prepared environment to git — the way the production Bun
+ * and Pi runtimes do — so per-command `config` (GIT_CONFIG_*) actually
+ * reaches the spawned process. `intercept` lets a test sabotage individual
+ * commands (e.g. force the cat-file size probe to fail).
+ */
+function makeConfigForwardingRuntime(
+  baseCwd: string,
+  intercept?: (args: string[]) => GitCommandResult | null,
+): ReviewGitRuntime {
+  const base = makeRuntime(baseCwd);
+  return {
+    ...base,
+    async runGit(args: string[], options?: GitCommandOptions) {
+      const intercepted = intercept?.(args);
+      if (intercepted) return intercepted;
+      const command = prepareGitCommand(args, options, process.env);
+      const result = spawnSync("git", command.args, {
+        cwd: options?.cwd ?? baseCwd,
+        encoding: "utf-8",
+        maxBuffer: MAX_REVIEW_FILE_CONTENT_BYTES * 4,
+        input: options?.stdin,
+        env: command.env as NodeJS.ProcessEnv | undefined,
+      });
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        exitCode: result.status ?? (result.error ? 1 : 0),
+      };
+    },
+  };
+}
+
 function initRepo(initialBranch = "main"): string {
   const repoDir = makeTempDir("plannotator-review-core-");
   git(repoDir, ["init"]);
@@ -171,6 +219,7 @@ describe("review-core", () => {
       GIT_SSH_COMMAND: "custom-ssh --proxy jump-host",
     });
     expect(command.args).toEqual([
+      ...GIT_COLOR_FREE_ARGS,
       "-c",
       "core.quotePath=false",
       "-c",
@@ -217,9 +266,64 @@ describe("review-core", () => {
     );
 
     expect(command).toEqual({
-      args: ["-c", "core.quotePath=false", "fetch", "origin", "main"],
+      args: [...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "fetch", "origin", "main"],
       isolateProcessGroup: false,
     });
+  });
+
+  test("per-command config rides GIT_CONFIG_* environment variables, never argv", () => {
+    const command = prepareGitCommand(
+      ["diff", "--no-ext-diff", "--cached"],
+      { config: { "core.bigFileThreshold": "5242880" } },
+      { PATH: "/usr/bin" },
+    );
+
+    // argv must stay byte-identical to the configless invocation: callers and
+    // test mocks match on the exact argument vector.
+    expect(command.args).toEqual([...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
+    expect(command.env).toEqual({
+      PATH: "/usr/bin",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_0: "5242880",
+    });
+    expect(command.isolateProcessGroup).toBe(false);
+  });
+
+  test("per-command config appends after config inherited from the environment", () => {
+    const command = prepareGitCommand(
+      ["diff"],
+      { config: { "core.bigFileThreshold": "5242880" } },
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "user.name",
+        GIT_CONFIG_VALUE_0: "Env User",
+      },
+    );
+
+    expect(command.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "Env User",
+      GIT_CONFIG_KEY_1: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_1: "5242880",
+    });
+  });
+
+  test("per-command config combines with the noninteractive policy environment", () => {
+    const command = prepareGitCommand(
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      { timeoutMs: 5_000, interaction: "forbid", config: { "core.bigFileThreshold": "1" } },
+      { PATH: "/usr/bin" },
+    );
+
+    expect(command.env).toMatchObject({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.bigFileThreshold",
+      GIT_CONFIG_VALUE_0: "1",
+      GIT_TERMINAL_PROMPT: "0",
+    });
+    expect(command.isolateProcessGroup).toBe(true);
   });
 
   test("remote-default discovery requests bounded noninteractive execution", async () => {
@@ -299,6 +403,52 @@ describe("review-core", () => {
       deletions: 0,
     });
     expect(isBinaryPatchFile(result.patch, "large build.bin")).toBe(true);
+    // Marked so the UI can say WHY the card is empty. A genuine binary file
+    // produces the same `Binary files ... differ` line, so the marker is the
+    // only thing that tells the two apart.
+    expect(isOversizedReviewStubPatch(result.patch)).toBe(true);
+  });
+
+  test("the oversized-stub marker is absent from ordinary and genuinely binary diffs", async () => {
+    const repoDir = initRepo();
+    const runtime = makeRuntime(repoDir);
+    writeFileSync(join(repoDir, "notes.txt"), "hello\n", "utf-8");
+    // NUL bytes, well under the cap: git calls it binary on its own merits.
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 2, 0, 3]));
+
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("Binary files");
+    expect(isOversizedReviewStubPatch(result.patch)).toBe(false);
+  });
+
+  test("CallDiff gets an applyable binary patch without changing the UI patch", async () => {
+    const repoDir = initRepo();
+    const runtime = makeRuntime(repoDir);
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 2, 0, 3]));
+    git(repoDir, ["add", "logo.png"]);
+    git(repoDir, ["commit", "-m", "add tracked image"]);
+    writeFileSync(join(repoDir, "logo.png"), Buffer.from([0, 1, 9, 0, 3, 4]));
+    writeFileSync(join(repoDir, "new-logo.png"), Buffer.from([0, 5, 6, 0, 7]));
+
+    const visible = await runGitDiff(runtime, "uncommitted", "main");
+    const materialization = await getGitSnapshotMaterializationPatch(
+      runtime,
+      "uncommitted",
+      "main",
+      repoDir,
+    );
+
+    expect(visible.patch).toContain("Binary files");
+    expect(visible.patch).not.toContain("GIT binary patch");
+    expect(materialization?.match(/GIT binary patch/g)).toHaveLength(2);
+    expect(materialization).toMatch(/^index [0-9a-f]{40,64}\.\.[0-9a-f]{40,64}/m);
+  });
+
+  test("the UI's size-cap label matches the enforced byte cap", () => {
+    expect(OVERSIZED_REVIEW_STUB_LIMIT_LABEL).toBe(
+      `${MAX_REVIEW_FILE_CONTENT_BYTES / (1024 * 1024)} MB`,
+    );
   });
 
   test("large tracked text files render as binary in staged and working-tree diffs (#1120)", async () => {
@@ -672,6 +822,336 @@ describe("review-core", () => {
     expect(individualSizeCalls).toBe(0);
   });
 
+  test("a failed size probe renders the diff instead of blanking it with binary stubs", async () => {
+    const renderedPatch =
+      "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    const calls: Array<{ args: string[]; options?: GitCommandOptions }> = [];
+    const runtime: ReviewGitRuntime = {
+      ...unavailableFileMethods,
+      async runGit(args, options) {
+        calls.push({ args, options });
+        if (args[0] === "diff" && args.includes("--raw")) {
+          return {
+            stdout: `:100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} M\0x.ts\0`,
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          return { stdout: "", stderr: "fatal: unable to read object database", exitCode: 128 };
+        }
+        if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", exitCode: 0 };
+        if (args[0] === "diff") return { stdout: renderedPatch, stderr: "", exitCode: 0 };
+        throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      },
+      async readTextFile() {
+        return null;
+      },
+    };
+
+    const result = await runGitDiff(runtime, "staged", "main", "/repo");
+
+    // The review shows the real diff — not one binary stub per file.
+    expect(result.patch).toContain("+new");
+    expect(result.patch).not.toContain("Binary files");
+    expect(
+      calls.some(({ args }) => args.some((arg) => arg.startsWith(":(top,exclude,literal)"))),
+    ).toBe(false);
+
+    // The probe is timeout-guarded and noninteractive so a hung git cannot
+    // stall the review server.
+    const probe = calls.find(({ args }) => args[0] === "cat-file");
+    expect(probe?.options).toMatchObject({ timeoutMs: 5000, interaction: "forbid" });
+
+    // Memory stays bounded by git itself: the rendered diff carries the
+    // core.bigFileThreshold config while argv stays byte-identical.
+    const rendered = calls.filter(
+      ({ args }) => args[0] === "diff" && !args.includes("--raw"),
+    );
+    expect(rendered.length).toBeGreaterThan(0);
+    for (const { args, options } of rendered) {
+      expect(options?.config).toEqual({
+        "core.bigFileThreshold": String(MAX_REVIEW_FILE_CONTENT_BYTES),
+      });
+      expect(args.some((arg) => arg.includes("bigFileThreshold"))).toBe(false);
+    }
+  });
+
+  test("a probed-oversized object excludes only its path, and a missing one none", async () => {
+    // Per-object evidence stays per-object: one oversized blob costs one path,
+    // never the whole review. An object the probe cannot SIZE is a different
+    // answer from one it sizes above the cap: `missing` is unknown, so that
+    // path keeps rendering under git's own core.bigFileThreshold bound.
+    const smallOld = "1".repeat(40);
+    const smallNew = "2".repeat(40);
+    const missingOld = "3".repeat(40);
+    const missingNew = "4".repeat(40);
+    const hugeOld = "5".repeat(40);
+    const hugeNew = "6".repeat(40);
+    const renderedPatch = [
+      "diff --git a/small.ts b/small.ts\n-old\n+new\n",
+      "diff --git a/unfetched.ts b/unfetched.ts\n-gone\n+restored\n",
+    ].join("");
+    const excludedPaths: string[] = [];
+    const runtime: ReviewGitRuntime = {
+      ...unavailableFileMethods,
+      async runGit(args, options) {
+        if (args[0] === "diff" && args.includes("--raw")) {
+          return {
+            stdout: [
+              `:100644 100644 ${smallOld} ${smallNew} M\0small.ts\0`,
+              `:100644 100644 ${missingOld} ${missingNew} M\0unfetched.ts\0`,
+              `:100644 100644 ${hugeOld} ${hugeNew} M\0huge.bin\0`,
+            ].join(""),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "cat-file" && args.some((arg) => arg.startsWith("--batch-check"))) {
+          const input = (options as { stdin?: string } | undefined)?.stdin ?? "";
+          return {
+            stdout: input.trim().split("\n").filter(Boolean).map((objectId) => {
+              if (objectId === missingNew) return `${objectId} missing`;
+              if (objectId === hugeNew) {
+                return `${objectId} blob ${MAX_REVIEW_FILE_CONTENT_BYTES + 1}`;
+              }
+              return `${objectId} blob 10`;
+            }).join("\n"),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        if (args[0] === "rev-parse") return { stdout: "/repo\n", stderr: "", exitCode: 0 };
+        if (args[0] === "diff") {
+          excludedPaths.push(
+            ...args.filter((arg) => arg.startsWith(":(top,exclude,literal)")),
+          );
+          return { stdout: renderedPatch, stderr: "", exitCode: 0 };
+        }
+        throw new Error(`Unexpected git command: ${args.join(" ")}`);
+      },
+      async readTextFile() {
+        return null;
+      },
+    };
+
+    const result = await runGitDiff(runtime, "staged", "main", "/repo");
+
+    expect(result.patch).toContain("+new");
+    expect(result.patch).toContain("Binary files a/huge.bin and b/huge.bin differ");
+    expect(excludedPaths).toEqual([":(top,exclude,literal)huge.bin"]);
+    // The unfetchable object's path is not stubbed away: git renders it, and
+    // a git that truly cannot read it fails loudly instead of blanking it.
+    expect(result.patch).toContain("+restored");
+    expect(result.patch).not.toContain("Binary files a/unfetched.ts");
+    expect(result.patch).not.toContain("Binary files a/small.ts");
+  });
+
+  test("a failed size probe keeps oversized committed blobs git-bounded", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+    git(repoDir, ["add", "big.txt", "tracked.txt"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "staged", "main");
+
+    // The small file's real diff survives — the review is not blanked.
+    expect(result.patch).toContain("+after");
+    // git's own core.bigFileThreshold stubs the oversized staged blob.
+    expect(result.patch).toContain("Binary files");
+    expect(result.patch).not.toContain("aaaaaaaaaa");
+    expect(result.patch.length).toBeLessThan(4_000);
+  }, 20_000);
+
+  test("a failed size probe never lets a textconv driver render an oversized blob (#1206)", async () => {
+    // core.bigFileThreshold only applies when git decides binaryness itself. A
+    // textconv driver skips that decision and formats the whole converted blob,
+    // so on the probe-failure path (no JS-side exclusion) the rendered diff
+    // must turn textconv off to keep the git-native bound.
+    const repoDir = initRepo();
+    git(repoDir, ["config", "diff.inflate.textconv", "sed p"]);
+    writeFileSync(join(repoDir, ".gitattributes"), "*.big diff=inflate\n", "utf-8");
+    git(repoDir, ["add", ".gitattributes"]);
+    git(repoDir, ["commit", "-m", "textconv driver"]);
+    const lines = Math.ceil((MAX_REVIEW_FILE_CONTENT_BYTES + 1) / 2);
+    writeFileSync(join(repoDir, "huge.big"), "a\n".repeat(lines), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+    git(repoDir, ["add", "huge.big", "tracked.txt"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "staged", "main");
+
+    // Length first, so a regression fails without printing megabytes.
+    expect(result.patch.length).toBeLessThan(4_000);
+    expect(result.patch).toContain("+after");
+    expect(result.patch).toContain("Binary files /dev/null and b/huge.big differ");
+  }, 20_000);
+
+  test("a working size probe keeps textconv for files under the cap", async () => {
+    // The textconv opt-out is for the probe-failure path only: with sizes
+    // known, oversized paths are excluded up front and small textconv'd files
+    // keep rendering through their driver.
+    const repoDir = initRepo();
+    git(repoDir, ["config", "diff.upper.textconv", "tr a-z A-Z <"]);
+    writeFileSync(join(repoDir, ".gitattributes"), "*.up diff=upper\n", "utf-8");
+    git(repoDir, ["add", ".gitattributes"]);
+    git(repoDir, ["commit", "-m", "textconv driver"]);
+    writeFileSync(join(repoDir, "note.up"), "hello\n", "utf-8");
+    git(repoDir, ["add", "note.up"]);
+
+    const result = await runGitDiff(makeConfigForwardingRuntime(repoDir), "staged", "main");
+
+    expect(result.patch).toContain("+HELLO");
+  }, 20_000);
+
+  test("a failed size probe still excludes oversized working-tree files by stat", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "big.txt"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+
+    // Dirty working tree: core.bigFileThreshold does NOT bound the worktree
+    // side of a diff (git hashes the file and content-based binary detection
+    // wins), so the stat-based exclusion door must work without the probe.
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("+after");
+    expect(result.patch).toContain("Binary files");
+    expect(result.patch).not.toContain("bbbbbbbbbb");
+    expect(result.patch.length).toBeLessThan(4_000);
+  }, 20_000);
+
+  test("staleness fingerprinting survives a failed size probe and still tracks content", async () => {
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "big.txt"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize), "utf-8");
+    const first = await getGitDiffFingerprint(runtime, "uncommitted", "main");
+    writeFileSync(join(repoDir, "big.txt"), "b".repeat(largeSize + 1), "utf-8");
+    const second = await getGitDiffFingerprint(runtime, "uncommitted", "main");
+
+    // Best-effort semantics preserved: the probe failing must not turn the
+    // staleness poll into a permanent false all-clear.
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+  }, 20_000);
+
+  test("renders a renamed file whose edited worktree blob the probe cannot find", async () => {
+    // Rename/copy detection makes git hash the WORKING-TREE content and print
+    // that hash in --raw output, but the blob is never written to the object
+    // database. The size probe answers `missing` for it. Treating that as
+    // "oversized" dropped the whole renamed file out of the review (#1167).
+    const repoDir = initRepo();
+    mkdirSync(join(repoDir, "src"));
+    const original = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n");
+    writeFileSync(join(repoDir, "src/Card.tsx"), `${original}\n`, "utf-8");
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "add card"]);
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    git(repoDir, ["mv", "src/Card.tsx", "src/Panel.tsx"]);
+    git(repoDir, ["commit", "-m", "rename card to panel"]);
+    writeFileSync(
+      join(repoDir, "src/Panel.tsx"),
+      `${original}\nline 41 unstaged\n`,
+      "utf-8",
+    );
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("+line 41 unstaged");
+    expect(patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("renders a tracked add whose worktree blob the probe cannot find", async () => {
+    // A delete/add pair also feeds rename detection, so the added path carries
+    // a real-but-unwritten worktree hash in --raw output.
+    const repoDir = initRepo();
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    writeFileSync(join(repoDir, "replacement.txt"), "fresh content\n", "utf-8");
+    git(repoDir, ["rm", "-q", "tracked.txt"]);
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "replace tracked file"]);
+    writeFileSync(join(repoDir, "replacement.txt"), "fresh content\nedited later\n", "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("+fresh content");
+    expect(patch).toContain("+edited later");
+    expect(patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("renders a file whose index blob is missing from the object database", async () => {
+    // Partial clones (and pruned object databases) can report `missing` for an
+    // index blob git can still diff perfectly well from the working tree.
+    const repoDir = initRepo();
+    writeFileSync(join(repoDir, "added.txt"), "content from the index\n", "utf-8");
+    git(repoDir, ["add", "added.txt"]);
+    const blobId = git(repoDir, ["rev-parse", ":added.txt"]);
+    rmSync(join(repoDir, ".git", "objects", blobId.slice(0, 2), blobId.slice(2)), { force: true });
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const result = await runGitDiff(runtime, "uncommitted", "main");
+
+    expect(result.patch).toContain("+content from the index");
+    expect(result.patch).not.toContain("Binary files");
+  }, 20_000);
+
+  test("still stubs an oversized worktree file whose blob the probe cannot find", async () => {
+    // The size probe cannot bound this file (its hash is missing) and
+    // core.bigFileThreshold does not bound working-tree sides, so the
+    // filesystem stat has to be the authoritative bound.
+    const repoDir = initRepo();
+    const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
+    writeFileSync(join(repoDir, "old-big.txt"), "a".repeat(largeSize), "utf-8");
+    git(repoDir, ["add", "-A"]);
+    git(repoDir, ["commit", "-m", "add big file"]);
+    const base = git(repoDir, ["rev-parse", "HEAD"]);
+    git(repoDir, ["mv", "old-big.txt", "new-big.txt"]);
+    git(repoDir, ["commit", "-m", "rename big file"]);
+    writeFileSync(join(repoDir, "new-big.txt"), "b".repeat(largeSize), "utf-8");
+
+    const runtime = makeConfigForwardingRuntime(repoDir);
+    const patch = await getWorkingTreeDiffFromBase(runtime, base);
+
+    expect(patch).toContain("Binary files");
+    expect(patch).not.toContain("bbbbbbbbbb");
+    expect(patch.length).toBeLessThan(4_000);
+  }, 40_000);
+
   test("synthesizes quoted rename and copy metadata from raw status details", async () => {
     const renamedFrom = 'old "rename" path';
     const renamedTo = "new \\ rename path";
@@ -854,6 +1334,53 @@ describe("review-core", () => {
     expect(result.patch).toContain("diff --git a/committed.txt b/committed.txt");
     expect(result.patch).toContain("diff --git a/tracked.txt b/tracked.txt");
     expect(result.patch).toContain("diff --git a/untracked.txt b/untracked.txt");
+  });
+
+  test("local-vs-remote includes committed, dirty, and untracked changes since the tracked branch", async () => {
+    const repoDir = initRepo();
+    const remoteDir = makeTempDir("plannotator-review-core-upstream-");
+    git(remoteDir, ["init", "--bare", "--initial-branch=main"]);
+    git(repoDir, ["remote", "add", "origin", remoteDir]);
+    git(repoDir, ["push", "--set-upstream", "origin", "main"]);
+
+    writeFileSync(join(repoDir, "committed.txt"), "committed\n", "utf-8");
+    git(repoDir, ["add", "committed.txt"]);
+    git(repoDir, ["commit", "-m", "local commit"]);
+    writeFileSync(join(repoDir, "tracked.txt"), "dirty\n", "utf-8");
+    writeFileSync(join(repoDir, "untracked.txt"), "new\n", "utf-8");
+
+    const runtime = makeRuntime(repoDir);
+    const context = await getGitContext(runtime, repoDir);
+    const result = await runGitDiff(runtime, "local-vs-remote", context.defaultBranch, repoDir);
+
+    // Intentional copy pins: these labels are the product terminology shown in the diff picker and header.
+    expect(context.diffOptions).toContainEqual({
+      id: "local-vs-remote",
+      label: "Local vs remote branch",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.label).toBe("main: Local vs origin/main");
+    expect(result.patch).toContain("diff --git a/committed.txt b/committed.txt");
+    expect(result.patch).toContain("diff --git a/tracked.txt b/tracked.txt");
+    expect(result.patch).toContain("diff --git a/untracked.txt b/untracked.txt");
+  });
+
+  test("git context hides local-vs-remote when the current branch has no upstream", async () => {
+    const repoDir = initRepo();
+    const context = await getGitContext(makeRuntime(repoDir), repoDir);
+
+    expect(context.diffOptions.map((option) => option.id)).not.toContain("local-vs-remote");
+  });
+
+  test("git context names the repository top level when started from a subfolder", async () => {
+    const repoDir = initRepo();
+    const subDir = join(repoDir, "docs");
+    mkdirSync(subDir, { recursive: true });
+    const context = await getGitContext(makeRuntime(subDir), subDir);
+
+    // Patch paths are relative to the top level, not to where the review began.
+    expect(context.cwd).toBe(subDir);
+    expect(realpathSync(context.root!)).toBe(realpathSync(repoDir));
   });
 
   test("since-base falls back to HEAD when the requested base cannot resolve", async () => {
@@ -1223,6 +1750,7 @@ describe("review-core", () => {
     // which pointed git at a non-existent cwd and silently collapsed the diff mode.
     const subTypes = [
       "since-base",
+      "local-vs-remote",
       "uncommitted",
       "staged",
       "unstaged",
@@ -1249,6 +1777,15 @@ describe("review-core", () => {
       subType: "uncommitted",
     });
   });
+
+  test("rejects a worktree diff type with no path", () => {
+    // An empty path would resolve to an empty cwd; Bun.spawn({ cwd: "" }) runs
+    // git in the server's OWN directory and leaks an unrelated repo's diff.
+    // Every degenerate form must return null so resolveCwd falls back.
+    expect(parseWorktreeDiffType("worktree:")).toBeNull();
+    expect(parseWorktreeDiffType("worktree::uncommitted")).toBeNull();
+    expect(parseWorktreeDiffType("worktree::commit:abc1234")).toBeNull();
+  });
 });
 
 describe("isSameCwdCommitSwitch", () => {
@@ -1265,6 +1802,20 @@ describe("isSameCwdCommitSwitch", () => {
     expect(
       isSameCwdCommitSwitch("worktree:/tmp/a:commit:abc1234", "worktree:/tmp/b:commit:abc1234"),
     ).toBe(false);
+  });
+});
+
+describe("jj-commit family", () => {
+  test("parses bare hex commit ids only, and reads as a commit detour", () => {
+    expect(parseJjCommitDiffType(`jj-commit:${"a".repeat(40)}`)).toEqual({ commitId: "a".repeat(40) });
+    expect(parseJjCommitDiffType("jj-commit:main")).toBeNull();
+    expect(parseJjCommitDiffType("jj-commit:@-")).toBeNull();
+    expect(parseJjCommitDiffType("commit:abc1234")).toBeNull();
+    expect(commitFamilyId("jj-commit:abc1234")).toBe("abc1234");
+    expect(commitFamilyId("worktree:/tmp/wt:commit:abc1234")).toBe("abc1234");
+    expect(commitFamilyId("jj-current")).toBeNull();
+    // The rail's hot path skips the jj context recompute too.
+    expect(isSameCwdCommitSwitch("jj-current", "jj-commit:abc1234")).toBe(true);
   });
 });
 
@@ -1368,5 +1919,47 @@ describe("commit diff mode", () => {
 
     const after = await getGitDiffFingerprint(runtime, `commit:${rootSha}` as DiffType, "main");
     expect(after).toBe(before);
+  });
+});
+
+/**
+ * Failure backoff for the remote-default probe (#1553). The regression this
+ * guards is the one the issue reported: a remote that never answers being
+ * retried on the same 60s cadence for the life of the session, which on a
+ * smartcard-backed SSH setup is one physical touch prompt per minute. The
+ * reset leg matters just as much — a network that comes back must return to
+ * the normal cadence rather than stay parked at the cap.
+ */
+describe("nextRemoteBaseCheckInterval", () => {
+  test("doubles on failure, from the base interval up to the cap", () => {
+    const seen: number[] = [];
+    let interval = REMOTE_BASE_CHECK_INTERVAL_MS;
+    for (let i = 0; i < 8; i++) {
+      interval = nextRemoteBaseCheckInterval(interval, false);
+      seen.push(interval);
+    }
+    expect(seen).toEqual([
+      120_000,
+      240_000,
+      480_000,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+    ]);
+  });
+
+  test("a success resets to the base interval from any backoff level", () => {
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_MAX_INTERVAL_MS, true))
+      .toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+    expect(nextRemoteBaseCheckInterval(240_000, true)).toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_INTERVAL_MS, true))
+      .toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+  });
+
+  test("the cap is never exceeded even from an already-capped interval", () => {
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_MAX_INTERVAL_MS, false))
+      .toBe(REMOTE_BASE_CHECK_MAX_INTERVAL_MS);
   });
 });

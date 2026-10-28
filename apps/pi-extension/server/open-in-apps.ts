@@ -8,20 +8,25 @@
  * (packages/shared/open-in-apps.ts, vendored into generated/).
  */
 
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
 import os from "node:os";
 
+import { resolveOpenInTarget } from "../generated/html-assets-node.ts";
 import {
 	OPEN_IN_APPS,
-	getOpenInApp,
+	checkOpenInAppId,
 	resolveRevealIcon,
 	resolveRevealLabel,
 	type OpenInApp,
 	type OpenInKind,
 	type OpenInPlatform,
 } from "../generated/open-in-apps.ts";
+import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
+import { checkServerSession, serverSessionMismatchBody } from "../generated/server-session.ts";
+import { json, parseJsonBody } from "./helpers.ts";
 
 function currentPlatform(): OpenInPlatform {
 	switch (process.platform) {
@@ -39,6 +44,7 @@ function whichBin(bin: string): boolean {
 	try {
 		const finder = process.platform === "win32" ? "where" : "which";
 		execFileSync(finder, [bin], {
+			env: process.env,
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
 		});
@@ -103,7 +109,26 @@ export function getAvailableOpenInApps(): Array<{
 	});
 }
 
-/** Run execFile and surface ENOENT (app not found) as a friendly error. */
+/**
+ * How long a launch may take to fail before we call it launched (ms). Mirrors
+ * the Bun runtime (packages/server/open-in.ts).
+ */
+const LAUNCH_GRACE_MS = 2000;
+
+/** Cap on captured stderr; the stream keeps draining beyond it. */
+const LAUNCH_STDERR_CAP_BYTES = 8192;
+
+/**
+ * Run an argv launcher and surface ENOENT (app not found) as a friendly error.
+ *
+ * Mirrors the Bun runtime's runArgv semantics exactly: the child is spawned
+ * DETACHED (its own process group) so an editor cold-started by a launcher CLI
+ * can never be taken down by a signal aimed at this server's group, the wait
+ * is BOUNDED so a launcher CLI that stays attached to the app it started
+ * cannot hold the HTTP request hostage, and stderr is drained from spawn time
+ * so a chatty child can never fill the pipe and deadlock inside the grace
+ * window.
+ */
 function run(
 	cmd: string,
 	args: string[],
@@ -111,20 +136,85 @@ function run(
 	opts?: { cwd?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
 	return new Promise((resolve) => {
-		const proc = execFile(cmd, args, opts?.cwd ? { cwd: opts.cwd } : {}, (err) => {
-			if (!err) {
-				resolve({ ok: true });
+		const failure = (msg: string): { ok: false; error: string } =>
+			/ENOENT|not found/i.test(msg)
+				? { ok: false, error: `${notFoundLabel} was not found on this system.` }
+				: { ok: false, error: msg };
+
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(cmd, args, {
+				detached: true,
+				stdio: ["ignore", "ignore", "pipe"],
+				...(opts?.cwd ? { cwd: opts.cwd } : {}),
+			});
+		} catch (err) {
+			resolve(failure(err instanceof Error ? err.message : String(err)));
+			return;
+		}
+
+		let stderr = "";
+		child.stderr?.on("data", (chunk: Buffer) => {
+			if (stderr.length < LAUNCH_STDERR_CAP_BYTES) stderr += chunk.toString();
+		});
+
+		let settled = false;
+		let exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null =
+			null;
+		const finish = (result: { ok: true } | { ok: false; error: string }) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(deadline);
+			resolve(result);
+		};
+
+		const concludeExit = () => {
+			if (!exitInfo) return;
+			if (/not found|ENOENT/i.test(stderr)) {
+				finish({ ok: false, error: `${notFoundLabel} was not found on this system.` });
 				return;
 			}
-			const code = (err as NodeJS.ErrnoException).code;
-			if (code === "ENOENT" || /ENOENT|not found/i.test(err.message)) {
-				resolve({ ok: false, error: `${notFoundLabel} was not found on this system.` });
-			} else {
-				resolve({ ok: false, error: err.message });
-			}
+			const status = exitInfo.code ?? exitInfo.signal ?? "unknown";
+			finish({
+				ok: false,
+				error: `Failed to open ${notFoundLabel} (exit ${status})${stderr ? `: ${stderr.trim()}` : ""}`,
+			});
+		};
+
+		// Still running at the deadline: it launched. A failure observed just
+		// before the deadline still reports as a failure.
+		const deadline = setTimeout(() => {
+			if (exitInfo) concludeExit();
+			else finish({ ok: true });
+		}, LAUNCH_GRACE_MS);
+
+		child.once("error", (err) => {
+			finish(failure(err instanceof Error ? err.message : String(err)));
 		});
-		// Detach: we don't care about the child's lifetime once launched.
-		proc.unref?.();
+
+		child.once("exit", (code, signal) => {
+			if (code === 0) {
+				finish({ ok: true });
+				return;
+			}
+			exitInfo = { code, signal };
+			// Give the stderr pipe a beat to flush before reporting; "close" (all
+			// stdio ended) concludes immediately when it arrives first. close alone
+			// is not enough: a grandchild inheriting the pipe can hold it open.
+			setTimeout(concludeExit, 50);
+		});
+
+		child.once("close", (code, signal) => {
+			if (code === 0) {
+				finish({ ok: true });
+				return;
+			}
+			exitInfo = { code, signal };
+			concludeExit();
+		});
+
+		// The launcher runs on its own; never keep this process alive for it.
+		child.unref();
 	});
 }
 
@@ -149,23 +239,19 @@ function spawnDetached(
 }
 
 /**
- * Launch `absPath` in the app identified by `appId` (defaults / unknown ->
- * the OS default handler). Mirrors the Bun-side launch semantics exactly.
+ * Launch `absPath` in the app identified by `appId`. A missing or unknown id
+ * is a failure, never a launch: there is deliberately no fallback to the OS
+ * default handler, which could execute the file (see checkOpenInAppId).
+ * Mirrors the Bun-side launch semantics exactly.
  */
 export function openFileInApp(
 	absPath: string,
-	appId?: string,
+	appId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
 	const platform = currentPlatform();
-	const app = appId ? getOpenInApp(appId) : undefined;
-
-	// Unknown or undefined appId -> OS default handler on the file.
-	if (!app) {
-		if (platform === "mac") return run("open", [absPath], "Default app");
-		if (platform === "win")
-			return run("cmd", ["/c", "start", "", basename(absPath)], "Default app", { cwd: dirname(absPath) });
-		return run("xdg-open", [absPath], "Default app");
-	}
+	const checked = checkOpenInAppId(appId);
+	if (!checked.ok) return Promise.resolve({ ok: false, error: checked.error });
+	const app = checked.app;
 
 	if (app.kind === "file-manager") {
 		// Reveal the file in the OS file manager.
@@ -211,4 +297,64 @@ export function openFileInApp(
 	if (!app.linux?.bin)
 		return Promise.resolve({ ok: false, error: `${app.label} is not available on this platform.` });
 	return run(app.linux.bin, [absPath], app.label);
+}
+
+/**
+ * POST /api/open-in for the Pi annotate and review servers, mirroring
+ * handleOpenIn in packages/server/open-in.ts. The caller has already refused
+ * the session shapes that have no local file (remote, URL source, static
+ * patch, committed GitButler view). In order: another site's page (including
+ * the sandboxed annotated-HTML frame, which sends `Origin: null`) is 403, a
+ * stale tab's `serverSession` is 409, a missing `filePath` or a missing or
+ * unknown `appId` is 400, a path outside `resolveRoot` is 403; then the app
+ * launches and the result rides a 200.
+ */
+export async function handleOpenInRequest(
+	req: IncomingMessage,
+	res: ServerResponse,
+	options: { serverSession: string; resolveRoot: () => string | string[] },
+): Promise<void> {
+	if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
+		json(res, { ok: false, error: "Cross-origin requests are not allowed" }, 403);
+		return;
+	}
+	try {
+		let body: unknown;
+		try {
+			body = await parseJsonBody(req);
+		} catch {
+			json(res, { ok: false, error: "Invalid request" }, 400);
+			return;
+		}
+		if (!body || typeof body !== "object") {
+			json(res, { ok: false, error: "Invalid request" }, 400);
+			return;
+		}
+		// Stale-tab guard: a tab left open on a reused port must not launch apps
+		// for a session it never showed. Missing is accepted.
+		if (checkServerSession(body, options.serverSession) === "mismatch") {
+			json(res, serverSessionMismatchBody(), 409);
+			return;
+		}
+		const { filePath, appId } = body as { filePath?: unknown; appId?: unknown };
+		if (typeof filePath !== "string" || !filePath) {
+			json(res, { ok: false, error: "Missing filePath" }, 400);
+			return;
+		}
+		const app = checkOpenInAppId(appId);
+		if (!app.ok) {
+			json(res, { ok: false, error: app.error }, 400);
+			return;
+		}
+		// Resolve against the server-supplied roots only (never a client `base`),
+		// then containment-check.
+		const abs = resolveOpenInTarget(filePath, null, options.resolveRoot);
+		if (abs == null) {
+			json(res, { ok: false, error: "Path is outside the allowed directory" }, 403);
+			return;
+		}
+		json(res, await openFileInApp(abs, app.app.id), 200);
+	} catch (err) {
+		json(res, { ok: false, error: err instanceof Error ? err.message : "Failed to open file" }, 500);
+	}
 }
