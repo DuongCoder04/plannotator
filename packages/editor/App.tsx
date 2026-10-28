@@ -94,7 +94,7 @@ import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskN
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useDocumentTextSize } from '@plannotator/ui/hooks/useDocumentTextSize';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
-import { markLookAndFeelChoiceResolved, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { usePlanLookDialog } from '@plannotator/ui/hooks/usePlanLookDialog';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
 import {
   markTerminalToolsAnnouncementSeen,
@@ -870,7 +870,13 @@ const App: React.FC = () => {
       setAiDefaultProvider(defaultProvider);
     },
   });
-  const [showLookAndFeelAnnouncement, setShowLookAndFeelAnnouncement] = useState(needsLookAndFeelAnnouncement);
+  // The first-run chooser, or the one-time notice for someone moved from Grid
+  // to Clean when Clean became the default. Shared with the code review app.
+  const {
+    prompt: lookAndFeelPrompt,
+    open: showLookAndFeelAnnouncement,
+    dismiss: dismissLookAndFeelAnnouncement,
+  } = usePlanLookDialog(gridEnabled);
   // One-time terminal-tools announcement (Plannotator TUI + Herdr Annotate),
   // shared with the code review editor through one cookie. Latched at mount:
   // the dismiss writes the cookie, and re-reading it per render would unmount
@@ -1280,14 +1286,6 @@ const App: React.FC = () => {
     await saveAgentTool(true);
     markAgentToolAnnouncementSeen();
   }, [saveAgentTool]);
-
-  const dismissLookAndFeelAnnouncement = useCallback(() => {
-    // Persist even when the user accepts the displayed default without first
-    // clicking its already-selected card, then record the explicit decision.
-    configStore.set('gridEnabled', gridEnabled);
-    markLookAndFeelChoiceResolved();
-    setShowLookAndFeelAnnouncement(false);
-  }, [gridEnabled]);
 
   const handleAIChatToggle = useCallback(() => {
     if (isCompactTouchLayout) {
@@ -7336,6 +7334,13 @@ const App: React.FC = () => {
   // canvas, not from the nested document scroller. Keep that canvas continuous
   // with the active surface so a card-backed plan does not end in a dark band.
   const browserCanvas = isHtmlSurface || gridEnabled ? 'background' : 'card';
+  // Grid look: the plan card (the paper) runs to the bottom of the view even
+  // when the plan is short, instead of stopping halfway down the grid. The
+  // document column grows to fill the scroll area and the Viewer's card fills it.
+  const gridPaperFillsView = gridEnabled && !isHtmlSurface && !isEditingMarkdown;
+  // The plan diff's card fills the same way, so toggling Diff does not make the
+  // paper jump from full height to half.
+  const gridDiffPaperFillsView = gridEnabled && !isHtmlSurface;
   if (isLoading && !isSharedSession) {
     return (
       <ThemeProvider defaultTheme="dark" manageFavicon>
@@ -7684,7 +7689,7 @@ const App: React.FC = () => {
               )}
 
               {planDiff.diffBlocks && planDiff.diffStats && !goalSetupMode && (
-                <div className="w-full flex justify-center" style={{ display: isPlanDiffActive ? undefined : 'none' }}>
+                <div className={`w-full flex justify-center${gridDiffPaperFillsView ? ' flex-1 print:flex-none' : ''}`} data-grid-paper-column={gridDiffPaperFillsView ? '' : undefined} style={{ display: isPlanDiffActive ? undefined : 'none' }}>
                   <PlanDiffViewer
                     diffBlocks={planDiff.diffBlocks}
                     diffStats={planDiff.diffStats}
@@ -7700,6 +7705,7 @@ const App: React.FC = () => {
                     onSelectAnnotation={handleSelectAnnotation}
                     selectedAnnotationId={selectedAnnotationId}
                     mode={effectiveEditorMode}
+                    fillHeight={gridDiffPaperFillsView}
                   />
                 </div>
               )}
@@ -7711,7 +7717,7 @@ const App: React.FC = () => {
                 />
               )}
               {/* Normal Plan View — always mounted, hidden during diff mode */}
-              <div className={`w-full relative ${isHtmlSurface ? 'flex-1 flex flex-col' : `${isCompactTouchLayout && isEditingMarkdown ? 'flex flex-col items-center' : 'flex justify-center'}${isEditingMarkdown ? ' flex-1 min-h-0' : ''}`}`} style={{ display: goalSetupMode || (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) ? 'none' : undefined }}>
+              <div className={`w-full relative ${isHtmlSurface ? 'flex-1 flex flex-col' : `${isCompactTouchLayout && isEditingMarkdown ? 'flex flex-col items-center' : 'flex justify-center'}${isEditingMarkdown ? ' flex-1 min-h-0' : ''}${gridPaperFillsView ? ' flex-1 print:flex-none' : ''}`}`} data-grid-paper-column={gridPaperFillsView ? '' : undefined} style={{ display: goalSetupMode || (isPlanDiffActive && planDiff.diffBlocks) || (annotateSource === 'folder' && !markdown && !linkedDocHook.isActive) ? 'none' : undefined }}>
                 {!isCompactTouchLayout && (canUseWideMode || canEditMarkdown) && !isPlanDiffActive && !archive.archiveMode && !isHtmlSurface && (
                   <div
                     data-print-hide
@@ -7927,6 +7933,7 @@ const App: React.FC = () => {
                     onVimHudKeyPanelChange={handleVimHudKeyPanelChange}
                     taterMode={taterMode}
                     gridEnabled={gridEnabled}
+                    fillHeight={gridPaperFillsView}
                     globalAttachments={globalAttachments}
                     onAddGlobalAttachment={handleAddGlobalAttachment}
                     onRemoveGlobalAttachment={handleRemoveGlobalAttachment}
@@ -8310,6 +8317,7 @@ const App: React.FC = () => {
 
         <LookAndFeelAnnouncementDialog
           isOpen={shouldShowLookAndFeelAnnouncement}
+          variant={lookAndFeelPrompt === 'moved' ? 'moved' : 'first-run'}
           gridEnabled={gridEnabled}
           onToggleGrid={(v) => configStore.set('gridEnabled', v)}
           onDismiss={dismissLookAndFeelAnnouncement}

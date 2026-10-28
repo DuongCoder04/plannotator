@@ -155,6 +155,14 @@ export interface ViewerProps {
   annotationHeader?: ViewerAnnotationHeaderConfig;
   /** Render the plan as a floating card on a grid background (shadow/border/padding). Default false. */
   gridEnabled?: boolean;
+  /**
+   * Grow the document card to the full height the parent gives the Viewer, so
+   * a short document's card still runs to the bottom of the view instead of
+   * stopping halfway down the grid paper. The parent must give the Viewer a
+   * height (a stretched flex item does). Default false: the card sizes to its
+   * content.
+   */
+  fillHeight?: boolean;
   onOpenLinkedDoc?: (path: string) => void;
   onOpenCodeFile?: (path: string) => void;
   /**
@@ -757,6 +765,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   stickyActions = true,
   annotationHeader,
   gridEnabled = false,
+  fillHeight = false,
   planDiffStats,
   isPlanDiffActive,
   onPlanDiffToggle,
@@ -1663,7 +1672,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     <CodePathValidationContext.Provider value={codePathValidation}>
     <LocalLinkContext.Provider value={resolveLocalLink ?? null}>
     <DiagramAnchorClaimsContext.Provider value={diagramClaims}>
-    <div className="relative z-50 w-full" style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}>
+    <div
+      className={`relative z-50 w-full${fillHeight ? ' flex flex-col print:block' : ''}`}
+      data-viewer-fill-height={fillHeight ? '' : undefined}
+      style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}
+    >
       {taterMode && <TaterSpriteSitting />}
       <article
         ref={containerRef}
@@ -1678,7 +1691,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         onFocus={vim.onFocus}
         onBlur={vim.onBlur}
         onMouseDown={vim.onMouseDown}
-        className={`w-full bg-card rounded-xl py-5 md:py-8 lg:py-10 xl:py-12 relative ${gridEnabled ? 'px-5 md:px-8 lg:px-10 xl:px-12 shadow-xl border border-border/50' : ''} ${inputMethod === 'pinpoint' ? 'cursor-pointer' : ''}`}
+        className={`w-full bg-card rounded-xl py-5 md:py-8 lg:py-10 xl:py-12 relative ${fillHeight ? 'flex-1 ' : ''}${gridEnabled ? 'px-5 md:px-8 lg:px-10 xl:px-12 shadow-xl border border-border/50' : ''} ${inputMethod === 'pinpoint' ? 'cursor-pointer' : ''}`}
         style={{
           WebkitTouchCallout: 'none',
           ...(vimModeActive ? { outline: 'none' } : {}),
