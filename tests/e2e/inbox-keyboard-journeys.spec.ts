@@ -264,7 +264,11 @@ async function moveTo(head: Locator): Promise<void> {
 
 /** Escape until the open file closes (full screen goes beside the thread first). */
 async function escapeFile(): Promise<void> {
-  for (let i = 0; i < 4 && (await pane().count()) > 0; i++) await press('Escape');
+  // One layer per Escape: each press waits for its layer to go, as a person would see it go.
+  for (let i = 0; i < 4 && (await pane().count()) > 0; i++) {
+    await press('Escape');
+    await expect.poll(() => pane().count(), { timeout: 700 }).toBe(0).catch(() => {});
+  }
   await expect(pane()).toHaveCount(0);
 }
 
@@ -384,7 +388,9 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   // The detour: Checkout, a file, mark read and undo.
   await arrowTo(checkout);
   // F at step 16 saved nothing: Checkout's file opens beside the thread, as files did before.
-  await press('Enter', 'o');
+  await press('Enter');
+  await expect(page.locator('section.ib-pane')).toBeVisible();
+  await press('o');
   await viewIs('side');
   await press(']');
   await escapeFile();

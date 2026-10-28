@@ -461,16 +461,17 @@ function tourPageInFront(): boolean {
 }
 
 /** Focus the first element on screen that matches one of `selectors`, in order (a list draws some rows twice, one hidden). */
-function focusFirst(selectors: readonly string[]): void {
+function focusFirst(selectors: readonly string[]): boolean {
   for (const selector of selectors) {
     const el = [...document.querySelectorAll<HTMLElement>(selector)].find((candidate) => candidate.getClientRects().length > 0);
     if (el) {
       // Inside a thread's messages (its subject heading): focus never moves the thread's scroll, the place the
       // person was in (closing a file with `‹ Inbox` put the thread back at its top).
       el.focus(el.closest('.ib-pbody') ? { preventScroll: true } : undefined);
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 /** A tour setting that did not save is tried again after these waits (ms), then said. */
@@ -749,17 +750,25 @@ function Inbox() {
       if (lastInput() === 'pointer') return;
       const mark = inputMark();
       // Focus left in what the traversal replaced moves too (focusKept says what stays). Checked again a beat later: a thread drawn again may drop it then.
+      // On a slow machine the page may not have drawn its targets by the first check: until one has taken focus,
+      // each later check places it as the first would have.
+      let placed = false;
       const place = (always: boolean) => {
         // A click or a key since this traversal (a timer left from an earlier Back can fire after one): focus stays
         // where that put it (a key's own move, an Escape's close, may not have landed yet).
         if (lastInput() === 'pointer' || actedSince(mark)) return;
         const active = document.activeElement;
         const to = readRoute();
-        if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to, from)))) return;
-        focusFirst(backFocusTargets(to, from));
+        if (modalOpen()) return;
+        if (!focusLost(active) && (!(always || !placed) || focusKept(active, to, from))) {
+          placed = true;
+          return;
+        }
+        if (focusFirst(backFocusTargets(to, from))) placed = true;
       };
       requestAnimationFrame(() => requestAnimationFrame(() => place(true)));
       setTimeout(() => place(false), 300);
+      setTimeout(() => place(false), 1000);
     };
     stripStrayMsg();
     settleOldExperimental();
