@@ -5,17 +5,12 @@
  * update (packages/server/sessions.ts).
  */
 import { registerInProcessSession, type SessionInfo } from "@plannotator/server/sessions";
-import { detectProjectName } from "@plannotator/server/project";
 
 type Mode = Extract<SessionInfo["mode"], "plan" | "review" | "annotate">;
 
 /** List a running server; returns the function that removes it (also run at process exit). */
-export async function listOpenCodeSession(
-  server: { port: number; url: string },
-  mode: Mode,
-  project?: string | null,
-): Promise<() => void> {
-  const name = project ?? (await detectProjectName().catch(() => null)) ?? "unknown";
+export function listOpenCodeSession(server: { port: number; url: string }, mode: Mode, project?: string | null): () => void {
+  const name = project || "unknown";
   return registerInProcessSession("opencode", {
     port: server.port,
     url: server.url,
@@ -28,7 +23,7 @@ export async function listOpenCodeSession(
 
 /**
  * Wait for the decision and close the server after the usual 1.5 s; the
- * session entry is removed with it whether the wait settles or throws.
+ * session entry is removed first, whether the wait settles or throws.
  */
 export async function decideListed<T>(
   server: { port: number; url: string; waitForDecision: () => Promise<T>; stop: () => void },
@@ -37,12 +32,12 @@ export async function decideListed<T>(
 ): Promise<T> {
   let unlist = () => {};
   try {
-    unlist = await listOpenCodeSession(server, mode, project);
+    unlist = listOpenCodeSession(server, mode, project);
     const result = await server.waitForDecision();
     await Bun.sleep(1500);
     return result;
   } finally {
-    server.stop();
     unlist();
+    server.stop();
   }
 }
