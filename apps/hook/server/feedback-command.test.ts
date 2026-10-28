@@ -9,13 +9,14 @@
  * HOME and data dir, no browser, no update check and no Inbox connect.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
 import { NO_BROWSER } from "../../../tests/helpers/no-browser";
-import { formatTopLevelHelp } from "./cli";
-import { FEEDBACK_TIMEOUT_MS, FEEDBACK_UNAVAILABLE } from "@plannotator/core/product-feedback";
+import { FEEDBACK_PROMPT_TEXT_LINE, feedbackPrompt } from "../../../packages/inbox/feedbackPrompt";
+import { FEEDBACK_COMMAND_USAGE, formatTopLevelHelp } from "./cli";
+import { FEEDBACK_HEREDOC_END, FEEDBACK_TIMEOUT_MS, FEEDBACK_UNAVAILABLE, PRODUCT_FEEDBACK_URL } from "@plannotator/core/product-feedback";
 import { parseFeedbackCommand, runFeedbackCommand } from "./feedback-command";
 
 const entry = resolve(import.meta.dir, "index.ts");
@@ -95,31 +96,76 @@ describe("plannotator feedback (processes)", () => {
     expect(body).toMatchObject({ message: "The Inbox is great, but the list jumps on reload", category: "bug", contact: "me@example.com", version: "dev", surface: "cli" });
   }, 30_000);
 
-  test("the documented heredoc form: $HOME, backticks, $(...) and quotes arrive byte for byte, and nothing runs", async () => {
+  // What a person might approve: shell syntax quoted from their own work, including a heredoc of
+  // their own (a line that is exactly EOF) and the end word inside a longer line.
+  const HOSTILE = [
+    "Setting $HOME breaks it, and `touch INJECTED` should not run; $(touch INJECTED2) neither.",
+    "Use <<'EOF' in your docs:",
+    "EOF",
+    "touch INJECTED3",
+    `The "double" and 'single' quotes, a back\\slash, \${PATH}, ${FEEDBACK_HEREDOC_END}-ish and a tab\there stay.`,
+    "'@ and ünïcødé 🎉 too.",
+  ].join("\n");
+
+  /** The bash forms as shipped: the copied prompt, the CLI help's example, the skill and the README's curl. */
+  function shippedTemplates(fakeUrl: string): { name: string; script: string; json: boolean }[] {
+    const fence = (text: string, after: string) => {
+      const start = text.indexOf("```", text.indexOf(after)) + 3;
+      return text.slice(text.indexOf("\n", start) + 1, text.indexOf("```", start)).trimEnd();
+    };
+    const prompt = fence(feedbackPrompt(null), "In bash");
+    const helpBlock = FEEDBACK_COMMAND_USAGE.split("Example (bash, zsh, sh):\n")[1]!.split("\n\n")[0]!;
+    const help = helpBlock
+      .split("\n")
+      .map((line) => line.replace(/^ {2}/, ""))
+      .join("\n");
+    const skillText = readFileSync(resolve(import.meta.dir, "../../skills/core/plannotator/SKILL.md"), "utf-8");
+    const skill = skillText.slice(skillText.indexOf("plannotator feedback --stdin"), skillText.indexOf(`\n${FEEDBACK_HEREDOC_END}`) + FEEDBACK_HEREDOC_END.length + 1);
+    const readme = fence(readFileSync(resolve(import.meta.dir, "../../feedback-service/README.md"), "utf-8"), "### Fallback for agents without the CLI");
+    const asCli = (template: string) =>
+      template
+        .replace(/^plannotator feedback/m, '"$PN_BUN" "$PN_ENTRY" feedback')
+        .replace(/ \[--category <bug\|idea\|other>\] \[--contact '<[^>]*>'\]/, " --category idea");
+    return [
+      { name: "prompt", script: asCli(prompt).replace(FEEDBACK_PROMPT_TEXT_LINE, HOSTILE), json: false },
+      { name: "help", script: asCli(help).replace("The list jumps to the top after a reload.", HOSTILE), json: false },
+      { name: "skill", script: asCli(skill).replace("<the message, exactly as the person approved it>", HOSTILE), json: false },
+      {
+        name: "readme",
+        script: readme.replace(PRODUCT_FEEDBACK_URL, fakeUrl).replace("<the person's words, JSON-escaped>", JSON.stringify(HOSTILE).slice(1, -1)),
+        json: true,
+      },
+    ];
+  }
+
+  test("each shipped template, run by bash as written: the approved text arrives byte for byte, and nothing in it runs", async () => {
     const endpoint = fakeEndpoint();
-    const { root, home, env } = sandbox(endpoint.url);
-    // What a person might approve: shell syntax quoted from their own work.
-    const message = [
-      "Setting $HOME breaks it, and `touch INJECTED` should not run; $(touch INJECTED2) neither.",
-      `The "double" and 'single' quotes, a back\\slash, \${PATH} and a tab\there stay.`,
-    ].join("\n");
-    // Exactly the template the prompt, the help and the skill give, run by bash.
-    const script = `"$PN_BUN" "$PN_ENTRY" feedback --stdin --category idea <<'EOF'\n${message}\nEOF\n`;
-    const proc = Bun.spawn(["/bin/bash", "-c", script], {
-      cwd: root,
-      env: { ...env, PN_BUN: process.execPath, PN_ENTRY: entry },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    expect(stdout.trim()).toBe("Sent");
-    expect(endpoint.received).toHaveLength(1);
-    expect(endpoint.received[0]!.body).toMatchObject({ message, category: "idea", surface: "cli" });
-    expect((endpoint.received[0]!.body as { message: string }).message).not.toContain(home);
-    expect(existsSync(join(root, "INJECTED"))).toBe(false);
-    expect(existsSync(join(root, "INJECTED2"))).toBe(false);
-  }, 30_000);
+    const templates = shippedTemplates(endpoint.url);
+    // Every template was found and filled (none silently empty).
+    for (const t of templates) {
+      expect(t.script, t.name).toContain(t.json ? JSON.stringify(HOSTILE).slice(1, -1) : HOSTILE);
+      expect(t.script, t.name).toContain(`<<'${FEEDBACK_HEREDOC_END}'`);
+    }
+    for (const t of templates) {
+      const { root, home, env } = sandbox(endpoint.url);
+      const before = endpoint.received.length;
+      const proc = Bun.spawn(["/bin/bash", "-c", t.script], {
+        cwd: root,
+        env: { ...env, PN_BUN: process.execPath, PN_ENTRY: entry, LANG: "en_US.UTF-8" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      expect({ name: t.name, code, stderr }).toEqual({ name: t.name, code: 0, stderr: "" });
+      if (!t.json) expect(stdout.trim(), t.name).toBe("Sent");
+      expect(endpoint.received.length, t.name).toBe(before + 1);
+      const body = endpoint.received.at(-1)!.body as { message: string; category?: string };
+      expect(body.message, t.name).toBe(HOSTILE);
+      expect(body.category, t.name).toBe("idea");
+      expect(body.message).not.toContain(home);
+      for (const file of ["INJECTED", "INJECTED2", "INJECTED3"]) expect(existsSync(join(root, file)), `${t.name}: ${file}`).toBe(false);
+    }
+  }, 60_000);
 
   test("`-` reads stdin too; stdin plus words, or an empty stdin, is a usage error that sends nothing", async () => {
     const endpoint = fakeEndpoint();
@@ -163,7 +209,7 @@ describe("plannotator feedback (processes)", () => {
     const help = await run(["--help"], endpoint.url);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain("plannotator feedback --stdin");
-    expect(help.stdout).toContain("<<'EOF'");
+    expect(help.stdout).toContain(`<<'${FEEDBACK_HEREDOC_END}'`);
     expect(help.stdout).not.toContain('feedback "');
     expect(endpoint.received).toHaveLength(0);
   }, 60_000);
@@ -193,7 +239,8 @@ describe("runFeedbackCommand: a service that never answers", () => {
   test("a fetch that throws is the same plain line, never a stack", async () => {
     const err: string[] = [];
     const code = await runFeedbackCommand(["hi"], {
-      env: {},
+      // A refusing loopback URL, never the live default, even though fetch is stubbed.
+      env: { PLANNOTATOR_FEEDBACK_URL: "http://127.0.0.1:9/feedback" },
       version: "dev",
       fetch: (async () => {
         throw new Error("getaddrinfo ENOTFOUND feedback.invalid");

@@ -13,8 +13,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
-import { feedbackCopiedToast, feedbackPrompt } from './feedbackPrompt';
+import { FEEDBACK_HEREDOC_END, FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
+import { FEEDBACK_PROMPT_TEXT_LINE, feedbackCopiedToast, feedbackPrompt } from './feedbackPrompt';
 
 const hasDom = typeof document !== 'undefined';
 const { FeedbackDialog } = (hasDom ? await import('./components/FeedbackDialog') : {}) as typeof import('./components/FeedbackDialog');
@@ -110,8 +110,9 @@ describe.skipIf(!hasDom)('the Feedback dialog', () => {
     expect(document.activeElement).toBe(dialog.box());
     // The line says what is sent, naming this version (the data it must keep truthful).
     expect(dialog.what().textContent).toContain('0.28.33');
-    // It names every field the Inbox adds, the surface included.
-    expect(dialog.what().textContent).toContain('the name of your OS and that it came from the Inbox');
+    // It names every field the Inbox adds, the surface (that it came from the Inbox) included.
+    expect(dialog.what().textContent).toMatch(/\bOS\b/);
+    expect(dialog.what().textContent).toMatch(/\bInbox\b/);
     expect(calls).toHaveLength(0);
 
     type(dialog.box(), '  Reload loses my place in the list  ');
@@ -272,8 +273,11 @@ describe('the copy prompt', () => {
   test('the command reads `plannotator feedback`, with the installed binary only as the fallback; the agent asks first', () => {
     const prompt = feedbackPrompt([BIN, 'inbox', 'mcp']);
     // Pinned on purpose (owner, 2026-10-27): installed users see `plannotator feedback …`, never an execPath.
-    // The text goes on stdin in a QUOTED heredoc: inside double quotes a shell would expand $VAR and run backticks in the approved text.
-    expect(prompt).toContain("plannotator feedback --stdin [--category <bug|idea|other>] [--contact '<email>'] <<'EOF'\n<the exact text I approved>\nEOF");
+    // The text goes on stdin: a QUOTED heredoc with an end word no feedback quotes (bash; feedback-command.test.ts runs it),
+    // or a single-quoted here-string with UTF-8 output (PowerShell). Never double quotes, which expand $VAR and backticks.
+    expect(prompt).toContain(`<<'${FEEDBACK_HEREDOC_END}'\n${FEEDBACK_PROMPT_TEXT_LINE}\n${FEEDBACK_HEREDOC_END}\n`);
+    expect(prompt).toContain(`$OutputEncoding = [Text.UTF8Encoding]::new($false)\n@'\n${FEEDBACK_PROMPT_TEXT_LINE}\n'@ | plannotator feedback --stdin`);
+    expect(prompt).not.toContain("<<'EOF'");
     expect(prompt).not.toContain('feedback "');
     expect(prompt).toContain('`plannotator feedback --help`');
     expect(prompt).toContain(`If \`plannotator\` is not found, use ${BIN} in its place.`);

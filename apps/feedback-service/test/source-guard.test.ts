@@ -38,6 +38,11 @@ describe("the Worker only ever inserts", () => {
     expect(names).toContain("targets/cloudflare.ts");
   });
 
+  test("wrangler.toml has only the known tables: nothing else (alias, build, rules, env.*) can change what it bundles or runs", () => {
+    const config = Bun.TOML.parse(readFileSync(join(root, "wrangler.toml"), "utf-8")) as Record<string, unknown>;
+    expect(Object.keys(config).sort()).toEqual(["compatibility_date", "d1_databases", "main", "name", "ratelimits", "vars"]);
+  });
+
   test("everything wrangler bundles from `main` is this package's own code, which the scan covers", () => {
     const main = /^main\s*=\s*"([^"]+)"/m.exec(readFileSync(join(root, "wrangler.toml"), "utf-8"))![1]!;
     const scanned = new Set(sources.map((s) => s.file));

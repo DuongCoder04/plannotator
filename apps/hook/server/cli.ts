@@ -1,6 +1,7 @@
 import { GUIDE_CLI_USAGE } from "@plannotator/server/guide-cli";
 import { T3_CLI_USAGE } from "@plannotator/t3-code/usage";
 import { INBOX_CARD_COLUMNS } from "@plannotator/core/inbox-types";
+import { FEEDBACK_HEREDOC_END } from "@plannotator/core/product-feedback";
 
 const HELP_FLAGS = new Set(["--help", "-h"]);
 
@@ -168,7 +169,7 @@ export function formatTopLevelHelp(options: { board?: boolean } = {}): string {
     "  plannotator inbox [--background | --no-open | --open] [--tailscale]",
     "  plannotator inbox mcp",
     ...(options.board === true ? ["  plannotator card <create|move|say|link|ship|drop|list> ..."] : []),
-    "  plannotator feedback --stdin [--category <bug|idea|other>] [--contact <text>] <<'EOF'",
+    `  plannotator feedback --stdin [--category <bug|idea|other>] [--contact '<text>'] <<'${FEEDBACK_HEREDOC_END}'`,
     "  plannotator update [--check]",
     "  plannotator uninstall [--purge] [--yes] [--dry-run]",
     "  plannotator improve-context",
@@ -232,9 +233,9 @@ export const CARD_COMMAND_USAGE = [
  */
 export const FEEDBACK_COMMAND_USAGE = [
   "Usage:",
-  "  plannotator feedback --stdin [--category <bug|idea|other>] [--contact '<how to reach you>'] <<'EOF'",
+  `  plannotator feedback --stdin [--category <bug|idea|other>] [--contact '<how to reach you>'] <<'${FEEDBACK_HEREDOC_END}'`,
   "  <the message, exactly as the person approved it>",
-  "  EOF",
+  `  ${FEEDBACK_HEREDOC_END}`,
   "",
   "Sends feedback about Plannotator to its maintainers and prints \"Sent\".",
   "What is sent: the message, the category and contact if given, the Plannotator",
@@ -243,10 +244,21 @@ export const FEEDBACK_COMMAND_USAGE = [
   "",
   "Agents: send only the person's own feedback. Show them the exact text (and",
   "category and contact) first, and run this only after they say yes. Pass the",
-  "message on stdin with a QUOTED heredoc (<<'EOF', quotes included) so the shell",
-  "changes nothing: never inside double quotes, where $VAR, backticks and $(...)",
-  "are expanded. Put a contact in single quotes. In PowerShell, pipe a single-quoted",
-  "here-string: @'<newline>…<newline>'@ | plannotator feedback --stdin",
+  `message on stdin with a QUOTED heredoc (<<'${FEEDBACK_HEREDOC_END}', quotes included)`,
+  "so the shell changes nothing. Never put it inside double quotes, in any shell:",
+  "they expand $VAR, backticks and $(...). If a line of the message is exactly the",
+  "end word, pick another. Put a contact in single quotes, a ' in it written as '\\''.",
+  "",
+  "Example (bash, zsh, sh):",
+  `  plannotator feedback --stdin --category idea --contact 'ada@example.com' <<'${FEEDBACK_HEREDOC_END}'`,
+  "  The list jumps to the top after a reload.",
+  `  ${FEEDBACK_HEREDOC_END}`,
+  "",
+  "Example (PowerShell; UTF-8 so accents and emoji survive; a ' in the contact is ''):",
+  "  $OutputEncoding = [Text.UTF8Encoding]::new($false)",
+  "  @'",
+  "  The list jumps to the top after a reload.",
+  "  '@ | plannotator feedback --stdin --category idea",
   "",
   "Options:",
   "  --stdin, -       Read the message from stdin (up to 4000 characters)",

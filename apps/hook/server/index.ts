@@ -317,7 +317,7 @@ const rawArgs = process.argv.slice(2);
     );
   }
 }
-// `plannotator feedback "<message>"`: the person's feedback about Plannotator,
+// `plannotator feedback --stdin`: the person's feedback about Plannotator,
 // sent to the feedback Worker (feedback-command.ts). Before the strict-annotate
 // parse: it takes its own flags, and its own --help.
 {

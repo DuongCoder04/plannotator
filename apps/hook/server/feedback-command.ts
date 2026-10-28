@@ -6,7 +6,7 @@
  * person has seen the exact text and said yes.
  *
  * The message comes on stdin (`--stdin` or `-`), which agents use with a
- * quoted heredoc (`<<'EOF'`) so the shell changes nothing in the approved text:
+ * quoted heredoc (`<<'PLANNOTATOR_FEEDBACK_END'`, FEEDBACK_HEREDOC_END) so the shell changes nothing in the approved text:
  * no `$VAR`, no backticks, no `$(…)`. Loose words still work for a quick
  * message typed by hand. Whitespace around the message is trimmed (the
  * heredoc's closing newline with it); everything inside arrives as written.
@@ -21,6 +21,7 @@
 
 import {
   FEEDBACK_CATEGORIES,
+  FEEDBACK_HEREDOC_END,
   FEEDBACK_UNAVAILABLE,
   feedbackInputError,
   feedbackOsName,
@@ -41,7 +42,7 @@ export type ParsedFeedbackCommand =
   | { ok: true; help: false; stdin: boolean; message: string; category: FeedbackCategory | null; contact: string | null }
   | { ok: false; error: string };
 
-const USAGE_HINT = "Give the message on stdin: plannotator feedback --stdin <<'EOF' … EOF";
+const USAGE_HINT = `Give the message on stdin: plannotator feedback --stdin <<'${FEEDBACK_HEREDOC_END}' … ${FEEDBACK_HEREDOC_END}`;
 
 export function parseFeedbackCommand(argv: readonly string[]): ParsedFeedbackCommand {
   const words: string[] = [];

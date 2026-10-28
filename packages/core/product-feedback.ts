@@ -55,6 +55,14 @@ export interface ProductFeedbackPayload {
  */
 export const FEEDBACK_UNAVAILABLE = "Couldn't send feedback right now; nothing was saved.";
 
+/**
+ * The end word of the quoted heredoc that carries the message to
+ * `plannotator feedback --stdin` in the copied prompt, the CLI help, the skill
+ * and the README. Not `EOF`: feedback about shells can quote a line that is
+ * exactly `EOF`, which would end the heredoc early and run the rest as commands.
+ */
+export const FEEDBACK_HEREDOC_END = "PLANNOTATOR_FEEDBACK_END";
+
 /** How long one send waits for the Worker. Under 10 s, so the window (which goes through its Inbox) has its answer by then. */
 export const FEEDBACK_TIMEOUT_MS = 8_000;
 

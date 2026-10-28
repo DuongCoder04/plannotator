@@ -57,15 +57,16 @@ itself, after the person has seen the exact text and said yes:
 ```bash
 curl -sS -X POST https://plannotator-feedback.plannotator.workers.dev/feedback \
   -H 'Content-Type: application/json' \
-  --data-binary @- <<'EOF'
+  --data-binary @- <<'PLANNOTATOR_FEEDBACK_END'
 {"message":"<the person's words, JSON-escaped>","category":"idea","surface":"cli"}
-EOF
+PLANNOTATOR_FEEDBACK_END
 ```
 
-The body goes through a quoted heredoc (`<<'EOF'`, quotes included), so the
-shell expands nothing in it: no `$VAR`, no backticks, no `$(…)`, and a `'` in
-the words needs no escaping. Only JSON's own escapes apply (`\"`, `\\`, `\n`
-for a line break). Never put the words in a double-quoted shell string.
+The body goes through a quoted heredoc (`<<'PLANNOTATOR_FEEDBACK_END'`, quotes
+included), so the shell expands nothing in it: no `$VAR`, no backticks, no
+`$(…)`, and a `'` in the words needs no escaping. Only JSON's own escapes apply
+(`\"`, `\\`, `\n` for a line break), so the body is one line and can never be
+exactly the end word. Never put the words in a double-quoted shell string.
 
 ## What is stored
 
