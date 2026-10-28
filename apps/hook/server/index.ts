@@ -852,6 +852,10 @@ const pasteApiUrl = process.env.PLANNOTATOR_PASTE_URL || undefined;
 //     shell tool; QWEN_CODE=1 is set for the shell tool only). The plan hook
 //     also knows Qwen from its payload (PermissionRequest + exit_plan_mode),
 //     and the extension's hook entry sets PLANNOTATOR_ORIGIN=qwen-code.
+//     Known limit: Qwen exports QWEN_CODE_SESSION_ID to every child, so a
+//     Claude Code started from a Qwen shell reads as Qwen here (and Qwen
+//     started from a Claude shell carries CLAUDECODE, so env alone cannot
+//     tell the nearer host).
 //   > oh-my-pi harness (OMPCODE) — checked last because OMP exports OMPCODE
 //     into every shell it spawns; runtimes launched from an OMP session must
 //     still be detected as themselves. OMPCODE still wins over the terminal

@@ -46,6 +46,22 @@ describe("Qwen Code extension", () => {
     expect(hook.env?.PLANNOTATOR_ORIGIN).toBe("qwen-code");
   });
 
+  test("every hook timeout is read the same by old and new Qwen", () => {
+    // Qwen before 2026-09-12 read every command-hook timeout as milliseconds;
+    // newer Qwen reads 1000 or more as milliseconds and less as seconds. So a
+    // value under 1000 (e.g. 5) is 5 ms on an older Qwen.
+    for (const groups of Object.values(hooks())) {
+      for (const group of groups) {
+        for (const hook of group.hooks) {
+          expect(hook.timeout).toBeGreaterThanOrEqual(1000);
+        }
+      }
+    }
+    const context = hooks().PreToolUse!.find((g) => g.matcher === "enter_plan_mode")!.hooks[0]!;
+    expect(context.command).toBe("plannotator improve-context");
+    expect(context.timeout).toBe(5000);
+  });
+
   test("every hook names an origin Plannotator knows", () => {
     for (const groups of Object.values(hooks())) {
       for (const group of groups) {
