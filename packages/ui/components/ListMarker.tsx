@@ -16,17 +16,14 @@ import React from 'react';
  * Interactivity is opt-in: the Viewer passes `interactive` + `onToggle`
  * for click-to-toggle checkboxes; the diff view leaves both undefined.
  *
- * The glyph spans carry `data-decorative`: a bullet and a numeral are drawn by
- * the renderer and are not text the document contains, so annotation anchoring
- * (`utils/renderedText`) must not see them. This matters most for ordered
- * items, whose numeral comes from the item's POSITION — CommonMark renumbers
- * `1. / 2. / 5.` as 1, 2, 3 — while a quote of that source line rendered on its
- * own has no list to be positioned in.
- *
- * Deliberately not `aria-hidden`: these divs carry no list semantics, so the
- * glyph is the only thing telling assistive tech this is a list item. The flag
- * also sits on the glyphs rather than the wrapper, which is the checkbox itself
- * when interactive.
+ * The marker carries `annotation-exclude` because it is `select-none`: the
+ * browser leaves the bullet/numeral out of every selection string, so it is
+ * out of the quote an annotation stores. Without the class the highlighter
+ * still PAINTS it (a selection crossing two list items wraps the second item's
+ * bullet on the way), and the restore verification then compares a painted
+ * "a•b" against a stored "a\nb", rejects a perfectly good restore, and
+ * the annotation comes back from a reload with no highlight at all. Excluding
+ * it makes the two agree by construction.
  */
 interface ListMarkerProps {
   level: number;
@@ -57,28 +54,28 @@ export const ListMarker: React.FC<ListMarkerProps> = ({
 
   return (
     <span
-      className={`select-none shrink-0 self-start flex items-center gap-1${interactive ? ' cursor-pointer' : ''}`}
+      className={`annotation-exclude select-none shrink-0 self-start flex items-center gap-1${interactive ? ' cursor-pointer' : ''}`}
       onClick={handleClick}
       role={interactive ? 'checkbox' : undefined}
       aria-checked={interactive ? checked : undefined}
     >
       {showNumeral && (
-        <span data-decorative="true" className="text-primary/60 tabular-nums text-right" style={{ minWidth: '1.5rem' }}>
+        <span className="text-primary/60 tabular-nums text-right" style={{ minWidth: '1.5rem' }} data-list-numeral="">
           {orderedIndex}.
         </span>
       )}
       {isCheckbox ? (
         checked ? (
-          <svg className="w-4 h-4 text-success mt-[3px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+          <svg data-list-check="" className="w-4 h-4 text-success mt-[3px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         ) : (
-          <svg className={`w-4 h-4 text-muted-foreground/50 mt-[3px]${interactive ? ' hover:text-muted-foreground transition-colors' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <svg data-list-check="" className={`w-4 h-4 text-muted-foreground/50 mt-[3px]${interactive ? ' hover:text-muted-foreground transition-colors' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
             <circle cx="12" cy="12" r="9" />
           </svg>
         )
       ) : !showNumeral ? (
-        <span data-decorative="true" className="text-primary/60">{bullet}</span>
+        <span className="text-primary/60">{bullet}</span>
       ) : null}
     </span>
   );

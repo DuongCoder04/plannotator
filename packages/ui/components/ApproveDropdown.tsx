@@ -1,6 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import type { Agent } from '../hooks/useAgents';
-import { getAgentSwitchSettings, saveAgentSwitchSettings, type AgentSwitchSettings } from '../utils/agentSwitch';
+import { useDismissablePopover } from '../hooks/useDismissablePopover';
+import { agentSwitchTargetLabel, getAgentSwitchDefaults, saveAgentSwitchSettings, type AgentSwitchSettings } from '../utils/agentSwitch';
+import { useConfigValue } from '../config/useConfig';
 
 interface ApproveDropdownProps {
   onApprove: () => void;
@@ -10,12 +12,7 @@ interface ApproveDropdownProps {
 }
 
 function getSelectedLabel(setting: AgentSwitchSettings, agents: Agent[]): string | null {
-  if (setting.switchTo === 'disabled') return null;
-  if (setting.switchTo === 'custom' && setting.customName) {
-    return setting.customName;
-  }
-  const match = agents.find(a => a.id.toLowerCase() === setting.switchTo.toLowerCase());
-  return match?.name ?? setting.switchTo;
+  return agentSwitchTargetLabel(setting, agents);
 }
 
 function isSelected(agentId: string, setting: AgentSwitchSettings): boolean {
@@ -36,29 +33,24 @@ export const ApproveDropdown: React.FC<ApproveDropdownProps> = ({
   disabled = false,
   isLoading = false,
 }) => {
-  const [setting, setSetting] = useState<AgentSwitchSettings>(() => getAgentSwitchSettings('plan'));
+  // Read reactively: config.json's value lands through configStore.init()
+  // once /api/plan answers, which may be after this mounts (#1390).
+  const stored = useConfigValue('agentSwitch');
+  const setting: AgentSwitchSettings = stored ?? getAgentSwitchDefaults('plan');
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handleClickOutside = (event: PointerEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsOpen(false);
-    };
-    document.addEventListener('pointerdown', handleClickOutside);
-    document.addEventListener('keydown', handleEscape);
-    return () => {
-      document.removeEventListener('pointerdown', handleClickOutside);
-      document.removeEventListener('keydown', handleEscape);
-    };
-  }, []);
+  // Shared dismissal (outside pointerdown + Escape), active only while open —
+  // the old always-on listeners were no-ops when closed. The hook consumes the
+  // dismissing Escape so it cannot double as a host-ladder Escape.
+  const dismiss = useCallback(() => setIsOpen(false), []);
+  useDismissablePopover({
+    enabled: isOpen,
+    ref: dropdownRef,
+    onDismiss: dismiss,
+  });
 
   const handleSelect = (newSetting: AgentSwitchSettings) => {
-    setSetting(newSetting);
     saveAgentSwitchSettings(newSetting);
     setIsOpen(false);
   };
@@ -120,7 +112,10 @@ export const ApproveDropdown: React.FC<ApproveDropdownProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-1 w-52 rounded-lg border border-border bg-popover shadow-xl z-[70] overflow-hidden py-1">
+        <div
+          data-pn-dismissable-popover="true"
+          className="absolute right-0 top-full mt-1 w-52 rounded-lg border border-border bg-popover shadow-xl z-[70] overflow-hidden py-1"
+        >
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/70 font-medium">
             Switch to agent
           </div>

@@ -17,6 +17,8 @@ import {
   type ThemePair,
 } from '../utils/themeRegistry';
 import type { Mode } from './themeModes';
+import { usePrintMedia } from '../hooks/usePrintMedia';
+import { markRootPlatform } from '../utils/platform';
 
 // Kept here because published consumers already import Mode from ThemeProvider.
 export type { Mode } from './themeModes';
@@ -181,11 +183,36 @@ export function ThemeProvider({
 
   const [systemIsLight, setSystemIsLight] = useState(getSystemIsLight);
 
+  // Paper is white: printing renders the LIGHT half of the user's pair, on
+  // every surface at once. That is what the print stylesheet has always
+  // assumed (white ground, near-black text) and what a dark-palette page could
+  // not deliver on its own — a Mermaid label, drawn as HTML inside
+  // `<foreignObject>`, took the stylesheet's near-black text onto a near-black
+  // node fill and printed illegibly. Light-mode users see no change.
+  const printThemeRef = useRef<{ enter: () => void; exit: () => void }>({ enter: () => {}, exit: () => {} });
+  const printing = usePrintMedia({
+    // Applied from inside `beforeprint`, because the print snapshot is taken
+    // before React would flush the state update below. The re-render then
+    // applies the same classes, so the two can never disagree.
+    onEnter: () => printThemeRef.current.enter(),
+    onExit: () => printThemeRef.current.exit(),
+  });
+
   // Keep the OS-resolved preference separate from the half it selects.
-  const preferredMode: 'dark' | 'light' =
+  const screenPreferredMode: 'dark' | 'light' =
     mode === 'system' ? (systemIsLight ? 'light' : 'dark') : mode;
+  const preferredMode: 'dark' | 'light' = printing ? 'light' : screenPreferredMode;
   const colorTheme = resolvePairTheme(pair, preferredMode);
   const resolvedMode = resolveThemeMode(colorTheme, preferredMode);
+
+  const applyHalf = useCallback((half: ThemeHalf) => {
+    const theme = resolvePairTheme(configStore.get('themePair'), half);
+    applyThemeClasses(theme, resolveThemeMode(theme, half));
+  }, []);
+  printThemeRef.current = {
+    enter: () => applyHalf('light'),
+    exit: () => applyHalf(screenPreferredMode),
+  };
 
   // Read by the legacy setColorTheme, which must target the half on screen
   // without re-creating its callback on every mode change.
@@ -197,6 +224,8 @@ export function ThemeProvider({
   // without this the first frame has no valid --background/--foreground.
   if (typeof window !== 'undefined') {
     applyThemeClasses(colorTheme, resolvedMode);
+    // theme.css scopes the Linux-only font-feature rule to this class (#1961).
+    markRootPlatform();
   }
 
   // Keep class in sync after state changes
