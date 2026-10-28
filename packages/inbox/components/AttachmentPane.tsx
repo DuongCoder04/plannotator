@@ -12,6 +12,7 @@ import {
 } from '@plannotator/core/inbox-types';
 import { CodeFileView } from '@plannotator/ui/components/CodeFilePopout';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
+import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
@@ -43,6 +44,7 @@ import {
 } from '../attachments';
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
+import { inboxMarkdownImageBase } from '../images';
 import { ImageAttachmentView } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
 import { VideoAttachmentView, type VideoAttachmentViewHandle } from './VideoAttachmentView';
@@ -327,6 +329,13 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // The current file cannot be read (gone, or no longer the file that was sent): the sent version opens.
   const currentUnavailable = attachment.unavailable !== null;
   const effectiveVersion = currentUnavailable ? 'sent' : version;
+  // Images in a Markdown file load relative to its folder, for the version on screen (#2228); one
+  // that cannot load is drawn as its alt text, as in a message body (Thread.tsx).
+  const imageBaseDir = inboxMarkdownImageBase(attachment.id, effectiveVersion);
+  const resolveImage = useCallback<ImageResolver>(
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    [imageBaseDir],
+  );
   // Data and log files are drawn as code (inboxViewKind).
   const kind = inboxViewKind(attachment.kind, attachment.name);
   // Text kinds read through the view route; an image draws from its own route, a PDF or a file downloads.
@@ -1755,11 +1764,13 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
           {view && !isHtml && !isCode && (
             <div className="ib-docscroll bg-card" data-look="clean">
+              <ImageResolverContext.Provider value={resolveImage}>
               <Viewer
                 key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
                 ref={viewerRef}
                 blocks={blocks}
                 markdown={view.text}
+                imageBaseDir={imageBaseDir}
                 questionDecisionLines={false}
                 annotations={annotations}
                 mentionSource={props.mentionSource}
@@ -1780,6 +1791,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 onRestoreReport={(report) => setUnanchored(new Set(report.unanchored))}
                 suggestComment={suggestion?.phrase ? (selected) => suggestionFor(view.text, suggestion, selected) : undefined}
               />
+              </ImageResolverContext.Provider>
             </div>
           )}
         </div>
