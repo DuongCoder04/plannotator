@@ -213,6 +213,7 @@ import type { CodeFileAnnotationInput } from '@plannotator/ui/components/CodeFil
 import type { DiffFile, AnnotationScrollTarget } from './types';
 import { annotationMatchesPrScope, proseAnnotationMatchesPr } from './utils/annotationScope';
 import { annotationNavigation, reanchorCodeAnnotations, restorableViewedFiles } from './utils/codeAnnotationAnchor';
+import { localReviewDraftTransport, withLocalReviewTarget } from './utils/localReviewDraft';
 import type { DiffOption, WorktreeInfo, GitContext, SinceBaseSections, CommitDiffInfo, ReviewSourceKind } from '@plannotator/shared/types';
 import { SectionsPanel } from './components/SectionsPanel';
 import { CommitsPanel } from './components/CommitsPanel';
@@ -679,6 +680,14 @@ const ReviewApp: React.FC = () => {
   // Echoed on every freshness probe so the server can answer per-client:
   // "your snapshot moved" is independent of whether the VCS changed.
   const [snapshotId, setSnapshotId] = useState<string | undefined>(undefined);
+  const [localDraftTarget, setLocalDraftTarget] = useState<string | null>(null);
+  // A fresh id per mount: a reloaded page no longer holds other targets' comments.
+  const [localDraftClientId] = useState(() => `${Date.now()}-${generateId()}`);
+  const localDraftTransport = useMemo(() => localDraftTarget ? localReviewDraftTransport(localDraftTarget, localDraftClientId) : undefined, [localDraftTarget, localDraftClientId]);
+  // Always sent: a page whose last switch landed on no target must still let
+  // its decision clear the targets it saved. PR drafts ignore it.
+  const feedbackUrl = `/api/feedback?client=${localDraftClientId}`;
+  const exitUrl = `/api/exit?client=${localDraftClientId}&`;
   const semanticDiffUsable = semanticDiffEnabled && semanticDiffAvailable;
   const callFlowAvailable = callFlowEnabled && callFlowAdvert.available;
   const { state: callFlowAnalysis, retry: retryCallFlowAnalysis } = useCallFlowAnalysis(snapshotId, callFlowAvailable);
@@ -707,6 +716,7 @@ const ReviewApp: React.FC = () => {
   const [openStatePinned, setOpenStatePinned] = useState(false);
   const [agentCwd, setAgentCwd] = useState<string | null>(null);
   const [isLoadingDiff, setIsLoadingDiff] = useState(false);
+  const diffSwitchSeqRef = useRef(0);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
@@ -1201,15 +1211,16 @@ const ReviewApp: React.FC = () => {
   }, [annotations, externalAnnotations]);
   const allAnnotationsRef = useRef(allAnnotations);
   allAnnotationsRef.current = allAnnotations;
-  // What the diff surfaces draw inline. Same array when nothing is outdated,
-  // so non-PR sessions see no identity change.
+  // Inline comments exclude outdated anchors and comments bound to another
+  // local target; the sidebar still retains the session-wide list.
   const diffAnnotations = useMemo(
-    () => (allAnnotations.some((a) => a.outdated) ? allAnnotations.filter((a) => !a.outdated) : allAnnotations),
-    [allAnnotations],
+    () => allAnnotations.filter(a => !a.outdated && (!a.localReviewTarget || a.localReviewTarget === localDraftTarget)),
+    [allAnnotations, localDraftTarget],
   );
 
   // Auto-save code annotation drafts
-  const { draftBanner, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget } = useCodeAnnotationDraft({
+  const { draftBanner, draftTargetChanged, restoreDraft, getDraftGeneration, dismissDraft, adoptDraftTarget, flushBeforeSwitch: flushDraftBeforeSwitch } = useCodeAnnotationDraft({
+    transport: localDraftTransport,
     annotations: allAnnotations,
     descriptionAnnotations,
     commentAnnotations,
@@ -1231,11 +1242,11 @@ const ReviewApp: React.FC = () => {
   // the switched-to diff.
   const draftTargetMergeRef = useRef<(items: CodeDraftMergeItems) => void>(() => {});
   draftTargetMergeRef.current = (items) => {
-    const merged = prMetadata
-      ? reanchorCodeAnnotations(items.annotations, files, {
+    const merged = prMetadata || localDraftTarget
+      ? reanchorCodeAnnotations(withLocalReviewTarget(items.annotations, localDraftTarget, files, snapshotId, items.patchChanged), files, {
           currentSnapshot: snapshotId,
           patchChanged: items.patchChanged,
-          belongsToCurrentDiff: (a) => annotationMatchesPrScope(a, prMetadata.url, prDiffScope),
+          belongsToCurrentDiff: (a) => prMetadata ? annotationMatchesPrScope(a, prMetadata.url, prDiffScope) : a.localReviewTarget === localDraftTarget,
         })
       : items.annotations;
     if (merged.length > 0) {
@@ -1245,7 +1256,7 @@ const ReviewApp: React.FC = () => {
     if (items.descriptionAnnotations.length > 0) setDescriptionAnnotations((prev) => [...prev, ...items.descriptionAnnotations]);
     if (items.commentAnnotations.length > 0) setCommentAnnotations((prev) => [...prev, ...items.commentAnnotations]);
     const count = merged.length + items.descriptionAnnotations.length + items.commentAnnotations.length;
-    toast.success(`Restored ${count} unsent comment${count === 1 ? '' : 's'} for this ${mrLabel}`);
+    toast.success(`Restored ${count} unsent comment${count === 1 ? '' : 's'} for this ${prMetadata ? mrLabel : 'review'}`);
   };
 
   const handleRestoreDraft = useCallback(() => {
@@ -1255,12 +1266,12 @@ const ReviewApp: React.FC = () => {
     // screen. When the server served the draft for a different patch, every
     // in-scope line comment is verified (unstamped ones included); otherwise
     // only comments stamped with another snapshot are. Mismatches are marked
-    // outdated, never dropped or moved. Local reviews restore untouched.
-    const restoredAnnotations = prMetadata
-      ? reanchorCodeAnnotations(restored.annotations, files, {
+    // outdated, never dropped or moved. Local Git uses the same anchor check.
+    const restoredAnnotations = prMetadata || localDraftTarget
+      ? reanchorCodeAnnotations(withLocalReviewTarget(restored.annotations, localDraftTarget, files, snapshotId, restored.patchChanged), files, {
           currentSnapshot: snapshotId,
           patchChanged: restored.patchChanged,
-          belongsToCurrentDiff: (a) => annotationMatchesPrScope(a, prMetadata.url, prDiffScope),
+          belongsToCurrentDiff: (a) => prMetadata ? annotationMatchesPrScope(a, prMetadata.url, prDiffScope) : a.localReviewTarget === localDraftTarget,
         })
       : restored.annotations;
     if (restoredAnnotations.length > 0) setAnnotations(restoredAnnotations);
@@ -1270,7 +1281,7 @@ const ReviewApp: React.FC = () => {
     const restoredViewed = restorableViewedFiles(restored.viewedFiles, restored.patchChanged, files);
     if (restoredViewed.length > 0) setViewedFiles(new Set(restoredViewed));
     if (restored.autoViewSuppressed.length > 0) setAutoViewSuppressed(new Set(restored.autoViewSuppressed));
-  }, [restoreDraft, reviewHistory, files, prMetadata, prDiffScope, snapshotId]);
+  }, [restoreDraft, reviewHistory, files, prMetadata, prDiffScope, snapshotId, localDraftTarget]);
 
   // PR mode (#1590): whenever the diff on screen changes (push picked up,
   // layer/full-stack switch, in-place PR switch back), re-check line comments
@@ -1283,17 +1294,17 @@ const ReviewApp: React.FC = () => {
   const knownPrMetadataRef = useRef(new Map<string, PRMetadata>());
   if (prMetadata) knownPrMetadataRef.current.set(prMetadata.url, prMetadata);
   useEffect(() => {
-    if (!prMetadata || !snapshotId) return;
-    if (prDiffScope !== 'full-stack') knownPrSnapshotsRef.current.set(prMetadata.url, snapshotId);
+    if ((!prMetadata && !localDraftTarget) || !snapshotId) return;
+    if (prMetadata && prDiffScope !== 'full-stack') knownPrSnapshotsRef.current.set(prMetadata.url, snapshotId);
     const next = reanchorCodeAnnotations(annotationsRef.current, files, {
       currentSnapshot: snapshotId,
-      belongsToCurrentDiff: (a) => annotationMatchesPrScope(a, prMetadata.url, prDiffScope),
+      belongsToCurrentDiff: (a) => prMetadata ? annotationMatchesPrScope(a, prMetadata.url, prDiffScope) : a.localReviewTarget === localDraftTarget,
     });
     if (next !== annotationsRef.current) {
       annotationsRef.current = next;
       setAnnotations(next);
     }
-  }, [snapshotId, files, prMetadata, prDiffScope]);
+  }, [snapshotId, files, prMetadata, prDiffScope, localDraftTarget]);
 
   // Agent Instructions — copy a clipboard payload teaching external agents
   // (Claude Code, Codex, etc.) how to POST review comments into this session
@@ -2078,6 +2089,7 @@ const ReviewApp: React.FC = () => {
     activeGitButlerContext,
     files,
     snapshotId,
+    localDraftTarget,
   );
 
   // Context rule shared by both auto-open effects below (and mirrored by
@@ -2536,6 +2548,7 @@ const ReviewApp: React.FC = () => {
         baseBehindRemote?: boolean;
         openStatePinned?: boolean;
         snapshotId?: string;
+        localDraftTarget?: string | null;
         serverConfig?: Record<string, unknown> & { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean };
         autoUpdateNotice?: unknown;
         updateAvailable?: unknown; updateCheckFailing?: unknown;
@@ -2558,6 +2571,7 @@ const ReviewApp: React.FC = () => {
         updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
         adoptPackageChangesConfig(data.serverConfig as Record<string, unknown> | undefined);
         setSnapshotId(data.snapshotId);
+        setLocalDraftTarget(data.localDraftTarget ?? null);
         setAiEnabled(data.aiEnabled !== false);
         const apiFiles = orderFilesBySections(parseDiffToFiles(data.rawPatch), data.sections);
         setDiffData({
@@ -3410,9 +3424,13 @@ const ReviewApp: React.FC = () => {
       contentRefresh?: boolean;
     },
   ): Promise<boolean> => {
+    const switchSeq = ++diffSwitchSeqRef.current;
     setIsLoadingDiff(true);
     try {
       await flushReviewProgress();
+      if (switchSeq !== diffSwitchSeqRef.current) return true;
+      if (localDraftTarget) await flushDraftBeforeSwitch();
+      if (switchSeq !== diffSwitchSeqRef.current) return true;
       const res = await fetch('/api/diff/switch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3453,11 +3471,19 @@ const ReviewApp: React.FC = () => {
         markdownPreviewSupported?: boolean;
         repoFilesSupported?: boolean;
         superseded?: boolean;
+        localDraftTarget?: string | null;
+        draftState?: CodeDraftTargetState;
       };
 
+      // Network delivery can reorder even successful responses. Only the
+      // latest request may adopt a target or release its draft-save pause.
+      if (switchSeq !== diffSwitchSeqRef.current) return true;
       // A newer switch superseded this one server-side — ignore this stale
       // body so it can't overwrite the newer result (last-response-wins).
-      if (data.superseded) return true;
+      if (data.superseded) {
+        if (localDraftTarget) adoptDraftTarget(undefined);
+        return true;
+      }
       // Leave-Commits restore memo: any APPLIED switch to a non-commit diff
       // (the restore itself, the Git-status since-base reset, a manual
       // DiffTypePicker escape, a worktree switch) ends the commit family, so
@@ -3467,6 +3493,12 @@ const ReviewApp: React.FC = () => {
       // switches never get here either, keeping the memo for a later retry.
       if (!isCommitDiffType(data.diffType)) preCommitDiffRef.current = null;
       setSnapshotId(data.snapshotId);
+      setLocalDraftTarget(data.localDraftTarget ?? null);
+      if (localDraftTarget || data.localDraftTarget) {
+        // An applied switch onto no target (e.g. git timed out) still resumes
+        // saving, so it passes an empty state rather than undefined.
+        adoptDraftTarget(data.draftState ?? { found: false, draftGeneration: null }, data.localDraftTarget ? localReviewDraftTransport(data.localDraftTarget, localDraftClientId) : undefined);
+      }
       // Session-constant in practice, but re-read from any payload that
       // carries it so the client stays in lockstep with whatever it last
       // applied (the server echoes the advert on the whole diff family).
@@ -3586,13 +3618,15 @@ const ReviewApp: React.FC = () => {
       setDiffError(data.error || null);
       return true;
     } catch (err) {
+      if (switchSeq !== diffSwitchSeqRef.current) return true;
       console.error('Failed to switch diff:', err);
+      if (localDraftTarget) adoptDraftTarget(undefined);
       setDiffError(err instanceof Error ? err.message : 'Failed to switch diff');
       return false;
     } finally {
-      setIsLoadingDiff(false);
+      if (switchSeq === diffSwitchSeqRef.current) setIsLoadingDiff(false);
     }
-  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile, applySemanticDiffAdvert, applyCallFlowAdvert, clearPendingSelection, autoViewedEnabled, diffType, reviewProgressStatus, flushReviewProgress]);
+  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile, applySemanticDiffAdvert, applyCallFlowAdvert, clearPendingSelection, autoViewedEnabled, diffType, reviewProgressStatus, flushReviewProgress, localDraftTarget, localDraftClientId, flushDraftBeforeSwitch, adoptDraftTarget]);
 
   // Switch the base branch the current diff compares against.
   // Only triggers a refetch when the active mode actually uses a base.
@@ -4463,7 +4497,7 @@ const ReviewApp: React.FC = () => {
       const agentSwitchSettings = getAgentSwitchSettings('review');
       const effectiveAgent = getEffectiveAgentName(agentSwitchSettings);
 
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(feedbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession({
@@ -4496,14 +4530,14 @@ const ReviewApp: React.FC = () => {
     } finally {
       sendSettled();
     }
-  }, [feedbackMarkdown, allAnnotations, getDraftGeneration, flushReviewProgress]);
+  }, [feedbackUrl, feedbackMarkdown, allAnnotations, getDraftGeneration, flushReviewProgress]);
 
   // Exit review session without sending any feedback
   const handleExit = useCallback(async () => {
     setIsExiting(true);
     try {
       await flushReviewProgress();
-      const res = await fetch(withServerSessionQuery(`/api/exit?draftGeneration=${getDraftGeneration()}`), { method: 'POST' });
+      const res = await fetch(withServerSessionQuery(`${exitUrl}draftGeneration=${getDraftGeneration()}`), { method: 'POST' });
       if (await noteServerSessionMismatch(res)) {
         setIsExiting(false);
         return;
@@ -4517,7 +4551,7 @@ const ReviewApp: React.FC = () => {
       console.error('Failed to exit review:', error);
       setIsExiting(false);
     }
-  }, [getDraftGeneration, flushReviewProgress]);
+  }, [exitUrl, getDraftGeneration, flushReviewProgress]);
 
   // Approve — bare (LGTM), with a composer note, or with the live annotations
   // riding along (PR5 delivery, spec §6.4). The old LGTM placeholder is gone:
@@ -4531,7 +4565,7 @@ const ReviewApp: React.FC = () => {
     sendStarted();
     try {
       await flushReviewProgress();
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(feedbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(buildReviewApprovalBody({
@@ -4564,7 +4598,7 @@ const ReviewApp: React.FC = () => {
     } finally {
       sendSettled();
     }
-  }, [getDraftGeneration, feedbackMarkdown, allAnnotations, flushReviewProgress]);
+  }, [feedbackUrl, getDraftGeneration, feedbackMarkdown, allAnnotations, flushReviewProgress]);
   // The failure toast's Retry and Copy feedback read the page when clicked:
   // Retry runs the latest handler, Copy copies what that handler would send.
   const latestDecision = {
@@ -4632,10 +4666,11 @@ const ReviewApp: React.FC = () => {
   const commitReviewNote = useCallback((text: string): string | null => {
     const note = createGeneralReviewComment(text, identity);
     if (!note) return null;
+    if (localDraftTarget) note.localReviewTarget = localDraftTarget;
     annotationsRef.current = [...annotationsRef.current, note];
     setAnnotations(annotationsRef.current);
     return note.id;
-  }, [identity]);
+  }, [identity, localDraftTarget]);
 
   // Sidebar "+ General comment" — the durable human producer for a
   // scope:'general' review-level comment (spec §3.3). Unlike the submit note
@@ -4651,8 +4686,9 @@ const ReviewApp: React.FC = () => {
     if (submitted || busyWithDecision) return;
     const note = createGeneralReviewComment(text, identity);
     if (!note) return;
+    if (localDraftTarget) note.localReviewTarget = localDraftTarget;
     addCodeAnnotationsWithHistory([note]);
-  }, [identity, addCodeAnnotationsWithHistory, busyWithDecision, submitted]);
+  }, [identity, addCodeAnnotationsWithHistory, busyWithDecision, submitted, localDraftTarget]);
 
   // The commit above is a state write, so feedbackMarkdown/handleSendFeedback
   // (which close over `allAnnotations`) only see the note on the NEXT render.
@@ -5793,6 +5829,15 @@ const ReviewApp: React.FC = () => {
             />
           </div>
         </header>
+
+        {draftTargetChanged && (
+          <div role="status" className="shrink-0 flex items-center justify-between gap-3 border-b border-warning/20 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <span>Draft saving paused because the review target changed. Your comments are still in this tab.</span>
+            <button data-pn-touch-target type="button" onClick={handleRefreshStaleDiff} disabled={isLoadingDiff} className="shrink-0 font-medium underline underline-offset-2 disabled:opacity-60">
+              {isLoadingDiff ? 'Refreshing…' : 'Refresh review'}
+            </button>
+          </div>
+        )}
 
         {isCompactTouchLayout && (
           platformActionError ? (
