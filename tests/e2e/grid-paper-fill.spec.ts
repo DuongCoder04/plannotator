@@ -33,6 +33,7 @@ const LONG = '# Migrate the settings store\n\n' + Array.from({ length: 16 }, (_,
 // Grid chosen, and every first-run dialog already seen, so the page opens on the plan.
 const COOKIES: [string, string][] = [
   ['plannotator-plan-look-choice-resolved', 'true'],
+  ['plannotator-plan-look-v2', 'resolved'],
   ['plannotator-grid-enabled', 'true'],
   ['plannotator-look-feel-announcement-seen', '2'],
   ['plannotator-announce-tui-herdr-seen', '1'],
