@@ -1144,7 +1144,7 @@ test('a touch phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no 
   }
 });
 
-test('a desktop window narrower than 768 px keeps every single key (the phone layout, no keycaps): J, E, Z, ], ?', async () => {
+test('a desktop window narrower than 768 px keeps every single key (the phone layout, no keycaps): J, E, Z, ], ?, and Escape out of Settings', async () => {
   const narrow: BrowserContext = await page.context().browser()!.newContext({ viewport: { width: 600, height: 900 } });
   try {
     const p = await narrow.newPage();
@@ -1190,6 +1190,18 @@ test('a desktop window narrower than 768 px keeps every single key (the phone la
     // ? opens the map.
     await p.keyboard.press('Shift+?');
     await expect(p.locator('[data-dialog="shortcut-map"]')).toBeVisible();
+    await p.keyboard.press('Escape');
+    await expect(p.locator('[data-dialog="shortcut-map"]')).toHaveCount(0);
+    // G S goes to Settings from the list; Escape goes back to it, as in a wide window.
+    await p.goto(world.url);
+    await expect(p.locator('.ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first()).toBeVisible();
+    await p.locator('.ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first().focus();
+    await p.keyboard.press('g');
+    await p.keyboard.press('s');
+    await expect.poll(() => new URL(p.url()).hash).toMatch(/^#settings/);
+    await p.keyboard.press('Escape');
+    await expect.poll(() => new URL(p.url()).hash).toBe('');
+    await expect(p.locator('.ib-main .ib-lbody [data-thread-id]').filter({ visible: true }).first()).toBeVisible();
   } finally {
     await narrow.close();
   }
