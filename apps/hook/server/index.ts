@@ -225,6 +225,7 @@ import { exitOnUnknownSubcommand } from "./unknown-subcommand";
 import { completeAnnotateCommand } from "./annotate-command";
 import { ensureInboxRunning, runInboxCommand, selfCommand as inboxSelfCommand } from "./inbox-command";
 import { runCardCommand } from "./card-command";
+import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
@@ -314,6 +315,15 @@ const rawArgs = process.argv.slice(2);
         ensureRunning: () => ensureInboxRunning(cardDataDir),
       }),
     );
+  }
+}
+// `plannotator feedback --stdin`: the person's feedback about Plannotator,
+// sent to the feedback Worker (feedback-command.ts). Before the strict-annotate
+// parse: it takes its own flags, and its own --help.
+{
+  const args = rawArgs;
+  if (args[0] === "feedback") {
+    process.exit(await runFeedbackCommand(args.slice(1), { env: process.env, version: getCliVersion() ?? "dev" }));
   }
 }
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's
