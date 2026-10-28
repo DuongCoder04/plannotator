@@ -138,6 +138,24 @@ export async function createPiAIRuntime(options: CreatePiAIRuntimeOptions = {}):
 			} catch {
 				// OpenCode not available.
 			}
+
+			try {
+				await import("../generated/ai/providers/qwen-sdk.ts");
+				const qwenPath = whichCmd("qwen");
+				if (qwenPath) {
+					const provider = await ai.createProvider({
+						type: "qwen-sdk",
+						cwd,
+						qwenExecutablePath: qwenPath,
+					} as any);
+					const providerId = registry.register(provider);
+					// Discovery reads Qwen Code's settings.json (no process), and a
+					// session runs on qwen's own default model when none is picked.
+					deferModelDiscovery(providerId, provider, { blockSession: false });
+				}
+			} catch {
+				// Qwen Code not available.
+			}
 		};
 
 		const pullBridge = !options.sessionBridge && options.pullSessionBridge
