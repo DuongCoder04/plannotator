@@ -1323,7 +1323,11 @@ function Inbox() {
       // settlesOnBack, settleThread).
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
-      if (next) setShown((current) => (current && settlesOnBack(current, next) ? settleThread(current, latestRef.current!.sections, closed) : current));
+      if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
+        // A keyboard Back just put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect).
+        if (lastInput === 'keyboard') refocusRow.current = closed;
+        setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      }
       return;
     }
     if (prefersReducedMotion()) settleList('own', false);
@@ -3030,6 +3034,8 @@ function Inbox() {
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
   const focusAfterShow = useRef(false);
+  /** The row a keyboard Back over a covered list focused, which its settle redraws in another group. */
+  const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
     const from = slideFrom.current;
@@ -3054,9 +3060,14 @@ function Inbox() {
     const shownAll = focusAfterShow.current;
     focusAfterShow.current = false;
     const gone = listFocus.current;
+    const refocus = refocusRow.current;
+    refocusRow.current = null;
     const active = document.activeElement;
     const lost = !active || active === document.body;
-    if (body && lost && shownAll) {
+    const moved = body && refocus ? rowElement(body, refocus) : null;
+    if (moved && lost) {
+      moved.focus({ preventScroll: true });
+    } else if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
     } else if (body && lastInput === 'keyboard' && gone && lost && !rowElement(body, gone)) {

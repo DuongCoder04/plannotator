@@ -21,7 +21,7 @@
  *   held, read and left with Back, land in Holding up work, never in Quiet.
  * - A stacked window: questions that arrive while the thread is open, seen on
  *   sight, and a thread opened wide whose window narrows to stacked: Back puts
- *   the row in Holding up work, never in Quiet.
+ *   the row in Holding up work, never in Quiet (after Escape, focus on the row).
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * Proof (frames of the settle slowed tenfold, a video of it at full speed,
@@ -446,7 +446,7 @@ async function drawnIn(page: Page, id: string): Promise<string | null> {
 }
 
 // Chromium only: seen on sight needs the page focused and visible, which headless WebKit does not report.
-test('stacked window (Chromium, 900 px): questions that arrive while the thread is open, seen on sight, put the row in Holding up work on Back, never in Quiet', async ({ browser }: { browser: Browser }) => {
+test('stacked window (Chromium, 900 px): questions that arrive while the thread is open, seen on sight, put the row in Holding up work on a keyboard Back, focus with it, never in Quiet', async ({ browser }: { browser: Browser }) => {
   const context = await browser.newContext({ viewport: { width: 900, height: 900 }, colorScheme: 'dark' });
   try {
     const page = await context.newPage();
@@ -478,9 +478,14 @@ test('stacked window (Chromium, 900 px): questions that arrive while the thread 
     await expect(page.locator('section.ib-pane fieldset[data-question-key]')).toHaveCount(4);
     await page.locator('section.ib-pane fieldset[data-question-key]').first().scrollIntoViewIfNeeded();
     await expect.poll(() => serverRow(first), { timeout: 15_000 }).toEqual({ section: 'holding', unseen: 0 });
-    await back();
-    // Where its open questions put it, as the server says; not left drawn in Quiet.
+    // Back with the keyboard (Escape).
+    await page.keyboard.press('Escape');
+    await expect(page.locator('section.ib-pane')).toHaveCount(0);
+    await page.waitForTimeout(BEAT_MS + 300);
+    // Where its open questions put it, as the server says; not left drawn in Quiet. Focus moved with the row
+    // (redrawn in Holding up work), never dropped to the page.
     expect(await sectionOf(page, first)).toBe('holding');
+    expect(await focused(page)).toBe(first);
     await shot(page, '09-stackedSeen-arrival-while-open-after-back');
   } finally {
     await context.close();
