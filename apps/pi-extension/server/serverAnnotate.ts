@@ -1,6 +1,6 @@
 import { piUpdateAdvert } from "./update-advert.ts";
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
-import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
+import { annotateDocumentRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -398,11 +398,11 @@ export async function startAnnotateServer(options: {
 	const clientLeaseGraceMs = options.clientLeaseTestOverrides?.graceMs ?? ANNOTATE_CLIENT_LEASE_GRACE_MS;
 	const clientLeaseHeartbeatMs = options.clientLeaseTestOverrides?.heartbeatMs ?? ANNOTATE_CLIENT_LEASE_HEARTBEAT_MS;
 
-	// Diagram sources (.mmd/.mermaid/.dot/.gv) render through the diagram
-	// engine rather than the markdown pipeline: the document body stays the
+	// Diagram sources (.mmd/.mermaid/.dot/.gv) and AsciiDoc (.adoc) render
+	// through their own engine rather than the markdown pipeline: the document body stays the
 	// raw file text and /api/plan names the engine in `renderAs`. Mirrors
 	// packages/server/annotate.ts; the decision itself is shared and pure.
-	const diagramRenderKind = annotateDiagramRenderKind({
+	const documentRenderKind = annotateDocumentRenderKind({
 		filePath: options.filePath,
 		mode: options.mode || "annotate",
 		renderHtml: options.renderHtml,
@@ -996,7 +996,7 @@ export async function startAnnotateServer(options: {
 				clientLease: options.clientLeaseSupported
 					? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
 					: { enabled: false as const },
-				renderAs: displayRawHtml ? 'html' : diagramRenderKind ?? 'markdown',
+				renderAs: displayRawHtml ? 'html' : documentRenderKind ?? 'markdown',
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
 				convertHtml: options.convertHtml ?? false,

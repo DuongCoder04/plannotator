@@ -38,7 +38,7 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { LINK_WAITS_FOR_DRAFT_TITLE, linkWaitsForDraftDescription, typedCommentDraft } from './htmlLinkDraftGuard';
 import { createPortal } from 'react-dom';
 import { annotateFileFeedback, annotateMessageFeedback, wrapFeedbackForClipboard, type AnnotateFeedbackTemplates } from '@plannotator/shared/feedback-templates';
-import { diagramDocumentBlocks, parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, formatDraftAnnotationsForAsk, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
+import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, formatDraftAnnotationsForAsk, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
 import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/utils/skillCatalog';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import type { AnnotationRestoreReport } from '@plannotator/ui/hooks/useAnnotationHighlighter';
@@ -332,7 +332,7 @@ import {
 } from './annotateSubmission';
 import { applyRestoredAnchors } from './restoredAnchors';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
-import { blocksForDocument, collectSubmittedAnnotations, mergeExternalAnnotations, mergeExternalsIntoMessageEntries, resolveFeedbackSections } from './feedbackDocuments';
+import { blocksForDocument, blocksForRenderAs, collectSubmittedAnnotations, mergeExternalAnnotations, mergeExternalsIntoMessageEntries, resolveFeedbackSections } from './feedbackDocuments';
 import { buildDecisionSpec, type DecisionActionId, type DecisionMenuItem } from '@plannotator/ui/utils/decisionSpec';
 import { DecisionNoteDialog, type DecisionControlProps, type DecisionHandler } from '@plannotator/ui/components/DecisionControl';
 import { AgentSwitchMenuSection, PermissionModeMenuLine } from '@plannotator/ui/components/PlanDecisionMenuExtras';
@@ -563,11 +563,8 @@ const App: React.FC = () => {
     [displayedMarkdown, parseFrontmatter],
   );
   const blocks = useMemo(
-    () =>
-      diagramDocumentKind !== null
-        ? diagramDocumentBlocks(displayedMarkdown, diagramDocumentKind)
-        : parseMarkdownToBlocks(displayedMarkdown, { frontmatter: parseFrontmatter }),
-    [diagramDocumentKind, displayedMarkdown, parseFrontmatter],
+    () => blocksForRenderAs(displayedMarkdown, renderAs, parseFrontmatter),
+    [renderAs, displayedMarkdown, parseFrontmatter],
   );
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -2646,6 +2643,7 @@ const App: React.FC = () => {
     setShareHtml,
     setRenderAs,
     htmlRefresh.reloadGeneration,
+    renderAs,
   );
 
   useEffect(() => {
@@ -3996,6 +3994,8 @@ const App: React.FC = () => {
           // A bundle opens its first file once loaded (see the effect below).
           setMarkdown('');
         } else if (typeof data.plan === 'string') {
+          // An .adoc file renders through the AsciiDoc block parser.
+          if (data.renderAs === 'asciidoc') setRenderAs('asciidoc');
           // CM6 joins lines with \n; CRLF input would make an untouched
           // edit round-trip fabricate a whole-document diff. Normalize once.
           const normalizedPlan = data.plan.replace(/\r\n?/g, '\n');
@@ -7469,7 +7469,7 @@ const App: React.FC = () => {
           onAgentToolChange={agentTool.save}
           agentTerminalAvailable={showAgentTerminalControls}
           webmcpAvailable={webmcp.available}
-          documentTextSizeAvailable={renderAs === 'markdown'}
+          documentTextSizeAvailable={renderAs === 'markdown' || renderAs === 'asciidoc'}
           agentConnected={webmcpActivity.calls > 0}
           onCallbackFeedback={handleCallbackFeedback}
           onCallbackApprove={handleCallbackApprove}

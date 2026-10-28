@@ -2536,6 +2536,10 @@ Slice 1 of the Inbox thread extract (plan record, not in this repo). These pure 
 
 Publish core first, then ui, as always. These subpaths need no ui bump until ui imports them.
 
+## AsciiDoc documents (#1009; next ui + core release; additive, one widened setter)
+
+`@plannotator/core/annotatable` gains `DocumentRenderKind` (`DiagramRenderKind | "asciidoc"`), `documentRenderKindForPath`, `isDocumentRenderKind` and `annotateDocumentRenderKind`; `.adoc`/`.asciidoc` join the annotatable sets. `@plannotator/ui` gains `utils/asciidocParser` (`parseAsciidocToBlocks`, the same Block model as the markdown parser), `DocumentRenderAs` widens to include `'asciidoc'`, and share payloads may carry `r: 'asciidoc'`. `useSharing` takes an optional trailing `renderAs` and its `setRenderAs` parameter widens to `DocumentRenderAs`, so a host whose state is typed `'markdown' | 'html'` must widen its setter. Publish core first.
+
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 
 These are enforced socially and, where possible, by CI. They exist because a prior from-scratch reimplementation of this UI broke the app and was reverted.

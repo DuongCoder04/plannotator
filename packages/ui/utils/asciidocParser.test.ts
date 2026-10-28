@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { parseAsciidocToBlocks, parseDocumentToBlocks, transpileInline } from './asciidocParser';
+import { parseAsciidocToBlocks, transpileInline } from './asciidocParser';
 import { exportAnnotations } from './parser';
 import { AnnotationType, type Block } from '../types';
 
@@ -134,11 +134,41 @@ describe('parseAsciidocToBlocks — lists', () => {
 });
 
 describe('parseAsciidocToBlocks — tables', () => {
-  test('compact style: each line is a row, first row is header', () => {
-    const blocks = parse('|===\n|Name |Age\n|Ada |36\n|Alan |41\n|===');
+  test('cells flow into rows by the cols count; %header names the header', () => {
+    const blocks = parse('[%header,cols="1,2"]\n|===\n|Key\n|Value\n|a\n|one\n|b\n|two\n|===');
+    expect(blocks[0].content).toBe('| Key | Value |\n| --- | --- |\n| a | one |\n| b | two |');
+    expect(blocks[0].startLine).toBe(1);
+  });
+
+  test('options="header" with a cols multiplier', () => {
+    const blocks = parse('[cols="3*", options="header"]\n|===\n|A |B |C\n|1 |2 |3\n|===');
+    expect(blocks[0].content).toBe('| A | B | C |\n| --- | --- | --- |\n| 1 | 2 | 3 |');
+  });
+
+  test('a colspan fills the cells it covers; escaped pipes stay in the cell', () => {
+    const blocks = parse('|===\n|H1 |H2\n\n2+|wide\n|a \\| b |c\n|===');
+    expect(blocks[0].content).toBe('| H1 | H2 |\n| --- | --- |\n| wide |  |\n| a \\| b | c |');
+  });
+
+  test('a line without a pipe continues the previous cell', () => {
+    const blocks = parse('|===\n|Name |Notes\n\n|Ada |first line\nsecond line\n|===');
+    expect(blocks[0].content).toContain('| Ada | first line second line |');
+  });
+
+  test('first line followed by a blank line is the implicit header', () => {
+    const blocks = parse('|===\n|Name |Age\n\n|Ada |36\n|Alan |41\n|===');
     expect(types(blocks)).toEqual(['table']);
     expect(blocks[0].content).toBe(
       '| Name | Age |\n| --- | --- |\n| Ada | 36 |\n| Alan | 41 |',
+    );
+    expect(blocks[0].startLine).toBe(1);
+    expect(blocks[0].sourceLineCount).toBe(6);
+  });
+
+  test('without a header the first row stays a body row', () => {
+    const blocks = parse('|===\n|Name |Age\n|Ada |36\n|Alan |41\n|===');
+    expect(blocks[0].content).toBe(
+      '|  |  |\n| --- | --- |\n| Name | Age |\n| Ada | 36 |\n| Alan | 41 |',
     );
     expect(blocks[0].startLine).toBe(1);
     expect(blocks[0].sourceLineCount).toBe(5);
@@ -193,8 +223,8 @@ describe('parseAsciidocToBlocks — quotes, rules, images, misc', () => {
   test('unknown block macros degrade to literal paragraphs', () => {
     const blocks = parse('toc::[]\n\ninclude::other.adoc[]');
     expect(types(blocks)).toEqual(['paragraph', 'paragraph']);
-    expect(blocks[0].content).toBe('toc::[]');
-    expect(blocks[1].content).toBe('include::other.adoc[]');
+    expect(blocks[0].content).toBe('`toc::[]`');
+    expect(blocks[1].content).toBe('`include::other.adoc[]`');
   });
 
   test('[[anchor]] lines fold into the next block span', () => {
@@ -288,16 +318,132 @@ describe('line-number accuracy through exportAnnotations', () => {
   });
 });
 
-describe('parseDocumentToBlocks router', () => {
-  test('routes asciidoc and markdown to the right parser', () => {
-    const adoc = parseDocumentToBlocks('== Section', 'asciidoc');
-    expect(adoc[0].type).toBe('heading');
-    expect(adoc[0].level).toBe(2);
+describe('parseAsciidocToBlocks — real-world structure', () => {
+  test('a list item continues on the following lines', () => {
+    const blocks = parse('* first line\n  continues here\n* second');
+    expect(types(blocks)).toEqual(['list-item', 'list-item']);
+    expect(blocks[0].content).toBe('first line\ncontinues here');
+    expect(blocks[0].sourceLineCount).toBe(2);
+    expect(blocks[1].startLine).toBe(3);
+  });
 
-    const md = parseDocumentToBlocks('== Section', 'markdown');
-    expect(md[0].type).toBe('paragraph');
+  test('explicitly numbered lists keep their start number', () => {
+    const blocks = parse('3. third\n4. fourth');
+    expect(blocks.map((b) => [b.ordered, b.orderedStart])).toEqual([[true, 3], [true, 4]]);
+  });
 
-    const mdHeading = parseDocumentToBlocks('## Section', 'markdown');
-    expect(mdHeading[0].type).toBe('heading');
+  test('an indented paragraph is a literal block', () => {
+    const blocks = parse('Run:\n\n  $ make build\n  $ make test\n\nDone.');
+    expect(types(blocks)).toEqual(['paragraph', 'code', 'paragraph']);
+    expect(blocks[1].content).toBe('$ make build\n$ make test');
+    expect(blocks[1].startLine).toBe(3);
+    expect(blocks[1].sourceLineCount).toBe(2);
+  });
+
+  test('markdown fences work as listings', () => {
+    const blocks = parse('```yaml\nkey: value\n```');
+    expect(blocks[0]).toMatchObject({ type: 'code', language: 'yaml', content: 'key: value', startLine: 1, sourceLineCount: 3 });
+  });
+
+  test('a delimited block closes only on its own delimiter', () => {
+    const blocks = parse('......\n....\ninner\n....\n......\n\nAfter.');
+    expect(types(blocks)).toEqual(['code', 'paragraph']);
+    expect(blocks[0].content).toBe('....\ninner\n....');
+    expect(blocks[1].startLine).toBe(7);
+  });
+
+  test('include and conditional directives are shown as written', () => {
+    const blocks = parse('ifdef::env-github[]\ninclude::partials/setup.adoc[leveloffset=+1]\nendif::[]');
+    expect(blocks.map((b) => b.content)).toEqual([
+      '`ifdef::env-github[]`',
+      '`include::partials/setup.adoc[leveloffset=+1]`',
+      '`endif::[]`',
+    ]);
+    expect(blocks.map((b) => b.startLine)).toEqual([1, 2, 3]);
+  });
+
+  test('an author line without an email is consumed; a section right under the title is not', () => {
+    expect(types(parse('= Title\nJane Doe\nv2.1\n\nBody.'))).toEqual(['heading', 'paragraph']);
+    expect(parse('= Title\n== Section\nBody.').map((b) => b.content)).toEqual(['Title', 'Section', 'Body.']);
+    // Attribute entries end the lookup: a later directive is not an author line.
+    expect(parse('= Title\n:icons: font\nifndef::icons[]\nendif::[]').map((b) => b.content)).toEqual([
+      'Title',
+      '`ifndef::icons[]`',
+      '`endif::[]`',
+    ]);
+  });
+
+  test('xrefs to other .adoc files become document links', () => {
+    expect(transpileInline('see xref:install.adoc#linux[Install]')).toBe('see [Install](install.adoc)');
+    expect(transpileInline('see <<guide.adoc#,the guide>>')).toBe('see [the guide](guide.adoc)');
+  });
+
+  test('inline anchors are dropped, not rendered as wiki-links', () => {
+    expect(transpileInline('Using profiles [[profiles]]')).toBe('Using profiles');
+    expect(transpileInline('anchor:intro[]Intro')).toBe('Intro');
+  });
+
+  test('Antora resource ids stay text', () => {
+    expect(transpileInline('see xref:macros:icons.adoc[Icons]')).toBe('see Icons');
+  });
+
+  test('literal markers inside code spans are dropped', () => {
+    expect(transpileInline('set `+{version}+` here')).toBe('set `{version}` here');
+  });
+
+  test('a realistic document keeps every block on its source lines', () => {
+    const source = [
+      '= Operator Guide',                       // 1
+      'Docs Team <docs@example.com>',           // 2
+      ':toc: left',                             // 3
+      ':version: 1.4',                          // 4
+      '',                                       // 5
+      '== Install',                             // 6
+      '',                                       // 7
+      'Install version {version} with:',        // 8
+      '',                                       // 9
+      '[source,bash]',                          // 10
+      '----',                                   // 11
+      'helm install op ./chart',                // 12
+      '----',                                   // 13
+      '',                                       // 14
+      'WARNING: Back up the *cluster* first.',  // 15
+      '',                                       // 16
+      '.Settings',                              // 17
+      '[cols="1,3",options="header"]',          // 18
+      '|===',                                   // 19
+      '|Name |Meaning',                         // 20
+      '|replicas |Pod count',                   // 21
+      '|===',                                   // 22
+      '',                                       // 23
+      'include::upgrade.adoc[]',                // 24
+    ].join('\n');
+    const blocks = parse(source);
+    expect(blocks.map((b) => [b.type, b.startLine])).toEqual([
+      ['heading', 1],
+      ['heading', 6],
+      ['paragraph', 8],
+      ['code', 10],
+      ['blockquote', 15],
+      ['paragraph', 17],
+      ['table', 18],
+      ['paragraph', 24],
+    ]);
+    expect(blocks[2].content).toBe('Install version 1.4 with:');
+    expect(blocks[4].content).toBe('Back up the **cluster** first.');
+
+    const annotate = (block: Block, text: string) => ({
+      id: `a-${block.id}`,
+      blockId: block.id,
+      startOffset: 0,
+      endOffset: text.length,
+      type: AnnotationType.COMMENT,
+      text: 'check',
+      originalText: text,
+      createdA: 1,
+    });
+    const out = exportAnnotations(blocks, [annotate(blocks[3], 'helm install'), annotate(blocks[6], 'replicas')]);
+    expect(out).toContain('(lines 10–13)');
+    expect(out).toContain('(lines 18–22)');
   });
 });

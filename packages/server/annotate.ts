@@ -85,7 +85,7 @@ import {
 } from "@plannotator/shared/live-proxy-core";
 import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
-import { annotateDiagramRenderKind } from "@plannotator/shared/annotatable";
+import { annotateDocumentRenderKind } from "@plannotator/shared/annotatable";
 import {
   annotateBundleDocumentCounts,
   annotateBundleRoot,
@@ -356,12 +356,12 @@ export async function startAnnotateServer(
   const wslFlag = await isWSL();
   const gitUser = detectGitUser();
 
-  // Diagram sources (.mmd/.mermaid/.dot/.gv) render through the diagram
-  // engine rather than the markdown pipeline: the document body stays the raw
-  // file text and /api/plan names the engine in `renderAs`. Session-level and
-  // path-only (see annotateDiagramRenderKind), so raw-HTML, converted, URL,
+  // Diagram sources (.mmd/.mermaid/.dot/.gv) and AsciiDoc (.adoc) render
+  // through their own engine rather than the markdown pipeline: the document
+  // body stays the raw file text and /api/plan names the engine in `renderAs`. Session-level and
+  // path-only (see annotateDocumentRenderKind), so raw-HTML, converted, URL,
   // folder, message and live-app sessions are untouched.
-  const diagramRenderKind = annotateDiagramRenderKind({
+  const documentRenderKind = annotateDocumentRenderKind({
     filePath,
     mode,
     renderHtml,
@@ -994,7 +994,7 @@ export async function startAnnotateServer(
               clientLease: clientLeaseSupported
                 ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
                 : { enabled: false as const },
-              renderAs: displayRawHtml ? 'html' as const : diagramRenderKind ?? ('markdown' as const),
+              renderAs: displayRawHtml ? 'html' as const : documentRenderKind ?? ('markdown' as const),
               ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               ...(diffHtml ? { diffHtml } : {}),
               convertHtml,
