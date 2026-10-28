@@ -157,6 +157,7 @@ import {
   piSessionOutdated,
 } from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
+import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
@@ -358,6 +359,12 @@ export interface InboxServerOptions {
   /** Tests: how the search index slices its build (packages/shared/inbox/search.ts). Default: 5 ms slices that yield. */
   searchIndex?: InboxSearchIndexOptions;
   /**
+   * Tests: the ACP runner's agents (packages/server/inbox-acp-runner.ts)
+   * started as these commands (the fake ACP agent), and its timers. Default:
+   * the agent's own program, found on the agent environment's PATH.
+   */
+  acpRunner?: Pick<InboxAcpRunnerOptions, "launches" | "idleMs" | "stopGraceMs">;
+  /**
    * The Codex wake (packages/server/inbox-codex-wake.ts): where to look for a
    * Codex CLI besides `agentEnvironment`'s PATH (default: the ChatGPT app's,
    * never under the test sandbox), and how often to look for replies to queue.
@@ -396,6 +403,8 @@ export interface InboxServer {
   search: InboxSearchIndex;
   /** The background capture of images messages show (inbox-message-images.ts): tests wait on its `idle`. */
   imageCapture: InboxImageCapture;
+  /** The ACP runner (inbox-acp-runner.ts): sessions the Inbox runs itself. */
+  runner: ReturnType<typeof createInboxAcpRunner>;
   /** The Codex wake (inbox-codex-wake.ts): tests run its sweep. */
   codexWake: InboxCodexWake;
   stop: () => void;
@@ -414,6 +423,12 @@ function json(body: unknown, status = 200): Response {
 const ERROR_STATUS: Record<string, number> = {
   validation_error: 422,
   project_unresolved: 503,
+  // The ACP runner (inbox-acp-runner.ts).
+  agent_unavailable: 409,
+  run_not_found: 404,
+  permission_not_found: 409,
+  place_not_found: 404,
+  owner_only: 403,
   message_not_found: 404,
   thread_not_found: 404,
   project_not_found: 404,
@@ -910,7 +925,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // One pass over the store feeds both the folders' counts and the sections.
     // `pinned_at` (additive) on the window's and the phone's rows only: never on anything an agent reads.
     const pinnedAt = new Map(store.pins().map((pin) => [pin.thread_id, pin.pinned_at]));
-    const rows = store.listRows().map((row) => (pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
+    // `run` (additive): a session the Inbox runs works here, or waits on a permission (then the row is in Stopped on you).
+    const rows = store
+      .listRows()
+      .map((row) => runner.decorateRow(pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
     const scoped = projectFilter ? rows.filter((row) => row.project.id === projectFilter) : rows;
     const byId = new Map(rows.map((row) => [row.thread_id, row]));
     return {
@@ -1199,7 +1217,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     if (typeof body.note === "boolean") {
       if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no Inbox note workflow.", { field: "note" });
-      if (agent === "cursor") throw new InboxError("validation_error", "Cursor rules must be copied manually from Settings → Agents.", { field: "note" });
+      if (agent === "cursor") throw new InboxError("validation_error", "note: Cursor's note is copied by hand into Customize → Rules; Show note in Settings → Agents.", { field: "note" });
       if (inboxNotesDisabled(agentEnvironment.env) && body.note) throw new InboxError("notes_disabled", "PLANNOTATOR_INBOX_NOTES=0 is set: notes are off.");
       // Adding one needs the agent here, as the note dialog and --notes ask; switching one off never does.
       if (body.note && !agentSpec(agent).detect(agentEnvironment)) {
@@ -1225,10 +1243,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const isNoteList = (value: unknown) => Array.isArray(value) && value.every((id) => typeof id === "string" && (INBOX_NOTE_AGENT_IDS as readonly string[]).includes(id));
     const add = body.add;
     if (!isNoteList(add)) {
-      throw new InboxError("validation_error", "add: a list of agents (claude-code, codex, gemini, pi, opencode).", { field: "add" });
+      throw new InboxError("validation_error", "add: a list of agents (claude-code, codex, gemini, pi, opencode, cursor).", { field: "add" });
     }
     if (body.asked !== undefined && !isNoteList(body.asked)) {
-      throw new InboxError("validation_error", "asked: a list of agents (claude-code, codex, gemini, pi, opencode).", { field: "asked" });
+      throw new InboxError("validation_error", "asked: a list of agents (claude-code, codex, gemini, pi, opencode, cursor).", { field: "asked" });
     }
     if (body.seen !== undefined && typeof body.seen !== "boolean") throw new InboxError("validation_error", "seen: a boolean.", { field: "seen" });
     const adding = [...new Set(add as InboxNoteAgentId[])];
@@ -1237,12 +1255,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // Read before adding: an agent whose note is added is no longer a candidate.
     const shown = (body.asked as InboxNoteAgentId[] | undefined) ?? (await noteCandidateIds(options));
     const results = adding.map((agent) =>
-      agent === "cursor"
-        ? ({ ok: true, agent, action: "manual", path: null } as const)
-        // Never a file for an agent that is not on this computer.
-        : agentSpec(agent).detect(agentEnvironment)
-          ? addInboxNote(agent, dataDir, agentEnvironment)
-          : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
+      // Never a note, written or to copy, for an agent that is not on this computer.
+      !agentSpec(agent).detect(agentEnvironment)
+        ? ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const)
+        : agent === "cursor"
+          ? // Cursor keeps its rules in the app: nothing is written, the window shows the note to copy.
+            ({ ok: true, agent, action: "manual", path: null } as const)
+          : addInboxNote(agent, dataDir, agentEnvironment),
     );
     const failed = new Set(results.filter((result) => !result.ok).map((result) => result.agent));
     await markNotesAsked([...new Set([...shown, ...adding])].filter((id) => !failed.has(id)), options);
@@ -1787,6 +1806,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // A row's delivery moved with the live sessions (no store line): windows only, like `reach`.
         const sendDeliveries = () => send(`event: deliveries\ndata: {}\n\n`);
         if (windowId) deliveryListeners.add(sendDeliveries);
+        // A session the Inbox runs changed (a turn started or ended, its activity, a permission): windows only.
+        const sendRuns = (data: string) => send(`event: runs\ndata: ${data}\n\n`);
+        if (windowId) runListeners.add(sendRuns);
         const heartbeat = setInterval(() => send(": ping\n\n"), SSE_HEARTBEAT_MS);
         cleanup = () => {
           if (counted) {
@@ -1800,6 +1822,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           draftListeners.delete(onDraft);
           pinListeners.delete(onPins);
           deliveryListeners.delete(sendDeliveries);
+          runListeners.delete(sendRuns);
           leave();
         };
         req.signal.addEventListener("abort", () => {
@@ -2170,6 +2193,35 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     boardOn,
   });
   compose.sweep();
+  // The ACP runner (packages/server/inbox-acp-runner.ts): sessions the Inbox runs itself (Grok Build), every
+  // reply a real turn. Windows hear `event: runs` as their runs change (a permission also raises a phone push).
+  const runListeners = new Set<(data: string) => void>();
+  const runner = createInboxAcpRunner({
+    store,
+    dataDir,
+    serverSession,
+    version,
+    live,
+    selfCommand,
+    environment: agentEnvironment,
+    resolveProject,
+    replyCommand: (reply, sendNow, session) => replyCommand(reply, sendNow, session),
+    compose,
+    displayPath: (path) => displayPath(path, agentEnvironment) ?? path,
+    onChange: (change) => {
+      const data = JSON.stringify({ key: change.key, thread_ids: change.threadIds, ...(change.permission ? { permission: true } : {}) });
+      for (const listener of runListeners) listener(data);
+      if (change.permission && relay) {
+        void relay.pushText({
+          threadId: change.permission.threadId,
+          messageId: change.permission.replyId,
+          subject: `${change.permission.label} needs your OK: ${change.permission.title}`,
+          agent: change.permission.label,
+        });
+      }
+    },
+    ...(options.acpRunner ?? {}),
+  });
   // Reply drafts: the words typed in a thread's reply box, kept per thread (packages/server/inbox-reply-drafts.ts).
   const replyDrafts = createInboxReplyDrafts({
     store,
@@ -2340,6 +2392,23 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     if (tourAnswer) return tourAnswer;
 
     try {
+      // The ACP runner's routes (inbox-acp-runner.ts): this computer, the owner over the tailnet, paired phones (their door
+      // forwards on this computer). Not a tailnet guest (a login inboxTailscaleAllow adds): it may not start or steer one.
+      if (path === "/api/inbox/acp" || path.startsWith("/api/inbox/acp/")) {
+        if (req.method === "GET" && !isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
+          return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
+        }
+        const answer = await runner.route(req, url, { owner: via === "local" || tailscale.isOwnerRequest(req.headers), readBody, json });
+        if (answer) return answer;
+      }
+      // A guest's write in a thread an agent the Inbox runs answers (a reply is a turn): refused.
+      if (via === "tailnet" && req.method === "POST" && !tailscale.isOwnerRequest(req.headers)) {
+        const steered = /^\/api\/inbox\/(?:messages|threads)\/(msg_[0-9A-HJKMNP-TV-Z]{26})\//.exec(path)?.[1];
+        const threadId = steered ? (store.message(steered)?.thread_id ?? steered) : null;
+        if (threadId && runner.runsThread(threadId)) {
+          throw new InboxError("owner_only", "Only this computer's owner can steer an agent the Inbox runs.");
+        }
+      }
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
       if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url)));
       if (path === "/api/inbox/threads/archived" && req.method === "GET") return json(archivedModel(url));
@@ -2729,7 +2798,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (!thread) return json({ error: "No such thread.", code: "thread_not_found" }, 404);
         const withRepo = { ...thread, project: { ...thread.project, repo: repos.get(thread.project.root) } };
         // `row` (additive): the thread's list row, also for an archived thread, which the window's list leaves out.
-        return json({ serverSession, cursor: store.cursor(), thread: withRepo, row: store.listRow(thread.thread_id) });
+        const row = store.listRow(thread.thread_id);
+        return json({ serverSession, cursor: store.cursor(), thread: withRepo, row: row && runner.decorateRow(row) });
       }
 
       const seenMatch = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/seen$/.exec(path);
@@ -2772,16 +2842,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json(result);
       }
 
-      // An action item (approval "inbox-next-actions"): the person's Done (with an
-      // optional note) or Can't do it (with a reason), sent to the agent once
-      // the Undo window passes; `{ outcome: null }` is the Undo.
+      // An action item: the person's Done (with an optional note) or Can't do it
+      // (with a reason). `staged: true` (the window; approval
+      // "inbox-action-items-in-reply") puts it in the reply draft, sent with the
+      // person's Send; without it (approval "inbox-next-actions") it is sent once
+      // the Undo window passes. `{ outcome: null }` takes it back. `note_only`
+      // (a note typed under the marked row) never marks an item taken back.
       const actionMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/actions\/(a-[0-9a-f]{8}(?:-\d{1,3})?)$/.exec(path);
       if (actionMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note });
-        if (body.outcome !== null) scheduleActionSettle();
+        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note, staged: body.staged, note_only: body.note_only });
+        // A staged mark waits for the person's Send: no timer.
+        if (body.outcome !== null && body.staged !== true) scheduleActionSettle();
         return json({ questions });
       }
 
@@ -2910,6 +2984,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 // The questions the person chose to skip ("Skip them"): only these. The old
                 // `skip_unanswered` flag is ignored (approval "inbox-explicit-skip", 2026-10-21).
                 skip: body.skip,
+                actions: body.actions,
               });
             } catch (error) {
               removeInboxAttachmentFiles(store.dir, attachments);
@@ -3163,6 +3238,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     search.dispose();
     // No capture writes after stop (a restart to update starts the next binary on this store).
     imageCapture.stop();
+    // Every agent the Inbox runs goes with its process group; a running turn reads "Interrupted".
+    runner.stop();
     clearInterval(uploadSweep);
     stopPinEvents();
     clearInterval(restartWatch);
@@ -3181,7 +3258,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     tailnetStopFailedPort = tailscale.stop().failedPort;
   };
 
-  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, codexWake, stop };
+  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, runner, codexWake, stop };
 }
 
 /** Print where the Inbox is, and open it when a person asked for it. */

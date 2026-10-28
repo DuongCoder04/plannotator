@@ -11,6 +11,7 @@
  */
 
 import type { ActionMark } from './components/ActionChecklist';
+import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
@@ -680,6 +681,8 @@ function Inbox() {
   const [replyDrafts, setReplyDrafts] = useState<InboxReplyDraftRow[]>([]);
   /** Raised when the open thread's reply draft changed (`event: drafts`): the thread reads it again. */
   const [draftChanged, setDraftChanged] = useState(0);
+  // Raised when the Inbox says a session it runs in the open thread changed (`event: runs`).
+  const [runsTick, setRunsTick] = useState(0);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState<string | null>(() => storage.getItem(COMPOSE_LAST_COOKIE));
   /** The one toast (Mark read, Archive) with its Undo, and what the live region last said. */
@@ -1120,6 +1123,7 @@ function Inbox() {
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
+    let runsTimer: ReturnType<typeof setTimeout> | null = null;
     let cardsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
@@ -1173,6 +1177,13 @@ function Inbox() {
             void refreshDrafts();
           }, 80);
         },
+        // A session the Inbox runs changed (the ACP runner): its row ("Grok Build is working", a permission in
+        // Stopped on you, with its notice) and the open thread's run line.
+        onRuns: (change) => {
+          if (routeRef.current.thread && change.thread_ids.includes(routeRef.current.thread)) setRunsTick((n) => n + 1);
+          if (runsTimer) clearTimeout(runsTimer);
+          runsTimer = setTimeout(() => void refreshList(false).then((next) => next && flushNotifications(next)), 120);
+        },
         // The sidebar's pins changed (here, in another window, or a deleted thread left them): read `pins` again.
         onPins: () => {
           if (pinsTimer) clearTimeout(pinsTimer);
@@ -1206,6 +1217,7 @@ function Inbox() {
       if (draftsTimer) clearTimeout(draftsTimer);
       if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
+      if (runsTimer) clearTimeout(runsTimer);
     };
   }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
@@ -1922,32 +1934,26 @@ function Inbox() {
   };
 
   /**
-   * An action item's Done or Can't do it (approval "inbox-next-actions"): written at
-   * once, sent to the agent once the 10 s Undo window passes, as 👍 Looks
-   * good. `null` is the Undo. Resolves false when it was refused.
+   * An action item's Done or Can't do it (approval "inbox-action-items-in-reply"):
+   * into the reply draft, like a pick, sent only with the person's Send. No
+   * toast and no timer; `null` takes it back out of the draft. A note typed
+   * under the marked row saves quietly. Resolves the message's action items as
+   * saved, or null when it was refused.
    */
-  const markAction = async (threadId: string, messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }): Promise<boolean> => {
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<InboxQuestion[] | null> => {
+    let actions: InboxQuestion[];
     try {
-      await inboxApi.markAction(messageId, key, mark);
+      ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
     } catch (cause) {
-      showError(cause);
+      // A note typed while the item was sent elsewhere or replaced: the thread redraws it as it is now.
+      if (!isMootNoteRefusal(mark, cause)) showError(cause);
       await afterWrite();
-      return false;
+      return null;
     }
     await afterWrite();
-    if (!mark) {
-      dismissToast();
-      say('Action item moved back. Nothing was sent.');
-      return true;
-    }
-    showToast({
-      icon: mark.outcome === 'done' ? 'check' : 'warn',
-      lead: mark.outcome === 'done' ? 'Done' : "Can't do it",
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${info.agent} in 10 s`,
-      onUndo: () => void markAction(threadId, messageId, key, null, info),
-    });
-    return true;
+    if (!mark) say('Taken out of your draft.');
+    else if (!mark.quiet) say(mark.outcome === 'done' ? 'Done. It goes with your reply.' : "Can't do it. It goes with your reply.");
+    return actions;
   };
 
   /** Archive (the MCP's resolve) or Unarchive, with Undo. */
@@ -3447,12 +3453,13 @@ function Inbox() {
             row={openThreadRow}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
-            onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
+            onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
             onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
             replyRequest={replyFor}
             draftChanged={draftChanged}
+            runsVersion={runsTick}
             onReplyOpened={() => setReplyFor(null)}
             onQuestions={patchQuestions}
             onChanged={afterWrite}
