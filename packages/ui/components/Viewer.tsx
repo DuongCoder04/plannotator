@@ -86,6 +86,7 @@ import { type QuickLabel } from '../utils/quickLabels';
 import type { SelectionAction } from '../utils/selectionActions';
 import type { MentionSource } from '../utils/mentions';
 import { DocBadges, type DocBadgesProps, type LinkedDocBadgeInfo } from './DocBadges';
+import { legacyBadgesMaxWidth } from './docBadgesWidth';
 import { PinpointOverlay } from './PinpointOverlay';
 import { usePinpoint } from '../hooks/usePinpoint';
 import { useAnnotationHighlighter, type AnnotationRestoreReport } from '../hooks/useAnnotationHighlighter';
@@ -647,6 +648,7 @@ const StickyActionsLane: React.FC<{ className: string; children: React.ReactNode
       {/* After the lane: the lane is a flex box, so a float placed before it would narrow it. */}
       <div
         data-print-hide
+        data-sticky-actions-spacer
         aria-hidden="true"
         className="float-right"
         style={box ? { width: box.width, height: box.height, marginTop: box.marginTop, marginRight: box.marginRight } : undefined}
@@ -920,27 +922,37 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   // card's top padding. One row fits; a second row (diff badge) or mobile
   // wrapping outgrows the padding and lands on the document's first heading.
   // Measure the cluster and insert exactly the clearance it needs (0 when it fits).
+  // The cluster also stops where the action cluster starts on the same row, so
+  // a long file name truncates at the buttons instead of running under them.
   const docBadgesRef = useRef<HTMLDivElement | null>(null);
   const [badgeClearance, setBadgeClearance] = useState(0);
+  const [badgeMaxWidth, setBadgeMaxWidth] = useState<number | null>(null);
   useEffect(() => {
     if (hasViewerAnnotationHeader) {
       setBadgeClearance(0);
+      setBadgeMaxWidth(null);
       return;
     }
     const el = docBadgesRef.current;
     const article = containerRef.current;
-    if (!el || !article) { setBadgeClearance(0); return; }
+    if (!el || !article) { setBadgeClearance(0); setBadgeMaxWidth(null); return; }
+    // The static float that holds the actions' place: the sticky lane's spacer
+    // (the lane itself moves while stuck), or the plain float without one.
+    const actions = article.querySelector<HTMLElement>('[data-sticky-actions-spacer]')
+      ?? article.querySelector<HTMLElement>('[data-sticky-actions]');
     const measure = () => {
       const pad = parseFloat(getComputedStyle(article).paddingTop) || 0;
       const overflow = el.offsetTop + el.offsetHeight - pad;
       setBadgeClearance(overflow > 1 ? overflow + 4 : 0);
+      setBadgeMaxWidth(legacyBadgesMaxWidth(el.getBoundingClientRect(), actions?.getBoundingClientRect() ?? null));
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    if (actions) ro.observe(actions);
     window.addEventListener('resize', measure);
     return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
-  }, [hasViewerAnnotationHeader, repoInfo, hasPreviousVersion, showDemoBadge, linkedDocInfo, archiveInfo, sourceInfo, planDiffStats, openInAppPath]);
+  }, [hasViewerAnnotationHeader, stickyActions, repoInfo, hasPreviousVersion, showDemoBadge, linkedDocInfo, archiveInfo, sourceInfo, planDiffStats, openInAppPath]);
 
   // Per-doc heading slug map with dedup — computed once per blocks array so
   // anchor ids stay stable across re-renders and duplicate heading texts get
@@ -1733,7 +1745,12 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
       >
         {/* Legacy badge placement remains byte-for-byte opt-out behavior. */}
         {!viewerAnnotationHeader && (repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo || openInAppPath) && (
-          <div ref={docBadgesRef} data-print-hide className={`absolute top-3 md:top-4 ${gridEnabled ? 'left-3 md:left-5' : 'left-0'}`}>
+          <div
+            ref={docBadgesRef}
+            data-print-hide
+            className={`absolute top-3 md:top-4 ${gridEnabled ? 'left-3 md:left-5' : 'left-0'}`}
+            style={badgeMaxWidth !== null ? { maxWidth: badgeMaxWidth } : undefined}
+          >
             <DocBadges
               layout="column"
               repoInfo={repoInfo}

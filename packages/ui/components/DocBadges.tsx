@@ -19,6 +19,7 @@ import React from 'react';
 import { PlanDiffBadge } from './plan-diff/PlanDiffBadge';
 import type { PlanDiffStats } from '../utils/planDiffEngine';
 import { hostnameOrFallback } from '@plannotator/core/project';
+import { basenameFromPath } from '@plannotator/core/source-save';
 import { OpenInAppButton } from './OpenInAppButton';
 
 export interface LinkedDocBadgeInfo {
@@ -74,8 +75,11 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
   const isHorizontal = layout !== 'column';
   const canOpenInApp =
     !!openInAppPath && !/^https?:\/\//i.test(openInAppPath);
+  // Never shrinks: a file name chip beside it gives up its width first.
   const openInButton = canOpenInApp ? (
-    <OpenInAppButton filePath={openInAppPath} base={null} />
+    <span className="flex flex-shrink-0">
+      <OpenInAppButton filePath={openInAppPath} base={null} />
+    </span>
   ) : null;
 
   // In row layout, only PlanDiffBadge (when it has stats to show) and
@@ -199,7 +203,7 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
       {/* Linked-doc breadcrumb: only in column layout (sticky lane is hidden in linked-doc mode) */}
       {!isRow && linkedDocInfo && (
         linkedDocInfo.variant === 'folder-file' ? (
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 max-w-full items-center gap-2">
             {linkedDocInfo.onBack && (
               <button
                 type="button"
@@ -210,18 +214,18 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
               </button>
             )}
             <span
-              className="truncate rounded bg-muted/50 px-1.5 py-0.5 text-[9px] text-muted-foreground max-w-[220px]"
+              className="min-w-0 truncate rounded bg-muted/50 px-1.5 py-0.5 text-[9px] text-muted-foreground"
               title={linkedDocInfo.filepath}
             >
-              {linkedDocInfo.filepath.split('/').pop()}
+              {basenameFromPath(linkedDocInfo.filepath)}
             </span>
             {openInButton}
           </div>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 max-w-full items-center gap-1.5">
             <button
               onClick={linkedDocInfo.onBack}
-              className="px-1.5 py-0.5 bg-primary/10 text-primary rounded hover:bg-primary/20 transition-colors flex items-center gap-1"
+              className="px-1.5 py-0.5 bg-primary/10 text-primary rounded hover:bg-primary/20 transition-colors flex flex-shrink-0 items-center gap-1"
             >
               <svg
                 className="w-2.5 h-2.5"
@@ -238,14 +242,14 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
               </svg>
               {linkedDocInfo.backLabel || 'plan'}
             </button>
-            <span className="px-1.5 py-0.5 bg-primary/10 text-primary/80 rounded">
+            <span className="px-1.5 py-0.5 bg-primary/10 text-primary/80 rounded flex-shrink-0">
               {linkedDocInfo.label || 'Linked File'}
             </span>
             <span
-              className="px-1.5 py-0.5 bg-muted/50 text-muted-foreground rounded truncate max-w-[200px]"
+              className="min-w-0 px-1.5 py-0.5 bg-muted/50 text-muted-foreground rounded truncate"
               title={linkedDocInfo.filepath}
             >
-              {linkedDocInfo.filepath.split('/').pop()}
+              {basenameFromPath(linkedDocInfo.filepath)}
             </span>
             {openInButton}
           </div>
