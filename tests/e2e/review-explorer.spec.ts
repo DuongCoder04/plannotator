@@ -194,6 +194,7 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
     HOME: root,
     PLANNOTATOR_DATA_DIR: join(root, 'data'),
     PLANNOTATOR_READY_FILE: readyFile,
+    PLANNOTATOR_BROWSER: NO_BROWSER,
     PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
     NO_BROWSER,
     PLANNOTATOR_REMOTE: '0',
