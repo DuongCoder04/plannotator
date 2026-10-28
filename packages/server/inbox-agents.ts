@@ -1228,16 +1228,6 @@ async function connectOne(spec: AgentSpec, options: ConnectOptions, at: string):
 }
 
 /**
- * Whether a recorded MCP entry is still there (read only). Null: the agent's
- * file is not known or not readable, so nothing can be said.
- */
-export function entryStillThere(id: InboxAgentId, e: AgentEnvironment, ours: readonly (readonly string[])[]): boolean | null {
-  const read = readAgentEntry(id, e, ours, true);
-  if (!read || read.kind === "unreadable") return null;
-  return read.kind === "ours";
-}
-
-/**
  * Connect every agent found that has no record yet. Never throws: a failure
  * is reported per agent and tried again at the next run (said again only
  * when its reason changes).
@@ -1259,7 +1249,21 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
   for (const spec of pending) {
     const record = file.agents[spec.id];
     if (!record || record.reach !== "mcp" || (record.state !== "added" && record.state !== "found") || record.removed_outside_at) continue;
-    if (entryStillThere(spec.id, e, ourCommands(options, record)) === false) record.removed_outside_at = at;
+    if (recordedElsewhere(spec, e, record)) {
+      // The environment names another file now (`QWEN_HOME` changed): the entry moves there, the one Plannotator added
+      // taken out of the file it was written in first, so only one is ever left behind for uninstall.
+      const moved = await moveRecordedEntry(spec, options, record);
+      if (moved === null) delete file.agents[spec.id];
+      else {
+        const reason = `its entry in ${displayPath(record.path, e)} could not be moved to ${displayPath(spec.file(e), e)} (${moved})`;
+        if (file.failures?.[spec.id] !== reason) report.failed.push({ agent: spec.id, reason, path: displayPath(record.path, e) });
+        (file.failures ??= {})[spec.id] = reason;
+      }
+      continue;
+    }
+    const raw = recordedRaw(spec, e, record);
+    const read = raw === null ? null : classify(raw, ourCommands(options, record), true);
+    if (read && read.kind !== "ours" && read.kind !== "unreadable") record.removed_outside_at = at;
   }
   // An agent connected through MCP before its plugin was installed (Pi before `pi install`), whose plugin's tool is
   // on now: the MCP entry Plannotator added goes, so the agent never carries both. Kept when it cannot be removed.
@@ -1453,7 +1457,8 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
   for (const spec of AGENT_SPECS) {
     const record = file.agents[spec.id];
     if (record && (record.reach !== "mcp" || record.state !== "added")) continue;
-    const raw = spec.raw(e);
+    // A recorded entry is removed where it was written, whatever the environment names now.
+    const raw = record ? recordedRaw(spec, e, record) : spec.raw(e);
     const label = INBOX_AGENT_LABELS[spec.id];
     if (!record) {
       // No record says Plannotator added it: never removed, only named when it runs this binary.
@@ -1472,7 +1477,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       continue;
     }
     if (read && read.kind !== "ours") continue;
-    const path = spec.file(e) ?? record.path ?? null;
+    const path = recordedFile(spec, e, record) ?? record.path ?? null;
     const shown = displayPath(path, e);
     const json = jsonFileFor(spec.id);
     if (json && path) {
@@ -1512,6 +1517,31 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
 function jsonFileFor(id: InboxAgentId): { keys: readonly string[]; rules: JsonFileRules } | null {
   if (id === "qwen") return { keys: ["mcpServers"], rules: QWEN_SETTINGS_RULES };
   return id === "cursor" || id === "kiro" || id === "claude-app" ? { keys: ["mcpServers"], rules: {} } : null;
+}
+
+/**
+ * The file an agent's recorded entry is in. For an agent whose JSON file
+ * Plannotator edits itself, the file the record names: the place it may move
+ * with the environment (`QWEN_HOME` set in one shell and not in another), and
+ * the entry is where it was written. Otherwise the file the environment names.
+ */
+function recordedFile(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRecord | undefined): string | null {
+  const recorded = record?.reach === "mcp" && (record.state === "added" || record.state === "found") ? record.path : null;
+  return jsonFileFor(spec.id) && recorded ? recorded : spec.file(e);
+}
+
+/** The recorded entry's raw value (`recordedFile`), read only. */
+function recordedRaw(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRecord | undefined): RawEntry | null {
+  const path = recordedFile(spec, e, record);
+  const json = jsonFileFor(spec.id);
+  if (!json || !path || path === spec.file(e)) return spec.raw(e);
+  return rawJsonEntry(path, json.keys, json.rules.comments === true);
+}
+
+/** Whether the environment now names another file than the one the agent's recorded entry is in. */
+function recordedElsewhere(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRecord | undefined): boolean {
+  const recorded = recordedFile(spec, e, record);
+  return recorded !== null && recorded !== spec.file(e);
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,6 +1679,19 @@ async function removeOurMcpEntry(id: InboxAgentId, options: ConnectOptions, reco
   return item ? item.apply() : null;
 }
 
+/**
+ * Before an entry is added where the environment names now: take the one
+ * Plannotator added out of the file its record names (that entry only). A
+ * found entry is the person's and stays; one gone or changed by hand is left
+ * too. Returns an error reason (the old file cannot be read or written), or null.
+ */
+async function moveRecordedEntry(spec: AgentSpec, options: ConnectOptions, record: InboxAgentRecord): Promise<string | null> {
+  if (record.reach !== "mcp" || record.state !== "added") return null;
+  const raw = recordedRaw(spec, options.environment, record);
+  if (raw?.kind === "unreadable") return `${displayPath(record.path, options.environment)} can't be read (${raw.reason})`;
+  return removeOurMcpEntry(spec.id, options, record);
+}
+
 export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options: ConnectOptions): Promise<string | null> {
   /** Said once the switch is done: the switch held, and something beside it did not (Qwen Code's trusted sender). */
   let notice: string | null = null;
@@ -1674,6 +1717,11 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     file.agents[id] = { state: on ? "added" : "off", reach: "tool", path: null, at };
   } else if (on) {
     const previous = file.agents[id];
+    if (previous && recordedElsewhere(spec, e, previous)) {
+      // Its entry is in another file than the environment names now (`QWEN_HOME` changed): taken out there first.
+      const moved = await moveRecordedEntry(spec, options, previous);
+      if (moved) return `Plannotator's entry in ${displayPath(previous.path, e)} could not be removed first, so nothing was added: ${moved}`;
+    }
     const outcome = await connectOne(spec, options, at);
     if (outcome.kind === "failed") return outcome.reason;
     if (outcome.kind === "foreign") return `${displayPath(outcome.path, e) ?? INBOX_AGENT_LABELS[id]} has its own ${NAME} entry`;

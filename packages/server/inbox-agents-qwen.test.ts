@@ -189,6 +189,80 @@ describe("connecting Qwen Code", () => {
   });
 });
 
+describe("QWEN_HOME is not the same as when the entry was added (set in one shell, not in another)", () => {
+  const other = () => join(fake.root, "other-qwen");
+  const otherSettings = () => join(other(), "settings.json");
+
+  test("uninstall removes the entry from the file it was written in, byte for byte, and touches nothing in the other home", async () => {
+    fake.install("qwen");
+    writeSettings(MINE);
+    await connect();
+    const plan = planInboxAgentRemoval(dataDir, environment({ QWEN_HOME: other() }), OURS);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.items.map((item) => item.describe)).toEqual(["MCP server plannotator-inbox from Qwen Code (~/.qwen/settings.json, that entry only)"]);
+    expect(await plan.items[0]!.apply()).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(existsSync(other())).toBe(false);
+  });
+
+  test("a run under the new home moves the entry: out of the old file (back byte for byte), into the new one, never called removed outside", async () => {
+    fake.install("qwen");
+    writeSettings(MINE);
+    await connect();
+    const moved = await connect({ QWEN_HOME: other() });
+    expect(moved.added).toEqual(["qwen"]);
+    expect(moved.failed).toEqual([]);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
+    const record = readInboxAgents(dataDir).agents.qwen!;
+    expect(record).toMatchObject({ state: "added", path: otherSettings() });
+    expect(record.removed_outside_at).toBeUndefined();
+    // Only the new file's entry is left for uninstall, from whichever shell it runs.
+    const plan = planInboxAgentRemoval(dataDir, environment(), OURS);
+    expect(await plan.items[0]!.apply()).toBeNull();
+    expect(existsSync(otherSettings())).toBe(false);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("an old file that cannot be written keeps the entry and its record: said once, nothing added in the new home, moved at a later run", async () => {
+    fake.install("qwen");
+    writeSettings(MINE);
+    await connect();
+    const added = readFileSync(settingsPath(), "utf8");
+    chmodSync(settingsPath(), 0o444);
+    try {
+      const first = await connect({ QWEN_HOME: other() });
+      expect(first.added).toEqual([]);
+      expect(first.failed).toHaveLength(1);
+      expect(first.failed[0]!.reason).toContain("could not be moved");
+      expect((await connect({ QWEN_HOME: other() })).failed).toEqual([]);
+      expect(readFileSync(settingsPath(), "utf8")).toBe(added);
+      expect(existsSync(otherSettings())).toBe(false);
+      expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", path: settingsPath() });
+      expect(readInboxAgents(dataDir).agents.qwen?.removed_outside_at).toBeUndefined();
+    } finally {
+      chmodSync(settingsPath(), 0o644);
+    }
+    expect((await connect({ QWEN_HOME: other() })).added).toEqual(["qwen"]);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+  });
+
+  test("the Settings switch acts on the recorded file: off removes it there; on in a new home takes the old one out first", async () => {
+    fake.install("qwen");
+    writeSettings(MINE);
+    await connect();
+    expect(await setInboxAgentReach("qwen", false, options({ QWEN_HOME: other() }))).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(readInboxAgents(dataDir).agents.qwen?.state).toBe("off");
+
+    expect(await setInboxAgentReach("qwen", true, options())).toBeNull();
+    expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }))).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
+    expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", path: otherSettings() });
+  });
+});
+
 describe("Qwen's settings.json is never left broken", () => {
   test("a settings.json that is not valid JSON: left byte for byte, the reason said", async () => {
     fake.install("qwen");

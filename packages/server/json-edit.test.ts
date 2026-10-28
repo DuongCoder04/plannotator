@@ -63,6 +63,18 @@ describe("JSON with comments (Qwen Code's settings.json)", () => {
     expect(addJsonMember('{\n  "m": {\n    // none yet\n  }\n}', ["m"], "k", 1, C)).toEqual({ ok: true, changed: true, text: '{\n  "m": {\n    "k": 1\n    // none yet\n  }\n}' });
   });
 
+  test("a CRLF file keeps CRLF everywhere: a line comment ending the last member's line keeps its line ending", () => {
+    const before = '{\r\n  "mcpServers": {\r\n    "a": 1 // keep\r\n  }\r\n}\r\n';
+    const added = addJsonMember(before, ["mcpServers"], "k", { c: "x" }, C);
+    expect(added).toEqual({ ok: true, changed: true, text: '{\r\n  "mcpServers": {\r\n    "a": 1, // keep\r\n    "k": {\r\n      "c": "x"\r\n    }\r\n  }\r\n}\r\n' });
+    expect(removeJsonMember(added.ok ? added.text : "", ["mcpServers"], "k", C)).toEqual({ ok: true, changed: true, text: before });
+  });
+
+  test("a one-line file keeps a comment inside an empty object", () => {
+    expect(addJsonMember('{"mcpServers":{/* keep me */}}', ["mcpServers"], "k", 1, C)).toEqual({ ok: true, changed: true, text: '{"mcpServers":{"k":1/* keep me */}}' });
+    expect(addJsonMember("{/* only */}", ["mcpServers"], "k", 1, C)).toEqual({ ok: true, changed: true, text: '{"mcpServers":{"k":1}/* only */}' });
+  });
+
   test("a removal next to a comment cuts only the member and one comma", () => {
     expect(removeJsonMember('{"m": {\n  // ours\n  "k": 1,\n  "b": 2 // b\n}}', ["m"], "k", C)).toEqual({ ok: true, changed: true, text: '{"m": {\n  // ours\n  "b": 2 // b\n}}' });
     expect(removeJsonMember('{"m": {\n  "a": 1, // a\n  "k": 2 /* k */\n}}', ["m"], "k", C)).toEqual({ ok: true, changed: true, text: '{"m": {\n  "a": 1 // a /* k */\n}}' });

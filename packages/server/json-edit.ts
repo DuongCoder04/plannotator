@@ -49,7 +49,9 @@ function commentEnd(t: string, i: number): number {
   if (t[i] !== "/") return i;
   if (t[i + 1] === "/") {
     const nl = t.indexOf("\n", i + 2);
-    return nl === -1 ? t.length : nl;
+    // A CRLF line's `\r` is the line ending's, not the comment's.
+    if (nl === -1) return t.length;
+    return t[nl - 1] === "\r" ? nl - 1 : nl;
   }
   if (t[i + 1] === "*") {
     const end = t.indexOf("*/", i + 2);
@@ -240,7 +242,11 @@ function insertMember(t: string, span: ObjectSpan, key: string, value: unknown, 
   // An empty object: pretty when the file is (it holds a line break), one line otherwise.
   const pretty = t.includes("\n");
   const outer = lineIndent(t, span.open);
-  if (!pretty) return `${t.slice(0, span.open + 1)}${keyText}:${JSON.stringify(value)}${t.slice(span.close)}`;
+  if (!pretty) {
+    // One line: a comment inside the empty object stays, after the new member.
+    const interior = t.slice(span.open + 1, span.close);
+    return `${t.slice(0, span.open + 1)}${keyText}:${JSON.stringify(value)}${blank(interior) ? "" : interior}${t.slice(span.close)}`;
+  }
   const inner = outer + unit;
   const member = `${nl}${inner}${keyText}: ${render(value, true, unit, inner, nl)}`;
   const interior = t.slice(span.open + 1, span.close);
