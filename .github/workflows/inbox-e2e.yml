@@ -16,11 +16,12 @@ name: Inbox window e2e
 # engine WKWebView is, and the VS Code Guides webview's sanitizer and Mermaid
 # path (vscode-guides-sanitize.spec.ts) and its answer frame
 # (vscode-guides-answer.spec.ts), no binary needed. Runs only when the
-# Inbox, the ui and the guide viewer it composes, the plan editor, the plan
-# and annotate servers and the draft storage they share (annotate-*.spec.ts,
-# plan-linked-doc-drafts.spec.ts), the binary entry or the build could have
-# changed. The Pi servers are not listed: these specs drive only the compiled
-# Bun binary, and test.yml runs the Pi mirrors of the same scenarios.
+# Inbox, the ui and the guide viewer it composes, the plan editor (the Grid
+# paper spec, grid-paper-fill.spec.ts), the plan and annotate servers and the
+# draft storage they share (annotate-*.spec.ts, plan-linked-doc-drafts.spec.ts),
+# the binary entry or the build could have changed. The Pi servers are not
+# listed: these specs drive only the compiled Bun binary, and test.yml runs the
+# Pi mirrors of the same scenarios.
 
 on:
   pull_request:
@@ -52,6 +53,7 @@ on:
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
@@ -106,6 +108,7 @@ on:
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
