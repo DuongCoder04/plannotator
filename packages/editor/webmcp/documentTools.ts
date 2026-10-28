@@ -317,7 +317,8 @@ function viewOf(
 
 /** The document's questions and answers, in document order, then orphaned answers. */
 export function questionViews(blocks: readonly Block[], annotations: readonly Annotation[], outline: readonly OutlineEntry[]): QuestionView[] {
-  const indexed = indexQuestionBlocks(blocks);
+  // The lines plan review shows as plain text stay in each question's context here too.
+  const indexed = indexQuestionBlocks(blocks, { contractLines: false });
   const answers = collectQuestionAnswers(annotations);
   const seen = new Set<string>();
   const questionsByKey = new Map(indexed.map(({ question }) => [question.key, question]));

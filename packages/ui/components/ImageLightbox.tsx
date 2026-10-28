@@ -8,7 +8,7 @@ import { AnnotationPanel } from './AnnotationPanel';
 import { CommentPopover, type CommentAskAIHandler } from './CommentPopover';
 import { ImagePeek, type ImagePeekHandle, type ImagePeekRow } from './ImagePeek';
 import { RegionBoxLayer, RegionToolStrip, regionOf, type RegionBoxItem } from './ImageRegions';
-import { ImageZoomStage, type ImageZoomStageHandle, type ZoomDraw, type ZoomMode } from './ImageZoomStage';
+import { ImageZoomStage, type ImageZoomStageHandle, type WheelHintGate, type ZoomDraw, type ZoomMode } from './ImageZoomStage';
 import type { NaturalBox, ZoomSize, ZoomViewport } from './imageZoom';
 import { useIsMobile } from '../hooks/useIsMobile';
 
@@ -91,7 +91,8 @@ export function lightboxImageName(image: Pick<LightboxImage, 'src' | 'alt'>): st
  * heading it sits under: what the lightbox steps through (plan review and
  * annotate's light version of the Inbox's one viewer, approval
  * "inbox-image-viewer"). Only images that open the lightbox count
- * (`.cursor-zoom-in`).
+ * (`.cursor-zoom-in`, or `[data-zoomable]`: a question card's picture
+ * choices, whose picture picks and whose separate zoom button opens it).
  */
 export function collectDocumentImages(container: ParentNode | null): LightboxImage[] {
   if (!container) return [];
@@ -103,7 +104,7 @@ export function collectDocumentImages(container: ParentNode | null): LightboxIma
       continue;
     }
     const img = el as HTMLImageElement;
-    if (!img.classList.contains('cursor-zoom-in')) continue;
+    if (!img.classList.contains('cursor-zoom-in') && !img.hasAttribute('data-zoomable')) continue;
     const src = img.getAttribute('src');
     if (!src || out.some((i) => i.src === src)) continue;
     const image: LightboxImage = { src, alt: img.getAttribute('alt') ?? '', section };
@@ -183,6 +184,8 @@ export const ImageLightbox: React.FC<{
   const [announced, setAnnounced] = useState('');
   const peekRef = useRef<ImagePeekHandle>(null);
   const stageRef = useRef<ImageZoomStageHandle>(null);
+  // The "⌘ + scroll to zoom" hint shows once while the lightbox is open, whichever image a plain wheel first scrolls (#2127).
+  const wheelHint = useRef<WheelHintGate>({ shown: false }).current;
   const refocusStage = useRef(false);
   const pillRef = useRef<HTMLButtonElement>(null);
   const endTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -542,6 +545,7 @@ export const ImageLightbox: React.FC<{
           imageClassName="shadow-2xl"
           radius={8}
           stageAttributes={{ 'data-lightbox-stage': zoomMode }}
+          wheelHint={wheelHint}
         />
         {alt && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[2.5vh] mx-auto max-w-[90vw] truncate text-center text-sm text-white/70">{alt}</div>
@@ -729,6 +733,7 @@ export const ImageLightbox: React.FC<{
                 className="absolute inset-0"
                 imageClassName="shadow-xl"
                 stageAttributes={{ 'data-lightbox-stage': zoomMode, ...(regionsOn ? { 'data-region-tool-active': tool } : {}) }}
+                wheelHint={wheelHint}
               >
                 {regionsOn && (
                   <RegionBoxLayer
