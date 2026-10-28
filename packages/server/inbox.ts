@@ -161,8 +161,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
-import { createInboxEmbeds, crossSiteFrameAllowed } from "./inbox-embeds";
-import { embedLoopbackOrigins } from "@plannotator/core/html-embed";
+import { createInboxEmbeds } from "./inbox-embeds";
 import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
@@ -528,47 +527,38 @@ const ERROR_STATUS: Record<string, number> = {
 /**
  * The window is a single-file build: its script and styles are inline, so the
  * policy allows inline code from this page only and no other origin. Nothing
- * may frame it, and it may only talk to this server. `frameSources` adds the
- * other loopback name of this port, where its embeds are served from
- * (`embedFrameUrl`); over the tailnet the window frames its own origin only.
+ * may frame it, and it may only talk to this server.
  */
-function windowCsp(frameSources = ""): string {
-  return [
-    "default-src 'self'",
-    // 'wasm-unsafe-eval' lets the Graphviz engine (@viz-js/viz) compile its
-    // WebAssembly; it does not allow eval() or new Function().
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    "font-src 'self' data:",
-    "connect-src 'self'",
-    "worker-src 'self' blob:",
-    ...(frameSources ? [`frame-src 'self' ${frameSources}`] : []),
-    "frame-ancestors 'none'",
-    // 'self', not 'none': an attached HTML page is drawn in a srcdoc frame,
-    // which inherits this policy, with a <base href> at its own folder's
-    // asset route on this origin (annotate's #1554 serving path). Without it
-    // the base is blocked and the page's frames resolve onto the Inbox.
-    "base-uri 'self'",
-    "form-action 'none'",
-  ].join("; ");
-}
+const WINDOW_CSP = [
+  "default-src 'self'",
+  // 'wasm-unsafe-eval' lets the Graphviz engine (@viz-js/viz) compile its
+  // WebAssembly; it does not allow eval() or new Function().
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "frame-ancestors 'none'",
+  // 'self', not 'none': an attached HTML page is drawn in a srcdoc frame,
+  // which inherits this policy, with a <base href> at its own folder's
+  // asset route on this origin (annotate's #1554 serving path). Without it
+  // the base is blocked and the page's frames resolve onto the Inbox.
+  "base-uri 'self'",
+  "form-action 'none'",
+].join("; ");
 
 /** `/` before the window is built (a source run, the server tests). */
 const NOT_BUILT_PAGE =
   '<!doctype html><meta charset="utf-8"><title>Plannotator Inbox</title><p data-inbox-not-built>The Inbox window is not built: run <code>bun run build:hook</code>.</p>';
 
 /** The window page's security headers, on every answer for `/`. */
-function windowPageHeaders(frameSources = ""): Record<string, string> {
-  return {
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": windowCsp(frameSources),
-  };
-}
-/** The tailnet window's: its embeds are on its own origin. */
-const WINDOW_PAGE_HEADERS = windowPageHeaders();
+const WINDOW_PAGE_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": WINDOW_CSP,
+} as const;
 
 /** One tag per page body, computed once (the page is ~22 MB; it changes only with the binary). */
 let windowPageTag: { page: string; etag: string } | null = null;
@@ -2310,11 +2300,6 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       return json({ error: "Bad request.", code: "bad_request" }, 400);
     }
     const path = url.pathname;
-    // Another site steering a frame at the Inbox (an embed navigating itself
-    // included): only embeds and HTML-page assets are drawn in a frame.
-    if (!crossSiteFrameAllowed(path, req.headers)) {
-      return json({ error: "The Inbox is not drawn in another site's frame.", code: "cross_site_frame" }, 403);
-    }
     const origin = req.headers.get("origin");
     /** The Board's reads carry the person's notes: another site's read is refused, as on the other read routes. */
     const crossSiteCardRead = (request: Request): Response | null =>
@@ -3109,13 +3094,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (req.method === "GET") updates.nudge();
         if (via === "tailnet") return tailnetWindowPage(req, page);
         return new Response(req.method === "HEAD" ? null : page, {
-          headers: {
-            // The window on this computer frames its embeds from the other loopback name, at the
-            // port the browser used (a forward may differ from the one this server listens on).
-            ...windowPageHeaders(embedLoopbackOrigins(url).join(" ")),
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-store",
-          },
+          headers: { ...WINDOW_PAGE_HEADERS, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
         });
       }
       if (path === "/favicon.png" && req.method === "GET") return handleFavicon();

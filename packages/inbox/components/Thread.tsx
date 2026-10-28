@@ -17,7 +17,6 @@ import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkCont
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
-import { embedFrameUrl } from '@plannotator/core/html-embed';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
 import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTiles';
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
@@ -252,15 +251,10 @@ export function commentTags(record: InboxAnnotationRecord): string[] {
 
 const NO_SENT_ANSWERS: readonly SentAnswerGroup[] = [];
 
-/**
- * The URL of a fence's embed document: the Inbox keeps the page and serves it
- * under its own policy, from the other loopback name when the window is on
- * one (its own process in Chromium; `embedFrameUrl`).
- */
+/** The URL of a fence's embed document: the Inbox keeps the page and serves it under its own policy. */
 async function inboxEmbedUrl(html: string): Promise<string | null> {
   const answer = await inboxApi.embed(html);
-  if (typeof answer.url !== 'string' || !answer.url.startsWith('/api/inbox/embeds/')) return null;
-  return embedFrameUrl(answer.url, window.location);
+  return typeof answer.url === 'string' && answer.url.startsWith('/api/inbox/embeds/') ? answer.url : null;
 }
 
 /** One message's text, with its question cards (exported for its DOM test). */
