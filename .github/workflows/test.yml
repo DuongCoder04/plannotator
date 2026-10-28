@@ -349,6 +349,7 @@ jobs:
           packages/ui/components/DocBadges.test.tsx
           packages/editor/planDiffAutoExit.test.tsx
           packages/editor/App.archiveReadOnly.test.tsx
+          packages/editor/App.refCards.test.tsx
           packages/editor/App.htmlChrome.test.tsx
           packages/editor/App.sidebarTabsAgentTerminal.test.tsx
           packages/editor/App.htmlLinkDraft.test.tsx
