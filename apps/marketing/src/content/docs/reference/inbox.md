@@ -80,13 +80,13 @@ The first time you open the Inbox after it connected your agents, a dialog asks 
 | Gemini CLI | `~/.gemini/GEMINI.md` (or your `context.fileName`) |
 | Pi | the one instructions file Pi reads in `~/.pi/agent/` |
 | OpenCode | `~/.config/opencode/AGENTS.md`, only when you already have it: creating it would stop OpenCode 1 reading your `~/.claude/CLAUDE.md` |
-| Cursor | Cursor User Rules in Settings → Rules (manual copy; no supported global rules file) |
+| Cursor | Customize → Rules in the Cursor app (you copy it by hand; Cursor has no global rules file) |
 
-Managed notes sit between two marker lines at the end of the file. Plannotator never overwrites a note you edited, and removing it removes only that section. `plannotator inbox --notes codex,gemini` adds managed notes from the terminal (the agent install prompt runs this only after you say yes). For Cursor, `plannotator inbox --notes cursor` prints the note to copy into Cursor Settings → Rules. Plannotator cannot detect whether it was pasted, update it or remove it; a copied Cursor rule is never shown as installed. `plannotator inbox --help` lists exact files and manual steps.
+Managed notes sit between two marker lines at the end of the file. Plannotator never overwrites a note you edited, and removing it removes only that section. `plannotator inbox --notes codex,gemini` adds managed notes from the terminal (the agent install prompt runs this only after you say yes). For Cursor, nothing is written: the dialog and Settings show the note (without the marker lines) to copy into Customize → Rules in Cursor, and `plannotator inbox --notes cursor` prints it. Plannotator cannot see whether it was pasted, update it or remove it; a copied Cursor rule is never shown as added. `plannotator inbox --help` lists exact files and manual steps.
 
 ### Settings → Agents
 
-Settings lists each agent found on this computer with up to three switches: **Reaches the Inbox** (its MCP entry, or the inbox tool for Claude Code, Pi and OpenCode), **Reminder at session start** (Claude Code, Pi and OpenCode: one line at the start of each session that has the inbox tool) and **Note in its instructions**. Cursor's note is a manual Show note workflow, not a managed switch; copy it into Settings → Rules. Plannotator cannot detect, update or remove that copy. Managed note changes apply to that agent's next session. An agent you turn off here is never connected again by `plannotator inbox`. Agents not found are folded under **Not found on this computer**, with the command or one-click link for each, editors included.
+Settings lists each agent found on this computer with up to three switches: **Reaches the Inbox** (its MCP entry, or the inbox tool for Claude Code, Pi and OpenCode), **Reminder at session start** (Claude Code, Pi and OpenCode: one line at the start of each session that has the inbox tool) and **Note in its instructions**. Cursor's note has no switch: **Show note** shows it to copy into Customize → Rules in Cursor. Plannotator cannot detect, update or remove that copy. Managed note changes apply to that agent's next session. An agent you turn off here is never connected again by `plannotator inbox`. Agents not found are folded under **Not found on this computer**, with the command or one-click link for each, editors included.
 
 ## What you see
 
@@ -200,6 +200,17 @@ Restart OpenCode. On OpenCode 2 a reply is queued into the session as its own tu
 ### The same session in two windows
 
 You can open one Pi session twice (`pi -c` or `--session`), or run two OpenCode 2 servers on one database. Then only one process delivers a reply: the one you used last. On Pi, typing in a window or the agent calling the inbox tool there moves replies to that window. On OpenCode 2, only the agent calling the inbox tool moves them, because the plugin does not see what you type (checked on OpenCode 2.0.19). The process that holds replies checks in every 5 seconds. If it quits, another process takes over at once, and if it crashes, after about 20 seconds. A reply is delivered once either way.
+
+### Grok Build: a session the Inbox runs
+
+Grok Build has no way to be woken from outside, so the Inbox can run it for you. In **New message**, open **To** and pick **New Grok Build session** in one of your projects. Your message is the session's first turn, and every reply in that thread is another turn.
+
+- Under each of your messages, a line says what happened: "Starting Grok Build…", "Grok Build is working · 0:42" with **Stop** and **Show activity** (the tools it ran and what it said), then "Done · 1:12".
+- Grok Build answers in the thread. If it ends a turn without writing to the Inbox, its last words are posted as its answer.
+- When it asks permission, the request shows as a card with all of Grok's own options, the thread moves to **Stopped on you**, and you get a notification. It waits until you answer or press **Stop**. Grok's own settings decide what it asks about; calls to the Inbox's own tools are allowed without asking.
+- It runs with your Grok Build settings and model, in the project's folder. Grok Build updates itself when it starts.
+- The thread's foot shows the command that opens the session in Grok's own terminal app (`grok -r <id>`). Close it there before you reply in the Inbox: two programs writing one session is not detected.
+- Turn it off in **Settings → Agents → Run in the Inbox**.
 
 ## The inbox tool setting
 
@@ -351,8 +362,9 @@ Everything lives under `~/.plannotator/inbox/` (or `$PLANNOTATOR_DATA_DIR/inbox/
 | `pins.json` | The threads pinned to the sidebar, in their order. Never seen by an agent or search; a phone reads them with the list |
 | `recent-searches.json` | Your last six searches, written only when you open a result. **Clear** in the search box empties it |
 | `claims/`, `leases/` and `connection-tools.json` | Bookkeeping for the Pi and OpenCode connections |
+| `acp/sessions.json` | The Grok Build sessions the Inbox runs: each one's folder, Grok's own session id, and how each turn ended. Owner-only. What a turn did (its tools and text) is kept in memory only |
 
-The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`).
+The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`, `inboxRun`).
 
 ## Uninstall
 

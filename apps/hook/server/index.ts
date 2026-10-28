@@ -89,6 +89,7 @@ import {
 } from "@plannotator/server/review";
 import { runGuideCli } from "@plannotator/server/guide-cli";
 import { runUpdateCommand } from "./update-command";
+import { runUpdatePrepareCommand } from "@plannotator/server/update-prepare";
 import { takeUpdateHint } from "@plannotator/shared/update-check";
 import {
   startAnnotateServer as startAnnotateServerUnguarded,
@@ -744,6 +745,13 @@ if (args[0] === "uninstall") {
 // auto-update trigger: it is not a session.
 if (args[0] === "update") {
   process.exit(await runUpdateCommand(rawArgs.slice(rawArgs.indexOf("update") + 1), { currentVersion: getCliVersion() }));
+}
+
+// Internal: the POSIX update wrapper's download step (safe updates, step 1).
+// This binary's own fetch downloads the install script and the expected
+// checksums into a private temp dir and prints the dir (update-prepare.ts).
+if (args[0] === "update-prepare") {
+  process.exit(await runUpdatePrepareCommand(args.slice(1), { platform: process.platform }));
 }
 
 if (args[0] === "install-runtime") {
@@ -2788,6 +2796,8 @@ if (args[0] === "sessions") {
     origin: "claude-code",
     planFilePath: input.planFilePath,
     permissionMode: input.permissionMode,
+    // A chain under the session root's project is continued after a shell cd (#2197).
+    historyRoot: input.projectRoot,
     planRevisions: true,
     // The mod delivers an approval's notes (planHostResult composes the
     // approved-with-notes prompt). The classic PermissionRequest hook below
@@ -3074,6 +3084,10 @@ if (args[0] === "sessions") {
     // model, so notes sent with an approval would be lost.
     // Claude Code writes the plan to disk before the hook fires.
     planFilePath: isGemini ? undefined : event.tool_input?.planFilePath,
+    // Claude Code sets CLAUDE_PROJECT_DIR (the session's project root) for
+    // hooks; a shell cd does not move it, so a chain under its project is
+    // continued (#2197). Gemini CLI sets the same variable as an alias: left out.
+    historyRoot: !isGemini && detectedOrigin === "claude-code" ? process.env.CLAUDE_PROJECT_DIR : undefined,
     permissionMode,
     sharingEnabled,
     shareBaseUrl,
