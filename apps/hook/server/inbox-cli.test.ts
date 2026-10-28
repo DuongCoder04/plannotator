@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import type { InboxQuestion } from "@plannotator/core/inbox-types";
+import { INBOX_HOST_NAMES, type InboxQuestion } from "@plannotator/core/inbox-types";
 import { inboxStatus, isPidAlive, readInboxRegistry, writeInboxRegistry } from "@plannotator/shared/inbox/registry";
 import { startInboxServer } from "@plannotator/server/inbox";
 import { INBOX_DEFAULT_SERVED_TOOLS } from "@plannotator/server/inbox-mcp";
@@ -347,8 +347,10 @@ describe("plannotator inbox mcp inside an agent session", () => {
     expect(piName).toBeDefined();
     expect(INBOX_SESSION_HOST_NAMES[piHost!]).toBe(piName!);
     // Codex has no plannotator_inbox tool: the Inbox wakes it itself (`codex queue`), and the shim sends as its thread.
-    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "opencode", "pi"]);
+    // Grok Build: a session the Inbox runs itself (inbox-acp-runner.ts), named as its messages are (core INBOX_HOST_NAMES).
+    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "grok", "opencode", "pi"]);
     expect(INBOX_SESSION_HOST_NAMES.codex).toBe("Codex");
+    expect(INBOX_SESSION_HOST_NAMES.grok).toBe(INBOX_HOST_NAMES.grok);
   });
 
   test("the session tag is read strictly; anything malformed is ignored", () => {
@@ -444,6 +446,20 @@ describe("plannotator inbox mcp inside an agent session", () => {
         .arguments,
     ).toEqual({ body: "hi", project_path: "/work", agent_session: "ses_OWN" });
     expect(call("send_message", { body: "hi", agent_name: "Helper" })).toMatchObject({ agent_host: "claude-code", agent_name: "Helper" });
+    // A Claude Code session's calls never claim to wake (its connection says so itself).
+    expect(fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: {} } }, "/work", "ses_OWN", hostSession).params!._meta).toBeUndefined();
+  });
+
+  test("a session the Inbox runs (Grok Build, PLANNOTATOR_SESSION_TAG set by the runner) sends as that session, marked as woken by its replies", () => {
+    const run = "run_01HZY3T5R4M2Q8W9X6V7B1N0KP";
+    const hostSession = inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: `grok:${run}` });
+    expect(hostSession).toEqual({ host: "grok", session: run, name: "Grok Build" });
+    const filled = fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: { body: "hi" } } }, "/work", "ses_OWN", hostSession).params!;
+    expect(filled.arguments).toEqual({ body: "hi", project_path: "/work", agent_session: run, agent_host: "grok", agent_name: "Grok Build" });
+    expect(filled._meta).toEqual({ "ai.plannotator/inbox-wakes": true });
+    // An agent that names another host is not that session, and claims nothing.
+    const other = fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: { body: "hi", agent_host: "codex" } } }, "/work", "ses_OWN", hostSession).params!;
+    expect(other._meta).toBeUndefined();
   });
 
   test("a command a Claude Code session runs sends as that session: the tool's author, its thread, and the reply wakes it", async () => {
@@ -800,5 +816,82 @@ describe("uninstall --purge and the Inbox", () => {
     await waitDead(registry.pid);
     expect(isPidAlive(registry.pid)).toBe(false);
     expect(existsSync(join(box.dataDir, "inbox"))).toBe(false);
+  }, 60_000);
+
+  test.skipIf(process.platform === "win32")("purge of a copied data dir removes the copy and leaves the original's Inbox and both its tailnet mappings up", async () => {
+    const original = sandbox();
+    const registry = (await background(original)).registry!;
+    // The two mappings a record can name: "Reach from my tailnet" (8443 → the door) and "Over your tailnet" (the window's port → its proxy).
+    const DOOR = 47_001;
+    const WINDOW_HTTPS = 10_443;
+    const PROXY = 47_002;
+    const mappings = {
+      tailnet: { https_port: 8443, door_port: DOOR },
+      tailscale: { url: `https://box.example.ts.net:${WINDOW_HTTPS}/`, error: null, https_port: WINDOW_HTTPS, proxy_port: PROXY },
+    };
+
+    // A fake `tailscale` first on PATH (never the real one): it logs every call and reports both mappings as live.
+    const bin = join(original.root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    const log = join(bin, "tailscale.log");
+    const statusFile = join(bin, "serve-status.json");
+    writeFileSync(
+      statusFile,
+      JSON.stringify({
+        TCP: { "8443": { HTTPS: true }, [String(WINDOW_HTTPS)]: { HTTPS: true } },
+        Web: {
+          "box.example.ts.net:8443": { Handlers: { "/": { Proxy: `http://127.0.0.1:${DOOR}` } } },
+          [`box.example.ts.net:${WINDOW_HTTPS}`]: { Handlers: { "/": { Proxy: `http://127.0.0.1:${PROXY}` } } },
+        },
+      }),
+    );
+    writeFileSync(join(bin, "tailscale"), `#!/bin/sh\necho "$*" >> '${log}'\nif [ "$1 $2" = "serve status" ]; then cat '${statusFile}'; fi\nexit 0\n`);
+    chmodSync(join(bin, "tailscale"), 0o755);
+    const offs = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((call) => call.includes("off")) : []);
+    const purge = (box: Sandbox) =>
+      runPlannotatorUninstall(
+        { purge: true, dryRun: false },
+        {
+          platform: process.platform,
+          homeDir: box.home,
+          tempDir: tmpdir(),
+          dataDir: box.dataDir,
+          execPath: join(box.root, "not-the-real-plannotator"),
+          env: {},
+          which: () => null,
+          runCommand: async () => ({ exitCode: 0, timedOut: false }),
+          scheduleWindowsSelfDelete: async () => true,
+        },
+      );
+
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? "/usr/bin:/bin"}`;
+    try {
+      expect(Bun.which("tailscale", { PATH: process.env.PATH })).toBe(join(bin, "tailscale"));
+
+      const copy = sandbox();
+      mkdirSync(join(copy.dataDir, "inbox"), { recursive: true });
+      const record = JSON.parse(readFileSync(join(original.dataDir, "inbox", "inbox.json"), "utf8"));
+      writeFileSync(join(copy.dataDir, "inbox", "inbox.json"), JSON.stringify({ ...record, ...mappings }));
+      const result = await purge(copy);
+      expect(result.errors).toEqual([]);
+      expect(existsSync(join(copy.dataDir, "inbox"))).toBe(false);
+      // Neither mapping is taken down: both are the running original's.
+      expect(offs()).toEqual([]);
+      await Bun.sleep(300);
+      expect(isPidAlive(registry.pid)).toBe(true);
+      expect((await inboxStatus(original.dataDir)).state).toBe("running");
+
+      // The same record left by an Inbox that has exited (a crash): purge takes both mappings down,
+      // so the fake answers what the take-downs read and the check above is not empty by accident.
+      const crashed = sandbox();
+      const gone = Bun.spawn(["true"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+      await gone.exited;
+      writeInboxRegistry(crashed.dataDir, { ...readInboxRegistry(original.dataDir)!, pid: gone.pid, port: 1, ...mappings });
+      expect((await purge(crashed)).errors).toEqual([]);
+      expect(offs().sort()).toEqual([`serve --https=${WINDOW_HTTPS} off`, "serve --https=8443 off"].sort());
+    } finally {
+      process.env.PATH = path;
+    }
   }, 60_000);
 });
