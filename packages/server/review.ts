@@ -181,6 +181,8 @@ import { getExtraMarkdownExtensions } from "@plannotator/shared/resolve-file";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { resolveWorkspaceFilePath, type LocalWorkspaceReview, type WorkspaceDiffType } from "./review-workspace";
 import { handleCodeNavResolve, handleCodeNavHover, extractChangedFiles } from "./code-nav";
+import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "@plannotator/shared/repo-file";
+import { decodeBunText } from "./git";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "./review-skill-loader";
 import { readGuideInstructions, writeGuideInstructions } from "@plannotator/shared/guide-instructions-store";
 import {
@@ -3821,25 +3823,19 @@ export async function startReviewServer(
             if (!hasCodeNavAccess) {
               return Response.json({ error: "Code navigation requires local access" }, { status: 400 });
             }
-            const filePath = url.searchParams.get("path");
-            if (!filePath) {
-              return Response.json({ error: "Missing path" }, { status: 400 });
+            const navCwd = options.worktreePool && prMetadata
+              ? await ensurePRLocalCwd()
+              : await resolveAgentCwdReady();
+            if (!navCwd) {
+              return Response.json({ error: "Local checkout unavailable" }, { status: 400 });
             }
-            try { validateFilePath(filePath); } catch {
-              return Response.json({ error: "Invalid path" }, { status: 400 });
+            // Links followed like an editor; 5 MB cap and no FIFO hang
+            // (packages/shared/repo-file.ts, the Pi server uses the same).
+            const read = await readRepoFile(navCwd, url.searchParams.get("path"), { decode: decodeBunText });
+            if (!read.ok) {
+              return Response.json(repoFileErrorBody(read), { status: REPO_FILE_ERROR_STATUS[read.reason] });
             }
-            try {
-              const navCwd = options.worktreePool && prMetadata
-                ? await ensurePRLocalCwd()
-                : await resolveAgentCwdReady();
-              if (!navCwd) {
-                return Response.json({ error: "Local checkout unavailable" }, { status: 400 });
-              }
-              const content = await Bun.file(`${navCwd}/${filePath}`).text();
-              return Response.json({ content });
-            } catch {
-              return Response.json({ error: "File not found" }, { status: 404 });
-            }
+            return Response.json({ content: read.content });
           }
 
           // API: Stage / unstage a file (disabled when VCS doesn't support it)
