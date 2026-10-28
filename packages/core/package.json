@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./agents": "./agents.ts",
+    "./inbox-acp": "./inbox-acp.ts",
     "./diff-paths": "./diff-paths.ts",
     "./diff-files": "./diff-files.ts",
     "./file-kind": "./file-kind.ts",
