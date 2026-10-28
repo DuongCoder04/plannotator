@@ -275,6 +275,8 @@ export class ClaudeAgentSDKProvider implements AIProvider {
           cwd: this.config.cwd ?? process.cwd(),
           abortController,
           persistSession: false,
+          // On purpose: only the model list is read, so no user, project or
+          // local settings load (no hooks or plugins run). Sessions load all three.
           settingSources: [],
           strictMcpConfig: true,
           ...(this.config.claudeExecutablePath && {
@@ -312,7 +314,9 @@ export class ClaudeAgentSDKProvider implements AIProvider {
       allowedTools: this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
       permissionMode: this.config.permissionMode ?? "default",
       claudeExecutablePath: this.config.claudeExecutablePath,
-      settingSources: this.config.settingSources ?? ['user', 'project'],
+      // All three, as when the user runs `claude` (and the SDK's own default):
+      // 'local' is CLAUDE.local.md and .claude/settings.local.json.
+      settingSources: this.config.settingSources ?? ['user', 'project', 'local'],
     };
   }
 }
