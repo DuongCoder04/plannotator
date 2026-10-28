@@ -2226,6 +2226,30 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
     expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toBeUndefined();
   });
 
+  test("an agent with one entry left (of two a move left) keeps its whole record, so the next uninstall tries again", async () => {
+    const fixture = createFixture();
+    const stray = join(fixture.homeDir, "elsewhere", "mcp.json");
+    writeJson(stray, { mcpServers: { "plannotator-inbox": ours } });
+    // Its own entry cannot go: the key is there twice, which Plannotator never cuts around (on every platform,
+    // unlike a read-only folder, which Windows ignores). The other one can.
+    const twice = `{\n  "mcpServers": {\n    "plannotator-inbox": ${JSON.stringify(ours)},\n    "plannotator-inbox": ${JSON.stringify(ours)}\n  }\n}\n`;
+    writeText(cursorFile(fixture), twice);
+    const record = {
+      state: "added",
+      reach: "mcp",
+      path: cursorFile(fixture),
+      command: ["/old/bin/plannotator", "inbox", "mcp"],
+      strays: [{ path: stray, command: ["/old/bin/plannotator", "inbox", "mcp"] }],
+      at: "2026-10-12T00:00:00.000Z",
+    };
+    writeJson(join(fixture.dataDir, "inbox", "agents.json"), { v: 1, agents: { cursor: record } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(readJson(stray).mcpServers).toEqual({});
+    expect(readFileSync(cursorFile(fixture), "utf8")).toBe(twice);
+    expect(result.warnings.some((warning) => warning.startsWith("Could not remove MCP server plannotator-inbox from Cursor"))).toBe(true);
+    expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toEqual(record);
+  });
+
   test("the notes: only the marked section, from a file the record no longer names too", async () => {
     const fixture = createFixture();
     const note = [
