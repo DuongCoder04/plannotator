@@ -18,7 +18,13 @@ import { compressAppText, negotiateAppHtmlEncoding, prepareAppHtml } from "./app
  * into the raw asset data that follows it, so neither building nor serving
  * escapes or parses the ~25MB of code.
  */
-export const PACKED_ASSETS_MARKER = "<!--plannotator:packed-assets-->";
+//
+// The marker opens a hidden <plaintext>, which has no end tag: a server
+// older than the pack (a Pi session that read the file after an in-place
+// update) serves the whole file as the page, and the browser then takes
+// everything after the marker as hidden text instead of rendering the index
+// and the chunks. The page itself says what happened (build/pack-app.ts).
+export const PACKED_ASSETS_MARKER = "<plaintext hidden><!--plannotator:packed-assets-->";
 
 /** Every packed asset lives here (Vite's `assetsDir`); the build refuses any other path. */
 export const PACKED_ASSET_ROUTE_PREFIX = "/assets/";
