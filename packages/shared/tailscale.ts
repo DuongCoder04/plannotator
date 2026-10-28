@@ -102,7 +102,9 @@ export const runTailscale: TailscaleRunner = (args, timeoutMs) => {
  * Serve off for the tailnet (or its HTTPS certificates off): `tailscale serve`
  * prints Tailscale's text ("Serve is not enabled on your tailnet. To enable,
  * visit:") and an admin link on stdout, then either exits 0 or waits for the
- * user to turn it on (we time out). Either way that link is the next step.
+ * user to turn it on (we time out). Either way that link is the next step:
+ * Tailscale's "Start using Serve" page, where one Enable HTTPS press (HTTPS
+ * certificates ticked, Funnel optional) turns it on for the whole tailnet.
  * The rest is `tailscale` refusing to run: stopped, signed out, waiting for
  * approval (cmd/tailscale/cli isRunningOrStarting), or no daemon to talk to.
  */
@@ -113,10 +115,10 @@ export function explainTailscaleSetup(result: TailscaleRunResult): string | unde
   if (enableLink || /\b(?:serve|https)\b[^\n]*\bnot enabled\b/i.test(output)) {
     const link = enableLink ?? links.find((candidate) => /login\.tailscale\.com/.test(candidate));
     return (
-      "Tailscale Serve is off for your tailnet. That is a Tailscale setting, not a Plannotator bug.\n" +
+      "Tailscale Serve is off for your tailnet. That is a one-time Tailscale setting, not a Plannotator bug.\n" +
       (link
-        ? `Turn it on at ${link} then try again.`
-        : "Turn on HTTPS Certificates in the Tailscale admin console (https://login.tailscale.com/admin/dns), then try again.")
+        ? `Open ${link} and press Enable HTTPS (keep "HTTPS certificates" ticked; Funnel is not needed), then try again.`
+        : "Turn on HTTPS certificates in the Tailscale admin console (https://login.tailscale.com/admin/dns), then try again.")
     );
   }
   if (/\bLogged out\b/.test(output)) {
