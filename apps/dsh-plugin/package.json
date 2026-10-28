@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/dsh",
-  "version": "0.28.35",
+  "version": "0.28.36",
   "type": "module",
   "description": "Plannotator plugin for DeepSeek Harness - review DSH plans with visual annotation",
   "author": "backnotprop",
