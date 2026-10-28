@@ -24,7 +24,6 @@ import {
 	openBrowser,
 } from "./network.ts";
 
-const savedEnv: Record<string, string | undefined> = {};
 const envKeys = [
 	"PLANNOTATOR_REMOTE",
 	"PLANNOTATOR_PORT",
@@ -34,12 +33,14 @@ const envKeys = [
 	"BROWSER",
 	"PLANNOTATOR_URL_HOST",
 ];
+// The values this file found (the preload's NO_BROWSER among them). Every
+// test is put back to these, however many times it cleared the env: saving
+// at each clearEnv() would keep a value an earlier loop pass set, and leak
+// it (PLANNOTATOR_BROWSER="Google Chrome") into the files after this one.
+const savedEnv: Record<string, string | undefined> = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 
 function clearEnv() {
-	for (const key of envKeys) {
-		savedEnv[key] = process.env[key];
-		delete process.env[key];
-	}
+	for (const key of envKeys) delete process.env[key];
 }
 
 afterEach(() => {
