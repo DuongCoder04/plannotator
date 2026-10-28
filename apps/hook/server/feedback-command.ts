@@ -7,11 +7,14 @@
  *
  * Sends only what is on the command line, plus the version and the OS name.
  * `PLANNOTATOR_FEEDBACK_URL` points it elsewhere (tests: a local fake).
- * Exit 0 sent, 1 not sent (the reason on stderr), 2 bad usage.
+ * Exit 0 sent, 1 not sent (one plain line on stderr: "Couldn't send feedback
+ * right now; nothing was saved." when the service is unreachable, not deployed
+ * or past FEEDBACK_TIMEOUT_MS, else the Worker's refusal), 2 bad usage.
  */
 
 import {
   FEEDBACK_CATEGORIES,
+  FEEDBACK_UNAVAILABLE,
   feedbackInputError,
   feedbackOsName,
   productFeedbackPayload,
@@ -67,6 +70,8 @@ export interface FeedbackCommandDeps {
   version: string;
   platform?: string;
   fetch?: typeof fetch;
+  /** Tests: a shorter wait than FEEDBACK_TIMEOUT_MS. */
+  timeoutMs?: number;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -84,14 +89,21 @@ export async function runFeedbackCommand(argv: readonly string[], deps: Feedback
     out(FEEDBACK_COMMAND_USAGE);
     return 0;
   }
-  const payload = productFeedbackPayload(parsed, {
-    version: deps.version,
-    os: feedbackOsName(deps.platform ?? process.platform),
-    surface: "cli",
-  });
-  const result = await sendProductFeedback(payload, { url: productFeedbackUrl(deps.env), fetch: deps.fetch });
+  let result: Awaited<ReturnType<typeof sendProductFeedback>>;
+  try {
+    const payload = productFeedbackPayload(parsed, {
+      version: deps.version,
+      os: feedbackOsName(deps.platform ?? process.platform),
+      surface: "cli",
+    });
+    result = await sendProductFeedback(payload, { url: productFeedbackUrl(deps.env), fetch: deps.fetch, timeoutMs: deps.timeoutMs });
+  } catch {
+    // Never a stack trace: anything unexpected reads as the service being unavailable.
+    result = { ok: false, reason: FEEDBACK_UNAVAILABLE, unavailable: true };
+  }
   if (!result.ok) {
-    err(`Not sent: ${result.reason}`);
+    // Unavailable: the plain line as it is. A refusal: the Worker's words.
+    err(result.unavailable ? result.reason : `Not sent: ${result.reason}`);
     return 1;
   }
   out("Sent");

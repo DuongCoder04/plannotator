@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { FEEDBACK_CONTACT_MAX, FEEDBACK_MESSAGE_MAX, feedbackInputError, type FeedbackCategory } from '@plannotator/core/product-feedback';
+import { FEEDBACK_CONTACT_MAX, FEEDBACK_MESSAGE_MAX, FEEDBACK_UNAVAILABLE, feedbackInputError, type FeedbackCategory } from '@plannotator/core/product-feedback';
 import { Icon } from '../icons';
 import { Modal } from './Updates';
 
@@ -81,7 +81,7 @@ export function FeedbackDialog({ version, phone, onSend, onCopyPrompt, onClose }
       setPhase('sent');
     } catch (cause) {
       setPhase('edit');
-      setError(cause instanceof Error && cause.message ? cause.message : 'Feedback was not sent.');
+      setError(cause instanceof Error && cause.message ? cause.message : FEEDBACK_UNAVAILABLE);
     }
   };
 

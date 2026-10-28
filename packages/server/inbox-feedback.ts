@@ -14,6 +14,7 @@
  */
 
 import {
+  FEEDBACK_UNAVAILABLE,
   feedbackInputError,
   feedbackOsName,
   productFeedbackPayload,
@@ -63,7 +64,10 @@ export function createInboxFeedback(options: {
     const input = { message: fields.message, category: (fields.category ?? null) as FeedbackCategory | null, contact: (fields.contact ?? null) as string | null };
     const invalid = feedbackInputError(input);
     if (invalid) return json({ error: invalid, code: "validation_error" }, 400);
-    const result = await send(productFeedbackPayload(input, { version: options.version, os, surface: "inbox" }), url());
+    // sendProductFeedback answers within FEEDBACK_TIMEOUT_MS (8 s) and never throws; the catch keeps a thrown seam plain too.
+    const result = await send(productFeedbackPayload(input, { version: options.version, os, surface: "inbox" }), url()).catch(
+      (): ProductFeedbackResult => ({ ok: false, reason: FEEDBACK_UNAVAILABLE, unavailable: true }),
+    );
     if (result.ok) return json({ ok: true });
     return json({ error: result.reason, code: "feedback_not_sent" }, 502);
   };

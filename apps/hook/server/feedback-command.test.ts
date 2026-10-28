@@ -2,8 +2,9 @@
  * `plannotator feedback` as real processes against a local fake endpoint
  * (PLANNOTATOR_FEEDBACK_URL; never the real Worker): it sends the message,
  * the category and contact when given, the version, the OS name and
- * `surface: "cli"`, and nothing else; prints "Sent"; exits 1 with the reason
- * when the endpoint refuses or is unreachable, 2 on bad usage (sending
+ * `surface: "cli"`, and nothing else; prints "Sent"; exits 1 with the
+ * Worker's reason when it refuses, and with one plain line (no stack) when it
+ * is unreachable, not deployed or silent past the time limit; 2 on bad usage (sending
  * nothing), and answers --help without sending. Every process gets a temp
  * HOME and data dir, no browser, no update check and no Inbox connect.
  */
@@ -14,7 +15,8 @@ import { join, resolve } from "node:path";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
 import { NO_BROWSER } from "../../../tests/helpers/no-browser";
 import { formatTopLevelHelp } from "./cli";
-import { parseFeedbackCommand } from "./feedback-command";
+import { FEEDBACK_TIMEOUT_MS, FEEDBACK_UNAVAILABLE } from "@plannotator/core/product-feedback";
+import { parseFeedbackCommand, runFeedbackCommand } from "./feedback-command";
 
 const entry = resolve(import.meta.dir, "index.ts");
 const roots: string[] = [];
@@ -94,12 +96,17 @@ describe("plannotator feedback (processes)", () => {
     expect(result.stderr).toContain("Not sent: message is required");
   }, 30_000);
 
-  test("an unreachable endpoint exits 1", async () => {
+  test("unreachable or not deployed: exit 1 with one plain line, no stack", async () => {
     const endpoint = fakeEndpoint();
     fakes.pop()!.stop(true);
-    const result = await run(["hi"], endpoint.url);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("Could not reach the feedback service.");
+    const notDeployed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<html>There is nothing here yet</html>", { status: 404, headers: { "Content-Type": "text/html" } }) });
+    fakes.push(notDeployed);
+    for (const url of [endpoint.url, `http://127.0.0.1:${notDeployed.port}/feedback`]) {
+      const result = await run(["hi"], url);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe(`${FEEDBACK_UNAVAILABLE}\n`);
+    }
   }, 30_000);
 
   test("bad usage exits 2 and sends nothing; --help sends nothing", async () => {
@@ -112,6 +119,43 @@ describe("plannotator feedback (processes)", () => {
     expect(help.stdout).toContain('plannotator feedback "<message>"');
     expect(endpoint.received).toHaveLength(0);
   }, 60_000);
+});
+
+describe("runFeedbackCommand: a service that never answers", () => {
+  test("gives up at the time limit with the plain line; the default limit is under 10 s", async () => {
+    expect(FEEDBACK_TIMEOUT_MS).toBeLessThan(10_000);
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Promise<Response>(() => {}) });
+    fakes.push(silent);
+    const out: string[] = [];
+    const err: string[] = [];
+    const started = performance.now();
+    const code = await runFeedbackCommand(["hi"], {
+      env: { PLANNOTATOR_FEEDBACK_URL: `http://127.0.0.1:${silent.port}/feedback` },
+      version: "dev",
+      timeoutMs: 300,
+      out: (line) => out.push(line),
+      err: (line) => err.push(line),
+    });
+    expect(code).toBe(1);
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(out).toEqual([]);
+    expect(err).toEqual([FEEDBACK_UNAVAILABLE]);
+  });
+
+  test("a fetch that throws is the same plain line, never a stack", async () => {
+    const err: string[] = [];
+    const code = await runFeedbackCommand(["hi"], {
+      env: {},
+      version: "dev",
+      fetch: (async () => {
+        throw new Error("getaddrinfo ENOTFOUND plannotator-feedback.plannotator.workers.dev");
+      }) as unknown as typeof fetch,
+      out: () => {},
+      err: (line) => err.push(line),
+    });
+    expect(code).toBe(1);
+    expect(err).toEqual([FEEDBACK_UNAVAILABLE]);
+  });
 });
 
 describe("parseFeedbackCommand", () => {

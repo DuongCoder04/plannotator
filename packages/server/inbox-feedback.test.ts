@@ -2,14 +2,16 @@
  * The Feedback dialog's send through a running Inbox (temp data dir,
  * loopback) to a local fake feedback endpoint (never the real Worker): the
  * window's words go on with the version, the OS name and `surface: "inbox"`
- * and nothing else; the answer is `{ ok: true }`; a refused or unreachable
- * endpoint is a 502 the dialog can show; bad input never leaves the
+ * and nothing else; the answer is `{ ok: true }`; a refusal is a 502 with
+ * the Worker's reason; an unreachable, undeployed, failing or silent endpoint
+ * is a 502 with one plain line, within 8 s; bad input never leaves the
  * computer; another site's page cannot send.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FEEDBACK_TIMEOUT_MS, FEEDBACK_UNAVAILABLE } from "@plannotator/core/product-feedback";
 import { startInboxServer, type InboxServer } from "./inbox";
 
 const roots: string[] = [];
@@ -92,21 +94,59 @@ describe("POST /api/inbox/feedback", () => {
     expect(endpoint.received).toHaveLength(0);
   });
 
-  test("a refusal from the endpoint is a 502 carrying its reason; an unreachable one says so", async () => {
+  test("a refusal from the endpoint is a 502 carrying its reason", async () => {
     const refusing = fakeEndpoint(429);
     const first = await inbox(refusing.url);
     const res = await first.send({ message: "hi" });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "Too many requests. Try again later.", code: "feedback_not_sent" });
+  });
 
+  test("unreachable, not deployed (404), failing (5xx) or a page that is not the Worker: a 502 with one plain line", async () => {
     // A port nothing listens on: a fake that is already stopped.
     const gone = fakeEndpoint();
     fakes.pop()!.stop(true);
-    const second = await inbox(gone.url);
-    const down = await second.send({ message: "hi" });
-    expect(down.status).toBe(502);
-    expect(((await down.json()) as { error: string }).error).toBe("Could not reach the feedback service.");
+    const odd = (status: number, body: string, type: string) => {
+      const fake = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(body, { status, headers: { "Content-Type": type } }) });
+      fakes.push(fake);
+      return `http://127.0.0.1:${fake.port}/feedback`;
+    };
+    for (const url of [
+      gone.url,
+      odd(404, "<html>There is nothing here yet</html>", "text/html"),
+      odd(500, '{"error":"TypeError: x is undefined\\n    at handler (worker.js:1:1)"}', "application/json"),
+      odd(503, "upstream connect error", "text/plain"),
+      odd(400, "<html>Bad Request</html>", "text/html"),
+    ]) {
+      const { send } = await inbox(url);
+      const res = await send({ message: "hi" });
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: FEEDBACK_UNAVAILABLE, code: "feedback_not_sent" });
+    }
   });
+
+  test("an endpoint that never answers: the Inbox gives up within FEEDBACK_TIMEOUT_MS, under 10 s", async () => {
+    expect(FEEDBACK_TIMEOUT_MS).toBeLessThan(10_000);
+    let hits = 0;
+    const silent = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => {
+        hits++;
+        return new Promise<Response>(() => {});
+      },
+    });
+    fakes.push(silent);
+    const { send } = await inbox(`http://127.0.0.1:${silent.port}/feedback`);
+    const started = performance.now();
+    const res = await send({ message: "hi" });
+    const took = performance.now() - started;
+    expect(hits).toBe(1);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: FEEDBACK_UNAVAILABLE, code: "feedback_not_sent" });
+    expect(took).toBeGreaterThanOrEqual(FEEDBACK_TIMEOUT_MS - 50);
+    expect(took).toBeLessThan(10_000);
+  }, 20_000);
 
   test("another site's page cannot send (the window's same-origin rule)", async () => {
     const endpoint = fakeEndpoint();

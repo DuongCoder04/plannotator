@@ -13,6 +13,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
 import { feedbackCopiedToast, feedbackPrompt } from './feedbackPrompt';
 
 const hasDom = typeof document !== 'undefined';
@@ -143,6 +144,30 @@ describe.skipIf(!hasDom)('the Feedback dialog', () => {
     await press(dialog.send());
     expect(calls).toHaveLength(2);
     expect(dialog.sent()).not.toBeNull();
+  });
+
+  test('the service or the Inbox unavailable: one plain line, never a network error or a status, and the words stay', async () => {
+    const answers: Array<() => Response | Promise<Response>> = [
+      // The Inbox's 502 when the Worker is unreachable, not deployed or silent.
+      () => Response.json({ error: FEEDBACK_UNAVAILABLE, code: 'feedback_not_sent' }, { status: 502 }),
+      // The Inbox itself gone: the browser's own network error.
+      () => Promise.reject(new TypeError('Failed to fetch')),
+      // Something in the way answering a page, not the Inbox's JSON.
+      () => new Response('<html>Bad gateway</html>', { status: 503, headers: { 'Content-Type': 'text/html' } }),
+      // The window's own time limit (an Inbox that holds the request).
+      () => Promise.reject(new DOMException('The operation was aborted.', 'AbortError')),
+    ];
+    let next = 0;
+    stubFetch(() => answers[next++]!());
+    const dialog = render();
+    type(dialog.box(), 'It crashed on open');
+    for (let i = 0; i < answers.length; i += 1) {
+      await press(dialog.send());
+      expect(dialog.sent()).toBeNull();
+      expect(dialog.error()?.textContent).toBe(FEEDBACK_UNAVAILABLE);
+      expect(dialog.box().value).toBe('It crashed on open');
+    }
+    expect(next).toBe(answers.length);
   });
 
   test('nothing empty or over 4,000 characters leaves the window', async () => {

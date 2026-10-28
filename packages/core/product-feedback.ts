@@ -47,7 +47,19 @@ export interface ProductFeedbackPayload {
   surface: FeedbackSurface;
 }
 
-export type ProductFeedbackResult = { ok: true } | { ok: false; reason: string; status?: number };
+/**
+ * What the person reads when the feedback service cannot take the message:
+ * unreachable, not deployed, too slow, or failing (a 5xx, a 404/405, an answer
+ * that is not the Worker's JSON). One plain line, the same in the dialog and
+ * the CLI, never a stack or a status code.
+ */
+export const FEEDBACK_UNAVAILABLE = "Couldn't send feedback right now; nothing was saved.";
+
+/** How long one send waits for the Worker. Under 10 s, so the window (which goes through its Inbox) has its answer by then. */
+export const FEEDBACK_TIMEOUT_MS = 8_000;
+
+/** `unavailable`: the service could not take it (reason is FEEDBACK_UNAVAILABLE); otherwise the Worker refused it and `reason` is its words. */
+export type ProductFeedbackResult = { ok: true } | { ok: false; reason: string; status?: number; unavailable: boolean };
 
 /** The URL to send to: a valid http(s) override from the env, else the constant. */
 export function productFeedbackUrl(env: Record<string, string | undefined> = {}): string {
@@ -116,7 +128,7 @@ export interface SendProductFeedbackOptions {
 export async function sendProductFeedback(payload: ProductFeedbackPayload, options: SendProductFeedbackOptions): Promise<ProductFeedbackResult> {
   const doFetch = options.fetch ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
   try {
     const res = await doFetch(options.url, {
       method: "POST",
@@ -127,17 +139,20 @@ export async function sendProductFeedback(payload: ProductFeedbackPayload, optio
       signal: controller.signal,
     });
     if (res.ok) return { ok: true };
-    let reason = `The feedback service answered ${res.status}.`;
-    try {
-      const body = (await res.json()) as { error?: unknown };
-      if (typeof body.error === "string" && body.error) reason = body.error;
-    } catch {
-      // No JSON error: keep the status line.
+    // A refusal is the Worker's 4xx with its JSON error (bad input, too big, too many). A 404 or 405 is
+    // a URL with no Worker on it (not deployed); a 5xx or anything else is the service failing.
+    if (res.status >= 400 && res.status < 500 && res.status !== 404 && res.status !== 405) {
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (typeof body.error === "string" && body.error) return { ok: false, reason: body.error.slice(0, 200), status: res.status, unavailable: false };
+      } catch {
+        // Not the Worker's JSON: unavailable, below.
+      }
     }
-    return { ok: false, reason, status: res.status };
-  } catch (error) {
-    const aborted = controller.signal.aborted;
-    return { ok: false, reason: aborted ? "The feedback service did not answer in time." : "Could not reach the feedback service." };
+    return { ok: false, reason: FEEDBACK_UNAVAILABLE, status: res.status, unavailable: true };
+  } catch {
+    // Unreachable (DNS, refused, TLS), a redirect, or past the time limit: one plain line, no detail.
+    return { ok: false, reason: FEEDBACK_UNAVAILABLE, unavailable: true };
   } finally {
     clearTimeout(timer);
   }
