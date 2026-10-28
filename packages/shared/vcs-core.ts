@@ -487,7 +487,8 @@ export function createVcsApi(
 
     const provider = getProviderById(vcsType);
     if (!provider) {
-      throw new Error(`${vcsType} support is not available in this runtime.`);
+      const names = { git: "Git", gitbutler: "GitButler", jj: "JJ", p4: "P4" } as const;
+      throw new Error(`${names[vcsType]} support is not available in this runtime.`);
     }
     if (!(await provider.detect(cwd))) {
       throw new Error(`${provider.label} workspace not found.`);
@@ -712,6 +713,11 @@ export function resolveInitialDiffType(
   gitContext: GitContext,
   configuredDiffType: DiffType,
 ): DiffType {
+  // Perforce always opens on the default changelist, as before (it has no
+  // saved default, and an empty default changelist still opens there).
+  if (gitContext.vcsType === "p4") {
+    return "p4-default";
+  }
   if (gitContext.diffOptions.some((option) => option.id === configuredDiffType)) {
     return configuredDiffType;
   }

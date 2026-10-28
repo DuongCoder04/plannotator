@@ -8,19 +8,8 @@ export interface ProviderReviewDefaults {
  */
 export type ReviewDefaults = Record<string, ProviderReviewDefaults>;
 
-export interface ReviewSettingsDiffOption {
-  id: string;
-  label: string;
-  description: string;
-}
-
-/** The default-diff choices Settings offers for one VCS. */
-export interface VcsReviewSettingsDescriptor {
-  id: string;
-  label: string;
-  defaultDiffType: string;
-  diffOptions: ReviewSettingsDiffOption[];
-}
+/** Git's saved default diff (`diffOptions.defaultDiffType`). */
+export type DefaultDiffType = 'since-base' | 'local-vs-remote' | 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all';
 
 export type DiffLineBgIntensity = 'subtle' | 'normal' | 'strong';
 
@@ -47,6 +36,6 @@ export interface DiffOptions {
   tabSize?: number;
   hideWhitespace?: boolean;
   expandUnchanged?: boolean;
-  defaultDiffType?: string;
+  defaultDiffType?: DefaultDiffType;
   lineBgIntensity?: DiffLineBgIntensity;
 }

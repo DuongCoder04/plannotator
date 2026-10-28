@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { AnnotateAgentTerminalSide } from '@plannotator/core/agent-terminal';
 import type { Origin } from '@plannotator/core/agents';
-import type { DiffLineBgIntensity, VcsReviewSettingsDescriptor } from '@plannotator/core/config-types';
+import type { DiffLineBgIntensity } from '@plannotator/core/config-types';
 import type { TokenHoverDelay } from '@plannotator/core/token-hover';
 import {
   configStore,
@@ -14,6 +14,7 @@ import {
   getProviderReviewDefaultDiffType,
   setProviderReviewDefaultDiffType,
   setReviewAutoViewed,
+  type VcsReviewSettingsDescriptor,
 } from '../config';
 import { setWebMcpToolsEnabled, useWebMcpToolsEnabled } from '../webmcp/preference';
 import { DIAGRAM_SHADOW_OPTIONS } from '../utils/diagramShadow';

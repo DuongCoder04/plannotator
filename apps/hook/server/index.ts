@@ -100,7 +100,7 @@ import {
   startGoalSetupServer as startGoalSetupServerUnguarded,
   handleGoalSetupServerReady,
 } from "@plannotator/server/goal-setup";
-import { type DiffType, type VcsProvider, detectManagedVcs, prepareLocalReviewDiff, resolveConfiguredVcsReviewDefault, gitRuntime } from "@plannotator/server/vcs";
+import { type DiffType, type VcsProvider, detectManagedVcs, getVcsReviewPolicy, prepareLocalReviewDiff, resolveConfiguredVcsReviewDefault, gitRuntime } from "@plannotator/server/vcs";
 import { loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
 import { formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory, type ParsedReviewArgs } from "@plannotator/shared/review-args";
 import { resolveReviewOpenState, type ReviewOpenState } from "@plannotator/shared/review-open-state";
@@ -559,7 +559,8 @@ async function resolveCliReviewOpenState(
   options: {
     isPRMode: boolean;
     isWorkspace: boolean;
-    provider?: VcsProvider;
+    providerId?: "git" | "gitbutler" | "jj" | "p4";
+    reviewPolicy?: VcsProvider["reviewPolicy"];
     resolvedDefaultDiffType: DiffType;
     cwd?: string;
   },
@@ -573,7 +574,7 @@ async function resolveCliReviewOpenState(
     reviewArgs.base !== undefined &&
     !options.isPRMode &&
     !options.isWorkspace &&
-    options.provider?.id === "git"
+    options.providerId === "git"
   ) {
     // The probe is the whole point of CLI-side resolution: without it a
     // typo'd base produces a confidently-mislabelled merge-base→HEAD diff
@@ -594,8 +595,8 @@ async function resolveCliReviewOpenState(
     parsed: reviewArgs,
     isPRMode: options.isPRMode,
     isWorkspace: options.isWorkspace,
-    provider: options.provider
-      ? { resolve: options.provider.reviewPolicy.resolveOpenState }
+    provider: options.reviewPolicy
+      ? { resolve: options.reviewPolicy.resolveOpenState }
       : undefined,
     resolvedDefaultDiffType: options.resolvedDefaultDiffType,
     baseResolves,
@@ -1431,7 +1432,10 @@ if (args[0] === "sessions") {
       const openState = await resolveCliReviewOpenState(reviewArgs, {
         isPRMode: false,
         isWorkspace: false,
-        provider: managedVcs ?? undefined,
+        providerId,
+        // A forced provider that is not detected still validates its own
+        // flags; prepareLocalReviewDiff then reports it missing.
+        reviewPolicy: managedVcs?.reviewPolicy ?? getVcsReviewPolicy(reviewArgs.vcsType),
         resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
         cwd: reviewCwd,
       });
@@ -2382,7 +2386,10 @@ if (args[0] === "sessions") {
       const openState = await resolveCliReviewOpenState(reviewArgs, {
         isPRMode: false,
         isWorkspace: false,
-        provider: managedVcs ?? undefined,
+        providerId,
+        // A forced provider that is not detected still validates its own
+        // flags; prepareLocalReviewDiff then reports it missing.
+        reviewPolicy: managedVcs?.reviewPolicy ?? getVcsReviewPolicy(reviewArgs.vcsType),
         resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
         cwd,
       });

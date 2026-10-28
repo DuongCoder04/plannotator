@@ -1,7 +1,20 @@
 import { configStore } from './configStore';
 import { SETTINGS } from './settings';
 import { storage } from '../utils/storage';
-import type { VcsReviewSettingsDescriptor } from '@plannotator/core/config-types';
+
+export interface ReviewSettingsDiffOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+/** The default-diff choices Settings → Review offers for one VCS. */
+export interface VcsReviewSettingsDescriptor {
+  id: string;
+  label: string;
+  defaultDiffType: string;
+  diffOptions: ReviewSettingsDiffOption[];
+}
 
 /**
  * The ONLY writers for the coupled setting pair (reviewPanelView,

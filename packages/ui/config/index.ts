@@ -11,4 +11,5 @@ export {
   needsAutoViewedNotice,
   markAutoViewedNoticeSeen,
   type ReviewDefaultDiffType,
+  type VcsReviewSettingsDescriptor,
 } from './reviewView';

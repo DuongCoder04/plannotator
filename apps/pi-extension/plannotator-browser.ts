@@ -737,14 +737,7 @@ async function createCodeReviewBrowserSession(
 		// resolve the effective requested base/diff type (promotion included).
 		// Programmatic callers keep the verbatim pass-through below.
 		let requestedBase = options.defaultBranch;
-		let requestedDiffType: DiffType | undefined;
-		if (!openStateFromFlags && options.diffType !== undefined) {
-			const reviewPolicy = managedVcs?.reviewPolicy ?? getVcsReviewPolicy(options.vcsType);
-			if (!reviewPolicy.ownsDiffType(options.diffType)) {
-				throw new Error(`Diff type ${options.diffType} is not available for this VCS provider.`);
-			}
-			requestedDiffType = options.diffType;
-		}
+		let requestedDiffType = options.diffType as DiffType | undefined;
 		if (openStateFromFlags) {
 			const { resolveReviewOpenState } = await import("./generated/review-open-state.ts");
 			if (managedVcs || forcedVcs) {
@@ -769,9 +762,9 @@ async function createCodeReviewBrowserSession(
 					parsed: { base: requestedBase, diffType: requestedDiffType },
 					isPRMode: false,
 					isWorkspace: false,
-					provider: managedVcs
-						? { resolve: managedVcs.reviewPolicy.resolveOpenState }
-						: undefined,
+					// A forced provider that is not detected still validates its
+					// own flags; prepareLocalReviewDiff then says it is missing.
+					provider: { resolve: (managedVcs?.reviewPolicy ?? getVcsReviewPolicy(options.vcsType)).resolveOpenState },
 					resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
 					baseResolves,
 				});
@@ -814,7 +807,7 @@ async function createCodeReviewBrowserSession(
 			initialBaseExplicit = openStateFromFlags && requestedBase !== undefined;
 		} else {
 			workspace = await buildLocalWorkspaceReview(cwd, {
-				requestedDiffType,
+				requestedDiffType: options.diffType as DiffType | WorkspaceDiffType | undefined,
 				configuredDiffType: resolveConfiguredVcsReviewDefault(config),
 				hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
 			});

@@ -23,12 +23,12 @@ import {
 } from "fs";
 import { execSync } from "child_process";
 
-import type { DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig } from '@plannotator/core/config-types';
+import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig } from '@plannotator/core/config-types';
 import { isFaviconStyle, type FaviconStyle } from './favicon';
 import { isAnnotateAgentTerminalSide, type AnnotateAgentTerminalSide } from './agent-terminal';
 import { parseAgentSwitchConfig, agentSwitchConfigValue, type AgentSwitchConfigValue } from './agent-switch';
 import { INBOX_TOOL_NAME, inboxReminderCustomText, inboxReminderFor } from './inbox/connection';
-export type { DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig, FaviconStyle };
+export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig, FaviconStyle };
 
 /** Single conventional comment label entry stored in config.json */
 export interface CCLabelConfig {

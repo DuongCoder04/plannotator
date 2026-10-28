@@ -14,7 +14,7 @@ import {
   startAnnotateServer,
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
-import { type DiffType, prepareLocalReviewDiff, detectManagedVcs, resolveConfiguredVcsReviewDefault, gitRuntime } from "@plannotator/server/vcs";
+import { type DiffType, prepareLocalReviewDiff, detectManagedVcs, getVcsReviewPolicy, resolveConfiguredVcsReviewDefault, gitRuntime } from "@plannotator/server/vcs";
 import { resolveReviewOpenState } from "@plannotator/shared/review-open-state";
 import { detectProjectName } from "@plannotator/server/project";
 import { parsePRUrl, checkPRAuth, fetchPR, getCliName, getMRLabel, getMRNumberLabel, getDisplayRepo } from "@plannotator/server/pr";
@@ -206,9 +206,9 @@ export async function handleReviewCommand(
         parsed: reviewArgs,
         isPRMode: false,
         isWorkspace: false,
-        provider: managedVcs
-          ? { resolve: managedVcs.reviewPolicy.resolveOpenState }
-          : undefined,
+        // A forced provider that is not detected still validates its own
+        // flags; prepareLocalReviewDiff then reports it missing.
+        provider: { resolve: (managedVcs?.reviewPolicy ?? getVcsReviewPolicy(reviewArgs.vcsType)).resolveOpenState },
         resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
         baseResolves,
       });
