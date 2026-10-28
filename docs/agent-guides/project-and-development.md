@@ -203,6 +203,8 @@ Run one lane locally with `bun run scripts/ci-test-lane.ts unit-2`. Several lane
 
 The Inbox window e2e (`.github/workflows/inbox-e2e.yml`) builds the apps once, then runs the Playwright specs as 8 shards, one worker each, through `scripts/ci-e2e-shard.ts <k>`. A shard is a set of whole spec files, spread by their measured time in `tests/e2e/shard-times.json` (Playwright's own `--shard` splits by test count, which left one shard at 17 min). A new spec needs no edit: with no time yet it counts as the median. Refresh the times when the shards drift apart (seconds per spec file, from a CI run's log). `scripts/ci-e2e-shard.test.ts` fails when a spec is in no shard or in two, or when the workflow's matrix and the script's shard count differ.
 
+The two Windows jobs for the Qwen Code installer steps (about 20 runner minutes) run on a PR only when the `qwen-gate` job sees a change to `scripts/install.{ps1,cmd}`, `scripts/install.test.ts`, `apps/qwen-code/`, the test setup, `package.json`, `bun.lock` or `test.yml`; otherwise they report skipped. Pushes to main and manual runs always run them.
+
 On a PR, the Release dry run skips its own `bun test` (the Test workflow runs the same sweep); tag pushes and manual runs still test before building. Test, Release and the Inbox e2e, Pi and Claude Code workflows cancel a PR's older run when the PR gets a new push; pushes to main and tags are never cancelled.
 
 ## Build

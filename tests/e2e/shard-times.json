@@ -31,6 +31,7 @@
   "inbox-guides.spec.ts": 44,
   "inbox-html-links.spec.ts": 37,
   "inbox-image-viewer.spec.ts": 86,
+  "inbox-inline-html.spec.ts": 25,
   "inbox-list-resize.spec.ts": 14,
   "inbox-mark-read.spec.ts": 25,
   "inbox-message-comments.spec.ts": 18,

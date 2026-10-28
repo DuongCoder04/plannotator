@@ -370,6 +370,44 @@ jobs:
       - name: Run focused uninstall tests
         run: bun test packages/server/uninstall.test.ts apps/hook/server/cli.test.ts packages/server/auto-update.test.ts
 
+  # Path gate for the Qwen Code installer jobs below (about 20 Windows runner
+  # minutes per run). Only these files can change what those tests run: the
+  # installers, their tests, the Qwen Code extension they install, the test
+  # setup, and this workflow. The same Qwen Code tests also run under pwsh in
+  # the unit lanes on every PR. Anything this cannot resolve (a push to main, a
+  # manual run, a checkout that is not the PR merge commit) runs the jobs:
+  # skipping is the risky direction. A skipped job reports as skipped, not
+  # missing.
+  qwen-gate:
+    name: Qwen Code installer steps (path gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # The merge commit plus both parents, as in guides-show.
+          fetch-depth: 2
+
+      - name: Does this change touch the Qwen Code installer steps?
+        id: gate
+        run: |
+          set -eu
+          run=true
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
+             && base=$(git rev-parse --verify --quiet 'HEAD^1') \
+             && git rev-parse --verify --quiet 'HEAD^2' >/dev/null; then
+            changed=$(git diff --name-only "$base" HEAD)
+            if grep -Eq '^(scripts/install\.(ps1|cmd)$|scripts/install\.test\.ts$|apps/qwen-code/|packages/shared/t3-hook-command\.ts$|tests/setup/|bunfig\.toml$|package\.json$|bun\.lock$|\.github/workflows/test\.yml$)' <<< "$changed"; then
+              run=true
+            else
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   qwen-installers-windows:
     # The Windows installers' Qwen Code steps on real Windows: install.ps1's
     # functions and install.cmd's PowerShell under pwsh and Windows PowerShell
@@ -378,10 +416,14 @@ jobs:
     # tests use temporary homes and a PATH of system folders, so no real qwen
     # runs and the runner's own user folders are never touched.
     # Split in two by test name: the cmd.exe runner (about 9 min) and every
-    # other Qwen Code test (about 8 min). The second pattern is the first one
-    # negated, so together they are every "Qwen Code" test, each once; a part
-    # that matches nothing fails (bun test exits 1 when a filter finds none).
+    # other Qwen Code test (about 8 min). Both patterns require "Qwen Code"
+    # anywhere in the name; one requires "install.cmd (cmd.exe)" and the other
+    # forbids it, in any order, so together they are every "Qwen Code" test,
+    # each once. A part that matches nothing fails (bun test exits 1 when a
+    # filter finds none). They run only when qwen-gate says so.
     name: Qwen Code installer steps (Windows, ${{ matrix.part }})
+    needs: qwen-gate
+    if: needs.qwen-gate.outputs.run == 'true'
     runs-on: windows-latest
     # Windows PowerShell 5.1 starts slowly on the runner: about 20 minutes in one job.
     timeout-minutes: 45
@@ -390,9 +432,9 @@ jobs:
       matrix:
         include:
           - part: cmd.exe
-            pattern: 'Qwen Code.*install\.cmd \(cmd\.exe\)'
+            pattern: '^(?=.*Qwen Code)(?=.*install\.cmd \(cmd\.exe\))'
           - part: PowerShell
-            pattern: '^(?!.*install\.cmd \(cmd\.exe\)).*Qwen Code'
+            pattern: '^(?=.*Qwen Code)(?!.*install\.cmd \(cmd\.exe\))'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
