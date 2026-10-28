@@ -199,12 +199,27 @@ interface ThreadLoad {
   error: string;
 }
 
+/**
+ * THROWAWAY (Board project filter, variants for the owner, `?variant=a|b|c`): a the Project chip in
+ * the Board's header; b the sidebar's Projects pick the Board's project; c both. Removed once he picks.
+ */
+const BOARD_FILTER_VARIANT: 'a' | 'b' | 'c' = (() => {
+  const v = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('variant');
+  return v === 'b' || v === 'c' ? v : 'a';
+})();
+const BOARD_SIDEBAR_SCOPE = BOARD_FILTER_VARIANT !== 'a';
+
 interface Route {
   page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour' | 'board';
   /** The Board's list (`#board`, `#board=shipped`, `#board=icebox`; approval "inbox-board", step 2). */
   board?: BoardView;
   /** The opened Board card (`#board&card=crd_…`), or on a thread the card it was opened from (its "‹ Board" way back). */
   card?: string | null;
+  /**
+   * On a thread opened from a Board card: the project the Board was filtered to (`&board-project=prj_…`), so its
+   * way back lands on the same filtered Board. On the Board itself the filter is `project` (`#board&project=prj_…`).
+   */
+  boardProject?: string | null;
   /** The onboarding tour's step (`#tour=3`, approval "inbox-onboarding-tour"): 1 to 6. */
   step?: number;
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
@@ -250,7 +265,8 @@ function routeOf(fullHash: string): Route {
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
   if (params.has('drafts')) return { page: 'drafts', project: null, thread: null };
-  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
+  // The Board's project filter rides the list's own key (`#board&project=prj_…`).
+  if (params.has('board')) return { page: 'board', project: params.get('project'), thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
   const thread = params.get('thread');
   const fileId = thread ? params.get('file') : null;
   return {
@@ -264,6 +280,7 @@ function routeOf(fullHash: string): Route {
     card: thread ? params.get('card') : null,
     // The Board list the card was opened from (Shipped, Icebox): the way back goes there.
     board: thread && params.get('card') ? boardViewOf(params.get('from')) : undefined,
+    boardProject: thread && params.get('card') ? params.get('board-project') : null,
   };
 }
 
@@ -273,7 +290,11 @@ function hashOf(route: Route): string {
   if (route.page === 'settings') hash = settingsHash({ section: route.section ?? null, pair: route.pair });
   else if (route.page === 'whats-new') hash = new URLSearchParams({ 'whats-new': route.version ?? '' }).toString();
   else if (route.page === 'drafts') hash = 'drafts';
-  else if (route.page === 'board') hash = (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') + (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
+  else if (route.page === 'board')
+    hash =
+      (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') +
+      (route.project ? `&project=${encodeURIComponent(route.project)}` : '') +
+      (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
@@ -293,6 +314,7 @@ function hashOf(route: Route): string {
     // A thread opened from a Board card: its way back is the card (`&card=crd_…`).
     if (route.thread && route.card) params.set('card', route.card);
     if (route.thread && route.card && route.board && route.board !== 'lanes') params.set('from', route.board);
+    if (route.thread && route.card && route.boardProject) params.set('board-project', route.boardProject);
     // `&artifacts`, a flag: written without its empty `=`.
     hash = params.toString().replace(/(^|&)artifacts=(?=&|$)/, '$1artifacts');
   }
@@ -2935,7 +2957,7 @@ function Inbox() {
   // A thread opened from a Board card (`#thread=…&card=crd_…`): it takes the list's place, led by
   // "‹ Board" and a chip naming the card; both go back to the opened card.
   const fromCard = route.page === 'inbox' && route.thread && route.card ? route.card : null;
-  const backToCard = () => close({ page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: fromCard });
+  const backToCard = () => close({ page: 'board', project: route.boardProject ?? null, thread: null, board: route.board ?? 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
@@ -3281,20 +3303,29 @@ function Inbox() {
         visitLook={boardVisit ? boardVisit.look : (cards?.seen_seq ?? null)}
         handled={boardVisit?.handled ?? EMPTY_SET}
         projects={projects}
-        defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
+        // Filtered to a project: a New card goes there.
+        defaultProject={(route.project && projects.some((p) => p.id === route.project) ? route.project : null) ?? recent?.project_id ?? projects[0]?.id ?? null}
         home={settings?.home ?? null}
         mcpCommand={settings?.mcp_command ?? null}
         phone={phone}
         openCard={route.card ?? null}
         onOpenCard={(id) => {
           if (id) handleCard(id);
-          const next: Route = { page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: id };
+          const next: Route = { page: 'board', project: route.project, thread: null, board: route.board ?? 'lanes', card: id };
           // Another card replaces the open one's entry; opening the first and closing are entries of their own (a phone's Back closes it).
           if (id === null && route.card) close(next);
           else writeRoute(next, { replace: !!route.card && id !== null });
         }}
         rowOf={(threadId) => rowById.get(threadId) ?? null}
-        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
+        onView={(next) => go({ page: 'board', project: route.project, thread: null, board: next })}
+        project={route.project}
+        projectChip={BOARD_FILTER_VARIANT === 'b' ? 'clear' : 'menu'}
+        // The filter is a place, like the list's project: each pick is a history entry, and Back undoes it.
+        onProject={(project) => {
+          // An opened card stays open while the Board still shows it.
+          const open = route.card ? cards?.cards.find((c) => c.id === route.card) : undefined;
+          go({ page: 'board', project, thread: null, board: route.board ?? 'lanes', card: open && (project === null || open.project_id === project) ? open.id : null });
+        }}
         onMove={moveCard}
         onChanged={(card) => {
           if (card) {
@@ -3305,7 +3336,7 @@ function Inbox() {
           void refreshList(false);
         }}
         onSeeDrops={seeDrops}
-        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes', boardProject: route.project })}
         onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
         marks={settings !== null && settings.via !== 'tailnet'}
@@ -3600,7 +3631,8 @@ function Inbox() {
           ) : (
           <Sidebar
             page={route.page === 'tour' ? 'inbox' : fromCard ? 'board' : route.page}
-            projectId={route.project}
+            projectId={route.page === 'board' ? (BOARD_SIDEBAR_SCOPE ? route.project : null) : fromCard ? (BOARD_SIDEBAR_SCOPE ? (route.boardProject ?? null) : null) : route.project}
+            boardScope={BOARD_SIDEBAR_SCOPE}
             inboxCount={waitingCount(latestSections)}
             projects={projects}
             projectCounts={projectCounts}
@@ -3619,11 +3651,19 @@ function Inbox() {
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
             // The Board (approval "inbox-board"): a row only while the person has it on; no count (the header has it).
-            onBoard={boardEnabled ? () => leave({ page: 'board', project: null, thread: null }) : undefined}
+            onBoard={
+              boardEnabled
+                ? () =>
+                    // b, c: the project the list shows carries to the Board; on the Board the row shows every project again.
+                    leave({ page: 'board', project: BOARD_SIDEBAR_SCOPE && route.page === 'inbox' && !fromCard ? route.project : null, thread: null })
+                : undefined
+            }
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>
-              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
+              BOARD_SIDEBAR_SCOPE && (route.page === 'board' || fromCard)
+                ? leave({ page: 'board', project: projectId, thread: null, board: route.page === 'board' ? (route.board ?? 'lanes') : 'lanes' })
+                : route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
             }
             refreshes={route.page === 'inbox' && route.thread === null}
             refreshSpin={refreshSpin}

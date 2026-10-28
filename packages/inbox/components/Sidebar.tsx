@@ -29,6 +29,8 @@ export interface SidebarProps {
    */
   onBoard?: () => void;
   projectId: string | null;
+  /** On the Board, the Projects rows pick the Board's project (`projectId` is the Board's then). THROWAWAY variants b, c. */
+  boardScope?: boolean;
   /** Rows waiting on the person, all projects. */
   inboxCount: number;
   projects: readonly ProjectFolder[];
@@ -138,7 +140,8 @@ export function Sidebar(props: SidebarProps) {
   const { setOpenMobile } = useSidebar();
   const phone = usePhone();
   // A project with nothing in the list leaves the sidebar (automatic hiding); the one the list shows stays until the person leaves it.
-  const held = props.page === 'inbox' ? props.projectId : null;
+  const scoped = props.page === 'inbox' || (props.page === 'board' && props.boardScope === true);
+  const held = scoped ? props.projectId : null;
   const shown = shownProjects(props.projects, held);
   const pins = props.pins ?? [];
   // One scroll area holds Pinned and Projects (no limit on pins: a long Pinned section scrolls with the projects).
@@ -336,7 +339,7 @@ export function Sidebar(props: SidebarProps) {
           ) : (
             shown.map((project) => {
               const n = props.projectCounts.get(project.id) ?? 0;
-              const on = props.page === 'inbox' && props.projectId === project.id;
+              const on = scoped && props.projectId === project.id;
               if (!props.onProjectAction) {
                 return (
                   <ProjectTip key={project.id} name={project.name} root={project.root}>
