@@ -21,6 +21,18 @@
 
 import type { AIMessage } from "../types.ts";
 
+/**
+ * Every Ask AI Qwen session id starts with this (still a valid UUID v4), so
+ * readers of Qwen's chat folder can tell Ask AI chats from the person's own.
+ * apps/hook/server/qwen-session.ts keeps a copy; its test pins the two equal.
+ */
+export const QWEN_ASK_AI_SESSION_PREFIX = "a5ca1000";
+
+/** A fresh Qwen session id for an Ask AI conversation. */
+export function newQwenAskAISessionId(): string {
+	return QWEN_ASK_AI_SESSION_PREFIX + crypto.randomUUID().slice(QWEN_ASK_AI_SESSION_PREFIX.length);
+}
+
 /** `sessionId` is the Plannotator session's id; a result line reports it. */
 export function mapQwenLine(line: Record<string, unknown>, sessionId: string): AIMessage[] {
 	if (line.parent_tool_use_id != null) return [];

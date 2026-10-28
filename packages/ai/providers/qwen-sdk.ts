@@ -5,13 +5,22 @@
  * One short-lived `qwen` process per question. `qwen -o stream-json` answers
  * one prompt and exits; the conversation lives in Qwen Code's own session
  * store. The first question starts it with `--session-id <uuid>`, later ones
- * continue it with `--resume <uuid>`.
+ * continue it with `--resume <uuid>`. The ids start with
+ * QWEN_ASK_AI_SESSION_PREFIX, so `plannotator last` can skip these chats.
+ * When a resume finds no saved session (the user turned Qwen's chat
+ * recording off, or a run died before Qwen saved it), the question is sent
+ * once more as a new session with the review context.
  *
  * - The prompt goes on stdin, never argv: cmd.exe caps a command line at
  *   about 8 KB and the first question carries the whole review context.
- * - `--approval-mode plan` keeps the run read-only. `exit_plan_mode` is
- *   excluded: the Plannotator Qwen extension opens a plan review on it, and
- *   an Ask AI answer must never do that.
+ * - `--approval-mode plan`, plus the tools in QWEN_EXCLUDED_TOOLS turned
+ *   off. Plan mode alone is not read-only: Qwen runs a tool the user's
+ *   settings auto-approve before it applies the plan-mode block. So the
+ *   file-writing and memory tools are removed outright. Still allowed:
+ *   tools of MCP servers the user marked trusted, and a shell command
+ *   Qwen's plan-mode shell policy accepts.
+ * - `exit_plan_mode` is off too: the Plannotator Qwen extension opens a plan
+ *   review on it, and an Ask AI answer must never do that.
  * - `--max-wall-time` bounds the run; qwen exits with code 55 when it is
  *   over.
  *
@@ -40,12 +49,25 @@ import {
 	resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { guardChildStreams, toChildError, writeChildLine } from "./child-io.ts";
-import { mapQwenLine } from "./qwen-events.ts";
+import { mapQwenLine, newQwenAskAISessionId } from "./qwen-events.ts";
 
-export { mapQwenLine } from "./qwen-events.ts";
+export { mapQwenLine, QWEN_ASK_AI_SESSION_PREFIX } from "./qwen-events.ts";
 
 const PROVIDER_NAME = "qwen-sdk";
 const QWEN_PROCESS_LABEL = "Qwen process";
+/**
+ * Turned off for every Ask AI run (`--exclude-tools`). A whole-tool deny
+ * removes the tool, and a deny wins over the user's allow rules, which plan
+ * mode alone does not (see the header). Names from Qwen Code's ToolNames.
+ */
+export const QWEN_EXCLUDED_TOOLS = [
+	"exit_plan_mode",
+	"edit",
+	"write_file",
+	"notebook_edit",
+	"save_memory",
+	"manage_memory",
+] as const;
 /** The run's wall-clock budget (qwen's `--max-wall-time`). */
 const QWEN_MAX_WALL_TIME = "10m";
 /** qwen's exit code when `--max-wall-time` ran out. */
@@ -256,17 +278,23 @@ export class QwenProcess {
 		for (const wake of this.endWaiters.splice(0)) wake();
 	}
 
-	/** Resolves once the run has ended, or after `ms` (then the run is stopped). */
-	async settle(ms: number): Promise<void> {
-		if (this.ended) return;
+	/**
+	 * Resolves once the run has ended, or after `ms` (then the run is
+	 * stopped), or at once when `signal` aborts (the run is left alone).
+	 */
+	async settle(ms: number, signal?: AbortSignal): Promise<void> {
+		if (this.ended || signal?.aborted) return;
 		await new Promise<void>((done) => {
-			const timer = setTimeout(done, ms);
-			this.endWaiters.push(() => {
+			const finish = () => {
 				clearTimeout(timer);
+				signal?.removeEventListener("abort", finish);
 				done();
-			});
+			};
+			const timer = setTimeout(finish, ms);
+			this.endWaiters.push(finish);
+			signal?.addEventListener("abort", finish, { once: true });
 		});
-		if (!this.ended) this.kill();
+		if (!this.ended && !signal?.aborted) this.kill();
 	}
 
 	kill(): void {
@@ -324,7 +352,7 @@ export class QwenSDKProvider implements AIProvider {
 		);
 	}
 
-	/** Continue a Qwen Code session this provider started (its id is qwen's). */
+	/** Continue a Qwen Code session this provider started; `sessionId` is the Qwen session id. */
 	async resumeSession(sessionId: string): Promise<QwenSDKSession> {
 		const session = new QwenSDKSession(
 			{
@@ -370,9 +398,10 @@ class QwenSDKSession extends BaseSession {
 	private config: SessionConfig;
 	private child: QwenProcess | null = null;
 	/**
-	 * The Qwen Code session id. It starts as this session's id; a first
-	 * question that got no answer at all gets a fresh one for the retry, since
-	 * qwen may already have stored that id.
+	 * The Qwen Code session id (QWEN_ASK_AI_SESSION_PREFIX + random). A new
+	 * one is picked when no conversation holds the review context yet and the
+	 * old id may be taken: a first question with no answer (qwen may have
+	 * stored the id), or a resume that found no saved session.
 	 */
 	private qwenSessionId: string;
 	private conversationStarted: boolean;
@@ -380,7 +409,7 @@ class QwenSDKSession extends BaseSession {
 	constructor(config: SessionConfig, initialId?: string) {
 		super({ parentSessionId: null, ...(initialId ? { initialId } : {}) });
 		this.config = config;
-		this.qwenSessionId = this.id;
+		this.qwenSessionId = config.resume && initialId ? initialId : newQwenAskAISessionId();
 		this.conversationStarted = config.resume;
 		this._firstQuerySent = config.resume;
 	}
@@ -394,7 +423,7 @@ class QwenSDKSession extends BaseSession {
 			"--include-partial-messages",
 			"--approval-mode",
 			"plan",
-			"--exclude-tools=exit_plan_mode",
+			`--exclude-tools=${QWEN_EXCLUDED_TOOLS.join(",")}`,
 			"--max-wall-time",
 			QWEN_MAX_WALL_TIME,
 		];
@@ -405,18 +434,19 @@ class QwenSDKSession extends BaseSession {
 		return args;
 	}
 
-	async *query(prompt: string): AsyncIterable<AIMessage> {
-		const started = this.startQuery();
-		if (!started) {
-			yield BaseSession.BUSY_ERROR;
-			return;
-		}
-		const { gen, signal } = started;
-
+	/**
+	 * One qwen run. Yields its messages; a run that ends without a result is
+	 * returned as `error` (not yielded), so the caller can retry instead.
+	 */
+	private async *run(prompt: string, signal: AbortSignal): AsyncGenerator<AIMessage, RunOutcome> {
+		const resumed = this.conversationStarted;
 		const queue: AIMessage[] = [];
 		let wake: (() => void) | null = null;
 		let done = false;
 		let answered = false;
+		let error: AIMessage | null = null;
+		let exitCode: number | null = null;
+		let startFailed = false;
 		const push = (msg: AIMessage) => {
 			queue.push(msg);
 			wake?.();
@@ -426,59 +456,88 @@ class QwenSDKSession extends BaseSession {
 			wake?.();
 		};
 
+		const child = new QwenProcess();
+		this.child = child;
+		const onAbort = () => {
+			child.kill();
+			finish();
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		child.start(
+			this.config.qwenExecutablePath,
+			this.buildArgs(),
+			this.config.cwd,
+			buildEffectivePrompt(prompt, this.config.systemPrompt, this.conversationStarted),
+			(line) => {
+				if (line.type === "system") return;
+				answered = true;
+				for (const msg of mapQwenLine(line, this.id)) {
+					push(msg);
+					if (msg.type === "result") finish();
+				}
+			},
+			(code, failure) => {
+				if (!done && !signal.aborted) {
+					exitCode = code;
+					startFailed = failure !== undefined;
+					error = { type: "error", error: qwenExitError(code, failure, child.stderr), code: "qwen_process_exit" };
+				}
+				finish();
+			},
+		);
+
+		try {
+			while (!done || queue.length > 0) {
+				if (queue.length > 0) {
+					yield queue.shift()!;
+				} else {
+					await new Promise<void>((r) => {
+						wake = r;
+					});
+					wake = null;
+				}
+			}
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+			if (answered) {
+				this.conversationStarted = true;
+				this._firstQuerySent = true;
+			} else if (!this.conversationStarted) {
+				this.qwenSessionId = newQwenAskAISessionId();
+			}
+		}
+		// A resume that printed nothing and exited with an error: qwen found no
+		// saved session ("No saved session found", exit 1). Not a start failure,
+		// and not the wall-time stop, which would only take 10 minutes again.
+		const noSavedSession =
+			resumed && !answered && !startFailed && exitCode !== null && exitCode !== 0 && exitCode !== QWEN_WALL_TIME_EXIT;
+		return { error, noSavedSession };
+	}
+
+	async *query(prompt: string): AsyncIterable<AIMessage> {
+		const started = this.startQuery();
+		if (!started) {
+			yield BaseSession.BUSY_ERROR;
+			return;
+		}
+		const { gen, signal } = started;
+
 		try {
 			// The previous run may still be saving the conversation this one
-			// continues.
-			await this.child?.settle(PREVIOUS_RUN_GRACE_MS);
+			// continues. Stop does not wait this out.
+			await this.child?.settle(PREVIOUS_RUN_GRACE_MS, signal);
 			if (signal.aborted) return;
 
-			const child = new QwenProcess();
-			this.child = child;
-			const onAbort = () => {
-				child.kill();
-				finish();
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-
-			child.start(
-				this.config.qwenExecutablePath,
-				this.buildArgs(),
-				this.config.cwd,
-				buildEffectivePrompt(prompt, this.config.systemPrompt, this.conversationStarted),
-				(line) => {
-					if (line.type === "system") return;
-					answered = true;
-					for (const msg of mapQwenLine(line, this.id)) {
-						push(msg);
-						if (msg.type === "result") finish();
-					}
-				},
-				(code, failure) => {
-					if (!done && !signal.aborted) {
-						push({
-							type: "error",
-							error: qwenExitError(code, failure, child.stderr),
-							code: "qwen_process_exit",
-						});
-					}
-					finish();
-				},
-			);
-
-			try {
-				while (!done || queue.length > 0) {
-					if (queue.length > 0) {
-						yield queue.shift()!;
-					} else {
-						await new Promise<void>((r) => {
-							wake = r;
-						});
-						wake = null;
-					}
-				}
-			} finally {
-				signal.removeEventListener("abort", onAbort);
+			let outcome = yield* this.run(prompt, signal);
+			if (outcome.noSavedSession && !signal.aborted) {
+				// The conversation is gone from Qwen's store. Start a new one with
+				// the review context and ask again; only the history is lost.
+				this.conversationStarted = false;
+				this._firstQuerySent = false;
+				this.qwenSessionId = newQwenAskAISessionId();
+				outcome = yield* this.run(prompt, signal);
 			}
+			if (outcome.error) yield outcome.error;
 		} catch (err) {
 			yield {
 				type: "error",
@@ -486,12 +545,6 @@ class QwenSDKSession extends BaseSession {
 				code: "provider_error",
 			};
 		} finally {
-			if (answered) {
-				this.conversationStarted = true;
-				this._firstQuerySent = true;
-			} else if (!this.conversationStarted) {
-				this.qwenSessionId = crypto.randomUUID();
-			}
 			this.endQuery(gen);
 		}
 	}
@@ -500,6 +553,13 @@ class QwenSDKSession extends BaseSession {
 	killProcess(): void {
 		this.child?.kill();
 	}
+}
+
+interface RunOutcome {
+	/** The error for a run that ended without a result; null otherwise. */
+	error: AIMessage | null;
+	/** A resume that found no saved session. */
+	noSavedSession: boolean;
 }
 
 registerProviderFactory(PROVIDER_NAME, async (config) => new QwenSDKProvider(config as QwenSDKConfig));

@@ -76,10 +76,18 @@ function isReadableFile(path: string): boolean {
   }
 }
 
+/**
+ * The start of every Ask AI Qwen session id (QWEN_ASK_AI_SESSION_PREFIX in
+ * packages/ai/providers/qwen-events.ts; qwen-session.test.ts pins the two
+ * equal). Those chats are Plannotator's own questions, never the session the
+ * person means by "last".
+ */
+export const QWEN_ASK_AI_CHAT_PREFIX = "a5ca1000";
+
 function newestChatLog(chatsDir: string): string | null {
   let files: string[];
   try {
-    files = readdirSync(chatsDir).filter((f) => f.endsWith(".jsonl"));
+    files = readdirSync(chatsDir).filter((f) => f.endsWith(".jsonl") && !f.startsWith(QWEN_ASK_AI_CHAT_PREFIX));
   } catch {
     return null;
   }
@@ -113,7 +121,8 @@ export interface QwenSessionLogOptions {
  * Prefers the variables Qwen sets (QWEN_CODE_PROJECT_DIR +
  * QWEN_CODE_SESSION_ID), which name the log. When either is missing, or the
  * named log does not exist, falls back to the newest chat of the cwd's
- * project folder (the CLI runs in the session's folder when its shell runs it).
+ * project folder (the CLI runs in the session's folder when its shell runs it),
+ * leaving out Plannotator's own Ask AI chats.
  */
 export function findQwenSessionLog(opts: QwenSessionLogOptions = {}): string | null {
   const env = opts.env ?? process.env;

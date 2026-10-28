@@ -3,7 +3,7 @@
  * script path as the executable). It never runs Qwen Code.
  *
  * Every run appends one JSON line to `log`: its argv, the prompt it read from
- * stdin, its cwd, $QWEN_HOME and its pid. What it does next comes from the
+ * stdin, its cwd, $QWEN_HOME, its pid and when it started (`at`, ms). What it does next comes from the
  * file `mode` in `dir` (read at each run, so a test can change it between
  * questions):
  *
@@ -13,6 +13,10 @@
  * - `wall-time`: a line on stderr, then exit 55 (qwen's `--max-wall-time`).
  * - `silent`: exit 1 with no output.
  * - `hang`: the init line, then waits (for abort tests).
+ * - `linger`: the answer, then stays running for 30 s (a qwen that has not
+ *   exited after its result line).
+ * - `resume-fails`: a `--resume` run prints "No saved session found" on
+ *   stderr and exits 1 (Qwen with chat recording off); any other run answers.
  *
  * The script runs under the current Bun (process.execPath), so the test PATH
  * does not need node.
@@ -23,10 +27,10 @@ import { join } from "node:path";
 export interface FakeQwen {
   /** The `qwen` launcher to put on PATH or pass as the executable path. */
   bin: string;
-  /** One JSON line per run: `{ args, stdin, cwd, qwenHome, pid }`. */
+  /** One JSON line per run: `{ args, stdin, cwd, qwenHome, pid, at }`. */
   log: string;
   /** Write the mode the next run uses. */
-  setMode(mode: "answer" | "wall-time" | "silent" | "hang"): void;
+  setMode(mode: "answer" | "wall-time" | "silent" | "hang" | "linger" | "resume-fails"): void;
 }
 
 export interface FakeQwenRun {
@@ -35,6 +39,7 @@ export interface FakeQwenRun {
   cwd: string;
   qwenHome: string | null;
   pid: number;
+  at: number;
 }
 
 export function fakeQwenCli(dir: string): FakeQwen {
@@ -54,12 +59,17 @@ process.stdin.on("end", () => {
     cwd: process.cwd(),
     qwenHome: process.env.QWEN_HOME ?? null,
     pid: process.pid,
+    at: Date.now(),
   }) + "\\n");
   const mode = existsSync(${JSON.stringify(modeFile)}) ? readFileSync(${JSON.stringify(modeFile)}, "utf8").trim() : "answer";
   const out = (line) => process.stdout.write(JSON.stringify(line) + "\\n");
   const at = args.indexOf("--session-id") >= 0 ? args.indexOf("--session-id") : args.indexOf("--resume");
   const session_id = args[at + 1];
   if (mode === "silent") process.exit(1);
+  if (mode === "resume-fails" && args.includes("--resume")) {
+    process.stderr.write("No saved session found with ID " + session_id + ".\\n");
+    process.exit(1);
+  }
   if (mode === "wall-time") {
     process.stderr.write("Run exceeded --max-wall-time\\n");
     process.exit(55);
@@ -73,6 +83,7 @@ process.stdin.on("end", () => {
   out({ type: "stream_event", session_id, parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ng" } } });
   out({ type: "assistant", session_id, parent_tool_use_id: null, message: { role: "assistant", content: [{ type: "text", text: "pong" }] } });
   out({ type: "result", subtype: "success", session_id, is_error: false, result: "pong", num_turns: 1 });
+  if (mode === "linger") setTimeout(() => process.exit(0), 30000);
 });
 `,
   );

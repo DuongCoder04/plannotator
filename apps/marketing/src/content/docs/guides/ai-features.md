@@ -66,7 +66,7 @@ OpenCode supports session forking, resuming, and runtime permission approvals â€
 
 ### Qwen Code (via the qwen CLI)
 
-Requires the `qwen` CLI installed and signed in. Each question runs `qwen` once in read-only plan mode, and later questions continue the same Qwen Code session. The models come from your Qwen Code settings (`~/.qwen/settings.json`, or the folder `QWEN_HOME` names): the models configured for your current sign-in type, with your current model as the default. Ask AI conversations appear in your Qwen Code session list.
+Requires the `qwen` CLI installed and signed in. Each question runs `qwen` once in its plan mode with the file-writing tools turned off, and later questions continue the same Qwen Code session. The models come from your Qwen Code settings (`~/.qwen/settings.json`, or the folder `QWEN_HOME` names): the models configured for your current sign-in type, with your current model as the default. Ask AI conversations appear in your Qwen Code session list. Each one is the newest Qwen chat for the project, so `qwen --continue` resumes it rather than your own session; use `qwen --resume` to pick yours.
 
 ## Configuration
 
@@ -100,7 +100,7 @@ OpenCode supports the same permission approval flow as Claude â€” tool calls tha
 
 Pi does not expose a permission approval gate over RPC, so tool execution is handled entirely by Pi's own runtime.
 
-Qwen Code runs in its read-only plan mode, so it can read and search but not change files, and no approval cards appear. Each answer has a 10-minute limit.
+Qwen Code runs in its plan mode, and Plannotator also turns off Qwen's file-editing, file-writing and memory tools for these runs, so no approval cards appear. Plan mode alone is not enough: Qwen runs a tool your settings auto-approve before plan mode can block it. Tools of an MCP server you marked as trusted can still run. Each answer has a 10-minute limit.
 
 ## Reasoning effort
 

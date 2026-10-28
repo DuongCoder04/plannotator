@@ -9,14 +9,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeQwenCli, fakeQwenRuns } from "../../../tests/test-fixtures/fake-qwen-cli.ts";
 import type { AIMessage, AISession } from "../types.ts";
-import { QwenSDKProvider, qwenHomeDir } from "./qwen-sdk.ts";
+import { QWEN_ASK_AI_SESSION_PREFIX, QwenSDKProvider, qwenHomeDir } from "./qwen-sdk.ts";
 
 const tempDirs: string[] = [];
+const providers: QwenSDKProvider[] = [];
+const fakeLogs: string[] = [];
 const savedQwenHome = process.env.QWEN_HOME;
 
 afterEach(() => {
 	if (savedQwenHome === undefined) delete process.env.QWEN_HOME;
 	else process.env.QWEN_HOME = savedQwenHome;
+	for (const provider of providers.splice(0)) provider.dispose();
+	// No fake qwen outlives its test, whatever the test did.
+	for (const log of fakeLogs.splice(0)) {
+		for (const run of fakeQwenRuns(log)) {
+			try {
+				process.kill(run.pid, "SIGKILL");
+			} catch {
+				// Already gone.
+			}
+		}
+	}
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -26,6 +39,8 @@ function setup() {
 	process.env.QWEN_HOME = join(dir, "qwen-home");
 	const fake = fakeQwenCli(dir);
 	const provider = new QwenSDKProvider({ type: "qwen-sdk", cwd: dir, qwenExecutablePath: fake.bin });
+	providers.push(provider);
+	fakeLogs.push(fake.log);
 	return { dir, fake, provider };
 }
 
@@ -67,14 +82,20 @@ describe("QwenSDKProvider", () => {
 		expect(second.at(-1)).toMatchObject({ type: "result", success: true });
 
 		const [run1, run2] = fakeQwenRuns(fake.log);
-		expect(run1!.args.slice(0, 2)).toEqual(["--session-id", session.id]);
-		expect(run2!.args.slice(0, 2)).toEqual(["--resume", session.id]);
-		for (const run of [run1!, run2!]) {
-			expect(run.args).toContain("--exclude-tools=exit_plan_mode");
-			expect(run.args.join(" ")).toContain("--approval-mode plan");
-			expect(run.args.join(" ")).toContain("--output-format stream-json --include-partial-messages");
-			expect(run.args.join(" ")).toContain("--model qwen3-coder-plus");
-		}
+		const qwenId = run1!.args[1]!;
+		// Marked as an Ask AI chat, so `plannotator last` can skip it.
+		expect(qwenId.startsWith(QWEN_ASK_AI_SESSION_PREFIX)).toBe(true);
+		expect(qwenId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+		const rest = [
+			"--output-format", "stream-json", "--include-partial-messages",
+			"--approval-mode", "plan",
+			// Plan mode alone runs a write tool the user's settings auto-approve.
+			"--exclude-tools=exit_plan_mode,edit,write_file,notebook_edit,save_memory,manage_memory",
+			"--max-wall-time", "10m",
+			"--model", "qwen3-coder-plus",
+		];
+		expect(run1!.args).toEqual(["--session-id", qwenId, ...rest]);
+		expect(run2!.args).toEqual(["--resume", qwenId, ...rest]);
 		// The review context goes with the first question only, and on stdin.
 		expect(run1!.stdin).toContain("# The plan under review");
 		expect(run1!.stdin).toContain("What does step 2 do?");
@@ -136,6 +157,78 @@ describe("QwenSDKProvider", () => {
 		}
 		expect(alive).toBe(false);
 	});
+
+	test.if(posix)("a follow-up whose saved session is gone starts a new session with the context and still answers", async () => {
+		const { fake, provider } = setup();
+		const session = await newSession(provider);
+		await ask(session, "First");
+		fake.setMode("resume-fails");
+		const second = await ask(session, "Second");
+		expect(second.some((m) => m.type === "error")).toBe(false);
+		expect(second.at(-1)).toMatchObject({ type: "result", success: true, result: "pong" });
+
+		fake.setMode("answer");
+		await ask(session, "Third");
+		const [run1, run2, run3, run4] = fakeQwenRuns(fake.log);
+		expect(run2!.args.slice(0, 2)).toEqual(["--resume", run1!.args[1]]);
+		expect(run3!.args[0]).toBe("--session-id");
+		expect(run3!.args[1]).not.toBe(run1!.args[1]);
+		expect(run3!.args[1]!.startsWith(QWEN_ASK_AI_SESSION_PREFIX)).toBe(true);
+		expect(run3!.stdin).toContain("# The plan under review");
+		expect(run3!.stdin).toContain("Second");
+		// Later questions continue the new session.
+		expect(run4!.args.slice(0, 2)).toEqual(["--resume", run3!.args[1]]);
+		expect(run4!.stdin).not.toContain("# The plan under review");
+	});
+
+	test.if(posix)("a follow-up that fails another way keeps the conversation for the next question", async () => {
+		const { fake, provider } = setup();
+		const session = await newSession(provider);
+		await ask(session, "First");
+		fake.setMode("wall-time");
+		const failed = await ask(session, "Second");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ type: "error", code: "qwen_process_exit" });
+		fake.setMode("answer");
+		await ask(session, "Third");
+		const runs = fakeQwenRuns(fake.log);
+		// No retry of the timed-out run, and the same conversation afterwards.
+		expect(runs).toHaveLength(3);
+		expect(runs[2]!.args.slice(0, 2)).toEqual(["--resume", runs[0]!.args[1]]);
+	});
+
+	test.if(posix)("the next question waits up to 5 s for a qwen still running after its answer, then stops it", async () => {
+		const { fake, provider } = setup();
+		const session = await newSession(provider);
+		fake.setMode("linger");
+		await ask(session, "First");
+		const answeredAt = Date.now();
+		fake.setMode("answer");
+		await ask(session, "Second");
+		const [run1, run2] = fakeQwenRuns(fake.log);
+		expect(run2!.at - answeredAt).toBeGreaterThanOrEqual(4_500);
+		let alive = pidAlive(run1!.pid);
+		for (let i = 0; i < 100 && alive; i++) {
+			await Bun.sleep(20);
+			alive = pidAlive(run1!.pid);
+		}
+		expect(alive).toBe(false);
+	}, 15_000);
+
+	test.if(posix)("Stop during that wait ends the question at once and starts no run", async () => {
+		const { fake, provider } = setup();
+		const session = await newSession(provider);
+		fake.setMode("linger");
+		await ask(session, "First");
+		const pending = ask(session, "Second");
+		await Bun.sleep(200);
+		const stoppedAt = Date.now();
+		session.abort();
+		const messages = await pending;
+		expect(Date.now() - stoppedAt).toBeLessThan(2_000);
+		expect(messages).toEqual([]);
+		expect(fakeQwenRuns(fake.log)).toHaveLength(1);
+	}, 15_000);
 
 	test("a qwen that cannot be started is reported, not thrown", async () => {
 		const { dir } = setup();

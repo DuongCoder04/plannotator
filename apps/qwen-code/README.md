@@ -30,7 +30,7 @@ Restart Qwen Code. Remove the extension with `qwen extensions uninstall plannota
 
 ## Ask AI
 
-When `qwen` is on your PATH, Ask AI in plan review, code review and annotate can answer with Qwen Code. In a Qwen Code session it is the default. It runs `qwen` in read-only plan mode, with the models from your Qwen Code settings.
+When `qwen` is on your PATH, Ask AI in plan review, code review and annotate can answer with Qwen Code. In a Qwen Code session it is the default. It runs `qwen` in plan mode with Qwen's file-editing, file-writing and memory tools turned off, and uses the models from your Qwen Code settings. Tools of an MCP server you marked as trusted can still run. Each Ask AI conversation becomes the newest Qwen chat for the project, so `qwen --continue` resumes it; `/plannotator-last` skips it.
 
 ## Credit
 
