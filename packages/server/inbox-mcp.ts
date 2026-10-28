@@ -150,7 +150,7 @@ export const INBOX_CONTRACT_EXAMPLE = [
 const sectionLabel = (id: InboxSectionId): string => INBOX_SECTIONS.find((section) => section.id === id)?.label ?? id;
 
 export const SEND_BODY_DESCRIPTION = [
-  "The message, markdown. Question blocks render as answerable cards.",
+  "The message, markdown. Question blocks render as answerable cards. Blocks fenced as `mermaid` or `dot` draw as diagrams; one fenced as `html` draws as a live, sandboxed page in the message (chart, SVG, mock; https libraries load). Leave its background transparent; use var(--foreground), var(--chart-1)…var(--chart-5).",
   "",
   "Two Inbox-only lines a question block can carry, each on its own line after the question:",
   `- \`Stopped: <why>\` only when you truly cannot go on until this is answered: the thread goes first in the person's list, under "${sectionLabel("stopped")}". Otherwise leave the line out. A negative value (\`no\`, \`none\`, \`n/a\`, \`-\`) means no stop, so never write \`Stopped: no\`.`,

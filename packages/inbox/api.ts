@@ -625,6 +625,8 @@ export function saveRecentSearch(input: { q: string } | { clear: true }): Promis
 }
 
 export const inboxApi = {
+  /** Keep a ```html fence's page and get the URL of its sandboxed document (approval "inbox-inline-html"). */
+  embed: (html: string) => post<{ id: string; url: string }>('/api/inbox/embeds', { html }),
   /** The global skills the composers' `/` and `$` picker lists (raw entries; ui's catalog layer normalizes them). */
   skills: () => get<{ skills?: unknown }>('/api/inbox/skills'),
   /** One human-only skill's SKILL.md, read when the person sends a message that references it. */

@@ -1836,10 +1836,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
+ * Then the fences that draw in `body` (approval "inbox-inline-html",
+ * 2026-10-28: Mermaid and Graphviz diagrams, live HTML pages): one sentence,
+ * measured on Pi, 9,673 bytes (+257, about +65 tokens). With the Board on
+ * 11,017 (10,760 + 257, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9416, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 9673, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11017, tokens: 3100 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

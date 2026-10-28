@@ -111,6 +111,8 @@ interface Block {
 - Directive containers (`:::kind ... :::`) — rendered via `Callout`
 - Paragraphs (default) with inline extras: bare URL autolinks, `@mentions` / `#issue-refs`, emoji shortcodes, smart punctuation
 
+**Live `html` and `svg` fences (`Viewer`'s `htmlEmbeds` seam).** `Viewer` takes an optional `htmlEmbeds: HtmlEmbedHost` (`{ frameUrl(html): Promise<string | null>, author? }`, `packages/ui/components/html-embed/`). Absent (plan review, annotate, code review, the phone surface, Workspaces), `html` and `svg` fences render as code, as before. Given a host, an `html` fence draws through `HtmlEmbedBlock`: a `sandbox="allow-scripts"` frame of the URL the host returns, themed through the fragment, sized by its own messages, gated near the viewport; `null` from the host shows the code. An `svg` fence draws as a `data:` image. The frame's sandbox, the document's policy and the message reader live in `packages/core/html-embed.ts` (`EMBED_SANDBOX` is pinned by a test). The Inbox is the only host today (see `inbox-files-and-guides.md`, "Live pages and pictures in a message").
+
 `exportAnnotations(blocks, annotations, globalAttachments)` generates human-readable feedback for Claude. Images are referenced by name: `[image-name] /tmp/path...`. Annotations with `diffContext` include `[In diff content]` labels.
 
 ## Annotation System
