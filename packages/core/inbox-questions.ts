@@ -59,8 +59,9 @@ import {
   questionChoiceWithoutRecommendedMarker,
   parseQuestionChoiceText,
 } from "./question-block";
-import { readInboxQuestionKind } from "./inbox-types";
+import { INBOX_ROW_WAITS_MAX, INBOX_ROW_WAIT_ENTRY_MAX, INBOX_ROW_WAIT_HOLDS_MAX, INBOX_ROW_WAIT_TEXT_MAX, readInboxQuestionKind } from "./inbox-types";
 import type {
+  InboxRowWait,
   InboxQuestionContract,
   InboxQuestion,
   InboxQuestionFacts,
@@ -440,10 +441,19 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
   let open = 0;
   let picked = 0;
   let actions = 0;
+  let staged = 0;
   let stopped = false;
   const holdsUp: string[] = [];
   let prompt: string | null = null;
   for (const q of questions) {
+    // A Done or Can't do it waiting in the reply draft: the agent is still stopped on it, so it keeps the
+    // row's Stopped / Holds up (approval "inbox-action-items-in-reply", Q2). Not open, not a pick.
+    if (q.kind === "action" && q.state === "picked" && q.action_result?.by === "person" && q.action_result.staged === true && !q.orphaned) {
+      staged += 1;
+      if (q.stopped !== null) stopped = true;
+      for (const name of q.holds_up) if (!holdsUp.includes(name)) holdsUp.push(name);
+      continue;
+    }
     // The list's rule: a kind this build does not know still counts (see inboxQuestionWaitsForList).
     if (!inboxQuestionWaitsForList(q)) continue;
     if (q.state === "picked") picked += 1;
@@ -454,7 +464,32 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
     for (const name of q.holds_up) if (!holdsUp.includes(name)) holdsUp.push(name);
     if (prompt === null) prompt = q.prompt;
   }
-  return { open, picked, stopped, holds_up: holdsUp, prompt, actions };
+  return { open, picked, stopped, holds_up: holdsUp, prompt, actions, ...(staged > 0 ? { staged } : {}) };
+}
+
+/**
+ * What a row's Stopped / Holds up badge holds (approval "inbox-row-badges"):
+ * the open questions and action items that stop the agent or hold something
+ * up, in the order given (thread order), capped. The same open rule as the
+ * badges' summary (`summarizeInboxQuestions`), so the card never lists a
+ * question the badge does not count.
+ */
+export function inboxRowWaits(questions: readonly InboxQuestion[]): InboxRowWait[] {
+  const out: InboxRowWait[] = [];
+  for (const q of questions) {
+    if (out.length >= INBOX_ROW_WAITS_MAX) break;
+    if (!inboxQuestionWaitsForList(q) || q.state !== "open") continue;
+    if (q.stopped === null && q.holds_up.length === 0) continue;
+    out.push({
+      message_id: q.message_id,
+      key: q.key,
+      position: q.position,
+      prompt: cutText(q.prompt, INBOX_ROW_WAIT_TEXT_MAX),
+      stopped: q.stopped === null ? null : cutText(q.stopped, INBOX_ROW_WAIT_TEXT_MAX),
+      holds_up: q.holds_up.slice(0, INBOX_ROW_WAIT_HOLDS_MAX).map((h) => cutText(h, INBOX_ROW_WAIT_ENTRY_MAX)),
+    });
+  }
+  return out;
 }
 
 // ─────────────────────────────── Picks ───────────────────────────────

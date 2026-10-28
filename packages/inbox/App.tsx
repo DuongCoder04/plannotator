@@ -11,6 +11,7 @@
  */
 
 import type { ActionMark } from './components/ActionChecklist';
+import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
@@ -36,7 +37,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, drawnSection, filterSections, heldNotice, markHeldRowArchived, putRowBack, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -72,6 +73,8 @@ import { TOUR_FIT_LINES, TOUR_FIT_TITLE, TourIntro } from './tour/Fit';
 import { TOUR_FIRST_QUESTION_PROMPT, TOUR_PROJECT_ID, TOUR_START, TOUR_STEPS, TOUR_THREAD, tourCanBack, tourCanForward, tourCoach, tourCoachSpeech, tourReducer, tourStepOf, type TourAction, type TourDegraded, type TourUi } from './tour/model';
 import { ThreadWait } from './components/ThreadWait';
 import { AgentNoteDialog } from './components/AgentNoteDialog';
+import { FeedbackDialog } from './components/FeedbackDialog';
+import { feedbackCopiedToast, feedbackPrompt } from './feedbackPrompt';
 import { cardReport, noteQuestionRows } from './agents';
 import type { InboxAgentRow, InboxAgentsModel, InboxConnectReport, InboxTourChange, InboxTourState } from '@plannotator/core/inbox-types';
 import { SettingsPage } from './components/Settings';
@@ -84,7 +87,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
-import { canToggleRead, MARK_READ_UNDO_MS, markReadToast } from './markRead';
+import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
@@ -108,7 +111,7 @@ import { DraftsPage } from './compose/DraftsPage';
 import { BoardPage, type BoardMove } from './board/BoardPage';
 import { BoardOff } from './board/BoardOff';
 import { CardChip } from './board/CardChip';
-import { boardViewOf, type BoardView } from './board/model';
+import { boardViewOf, newCardProject, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { CardsModel, DraftView, UpdateCheckFailing } from './api';
@@ -204,6 +207,11 @@ interface Route {
   board?: BoardView;
   /** The opened Board card (`#board&card=crd_…`), or on a thread the card it was opened from (its "‹ Board" way back). */
   card?: string | null;
+  /**
+   * On a thread opened from a Board card: the project the Board was filtered to (`&board-project=prj_…`), so its
+   * way back lands on the same filtered Board. On the Board itself the filter is `project` (`#board&project=prj_…`).
+   */
+  boardProject?: string | null;
   /** The onboarding tour's step (`#tour=3`, approval "inbox-onboarding-tour"): 1 to 6. */
   step?: number;
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
@@ -249,7 +257,8 @@ function routeOf(fullHash: string): Route {
   if (params.has('whats-new')) return { page: 'whats-new', project: null, thread: null, version: params.get('whats-new') };
   if (params.has('tour')) return { page: 'tour', project: null, thread: null, step: tourStepOf(params.get('tour')) };
   if (params.has('drafts')) return { page: 'drafts', project: null, thread: null };
-  if (params.has('board')) return { page: 'board', project: null, thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
+  // The Board's project filter rides the list's own key (`#board&project=prj_…`).
+  if (params.has('board')) return { page: 'board', project: params.get('project') || null, thread: null, board: boardViewOf(params.get('board')), card: params.get('card') };
   const thread = params.get('thread');
   const fileId = thread ? params.get('file') : null;
   return {
@@ -263,6 +272,7 @@ function routeOf(fullHash: string): Route {
     card: thread ? params.get('card') : null,
     // The Board list the card was opened from (Shipped, Icebox): the way back goes there.
     board: thread && params.get('card') ? boardViewOf(params.get('from')) : undefined,
+    boardProject: thread && params.get('card') ? params.get('board-project') || null : null,
   };
 }
 
@@ -272,7 +282,11 @@ function hashOf(route: Route): string {
   if (route.page === 'settings') hash = settingsHash({ section: route.section ?? null, pair: route.pair });
   else if (route.page === 'whats-new') hash = new URLSearchParams({ 'whats-new': route.version ?? '' }).toString();
   else if (route.page === 'drafts') hash = 'drafts';
-  else if (route.page === 'board') hash = (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') + (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
+  else if (route.page === 'board')
+    hash =
+      (route.board && route.board !== 'lanes' ? `board=${route.board}` : 'board') +
+      (route.project ? `&project=${encodeURIComponent(route.project)}` : '') +
+      (route.card ? `&card=${encodeURIComponent(route.card)}` : '');
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
@@ -292,6 +306,7 @@ function hashOf(route: Route): string {
     // A thread opened from a Board card: its way back is the card (`&card=crd_…`).
     if (route.thread && route.card) params.set('card', route.card);
     if (route.thread && route.card && route.board && route.board !== 'lanes') params.set('from', route.board);
+    if (route.thread && route.card && route.boardProject) params.set('board-project', route.boardProject);
     // `&artifacts`, a flag: written without its empty `=`.
     hash = params.toString().replace(/(^|&)artifacts=(?=&|$)/, '$1artifacts');
   }
@@ -641,6 +656,8 @@ function Inbox() {
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The one-time sound dialog: open on this load, or shown on it (then the notification ask line waits for another load). */
   const [soundDialog, setSoundDialog] = useState<'none' | 'open' | 'shown'>('none');
+  /** Sidebar → Feedback (components/FeedbackDialog.tsx): open only on the person's click. */
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const soundDialogAsked = useRef(false);
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -680,6 +697,8 @@ function Inbox() {
   const [replyDrafts, setReplyDrafts] = useState<InboxReplyDraftRow[]>([]);
   /** Raised when the open thread's reply draft changed (`event: drafts`): the thread reads it again. */
   const [draftChanged, setDraftChanged] = useState(0);
+  // Raised when the Inbox says a session it runs in the open thread changed (`event: runs`).
+  const [runsTick, setRunsTick] = useState(0);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState<string | null>(() => storage.getItem(COMPOSE_LAST_COOKIE));
   /** The one toast (Mark read, Archive) with its Undo, and what the live region last said. */
@@ -803,13 +822,15 @@ function Inbox() {
   /**
    * The list on screen catches up: with the person's own reads and actions
    * (`own`: closing a thread; agent activity still waits behind "N new"), or
-   * with everything (`all`: Show, another folder or page).
+   * with everything (`all`: Show, another folder or page). `opening`: the
+   * thread a covered list settles behind (a phone, a stacked window), which
+   * settles as it now is, like the thread just closed.
    */
   const settleList = useCallback(
-    (what: 'own' | 'all', slide: boolean) => {
+    (what: 'own' | 'all', slide: boolean, opening?: OpenThread) => {
       cancelSettle();
       // The thread just closed settles as it now is, an arrival there included (held.ts settleOwn).
-      const closed = closing.current;
+      const closed = opening ?? closing.current;
       closing.current = null;
       const next = latestRef.current;
       if (!next) return;
@@ -828,6 +849,8 @@ function Inbox() {
     try {
       const next = await inboxApi.list();
       setPageSession(next.serverSession);
+      // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
+      latestRef.current = next;
       setLatest(next);
       if (adopt && slide) armSlide();
       // Show's light for a refresh (clicking Inbox): the rows it brings in, against the list on screen now.
@@ -867,6 +890,24 @@ function Inbox() {
   lookRef.current = look;
   /** Per thread, the furthest look on its way to the server. */
   const seenPosting = useRef(new Map<string, number>());
+  /**
+   * Per thread, the looks this tab has sent (the open look, seen on sight) and
+   * the list read after each, until they land. Mark read waits for them, so it
+   * decides on the state the look gives the thread whenever it is pressed
+   * (markRead.ts `seenHeldInNew`).
+   */
+  const looksInFlight = useRef(new Map<string, Set<Promise<unknown>>>());
+  const trackLook = useCallback((threadId: string, look: Promise<unknown>) => {
+    const looks = looksInFlight.current;
+    const mine = looks.get(threadId) ?? new Set<Promise<unknown>>();
+    looks.set(threadId, mine);
+    mine.add(look);
+    const done = () => {
+      mine.delete(look);
+      if (mine.size === 0 && looks.get(threadId) === mine) looks.delete(threadId);
+    };
+    look.then(done, done);
+  }, []);
   const seenRetries = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const retries = seenRetries.current;
@@ -882,7 +923,7 @@ function Inbox() {
       if ((seenPosting.current.get(threadId) ?? -1) >= through) return;
       seenPosting.current.set(threadId, through);
       const attempt = (tries: number) => {
-        void inboxApi
+        const look = inboxApi
           .seen(threadId, through)
           .then(() => {
             if (seenPosting.current.get(threadId) === through) seenPosting.current.delete(threadId);
@@ -907,10 +948,11 @@ function Inbox() {
             }, SEEN_RETRY_MS * 2 ** tries);
             seenRetries.current.add(timer);
           });
+        trackLook(threadId, look);
       };
       attempt(0);
     },
-    [refreshList],
+    [refreshList, trackLook],
   );
 
   const refreshThread = useCallback(async (threadId: string) => {
@@ -1018,6 +1060,13 @@ function Inbox() {
     void refreshCards();
   }, [boardEnabled, refreshCards]);
   const onBoard = route.page === 'board' && boardEnabled === true;
+  /**
+   * The project the Board is filtered to (`#board&project=prj_…`). A project the Inbox does not
+   * know (a stale or hand-edited link) is no filter once the projects have loaded; before that the
+   * id filters as it stands, so a filtered link never flashes every card.
+   */
+  const boardFilter =
+    route.page === 'board' && route.project && (latest === null || latest.projects.some((p) => p.id === route.project)) ? route.project : null;
   useEffect(() => {
     if (!onBoard) {
       setBoardVisit(null);
@@ -1027,14 +1076,29 @@ function Inbox() {
     void refreshCards().then((model) => {
       if (!live || !model) return;
       setBoardVisit({ look: model.seen_seq ?? null, handled: new Set() });
-      // The look runs through this read's cursor: every line up to it was on the page. An Inbox before
-      // step 2 has no look to record (no `seen_seq`): nothing is bold beyond this visit there.
-      if (model.seen_seq !== undefined) void inboxApi.seeBoard(model.cursor).catch(() => {});
     });
     return () => {
       live = false;
     };
   }, [onBoard, refreshCards]);
+  /**
+   * The look is recorded once per visit, and only while the Board shows every project: a visit
+   * filtered to one project never had the others' cards on screen, so their news stays bold (review
+   * of #2284). A visit that starts filtered and then shows every project records it then, through
+   * the latest read's cursor (every line up to it is on the page). An Inbox before step 2 has no
+   * look to record (no `seen_seq`): nothing is bold beyond this visit there.
+   */
+  const lookRecorded = useRef(false);
+  const boardShowsAll = onBoard && boardFilter === null;
+  useEffect(() => {
+    if (!boardVisit) {
+      lookRecorded.current = false;
+      return;
+    }
+    if (lookRecorded.current || !boardShowsAll || !cards || cards.seen_seq === undefined) return;
+    lookRecorded.current = true;
+    void inboxApi.seeBoard(cards.cursor).catch(() => {});
+  }, [boardVisit, boardShowsAll, cards]);
   const handleCard = (id: string) =>
     setBoardVisit((visit) => (visit && !visit.handled.has(id) ? { ...visit, handled: new Set([...visit.handled, id]) } : visit));
   const moveCard = async (card: InboxCardWire, change: BoardMove): Promise<InboxCardWire | null> => {
@@ -1120,6 +1184,7 @@ function Inbox() {
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
+    let runsTimer: ReturnType<typeof setTimeout> | null = null;
     let cardsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
@@ -1173,6 +1238,13 @@ function Inbox() {
             void refreshDrafts();
           }, 80);
         },
+        // A session the Inbox runs changed (the ACP runner): its row ("Grok Build is working", a permission in
+        // Stopped on you, with its notice) and the open thread's run line.
+        onRuns: (change) => {
+          if (routeRef.current.thread && change.thread_ids.includes(routeRef.current.thread)) setRunsTick((n) => n + 1);
+          if (runsTimer) clearTimeout(runsTimer);
+          runsTimer = setTimeout(() => void refreshList(false).then((next) => next && flushNotifications(next)), 120);
+        },
         // The sidebar's pins changed (here, in another window, or a deleted thread left them): read `pins` again.
         onPins: () => {
           if (pinsTimer) clearTimeout(pinsTimer);
@@ -1206,6 +1278,7 @@ function Inbox() {
       if (draftsTimer) clearTimeout(draftsTimer);
       if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
+      if (runsTimer) clearTimeout(runsTimer);
     };
   }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
@@ -1251,17 +1324,26 @@ function Inbox() {
         opened = landed();
       }
       closing.current = null;
-      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false);
+      // The thread opening settles as it now is too: an agent message the list
+      // held there is the person's to read now, not news for "N new". Held,
+      // its row kept the state the list showed (Quiet, say) and Back, which
+      // settles nothing when every message is seen, left it there with its
+      // questions open.
+      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false, { threadId });
       // The look covers what this read showed, not a message that lands before the server takes it.
-      await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
-      if (!cancelled) await refreshList(false);
+      const look = (async () => {
+        await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
+        if (!cancelled) await refreshList(false);
+      })();
+      trackLook(threadId, look);
+      await look;
     })();
     return () => {
       cancelled = true;
       if (retry) clearTimeout(retry);
       wakeThreadRetry.current = null;
     };
-  }, [route.thread, threadRetry, refreshThread, refreshList, settleList]);
+  }, [route.thread, threadRetry, refreshThread, refreshList, settleList, trackLook]);
   // The thread landed while focus was in its place: focus goes to its subject, never to the page.
   useLayoutEffect(() => {
     if (!focusThreadSubject.current || !thread || thread.thread_id !== route.thread) return;
@@ -1309,11 +1391,18 @@ function Inbox() {
     if (body && lastInput === 'keyboard' && (!active || active === document.body)) rowElement(body, closed)?.focus({ preventScroll: true });
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
-      // when a message arrived there that they did not see: it comes back
-      // unread, in the section its state gives it (held.ts settleThread).
+      // when a message arrived there that they did not see, or when it now
+      // waits on them and is drawn in another group (an agent asked while it
+      // was open): it takes the section its state gives it (held.ts
+      // settlesOnBack, settleThread).
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
-      if (next && next.unseen > 0) setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
+        // Back put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect):
+        // after a key, and after a stacked window's Back by mouse (#1866 hands that focus to the row too); never after a phone's tap.
+        if (lastInput === 'keyboard' || !isPhone()) refocusRow.current = closed;
+        setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      }
       return;
     }
     if (prefersReducedMotion()) settleList('own', false);
@@ -1851,7 +1940,22 @@ function Inbox() {
    * toast a warning with Reply.
    */
   const markRead = async (threadId: string, read: boolean) => {
+    // A look this tab sent and the server has not taken yet: decide on what it gives (a seen update held in New
+    // moves locally), whether Mark read came before the look landed or after. Never longer than
+    // MARK_READ_LOOK_WAIT_MS: a look that stalls leaves the thread New on the server, so Mark read writes.
+    const looks = read ? looksInFlight.current.get(threadId) : undefined;
+    if (looks) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(looks), new Promise<void>((done) => (timer = setTimeout(done, MARK_READ_LOOK_WAIT_MS)))]);
+      clearTimeout(timer);
+    }
     const before = rowOf(threadId);
+    if (read && before) {
+      const drawn = drawnSection(shownRef.current, threadId);
+      if (seenHeldInNew(before, drawn)) return moveSeenToQuiet(threadId, before);
+      // Once the look landed nothing waits here any more (the thread closed and the list settled, say).
+      if (looks && !canToggleRead(before, drawn)) return;
+    }
     // With a thread open the list holds still: the row moves to Quiet when the list next settles.
     const open = routeRef.current.thread;
     const deferred = open !== null;
@@ -1890,6 +1994,33 @@ function Inbox() {
   };
 
   /**
+   * Mark read on a seen update the list still holds in New (markRead.ts
+   * `seenHeldInNew`): the thread is already Quiet on the server, so nothing is
+   * written; its row moves to Quiet now, sliding as the row's hover Mark read
+   * does. Undo puts it back where it was drawn.
+   */
+  const moveSeenToQuiet = (threadId: string, row: InboxListRow) => {
+    const before = shownRef.current;
+    const sections = latestRef.current?.sections;
+    if (!before || !sections) return;
+    armSlide();
+    setShown((current) => (current ? settleThread(current, sections, threadId) : current));
+    // "Moved to Quiet · “<subject>”": the row has moved, wherever focus is.
+    const { lead, detail } = markReadToast(row, 'list');
+    showToast({
+      lead,
+      detail,
+      icon: 'check',
+      onUndo: () => {
+        dismissToast();
+        armSlide();
+        setShown((current) => (current ? putRowBack(current, before, threadId) : current));
+        say('Moved back.');
+      },
+    });
+  };
+
+  /**
    * 👍 Looks good (design record "inbox-acknowledge", approved 2026-10-15,
    * amended 2026-10-16), or take it back (the toast's Undo, `Z`, the pressed
    * button). The ack is recorded on the agent's latest message and the thread
@@ -1922,32 +2053,26 @@ function Inbox() {
   };
 
   /**
-   * An action item's Done or Can't do it (approval "inbox-next-actions"): written at
-   * once, sent to the agent once the 10 s Undo window passes, as 👍 Looks
-   * good. `null` is the Undo. Resolves false when it was refused.
+   * An action item's Done or Can't do it (approval "inbox-action-items-in-reply"):
+   * into the reply draft, like a pick, sent only with the person's Send. No
+   * toast and no timer; `null` takes it back out of the draft. A note typed
+   * under the marked row saves quietly. Resolves the message's action items as
+   * saved, or null when it was refused.
    */
-  const markAction = async (threadId: string, messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }): Promise<boolean> => {
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<InboxQuestion[] | null> => {
+    let actions: InboxQuestion[];
     try {
-      await inboxApi.markAction(messageId, key, mark);
+      ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
     } catch (cause) {
-      showError(cause);
+      // A note typed while the item was sent elsewhere or replaced: the thread redraws it as it is now.
+      if (!isMootNoteRefusal(mark, cause)) showError(cause);
       await afterWrite();
-      return false;
+      return null;
     }
     await afterWrite();
-    if (!mark) {
-      dismissToast();
-      say('Action item moved back. Nothing was sent.');
-      return true;
-    }
-    showToast({
-      icon: mark.outcome === 'done' ? 'check' : 'warn',
-      lead: mark.outcome === 'done' ? 'Done' : "Can't do it",
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${info.agent} in 10 s`,
-      onUndo: () => void markAction(threadId, messageId, key, null, info),
-    });
-    return true;
+    if (!mark) say('Taken out of your draft.');
+    else if (!mark.quiet) say(mark.outcome === 'done' ? 'Done. It goes with your reply.' : "Can't do it. It goes with your reply.");
+    return actions;
   };
 
   /** Archive (the MCP's resolve) or Unarchive, with Undo. */
@@ -2173,15 +2298,15 @@ function Inbox() {
   // An open file (its viewer, the stepping bar, the guard row) and a guided
   // review own the keyboard: E and Z stand down there, and while the sound
   // dialog is up.
-  const keysRef = useRef({ markRead, toast, thread, soundDialog, agentNoteOpen: false });
-  keysRef.current = { markRead, toast, thread, soundDialog, agentNoteOpen: typeof agentNote === 'object' };
+  const keysRef = useRef({ markRead, toast, thread, soundDialog, agentNoteOpen: false, feedbackOpen: false });
+  keysRef.current = { markRead, toast, thread, soundDialog, agentNoteOpen: typeof agentNote === 'object', feedbackOpen };
   /**
    * What E or Z does now, or null when it stands down (the rules: guards.ts
    * for typing, composition and repeat; the rest is the thread's own).
    */
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
     if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event)) return null;
-    if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || routeRef.current.guide) return null;
+    if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || keysRef.current.feedbackOpen || routeRef.current.guide) return null;
     // Words selected in a message: its toolbar takes the letters (a comment starting with them).
     if (selectionToolbarShowing()) return null;
     const target = event.target instanceof HTMLElement ? event.target : null;
@@ -2202,7 +2327,7 @@ function Inbox() {
     const threadId = rowId ?? (open && open.thread_id === routeRef.current.thread ? open.thread_id : null);
     if (!threadId) return null;
     const row = rowOf(threadId);
-    if (!row || !canToggleRead(row)) return null;
+    if (!row || !canToggleRead(row, drawnSection(shownRef.current, threadId))) return null;
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
@@ -2940,7 +3065,7 @@ function Inbox() {
   // A thread opened from a Board card (`#thread=…&card=crd_…`): it takes the list's place, led by
   // "‹ Board" and a chip naming the card; both go back to the opened card.
   const fromCard = route.page === 'inbox' && route.thread && route.card ? route.card : null;
-  const backToCard = () => close({ page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: fromCard });
+  const backToCard = () => close({ page: 'board', project: route.boardProject ?? null, thread: null, board: route.board ?? 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
@@ -3026,6 +3151,8 @@ function Inbox() {
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
   const focusAfterShow = useRef(false);
+  /** The row Back over a covered list focused (a key, or a stacked window's mouse Back), which its settle redraws in another group. */
+  const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
     const from = slideFrom.current;
@@ -3050,9 +3177,14 @@ function Inbox() {
     const shownAll = focusAfterShow.current;
     focusAfterShow.current = false;
     const gone = listFocus.current;
+    const refocus = refocusRow.current;
+    refocusRow.current = null;
     const active = document.activeElement;
     const lost = !active || active === document.body;
-    if (body && lost && shownAll) {
+    const moved = body && refocus ? rowElement(body, refocus) : null;
+    if (moved && lost) {
+      moved.focus({ preventScroll: true });
+    } else if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
     } else if (body && lastInput === 'keyboard' && gone && lost && !rowElement(body, gone)) {
@@ -3276,8 +3408,6 @@ function Inbox() {
     for (const row of latest?.pins ?? []) if (!rowById.has(row.thread_id)) rowById.set(row.thread_id, row);
     // The cards' own answer names threads the list leaves out (archived): the opened card still names them.
     for (const [id, row] of Object.entries(cards?.threads ?? {})) if (row && !rowById.has(id)) rowById.set(id, row);
-    // A New card goes in the project of the card heard from last, else the first project.
-    const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
     main = (
       <BoardPage
         view={route.board ?? 'lanes'}
@@ -3286,20 +3416,28 @@ function Inbox() {
         visitLook={boardVisit ? boardVisit.look : (cards?.seen_seq ?? null)}
         handled={boardVisit?.handled ?? EMPTY_SET}
         projects={projects}
-        defaultProject={recent?.project_id ?? projects[0]?.id ?? null}
+        // The filtered project, else the project of the card heard from last, else the first.
+        defaultProject={newCardProject(boardFilter, projects, cards?.cards ?? [])}
         home={settings?.home ?? null}
         mcpCommand={settings?.mcp_command ?? null}
         phone={phone}
         openCard={route.card ?? null}
         onOpenCard={(id) => {
           if (id) handleCard(id);
-          const next: Route = { page: 'board', project: null, thread: null, board: route.board ?? 'lanes', card: id };
+          const next: Route = { page: 'board', project: route.project, thread: null, board: route.board ?? 'lanes', card: id };
           // Another card replaces the open one's entry; opening the first and closing are entries of their own (a phone's Back closes it).
           if (id === null && route.card) close(next);
           else writeRoute(next, { replace: !!route.card && id !== null });
         }}
         rowOf={(threadId) => rowById.get(threadId) ?? null}
-        onView={(next) => go({ page: 'board', project: null, thread: null, board: next })}
+        onView={(next) => go({ page: 'board', project: route.project, thread: null, board: next })}
+        project={boardFilter}
+        // The filter is a place, like the list's project: each pick is a history entry, and Back undoes it.
+        onProject={(project) => {
+          // An opened card stays open while the Board still shows it.
+          const open = route.card ? cards?.cards.find((c) => c.id === route.card) : undefined;
+          go({ page: 'board', project, thread: null, board: route.board ?? 'lanes', card: open && (project === null || open.project_id === project) ? open.id : null });
+        }}
         onMove={moveCard}
         onChanged={(card) => {
           if (card) {
@@ -3310,7 +3448,7 @@ function Inbox() {
           void refreshList(false);
         }}
         onSeeDrops={seeDrops}
-        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes' })}
+        onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes', boardProject: boardFilter })}
         onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
         marks={settings !== null && settings.via !== 'tailnet'}
@@ -3445,14 +3583,16 @@ function Inbox() {
             thread={thread}
             sent={openThreadRow?.sent ?? null}
             row={openThreadRow}
+            drawn={drawnSection(shown, thread.thread_id)}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
-            onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
+            onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
             onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
             replyRequest={replyFor}
             draftChanged={draftChanged}
+            runsVersion={runsTick}
             onReplyOpened={() => setReplyFor(null)}
             onQuestions={patchQuestions}
             onChanged={afterWrite}
@@ -3529,7 +3669,7 @@ function Inbox() {
             lookSeq={look?.threadId === thread.thread_id ? look.seq : undefined}
             seenThrough={look?.threadId === thread.thread_id ? look.through : null}
             onSeen={(through) => seenOnSight(thread.thread_id, through)}
-            covered={!!route.guide || updateDialog !== null || soundDialog === 'open' || agentNoteOpen || compose !== null}
+            covered={!!route.guide || updateDialog !== null || soundDialog === 'open' || agentNoteOpen || feedbackOpen || compose !== null}
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
@@ -3641,6 +3781,7 @@ function Inbox() {
             onCheckFailing={() => leave({ page: 'settings', project: null, thread: null, section: 'about' })}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
+            onFeedback={() => setFeedbackOpen(true)}
           />
           )
         }
@@ -3691,6 +3832,22 @@ function Inbox() {
             setSoundDialog('shown');
             void sound.setEnabled(false).then((saved) => showToast(saved ? { icon: 'mute', lead: 'Sound off' } : { icon: 'warn', lead: 'Sound setting not saved' }, 4200));
           }}
+        />
+      )}
+      {feedbackOpen && (
+        <FeedbackDialog
+          version={latest?.version ?? settings?.version ?? 'dev'}
+          phone={phone}
+          onSend={async (input) => {
+            await inboxApi.sendFeedback(input);
+          }}
+          onCopyPrompt={(draft) => {
+            // The copy starts inside the click (the clipboard needs it); the dialog closes so the toast is in view.
+            const copied = copyTextToClipboard(feedbackPrompt(settings?.mcp_command ?? null, draft));
+            setFeedbackOpen(false);
+            void copied.then((ok) => showToast(feedbackCopiedToast(ok), ok ? 6000 : 4200));
+          }}
+          onClose={() => setFeedbackOpen(false)}
         />
       )}
       {typeof agentNote === 'object' && agents && (
