@@ -211,7 +211,7 @@ plannotator improve-context
 - `update` installs the newest release now (the install script, with the choices from the last install); `--check` only reports whether one exists. Run it only when the person asks you to update Plannotator: it replaces the binary. Exit 0 up to date or updated, 1 failed, 2 usage, 130 interrupted.
 - `uninstall` removes Plannotator-installed components (`--purge` also deletes local data; `--yes` is required without a TTY; `--dry-run` previews).
 - `improve-context` and `install-runtime` are internal integration commands (hook plumbing and managed runtime install). Never run `improve-context` directly; `plannotator install-runtime agent-terminal` exists for reinstalling the optional annotate-terminal runtime and is normally run by the installer.
-- Additional host-internal subcommands (the `opencode-*` and `copilot-plan` family) are invoked by their plugins, not by you.
+- Additional host-internal subcommands (the `opencode-*` family, `copilot-plan` and `dsh-plan`) are invoked by their plugins, not by you.
 
 ## Environment variables that change behavior
 
@@ -219,7 +219,7 @@ plannotator improve-context
 | --- | --- |
 | `PLANNOTATOR_REMOTE=1` | Force remote mode (fixed port 19432, wide bind) for SSH/devcontainer sessions; `0` forces local. Unset means SSH auto-detection. |
 | `PLANNOTATOR_PORT` | Fix the port instead of a random one. |
-| `PLANNOTATOR_ORIGIN` | Override agent-origin detection (`claude-code`, `codex`, `opencode`, `pi`, `oh-my-pi`, `amp`, `droid`, `copilot-cli`, `gemini-cli`, `kiro-cli`, `mistral-vibe`, `qwen-code`). Set it when launching Plannotator from a wrapper the detection cannot see through. |
+| `PLANNOTATOR_ORIGIN` | Override agent-origin detection (`claude-code`, `codex`, `opencode`, `pi`, `oh-my-pi`, `amp`, `droid`, `copilot-cli`, `gemini-cli`, `kiro-cli`, `mistral-vibe`, `qwen-code`, `dsh`). Set it when launching Plannotator from a wrapper the detection cannot see through. |
 | `PLANNOTATOR_AI=disabled` | Disable Ask AI and agent-launched review surfaces in the UI. |
 | `PLANNOTATOR_SHARE=disabled` | Disable URL sharing, including guide share links. |
 | `PLANNOTATOR_DATA_DIR` | Move the data directory (default `~/.plannotator`): plans, history, drafts, config. |

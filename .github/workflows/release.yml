@@ -1187,6 +1187,7 @@ jobs:
             plannotator-paste-win32-arm64.exe
             npm-packages/plannotator-opencode.tgz
             npm-packages/plannotator-pi-extension.tgz
+            npm-packages/plannotator-dsh.tgz
           sbom-path: release-sbom/${{ needs.release-security.outputs.sbom-name }}
 
   release:
@@ -1268,6 +1269,7 @@ jobs:
           bun run build:hook
           bun run build:opencode
           bun run build:pi
+          bun run build:dsh
 
       - name: Create package artifact directory
         run: mkdir -p npm-packages
@@ -1279,6 +1281,10 @@ jobs:
       - name: Pack @plannotator/pi-extension
         working-directory: apps/pi-extension
         run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-pi-extension.tgz"
+
+      - name: Pack @plannotator/dsh
+        working-directory: apps/dsh-plugin
+        run: bun pm pack --filename "$GITHUB_WORKSPACE/npm-packages/plannotator-dsh.tgz"
 
       - name: Upload npm package artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1397,3 +1403,15 @@ jobs:
 
       - name: Publish @plannotator/pi-extension
         run: npm publish ./npm-packages/plannotator-pi-extension.tgz --ignore-scripts --provenance --access public
+
+      # Last on purpose, and allowed to fail until npm trusted publishing is
+      # set up for @plannotator/dsh (its first version is published by hand).
+      # The tarball is the gated one: it was packed into npm-packages, scanned
+      # by release-security and named in the SBOM attestation like the two
+      # packages above, so only this publish step is lenient. A failure here
+      # must never hold back the two packages above. Remove continue-on-error
+      # once the package publishes from this workflow.
+      - name: Publish @plannotator/dsh
+        continue-on-error: true
+        timeout-minutes: 10
+        run: npm publish ./npm-packages/plannotator-dsh.tgz --ignore-scripts --provenance --access public
