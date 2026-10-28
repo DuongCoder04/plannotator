@@ -35,13 +35,13 @@ import {
   INBOX_CODEX_NAME,
   INBOX_HOST_NAMES,
   INBOX_QWEN_HOST,
-  INBOX_QWEN_MCP_CLIENT,
   INBOX_QWEN_NAME,
   INBOX_QWEN_SESSION_ENV,
   INBOX_WAKING_HOSTS,
   codexThreadOfCall,
   inboxId,
   isCodexThreadId,
+  isQwenMcpClient,
   isQwenSessionId,
   qwenSessionOfCall,
 } from "@plannotator/core/inbox-types";
@@ -161,7 +161,7 @@ export function inboxCallHostSession(
   const named = qwenSessionOfCall(meta);
   if (named) return qwenHostSession(named);
   const fromEnv = qwen?.envSession ?? null;
-  const qwenClient = clientName === INBOX_QWEN_MCP_CLIENT;
+  const qwenClient = isQwenMcpClient(clientName);
   const other = hostSession && hostSession.host !== INBOX_QWEN_HOST ? hostSession : null;
   if (!qwen || (!qwenClient && fromEnv === null)) return hostSession;
   const record = qwenSessionOfProcess(qwen.home, qwen.parentPid);

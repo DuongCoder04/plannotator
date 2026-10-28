@@ -53,7 +53,7 @@ import {
   type InboxToolHost,
 } from "@plannotator/shared/config";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
-import { qwenHome } from "@plannotator/shared/inbox/qwen-sessions";
+import { qwenHome, qwenHomeIsRelative } from "@plannotator/shared/inbox/qwen-sessions";
 import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
@@ -94,8 +94,9 @@ export interface AgentEnvironment {
   /**
    * Run argv with no stdin, the environment's env, killed (with its process
    * group) after `timeoutMs`, when `signal` aborts, or when this process exits.
+   * `cwd`: the folder it runs in (default: this process's).
    */
-  run(argv: readonly string[], options: { timeoutMs: number; signal?: AbortSignal }): Promise<AgentRunResult>;
+  run(argv: readonly string[], options: { timeoutMs: number; signal?: AbortSignal; cwd?: string }): Promise<AgentRunResult>;
 }
 
 /** The real boundary: this process's home, environment and PATH. */
@@ -115,7 +116,7 @@ export function createAgentEnvironmentFor(input: {
     homeDir: input.homeDir,
     env,
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
-    run: (argv, options) => runWithTimeout(argv, env, options.timeoutMs, options.signal),
+    run: (argv, options) => runWithTimeout(argv, env, options.timeoutMs, options.signal, options.cwd),
   };
 }
 
@@ -150,6 +151,7 @@ function runWithTimeout(
   env: Readonly<Record<string, string | undefined>>,
   timeoutMs: number,
   signal?: AbortSignal,
+  cwd?: string,
 ): Promise<AgentRunResult> {
   return new Promise((done) => {
     if (signal?.aborted) {
@@ -161,6 +163,7 @@ function runWithTimeout(
       child = spawnChild(argv[0]!, argv.slice(1), {
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...env } as NodeJS.ProcessEnv,
+        ...(cwd ? { cwd } : {}),
         detached: process.platform !== "win32",
         windowsHide: true,
       });
@@ -289,9 +292,15 @@ export function openCodeConfigDir(e: AgentEnvironment): string {
 export function geminiDir(e: AgentEnvironment): string {
   return join(envDir(e, "GEMINI_CLI_HOME") ?? e.homeDir, ".gemini");
 }
-/** Qwen Code's folder: `$QWEN_HOME` itself when set (a relative one against the working folder, as Qwen does), else `~/.qwen`. */
+/**
+ * Qwen Code's folder: `QWEN_HOME` itself when set (in the environment, else
+ * in `~/.qwen/.env` or `~/.env`, as Qwen reads it), else `~/.qwen`. A relative
+ * `QWEN_HOME` depends on the folder Qwen runs in; it is resolved against the
+ * home folder, where Plannotator runs `qwen` (and the connect leaves it to the
+ * person).
+ */
 export function qwenDir(e: AgentEnvironment): string {
-  return qwenHome(e.env, e.homeDir, process.cwd());
+  return qwenHome(e.env, e.homeDir, e.homeDir);
 }
 /** The Claude desktop app's settings folder on this platform. */
 export function claudeAppDir(e: AgentEnvironment): string {
@@ -444,8 +453,8 @@ export function readCodexEntry(path: string, ours: readonly (readonly string[])[
 type ConnectWay =
   /** Run the agent's own `mcp add`; remove with its `mcp remove`. */
   | { kind: "cli"; bin: string; add: (command: readonly string[]) => string[]; remove: string[] }
-  /** One key in a plain-JSON file. */
-  | { kind: "json"; keys: readonly string[] }
+  /** One key in a JSON file (`json`: how it is edited). */
+  | { kind: "json"; keys: readonly string[]; json?: JsonFileRules }
   /** `inboxTool` on for Plannotator's own extension/plugin. */
   | { kind: "tool"; host: InboxToolHost }
   /** Only a person can connect it; `why` says how. */
@@ -469,14 +478,16 @@ interface AgentSpec {
   raw(e: AgentEnvironment): RawEntry | null;
   /** How uninstall removes it, when not a JSON key. */
   remove?: { bin: string; args: string[] };
-  /**
-   * The settings file's MCP servers key, for an agent whose own CLI edits a
-   * JSON settings file Plannotator must never leave broken (Qwen Code): the
-   * CLI is not run on a read-only file, and after an add or a remove the file
-   * must still parse and hold every other server it held, or its bytes are put
-   * back (`guardedSettingsRun`).
-   */
-  guard?: readonly string[];
+}
+
+/**
+ * How Plannotator edits an agent's JSON file itself. `comments`: the file is
+ * JSON with comments (json-edit.ts keeps every one). `keepReadOnly`: a
+ * read-only file is left as it is (the person locked it), never replaced.
+ */
+export interface JsonFileRules {
+  comments?: boolean;
+  keepReadOnly?: boolean;
 }
 
 const NAME = INBOX_MCP_SERVER_NAME;
@@ -685,9 +696,9 @@ export function claudeCodeInboxToolOn(e: AgentEnvironment): boolean {
  * build older than its `mcp add` is left to the person: Pi before 0.99 (no
  * `pi mcp`: it would read the words as a chat prompt and run a model turn),
  * Codex CLI before 0.35.0 (`codex mcp add` landed in rust-v0.35.0, Sep 2025)
- * Gemini CLI before 0.1.19 (`gemini mcp add`, Aug 2025) and Qwen Code before
- * 0.0.8 (its first `qwen mcp add`; an older `qwen` might read the words as a
- * prompt). Read with no
+ * and Gemini CLI before 0.1.19 (`gemini mcp add`, Aug 2025). Qwen Code's
+ * settings.json is edited by Plannotator itself, so any Qwen Code version
+ * will do; the line only tells Qwen Code from another `qwen`. Read with no
  * stdin, under the limit.
  */
 const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, number]; older?: string; manual: string }> = {
@@ -705,8 +716,6 @@ const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, numb
   },
   qwen: {
     line: /^(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/,
-    min: [0, 0, 8],
-    older: "Qwen Code before 0.0.8 has no `qwen mcp add`; update Qwen Code, or add plannotator-inbox to its settings.json by hand",
     manual: "this qwen did not answer like Qwen Code",
   },
   devin: { line: /^devin (\d+)\.(\d+)\.(\d+)\b/, manual: "this devin did not answer like Devin" },
@@ -718,79 +727,6 @@ const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, numb
   },
 };
 
-/** A guarded settings file as it was before its agent's CLI ran (see `AgentSpec.guard`). */
-interface SettingsSnapshot {
-  path: string;
-  target: string;
-  /** The file's text and how to write it back; null: there was no file. */
-  before: { text: string; bom: boolean; mode: number } | null;
-  /** The MCP servers it held. */
-  servers: string[];
-}
-
-/** The server names under `keys` in a JSON(C) text, or null when the text does not parse. */
-function settingsServers(text: string, keys: readonly string[]): string[] | null {
-  if (!text.trim()) return [];
-  try {
-    const value = at(JSON.parse(stripJsonComments(text)), keys);
-    return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value) : [];
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Before an agent's CLI edits its settings file: refuse a file that cannot be
- * read, does not parse, or is read-only (the CLI is then never run, so the
- * file stays exactly as it was), else keep its bytes to put back.
- */
-function snapshotSettings(path: string, keys: readonly string[], e: AgentEnvironment): { ok: true; snapshot: SettingsSnapshot } | { ok: false; reason: string } {
-  const read = readAgentFile(path);
-  const shown = displayPath(path, e);
-  if (read.kind === "refused") return { ok: false, reason: `${shown} can't be read (${read.reason}), so Plannotator left it as it was` };
-  if (read.kind === "missing") return { ok: true, snapshot: { path, target: read.target, before: null, servers: [] } };
-  const servers = settingsServers(read.text, keys);
-  if (servers === null) return { ok: false, reason: `${shown} is not valid JSON, so Plannotator left it as it was` };
-  let writable = (read.mode & 0o200) !== 0;
-  try {
-    accessSync(read.target, fsConstants.W_OK);
-  } catch {
-    writable = false;
-  }
-  if (!writable) return { ok: false, reason: `${shown} is read-only, so Plannotator left it as it was` };
-  return { ok: true, snapshot: { path, target: read.target, before: { text: read.text, bom: read.bom, mode: read.mode }, servers } };
-}
-
-/**
- * After the CLI ran (whatever its exit): the file must still parse and hold
- * every server it held (`keep`: the ones it may have dropped, i.e. ours on a
- * remove). Otherwise its bytes are put back (a file that was not there is
- * removed) and the reason is returned; null when the file is intact.
- */
-function settingsIntact(snapshot: SettingsSnapshot, keys: readonly string[], drop: string | null, e: AgentEnvironment): string | null {
-  const read = readAgentFile(snapshot.path);
-  let problem: string | null = null;
-  if (read.kind === "refused") problem = `it can't be read (${read.reason})`;
-  else if (read.kind === "missing") problem = snapshot.before ? "it is gone" : null;
-  else {
-    const servers = settingsServers(read.text, keys);
-    if (servers === null) problem = "it is not valid JSON";
-    else {
-      const lost = snapshot.servers.filter((name) => name !== drop && !servers.includes(name));
-      if (lost.length > 0) problem = `it lost ${lost.length === 1 ? "the server" : "the servers"} ${lost.map((name) => JSON.stringify(name)).join(", ")}`;
-    }
-  }
-  if (!problem) return null;
-  const shown = displayPath(snapshot.path, e);
-  try {
-    if (snapshot.before) writeAgentFileAtomic(snapshot.target, withBom(snapshot.before.text, snapshot.before.bom), snapshot.before.mode);
-    else rmSync(snapshot.target, { force: true });
-  } catch (error) {
-    return `${shown} was left changed (${problem}) and could not be put back (${describeFsError(error)})`;
-  }
-  return `${shown} was changed in a way Plannotator did not expect (${problem}), so Plannotator put it back as it was`;
-}
-
 async function cliWay(
   e: AgentEnvironment,
   bin: string,
@@ -801,20 +737,57 @@ async function cliWay(
 ): Promise<ConnectWay> {
   const path = e.which(bin);
   if (!path) return { kind: "manual", why: `${bin} is not on PATH` };
-  const shape = VERSION_SHAPES[bin];
-  if (shape && probe) {
-    const ran = await e.run([path, "--version"], { timeoutMs: Math.min(timeoutMs, 5_000) });
-    const line = ran.stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
-    const match = ran.exitCode === 0 && !ran.timedOut ? shape.line.exec(line) : null;
-    if (!match) return { kind: "manual", why: shape.manual };
-    if (shape.min) {
-      const version = [Number(match[1]), Number(match[2]), Number(match[3])];
-      const [a, b, c] = shape.min;
-      const older = version[0]! < a || (version[0] === a && (version[1]! < b || (version[1] === b && version[2]! < c)));
-      if (older) return { kind: "manual", why: shape.older ?? shape.manual };
-    }
+  if (probe) {
+    const refused = await versionRefusal(e, bin, path, timeoutMs);
+    if (refused) return { kind: "manual", why: refused };
   }
   return { kind: "cli", bin, add, remove };
+}
+
+/**
+ * Ask a CLI its `--version` (VERSION_SHAPES) before anything is written for
+ * it: why it is left to the person (not the CLI it is named for, or older
+ * than its `mcp add`), or null. `cwd`: the folder it runs in.
+ */
+async function versionRefusal(e: AgentEnvironment, bin: string, path: string, timeoutMs: number, cwd?: string): Promise<string | null> {
+  const shape = VERSION_SHAPES[bin];
+  if (!shape) return null;
+  const ran = await e.run([path, "--version"], { timeoutMs: Math.min(timeoutMs, 5_000), ...(cwd ? { cwd } : {}) });
+  const line = ran.stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+  const match = ran.exitCode === 0 && !ran.timedOut ? shape.line.exec(line) : null;
+  if (!match) return shape.manual;
+  if (shape.min) {
+    const version = [Number(match[1]), Number(match[2]), Number(match[3])];
+    const [a, b, c] = shape.min;
+    const older = version[0]! < a || (version[0] === a && (version[1]! < b || (version[1] === b && version[2]! < c)));
+    if (older) return shape.older ?? shape.manual;
+  }
+  return null;
+}
+
+/** Qwen Code's settings.json: JSON with comments, edited by Plannotator itself; a read-only one is left alone. */
+const QWEN_SETTINGS_RULES: JsonFileRules = { comments: true, keepReadOnly: true };
+
+/**
+ * Qwen Code is connected by editing its user settings.json directly, never
+ * with `qwen mcp add` / `remove`: those write back every MCP server with its
+ * `$VAR` / `${VAR}` values expanded (a token kept in the environment would
+ * land in the file as plain text). A `qwen` on PATH is asked its version
+ * first (run in the home folder, so Qwen never touches a project's
+ * `.qwen/settings.json`), so another program named `qwen` is not taken for
+ * it. A relative `QWEN_HOME` names a different folder in every project, so
+ * that is left to the person.
+ */
+async function qwenWay(e: AgentEnvironment, probe: boolean): Promise<ConnectWay> {
+  if (qwenHomeIsRelative(e.env, e.homeDir)) {
+    return { kind: "manual", why: "QWEN_HOME is a relative path, so Qwen Code's folder depends on where it runs; add plannotator-inbox to its settings.json by hand" };
+  }
+  const path = e.which("qwen");
+  if (path && probe) {
+    const refused = await versionRefusal(e, "qwen", path, INBOX_CONNECT_AGENT_TIMEOUT_MS, e.homeDir);
+    if (refused) return { kind: "manual", why: refused };
+  }
+  return { kind: "json", keys: ["mcpServers"], json: QWEN_SETTINGS_RULES };
 }
 
 export const AGENT_SPECS: readonly AgentSpec[] = [
@@ -845,11 +818,9 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
   {
     id: "qwen",
     detect: (e) => !!e.which("qwen") || isDir(qwenDir(e)),
-    way: (e, probe) => cliWay(e, "qwen", (cmd) => ["mcp", "add", "-s", "user", NAME, ...cmd], ["mcp", "remove", "-s", "user", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
+    way: (e, probe) => qwenWay(e, probe === true),
     file: (e) => join(qwenDir(e), "settings.json"),
     raw: (e) => rawJsonEntry(join(qwenDir(e), "settings.json"), ["mcpServers"], true),
-    remove: { bin: "qwen", args: ["mcp", "remove", "-s", "user", NAME] },
-    guard: ["mcpServers"],
   },
   {
     id: "cursor",
@@ -958,6 +929,17 @@ function deleteIfOnlyOurs(path: string, keys: readonly string[]): void {
   }
 }
 
+/** Whether a file may be written: its mode has the owner's write bit and this process may write it. */
+function writableFile(target: string, mode: number): boolean {
+  if ((mode & 0o200) === 0) return false;
+  try {
+    accessSync(target, fsConstants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The smallest middle span that differs between two texts. */
 function textChange(original: string, next: string): JsonEntryUndo {
   let start = 0;
@@ -972,14 +954,14 @@ function textChange(original: string, next: string): JsonEntryUndo {
  * untouched) and putting `before` back leaves a file without the entry. Null
  * when that cannot be done; the caller then cuts the entry alone.
  */
-function undoJsonEntry(text: string, undo: JsonEntryUndo | undefined, keys: readonly string[]): string | null {
+function undoJsonEntry(text: string, undo: JsonEntryUndo | undefined, keys: readonly string[], comments: boolean): string | null {
   if (!undo || !undo.after || !undo.after.includes(JSON.stringify(NAME))) return null;
   const first = text.indexOf(undo.after);
   if (first < 0 || text.indexOf(undo.after, first + 1) >= 0) return null;
   const restored = text.slice(0, first) + undo.before + text.slice(first + undo.after.length);
   if (!restored.trim()) return restored;
   try {
-    return at(JSON.parse(restored), [...keys, NAME]) === undefined ? restored : null;
+    return at(JSON.parse(comments ? stripJsonComments(restored) : restored), [...keys, NAME]) === undefined ? restored : null;
   } catch {
     return null;
   }
@@ -987,11 +969,11 @@ function undoJsonEntry(text: string, undo: JsonEntryUndo | undefined, keys: read
 
 /**
  * Add (`value`) or remove (`undefined`) `plannotator-inbox` at `keys` in a
- * plain-JSON file, losslessly (json-edit.ts: only that member's text
- * changes; anything else is refused, with the reason), atomically, written at
- * a symlink's target, a no-op when nothing changes. `ours`: the commands a
+ * JSON file, losslessly (json-edit.ts: only that member's text changes;
+ * anything else is refused, with the reason), atomically, written at a
+ * symlink's target, a no-op when nothing changes. `ours`: the commands a
  * removal may take away; an entry running anything else is never replaced or
- * removed.
+ * removed. `rules`: comments allowed, a read-only file kept.
  */
 export function writeJsonEntry(
   path: string,
@@ -999,7 +981,9 @@ export function writeJsonEntry(
   value: { command: string; args: string[] } | undefined,
   ours: readonly (readonly string[])[] = value ? [[value.command, ...value.args]] : [],
   undo?: JsonEntryUndo,
+  rules: JsonFileRules = {},
 ): WriteOutcome {
+  const comments = rules.comments === true;
   const read = readAgentFile(path);
   if (read.kind === "refused") return { ok: false, reason: `${path} can't be edited (${read.reason})` };
   if (read.kind === "missing" && value === undefined) return { ok: true, changed: false };
@@ -1007,9 +991,9 @@ export function writeJsonEntry(
   if (original.trim()) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(original);
+      parsed = JSON.parse(comments ? stripJsonComments(original) : original);
     } catch {
-      return { ok: false, reason: `${path} is not plain JSON, so Plannotator left it as it was` };
+      return { ok: false, reason: `${path} is not ${comments ? "valid" : "plain"} JSON, so Plannotator left it as it was` };
     }
     const current = at(parsed, [...keys, NAME]);
     if (current !== undefined) {
@@ -1018,10 +1002,18 @@ export function writeJsonEntry(
       if (!owned) return { ok: false, reason: `${path} has a ${NAME} entry Plannotator did not write` };
     } else if (value === undefined) return { ok: true, changed: false };
   }
-  const undone = value === undefined ? undoJsonEntry(original, undo, keys) : null;
-  const edit = undone !== null ? { ok: true as const, changed: true, text: undone } : value === undefined ? removeJsonMember(original, keys, NAME) : addJsonMember(original, keys, NAME, value);
+  const undone = value === undefined ? undoJsonEntry(original, undo, keys, comments) : null;
+  const edit =
+    undone !== null
+      ? { ok: true as const, changed: true, text: undone }
+      : value === undefined
+        ? removeJsonMember(original, keys, NAME, { comments })
+        : addJsonMember(original, keys, NAME, value, { comments });
   if (!edit.ok) return { ok: false, reason: `${path} can't be edited without reshaping it (${edit.reason}), so Plannotator left it as it was` };
   if (!edit.changed) return { ok: true, changed: false };
+  if (rules.keepReadOnly && read.kind === "file" && !writableFile(read.target, read.mode)) {
+    return { ok: false, reason: `${path} is read-only, so Plannotator left it as it was` };
+  }
   try {
     writeAgentFileAtomic(read.target, withBom(edit.text, read.kind === "file" && read.bom), read.kind === "file" ? read.mode : 0o600);
   } catch (error) {
@@ -1184,18 +1176,13 @@ async function connectOne(spec: AgentSpec, options: ConnectOptions, at: string):
   if (way.kind === "json") {
     const [cmd, ...args] = command;
     const created = readAgentFile(file!).kind === "missing";
-    const result = writeJsonEntry(file!, way.keys, { command: cmd!, args });
+    const result = writeJsonEntry(file!, way.keys, { command: cmd!, args }, undefined, undefined, way.json);
     if (!result.ok) return { kind: "failed", reason: result.reason.split(e.homeDir).join("~"), path: file };
     return { kind: "added", record: { state: "added", reach: "mcp", path: file, command, at, ...(result.undo ? { undo: result.undo } : {}), ...(created ? { created: true } : {}) } };
   }
   const bin = e.which(way.bin);
   if (!bin) return { kind: "manual", why: `${way.bin} is not on PATH` };
-  const guard = spec.guard && file ? snapshotSettings(file, spec.guard, e) : null;
-  if (guard && !guard.ok) return { kind: "failed", reason: guard.reason, path: file };
   const ran = await e.run([bin, ...way.add(command)], { timeoutMs });
-  // Whatever the CLI did (it may have been stopped mid-write), the file must still parse and keep the person's servers.
-  const broken = guard?.ok ? settingsIntact(guard.snapshot, spec.guard!, null, e) : null;
-  if (broken) return { kind: "failed", reason: broken, path: file };
   if (ran.timedOut) return { kind: "failed", reason: `${way.bin} mcp add did not finish within ${formatSeconds(timeoutMs)}`, path: file };
   if (ran.exitCode !== 0) {
     const why = firstLine(ran.stderr) || firstLine(ran.stdout);
@@ -1420,7 +1407,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       const unrecorded = raw === null ? null : classify(raw, [[...ourCommand]], false);
       if (unrecorded?.kind === "ours") {
         const at = displayPath(spec.file(e), e);
-        const how = jsonKeysFor(spec.id) ? "delete that entry by hand" : spec.remove ? `run \`${spec.remove.bin} ${spec.remove.args.join(" ")}\`` : "remove it in the agent's settings";
+        const how = jsonFileFor(spec.id) ? "delete that entry by hand" : spec.remove ? `run \`${spec.remove.bin} ${spec.remove.args.join(" ")}\`` : "remove it in the agent's settings";
         skipped.push(`${label}'s "${NAME}"${at ? ` in ${at}` : ""} runs this Plannotator, but no record says Plannotator added it, so it may be yours (to remove it, ${how})`);
       }
       continue;
@@ -1434,14 +1421,14 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
     if (read && read.kind !== "ours") continue;
     const path = spec.file(e) ?? record.path ?? null;
     const shown = displayPath(path, e);
-    const jsonKeys = jsonKeysFor(spec.id);
-    if (jsonKeys && path) {
+    const json = jsonFileFor(spec.id);
+    if (json && path) {
       items.push({
         agent: spec.id,
         describe: `MCP server ${NAME} from ${label} (${shown}, that entry only)`,
         apply: async () => {
-          const result = writeJsonEntry(path, jsonKeys, undefined, ours, record.undo);
-          if (result.ok && record.created) deleteIfOnlyOurs(path, jsonKeys);
+          const result = writeJsonEntry(path, json.keys, undefined, ours, record.undo, json.rules);
+          if (result.ok && record.created) deleteIfOnlyOurs(path, json.keys);
           return result.ok ? null : result.reason;
         },
       });
@@ -1458,11 +1445,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       agent: spec.id,
       describe: `MCP server ${NAME} from ${label} (${remove.bin} ${remove.args.join(" ")})`,
       apply: async () => {
-        const settings = spec.guard && path ? snapshotSettings(path, spec.guard, e) : null;
-        if (settings && !settings.ok) return settings.reason;
         const ran = await e.run([bin, ...remove.args], { timeoutMs: INBOX_CONNECT_AGENT_TIMEOUT_MS });
-        const broken = settings?.ok ? settingsIntact(settings.snapshot, spec.guard!, NAME, e) : null;
-        if (broken) return broken;
         if (ran.timedOut) return `${remove.bin} mcp remove did not finish`;
         if (ran.exitCode !== 0) return `${remove.bin} mcp remove exited with code ${ran.exitCode}`;
         return null;
@@ -1472,8 +1455,10 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
   return { items, skipped };
 }
 
-function jsonKeysFor(id: InboxAgentId): readonly string[] | null {
-  return id === "cursor" || id === "kiro" || id === "claude-app" ? ["mcpServers"] : null;
+/** The agents whose JSON file Plannotator edits itself: where their entry is and how the file is edited. */
+function jsonFileFor(id: InboxAgentId): { keys: readonly string[]; rules: JsonFileRules } | null {
+  if (id === "qwen") return { keys: ["mcpServers"], rules: QWEN_SETTINGS_RULES };
+  return id === "cursor" || id === "kiro" || id === "claude-app" ? { keys: ["mcpServers"], rules: {} } : null;
 }
 
 // ---------------------------------------------------------------------------

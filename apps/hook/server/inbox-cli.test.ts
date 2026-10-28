@@ -601,6 +601,8 @@ describe("plannotator inbox mcp inside a Qwen Code session", () => {
   const QWEN_STALE = "11111111-2222-4333-8444-555555555555";
   const claude = { host: "claude-code", session: CLAUDE_SESSION, name: "Claude Code" };
   const qwen = (session: string) => ({ host: "qwen", session, name: "Qwen Code" });
+  /** The name a Qwen Code session's MCP client gives (`qwen-cli-mcp-client-<server name>`, Qwen 0.26). */
+  const QWEN_CLIENT = "qwen-cli-mcp-client-plannotator-inbox";
 
   /** A Qwen home with the registry record Qwen writes for a session (cross-session protocol, schema 1). */
   function qwenHomeWith(pid: number, sessionId: string, extra: Record<string, unknown> = {}): string {
@@ -626,25 +628,40 @@ describe("plannotator inbox mcp inside a Qwen Code session", () => {
     const context = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid);
     expect(context).toEqual({ home, parentPid: pid, envSession: QWEN_STALE });
     const env = inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: QWEN_STALE });
-    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_A));
     // /clear: Qwen patches the record under the same pid; the next call reads the new id.
     writeRecord(home, pid, QWEN_B);
-    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_B));
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_B));
     // A record that is not usable is never guessed from: the variable Qwen started the shim with.
-    for (const bad of [{ pid: pid + 1 }, { sessionId: "../x" }, { schemaVersion: 2 }, { kind: "NOT A KIND" }]) {
+    for (const bad of [{ pid: pid + 1 }, { sessionId: "../x" }, { schemaVersion: 2 }]) {
       writeRecord(home, pid, QWEN_B, bad);
-      expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+      expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_STALE));
     }
+    // A `kind` of the wrong shape is only that field: Qwen reads the record as a terminal session's, and so does the shim.
+    writeRecord(home, pid, QWEN_B, { kind: "NOT A KIND" });
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_B));
     rmSync(join(home, "sessions"), { recursive: true });
-    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_STALE));
     // A process hosting several sessions (`<pid>-<8 hex>.json`): one record is that session; two, only the call can say.
     writeRecord(home, pid, QWEN_A, {}, `${pid}-0a1b2c3d.json`);
-    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_A));
     writeRecord(home, pid, QWEN_B, {}, `${pid}-ffffffff.json`);
-    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_STALE));
     // A daemon-run session names itself on the call: that wins.
     const meta = { "qwen-code/invocation": { version: 1, sessionId: QWEN_B, promptId: "p1" } };
-    expect(inboxCallHostSession(env, context, meta, "qwen-code-mcp-client")).toEqual(qwen(QWEN_B));
+    expect(inboxCallHostSession(env, context, meta, QWEN_CLIENT)).toEqual(qwen(QWEN_B));
+  });
+
+  test("Qwen's client with no registry record (cross-session messaging off, bare mode, `qwen -p`): the variable Qwen started the shim with", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-qwen-home-")));
+    roots.push(home);
+    const context = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_A }, "/nowhere", "/work", 61234);
+    const env = inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: QWEN_A });
+    expect(inboxCallHostSession(env, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_A));
+    // Qwen's older one-shot client name counts too; another client whose name only starts alike does not.
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    expect(inboxCallHostSession(env, context, undefined, "qwen-cli-mcp-client-")).toBeNull();
+    expect(inboxCallHostSession(claude, context, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_A));
   });
 
   test("Qwen's client wins over another host's variable; the variable alone does not, nor when another client named itself", () => {
@@ -652,7 +669,7 @@ describe("plannotator inbox mcp inside a Qwen Code session", () => {
     const home = qwenHomeWith(pid, QWEN_A);
     const withRecord = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid);
     const noRecord = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid + 7);
-    expect(inboxCallHostSession(claude, withRecord, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    expect(inboxCallHostSession(claude, withRecord, undefined, QWEN_CLIENT)).toEqual(qwen(QWEN_A));
     // The parent is a Qwen process (its record is there), whatever the client called itself.
     expect(inboxCallHostSession(claude, withRecord, undefined, "some-client")).toEqual(qwen(QWEN_A));
     // A variable inherited by another client's process (no record for the parent): not Qwen's.
@@ -673,7 +690,7 @@ describe("plannotator inbox mcp inside a Qwen Code session", () => {
     const registry = (await background(box)).registry!;
     // The shim's parent is this test process (the transport spawns it directly), so Qwen's record is keyed by our pid.
     const home = qwenHomeWith(process.pid, QWEN_A);
-    const client = new Client({ name: "qwen-code-mcp-client", version: "0.26.2" });
+    const client = new Client({ name: QWEN_CLIENT, version: "0.26.2" });
     await client.connect(
       new StdioClientTransport({
         command: process.execPath,
