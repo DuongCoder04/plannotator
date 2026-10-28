@@ -162,6 +162,28 @@ test.skipIf(!hasDom)('a switch saves that one change and says it applies to the 
   expect(group(el, 'cursor').querySelector('.ib-cbox p')?.textContent).toBe("Copy this text into Customize → Rules in Cursor. Plannotator can't see, update or remove that copy.");
 });
 
+test.skipIf(!hasDom)('connected under another QWEN_HOME: shown off, where it is, and turning it on asks to move it here', async () => {
+  const qwen = mcp('qwen', 'Qwen Code', '~/.qwen/settings.json', {
+    reach: { kind: 'mcp', on: false, state: 'elsewhere', path: '~/.qwen/settings.json', locked: false, reason: null },
+  });
+  const el = mount(model({ agents: [qwen] }));
+  const reach = rows(group(el, 'qwen'))[0]!;
+  expect(reach.sw).toBe('false');
+  expect(reach.v).toBe('Connected in ~/.qwen/settings.json. Turn on to move it here.');
+  expect(group(el, 'qwen').textContent).toContain('Connected in another folder');
+  const sent: unknown[] = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ...model({ agents: [qwen] }), error: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  const button = group(el, 'qwen').querySelector('[role="switch"]') as HTMLButtonElement;
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(sent).toEqual([{ agent: 'qwen', reach: true }]);
+});
+
 test.skipIf(!hasDom)('PLANNOTATOR_INBOX_TOOL locks the tool and reminder switches and says why', () => {
   const locked = model({ tool_env: false });
   locked.agents[0] = tool('claude-code', 'Claude Code', {
