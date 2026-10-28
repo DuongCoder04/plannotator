@@ -147,8 +147,9 @@ test.skipIf(!hasDom)('the sidebar open: no New message in the list header (the s
   act(() => (el.querySelector('.ib-lhead [data-sidebar="trigger"]') as HTMLButtonElement).click());
   await until(() => sidebarState(el) === 'collapsed', 'the sidebar closed');
   expect(headerCompose(el)).not.toBeNull();
-  // The header's last control: its far right.
-  expect(el.querySelector('.ib-lhead')!.lastElementChild).toBe(headerCompose(el));
+  // The header's right end: New message, then Tidy's ⋮ (the approved Tidy frames).
+  expect(headerCompose(el)!.nextElementSibling).toBe(el.querySelector('.ib-lhead [data-tidy-menu]'));
+  expect(el.querySelector('.ib-lhead')!.lastElementChild).toBe(el.querySelector('.ib-lhead [data-tidy-menu]'));
 
   act(() => (el.querySelector('.ib-lhead [data-sidebar="trigger"]') as HTMLButtonElement).click());
   await until(() => sidebarState(el) === 'expanded', 'the sidebar open');

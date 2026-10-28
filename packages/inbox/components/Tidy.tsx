@@ -28,6 +28,8 @@ export interface TidyController {
 }
 
 const DISMISSED_KEY = 'plannotator-inbox-tidy-closed';
+/** How long the window polls a run's progress. */
+const TIDY_POLL_MS = 10 * 60_000;
 
 function readDismissed(): string | null {
   try {
@@ -57,12 +59,22 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
     return () => clearTimeout(timer);
   }, [refresh, version, enabled]);
   const run = plan?.run && plan.run.id !== dismissed ? plan.run : null;
+  // Poll while a run goes, for 10 minutes at most: an agent that cannot say it
+  // is done (Codex, MCP only) would otherwise keep it going all day. List and
+  // Board reads (`version`) still read it after that.
   const underway = run !== null && run.done < run.agents.length;
+  const runAt = run ? Date.parse(run.at) : 0;
   useEffect(() => {
     if (!underway || !enabled) return;
+    const left = runAt + TIDY_POLL_MS - Date.now();
+    if (left <= 0) return;
     const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
-  }, [underway, refresh, enabled]);
+    const stop = setTimeout(() => clearInterval(timer), left);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(stop);
+    };
+  }, [underway, runAt, refresh, enabled]);
   const start = useCallback(
     async (sessions: readonly string[], key: string): Promise<string | null> => {
       try {
@@ -88,6 +100,9 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
   }, [plan?.run?.id]);
   return { surface, scope, plan, run, start, dismiss, refresh };
 }
+
+/** The run the menu and the popover show: only while nothing new is offered (new work shows the plan, the run stays on the line). */
+const shownRun = (tidy: TidyController): InboxTidyRun | null => (tidy.run && (tidy.plan?.count ?? 0) === 0 ? tidy.run : null);
 
 /** "Tidy · 3/4" while a run shows. */
 const runLabel = (run: InboxTidyRun) => `Tidy · ${run.done}/${run.agents.length}`;
@@ -115,9 +130,11 @@ export function TidyMenu({
   const [popOpen, setPopOpen] = useState(false);
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => setPortal(trigger.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
-  const { plan, run } = tidy;
+  const { plan } = tidy;
   const count = plan?.count ?? 0;
-  const canOpen = run !== null || count > 0;
+  const run = shownRun(tidy);
+  // Still reading (plan null): enabled, so the menu does not flash disabled on load.
+  const canOpen = plan === null || run !== null || count > 0;
   return (
     <>
       <Menu.Root open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
@@ -171,7 +188,8 @@ export function TidyMenu({
 const plural = (n: number, one: string, many = `${one}s`) => `${formatCount(n)} ${n === 1 ? one : many}`;
 
 function TidyPanel({ tidy, onSetAside, onDone }: { tidy: TidyController; onSetAside?: (threadIds: readonly string[]) => void; onDone: () => void }) {
-  const { plan, run } = tidy;
+  const { plan } = tidy;
+  const run = shownRun(tidy);
   const [details, setDetails] = useState(false);
   const [off, setOff] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +198,13 @@ function TidyPanel({ tidy, onSetAside, onDone }: { tidy: TidyController; onSetAs
   const [key] = useState(() => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `tidy-${Date.now()}-${Math.random()}`));
   if (run) return <RunPanel run={run} />;
   if (!plan) return <div className="ib-tidy-top"><b>Tidy</b></div>;
+  if (plan.agents.length === 0)
+    return (
+      <div className="ib-tidy-top" data-tidy-empty="">
+        <b>Tidy</b>
+        <span>Nothing to ask</span>
+      </div>
+    );
   const agents = plan.agents;
   const picked = agents.filter((a) => !off.has(a.session));
   const allThreads = agents.every((a) => a.items.every((i) => i.thread_id !== null));

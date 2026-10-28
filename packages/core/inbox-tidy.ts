@@ -38,7 +38,7 @@ export const INBOX_TIDY_HOW =
 
 /** The line before the Tidy text at the end of an MCP-only agent's next Inbox tool result. */
 export function inboxTidyMcpLine(id: string): string {
-  return `Plannotator Inbox: Tidy (${id}). The person asked you to tidy your threads there; finish what this call was for first.`;
+  return `Plannotator Inbox: Tidy (${id}). Finish what this call was for first.`;
 }
 
 /** Whether a message is one of the Inbox's Tidy notes. */
