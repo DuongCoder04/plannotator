@@ -1362,7 +1362,11 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
   // Qwen Code connected: Plannotator registers itself as its trusted sender, so the person's replies go into its
   // running sessions (inbox-qwen-trust.ts; the owner's answer, 2026-10-27). A token already held is kept.
   const qwen = file.agents.qwen;
-  if (INBOX_QWEN_TRUST_ON_CONNECT && qwen?.reach === "mcp" && (qwen.state === "added" || qwen.state === "found") && !qwen.removed_outside_at) {
+  const qwenConnected = qwen?.reach === "mcp" && (qwen.state === "added" || qwen.state === "found") && !qwen.removed_outside_at;
+  // Connected in another Qwen home than this run's (`QWEN_HOME` differs): the grant stays with the entry, in the
+  // home it was minted in; it moves only with the entry, when the person turns Qwen Code on in Settings.
+  const qwenElsewhere = qwenConnected && recordedElsewhere(agentSpec("qwen"), e, qwen);
+  if (INBOX_QWEN_TRUST_ON_CONNECT && qwenConnected && !qwenElsewhere) {
     const trust = await ensureQwenTrust(options.dataDir, e, { ...(options.signal ? { signal: options.signal } : {}), now }).catch(
       (error: unknown): QwenTrustOutcome => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error) }),
     );
@@ -1371,7 +1375,7 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     if (trust.kind === "failed" && !trust.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: trust.reason });
     // Revoked in Qwen (seen now, or by the wake when Qwen stopped confirming): said once.
     if (trust.kind === "revoked_outside" && trust.first) (report.trust_failed ??= []).push({ agent: "qwen", reason: QWEN_TRUST_REVOKED_REASON });
-  } else {
+  } else if (!qwenConnected) {
     // Not connected (turned off): a grant the switch could not revoke is tried again; its token is no longer used.
     const retry = await retryQwenRevoke(options.dataDir, e, options.signal).catch(() => null);
     if (options.signal?.aborted) return report;

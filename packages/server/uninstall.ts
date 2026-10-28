@@ -35,7 +35,7 @@ import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/i
 import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
 import { takeDownInboxTailscale } from "./inbox-tailscale";
 import { agentHomeAllowed, forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
-import { qwenTrustRemoval } from "./inbox-qwen-trust";
+import { qwenTrustRemoval, type QwenRevokeResult } from "./inbox-qwen-trust";
 import { planInboxNoteRemoval } from "./inbox-agent-notes";
 import { INBOX_AGENT_LABELS, type InboxAgentId } from "@plannotator/core/inbox-types";
 import {
@@ -585,10 +585,11 @@ async function removeInboxAgentConnections(
     return;
   }
   if (trust) {
-    const result = await trust.apply();
+    // Never stops the uninstall: the entries and the binary go whatever happens to the grant.
+    const result = await trust.apply().catch((error: unknown): QwenRevokeResult => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error), manual: trust.manual, held: true }));
     if (result.kind === "revoked") state.removed.push(trust.describe);
     else if (result.kind === "forgotten") state.warnings.push(`Plannotator forgot ${trust.describe}, but qwen is not on PATH, so the grant may still be in Qwen Code; run \`${result.manual}\`.`);
-    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}. Plannotator no longer uses it; run \`${result.manual}\` to remove it.`);
+    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}.${result.held ? " Run" : " Plannotator no longer uses it; run"} \`${result.manual}\` to remove it.`);
   }
   for (const note of notes.items) {
     const result = note.apply();
