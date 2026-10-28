@@ -121,7 +121,7 @@ import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
 import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
-import { lastInput } from './lastInput';
+import { actedSince, inputMark, lastInput } from './lastInput';
 import { backFocusTargets, focusKept, focusLost } from './backFocus';
 import { askArrivalFocus, listOrder as drawnOrder, threadStep } from './threadStep';
 import { LIST_STOPS, listMoveIndex, listStops } from './listKeys';
@@ -747,10 +747,12 @@ function Inbox() {
       const from = routeRef.current;
       onHash();
       if (lastInput() === 'pointer') return;
+      const mark = inputMark();
       // Focus left in what the traversal replaced moves too (focusKept says what stays). Checked again a beat later: a thread drawn again may drop it then.
       const place = (always: boolean) => {
-        // A click since this traversal (a timer left from an earlier Back can fire after one): focus stays the click's.
-        if (lastInput() === 'pointer') return;
+        // A click or a key since this traversal (a timer left from an earlier Back can fire after one): focus stays
+        // where that put it (a key's own move, an Escape's close, may not have landed yet).
+        if (lastInput() === 'pointer' || actedSince(mark)) return;
         const active = document.activeElement;
         const to = readRoute();
         if (modalOpen() || (!focusLost(active) && (!always || focusKept(active, to, from)))) return;
@@ -1494,8 +1496,9 @@ function Inbox() {
     // The thread draws again under Settings' way back and puts focus on its subject as it opens; a file that was
     // open is where the person was, so it has focus once the thread has drawn.
     if (to.file) {
+      const mark = inputMark();
       setTimeout(() => {
-        if (!document.activeElement?.closest('[data-attachment-pane], .ib-side')) focusFirst(['[data-attachment-pane]']);
+        if (!actedSince(mark) && !document.activeElement?.closest('[data-attachment-pane], .ib-side')) focusFirst(['[data-attachment-pane]']);
       }, 300);
     }
   };
@@ -1658,9 +1661,11 @@ function Inbox() {
     // Otherwise a new history entry: Back returns to where the search started (on a phone, the list).
     writeRoute(next, sameThread ? { replace: true } : {});
     // The landing puts focus on the result in the thread; a thread with nothing to land on (its reply box already
-    // open with a draft, no Reply to focus) leaves it nowhere: the thread's subject then, never the page.
+    // open with a draft, no Reply to focus) leaves it nowhere: the thread's subject then, never the page. Not once
+    // the person has acted since (a Send closing the box leaves focus nowhere for a moment too).
+    const mark = inputMark();
     setTimeout(() => {
-      if (focusLost(document.activeElement) && !modalOpen()) focusFirst(['section.ib-pane [data-reply-button]', 'section.ib-pane h2.ib-subject', '.ib-main h1']);
+      if (!actedSince(mark) && focusLost(document.activeElement) && !modalOpen()) focusFirst(['section.ib-pane [data-reply-button]', 'section.ib-pane h2.ib-subject', '.ib-main h1']);
     }, 400);
   };
   // ── Compose: a new message to a connected agent (compose/ComposeDialog.tsx) ──

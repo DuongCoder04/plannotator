@@ -940,6 +940,9 @@ test('J6: Decide mode stays its own', async () => {
   expect(hash()).toBe(before);
   await tabTo(decide().getByRole('radio').first());
   await press('Space');
+  // The answer stamps the card, then Decide moves to the next one and puts focus on its question: let it land
+  // before Escape, so the move does not take focus from where Escape puts it.
+  await expect(decide().locator('[data-decision-prompt]')).toBeFocused();
   await press('Escape');
   await expect(decide().locator('[data-decision-confirm]')).toBeVisible();
   await press('Escape');
