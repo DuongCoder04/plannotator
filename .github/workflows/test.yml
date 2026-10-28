@@ -451,6 +451,7 @@ jobs:
           packages/ui/components/Settings.documentTextSize.test.tsx
           packages/ui/components/Settings.experimental.test.tsx
           packages/ui/components/Settings.gridChoice.test.tsx
+          packages/ui/components/Settings.notion.test.tsx
           packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
           packages/ui/utils/diffFonts.test.ts
