@@ -2536,6 +2536,16 @@ Slice 1 of the Inbox thread extract (plan record, not in this repo). These pure 
 
 Publish core first, then ui, as always. These subpaths need no ui bump until ui imports them.
 
+## Document font (#1657; next ui release; additive, no core change)
+
+Settings → Display can show a **Document font** row beside Text size. Inert until a host opts in, like Text size.
+
+- **`utils/documentFont`** (new): `DOCUMENT_FONT_OPTIONS` (Theme Default, Serif, Sans Serif, Monospace), `documentFontStack(value)`, and **`applyDocumentFont(root, value)`**, which sets `data-doc-font` and `--doc-font-family` on `root`, and removes both at the default.
+- **`hooks/useDocumentFont()`** (new): applies the setting to the document element while mounted.
+- **Setting `documentFontFamily`** (`config/settings.ts`, cookie-only `plannotator-document-font-family`, default `''` = the theme's font).
+- **`theme.css`**: one base-layer rule gated on `[data-doc-font]` sets the font on the blocks Text size scales; code keeps its monospace font.
+- **`Settings`** gains **`showDocumentFont?: boolean`** (default false). The Code Font row and the new row share one `FontFamilyField`; Code Font behaves as before (its select now has an `aria-label`).
+
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 
 These are enforced socially and, where possible, by CI. They exist because a prior from-scratch reimplementation of this UI broke the app and was reverted.
