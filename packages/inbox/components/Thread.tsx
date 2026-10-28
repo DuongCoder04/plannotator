@@ -63,6 +63,7 @@ import {
   type RouteState,
 } from './ReplyRoute';
 import { ReaskNote } from './ReaskNote';
+import { TidyNote } from './Tidy';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
@@ -3741,7 +3742,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     )}
                   </div>
                 )}
-                {(message.reask?.length ?? 0) > 0 ? (
+                {message.tidy ? (
+                  <TidyNote message={message} agent={message.to ? toName(message, message.to) : 'the agent'} />
+                ) : (message.reask?.length ?? 0) > 0 ? (
                   <ReaskNote
                     message={message}
                     agent={message.to ? toName(message, message.to) : reaskNoteAgent(askedBy(message)?.author, asker)}

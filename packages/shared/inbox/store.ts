@@ -1230,7 +1230,8 @@ export class InboxStore {
     if (!root || root.thread_id !== threadId) return null;
     // The note carrying a 👍 is not a message of the thread as the person sees it.
     const messages = this.threadMessages(threadId).filter((m) => !isAckNote(m));
-    const last = messages[messages.length - 1] ?? root;
+    // A Tidy note never moves the row: its time and author are the message before it.
+    const last = [...messages].reverse().find((m) => !m.tidy) ?? root;
     // The Inbox's own notes are not the person's reply: the last word is the last other message's.
     const lastWord = lastNonNote(messages) ?? root;
     const questions = messages.flatMap((m) => this.questionsOf(m.id));
@@ -4332,6 +4333,8 @@ export class InboxStore {
     const tag = owner ? null : tagOf(message, session);
     if (tag) return !tag.delivery && options.tags !== false;
     if (message.delivery || !owner) return false;
+    // A Tidy note in a thread other than the one carrying the session's wake is never delivered.
+    if (message.tidy && !message.tidy.wake) return false;
     // A 👍 taken back before it went is never delivered.
     if (isAckNote(message) && !this.ackNoteLive(message)) return false;
     const seq = this.messageSeq.get(message.id) ?? 0;
@@ -4573,6 +4576,8 @@ export class InboxStore {
     for (const item of this.pendingReplies(session, { tags: options.tags })) {
       if ((item.set_aside?.length ?? 0) > 0 || (item.reopened?.length ?? 0) > 0) continue;
       if (!INBOX_AUTO_SEND_ACK_NOTES && item.ack_of) continue;
+      // Tidy goes to a busy session when its turn ends, never into it.
+      if (item.tidy) continue;
       const clock = options.clockOf(item.id);
       if (!clock || clock.autoSince === null || clock.autoSince + options.afterMs > now) continue;
       const owner = this.isOwner(item, session);
@@ -4667,6 +4672,52 @@ export class InboxStore {
     this.appendMessage(message, at);
     return { message, replayed: false };
   }
+  // ──────────── Tidy ────────────
+
+  /**
+   * The person's Tidy for one session (owner-approved design, 2026-10-28):
+   * one Inbox note per thread, addressed to the session (`to`), the first
+   * carrying its wake (`tidy.wake`, the only one `pendingReplies` hands
+   * out). They are Inbox notes, so no row moves. The same `idempotency_key`
+   * for the same session answers the notes it wrote and writes nothing.
+   * Whether the session may be asked is the server's check.
+   */
+  sendTidy(input: { run: string; to: InboxAddressee; threadIds: readonly string[]; body: string; idempotency_key: string }): { notes: InboxMessage[]; replayed: boolean } {
+    const key = input.idempotency_key.trim();
+    if (!key) throw new InboxError("validation_error", "idempotency_key: required on a Tidy.", { field: "idempotency_key" });
+    const done = this.tidyNotes().filter((m) => m.idempotency_key === key && m.to?.session === input.to.session);
+    if (done.length > 0) return { notes: done, replayed: true };
+    const notes: InboxMessage[] = [];
+    for (const threadId of new Set(input.threadIds)) {
+      const root = this.messages.get(threadId);
+      if (!root || root.thread_id !== threadId) continue;
+      const at = this.stamp();
+      const note: InboxMessage = {
+        id: inboxId("msg"),
+        project_id: root.project_id,
+        thread_id: threadId,
+        reply_to: null,
+        author: { kind: "person" },
+        subject: null,
+        body: input.body,
+        created_at: at,
+        resolved_at: null,
+        idempotency_key: key,
+        to: { host: input.to.host, session: input.to.session },
+        tidy: { id: input.run, wake: notes.length === 0 },
+      };
+      this.appendMessage(note, at);
+      notes.push(note);
+    }
+    return { notes, replayed: false };
+  }
+
+  /** Every Tidy note, oldest first. */
+  tidyNotes(): InboxMessage[] {
+    const out = [...this.messages.values()].filter((m) => m.tidy);
+    return out.sort((a, b) => (this.messageSeq.get(a.id) ?? 0) - (this.messageSeq.get(b.id) ?? 0));
+  }
+
   // ──────────── Compose: a thread the person starts with a live agent ────────────
 
   /**

@@ -16,6 +16,7 @@ import { RefMark, markLabel } from './RefMark';
 import { useCardMarks } from './useCardMarks';
 import { NewCardDialog, type NewCardInput } from './NewCardDialog';
 import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
+import { TidyLine, TidyMenu, type TidyController } from '../components/Tidy';
 import {
   agentState,
   askWhereBody,
@@ -77,6 +78,10 @@ export interface BoardPageProps {
   onCreateThread: (card: InboxCardWire, session: string | null, opener: HTMLElement) => void;
   /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
   marks?: boolean;
+  /** Tidy (2026-10-28): the header's ⋮ menu (Tidy, Refresh) and the run's line. Absent: no menu. */
+  tidy?: TidyController;
+  /** Tidy's Set aside: Mark read on the ended sessions' threads, with one Undo. */
+  onSetAside?: (threadIds: readonly string[]) => void;
 }
 
 /**
@@ -418,7 +423,15 @@ export function BoardPage(props: BoardPageProps) {
           </nav>
         )}
         {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => openCreate('backlog')} />}
+        {props.tidy && (view === 'lanes' || phone) && (
+          <TidyMenu tidy={props.tidy} phone={phone} className="ib-bhead-more" onRefresh={() => props.onChanged()} onSetAside={props.onSetAside} />
+        )}
       </div>
+      {props.tidy && (view === 'lanes' || phone) && (
+        <div className="ib-btidyline">
+          <TidyLine tidy={props.tidy} />
+        </div>
+      )}
       {model && drops.length > 0 && view !== 'icebox' && (
         <DroppedNotice drops={drops} onRestore={(card) => move(card, { op: 'restore' })} onSeen={() => props.onSeeDrops(drops.map((card) => card.id))} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
       )}

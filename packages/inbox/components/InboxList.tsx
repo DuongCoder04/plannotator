@@ -20,6 +20,7 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
+import { TidyLine, TidyMenu, type TidyController } from './Tidy';
 
 export interface InboxListProps {
   title: string;
@@ -85,6 +86,13 @@ export interface InboxListProps {
    * older Inbox keeps no pins): neither.
    */
   pinned?: ReadonlySet<string>;
+  /**
+   * Tidy (2026-10-28): the header's ⋮ menu (Tidy, Refresh) and the run's line
+   * at the top of the list. Absent: no menu.
+   */
+  tidy?: TidyController;
+  /** Tidy's Set aside: Mark read on the ended sessions' threads, with one Undo. */
+  onSetAside?: (threadIds: readonly string[]) => void;
 }
 
 /**
@@ -636,6 +644,15 @@ export function InboxList(props: InboxListProps) {
             </button>
           </Tip>
         )}
+        {props.tidy && (
+          <TidyMenu
+            tidy={props.tidy}
+            phone={isMobile}
+            className="ib-lhead-more"
+            onRefresh={() => props.onRefresh?.()}
+            onSetAside={props.onSetAside}
+          />
+        )}
       </div>
       {pulls && (
         // The ↻ a pull reveals under the header, behind the list (pullRefresh.ts moves it). Not for a screen reader:
@@ -659,6 +676,7 @@ export function InboxList(props: InboxListProps) {
           held={props.selectedThreadId !== null}
         >
           {props.ask}
+          {props.tidy && <TidyLine tidy={props.tidy} />}
           {props.notice && (
             <button type="button" className="ib-notice" onClick={props.onShowNew} data-inbox-notice="">
               <Icon name="inbox" size={15} />
