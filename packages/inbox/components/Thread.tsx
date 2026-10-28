@@ -16,6 +16,7 @@ import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNot
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
+import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
 import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTiles';
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
@@ -256,6 +257,12 @@ export function commentTags(record: InboxAnnotationRecord): string[] {
 
 const NO_SENT_ANSWERS: readonly SentAnswerGroup[] = [];
 
+/** The URL of a fence's embed document: the Inbox keeps the page and serves it under its own policy. */
+async function inboxEmbedUrl(html: string): Promise<string | null> {
+  const answer = await inboxApi.embed(html);
+  return typeof answer.url === 'string' && answer.url.startsWith('/api/inbox/embeds/') ? answer.url : null;
+}
+
 /** One message's text, with its question cards (exported for its DOM test). */
 export function MessageBody({
   message,
@@ -382,6 +389,9 @@ export function MessageBody({
   // `blob:` sources keep their URL (HtmlBlock's default test: `https:host/a.png`
   // is remote too).
   const imageBaseDir = imageBase ?? inboxMessageImageBase(message.id);
+  // ```html fences draw as live, sandboxed pages, ```svg as images (approval "inbox-inline-html").
+  const embedAuthor = message.author.kind === 'agent' ? agentName(message.author) : undefined;
+  const htmlEmbeds = useMemo<HtmlEmbedHost>(() => ({ frameUrl: inboxEmbedUrl, author: embedAuthor }), [embedAuthor]);
   const resolveImage = useCallback<ImageResolver>(
     (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
     [imageBaseDir],
@@ -683,6 +693,7 @@ export function MessageBody({
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
         answerOnly
+        htmlEmbeds={htmlEmbeds}
         // `readOnly` is about the question cards (answerLocked locks them); with comments on, the text still takes them.
         readOnly={readOnly && !comments}
         questionAnswers={answers}
@@ -722,6 +733,7 @@ export function MessageBody({
           resolveLocalLink={resolveLocalLink}
           refRepo={refRepo}
           answerOnly
+          htmlEmbeds={htmlEmbeds}
           readOnly
           questionDecisionLines={false}
         />
