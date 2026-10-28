@@ -9,6 +9,7 @@
  * webview's sanitizer and Mermaid path (vscode-guides-sanitize.spec.ts) and its answer
  * frame under the answer tab's policy (vscode-guides-answer.spec.ts). Build the binary
  * first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
+ * Copy file in a code attachment has its own spec (inbox-copy-file.spec.ts).
  */
 import { defineConfig } from '@playwright/test';
 
@@ -35,6 +36,7 @@ export default defineConfig({
     'inbox-choice-pill.spec.ts',
     'inbox-compose-skill-picker.spec.ts',
     'inbox-compose.spec.ts',
+    'inbox-copy-file.spec.ts',
     'inbox-decision-mode.spec.ts',
     'inbox-dictation-paste.spec.ts',
     'inbox-ended-session.spec.ts',
