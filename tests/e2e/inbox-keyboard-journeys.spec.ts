@@ -1114,11 +1114,23 @@ async function singleKeysDoNothing(p: Page): Promise<void> {
   await expect(p.locator('[data-attachment-pane]'), 'O and F opened no file').toHaveCount(0);
   expect(await p.evaluate((id) => [...document.querySelectorAll(`[data-thread-id="${id}"]`)].some((el) => el.classList.contains('ib-u')), world.threads.checkout), 'E marked nothing').toBe(unread);
   await quiet('the thread');
-  // `?` still opens the map: a phone with a hardware keyboard (design §5.4).
+  // Nothing names a key that does nothing here: no single key but `?` in any aria-keyshortcuts.
+  const dead = (names: string[]) => names.flatMap((name) => name.split(/\s+/)).filter((token) => /^(Shift\+)?[^+]$/.test(token) && token !== 'Shift+?');
+  expect(dead(await p.locator('[aria-keyshortcuts]').evaluateAll((els) => els.map((el) => el.getAttribute('aria-keyshortcuts') ?? ''))), 'aria-keyshortcuts names no dead key').toEqual([]);
+  // `?` still opens the map: a phone with a hardware keyboard (design §5.4). It lists only the keys that act here.
   await p.keyboard.press('Shift+?');
-  await expect(p.locator('[data-dialog="shortcut-map"]'), '? opens the map').toBeVisible();
+  const map = p.locator('[data-dialog="shortcut-map"]');
+  await expect(map, '? opens the map').toBeVisible();
+  await expect(map.locator('[data-map-row="inbox-app.openMap"]'), 'the map lists ?').toHaveCount(1);
+  const caps = await map.locator('[data-map-row] kbd').allInnerTexts();
+  expect(caps.filter((cap) => /^[^\s⌘]$/.test(cap.trim()) && !['?', '↑', '↓', '←', '→', '↵'].includes(cap.trim())), 'the map lists no single key that does nothing here').toEqual([]);
+  for (const action of ['inbox-thread.reply', 'inbox-thread.markRead', 'inbox-thread.undo', 'inbox-thread.nextThread']) {
+    await expect(map.locator(`[data-map-row="${action}"]`), `no ${action} row`).toHaveCount(0);
+  }
+  await expect(map.locator('#ib-map-sub')).not.toContainText('Single keys work');
+  await expect(map.locator('[data-map-settings]'), 'no way to the Keyboard settings a phone hides').toHaveCount(0);
   await p.keyboard.press('Escape');
-  await expect(p.locator('[data-dialog="shortcut-map"]')).toHaveCount(0);
+  await expect(map).toHaveCount(0);
 }
 
 test('a touch phone (WebKit, iPhone 15): no keycaps, no keyboard button, and no single key acts but ?, in the list or a thread', async () => {

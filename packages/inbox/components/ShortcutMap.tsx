@@ -13,14 +13,17 @@
 import { Icon } from '../icons';
 import { mapColumns, present, type MapRow } from '../shortcuts/map';
 import { isEditableTarget } from '../shortcuts/guards';
-import { MapKeys } from '../shortcuts/hint';
+import { keyLive, MapKeys } from '../shortcuts/hint';
+import { useTouchPhone } from '../phone';
 import { setKeyHints, shortcutPrefs, useShortcutPrefs } from '../shortcuts/prefs';
 import { Modal } from './Updates';
 
-function rowBindings(row: MapRow): string[] {
+/** A row's keys; on a touch phone only the ones that act there (`?` and the chords, Esc, Enter, the arrows). */
+function rowBindings(row: MapRow, touchPhone: boolean): string[] {
   return row.keys.filter(present).flatMap((ref) => {
-    const bindings = ref.scope.shortcuts[ref.action]!.bindings;
-    return ref.only === undefined ? bindings : bindings.slice(ref.only, ref.only + 1);
+    const all = ref.scope.shortcuts[ref.action]!.bindings;
+    const bindings = ref.only === undefined ? all : all.slice(ref.only, ref.only + 1);
+    return touchPhone ? bindings.filter((binding) => keyLive(binding, { singleKeys: true }, ref)) : bindings;
   });
 }
 
@@ -35,6 +38,12 @@ function mapFallback(): HTMLElement | null {
 
 export function ShortcutMap({ onClose, onSettings }: { onClose: () => void; onSettings: () => void }) {
   const prefs = useShortcutPrefs();
+  // A touch phone (a hardware keyboard opened it with `?`): only the keys that act there, and no way to the
+  // Keyboard settings, which a touch phone does not show.
+  const touchPhone = useTouchPhone();
+  const columns = mapColumns()
+    .map((groups) => groups.map((group) => ({ ...group, rows: group.rows.filter((row) => rowBindings(row, touchPhone).length > 0) })).filter((group) => group.rows.length > 0))
+    .filter((groups) => groups.length > 0);
   return (
     <Modal labelledBy="ib-map-title" describedBy="ib-map-sub" onClose={onClose} testId="shortcut-map" ownKeys className="ib-map" fallbackFocus={mapFallback}>
       <div
@@ -54,10 +63,14 @@ export function ShortcutMap({ onClose, onSettings }: { onClose: () => void; onSe
           </button>
         </div>
         <p className="ib-sub" id="ib-map-sub">
-          {prefs.singleKeys ? 'Single keys work when you are not typing. Esc closes this.' : 'Single-key shortcuts are off: only the keys with ⌘, Ctrl, Esc, Enter and the arrows work. Esc closes this.'}
+          {touchPhone
+            ? 'On this device only ? and the keys with ⌘, Ctrl, Esc, Enter and the arrows work. Esc closes this.'
+            : prefs.singleKeys
+              ? 'Single keys work when you are not typing. Esc closes this.'
+              : 'Single-key shortcuts are off: only the keys with ⌘, Ctrl, Esc, Enter and the arrows work. Esc closes this.'}
         </p>
         <div className="ib-map-cols">
-          {mapColumns().map((groups, c) => (
+          {columns.map((groups, c) => (
             <div key={c} className="ib-map-col">
               {groups.map((group) => (
                 <section key={group.title} className="ib-map-group" aria-label={group.title}>
@@ -65,7 +78,7 @@ export function ShortcutMap({ onClose, onSettings }: { onClose: () => void; onSe
                   <dl>
                     {group.rows.map((row) => {
                       const first = row.keys.find(present)!;
-                      const bindings = rowBindings(row);
+                      const bindings = rowBindings(row, touchPhone);
                       const joined = row.keys.length === 1 && bindings.length > 1;
                       return (
                         <div key={`${first.scope.id}.${first.action}`} className="ib-map-row" data-map-row={`${first.scope.id}.${first.action}`}>
@@ -87,6 +100,7 @@ export function ShortcutMap({ onClose, onSettings }: { onClose: () => void; onSe
             </div>
           ))}
         </div>
+        {!touchPhone && (
         <div className="ib-map-foot">
           <label className="ib-map-hints">
             <button type="button" role="switch" className="ib-sw" aria-checked={prefs.hints} aria-labelledby="ib-map-hints-l" onClick={() => setKeyHints(!prefs.hints)} data-map-hints="" />
@@ -96,6 +110,7 @@ export function ShortcutMap({ onClose, onSettings }: { onClose: () => void; onSe
             {prefs.singleKeys ? 'Turn single keys off in Settings → General' : 'Turn single keys on in Settings → General'}
           </button>
         </div>
+        )}
       </div>
     </Modal>
   );

@@ -8,10 +8,12 @@
  * - Single-key shortcuts off: a single key's keycap and its
  *   `aria-keyshortcuts` both go (the key does nothing); chords stay.
  * - A phone: no keycaps (there is no keyboard to read them for).
+ * - A touch phone: no single key but `?` acts, so `aria-keyshortcuts` names none of the others.
  */
 import type { ReactNode } from 'react';
 import { formatShortcutBindingTokens, getShortcutPlatform, type ShortcutScopeDefinition } from '@plannotator/ui/shortcuts';
-import { usePhone } from '../phone';
+import { isTouchPhone, usePhone } from '../phone';
+import { inboxAppShortcuts } from './app.shortcuts';
 import { isBareBinding } from './guards';
 import { shortcutPrefs, useShortcutPrefs, type ShortcutPrefs } from './prefs';
 
@@ -32,9 +34,19 @@ export function bindingOf(ref: ShortcutRef): string {
   return binding;
 }
 
-/** Whether the key is in force: a single key with single keys off does nothing, so nothing names it. */
-function keyLive(binding: string, prefs: Pick<ShortcutPrefs, 'singleKeys'>): boolean {
-  return prefs.singleKeys || !isBareBinding(binding);
+/** The one single key a touch phone keeps: `?`, so a hardware keyboard still opens the map (design §5.4). */
+function touchPhoneKey(ref: Pick<ShortcutRef, 'scope' | 'action'>): boolean {
+  return ref.scope === inboxAppShortcuts && ref.action === 'openMap';
+}
+
+/**
+ * Whether the key is in force: a single key does nothing with single keys off, nor on a touch phone (but `?`;
+ * `singleKeysLive` in guards.ts), so nothing names it there.
+ */
+export function keyLive(binding: string, prefs: Pick<ShortcutPrefs, 'singleKeys'>, ref?: Pick<ShortcutRef, 'scope' | 'action'>): boolean {
+  if (!isBareBinding(binding)) return true;
+  if (!prefs.singleKeys) return false;
+  return !isTouchPhone() || (ref !== undefined && touchPhoneKey(ref));
 }
 
 /**
@@ -58,7 +70,7 @@ export function bindingText(binding: string, platform: Platform = getShortcutPla
 /** The keycap's text, or null when none is drawn (hints off, a phone, a single key with single keys off). */
 export function hintShown(ref: ShortcutRef, state: { prefs: ShortcutPrefs; phone: boolean }, platform?: Platform): string | null {
   if (!state.prefs.hints || state.phone) return null;
-  if (!keyLive(bindingOf(ref), state.prefs)) return null;
+  if (!keyLive(bindingOf(ref), state.prefs, ref)) return null;
   return hintText(ref, platform);
 }
 
@@ -86,7 +98,7 @@ export function ariaBinding(binding: string, platform: Platform = getShortcutPla
 export function shortcutAria(ref: Omit<ShortcutRef, 'binding'> & { only?: number }, prefs: Pick<ShortcutPrefs, 'singleKeys'> = shortcutPrefs(), platform?: Platform): string | undefined {
   const bindings = ref.scope.shortcuts[ref.action]?.bindings ?? [];
   const picked = ref.only === undefined ? bindings : bindings.slice(ref.only, ref.only + 1);
-  const names = picked.filter((binding) => keyLive(binding, prefs)).map((binding) => ariaBinding(binding, platform)).filter((name): name is string => name !== null);
+  const names = picked.filter((binding) => keyLive(binding, prefs, ref)).map((binding) => ariaBinding(binding, platform)).filter((name): name is string => name !== null);
   return names.length > 0 ? names.join(' ') : undefined;
 }
 

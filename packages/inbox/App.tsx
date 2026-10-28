@@ -95,7 +95,7 @@ import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
-import { isPhone, trackKeyboard, usePhone } from './phone';
+import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
 import { installPasteFollowsField } from './pasteTarget';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { LIST_MIN_WIDTH, THREAD_BESIDE_FILE_WIDTH, paneGutters, useStack } from './stack';
@@ -1427,7 +1427,8 @@ function Inbox() {
       if (event.key === 'Escape' && (routeRef.current.page === 'settings' || routeRef.current.page === 'whats-new')) {
         const from = keyTarget(event);
         if (event.defaultPrevented || isComposingKey(event) || modalOpen() || (from && (isEditableTarget(from) || inOverlay(from) || from.closest('[role="menu"], [role="listbox"], [aria-expanded="true"]')))) return;
-        if (isPhone()) return;
+        // A touch phone has its own way back (‹ Inbox); a narrow desktop window keeps Escape, as it keeps its keys.
+        if (isTouchPhone()) return;
         pageBackRef.current();
         return;
       }
