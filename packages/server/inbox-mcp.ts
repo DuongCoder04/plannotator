@@ -19,7 +19,7 @@ import { QUESTION_AUTHORING_GUIDE } from "@plannotator/core/question-block";
 import { inboxQuestionKeysWithRecommendedMarker } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_DONE_DESCRIPTION } from "@plannotator/core/inbox-actions";
 import { checkInboxSubject, INBOX_CARD_ACTION_ON, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
-import { INBOX_CHANNEL_RULE, INBOX_PEEK_META_KEY, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
+import { INBOX_CHANNEL_RULE, INBOX_PEEK_META_KEY, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
 import { inboxBodyForAgent } from "@plannotator/shared/inbox/uploads";
 import { inboxSectionOf } from "@plannotator/shared/inbox/list";
 import { bodyShowsLocalImages, captureInboxInlineImages, type InlineImageFailure } from "@plannotator/shared/inbox/inline-images";
@@ -151,6 +151,7 @@ const sectionLabel = (id: InboxSectionId): string => INBOX_SECTIONS.find((sectio
 
 export const SEND_BODY_DESCRIPTION = [
   "The message, markdown. Question blocks render as answerable cards.",
+  INBOX_REF_LINK_RULE,
   "",
   "Two Inbox-only lines a question block can carry, each on its own line after the question:",
   `- \`Stopped: <why>\` only when you truly cannot go on until this is answered: the thread goes first in the person's list, under "${sectionLabel("stopped")}". Otherwise leave the line out. A negative value (\`no\`, \`none\`, \`n/a\`, \`-\`) means no stop, so never write \`Stopped: no\`.`,

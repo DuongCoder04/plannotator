@@ -3771,6 +3771,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                             <ActionChecklist
                               actions={records}
                               agent={name}
+                              refRepo={threadRefRepo}
                               readOnly={!liveMessage(message)}
                               onMark={(action, mark) => markAction(message.id, action.key, mark)}
                             />

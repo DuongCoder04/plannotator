@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, inboxCardMarkRef, type InboxCardColumn, type InboxCardMark, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
+import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, inboxCardMarkRef, type InboxCardColumn, type InboxCardMark, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow, type InboxProjectRepo } from '@plannotator/core/inbox-types';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
@@ -1012,12 +1012,18 @@ function OpenedCard({
   onCreateThread: (session: string | null, opener: HTMLElement) => void;
 }) {
   const [history, setHistory] = useState<InboxCardHistoryEntry[] | null>(null);
+  // The card's own project's repo (not the window's): its text links `#123` there.
+  const [repo, setRepo] = useState<InboxProjectRepo | null>(null);
   const [refs, setRefs] = useState<{ ref: InboxCardRef; result: ForgeRefCardResult }[] | null>(null);
   useEffect(() => {
     let alive = true;
     inboxApi
       .card(card.id)
-      .then((answer) => alive && setHistory(answer.history))
+      .then((answer) => {
+        if (!alive) return;
+        setHistory(answer.history);
+        setRepo(answer.repo ?? null);
+      })
       .catch(() => alive && setHistory([]));
     return () => {
       alive = false;
@@ -1076,6 +1082,7 @@ function OpenedCard({
       history={history}
       refs={refs}
       projectName={projectName}
+      repo={repo}
       state={agentState(agentSession, live)}
       canAsk={askTarget !== null}
       askNote={
