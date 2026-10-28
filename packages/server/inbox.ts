@@ -123,6 +123,7 @@ import {
 import {
   createInboxToken,
   inboxRegistryPath,
+  isOwnDataDir,
   probeInboxData,
   readInboxRegistry,
   writeInboxRegistry,
@@ -2340,6 +2341,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       }
       if (path === "/api/inbox/control/stop") {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        // `plannotator inbox stop` names its data dir: a copied data dir's record names this
+        // Inbox too, and its stop must not end this one. No body (an older CLI) stops, as before.
+        const request = (await req.json().catch(() => null)) as { data_dir?: unknown } | null;
+        if (typeof request?.data_dir === "string" && !isOwnDataDir(dataDir, request.data_dir)) {
+          return json({ error: "This Inbox runs on another data dir.", code: "not_ours" }, 409);
+        }
+        // Read before the stop: `plannotator inbox restart` passes a run published only by
+        // `--tailscale` on to the next start, as the window's Restart does (additive).
+        const tailscaleRunOnly = tailscale.runOnly();
         if (!stopRequested) {
           stopRequested = true;
           setTimeout(() => {
@@ -2347,7 +2357,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             options.onStopRequested?.();
           }, 50);
         }
-        return json({ ok: true, stopping: true });
+        return json({ ok: true, stopping: true, tailscale_run_only: tailscaleRunOnly });
       }
       // `plannotator inbox --tailscale` while this Inbox runs: publish for this run.
       if (path === "/api/inbox/control/tailscale") {
