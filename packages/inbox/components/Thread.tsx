@@ -1570,7 +1570,18 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             options: tagOpts,
             onChange: onTagsChange,
             // One line under the box (approval "inbox-tag-handoff", A2): "Asks X · Add instead · Hand off instead".
-            note: ({ id, tagged }: { id: string; tagged: readonly TagOption[] }) => <TagModeNote id={id} tagged={tagged} mode={tagMode} onMode={setTagMode} />,
+            note: ({ id, tagged, focusField }: { id: string; tagged: readonly TagOption[]; focusField: () => void }) => (
+              <TagModeNote
+                id={id}
+                tagged={tagged}
+                mode={tagMode}
+                onMode={(mode) => {
+                  setTagMode(mode);
+                  // The link pressed is gone once the line switches: focus goes back to the field, so Mod+Enter still sends.
+                  focusField();
+                }}
+              />
+            ),
           }
         : undefined,
     [taggable, tagOpts, onTagsChange, tagMode],
@@ -2951,6 +2962,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     // The former owner of a handed-off thread was told to stop (approval "inbox-tag-handoff").
     if (tag.handed_away && tag.delivery) return { tag, name, line: { ...line, text: `${name} was told to stop, ${whenTime(tag.delivery.at)}` } };
     if (tag.handed_away && !last.handoff?.settled_at) return { tag, name, line: { state: 'queued' as const, text: `${name} is told to stop once the Undo window ends.` } };
+    // Settled, not taken yet: the notice goes in when its turn ends. No Send now: the notice never interrupts a turn.
+    if (tag.handed_away) return { tag, name, line: { state: 'queued' as const, text: `${name} is told to stop when its turn ends.` } };
     return { tag, name, line };
   });
   const deliveredNow: DeliveryLine | null =

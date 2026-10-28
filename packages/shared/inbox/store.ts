@@ -2368,6 +2368,19 @@ export class InboxStore {
     return out;
   }
 
+  /** Settle now every hand-off still held in one thread: the person wrote again in it. */
+  settleHandoffsIn(threadId: string): InboxMessage[] {
+    const out: InboxMessage[] = [];
+    for (const message of this.threadMessages(threadId)) {
+      if (!handoffHeld(message)) continue;
+      const at = this.stamp();
+      const settled: InboxMessage = { ...message, handoff: { ...message.handoff!, settled_at: at } };
+      this.appendMessage(settled, at);
+      out.push(settled);
+    }
+    return out;
+  }
+
   /**
    * The person took a hand-off back inside its Undo window: the reply goes
    * as an Ask instead. A new snapshot: addressed as it would have been
@@ -3540,6 +3553,10 @@ export class InboxStore {
         ? { handoff: { from: handoff.from ? { host: handoff.from.host, session: handoff.from.session } : null, ...(handoff.label ? { label: handoff.label } : {}), at } }
         : {}),
     };
+    // A hand-off still inside its Undo window in this thread goes first (approval "inbox-tag-handoff"):
+    // a later reply never reaches the new owner before the hand-off does, and Undo can no longer
+    // send the thread back past a reply the new owner already has.
+    this.settleHandoffsIn(message.thread_id);
     try {
       for (const record of [...updated, ...actionsSent]) this.appendQuestion(record, at);
       for (const record of carried) this.appendAnnotation({ ...record, sent_reply_id: replyId, updated_at: at }, at);

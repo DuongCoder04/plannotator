@@ -199,6 +199,50 @@ describe("Hand off", () => {
     expect(inboxWakeText(ownerCommand).split("\n")[1]).toBe(INBOX_WAKE_INSTRUCTION);
   });
 
+  test("wait_for_reply as the former owner after the window: the stop notice alone, never the person's words", async () => {
+    const { server, client, project, asked } = await world(100);
+    const sent = await reply(server, asked.message_id, { idempotency_key: "k1", words: "SECRET-WORDS for herdr only.", tags: [{ ...HERDR_TAG, mode: "handoff" }] });
+    const id = (sent.json.reply as InboxMessageWire).id;
+    await until(async () => !!(await thread(server, asked.thread_id)).messages.find((m) => m.id === id)?.handoff?.settled_at, "the hand-off to settle");
+    // The normal agent loop: no cursor, the thread it asked in.
+    const result = await client.callTool({
+      name: "wait_for_reply",
+      arguments: { thread_id: asked.thread_id, project_path: project, agent_session: OWNER, timeout_seconds: 1 },
+    });
+    const text = (result.content as { type: string; text: string }[]).map((c) => c.text).join("\n");
+    const structured = result.structuredContent as { reply?: { message_id: string; body: string }; handed_away?: { to: string } };
+    expect(structured.reply?.message_id).toBe(id);
+    expect(structured.reply?.body).toBe(inboxHandedAwayLine("Claude Code"));
+    expect(structured.handed_away).toEqual({ to: "Claude Code" });
+    expect(text).toContain(inboxHandedAwayLine("Claude Code"));
+    expect(text).not.toContain("SECRET-WORDS");
+    expect(JSON.stringify(result)).not.toContain("SECRET-WORDS");
+  });
+
+  test("a reply sent inside the window settles the hand-off first: the new owner gets the hand-off, then the reply; Undo is gone", async () => {
+    const { server, project, herdr, asked } = await world(60_000);
+    const sent = await reply(server, asked.message_id, { idempotency_key: "k1", words: "@Claude Code (herdr) yours.", tags: [{ ...HERDR_TAG, mode: "handoff" }] });
+    const id = (sent.json.reply as InboxMessageWire).id;
+    // The reply box answers the held hand-off reply, so the follow-up is addressed to the new owner.
+    const follow = await reply(server, id, { idempotency_key: "k2", words: "Creds are in the vault." });
+    expect(follow.status).toBe(200);
+    const followId = (follow.json.reply as InboxMessageWire).id;
+    expect((follow.json.reply as InboxMessageWire).to).toEqual({ host: "claude-code", session: HERDR });
+    const handedOff = (await thread(server, asked.thread_id)).messages.find((m) => m.id === id)!;
+    expect(handedOff.handoff?.settled_at).toBeString();
+    // In order: the hand-off (with its wake), then the follow-up.
+    const commands = await poll(server, HERDR, herdr);
+    expect(commands.map((c) => c.id)).toEqual([id, followId]);
+    expect(commands[0]!.handoff).toEqual({ from: "Claude Code" });
+    // The former owner is told to stop, and never handed the follow-up.
+    const told = await poll(server, OWNER, project);
+    expect(told.map((c) => c.id)).toEqual([id]);
+    expect(told[0]!.handed_away).toEqual({ to: "Claude Code" });
+    // Undo can no longer send the thread back past a reply the new owner has.
+    expect((await post(server, `/api/inbox/messages/${id}/handoff/undo`, {})).status).toBe(409);
+    expect(await owner(server, asked.thread_id)).toBe(HERDR);
+  });
+
   test("Undo after the window is refused, and the thread stays handed off", async () => {
     const { server, herdr, asked } = await world(100);
     const sent = await reply(server, asked.message_id, { idempotency_key: "k1", words: "Yours.", tags: [{ ...HERDR_TAG, mode: "handoff" }] });

@@ -205,7 +205,6 @@ test('Add: the agent joins with the added wake, the thread says so, and a later 
   await expect(words(page)).toHaveText('Adds OpenCode to this thread');
   await expect(links(page)).toHaveText(['Ask instead']);
   await shot(page, '2-switched-add-desktop');
-  await box.focus();
   await send(page);
   await expect(page.locator('[data-thread-move="added"]')).toContainText('You added OpenCode to this thread');
   await expect(page.locator('[data-thread-owner]')).toHaveCount(0);
@@ -239,7 +238,6 @@ test('Hand off, then Undo inside the window: nobody is handed it while held, and
   await expect(links(page)).toHaveText(['Ask instead']);
   await expect(page.locator('section.ib-pane').getByRole('textbox', { name: 'Reply to Pi' })).toBeVisible();
   await shot(page, '3-switched-handoff-desktop');
-  await box.focus();
   await send(page);
   const move = page.locator('[data-thread-move="handoff"]');
   await expect(move).toContainText('You handed this thread to Pi');
@@ -277,7 +275,6 @@ test('Hand off settles: the new owner gets the hand-off wake, the former owner o
   await tag(page, box, 'Pi', S.pi);
   await box.pressSequentially('the queue work is yours now.');
   await page.locator('[data-tag-mode-to="handoff"]').click();
-  await box.focus();
   await send(page);
   await expect(page.locator('[data-thread-move="handoff"] [data-handoff-undo]')).toBeVisible();
   const sent = await lastPersonMessage(world.tags.ids.t1);
@@ -296,6 +293,10 @@ test('Hand off settles: the new owner gets the hand-off wake, the former owner o
   // The thread after the hand-off: who has it, no Undo any more.
   await expect(page.locator('[data-thread-owner]')).toContainText('Now with Pi');
   await expect(page.locator('[data-handoff-undo]')).toHaveCount(0);
+  // The former owner's line: told to stop when its turn ends, with no Send now (the notice never interrupts a turn).
+  const formerLine = page.locator(`[data-tag-line="${S.owner}"]`);
+  await expect(formerLine).toContainText('Claude Code (billing-api) is told to stop when its turn ends.');
+  await expect(formerLine.locator('[data-send-now]')).toHaveCount(0);
   // The former owner's stop notice is not shown as a tag the person typed.
   const handOffMessage = page.locator('article.ib-message').filter({ hasText: 'the queue work is yours now.' });
   await expect(handOffMessage).toHaveCount(1);
@@ -343,8 +344,7 @@ test('on a phone: the same line, links at 44 px inside 390 px, and a hand-off wi
     await page.locator('[data-tag-mode-to="handoff"]').click();
     await expect(words(page)).toHaveText('Hands this thread to OpenCode');
     await shot(page, '3-switched-handoff-phone');
-    await box.focus();
-    await send(page);
+      await send(page);
     const undo = page.locator('[data-thread-move="handoff"] [data-handoff-undo]');
     await expect(undo).toBeVisible();
     expect((await undo.boundingBox())!.height).toBeGreaterThanOrEqual(44);

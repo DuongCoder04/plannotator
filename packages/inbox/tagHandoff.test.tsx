@@ -216,10 +216,13 @@ test.skipIf(!hasDom)('Hand off: the line switches and back, Send carries it, the
   expect(modeLine(el)!.getAttribute('data-tag-mode')).toBe('ask');
   expect(modeWords(el)).toBe('Asks Pi');
   expect(modeLinks(el)).toEqual(['Add instead', 'Hand off instead']);
+  (el.querySelector('[data-tag-mode-to="handoff"]') as HTMLButtonElement).focus();
   await click(el.querySelector('[data-tag-mode-to="handoff"]'));
   expect(modeWords(el)).toBe('Hands this thread to Pi');
   expect(modeLinks(el)).toEqual(['Ask instead']);
   expect(draftLabel(el)).toContain('Reply to Pi');
+  // The pressed link is gone once the line switches: focus is back in the field, so Mod+Enter still sends.
+  expect(document.activeElement).toBe(box);
   // Ask instead goes back to exactly the Ask.
   await click(el.querySelector('[data-tag-mode-to="ask"]'));
   expect(modeWords(el)).toBe('Asks Pi');
@@ -251,8 +254,10 @@ test.skipIf(!hasDom)('Hand off: the line switches and back, Send carries it, the
 test.skipIf(!hasDom)('Add: Send carries it, the added session is marked, and the thread says it joined', async () => {
   const S = tags.sessions;
   const el = await renderApp(`#thread=${tags.ids.t3}`);
-  await tagPi(el, 'Keep an eye on this.');
+  const box = await tagPi(el, 'Keep an eye on this.');
+  (el.querySelector('[data-tag-mode-to="add"]') as HTMLButtonElement).focus();
   await click(el.querySelector('[data-tag-mode-to="add"]'));
+  expect(document.activeElement).toBe(box);
   expect(modeWords(el)).toBe('Adds Pi to this thread');
   // The Send button, clicked (the line's buttons are not the Send).
   await click(el.querySelector('section.ib-pane .ib-pfoot .ib-acts .ib-btn.ib-pri'));

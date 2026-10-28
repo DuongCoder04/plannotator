@@ -18,8 +18,8 @@ import * as z from "zod";
 import { QUESTION_AUTHORING_GUIDE } from "@plannotator/core/question-block";
 import { inboxQuestionKeysWithRecommendedMarker } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_DONE_DESCRIPTION } from "@plannotator/core/inbox-actions";
-import { checkInboxSubject, INBOX_CARD_ACTION_ON, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
-import { INBOX_CHANNEL_RULE, INBOX_PEEK_META_KEY, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
+import { checkInboxSubject, INBOX_CARD_ACTION_ON, INBOX_HOST_NAMES, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
+import { INBOX_CHANNEL_RULE, INBOX_PEEK_META_KEY, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxHandedAwayLine, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
 import { inboxBodyForAgent } from "@plannotator/shared/inbox/uploads";
 import { inboxSectionOf } from "@plannotator/shared/inbox/list";
 import { bodyShowsLocalImages, captureInboxInlineImages, type InlineImageFailure } from "@plannotator/shared/inbox/inline-images";
@@ -406,6 +406,23 @@ function replyResult(store: InboxStore, reply: InboxMessage, base: string, calle
   // The agent now has this reply (not any later one): a Sent row moves to Quiet.
   // Not for a session only tagged here: its read must not settle what the owner still waits for.
   if (!store.isTaggedGuest(reply.thread_id, caller)) store.markAgentChecked(reply.thread_id, cursor);
+  // The former owner of a handed-off thread (approval "inbox-tag-handoff"): the stop notice alone, never the
+  // person's words, as its bridge command (`replyCommand` in inbox.ts) carries it.
+  if (tag?.handed_away) {
+    const to = reply.to?.host && Object.hasOwn(INBOX_HOST_NAMES, reply.to.host) ? INBOX_HOST_NAMES[reply.to.host]! : "another agent";
+    const notice = inboxHandedAwayLine(to);
+    const url = threadUrl(base, reply.thread_id);
+    const subject = store.threadSubject(reply.thread_id);
+    return okComplete(`Thread ${reply.thread_id}${subject ? ` (${subject})` : ""}: ${notice}\n\n[reply ${reply.id} · ${shortTime(reply.created_at)} · cursor ${cursor} · ${url}]`, {
+      status: "replied",
+      thread_id: reply.thread_id,
+      handed_away: { to },
+      reply: { message_id: reply.id, reply_to: reply.reply_to, body: notice, created_at: reply.created_at },
+      questions: [],
+      cursor,
+      url,
+    });
+  }
   // Every question of each message the reply answers (its reply_to and any other of the session's messages
   // it sent answers or skips on), each named by its message.
   const answered = replyAnsweredMessages(store, reply);
