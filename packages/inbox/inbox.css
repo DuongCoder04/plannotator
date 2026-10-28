@@ -4133,6 +4133,12 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-chk-compose label { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .pn-inbox .ib-chk-note { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 8px 10px; font: inherit; color: inherit; }
 .pn-inbox .ib-chk-compose .ib-chk-acts { margin-top: 4px; }
+/* A Done or Can't do it waiting in the reply draft (approval "inbox-action-items-in-reply"): its note under the row, then "Done 3:12 PM · in your draft". */
+.pn-inbox .ib-chk-draft { margin: -2px 10px 8px 38px; display: flex; flex-direction: column; gap: 3px; }
+.pn-inbox .ib-chk-dnote { width: 100%; min-height: 32px; resize: none; overflow: hidden; border: 1px solid color-mix(in oklch, var(--border) 80%, transparent); border-radius: 8px; background: var(--card); padding: 6px 10px; font: inherit; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.45; color: inherit; }
+.pn-inbox .ib-chk-dnote::placeholder { color: color-mix(in oklch, var(--muted-foreground) 80%, transparent); }
+.pn-inbox .ib-chk-dnote:focus { outline: none; border-color: color-mix(in oklch, var(--primary) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 14%, transparent); }
+.pn-inbox .ib-chk-dline { margin: 0; padding-left: 2px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .pn-inbox .ib-chk-foot { display: flex; align-items: flex-start; gap: 7px; margin: 8px 10px 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.45; }
 .pn-inbox .ib-chk-foot .ib-ic { width: 14px; height: 14px; margin-top: 1px; flex: none; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
@@ -4152,6 +4158,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
   .pn-inbox .ib-act-undo { position: relative; }
   .pn-inbox .ib-act-undo::after { content: ""; position: absolute; inset: -13px -10px; }
   .pn-inbox .ib-chk-note { font-size: var(--ib-fs-16-in, 16px); }
+  .pn-inbox .ib-chk-draft { margin-left: 48px; }
+  .pn-inbox .ib-chk-dnote { font-size: var(--ib-fs-16-in, 16px); min-height: 44px; }
 }
 /*
  * A reply waiting on a busy agent (owner approval "inbox-busy-agent-reply", 2026-10-21; mock.html in
