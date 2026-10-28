@@ -162,7 +162,7 @@ import {
   buildPlanFileRule,
 } from "@plannotator/shared/prompts";
 import { buildReviewOutput, supportsReviewApprovalNotes } from "./review-output";
-import { registerSession, unregisterSession, listSessions, type SessionInfo } from "@plannotator/server/sessions";
+import { registerSession, unregisterSession, listSessions, listInProcessSessions, type SessionInfo } from "@plannotator/server/sessions";
 import { enableAutoUpdateNotice, isManagedBinary, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
@@ -1009,14 +1009,17 @@ if (args[0] === "sessions") {
   // SESSION DISCOVERY MODE
   // ============================================
 
+  // Both lists remove stale entries as they read. OpenCode's in-process
+  // servers are listed too, newest first with the rest.
+  const sessions = [...listSessions(), ...(await listInProcessSessions("opencode"))].sort(
+    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+  );
+
   if (args.includes("--clean")) {
-    // Force cleanup: list sessions (which auto-removes stale entries)
-    const sessions = listSessions();
     console.error(`Cleaned up stale sessions. ${sessions.length} active session(s) remain.`);
     process.exit(0);
   }
 
-  const sessions = listSessions();
   const sessionsJson = jsonFlag;
 
   if (sessions.length === 0) {

@@ -52,8 +52,8 @@ import { statSync } from "fs";
 import path from "path";
 import { resolveValidatedTargetAgent } from "./agent-switch";
 import { deliverOpenCodePrompt } from "./prompt-delivery-error";
-import { registerEmbeddedSession, unregisterEmbeddedSession } from "./session-registry";
 import { announceSessionUrl } from "./session-url";
+import { decideListed } from "./session-registry";
 import {
   readLastUserAgent,
   readMessageAgent,
@@ -311,13 +311,9 @@ export async function handleReviewCommand(
       announceSessionUrl(client, "code review", url);
     },
   });
-  const sessionKey = await registerEmbeddedSession(server, "review", "review", reviewProject);
 
-  const result = await server.waitForDecision();
+  const result = await decideListed(server, "review", reviewProject);
   result.feedback = withReviewDirectory(result.feedback, result.reviewDirectory);
-  await Bun.sleep(1500);
-  server.stop();
-  unregisterEmbeddedSession(sessionKey);
 
   if (result.exit) {
     return;
@@ -570,12 +566,8 @@ export async function handleAnnotateCommand(
       announceSessionUrl(client, "annotation UI", url);
     },
   });
-  const sessionKey = await registerEmbeddedSession(server, "annotate", "annotate", annotateProject);
 
-  const result = await server.waitForDecision();
-  await Bun.sleep(1500);
-  server.stop();
-  unregisterEmbeddedSession(sessionKey);
+  const result = await decideListed(server, "annotate", annotateProject);
 
   // A Done with nothing to send (#1701) carries the zero-state sentence as
   // feedback; it is not something the agent should act on.
@@ -714,12 +706,8 @@ export async function handleAnnotateLastCommand(
       announceSessionUrl(client, "annotation UI", url);
     },
   });
-  const sessionKey = await registerEmbeddedSession(server, "annotate", "annotate", lastProject);
 
-  const result = await server.waitForDecision();
-  await Bun.sleep(1500);
-  server.stop();
-  unregisterEmbeddedSession(sessionKey);
+  const result = await decideListed(server, "annotate", lastProject);
 
   if (result.exit || (result.approved && !result.feedback) || result.nothingToSend === true) {
     return null;

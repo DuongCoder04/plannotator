@@ -1,12 +1,21 @@
 /**
  * The session registry: writes are atomic, and the read-only lister the
- * update advert runs on every page payload never deletes a file.
+ * update advert runs on every page payload never deletes a file. OpenCode's
+ * in-process servers are listed apart: the update checks never see them, and
+ * no entry outlives its server.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLiveSessions, listSessions, registerSession, sessionKey, unregisterSession, type SessionInfo } from "./sessions";
+import {
+  listInProcessSessions,
+  listLiveSessions,
+  listSessions,
+  registerInProcessSession,
+  registerSession,
+  type SessionInfo,
+} from "./sessions";
 
 let dataDir: string;
 let saved: string | undefined;
@@ -73,60 +82,84 @@ test("registerSession never throws when the data dir can't be written (a file in
   expect(() => registerSession(info(process.pid))).not.toThrow();
 });
 
-function baseInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
-  return {
-    pid: process.pid,
-    port: 19432,
-    url: "http://127.0.0.1:19432",
-    mode: "plan",
-    project: "demo",
+describe("in-process sessions (OpenCode)", () => {
+  const opencodeDir = () => join(dataDir, "sessions", "opencode");
+  const entry = (port: number) => ({
+    port,
+    url: `http://localhost:${port}`,
+    mode: "review" as const,
+    project: "p",
     startedAt: new Date().toISOString(),
-    label: "plan-demo",
-    ...overrides,
-  };
-}
+    label: "review-p",
+  });
+  const serve = () => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
 
-describe("session registry", () => {
-  test("sessionKey prefers an explicit id over the pid", () => {
-    expect(sessionKey({ pid: 42 })).toBe("42");
-    expect(sessionKey({ id: "42-19432", pid: 42 })).toBe("42-19432");
+  test("listed while its server answers; the update checks' readers never see it", async () => {
+    const server = serve();
+    try {
+      const unlist = registerInProcessSession("opencode", entry(server.port));
+      // listSessions and listLiveSessions read what every released binary
+      // reads (the top folder's *.json), so an older binary skips it too.
+      expect(listSessions()).toEqual([]);
+      expect(listLiveSessions()).toEqual([]);
+      expect(readdirSync(opencodeDir())).toEqual([`${process.pid}-${server.port}.json`]);
+      expect(await listInProcessSessions("opencode")).toMatchObject([{ pid: process.pid, port: server.port, host: "opencode" }]);
+
+      unlist();
+      expect(readdirSync(opencodeDir())).toEqual([]);
+      expect(() => unlist()).not.toThrow();
+    } finally {
+      server.stop(true);
+    }
   });
 
-  test("registers a pid-keyed session when no id is given", () => {
-    registerSession(baseInfo());
-    const sessions = listSessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].port).toBe(19432);
+  test("a stale entry is dropped and removed: its server stopped, its process gone, or unreadable", async () => {
+    const stopped = serve();
+    registerInProcessSession("opencode", entry(stopped.port));
+    stopped.stop(true);
+
+    const live = serve();
+    try {
+      const dead = deadPid();
+      writeFileSync(join(opencodeDir(), `${dead}-${live.port}.json`), JSON.stringify({ ...entry(live.port), pid: dead, host: "opencode" }));
+      writeFileSync(join(opencodeDir(), "1-2.json"), '{"pid": 1, "port"');
+
+      expect(await listInProcessSessions("opencode")).toEqual([]);
+      expect(readdirSync(opencodeDir())).toEqual([]);
+    } finally {
+      live.stop(true);
+    }
   });
 
-  test("keeps concurrent sessions from one process separate", () => {
-    registerSession(baseInfo({ id: `${process.pid}-19432`, port: 19432, label: "plan-a" }));
-    registerSession(baseInfo({ id: `${process.pid}-19433`, port: 19433, label: "plan-b" }));
+  test("the process's exit removes its entries; a killed process's entry is dropped by the next list", async () => {
+    const script = [
+      `import { registerInProcessSession } from ${JSON.stringify(join(import.meta.dir, "sessions.ts"))};`,
+      `const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });`,
+      `registerInProcessSession("opencode", { ...${JSON.stringify(entry(0))}, port: server.port });`,
+      `console.log("ready");`,
+      `if (process.argv.includes("--exit")) process.exit(0);`,
+    ].join("\n");
+    const run = (arg: string) =>
+      Bun.spawn([process.execPath, "-e", script, "--", arg], {
+        env: { ...process.env, PLANNOTATOR_DATA_DIR: dataDir, PLANNOTATOR_INBOX_CONNECT: "0", PLANNOTATOR_UPDATE_CHECK: "0" },
+        stdout: "pipe",
+        stderr: "inherit",
+      });
 
-    const sessions = listSessions();
-    expect(sessions).toHaveLength(2);
-    expect(sessions.map((s) => s.port).sort()).toEqual([19432, 19433]);
-  });
+    const exits = run("--exit");
+    expect(await exits.exited).toBe(0);
+    expect(readdirSync(opencodeDir())).toEqual([]);
 
-  test("unregisterSession removes only the matching key", () => {
-    registerSession(baseInfo({ id: `${process.pid}-19432`, port: 19432 }));
-    registerSession(baseInfo({ id: `${process.pid}-19433`, port: 19433 }));
-
-    unregisterSession(`${process.pid}-19432`);
-
-    const sessions = listSessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].port).toBe(19433);
-  });
-
-  test("unregisterSession defaults to the pid key", () => {
-    registerSession(baseInfo());
-    unregisterSession();
-    expect(listSessions()).toHaveLength(0);
-  });
-
-  test("listSessions drops entries whose process is gone", () => {
-    registerSession(baseInfo({ id: "dead", pid: 2147483646 }));
-    expect(listSessions()).toHaveLength(0);
+    const killed = run("--stay");
+    try {
+      const first = await killed.stdout.getReader().read();
+      expect(new TextDecoder().decode(first.value)).toContain("ready");
+      expect(readdirSync(opencodeDir())).toHaveLength(1);
+    } finally {
+      killed.kill("SIGKILL");
+      await killed.exited;
+    }
+    expect(await listInProcessSessions("opencode")).toEqual([]);
+    expect(readdirSync(opencodeDir())).toEqual([]);
   });
 });

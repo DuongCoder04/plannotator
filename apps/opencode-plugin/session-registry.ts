@@ -1,47 +1,48 @@
-import {
-  registerSession,
-  unregisterSession,
-  type SessionInfo,
-} from "@plannotator/server/sessions";
+/**
+ * `plannotator sessions` discovery for the servers this plugin runs inside
+ * OpenCode's process. They go in `sessions/opencode/`, which the update checks
+ * never read: these servers do not run the binary, so they never hold back its
+ * update (packages/server/sessions.ts).
+ */
+import { registerInProcessSession, type SessionInfo } from "@plannotator/server/sessions";
 import { detectProjectName } from "@plannotator/server/project";
 
-export type EmbeddedSessionMode = Extract<
-  SessionInfo["mode"],
-  "plan" | "review" | "annotate"
->;
+type Mode = Extract<SessionInfo["mode"], "plan" | "review" | "annotate">;
 
-/**
- * Register an embedded (in-process) session so `plannotator sessions` and other
- * discovery tools can find it.
- *
- * The embedded OpenCode runtime hosts several concurrent sessions inside the
- * single OpenCode process, so each session is keyed by `<pid>-<port>` instead of
- * the pid alone (see SessionInfo.id). Returns the registry key to pass to
- * unregisterEmbeddedSession().
- */
-export async function registerEmbeddedSession(
+/** List a running server; returns the function that removes it (also run at process exit). */
+export async function listOpenCodeSession(
   server: { port: number; url: string },
-  mode: EmbeddedSessionMode,
-  labelPrefix: string,
+  mode: Mode,
   project?: string | null,
-): Promise<string> {
-  const resolvedProject =
-    project ?? (await detectProjectName().catch(() => null)) ?? "unknown";
-  const key = `${process.pid}-${server.port}`;
-  registerSession({
-    id: key,
-    pid: process.pid,
+): Promise<() => void> {
+  const name = project ?? (await detectProjectName().catch(() => null)) ?? "unknown";
+  return registerInProcessSession("opencode", {
     port: server.port,
     url: server.url,
     mode,
-    project: resolvedProject,
+    project: name,
     startedAt: new Date().toISOString(),
-    label: `${labelPrefix}-${resolvedProject}`,
+    label: `${mode}-${name}`,
   });
-  return key;
 }
 
-/** Remove a session registered by registerEmbeddedSession(). No-op if absent. */
-export function unregisterEmbeddedSession(key: string): void {
-  unregisterSession(key);
+/**
+ * Wait for the decision and close the server after the usual 1.5 s; the
+ * session entry is removed with it whether the wait settles or throws.
+ */
+export async function decideListed<T>(
+  server: { port: number; url: string; waitForDecision: () => Promise<T>; stop: () => void },
+  mode: Mode,
+  project?: string | null,
+): Promise<T> {
+  let unlist = () => {};
+  try {
+    unlist = await listOpenCodeSession(server, mode, project);
+    const result = await server.waitForDecision();
+    await Bun.sleep(1500);
+    return result;
+  } finally {
+    server.stop();
+    unlist();
+  }
 }
