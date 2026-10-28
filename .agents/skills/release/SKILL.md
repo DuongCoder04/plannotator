@@ -196,14 +196,14 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    - Runs tests
    - Cross-compiles binaries for 6 platforms (macOS ARM64/x64, Linux x64/ARM64, Windows x64/ARM64)
    - Compiles paste service binaries (same 6 platforms)
-   - Packs the npm packages in a credential-free job. `@plannotator/dsh` is packed last, in its own artifact, by a step allowed to fail, and is outside the security gate and SBOM attestation below
+   - Packs the npm packages (`@plannotator/opencode`, `@plannotator/pi-extension`, `@plannotator/dsh`) in a credential-free job, into the one artifact the security gate scans (`NPM_SUBJECTS` in `scripts/release-security/release-evidence.mjs`; `tests/release-gate-subjects.test.ts` fails when release.yml packs or publishes a tarball outside it)
    - Downloads pinned, checksum-verified Syft and Grype binaries; generates and schema-validates the release-wide CycloneDX SBOM after all shipped subjects exist
    - Forces the repository-owned, suppression-free Grype configuration, retries the official database update up to three times, requires a valid/active schema-v6 database no more than 120 hours old with no pending update, and preserves the machine-readable scan/database/policy evidence as a workflow artifact
    - Rejects every scanner-side ignored match, then blocks before any attestation or publication on CISA KEV or fixable Critical findings classified as shipped/runtime or unknown-applicability. High, development-only, and no-fix Critical findings are report-only but remain in the evidence
    - Generates SLSA build provenance attestations for all 12 binaries via `actions/attest-build-provenance` (signed through Sigstore, recorded in Rekor)
-   - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and the `@plannotator/opencode` and `@plannotator/pi-extension` tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
+   - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and the `@plannotator/opencode`, `@plannotator/pi-extension` and `@plannotator/dsh` tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
    - Creates the GitHub Release with all binaries, SHA256 sidecars, the versioned CycloneDX SBOM, and its SHA256 sidecar attached
-   - Publishes `@plannotator/opencode` and `@plannotator/pi-extension` to npm with provenance, then `@plannotator/dsh` last, in a step allowed to fail until its trusted publishing is set up (a failure there shows as a warning; check it with `npm view`)
+   - Publishes `@plannotator/opencode` and `@plannotator/pi-extension` to npm with provenance, then the gated `@plannotator/dsh` tarball last, in a step allowed to fail until its trusted publishing is set up (a failure there shows as a warning; check it with `npm view`)
 
    **SBOM scope:** the public document is a release-wide Syft inventory of the monorepo's locked build inputs and dependencies. It is deliberately not described as exact binary runtime contents. Coverage testing found that Bun standalone executables hide bundled JavaScript dependency metadata from Syft. The OpenCode tarball is similarly opaque; the Pi tarball exposes only a partial view through nested package-lock files. The scope and limitations are also embedded in the CycloneDX metadata.
 
