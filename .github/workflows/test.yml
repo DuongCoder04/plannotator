@@ -676,7 +676,8 @@ jobs:
     # runs and the runner's own user folders are never touched.
     name: Qwen Code installer steps (Windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Windows PowerShell 5.1 starts slowly on the runner: about 20 minutes.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

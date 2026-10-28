@@ -5314,13 +5314,17 @@ const cmdExeRunner: QwenRunner = {
   },
 };
 
+// install.cmd's program runs under pwsh directly; on Windows the cmd.exe
+// runner covers it under Windows PowerShell 5.1 (what install.cmd starts),
+// so it is not run under 5.1 a second time.
 const QWEN_PS_RUNNERS: QwenRunner[] = [
   ...PS_SHELLS.map(ps1Runner),
-  ...PS_SHELLS.map(cmdPsRunner),
+  ...PS_SHELLS.filter((shell) => !/powershell(\.exe)?$/i.test(shell)).map(cmdPsRunner),
   ...(process.platform === "win32" ? [cmdExeRunner] : []),
 ];
 
-const QWEN_PS_TIMEOUT_MS = 120_000;
+// Windows PowerShell 5.1 on a CI runner takes many seconds per start.
+const QWEN_PS_TIMEOUT_MS = process.platform === "win32" ? 300_000 : 120_000;
 
 describe.skipIf(QWEN_PS_RUNNERS.length === 0)("Windows installers' Qwen Code steps (PowerShell, fake qwen)", () => {
   const roots: string[] = [];
