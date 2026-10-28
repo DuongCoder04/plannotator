@@ -156,9 +156,16 @@ describe("Inbox guidance parity across harnesses", () => {
     }
   });
 
-  test("the marketing docs quote the reminder as agents get it", () => {
-    const docs = readFileSync(join(root, "apps/marketing/src/content/docs/reference/inbox.md"), "utf8");
-    expect(docs).toContain(`> ${INBOX_REMINDER_TEXT}\n`);
+  test("the docs that quote the reminder quote it as agents get it", () => {
+    const docs = (path: string) => readFileSync(join(root, path), "utf8");
+    expect(docs("apps/marketing/src/content/docs/reference/inbox.md")).toContain(`> ${INBOX_REMINDER_TEXT}\n`);
+    // The inboxReminder entry under config-only settings.
+    expect(docs("docs/agent-guides/environment.md")).toContain(`("${INBOX_REMINDER_TEXT}"`);
+  });
+
+  test("MCP clients are still told to pass an idempotency_key, in its field (moved there from the server instructions)", () => {
+    const field = (INBOX_DEFAULT_TOOLS.find((tool) => tool.name === "send_message")!.inputSchema.properties as Record<string, { description?: string }>).idempotency_key!;
+    expect(field.description).toContain("Pass an idempotency_key so a retry never posts twice.");
   });
 
   test("the skill's description carries the subagent rule", () => {
