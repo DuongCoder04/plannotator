@@ -160,7 +160,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
-import { createInboxFeedback } from "./inbox-feedback";
+import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
@@ -2675,7 +2675,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Pins (approval "inbox-pinned-threads"): pin, unpin and the order of the sidebar's pinned threads.
       const pinned = await pins.route(req, url);
       if (pinned) return pinned;
-      // Feedback (the sidebar's Feedback dialog): sent on, never stored here.
+      // Feedback (the sidebar's Feedback dialog): sent on, never stored here. The owner's only: a
+      // tailnet guest's words would go out as this computer's (its version, OS, IP and rate limit).
+      if (path === INBOX_FEEDBACK_PATH && via === "tailnet" && !tailscale.isOwnerRequest(req.headers)) {
+        throw new InboxError("owner_only", "Only this computer's owner can send feedback from this Inbox.");
+      }
       const fed = await feedback.route(req, path);
       if (fed) return fed;
 

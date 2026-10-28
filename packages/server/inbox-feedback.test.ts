@@ -8,10 +8,11 @@
  * computer; another site's page cannot send.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FEEDBACK_TIMEOUT_MS, FEEDBACK_UNAVAILABLE } from "@plannotator/core/product-feedback";
+import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import { startInboxServer, type InboxServer } from "./inbox";
 
 const roots: string[] = [];
@@ -147,6 +148,62 @@ describe("POST /api/inbox/feedback", () => {
     expect(took).toBeGreaterThanOrEqual(FEEDBACK_TIMEOUT_MS - 50);
     expect(took).toBeLessThan(10_000);
   }, 20_000);
+
+  test("over the tailnet only the owner sends: a guest is 403 owner_only and nothing leaves", async () => {
+    const MAGIC = "macbook-pro.tail0000.ts.net";
+    const OWNER = "owner@example.com";
+    const GUEST = "guest@example.com";
+    const serve = new Map<number, string>();
+    const fakeTailscale: TailscaleRunner = (args) => {
+      const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+      if (args[0] === "status") return ok(JSON.stringify({ Self: { DNSName: `${MAGIC}.`, UserID: 42 }, User: { "42": { ID: 42, LoginName: OWNER, DisplayName: "Owner" } } }));
+      if (args[1] === "status") {
+        const TCP = Object.fromEntries([...serve.keys()].map((p) => [String(p), { HTTPS: true }]));
+        const Web = Object.fromEntries([...serve].map(([p, proxy]) => [`${MAGIC}:${p}`, { Handlers: { "/": { Proxy: proxy } } }]));
+        return ok(serve.size === 0 ? "{}" : JSON.stringify({ TCP, Web }));
+      }
+      const httpsPort = Number(/--https=(\d+)/.exec(args.join(" "))![1]);
+      if (args.includes("off")) {
+        serve.delete(httpsPort);
+        return ok();
+      }
+      serve.set(httpsPort, args.at(-1)!);
+      return ok(`Available within your tailnet:\n\nhttps://${MAGIC}:${httpsPort}/\n|-- proxy ${args.at(-1)}\n`);
+    };
+    const endpoint = fakeEndpoint();
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-feedback-tailnet-")));
+    roots.push(root);
+    const dataDir = join(root, "data");
+    mkdirSync(dataDir, { recursive: true });
+    // The tailnet's allowed logins come from config.json in the data dir (loadConfig reads the env's).
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxTailscaleAllow: [GUEST] }));
+    const previous = { data: process.env.PLANNOTATOR_DATA_DIR, ts: process.env.PLANNOTATOR_INBOX_TAILSCALE };
+    process.env.PLANNOTATOR_DATA_DIR = dataDir;
+    delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
+    try {
+      const server = await startInboxServer({ dataDir, binaryPath: null, version: "0.28.33", feedbackUrl: endpoint.url, tailscale: fakeTailscale, publishTailnet: true, phones: false });
+      servers.push(server);
+      const listener = server.tailscale.listenerPort();
+      expect(listener).not.toBeNull();
+      const origin = `https://${MAGIC}:${server.port}`;
+      const through = (login: string) =>
+        fetch(`http://127.0.0.1:${listener}/api/inbox/feedback`, {
+          method: "POST",
+          headers: { Host: `${MAGIC}:${server.port}`, "Tailscale-User-Login": login, Origin: origin, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+          body: JSON.stringify({ serverSession: server.serverSession, message: "from the tailnet" }),
+        });
+      const guest = await through(GUEST);
+      expect([guest.status, ((await guest.json()) as { code?: string }).code]).toEqual([403, "owner_only"]);
+      expect(endpoint.received).toHaveLength(0);
+      const owner = await through(OWNER);
+      expect(owner.status).toBe(200);
+      expect(endpoint.received).toHaveLength(1);
+    } finally {
+      if (previous.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
+      else process.env.PLANNOTATOR_DATA_DIR = previous.data;
+      if (previous.ts !== undefined) process.env.PLANNOTATOR_INBOX_TAILSCALE = previous.ts;
+    }
+  });
 
   test("another site's page cannot send (the window's same-origin rule)", async () => {
     const endpoint = fakeEndpoint();

@@ -110,6 +110,8 @@ describe.skipIf(!hasDom)('the Feedback dialog', () => {
     expect(document.activeElement).toBe(dialog.box());
     // The line says what is sent, naming this version (the data it must keep truthful).
     expect(dialog.what().textContent).toContain('0.28.33');
+    // It names every field the Inbox adds, the surface included.
+    expect(dialog.what().textContent).toContain('the name of your OS and that it came from the Inbox');
     expect(calls).toHaveLength(0);
 
     type(dialog.box(), '  Reload loses my place in the list  ');
@@ -168,6 +170,25 @@ describe.skipIf(!hasDom)('the Feedback dialog', () => {
       expect(dialog.box().value).toBe('It crashed on open');
     }
     expect(next).toBe(answers.length);
+  });
+
+  test('when its opener is gone (the phone drawer closed), closing puts focus on the page heading, not <body>', () => {
+    const main = document.createElement('main');
+    main.className = 'ib-main';
+    const heading = document.createElement('h1');
+    heading.textContent = 'Inbox';
+    main.appendChild(heading);
+    const opener = document.createElement('button');
+    opener.textContent = 'Feedback';
+    document.body.append(main, opener);
+    opener.focus();
+    render();
+    // The drawer that held the Feedback row unmounts when the row is picked.
+    opener.remove();
+    act(() => root?.unmount());
+    root = null;
+    expect(document.activeElement).toBe(heading);
+    expect(heading.getAttribute('tabindex')).toBe('-1');
   });
 
   test('nothing empty or over 4,000 characters leaves the window', async () => {
@@ -251,9 +272,11 @@ describe('the copy prompt', () => {
   test('the command reads `plannotator feedback`, with the installed binary only as the fallback; the agent asks first', () => {
     const prompt = feedbackPrompt([BIN, 'inbox', 'mcp']);
     // Pinned on purpose (owner, 2026-10-27): installed users see `plannotator feedback …`, never an execPath.
-    expect(prompt).toContain('`plannotator feedback "<message>" [--category <bug|idea|other>] [--contact <email>]`');
+    // The text goes on stdin in a QUOTED heredoc: inside double quotes a shell would expand $VAR and run backticks in the approved text.
+    expect(prompt).toContain("plannotator feedback --stdin [--category <bug|idea|other>] [--contact '<email>'] <<'EOF'\n<the exact text I approved>\nEOF");
+    expect(prompt).not.toContain('feedback "');
     expect(prompt).toContain('`plannotator feedback --help`');
-    expect(prompt).toContain(`If \`plannotator\` is not found, run it as ${BIN}.`);
+    expect(prompt).toContain(`If \`plannotator\` is not found, use ${BIN} in its place.`);
     expect(prompt).not.toContain(`${BIN} feedback`);
     // Windows: the .exe is the installed binary too.
     expect(feedbackPrompt(['C:\\Users\\ada\\AppData\\Local\\plannotator\\plannotator.exe', 'inbox', 'mcp'])).toContain('plannotator.exe');
@@ -267,7 +290,7 @@ describe('the copy prompt', () => {
   test('a source run (bun plus a script) or settings not loaded: bare plannotator, and no runtime path anywhere', () => {
     for (const command of [null, ['/private/tmp/bun-darwin-aarch64/bun', 'inbox', 'mcp'], ['/opt/bun', '/repo/apps/hook/server/index.ts', 'inbox', 'mcp']]) {
       const prompt = feedbackPrompt(command);
-      expect(prompt).toContain('`plannotator feedback "<message>"');
+      expect(prompt).toContain("plannotator feedback --stdin");
       expect(prompt).not.toContain('bun');
       expect(prompt).not.toContain('not found');
     }

@@ -1,16 +1,15 @@
 // Which browser origins may POST feedback, and the CORS headers they get.
 //
-// The Inbox sends feedback from its own local server (no Origin header), and
-// `plannotator feedback` sends it from the CLI (no Origin either), so most
-// requests carry none: those are allowed. A request that does carry an Origin
-// must be a Plannotator page: this computer (localhost, 127.0.0.1, [::1], any
-// port) or a tailnet name (https://<machine>.<tailnet>.ts.net). CORS only
-// limits what a browser lets a page do; it is not authentication.
+// No Plannotator surface needs CORS: the Inbox sends feedback from its own
+// local server and `plannotator feedback` from the CLI, and neither sends an
+// Origin header. So a request that carries an Origin is a browser page, and it
+// is refused (403, no preflight either) unless the owner lists that exact
+// origin in `ALLOWED_ORIGINS`. Without that, any page a person visits (a
+// localhost dev server, a public `*.ts.net` Funnel site) could make each
+// visitor's browser submit, from many IPs past the per-IP limits. CORS is not
+// authentication; this only narrows who can submit.
 
-const LOOPBACK_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/;
-const TAILNET_RE = /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net(?::\d{1,5})?$/;
-
-/** Extra origins from `ALLOWED_ORIGINS` (comma separated). Empty: loopback and tailnet only. */
+/** Origins from `ALLOWED_ORIGINS` (comma separated, exact matches; `*` is ignored). Empty: no browser origin at all. */
 export function parseExtraOrigins(envValue?: string): string[] {
   if (!envValue) return [];
   return envValue
@@ -19,8 +18,8 @@ export function parseExtraOrigins(envValue?: string): string[] {
     .filter((origin) => origin && origin !== "*");
 }
 
-export function isAllowedOrigin(origin: string, extra: readonly string[] = []): boolean {
-  return LOOPBACK_RE.test(origin) || TAILNET_RE.test(origin) || extra.includes(origin);
+export function isAllowedOrigin(origin: string, allowed: readonly string[] = []): boolean {
+  return allowed.includes(origin);
 }
 
 /** The CORS headers for an allowed Origin; none without one. Never credentials. */

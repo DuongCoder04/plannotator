@@ -9,7 +9,7 @@
  * HOME and data dir, no browser, no update check and no Inbox connect.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
@@ -49,24 +49,31 @@ function fakeEndpoint(status = 201) {
   return { url: `http://127.0.0.1:${fake.port}/feedback`, received };
 }
 
-async function run(args: string[], feedbackUrl: string) {
+function sandbox(feedbackUrl: string) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-feedback-cli-")));
   roots.push(root);
   const home = join(root, "home");
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: home,
+    TMPDIR: tmpdir(),
+    PLANNOTATOR_DATA_DIR: join(home, ".plannotator"),
+    PLANNOTATOR_BROWSER: NO_BROWSER,
+    BROWSER: NO_BROWSER,
+    NO_BROWSER,
+    PLANNOTATOR_INBOX_CONNECT: "0",
+    PLANNOTATOR_UPDATE_CHECK: "0",
+    PLANNOTATOR_FEEDBACK_URL: feedbackUrl,
+  };
+  return { root, home, env };
+}
+
+async function run(args: string[], feedbackUrl: string, stdin?: string) {
+  const { root, env } = sandbox(feedbackUrl);
   const proc = Bun.spawn([process.execPath, entry, "feedback", ...args], {
     cwd: root,
-    env: {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      HOME: home,
-      TMPDIR: tmpdir(),
-      PLANNOTATOR_DATA_DIR: join(home, ".plannotator"),
-      PLANNOTATOR_BROWSER: NO_BROWSER,
-      BROWSER: NO_BROWSER,
-      NO_BROWSER,
-      PLANNOTATOR_INBOX_CONNECT: "0",
-      PLANNOTATOR_UPDATE_CHECK: "0",
-      PLANNOTATOR_FEEDBACK_URL: feedbackUrl,
-    },
+    env,
+    stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -87,6 +94,45 @@ describe("plannotator feedback (processes)", () => {
     // A source run has no baked version: `dev`.
     expect(body).toMatchObject({ message: "The Inbox is great, but the list jumps on reload", category: "bug", contact: "me@example.com", version: "dev", surface: "cli" });
   }, 30_000);
+
+  test("the documented heredoc form: $HOME, backticks, $(...) and quotes arrive byte for byte, and nothing runs", async () => {
+    const endpoint = fakeEndpoint();
+    const { root, home, env } = sandbox(endpoint.url);
+    // What a person might approve: shell syntax quoted from their own work.
+    const message = [
+      "Setting $HOME breaks it, and `touch INJECTED` should not run; $(touch INJECTED2) neither.",
+      `The "double" and 'single' quotes, a back\\slash, \${PATH} and a tab\there stay.`,
+    ].join("\n");
+    // Exactly the template the prompt, the help and the skill give, run by bash.
+    const script = `"$PN_BUN" "$PN_ENTRY" feedback --stdin --category idea <<'EOF'\n${message}\nEOF\n`;
+    const proc = Bun.spawn(["/bin/bash", "-c", script], {
+      cwd: root,
+      env: { ...env, PN_BUN: process.execPath, PN_ENTRY: entry },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(stdout.trim()).toBe("Sent");
+    expect(endpoint.received).toHaveLength(1);
+    expect(endpoint.received[0]!.body).toMatchObject({ message, category: "idea", surface: "cli" });
+    expect((endpoint.received[0]!.body as { message: string }).message).not.toContain(home);
+    expect(existsSync(join(root, "INJECTED"))).toBe(false);
+    expect(existsSync(join(root, "INJECTED2"))).toBe(false);
+  }, 30_000);
+
+  test("`-` reads stdin too; stdin plus words, or an empty stdin, is a usage error that sends nothing", async () => {
+    const endpoint = fakeEndpoint();
+    const piped = await run(["-"], endpoint.url, "Piped in\n");
+    expect(piped.code).toBe(0);
+    expect((endpoint.received[0]!.body as { message: string }).message).toBe("Piped in");
+    expect((await run(["--stdin", "and", "words"], endpoint.url, "hi\n")).code).toBe(2);
+    const empty = await run(["--stdin"], endpoint.url, "");
+    expect(empty.code).toBe(2);
+    expect(empty.stderr).toContain("stdin was empty");
+    expect((await run(["--stdin"], endpoint.url, "x".repeat(4001))).code).toBe(2);
+    expect(endpoint.received).toHaveLength(1);
+  }, 60_000);
 
   test("a refusal exits 1 with the reason on stderr", async () => {
     const endpoint = fakeEndpoint(400);
@@ -116,7 +162,9 @@ describe("plannotator feedback (processes)", () => {
     expect((await run(["hi", "--unknown"], endpoint.url)).code).toBe(2);
     const help = await run(["--help"], endpoint.url);
     expect(help.code).toBe(0);
-    expect(help.stdout).toContain('plannotator feedback "<message>"');
+    expect(help.stdout).toContain("plannotator feedback --stdin");
+    expect(help.stdout).toContain("<<'EOF'");
+    expect(help.stdout).not.toContain('feedback "');
     expect(endpoint.received).toHaveLength(0);
   }, 60_000);
 });
@@ -148,7 +196,7 @@ describe("runFeedbackCommand: a service that never answers", () => {
       env: {},
       version: "dev",
       fetch: (async () => {
-        throw new Error("getaddrinfo ENOTFOUND plannotator-feedback.plannotator.workers.dev");
+        throw new Error("getaddrinfo ENOTFOUND feedback.invalid");
       }) as unknown as typeof fetch,
       out: () => {},
       err: (line) => err.push(line),
@@ -160,12 +208,14 @@ describe("runFeedbackCommand: a service that never answers", () => {
 
 describe("parseFeedbackCommand", () => {
   test("joins loose words into one message and reads both flag forms", () => {
-    expect(parseFeedbackCommand(["two", "words", "--category=idea"])).toEqual({ ok: true, help: false, message: "two words", category: "idea", contact: null });
-    expect(parseFeedbackCommand(["--contact", "@me", "hi"])).toEqual({ ok: true, help: false, message: "hi", category: null, contact: "@me" });
+    expect(parseFeedbackCommand(["two", "words", "--category=idea"])).toEqual({ ok: true, help: false, stdin: false, message: "two words", category: "idea", contact: null });
+    expect(parseFeedbackCommand(["--contact", "@me", "hi"])).toEqual({ ok: true, help: false, stdin: false, message: "hi", category: null, contact: "@me" });
+    expect(parseFeedbackCommand(["--stdin", "--category", "bug"])).toEqual({ ok: true, help: false, stdin: true, message: "", category: "bug", contact: null });
+    expect(parseFeedbackCommand(["-"])).toMatchObject({ ok: true, stdin: true });
   });
 
   test("after --, a flag-looking word is part of the message", () => {
-    expect(parseFeedbackCommand(["--", "--help", "is", "confusing"])).toEqual({ ok: true, help: false, message: "--help is confusing", category: null, contact: null });
+    expect(parseFeedbackCommand(["--", "--help", "is", "confusing"])).toEqual({ ok: true, help: false, stdin: false, message: "--help is confusing", category: null, contact: null });
   });
 
   test("refuses an empty or over-long message and a flag with no value", () => {

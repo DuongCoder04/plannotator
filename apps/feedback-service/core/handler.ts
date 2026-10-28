@@ -1,4 +1,5 @@
 import { corsHeaders, isAllowedOrigin } from "./cors";
+import { limitKey } from "./ip";
 import type { FeedbackStore } from "./storage";
 import type { Throttle } from "./throttle";
 import { normalizeFeedback, ValidationError } from "./validation";
@@ -8,6 +9,9 @@ import { normalizeFeedback, ValidationError } from "./validation";
  * (another method on this one). It writes; it never answers with data.
  */
 export const FEEDBACK_PATH = "/feedback";
+
+/** The global ceiling's one key: every caller shares it. */
+export const GLOBAL_LIMIT_KEY = "all";
 
 /** The legitimate body is under 5 KB (a 4,000-character message and short labels). */
 export const MAX_BODY_BYTES = 16 * 1024;
@@ -21,11 +25,13 @@ export interface HandlerDeps {
   store: FeedbackStore;
   /** The in-isolate per-IP throttle. */
   throttle: Throttle;
-  /** The Cloudflare rate-limit binding, when configured. */
+  /** The Cloudflare rate-limit binding, when configured, keyed per caller. */
   rateLimiter?: RateLimiter;
+  /** A second binding, keyed by one constant: a ceiling on all submissions together (per Cloudflare location). */
+  globalRateLimiter?: RateLimiter;
   /** The caller's IP (CF-Connecting-IP), used only as a throttle key in memory. Never stored. */
   ip: string | null;
-  /** Origins allowed besides loopback and the tailnet (`ALLOWED_ORIGINS`). */
+  /** The only browser origins allowed (`ALLOWED_ORIGINS`); any other request with an Origin is 403. */
   extraOrigins?: readonly string[];
   now?: () => Date;
 }
@@ -96,17 +102,27 @@ export async function handleRequest(request: Request, deps: HandlerDeps): Promis
   }
 
   // Limits before the body is read: a flood costs no parsing and no write.
+  // Per caller (an IPv6 address counts by its /64), then one ceiling for everyone.
   if (deps.ip) {
+    const key = limitKey(deps.ip);
     if (deps.rateLimiter) {
       try {
-        const { success } = await deps.rateLimiter.limit({ key: deps.ip });
+        const { success } = await deps.rateLimiter.limit({ key });
         if (!success) return reply(429, { error: "Too many requests. Try again in a minute." }, cors);
       } catch {
         // The binding failing open keeps feedback flowing; the throttle below still applies.
       }
     }
-    if (!deps.throttle.allow(deps.ip)) {
+    if (!deps.throttle.allow(key)) {
       return reply(429, { error: "Too many requests. Try again later." }, cors);
+    }
+  }
+  if (deps.globalRateLimiter) {
+    try {
+      const { success } = await deps.globalRateLimiter.limit({ key: GLOBAL_LIMIT_KEY });
+      if (!success) return reply(429, { error: "Too many requests. Try again in a minute." }, cors);
+    } catch {
+      // Fails open, like the per-caller binding.
     }
   }
 

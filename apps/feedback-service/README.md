@@ -1,7 +1,7 @@
 # @plannotator/feedback-service
 
 Cloudflare Worker + D1 that collects product feedback from the Plannotator
-Inbox (sidebar → Feedback) and from `plannotator feedback "<message>"`.
+Inbox (sidebar → Feedback) and from `plannotator feedback --stdin`.
 
 The public endpoint can only submit. It never reads, and it never changes or
 removes a stored row. There is no admin route, no list route and no key.
@@ -12,8 +12,9 @@ removes a stored row. There is no admin route, no list route and no key.
 core/
   handler.ts      # The one route, body cap, limits, origin rule
   validation.ts   # Strict field validation (unknown fields refused)
-  cors.ts         # Allowed browser origins (loopback, tailnet, ALLOWED_ORIGINS)
-  throttle.ts     # Per-IP throttle in isolate memory (never stored)
+  cors.ts         # Browser origins: none unless listed in ALLOWED_ORIGINS
+  ip.ts           # The limit key: the IP, an IPv6 address by its /64
+  throttle.ts     # Per-caller throttle in isolate memory (never stored)
   storage.ts      # FeedbackStore: one method, insert
 stores/
   d1.ts           # The one statement: a parameterised INSERT
@@ -29,7 +30,7 @@ wrangler.toml
 | Method | Path | Notes |
 | --- | --- | --- |
 | POST | `/feedback` | JSON body, at most 16 KB. Answer: `201 {"ok":true}`, nothing echoed. |
-| OPTIONS | `/feedback` | CORS preflight for an allowed origin. |
+| OPTIONS | `/feedback` | CORS preflight, only for an origin listed in `ALLOWED_ORIGINS` (none by default). |
 
 Every other path is `404`, every other method on `/feedback` is `405`.
 
@@ -56,8 +57,15 @@ itself, after the person has seen the exact text and said yes:
 ```bash
 curl -sS -X POST https://plannotator-feedback.plannotator.workers.dev/feedback \
   -H 'Content-Type: application/json' \
-  -d '{"message":"<the person'\''s words>","category":"idea","surface":"cli"}'
+  --data-binary @- <<'EOF'
+{"message":"<the person's words, JSON-escaped>","category":"idea","surface":"cli"}
+EOF
 ```
+
+The body goes through a quoted heredoc (`<<'EOF'`, quotes included), so the
+shell expands nothing in it: no `$VAR`, no backticks, no `$(…)`, and a `'` in
+the words needs no escaping. Only JSON's own escapes apply (`\"`, `\\`, `\n`
+for a line break). Never put the words in a double-quoted shell string.
 
 ## What is stored
 
@@ -70,18 +78,31 @@ The per-IP limits read the caller's IP in memory only.
 
 All values are starting points; change them to taste.
 
-1. **Cloudflare rate limiting** (`[[ratelimits]]` in `wrangler.toml`):
-   5 submissions per IP per 60 seconds, counted by Cloudflare across the
-   network.
-2. **Per-IP throttle** (`targets/cloudflare.ts`): 10 submissions per IP per
-   10 minutes, per Worker isolate, in memory.
-3. **Body cap**: 16 KB; the message cap is 4,000 characters.
+Every per-caller limit counts an IPv4 address as itself and an IPv6 address by
+its /64 (one host usually holds a whole /64).
 
-There is no key: anything shipped in the client would be public. CORS
-allows browser pages only from loopback (`localhost`, `127.0.0.1`, `[::1]`,
-any port) and `https://*.ts.net`, plus `ALLOWED_ORIGINS`. Requests with no
-Origin (the Inbox's server, the CLI) are allowed. CORS limits what a browser
-page can do; it does not stop a script, which the limits above are for.
+1. **Cloudflare rate limiting, per caller** (`FEEDBACK_RATE_LIMITER` in
+   `wrangler.toml`): 5 submissions per caller per 60 seconds. Cloudflare counts
+   it per location (each data centre keeps its own count, eventually
+   consistent), not once across the whole network.
+2. **Cloudflare rate limiting, a ceiling for everyone** (`FEEDBACK_GLOBAL_LIMITER`):
+   30 submissions per 60 seconds under one shared key, also per location. It
+   caps a flood spread over many IPs; while it holds, real feedback waits too.
+3. **Per-caller throttle** (`targets/cloudflare.ts`): 10 submissions per
+   caller per 10 minutes, in one Worker isolate's memory. Soft: Cloudflare
+   spreads a caller over many isolates and recycles them, so it only slows a
+   burst that lands on one warm isolate.
+4. **Body cap**: 16 KB; the message cap is 4,000 characters.
+
+There is no daily or total cap: rows from a slow, distributed flood stay
+until the owner removes them ("Removing a row").
+
+There is no key: anything shipped in the client would be public. No browser
+page may submit: a request with an `Origin` header is refused with `403`
+(preflight included) unless that exact origin is in `ALLOWED_ORIGINS` (none
+by default). The Inbox sends from its own server and the CLI from the
+command line, neither with an Origin. CORS limits what a browser page can do;
+it does not stop a script, which the limits above are for.
 
 ## Deployment
 

@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import { FEEDBACK_PATH, handleRequest, MAX_BODY_BYTES, type HandlerDeps, type RateLimiter } from "../core/handler";
 import type { FeedbackEntry, FeedbackStore } from "../core/storage";
+import { parseExtraOrigins } from "../core/cors";
+import { limitKey } from "../core/ip";
 import { createThrottle } from "../core/throttle";
 
 class MemoryStore implements FeedbackStore {
@@ -165,30 +167,31 @@ describe("origins", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
-  test("loopback and tailnet origins are allowed, with CORS for that origin and never credentials", async () => {
-    for (const origin of ["http://localhost:59812", "http://127.0.0.1:3000", "http://[::1]:8080", "https://mac.tail1234.ts.net", "https://mac.tail1234.ts.net:8443"]) {
-      const res = await handleRequest(post({ message: "hi" }, { headers: { Origin: origin } }), deps());
-      expect(res.status).toBe(201);
-      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(origin);
-      expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
-    }
-  });
-
-  test("a preflight from an allowed origin is 204; any other origin is 403 and writes nothing", async () => {
-    const pre = await handleRequest(new Request(`${URL_BASE}${FEEDBACK_PATH}`, { method: "OPTIONS", headers: { Origin: "http://localhost:59812" } }), deps());
-    expect(pre.status).toBe(204);
-    expect(pre.headers.get("Access-Control-Allow-Methods")).toBe("POST, OPTIONS");
+  test("by default any Origin is refused, a preflight too: localhost, a tailnet name, anything; nothing is written", async () => {
     const d = deps();
-    for (const origin of ["https://evil.example", "null", "http://localhost.evil.example", "https://ts.net.evil.example", "http://mac.tail1234.ts.net"]) {
+    for (const origin of ["http://localhost:59812", "http://127.0.0.1:3000", "http://[::1]:8080", "https://mac.tail1234.ts.net", "https://evil.example", "null"]) {
       const res = await handleRequest(post({ message: "hi" }, { headers: { Origin: origin } }), d);
       expect(res.status).toBe(403);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+      const pre = await handleRequest(new Request(`${URL_BASE}${FEEDBACK_PATH}`, { method: "OPTIONS", headers: { Origin: origin } }), d);
+      expect(pre.status).toBe(403);
     }
     expect(d.store.rows).toHaveLength(0);
   });
 
-  test("ALLOWED_ORIGINS adds an origin", async () => {
-    const res = await handleRequest(post({ message: "hi" }, { headers: { Origin: "https://plannotator.ai" } }), deps({ extraOrigins: ["https://plannotator.ai"] }));
+  test("an origin listed in ALLOWED_ORIGINS, exactly, gets CORS (never credentials) and a preflight", async () => {
+    const d = deps({ extraOrigins: parseExtraOrigins(" https://plannotator.ai , * ") });
+    const res = await handleRequest(post({ message: "hi" }, { headers: { Origin: "https://plannotator.ai" } }), d);
     expect(res.status).toBe(201);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://plannotator.ai");
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBeNull();
+    const pre = await handleRequest(new Request(`${URL_BASE}${FEEDBACK_PATH}`, { method: "OPTIONS", headers: { Origin: "https://plannotator.ai" } }), d);
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get("Access-Control-Allow-Methods")).toBe("POST, OPTIONS");
+    // `*` in the list allows nothing; a near match is refused.
+    for (const origin of ["https://evil.example", "https://plannotator.ai.evil.example", "http://plannotator.ai"]) {
+      expect((await handleRequest(post({ message: "hi" }, { headers: { Origin: origin } }), d)).status).toBe(403);
+    }
   });
 });
 
@@ -234,6 +237,50 @@ describe("abuse limits", () => {
     expect(res.status).toBe(429);
     expect(keys).toEqual(["203.0.113.7"]);
     expect(d.store.rows).toHaveLength(0);
+  });
+
+  test("an IPv6 caller counts by its /64: rotating inside it does not reset the limits", async () => {
+    expect(limitKey("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2::/64");
+    expect(limitKey("2001:0db8:0001:0002:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
+    expect(limitKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(limitKey("203.0.113.7")).toBe("203.0.113.7");
+    // IPv4-mapped and anything odd keep the whole address (a shared /64 would lump all IPv4 callers).
+    expect(limitKey("::ffff:203.0.113.7")).toBe("::ffff:203.0.113.7");
+    expect(limitKey("not an ip")).toBe("not an ip");
+
+    const keys: string[] = [];
+    const limiter: RateLimiter = {
+      async limit({ key }) {
+        keys.push(key);
+        return { success: true };
+      },
+    };
+    const d = deps({ throttle: createThrottle({ limit: 2, windowMs: 60_000 }), rateLimiter: limiter });
+    const statuses: number[] = [];
+    for (const ip of ["2001:db8:1:2::a", "2001:db8:1:2::b", "2001:db8:1:2:ffff::c"]) {
+      statuses.push((await handleRequest(post({ message: "hi" }), { ...d, ip })).status);
+    }
+    expect(statuses).toEqual([201, 201, 429]);
+    expect(new Set(keys)).toEqual(new Set(["2001:db8:1:2::/64"]));
+  });
+
+  test("the global ceiling, one key for everyone, answers 429 for any caller once it is reached", async () => {
+    let left = 2;
+    const keys: string[] = [];
+    const ceiling: RateLimiter = {
+      async limit({ key }) {
+        keys.push(key);
+        return { success: left-- > 0 };
+      },
+    };
+    const d = deps({ globalRateLimiter: ceiling });
+    const statuses: number[] = [];
+    for (const ip of ["198.51.100.1", "198.51.100.2", "198.51.100.3", null]) {
+      statuses.push((await handleRequest(post({ message: "hi" }), { ...d, ip })).status);
+    }
+    expect(statuses).toEqual([201, 201, 429, 429]);
+    expect(new Set(keys)).toEqual(new Set(["all"]));
+    expect(d.store.rows).toHaveLength(2);
   });
 
   test("a failing rate-limit binding fails open (the throttle still applies)", async () => {

@@ -11,17 +11,25 @@ binding = "FEEDBACK_DB"
 database_name = "plannotator-feedback"
 database_id = "d378d61f-b046-4ac4-b8b8-bc1e590171d1"
 
-# Cloudflare's rate limiting binding, keyed by the caller's IP (counted by
-# Cloudflare, never stored by this Worker). 5 submissions per IP per 60 s:
-# the owner's call. `namespace_id` is any integer unique in the account.
+# Cloudflare rate limiting bindings. Each counts per Cloudflare location and
+# is eventually consistent (not one network-wide count). Never stored by this
+# Worker. The values are the owner's call; `namespace_id` is any integer unique
+# in the account.
+#
+# Per caller, keyed by the IP (an IPv6 address by its /64): 5 per 60 s.
 [[ratelimits]]
 name = "FEEDBACK_RATE_LIMITER"
 namespace_id = "2401"
 simple = { limit = 5, period = 60 }
 
+# A ceiling on all submissions together, one key for everyone: 30 per 60 s.
+[[ratelimits]]
+name = "FEEDBACK_GLOBAL_LIMITER"
+namespace_id = "2402"
+simple = { limit = 30, period = 60 }
+
 [vars]
-# Optional: more browser origins allowed to POST, comma separated, besides
-# localhost / 127.0.0.1 / [::1] (any port) and https://*.ts.net, which are
-# always allowed. Requests with no Origin (the Inbox's server, the CLI) are
-# always allowed.
+# Optional: the only browser origins allowed to POST, exact, comma separated.
+# None by default: the Inbox (its own server) and the CLI send no Origin, so a
+# request with an Origin is a third-party page and is refused with 403.
 # ALLOWED_ORIGINS = ""

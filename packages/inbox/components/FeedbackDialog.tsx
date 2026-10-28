@@ -92,6 +92,8 @@ export function FeedbackDialog({ version, phone, onSend, onCopyPrompt, onClose }
       testId="feedback"
       onClose={() => (sending ? undefined : close())}
       ownKeys
+      // On a phone the opener (the Feedback row) was in the drawer, which closed: focus goes to the page heading, not <body>.
+      fallbackFocus={pageHeading}
       className={`ib-fbk${phone ? ' ib-fbk-phone' : ''}`}
     >
       {phase === 'sent' ? (
@@ -190,8 +192,8 @@ export function FeedbackDialog({ version, phone, onSend, onCopyPrompt, onClose }
           <p className="ib-fbk-what" id={`ib-fbk-what-${uid}`} data-feedback-what="">
             <Icon name="info" />
             <span>
-              Sends only your message (and the category and email, if you add them), Plannotator {version} and the name of your OS. Nothing from your
-              threads or files.
+              Sends only your message (and the category and email, if you add them), Plannotator {version}, the name of your OS and that it came
+              from the Inbox. Nothing from your threads or files.
             </span>
           </p>
           {error && (
@@ -216,4 +218,11 @@ export function FeedbackDialog({ version, phone, onSend, onCopyPrompt, onClose }
       )}
     </Modal>
   );
+}
+
+/** Focus after the dialog when its opener is gone: the page's heading (as AgentNoteDialog and SoundIntro do). */
+function pageHeading(): HTMLElement | null {
+  const heading = document.querySelector<HTMLElement>('.ib-main h1');
+  if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+  return heading;
 }
