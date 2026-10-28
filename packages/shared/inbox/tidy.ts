@@ -322,7 +322,8 @@ export function inboxTidyWakeThread(store: InboxStore, agent: InboxTidyPlanAgent
  * session "tidied" once it wrote (a message, or a card) after its wake was
  * delivered; "nothing" to change once it went idle after delivery without a
  * write (`idleSince`: its last idle transition, kept through later turns and
- * its end; null when it does not say); "ended" when it ended before delivery.
+ * its end; null when it does not say); "ended" when it ended before delivery,
+ * or after it without writing or going idle.
  * `updated` counts only the threads this run sent it a note in.
  */
 export function inboxTidyRun(
@@ -369,7 +370,10 @@ export function inboxTidyRun(
           ? "tidied"
           : idle !== null && idle > Date.parse(at)
             ? "nothing"
-            : "delivered";
+            : // Delivered, then gone without a write (closed mid-turn, or the Inbox restarted): it never will.
+              reach === null
+              ? "ended"
+              : "delivered";
     return { session, host: note.to!.host, name: hostName(note.to!.host), reach: reach ?? "wakes", state, updated: threads };
   });
   return {

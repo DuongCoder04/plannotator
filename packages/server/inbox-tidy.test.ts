@@ -255,6 +255,8 @@ describe("Tidy: asking", () => {
     await poll(server, "ses-a", billing);
     expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
     await deliver(server, "ses-a", billing);
+    // A write counts once it is after the delivery (a later clock tick).
+    await new Promise((resolve) => setTimeout(resolve, 5));
     // Other work, in a thread the run never named: tidied, with no thread counted.
     await send(client, billing, "ses-a", { subject: "Elsewhere", thread: "Elsewhere", body: "Started the cache work." });
     let run = (await plan(server)).run!;
@@ -297,6 +299,24 @@ describe("Tidy: asking", () => {
     servers.splice(servers.indexOf(server), 1);
     const store = InboxStore.open(dataDir);
     const run = inboxTidyRun(store, { now: Date.now(), idleSince: () => null, reachOf: () => null })!;
+    expect(run.agents.map((x) => x.state)).toEqual(["ended"]);
+    expect(run.done).toBe(1);
+  });
+
+  test("a session that got its wake and ended without writing reads Session ended, not Delivered all day", async () => {
+    const { server, client, billing, clock, dataDir } = await setup();
+    clock.behind = 3 * HOUR;
+    await poll(server, "ses-a", billing);
+    await send(client, billing, "ses-a", { subject: "Ledger", thread: "Ledger", body: block("Ledger first?") });
+    clock.behind = 0;
+    await poll(server, "ses-a", billing);
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
+    await deliver(server, "ses-a", billing);
+    expect(await stateOf(server, "ses-a")).toBe("delivered");
+    // Closed mid-turn (or the Inbox restarted, its idle times gone): no connection, no idle time, no write.
+    server.stop();
+    servers.splice(servers.indexOf(server), 1);
+    const run = inboxTidyRun(InboxStore.open(dataDir), { now: Date.now(), idleSince: () => null, reachOf: () => null })!;
     expect(run.agents.map((x) => x.state)).toEqual(["ended"]);
     expect(run.done).toBe(1);
   });

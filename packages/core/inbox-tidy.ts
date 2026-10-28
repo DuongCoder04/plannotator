@@ -94,7 +94,7 @@ export interface InboxTidyPlan {
  * "Nothing to change"). An agent whose connection reports no idle (Codex,
  * MCP only) stays `delivered` until it writes.
  */
-/** "ended": the session ended before its wake was delivered (it never will be). */
+/** "ended": the session ended before its wake was delivered, or after it without writing or going idle (it never will). */
 export type InboxTidyState = "waiting" | "delivered" | "tidied" | "nothing" | "ended";
 
 export interface InboxTidyRunAgent {
