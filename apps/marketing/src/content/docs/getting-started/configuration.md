@@ -105,7 +105,7 @@ Approved and denied plans are saved to `~/.plannotator/plans/` by default. You c
 
 Plannotator reads `~/.plannotator/config.json` for persistent settings. This includes display name, diff options, conventional comment labels, and feedback message customization.
 
-The review open-state flags (`plannotator review --base <ref>` / `--diff-type <type>`) seed a single session and never change the saved `defaultDiffType` — Settings → Git remains the only writer.
+The review open-state flags (`plannotator review --base <ref>` / `--diff-type <type>`) seed a single session and never change the saved defaults — Settings → Review remains the only writer. Git reviews open on `diffOptions.defaultDiffType`; Jujutsu reviews open on `reviewDefaults.jj.defaultDiffType` (`jj-current`, `jj-last`, `jj-line`, `jj-evolog` or `jj-all`; unset or invalid means `jj-current`).
 
 To turn off the Claude Code mod (non-blocking plan review, code review and annotate, plus Ask this session), add `"claudeCodeMod": false`. It is on by default, `PLANNOTATOR_CLAUDE_MOD` wins over it, and Claude Code reads it when it starts. See [Claude Code](/docs/guides/claude-code/#turning-the-mod-off).
 

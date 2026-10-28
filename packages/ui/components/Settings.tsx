@@ -158,13 +158,9 @@ interface SettingsProps {
    *  readable Error, which the row shows. */
   onAgentToolChange?: (enabled: boolean) => Promise<void>;
   /** Current session is a local git review where since-base ISN'T offered
-   *  (base ref unresolvable) — the Git tab shows a note that the Git-status
-   *  preference can't take effect in THIS repo. */
+   *  (base ref unresolvable) — the Review tab's Git section shows a note that
+   *  the Git-status preference can't take effect in THIS repo. */
   sinceBaseUnavailable?: boolean;
-  /** Provider-owned defaults available in this review runtime. */
-  reviewSettings?: VcsReviewSettingsDescriptor[];
-  /** Provider active in the current review. */
-  activeVcsId?: string;
   /** The host is rendering its compact touch shell (review only). Display
    *  settings that the compact shell overrides for the session are hidden
    *  there instead of silently editing the desktop preference. */
@@ -238,6 +234,31 @@ export const LINE_BG_INTENSITY_OPTIONS: { value: DiffLineBgIntensity; label: str
   { value: 'normal', label: 'Normal' },
   { value: 'strong', label: 'Strong' },
 ];
+const DEFAULT_DIFF_TYPE_OPTIONS = [
+  // "All Changes" belongs to since-base (the flagship composite); uncommitted
+  // reverts to its plain name so the two stay distinguishable side by side.
+  { value: 'since-base' as const, label: 'All Changes (Recommended)', description: "Everything since your branch split from main — committed, uncommitted, and untracked" },
+  { value: 'local-vs-remote' as const, label: 'Local vs Remote Branch', description: "Your local branch and working tree compared with its last-fetched remote-tracking branch" },
+  { value: 'uncommitted' as const, label: 'Uncommitted', description: "Everything you've changed since your last commit" },
+  { value: 'unstaged' as const, label: 'Unstaged', description: "Only changes you haven't staged yet" },
+  { value: 'staged' as const, label: 'Staged', description: "Only changes you've staged for commit" },
+  { value: 'merge-base' as const, label: 'Committed changes (PR view)', description: "Everything you've committed on this branch" },
+  { value: 'all' as const, label: 'All Files (HEAD)', description: "Every tracked file at HEAD, shown as additions" },
+];
+// Labels match the jj diff picker (getJjContext in packages/shared/jj-core.ts).
+const JJ_DEFAULT_DIFF_TYPE_OPTIONS = [
+  { value: 'jj-current', label: 'Current change', description: 'Only the working-copy change (@)' },
+  { value: 'jj-last', label: 'Last change', description: 'The change just before the working copy (@-)' },
+  { value: 'jj-line', label: 'Line of work', description: 'Every change on your line of work since it left trunk' },
+  { value: 'jj-evolog', label: 'Evolution diff', description: 'How the current change evolved. Opens on Current change when it has no history' },
+  { value: 'jj-all', label: 'All files', description: 'Every file at the working copy, shown as additions' },
+] as const;
+const JJ_REVIEW_DEFAULTS: VcsReviewSettingsDescriptor = {
+  id: 'jj',
+  label: 'Jujutsu',
+  defaultDiffType: 'jj-current',
+  diffOptions: JJ_DEFAULT_DIFF_TYPE_OPTIONS.map(({ value, label, description }) => ({ id: value, label, description })),
+};
 const AGENT_TERMINAL_SIDE_OPTIONS: { value: AnnotateAgentTerminalSide; label: string }[] = [
   { value: 'left', label: 'Left' },
   { value: 'right', label: 'Right' },
@@ -519,62 +540,80 @@ function ReviewAnalysisTab({ packageChangesSetting }: { packageChangesSetting?: 
   );
 }
 
-const ReviewSettingsTab: React.FC<{
-  providers: VcsReviewSettingsDescriptor[];
-  activeVcsId?: string;
-  sinceBaseUnavailable?: boolean;
-}> = ({ providers, activeVcsId, sinceBaseUnavailable }) => {
+/** One radio card list for a saved default diff (Git or Jujutsu). */
+function DefaultDiffChoices<T extends string>({ options, value, onChange }: {
+  options: ReadonlyArray<{ value: T; label: string; description: string }>;
+  value: string;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="space-y-2" role="radiogroup">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          role="radio"
+          aria-checked={value === opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`w-full flex items-start gap-3 p-3 rounded-lg border transition-colors text-left ${
+            value === opt.value
+              ? 'border-primary bg-primary/5'
+              : 'border-border hover:border-muted-foreground/30 hover:bg-muted/50'
+          }`}
+        >
+          <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+            value === opt.value ? 'border-primary' : 'border-muted-foreground/40'
+          }`}>
+            {value === opt.value && (
+              <div className="w-2 h-2 rounded-full bg-primary" />
+            )}
+          </div>
+          <div>
+            <div className="text-sm font-medium">{opt.label}</div>
+            <div className="text-xs text-muted-foreground">{opt.description}</div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const REVIEW_SECTION_HEADING = 'text-xs font-semibold uppercase tracking-wider text-muted-foreground';
+
+const ReviewTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavailable }) => {
+  const defaultDiffType = useConfigValue('defaultDiffType');
   useConfigValue('reviewDefaults');
-  useConfigValue('defaultDiffType');
+  const jjDefaultDiffType = getProviderReviewDefaultDiffType(JJ_REVIEW_DEFAULTS);
   const reviewPanelView = useConfigValue('reviewPanelView');
   const reviewAutoViewed = useConfigValue('reviewAutoViewed');
-  const [selectedProviderId, setSelectedProviderId] = useState(() =>
-    providers.some((provider) => provider.id === activeVcsId)
-      ? activeVcsId!
-      : providers[0]?.id ?? ''
-  );
-  const provider = providers.find((candidate) => candidate.id === selectedProviderId) ?? providers[0];
-  const defaultDiffType = provider ? getProviderReviewDefaultDiffType(provider) : '';
-
-  useEffect(() => {
-    if (activeVcsId && providers.some((candidate) => candidate.id === activeVcsId)) {
-      setSelectedProviderId(activeVcsId);
-    }
-  }, [activeVcsId, providers]);
-
   return (
     <div className="space-y-5">
       <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Viewed files
-        </div>
+        <div className={REVIEW_SECTION_HEADING}>Viewed files</div>
+        {/* Never write `reviewAutoViewed` directly — setReviewAutoViewed also
+            consumes the first-time notice, since an explicit toggle is proof
+            the reviewer already found the switch. */}
         <ToggleSwitch
           checked={reviewAutoViewed}
-          onChange={setReviewAutoViewed}
+          onChange={(v) => setReviewAutoViewed(v)}
           label="Auto-mark viewed"
           description="Mark a file viewed when you scroll past it or move on to another file. Files you un-view stay un-viewed, and files that change on refresh become un-viewed."
         />
       </div>
 
-      {providers.length > 1 && provider && (
-        <div className="space-y-2">
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Defaults for
-          </div>
-          <SegmentedControl
-            options={providers.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
-            value={provider.id}
-            onChange={setSelectedProviderId}
-          />
-        </div>
-      )}
+      <div className="border-t border-border" />
 
-      {provider?.capabilities.statusSections && (
+      <section className="space-y-4" aria-labelledby="settings-review-git">
+        <div id="settings-review-git" className={REVIEW_SECTION_HEADING}>Git</div>
         <div className="space-y-2">
           <div>
             <div className="text-sm font-medium">Default review view</div>
             <div className="text-xs text-muted-foreground">Which panel a code review opens in</div>
-            {sinceBaseUnavailable && provider.id === activeVcsId && (
+            {/* This is a GLOBAL preference — never hide the options because the
+                CURRENT repo can't serve them; just say so. Without this note,
+                picking Git status on a repo whose base ref doesn't resolve
+                silently falls back to Tree and the setting looks broken. */}
+            {sinceBaseUnavailable && (
               <div className="text-xs text-warning mt-1">
                 Git status view isn't available in this repository (its base branch
                 couldn't be resolved) — reviews here open in Tree. The preference
@@ -582,6 +621,8 @@ const ReviewSettingsTab: React.FC<{
               </div>
             )}
           </div>
+          {/* No Commits option here: the Commits view is session-only (entered
+              via the panel toggle) and is never the opening view. */}
           <SegmentedControl
             options={[
               { value: 'sections' as const, label: 'Git status' },
@@ -591,44 +632,39 @@ const ReviewSettingsTab: React.FC<{
             onChange={setReviewPanelView}
           />
         </div>
-      )}
-
-      {provider && (
         <div className="space-y-2">
           <div>
             <div className="text-sm font-medium">Default diff view</div>
             <div className="text-xs text-muted-foreground">Which changes to show when you open a code review</div>
           </div>
-          <div className="space-y-2">
-            {provider.diffOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => provider.id === 'git'
-                  ? setReviewDefaultDiffType(option.id as Parameters<typeof setReviewDefaultDiffType>[0])
-                  : setProviderReviewDefaultDiffType(provider.id, option.id)}
-                className={`w-full flex items-start gap-3 p-3 rounded-lg border transition-colors text-left ${
-                  defaultDiffType === option.id
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border hover:border-muted-foreground/30 hover:bg-muted/50'
-                }`}
-              >
-                <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
-                  defaultDiffType === option.id ? 'border-primary' : 'border-muted-foreground/40'
-                }`}>
-                  {defaultDiffType === option.id && (
-                    <div className="w-2 h-2 rounded-full bg-primary" />
-                  )}
-                </div>
-                <div>
-                  <div className="text-sm font-medium">{option.label}</div>
-                  <div className="text-xs text-muted-foreground">{option.description}</div>
-                </div>
-              </button>
-            ))}
-          </div>
+          {/* Coupling (sections ⟺ since-base) lives in the shared setter —
+              never write the pair by hand (see config/reviewView). */}
+          <DefaultDiffChoices
+            options={DEFAULT_DIFF_TYPE_OPTIONS}
+            value={defaultDiffType}
+            onChange={(value) => setReviewDefaultDiffType(value)}
+          />
         </div>
-      )}
+      </section>
+
+      <div className="border-t border-border" />
+
+      <section className="space-y-4" aria-labelledby="settings-review-jj">
+        <div id="settings-review-jj" className={REVIEW_SECTION_HEADING}>Jujutsu</div>
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Default diff view</div>
+            <div className="text-xs text-muted-foreground">Which changes to show when you open a code review</div>
+          </div>
+          {/* Its own saved value: Git modes mean nothing in a jj repo, and jj has
+              no Git status view, so nothing here is coupled to the Git half. */}
+          <DefaultDiffChoices
+            options={JJ_DEFAULT_DIFF_TYPE_OPTIONS}
+            value={jjDefaultDiffType}
+            onChange={(value) => setProviderReviewDefaultDiffType('jj', value)}
+          />
+        </div>
+      </section>
     </div>
   );
 };
@@ -1196,7 +1232,7 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, reviewSettings = [], activeVcsId, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
   const webmcpTools = useWebMcpToolsEnabled();
   const autoUpdate = useConfigValue('autoUpdate');
   const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
@@ -1942,11 +1978,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                 {/* === REVIEW TAB === */}
                 {activeTab === 'review' && mode === 'review' && (
-                  <ReviewSettingsTab
-                    providers={reviewSettings}
-                    activeVcsId={activeVcsId}
-                    sinceBaseUnavailable={sinceBaseUnavailable}
-                  />
+                  <ReviewTab sinceBaseUnavailable={sinceBaseUnavailable} />
                 )}
 
                 {/* === DISPLAY TAB === */}

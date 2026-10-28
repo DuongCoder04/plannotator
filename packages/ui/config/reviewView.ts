@@ -74,7 +74,6 @@ export function setReviewDefaultDiffType(
   store: PanelViewConfigStore = configStore,
 ): void {
   store.set('defaultDiffType', value);
-  setProviderReviewDefaultDiffType('git', value, store);
   if (value !== 'since-base' && store.get('reviewPanelView') !== 'tree') {
     store.set('reviewPanelView', 'tree');
     // The snap is an explicit-choice consequence (the user picked a classic
@@ -83,19 +82,20 @@ export function setReviewDefaultDiffType(
   }
 }
 
+/**
+ * The saved default diff for a VCS other than Git (today: Jujutsu), read from
+ * `reviewDefaults[id]`. Git keeps its original `defaultDiffType` setting and
+ * its coupled setter above; a value this VCS does not offer reads as its own
+ * default, never as a Git mode.
+ */
 export function getProviderReviewDefaultDiffType(
   descriptor: VcsReviewSettingsDescriptor,
   store: PanelViewConfigStore = configStore,
 ): string {
   const configured = store.get('reviewDefaults')[descriptor.id]?.defaultDiffType;
-  if (configured && descriptor.diffOptions.some((option) => option.id === configured)) {
-    return configured;
-  }
-  if (descriptor.legacyDefaultSetting) {
-    const legacy = store.get(descriptor.legacyDefaultSetting as 'defaultDiffType');
-    if (descriptor.diffOptions.some((option) => option.id === legacy)) return legacy;
-  }
-  return descriptor.defaultDiffType;
+  return configured && descriptor.diffOptions.some((option) => option.id === configured)
+    ? configured
+    : descriptor.defaultDiffType;
 }
 
 export function setProviderReviewDefaultDiffType(

@@ -80,43 +80,51 @@ describe('reviewPanelViewLastUsed setting', () => {
     expect(store.get('reviewPanelViewLastUsed')).toBe('tree');
   });
 
-  test('keeps provider defaults independent and falls back to provider metadata', () => {
+  const jj = {
+    id: 'jj',
+    label: 'Jujutsu',
+    defaultDiffType: 'jj-current',
+    diffOptions: [
+      { id: 'jj-current', label: 'Current', description: 'Current change' },
+      { id: 'jj-line', label: 'Line', description: 'Line of work' },
+    ],
+  };
+
+  test('the Jujutsu default is its own value: Git writes never touch it, and it never touches Git', () => {
     installMemoryBackend();
     const store = makeStore();
-    const jj = {
-      id: 'jj',
-      label: 'Jujutsu',
-      defaultDiffType: 'jj-current',
-      diffOptions: [
-        { id: 'jj-current', label: 'Current', description: 'Current change' },
-        { id: 'jj-line', label: 'Line', description: 'Line of work' },
-      ],
-      capabilities: { statusSections: false, staging: false, compareTarget: true },
-    };
 
     expect(getProviderReviewDefaultDiffType(jj, store)).toBe('jj-current');
     setProviderReviewDefaultDiffType('jj', 'jj-line', store);
     expect(getProviderReviewDefaultDiffType(jj, store)).toBe('jj-line');
     expect(store.get('defaultDiffType')).toBe('since-base');
+
+    setReviewDefaultDiffType('merge-base', store);
+    setReviewPanelView('sections', undefined, store);
+    expect(getProviderReviewDefaultDiffType(jj, store)).toBe('jj-line');
+    // Git stays on its original key only; no copy that could go stale.
+    expect(store.get('reviewDefaults').git).toBeUndefined();
   });
 
-  test('reads a provider-declared legacy setting without knowing the provider id', () => {
+  test('a Git-shaped or unknown saved jj value reads as jj-current', () => {
     installMemoryBackend();
     const store = makeStore();
-    store.set('defaultDiffType', 'merge-base');
-    const descriptor = {
-      id: 'provider-with-legacy-setting',
-      label: 'Provider',
-      defaultDiffType: 'provider-default',
-      diffOptions: [
-        { id: 'provider-default', label: 'Default', description: 'Default mode' },
-        { id: 'merge-base', label: 'Legacy', description: 'Legacy mode' },
-      ],
-      capabilities: { statusSections: false, staging: false, compareTarget: true },
-      legacyDefaultSetting: 'defaultDiffType',
-    };
+    for (const bad of ['since-base', 'merge-base', 'jj-nope']) {
+      setProviderReviewDefaultDiffType('jj', bad, store);
+      expect(getProviderReviewDefaultDiffType(jj, store)).toBe('jj-current');
+    }
+  });
 
-    expect(getProviderReviewDefaultDiffType(descriptor, store)).toBe('merge-base');
+  test('settings saved before Jujutsu defaults keep working without a rewrite', () => {
+    const values = installMemoryBackend();
+    values.set('plannotator-default-diff-type', 'branch');
+    const store = makeStore();
+    // The old cookie, including its retired alias, is still the Git default.
+    expect(store.get('defaultDiffType')).toBe('merge-base');
+    // And the old config.json key still wins on load.
+    store.init({ diffOptions: { defaultDiffType: 'unstaged' } });
+    expect(store.get('defaultDiffType')).toBe('unstaged');
+    expect(getProviderReviewDefaultDiffType(jj, store)).toBe('jj-current');
   });
 
   test('local-vs-remote persists as a Tree-compatible default', () => {
