@@ -77,6 +77,7 @@ import {
   type InboxMessage,
   type InboxProject,
   type InboxProjectRepo,
+  type InboxTag,
 } from "@plannotator/core/inbox-types";
 import { checkServerSession, createServerSessionNonce, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
 import {
@@ -116,6 +117,7 @@ import {
   INBOX_BRIDGE_EVENT_PATH,
   INBOX_BRIDGE_POLL_MAX_MS,
   INBOX_BRIDGE_POLL_PATH,
+  inboxHandedAwayLine,
   inboxReaskItemsOf,
   INBOX_MAX_REQUEST_BYTES,
   INBOX_SEND_NOW_POLL_FIELD,
@@ -505,6 +507,10 @@ const ERROR_STATUS: Record<string, number> = {
   tag_needs_update: 409,
   // Tags: the session is known, but as another agent than the tag says.
   tag_host_mismatch: 409,
+  // Add or Hand off (approval "inbox-tag-handoff"): a session that is not woken, the thread's own owner, a hand-off already sent.
+  mode_needs_live: 409,
+  already_owner: 409,
+  handoff_settled: 409,
   // Compose: a new thread the person starts (packages/server/inbox-compose.ts).
   already_delivered: 409,
   not_addressed: 422,
@@ -714,6 +720,22 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const timer = setTimeout(() => {
       setAsideTimers.delete(timer);
       settleAcks();
+    }, setAsideDelayMs + 50);
+    (timer as { unref?: () => void }).unref?.();
+    setAsideTimers.add(timer);
+  };
+  // A hand-off (approval "inbox-tag-handoff", A2): held for the same Undo window, then handed to the new owner and the former one.
+  const settleHandoffs = () => {
+    try {
+      store.settleHandoffs(setAsideDelayMs);
+    } catch (error) {
+      process.stderr.write(`Inbox: a hand-off was not settled: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  const scheduleHandoffSettle = () => {
+    const timer = setTimeout(() => {
+      setAsideTimers.delete(timer);
+      settleHandoffs();
     }, setAsideDelayMs + 50);
     (timer as { unref?: () => void }).unref?.();
     setAsideTimers.add(timer);
@@ -1889,6 +1911,61 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const hostAgentName = (host: string | null | undefined, fallback = "another agent"): string =>
     host && Object.hasOwn(INBOX_HOST_NAMES, host) ? INBOX_HOST_NAMES[host]! : fallback;
   /**
+   * The reply route's `tags`, with each one's mode from the reply box's line
+   * (approval "inbox-tag-handoff", A2): none is an Ask (today's tag), `add`
+   * joins the session to the thread, `handoff` hands it the thread (at most
+   * one). Each is resolved by `tagTargets` first (its refusals unchanged);
+   * Add and Hand off reach a live, woken session only. A hand-off to the
+   * session that owns the thread already is refused (`already_owner`).
+   */
+  const tagModes = (
+    messageId: string,
+    value: unknown,
+  ): { tags: InboxTag[]; handoff?: NonNullable<Parameters<typeof store.sendReply>[1]["handoff"]> } => {
+    const resolved = live.tagTargets(value);
+    const list = value as Record<string, unknown>[];
+    const modeOf = (session: string) => {
+      const mode = list.find((item) => item && item.session === session)?.mode;
+      if (mode === undefined || mode === null || mode === "ask") return "ask";
+      if (mode === "add" || mode === "handoff") return mode;
+      throw new InboxError("validation_error", "tags: mode is ask, add or handoff.", { field: "tags" });
+    };
+    const handoffs = resolved.filter((tag) => modeOf(tag.session) === "handoff");
+    if (handoffs.length > 1) throw new InboxError("validation_error", "tags: a reply hands the thread to one session at most.", { field: "tags" });
+    for (const tag of resolved) {
+      if (modeOf(tag.session) !== "ask" && (!tag.wakes || !tag.host)) {
+        throw new InboxError(
+          "mode_needs_live",
+          "Add and Hand off reach a live session only: a session you picked reads the Inbox through MCP. Nothing was sent. Send it as an Ask instead.",
+          { sessions: [tag.session] },
+        );
+      }
+    }
+    const tags = resolved.filter((tag) => modeOf(tag.session) !== "handoff").map((tag) => (modeOf(tag.session) === "add" ? { ...tag, joined: true } : tag));
+    const target = handoffs[0];
+    if (!target) return { tags };
+    const message = store.message(messageId);
+    if (!message) throw new InboxError("message_not_found", `No message ${messageId}.`);
+    const owner = store.threadOwner(message.thread_id);
+    if (owner?.session === target.session) throw new InboxError("already_owner", "That session owns this thread already: nothing was sent.");
+    return {
+      tags,
+      handoff: {
+        to: { host: target.host!, session: target.session },
+        label: target.label ?? null,
+        // The former owner reads by its agent and this thread's project in the person's lines ("Claude Code (plannotator)").
+        from: owner
+          ? {
+              host: owner.host,
+              session: owner.session,
+              wakes: live.wakesTagged(owner.session),
+              label: `${hostAgentName(owner.host, "An agent")} (${store.project(message.project_id)?.name ?? "this project"})`,
+            }
+          : null,
+      },
+    };
+  };
+  /**
    * `sendNow`: the polling connection said it can deliver into a running turn;
    * only then does a Send now reply carry `now`. `session`: the polling
    * session, when the reply may tag it (approval "inbox-tag-agents"): a
@@ -1897,6 +1974,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    */
   const replyCommand = (reply: InboxMessage, sendNow = false, session: string | null = null): InboxReplyCommand => {
     const tag = session && !store.isOwner(reply, session) ? (reply.tags?.find((t) => t.session === session) ?? null) : null;
+    // The former owner of a handed-off thread: the notice alone (its body, so an older connection still says it).
+    if (tag?.handed_away) {
+      const to = hostAgentName(reply.to?.host);
+      return {
+        type: "reply",
+        id: reply.id,
+        thread_id: reply.thread_id,
+        reply_to: reply.reply_to,
+        subject: store.threadSubject(reply.thread_id),
+        body: inboxHandedAwayLine(to),
+        url: threadPageUrl(baseUrl, reply.thread_id),
+        handed_away: { to },
+      };
+    }
     if (tag) {
       return {
         type: reply.to && !reply.reply_to ? "message" : "reply",
@@ -1907,11 +1998,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         body: inboxBodyForAgent(reply),
         url: threadPageUrl(baseUrl, reply.thread_id),
         tagged: { owner: hostAgentName(store.recipientOf(reply)?.host) },
+        // Added to the thread ("Add instead"): it works alongside the owner.
+        ...(tag.joined ? { added: true } : {}),
         ...(tag.deliver_now_at && sendNow ? { now: true } : {}),
       };
     }
-    const alsoTagged = (reply.tags ?? []).map((t) => hostAgentName(t.host));
-    return { ...ownerCommand(reply, sendNow), ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
+    const alsoTagged = (reply.tags ?? []).filter((t) => !t.handed_away).map((t) => hostAgentName(t.host));
+    // Handed this thread ("Hand off instead"): the wake says it is this session's now.
+    const handedFrom = reply.handoff && !reply.handoff.undone_at && reply.to ? { handoff: { from: hostAgentName(reply.handoff.from?.host) } } : {};
+    return { ...ownerCommand(reply, sendNow), ...handedFrom, ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
   };
   const ownerCommand = (reply: InboxMessage, sendNow: boolean): InboxReplyCommand => {
     // A reply the person sent to another session because the one that asked
@@ -2999,6 +3094,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       const guide = await inboxGuideRoute(req, path, store, serverSession);
       if (guide) return guide;
 
+      // Undo a hand-off inside its window (approval "inbox-tag-handoff"): the reply goes as an Ask instead.
+      const handoffUndo = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/handoff\/undo$/.exec(path);
+      if (handoffUndo) {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        return json({ message: store.undoHandoff(handoffUndo[1]!) });
+      }
+
       const messageMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/(picks|reply|reask|resolve)$/.exec(path);
       if (messageMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
@@ -3025,8 +3129,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             // with a connection that understands tags, or an MCP agent the Inbox knows; any other
             // is refused before anything is written. A replay answers what it wrote, as it was.
             const tagKey = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
-            const tags =
-              body.tags === undefined || body.tags === null || (tagKey && store.replyByKey(messageId, tagKey)) ? undefined : live.tagTargets(body.tags);
+            const tagged =
+              body.tags === undefined || body.tags === null || (tagKey && store.replyByKey(messageId, tagKey)) ? undefined : tagModes(messageId, body.tags);
+            const tags = tagged?.tags;
+            const handoff = tagged?.handoff;
             // Files the person pasted into the reply box: their uploads become
             // attachments on the reply, exactly as compose's become a thread's.
             // A replay answers the reply it wrote before anything is copied
@@ -3043,6 +3149,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 ...(attachments.length > 0 ? { attachments } : {}),
                 ...(to === undefined ? {} : { to }),
                 ...(tags && tags.length > 0 ? { tags } : {}),
+                ...(handoff ? { handoff } : {}),
                 words: typeof body.words === "string" ? body.words : undefined,
                 questions: (body.questions as never) ?? [],
                 idempotency_key: body.idempotency_key as string,
@@ -3068,6 +3175,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               const threadId = store.message(messageId)?.thread_id;
               if (threadId && store.clearSentReplyDraft(threadId, body.clear_draft)) for (const listener of draftListeners) listener(threadId);
             }
+            // A hand-off waits out its Undo window, then goes to both sessions.
+            if (!result.replayed && result.reply.handoff) scheduleHandoffSettle();
             if (result.replayed) removeInboxAttachmentFiles(store.dir, attachments);
             // Sent: the uploads are the reply's attachments now.
             else if (attachments.length > 0) removeInboxUploads(store.dir, uploads.filter((id): id is string => typeof id === "string"));
@@ -3288,6 +3397,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // An action item's Done a stop interrupted inside its Undo window.
     settleActions();
     if (store.actionsPending() > 0) scheduleActionSettle();
+    // A hand-off a stop interrupted inside its Undo window.
+    settleHandoffs();
+    if (store.handoffsPending() > 0) scheduleHandoffSettle();
   }, 0);
 
   let stopped = false;

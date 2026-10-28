@@ -129,7 +129,7 @@ interface AppHeaderProps {
   /** The browser exposes WebMCP, so Settings shows the "Agent tools" opt-out.
    *  Nothing in the header renders for this alone. */
   webmcpAvailable?: boolean;
-  /** The open document is markdown or text, so Settings offers Text size (raw HTML and diagram files draw themselves). */
+  /** The open document is markdown or text, so Settings offers Text size and Document font (raw HTML and diagram files draw themselves). */
   documentTextSizeAvailable?: boolean;
   /** A browser agent has completed at least one tool call in this session.
    *  Only then does the unobtrusive "Agent" indicator appear. */
@@ -161,6 +161,7 @@ interface AppHeaderProps {
   onSaveToObsidian: () => void;
   onSaveToBear: () => void;
   onSaveToOctarine: () => void;
+  onSaveToNotion?: () => void;
 
   // PlanHeaderMenu config
   appVersion: string;
@@ -170,6 +171,7 @@ interface AppHeaderProps {
   obsidianConfigured: boolean;
   bearConfigured: boolean;
   octarineConfigured: boolean;
+  notionConfigured?: boolean;
 }
 
 export const AppHeader = React.memo<AppHeaderProps>(({
@@ -251,6 +253,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onSaveToObsidian,
   onSaveToBear,
   onSaveToOctarine,
+  onSaveToNotion,
   appVersion,
   updateInfo,
   isWSL,
@@ -258,6 +261,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   obsidianConfigured,
   bearConfigured,
   octarineConfigured,
+  notionConfigured = false,
 }) => {
   return (
     <header
@@ -500,6 +504,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             agentTerminalAvailable={agentTerminalAvailable}
             webmcpAvailable={webmcpAvailable}
             showDocumentTextSize={documentTextSizeAvailable}
+            showDocumentFont={documentTextSizeAvailable}
           />
         </div>
 
@@ -518,12 +523,14 @@ export const AppHeader = React.memo<AppHeaderProps>(({
           onSaveToObsidian={onSaveToObsidian}
           onSaveToBear={onSaveToBear}
           onSaveToOctarine={onSaveToOctarine}
+          onSaveToNotion={onSaveToNotion}
           sharingEnabled={canShareCurrentSession}
           isApiMode={isApiMode}
           agentInstructionsEnabled={agentInstructionsEnabled}
           obsidianConfigured={!archiveMode && !goalSetupMode && obsidianConfigured}
           bearConfigured={!archiveMode && !goalSetupMode && bearConfigured}
           octarineConfigured={!archiveMode && !goalSetupMode && octarineConfigured}
+          notionConfigured={!archiveMode && !goalSetupMode && notionConfigured}
           compactTouchLayout={compactTouchLayout}
           compactSessionActions={compactSessionActions}
           compactDocumentActions={compactDocumentActions}

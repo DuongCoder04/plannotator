@@ -11,6 +11,7 @@ import { setWebMcpToolsEnabled, useWebMcpToolsEnabled } from '../webmcp/preferen
 import { DIAGRAM_SHADOW_OPTIONS } from '../utils/diagramShadow';
 import { markLookAndFeelChoiceResolved } from '../utils/lookAndFeelAnnouncement';
 import { DEFAULT_DOCUMENT_TEXT_SIZE, DOCUMENT_TEXT_SIZE_OPTIONS } from '../utils/documentTextSize';
+import { DOCUMENT_FONT_OPTIONS, documentFontStack } from '../utils/documentFont';
 import {
   agentToolAppliesWhen,
   agentToolCostNote,
@@ -42,6 +43,13 @@ import {
   saveOctarineSettings,
   type OctarineSettings,
 } from '../utils/octarine';
+import {
+  getNotionSettings,
+  saveNotionSettings,
+  getNotionParentPageId,
+  isNotionAvailable,
+  type NotionSettings,
+} from '../utils/notion';
 import {
   getAgentSwitchSettings,
   getAgentSwitchDefaults,
@@ -91,7 +99,7 @@ import {
 import { requestVimDocumentFocus } from '../hooks/useVimDocumentFocus';
 import { AnalysisLayerToggle } from './AnalysisLayerToggle';
 
-type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'comments' | 'hooks' | 'experimental';
+type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks' | 'experimental';
 
 interface SettingsProps {
   taterMode: boolean;
@@ -119,6 +127,12 @@ interface SettingsProps {
    * in plan review and annotate on a markdown or text document.
    */
   showDocumentTextSize?: boolean;
+  /**
+   * Show Display's Document font row (#1657). Default false, like
+   * `showDocumentTextSize`: the row does something only where the page
+   * applies the `documentFontFamily` setting (`hooks/useDocumentFont`).
+   */
+  showDocumentFont?: boolean;
   onUIPreferencesChange?: (prefs: UIPreferences) => void;
   /** Claude Code's permission mode was changed here (plan review). The host
    *  keeps its own copy in step, since its Approve sends the mode and its
@@ -607,15 +621,161 @@ const GitTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavail
 /** Sentinel for the "Custom…" select option — never persisted as a font name. */
 const CUSTOM_FONT_SENTINEL = '__custom__';
 
-function isBuiltInFont(value: string): boolean {
-  return DIFF_FONT_OPTIONS.some((opt) => opt.value === value);
-}
-
-/** Inline style rendering UI chrome in the chosen font (quoted and escaped: free text). */
-function fontPreviewStyle(family: string): React.CSSProperties | undefined {
-  const stack = monoFontStack(family);
+/** Inline style rendering a control in the chosen font (quoted and escaped: free text). */
+function stackStyle(stack: string): React.CSSProperties | undefined {
   return stack ? { fontFamily: stack } : undefined;
 }
+
+/**
+ * A font row (#851, shared by Code Font and Document font): a select of the
+ * built-in choices plus "Custom…", which opens a field for the family name of
+ * any font installed on this machine. The typed name is saved after a short
+ * pause (configStore.set writes the cookie and may POST /api/config), flushed
+ * on unmount, and dropped when a built-in is picked mid-pause.
+ */
+const FontFamilyField: React.FC<{
+  label: string;
+  description: string;
+  value: string;
+  onSave: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+  /** The `font-family` the controls preview a value in. */
+  previewStack: (value: string) => string;
+  previewText: string;
+  customAriaLabel: string;
+  customPlaceholder: string;
+  notFoundText: string;
+  /** Load a built-in's web font for the preview, if it has one. */
+  loadFont?: (value: string) => void;
+  previewClassName?: string;
+}> = ({ label, description, value, onSave, options, previewStack, previewText, customAriaLabel, customPlaceholder, notFoundText, loadFont, previewClassName = '' }) => {
+  const isBuiltIn = (v: string) => options.some((opt) => opt.value === v);
+  // Custom font: progressive disclosure. customFontMode keeps the input open
+  // while the user picks "Custom…" or has a non-built-in font saved.
+  const [customFontMode, setCustomFontMode] = useState(() => !!value && !isBuiltIn(value));
+  const [customFontDraft, setCustomFontDraft] = useState(() => (value && !isBuiltIn(value) ? value : ''));
+  const customFontSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Pending debounced value. Non-null means "typed but not yet saved" — it is
+  // flushed (not discarded) on unmount, and cancelled when a built-in is
+  // picked so a stale timer can't overwrite the new selection.
+  const pendingFontSave = useRef<string | null>(null);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const customActive = customFontMode || (!!value && !isBuiltIn(value));
+  // Width-measurement check — deterministic per machine, no permissions.
+  const customFontInstalled = useMemo(
+    () => (normalizeFontFamilyName(customFontDraft) ? isFontInstalled(customFontDraft) : null),
+    [customFontDraft],
+  );
+
+  // Load font for the preview swatch
+  useEffect(() => {
+    if (value) loadFont?.(value);
+  }, [value, loadFont]);
+
+  // Adopt external changes (late server hydration, edits from elsewhere) into
+  // the draft — but never clobber typing that hasn't been saved yet.
+  useEffect(() => {
+    if (pendingFontSave.current !== null) return;
+    if (value && !isBuiltIn(value) && value !== normalizeFontFamilyName(customFontDraft)) {
+      setCustomFontDraft(value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const cancelPendingFontSave = () => {
+    clearTimeout(customFontSaveTimer.current);
+    pendingFontSave.current = null;
+  };
+
+  // Flush a pending save on unmount so closing the panel mid-debounce
+  // doesn't lose the typed font.
+  useEffect(() => () => {
+    clearTimeout(customFontSaveTimer.current);
+    if (pendingFontSave.current !== null) {
+      onSaveRef.current(pendingFontSave.current);
+    }
+  }, []);
+
+  const handleCustomFontInput = (next: string) => {
+    setCustomFontDraft(next);
+    // Debounce the save — per-keystroke writes would spam the cookie and
+    // /api/config.
+    clearTimeout(customFontSaveTimer.current);
+    pendingFontSave.current = normalizeFontFamilyName(next);
+    customFontSaveTimer.current = setTimeout(() => {
+      if (pendingFontSave.current !== null) {
+        onSaveRef.current(pendingFontSave.current);
+        pendingFontSave.current = null;
+      }
+    }, 400);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-xs text-muted-foreground">{description}</div>
+      </div>
+      <select
+        value={customActive ? CUSTOM_FONT_SENTINEL : value}
+        aria-label={label}
+        onChange={(e) => {
+          if (e.target.value === CUSTOM_FONT_SENTINEL) {
+            setCustomFontMode(true);
+          } else {
+            // Cancel any in-flight debounced custom save so a stale timer
+            // can't overwrite this selection.
+            cancelPendingFontSave();
+            setCustomFontMode(false);
+            setCustomFontDraft('');
+            onSave(e.target.value);
+          }
+        }}
+        className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground"
+        style={value && !customActive ? stackStyle(previewStack(value)) : undefined}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+        <option value={CUSTOM_FONT_SENTINEL}>Custom…</option>
+      </select>
+      {customActive && (
+        <div className="space-y-1">
+          <input
+            type="text"
+            value={customFontDraft}
+            onChange={(e) => handleCustomFontInput(e.target.value)}
+            placeholder={customPlaceholder}
+            aria-label={customAriaLabel}
+            maxLength={MAX_FONT_FAMILY_LENGTH}
+            autoFocus={!customFontDraft}
+            spellCheck={false}
+            className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+            style={stackStyle(previewStack(customFontDraft))}
+          />
+          <div className="text-[11px]" aria-live="polite">
+            {!normalizeFontFamilyName(customFontDraft) ? (
+              <span className="text-muted-foreground">Any font installed on this machine works — type its family name.</span>
+            ) : customFontInstalled === true ? (
+              <span className="text-success">✓ Found on this machine</span>
+            ) : customFontInstalled === false ? (
+              <span className="text-warning">{notFoundText}</span>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {value && (
+        <div
+          className={`text-xs text-muted-foreground px-1 py-1 rounded bg-muted/30 ${previewClassName}`}
+          style={stackStyle(previewStack(value))}
+        >
+          {previewText}
+        </div>
+      )}
+    </div>
+  );
+};
 
 /**
  * Experimental (the owner, 2026-10-27: "its own page on settings", the last
@@ -655,69 +815,6 @@ const ReviewDisplayTab: React.FC<{ isCompactTouchLayout?: boolean }> = ({ isComp
   const tokenHoverTrigger = useConfigValue('tokenHoverTrigger');
   const tokenHoverDelay = useConfigValue('tokenHoverDelay');
 
-  // Custom font: progressive disclosure. customFontMode keeps the input open
-  // while the user picks "Custom…" or has a non-built-in font saved.
-  const [customFontMode, setCustomFontMode] = useState(
-    () => !!diffFontFamily && !isBuiltInFont(diffFontFamily),
-  );
-  const [customFontDraft, setCustomFontDraft] = useState(
-    () => (diffFontFamily && !isBuiltInFont(diffFontFamily) ? diffFontFamily : ''),
-  );
-  const customFontSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Pending debounced value. Non-null means "typed but not yet saved" — it is
-  // flushed (not discarded) on unmount, and cancelled when a built-in is
-  // picked so a stale timer can't overwrite the new selection.
-  const pendingFontSave = useRef<string | null>(null);
-  const customActive = customFontMode || (!!diffFontFamily && !isBuiltInFont(diffFontFamily));
-  // Width-measurement check — deterministic per machine, no permissions.
-  const customFontInstalled = useMemo(
-    () => (normalizeFontFamilyName(customFontDraft) ? isFontInstalled(customFontDraft) : null),
-    [customFontDraft],
-  );
-
-  // Load font for the preview swatch
-  useEffect(() => {
-    if (diffFontFamily) loadDiffFont(diffFontFamily);
-  }, [diffFontFamily]);
-
-  // Adopt external changes (late server hydration, edits from elsewhere) into
-  // the draft — but never clobber typing that hasn't been saved yet.
-  useEffect(() => {
-    if (pendingFontSave.current !== null) return;
-    if (diffFontFamily && !isBuiltInFont(diffFontFamily) && diffFontFamily !== normalizeFontFamilyName(customFontDraft)) {
-      setCustomFontDraft(diffFontFamily);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diffFontFamily]);
-
-  const cancelPendingFontSave = () => {
-    clearTimeout(customFontSaveTimer.current);
-    pendingFontSave.current = null;
-  };
-
-  // Flush a pending save on unmount so closing the panel mid-debounce
-  // doesn't lose the typed font.
-  useEffect(() => () => {
-    clearTimeout(customFontSaveTimer.current);
-    if (pendingFontSave.current !== null) {
-      configStore.set('diffFontFamily', pendingFontSave.current);
-    }
-  }, []);
-
-  const handleCustomFontInput = (value: string) => {
-    setCustomFontDraft(value);
-    // Debounce the save — configStore.set writes the cookie and POSTs
-    // /api/config; per-keystroke writes would spam both.
-    clearTimeout(customFontSaveTimer.current);
-    pendingFontSave.current = normalizeFontFamilyName(value);
-    customFontSaveTimer.current = setTimeout(() => {
-      if (pendingFontSave.current !== null) {
-        configStore.set('diffFontFamily', pendingFontSave.current);
-        pendingFontSave.current = null;
-      }
-    }, 400);
-  };
-
   return (
     <>
       {/* Hover cards (internally tokenHover*; the label is what changed, not
@@ -756,67 +853,20 @@ const ReviewDisplayTab: React.FC<{ isCompactTouchLayout?: boolean }> = ({ isComp
       <div className="border-t border-border" />
 
       {/* Font Family */}
-      <div className="space-y-2">
-        <div>
-          <div className="text-sm font-medium">Code Font</div>
-          <div className="text-xs text-muted-foreground">Font family for diff code lines</div>
-        </div>
-        <select
-          value={customActive ? CUSTOM_FONT_SENTINEL : diffFontFamily}
-          onChange={(e) => {
-            if (e.target.value === CUSTOM_FONT_SENTINEL) {
-              setCustomFontMode(true);
-            } else {
-              // Cancel any in-flight debounced custom save so a stale timer
-              // can't overwrite this selection.
-              cancelPendingFontSave();
-              setCustomFontMode(false);
-              setCustomFontDraft('');
-              configStore.set('diffFontFamily', e.target.value);
-            }
-          }}
-          className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground"
-          style={diffFontFamily && !customActive ? fontPreviewStyle(diffFontFamily) : undefined}
-        >
-          {DIFF_FONT_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-          <option value={CUSTOM_FONT_SENTINEL}>Custom…</option>
-        </select>
-        {customActive && (
-          <div className="space-y-1">
-            <input
-              type="text"
-              value={customFontDraft}
-              onChange={(e) => handleCustomFontInput(e.target.value)}
-              placeholder="Font name as installed, e.g. Iosevka"
-              aria-label="Custom code font name"
-              maxLength={MAX_FONT_FAMILY_LENGTH}
-              autoFocus={!customFontDraft}
-              spellCheck={false}
-              className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
-              style={fontPreviewStyle(customFontDraft)}
-            />
-            <div className="text-[11px]" aria-live="polite">
-              {!normalizeFontFamilyName(customFontDraft) ? (
-                <span className="text-muted-foreground">Any font installed on this machine works — type its family name.</span>
-              ) : customFontInstalled === true ? (
-                <span className="text-success">✓ Found on this machine</span>
-              ) : customFontInstalled === false ? (
-                <span className="text-warning">Not found — diffs will fall back to monospace</span>
-              ) : null}
-            </div>
-          </div>
-        )}
-        {diffFontFamily && (
-          <div
-            className="text-xs text-muted-foreground px-1 py-1 rounded bg-muted/30 font-mono"
-            style={fontPreviewStyle(diffFontFamily)}
-          >
-            Preview: const x = fn(42);
-          </div>
-        )}
-      </div>
+      <FontFamilyField
+        label="Code Font"
+        description="Font family for diff code lines"
+        value={diffFontFamily}
+        onSave={(v) => configStore.set('diffFontFamily', v)}
+        options={DIFF_FONT_OPTIONS}
+        previewStack={monoFontStack}
+        previewText="Preview: const x = fn(42);"
+        customAriaLabel="Custom code font name"
+        customPlaceholder="Font name as installed, e.g. Iosevka"
+        notFoundText="Not found — diffs will fall back to monospace"
+        loadFont={loadDiffFont}
+        previewClassName="font-mono"
+      />
 
       <div className="border-t border-border" />
 
@@ -1167,7 +1217,7 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false, showDocumentFont = false }) => {
   const webmcpTools = useWebMcpToolsEnabled();
   const autoUpdate = useConfigValue('autoUpdate');
   const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
@@ -1201,6 +1251,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const gridEnabled = useConfigValue('gridEnabled');
   const diagramShadow = useConfigValue('diagramShadow');
   const documentTextSize = useConfigValue('documentTextSize');
+  const documentFontFamily = useConfigValue('documentFontFamily');
   const vimModeEnabled = useConfigValue('vimModeEnabled');
   const enterSavesComment = useConfigValue('enterSavesComment');
   const vimHudEnabled = useConfigValue('vimHudEnabled');
@@ -1219,6 +1270,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const [vaultsLoading, setVaultsLoading] = useState(false);
   const [bear, setBear] = useState<BearSettings>({ enabled: false, customTags: '', tagPosition: 'append', autoSave: false });
   const [octarine, setOctarine] = useState<OctarineSettings>({ enabled: false, workspace: '', folder: 'plannotator', autoSave: false });
+  const [notion, setNotion] = useState<NotionSettings>({ enabled: false, parentPageId: '', autoSave: false });
   // The agent switch default depends on the surface: plan approval hands off to
   // the build agent, review feedback stays on the current agent.
   const agentSurface: AgentSwitchSurface = mode === 'review' ? 'review' : 'plan';
@@ -1272,7 +1324,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const integrationTabs: { id: SettingsTab; label: string }[] = [
     { id: 'files', label: 'Files' },
     ...(mode === 'plan' || annotateDocumentTabs
-      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }]
+      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }, ...(isNotionAvailable() ? [{ id: 'notion' as SettingsTab, label: 'Notion' }] : [])]
       : []),
   ];
   // Experimental is the last tab, on its own below the integrations (the owner,
@@ -1281,6 +1333,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const obsidianDefaultSaveAvailable = obsidian.enabled && getEffectiveVaultPath(obsidian).trim().length > 0;
   const bearDefaultSaveAvailable = bear.enabled;
   const octarineDefaultSaveAvailable = octarine.enabled && octarine.workspace.trim().length > 0;
+  const notionDefaultSaveAvailable = getNotionParentPageId(notion) !== null;
 
   // Sync external open state
   useEffect(() => {
@@ -1296,6 +1349,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       setObsidian(getObsidianSettings());
       setBear(getBearSettings());
       setOctarine(getOctarineSettings());
+      setNotion(getNotionSettings());
       setAgent(getAgentSwitchSettings(agentSurface));
       setPlanSave(getPlanSaveSettings());
       setUiPrefs(getUIPreferences());
@@ -1321,7 +1375,9 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       defaultNotesApp === 'download' ||
       (defaultNotesApp === 'obsidian' && obsidianDefaultSaveAvailable) ||
       (defaultNotesApp === 'bear' && bearDefaultSaveAvailable) ||
-      (defaultNotesApp === 'octarine' && octarineDefaultSaveAvailable);
+      (defaultNotesApp === 'octarine' && octarineDefaultSaveAvailable) ||
+      // A session without Notion (remote, or no NOTION_TOKEN) keeps the choice for the next one.
+      (defaultNotesApp === 'notion' && (notionDefaultSaveAvailable || !isNotionAvailable()));
 
     if (!defaultSaveAvailable) {
       setDefaultNotesApp('ask');
@@ -1333,6 +1389,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     obsidianDefaultSaveAvailable,
     bearDefaultSaveAvailable,
     octarineDefaultSaveAvailable,
+    notionDefaultSaveAvailable,
   ]);
 
   // Fetch detected vaults when Obsidian is enabled
@@ -1387,6 +1444,12 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     const newSettings = { ...octarine, ...updates };
     setOctarine(newSettings);
     saveOctarineSettings(newSettings);
+  };
+
+  const handleNotionChange = (updates: Partial<NotionSettings>) => {
+    const newSettings = { ...notion, ...updates };
+    setNotion(newSettings);
+    saveNotionSettings(newSettings);
   };
 
   const handleAgentChange = (switchTo: AgentSwitchSettings['switchTo'], customName?: string) => {
@@ -1959,6 +2022,26 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                     <div className="border-t border-border" />
                     </>)}
 
+                    {/* Document font (#1657): the document only; code keeps its font */}
+                    {showDocumentFont && (<>
+                    <div data-document-font-setting>
+                      <FontFamilyField
+                        label="Document font"
+                        description={`${mode === 'annotate' ? 'Text of the document' : 'Text of the plan'}; code keeps its monospace font`}
+                        value={documentFontFamily}
+                        onSave={(v) => configStore.set('documentFontFamily', v)}
+                        options={DOCUMENT_FONT_OPTIONS}
+                        previewStack={documentFontStack}
+                        previewText="Preview: The quick brown fox jumps over the lazy dog."
+                        customAriaLabel="Custom document font name"
+                        customPlaceholder="Font name as installed, e.g. Iowan Old Style"
+                        notFoundText="Not found — the document keeps the theme font"
+                      />
+                    </div>
+
+                    <div className="border-t border-border" />
+                    </>)}
+
                     {/* Auto-open Sidebar */}
                     <div className="flex items-center justify-between">
                       <div>
@@ -2252,13 +2335,14 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         {obsidianDefaultSaveAvailable && <option value="obsidian">Obsidian</option>}
                         {bearDefaultSaveAvailable && <option value="bear">Bear</option>}
                         {octarineDefaultSaveAvailable && <option value="octarine">Octarine</option>}
+                        {(notionDefaultSaveAvailable || defaultNotesApp === 'notion') && <option value="notion">Notion</option>}
                       </select>
                       <div className="text-[10px] text-muted-foreground/70">
                         {defaultNotesApp === 'ask'
                           ? 'Opens Export dialog with Notes tab'
                           : defaultNotesApp === 'download'
                             ? `${modKey}+S downloads the annotations file`
-                            : `${modKey}+S saves directly to ${{ obsidian: 'Obsidian', bear: 'Bear', octarine: 'Octarine' }[defaultNotesApp] ?? defaultNotesApp}`}
+                            : `${modKey}+S saves directly to ${{ obsidian: 'Obsidian', bear: 'Bear', octarine: 'Octarine', notion: 'Notion' }[defaultNotesApp] ?? defaultNotesApp}`}
                       </div>
                     </div>
 
@@ -2803,6 +2887,76 @@ tags: [${mode === 'annotate' ? 'plannotator' : 'plan'}, ...]
                           >
                             <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
                               octarine.autoSave ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+                        </>)}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* === NOTION TAB === */}
+                {activeTab === 'notion' && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium">Notion</div>
+                        <div className="text-xs text-muted-foreground">
+                          {mode === 'annotate' ? 'Save documents to Notion from the Options menu. When on, plan review also saves each approved plan here.' : 'Save approved plans as Notion pages'}
+                        </div>
+                      </div>
+                      <button
+                        role="switch"
+                        aria-checked={notion.enabled}
+                        onClick={() => handleNotionChange({ enabled: !notion.enabled })}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          notion.enabled ? 'bg-primary' : 'bg-muted'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                            notion.enabled ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    {notion.enabled && (
+                      <div className="mt-3 space-y-3">
+                        <div className="space-y-1.5 pl-0.5">
+                          <label className="text-xs text-muted-foreground">Parent Page</label>
+                          <input
+                            type="text"
+                            value={notion.parentPageId}
+                            onChange={(e) => handleNotionChange({ parentPageId: e.target.value })}
+                            placeholder="https://www.notion.so/..."
+                            className="w-full px-3 py-2 bg-muted rounded-lg text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          />
+                          <div className="text-[10px] text-muted-foreground">
+                            A page link or ID. Each save adds a page under it. Share it with your Notion integration first.
+                          </div>
+                        </div>
+
+                        {mode === 'plan' && (<>
+                        <div className="border-t border-border/30" />
+
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-xs font-medium">Auto-save on Plan Arrival</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              Automatically save to Notion when a plan loads, before you approve or deny
+                            </div>
+                          </div>
+                          <button
+                            role="switch"
+                            aria-checked={notion.autoSave}
+                            onClick={() => handleNotionChange({ autoSave: !notion.autoSave })}
+                            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                              notion.autoSave ? 'bg-primary' : 'bg-muted'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              notion.autoSave ? 'translate-x-6' : 'translate-x-1'
                             }`} />
                           </button>
                         </div>
