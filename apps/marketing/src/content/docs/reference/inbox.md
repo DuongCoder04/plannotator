@@ -28,10 +28,27 @@ This starts the Inbox and opens it in your browser. If it is already running, th
 | `plannotator inbox --open` | Open it in the browser and print its URL, starting it in the background first if it is not running. It returns at once. Over SSH it opens no browser on the remote machine and says how to reach the Inbox |
 | `plannotator inbox --tailscale` | Also publish it [over your tailnet](#over-your-tailnet) until it stops. Works with the forms above. If the Inbox is already running, it is asked to publish |
 | `plannotator inbox mcp` | The stdio MCP server for agents. It starts a stopped Inbox without opening a browser tab |
+| `plannotator inbox status` | Say whether the Inbox is running, with its address, process ID, version and data folder. Add `--json` for the same as JSON |
+| `plannotator inbox stop` | Stop the running Inbox |
+| `plannotator inbox restart` | Stop the Inbox, then start it again in the background and print its address |
 
 Run `plannotator inbox` once before you connect an agent. That first run writes the Inbox's registry file, and the connections look for that file when a session starts.
 
 You never need to keep the Inbox running yourself. When an agent calls it and it is stopped, it starts in the background, and no tab opens.
+
+### Status, stop and restart
+
+`plannotator inbox status` exits with 0 when the Inbox is running, 1 when it is not running, and 2 when its process holds the port but does not answer. Use it in scripts:
+
+```bash
+plannotator inbox status >/dev/null && echo "The Inbox is up"
+```
+
+`plannotator inbox stop` asks the Inbox to stop first, so it closes cleanly and takes its tailnet address down. If it does not stop, the command sends `SIGTERM`, then `SIGKILL`. Before each signal, the command makes sure the process is the Inbox of this data folder. A process ID can be reused by another program after the Inbox exits, and the command never signals that program. If this data folder is a copy of another one, its registry file names the other folder's Inbox: that Inbox refuses the stop and keeps running. The command exits with 0 when no Inbox runs afterwards. The registry file stays, so your agents still find the Inbox. The next time an agent calls the Inbox, the Inbox starts again in the background.
+
+`plannotator inbox restart` stops the Inbox, then starts it in the background with the `plannotator` you ran. No tab opens: reload the open tab. If the Inbox was published over your tailnet with `--tailscale` for that run, the new run is published again. Agents that wait for your replies connect again by themselves within a few seconds, and a reply that waited during the restart arrives once.
+
+On Windows, `stop` and `restart` can signal the Inbox only while it answers. If the Inbox hangs and does not answer, the command names its process ID: end it in Task Manager.
 
 ### Closed the tab?
 
@@ -54,6 +71,7 @@ Agents use it from their next session. PLANNOTATOR_INBOX_CONNECT=0 skips this st
 | Pi without the extension | Pi 0.99 or later on your `PATH` (older Pi has no `pi mcp`: connect it by hand) | `pi mcp add plannotator-inbox` |
 | Codex | `codex` 0.35 or later on your `PATH` (older Codex has no `codex mcp add`, and a `~/.codex` or `$CODEX_HOME` folder without the CLI: connect it by hand) | `codex mcp add plannotator-inbox` (the Codex app and IDE extension share it) |
 | Gemini CLI | `gemini` 0.1.19 or later on your `PATH` (older has no `gemini mcp add`: connect it by hand; `$GEMINI_CLI_HOME` honored) | `gemini mcp add -s user plannotator-inbox` |
+| Qwen Code | `qwen` on your `PATH`, or a `~/.qwen` or `$QWEN_HOME` folder | one `plannotator-inbox` key in Qwen's `settings.json` |
 | Windsurf / Devin, Amp | `devin` or `amp` on your `PATH` | the agent's own `mcp add plannotator-inbox` |
 | Cursor, Kiro | `~/.cursor` exists or `cursor` / `cursor-agent` is on your `PATH`; `~/.kiro` exists or `kiro-cli` is on your `PATH` | one `plannotator-inbox` key in `~/.cursor/mcp.json` or `~/.kiro/settings/mcp.json` |
 | The Claude app | its settings folder exists | one key in `claude_desktop_config.json` (restart the Claude app) |
@@ -66,6 +84,7 @@ Each entry runs `<your plannotator binary> inbox mcp`. The agent uses it from it
 - An existing `plannotator-inbox` entry that runs something else is never replaced.
 - In a JSON file only that one entry is added; every other byte of the file stays as it was, and removing it gives the file back exactly as it was (an empty file stays empty; a file Plannotator created is deleted). A file Plannotator cannot edit that way (comments, a duplicate key) is left as it was, and the terminal says why.
 - Editors (VS Code, Zed, JetBrains, Goose) are never changed. Settings has a one-click link or a snippet for each.
+- Qwen Code's `settings.json` may hold comments: Plannotator keeps every one, and adds only its own entry. It never uses `qwen mcp add`, which writes your other servers back with their `${VAR}` values filled in (a token kept in your environment would end up in the file). A file that is not valid JSON or is read-only is left as it was, and the terminal says why. A relative `QWEN_HOME` names a different folder in each project, so you connect Qwen Code by hand then. If the Inbox starts with another `QWEN_HOME` than the one Qwen Code was connected in, Plannotator leaves both folders as they are and tells you once. **Settings → Agents** shows Qwen Code off there, with the folder it is connected in; turn it on to move it. If the new folder's settings.json can't take it, nothing changes and the reason is shown.
 - `PLANNOTATOR_INBOX_CONNECT=0` skips this step.
 - `plannotator uninstall` removes every entry it recorded adding (never one you added yourself). `--dry-run` lists them first. If its record (`~/.plannotator/inbox/agents.json`) is gone, it removes none: an entry that runs this Plannotator is named with how to remove it, since you may have added it by hand.
 
@@ -78,6 +97,7 @@ The first time you open the Inbox after it connected your agents, a dialog asks 
 | Claude Code | `~/.claude/rules/plannotator-inbox.md` (a file of its own) |
 | Codex | `~/.codex/AGENTS.override.md` when you have one, else `~/.codex/AGENTS.md` |
 | Gemini CLI | `~/.gemini/GEMINI.md` (or your `context.fileName`) |
+| Qwen Code | `~/.qwen/QWEN.md` (or your `context.fileName`; in `$QWEN_HOME` when set) |
 | Pi | the one instructions file Pi reads in `~/.pi/agent/` |
 | OpenCode | `~/.config/opencode/AGENTS.md`, only when you already have it: creating it would stop OpenCode 1 reading your `~/.claude/CLAUDE.md` |
 | Cursor | Customize → Rules in the Cursor app (you copy it by hand; Cursor has no global rules file) |
@@ -179,7 +199,7 @@ The mod is off in `claude -p`, in SDK runs and on Windows. There the tool is not
 
 ### Pi
 
-Install the [Pi extension](/docs/getting-started/installation/#pi), then run `plannotator inbox`: it turns the inbox tool on for Pi when it finds the extension. The tool is off by default on Pi, because Pi sends every tool's full definition with each request: the inbox tool adds about 9 KB to every request, roughly 2,500 tokens depending on the model (about 10 KB, roughly 2,900 tokens, with the Board on). To turn it on yourself:
+Install the [Pi extension](/docs/getting-started/installation/#pi), then run `plannotator inbox`: it turns the inbox tool on for Pi when it finds the extension. The tool is off by default on Pi, because Pi sends every tool's full definition with each request: the inbox tool adds about 10 KB to every request, roughly 2,600 tokens depending on the model (about 11 KB, roughly 3,000 tokens, with the Board on). To turn it on yourself:
 
 ```bash
 export PLANNOTATOR_INBOX_TOOL=1
@@ -189,7 +209,7 @@ Start a new Pi session (or `/reload`). A reply arrives as a follow-up message on
 
 ### OpenCode
 
-Add the [OpenCode plugin](/docs/getting-started/installation/#opencode), then run `plannotator inbox`: it turns the inbox tool on for OpenCode when it finds the plugin in your global opencode config. The tool is off by default on OpenCode, for the same reason as Pi (about 9 KB per request, roughly 2,500 tokens). To turn it on yourself:
+Add the [OpenCode plugin](/docs/getting-started/installation/#opencode), then run `plannotator inbox`: it turns the inbox tool on for OpenCode when it finds the plugin in your global opencode config. The tool is off by default on OpenCode, for the same reason as Pi (about 10 KB per request, roughly 2,600 tokens). To turn it on yourself:
 
 ```bash
 export PLANNOTATOR_INBOX_TOOL=1
@@ -200,6 +220,17 @@ Restart OpenCode. On OpenCode 2 a reply is queued into the session as its own tu
 ### The same session in two windows
 
 You can open one Pi session twice (`pi -c` or `--session`), or run two OpenCode 2 servers on one database. Then only one process delivers a reply: the one you used last. On Pi, typing in a window or the agent calling the inbox tool there moves replies to that window. On OpenCode 2, only the agent calling the inbox tool moves them, because the plugin does not see what you type (checked on OpenCode 2.0.19). The process that holds replies checks in every 5 seconds. If it quits, another process takes over at once, and if it crashes, after about 20 seconds. A reply is delivered once either way.
+
+### Grok Build: a session the Inbox runs
+
+Grok Build has no way to be woken from outside, so the Inbox can run it for you. In **New message**, open **To** and pick **New Grok Build session** in one of your projects. Your message is the session's first turn, and every reply in that thread is another turn.
+
+- Under each of your messages, a line says what happened: "Starting Grok Build…", "Grok Build is working · 0:42" with **Stop** and **Show activity** (the tools it ran and what it said), then "Done · 1:12".
+- Grok Build answers in the thread. If it ends a turn without writing to the Inbox, its last words are posted as its answer.
+- When it asks permission, the request shows as a card with all of Grok's own options, the thread moves to **Stopped on you**, and you get a notification. It waits until you answer or press **Stop**. Grok's own settings decide what it asks about; calls to the Inbox's own tools are allowed without asking.
+- It runs with your Grok Build settings and model, in the project's folder. Grok Build updates itself when it starts.
+- The thread's foot shows the command that opens the session in Grok's own terminal app (`grok -r <id>`). Close it there before you reply in the Inbox: two programs writing one session is not detected.
+- Turn it off in **Settings → Agents → Run in the Inbox**.
 
 ## The inbox tool setting
 
@@ -278,7 +309,7 @@ claude mcp add --scope user plannotator-inbox -- plannotator inbox mcp
 codex mcp add plannotator-inbox -- plannotator inbox mcp
 ```
 
-The Inbox's first-run screen and **Settings** give the exact command or install link for each client, with the absolute path of your `plannotator` binary filled in. The list covers Claude Code, the Claude app, Codex, Cursor, VS Code, Windsurf / Devin, Gemini CLI, Goose, Amp, Cline, Pi, OpenCode, Zed, Kiro, JetBrains, and any other MCP client. Apps started from the Dock may not see your shell's `PATH`, which is why the commands use the full path.
+The Inbox's first-run screen and **Settings** give the exact command or install link for each client, with the absolute path of your `plannotator` binary filled in. The list covers Claude Code, the Claude app, Codex, Cursor, VS Code, Windsurf / Devin, Gemini CLI, Qwen Code, Goose, Amp, Cline, Pi, OpenCode, Zed, Kiro, JetBrains, and any other MCP client. Apps started from the Dock may not see your shell's `PATH`, which is why the commands use the full path.
 
 **Codex** needs no plugin: with Codex 0.149 or later, connected through `plannotator inbox mcp`, your reply arrives in the Codex thread that asked as a new turn by itself (in the TUI, the Codex app and the IDE extension; a one-shot `codex exec` run is not woken, its agent waits for the reply instead). The Inbox puts it there with `codex queue`: an idle thread starts the turn within about a second, a busy one gets it when its current turn ends (never in the middle of one), and a thread whose Codex is closed gets it when you resume it. The Inbox finds `codex` on its `PATH`, else the ChatGPT or Codex app's own Codex. While it queues, your reply is an argument of the `codex queue` command, so for that moment it shows in the process list. The line under your reply says "Queued for Codex; it gets this as its next turn." until the thread's next turn uses the Inbox; there is no **Send now** for Codex. If Codex does not know the thread (it was deleted, or Codex uses another `CODEX_HOME` than the Inbox), the reply is saved for the next agent, as for a session that has ended. If handing it to Codex took too long (30 seconds), the Inbox does not try again, so it never arrives twice, and the line says the reply is saved for the agent's next read. If the Inbox finds no `codex` at all, the reply waits, and goes the next time something happens in the Inbox once a Codex is there.
 
@@ -351,8 +382,9 @@ Everything lives under `~/.plannotator/inbox/` (or `$PLANNOTATOR_DATA_DIR/inbox/
 | `pins.json` | The threads pinned to the sidebar, in their order. Never seen by an agent or search; a phone reads them with the list |
 | `recent-searches.json` | Your last six searches, written only when you open a result. **Clear** in the search box empties it |
 | `claims/`, `leases/` and `connection-tools.json` | Bookkeeping for the Pi and OpenCode connections |
+| `acp/sessions.json` | The Grok Build sessions the Inbox runs: each one's folder, Grok's own session id, and how each turn ended. Owner-only. What a turn did (its tools and text) is kept in memory only |
 
-The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`).
+The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`, `inboxRun`).
 
 ## Uninstall
 

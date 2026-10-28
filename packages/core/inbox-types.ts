@@ -17,6 +17,7 @@
 import type { QuestionAnswer, QuestionKind } from "./question-block";
 import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, InboxInlineImage } from "./inbox-attachments";
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
+import type { InboxRowRun } from "./inbox-acp";
 import type { InboxCard } from "./inbox-cards";
 
 // The attachment shapes and file rules (step 2) live in their own module and
@@ -25,6 +26,7 @@ export * from "./inbox-attachments";
 export * from "./inbox-open-in";
 export * from "./inbox-delivery";
 export * from "./inbox-codex";
+export * from "./inbox-qwen";
 // The Board's cards (approval "inbox-board"), the same way.
 export * from "./inbox-cards";
 // The surface bridge's messages (the phone, PLAN step S1), the same way.
@@ -56,7 +58,7 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /** `upl`: a file the person uploaded for a message; `drf`: a draft of one (compose); `crd`: a Board card. */
-export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd";
+export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "run";
 
 export function inboxId(prefix: InboxIdPrefix, now?: number): string {
   return `${prefix}_${ulid(now)}`;
@@ -73,6 +75,8 @@ const ID_RE: Record<InboxIdPrefix, RegExp> = {
   drf: /^drf_[0-9A-HJKMNP-TV-Z]{26}$/,
   /** A Board card (approval "inbox-board"). */
   crd: /^crd_[0-9A-HJKMNP-TV-Z]{26}$/,
+  /** A session the Inbox runs itself over ACP (packages/server/inbox-acp-runner.ts): its agent session id. */
+  run: /^run_[0-9A-HJKMNP-TV-Z]{26}$/,
 };
 
 export function isInboxId(prefix: InboxIdPrefix, value: unknown): value is string {
@@ -260,6 +264,8 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
   opencode: "OpenCode",
   codex: "Codex",
   cursor: "Cursor",
+  grok: "Grok Build",
+  qwen: "Qwen Code",
 };
 
 /**
@@ -865,10 +871,13 @@ export interface InboxQuestionRecord {
   action?: InboxActionFacts | null;
   /**
    * On an action item: what came of it. The person's Done or Can't do it (`by:
-   * "person"`), sent to the agent once the Undo window passes (then
-   * `sent_revision === revision` and `sent_reply_id` names the reply), or
-   * the agent's own `done` (`by: "agent"`: it saw it happen; nothing is
-   * sent). Null while the action item is open, and after an Undo.
+   * "person"`), sent with their reply when `staged` (the window; approval
+   * "inbox-action-items-in-reply"), else once the Undo window passes; then
+   * `sent_revision === revision` and `sent_reply_id` names the reply. Or the
+   * agent's own `done` (`by: "agent"`: it saw it happen; nothing is sent by
+   * it), with the person's mark kept under `person` when it was waiting in
+   * their draft (its note still goes with their Send). Null while the action
+   * item is open, and after it is taken back.
    */
   action_result?: InboxActionResult | null;
 }
@@ -917,6 +926,42 @@ export interface InboxActionResult {
   by: "person" | "agent";
   /** With `by: "agent"`: the agent's message whose `done` named it. */
   message_id?: string | null;
+  /**
+   * The person's Done or Can't do it waits in their reply draft and goes with
+   * their next Send, never on a timer (approval "inbox-action-items-in-reply").
+   * Absent: marked through the timed path (decision mode, the phone door, an
+   * older window), sent once the Undo window passes.
+   */
+  staged?: boolean;
+  /**
+   * With `by: "agent"`: the person's staged mark the agent's `done` settled
+   * (approval "inbox-action-items-in-reply", Q3). When it carries a note, the
+   * note still goes with the person's next Send (`inboxActionInDraft`).
+   */
+  person?: { outcome: "done" | "cant"; note: string | null; at: string } | null;
+}
+
+/**
+ * An action item whose result waits in the person's reply draft (approval
+ * "inbox-action-items-in-reply"): their staged Done or Can't do it, not sent;
+ * or, once the agent saw it done itself, the note they wrote on it, not sent.
+ * The Send carries it (`actions`), under "Action items you asked for".
+ */
+export function inboxActionInDraft(
+  q: { kind: string; state: InboxQuestionState; action_result?: InboxActionResult | null; revision: number; sent_revision: number },
+): boolean {
+  const result = q.action_result;
+  if (q.kind !== "action" || !result) return false;
+  if (result.by === "person") return result.staged === true && q.state === "picked";
+  const note = result.person?.note?.trim() ?? "";
+  return note !== "" && q.state === "closed" && !(q.revision > 0 && q.sent_revision === q.revision);
+}
+
+/** The person's own mark on an action item in their draft or sent: their staged mark, or the one the agent's done settled. */
+export function inboxActionPersonMark(result: InboxActionResult | null | undefined): { outcome: "done" | "cant"; note: string | null; at: string } | null {
+  if (!result) return null;
+  if (result.by === "person") return { outcome: result.outcome, note: result.note, at: result.at };
+  return result.person ?? null;
 }
 
 /** A question Mark read closed (`InboxQuestionRecord.set_aside`). */
@@ -1010,7 +1055,8 @@ export interface InboxDecision {
     /** `paths` (additive): the file's real path, and the path it was named by when that was a link; a `Shows:` file is matched by them. */
     attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null; paths?: string[] }[];
   };
-  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string }; section: InboxSectionId };
+  /** `project.repo` (additive, the window's read): its git origin, as on a thread; refs in the card link into it. */
+  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string; repo?: InboxProjectRepo | null }; section: InboxSectionId };
   /**
    * The agent session that asked: one reply per session per thread
    * (`key`: `s:<host>\u0000<session>`, or `m:<message id>` for a message with
@@ -1036,6 +1082,13 @@ export interface InboxQuestionSummary {
   prompt: string | null;
   /** How many of `open` are action items (`kind: "action"`): the row reads "1 action item". Absent from an older Inbox. */
   actions?: number;
+  /**
+   * Action items the person marked Done or Can't do it that wait in their
+   * reply draft, the agent still stopped on them (approval
+   * "inbox-action-items-in-reply", Q2): the row keeps its section by their
+   * Stopped / Holds up (`stopped` and `holds_up` count them). Absent: none.
+   */
+  staged?: number;
 }
 
 export interface InboxMessageWire extends InboxMessage {
@@ -1133,6 +1186,13 @@ export interface InboxListRow extends InboxThreadSummary {
    * reads. Additive: absent from an older Inbox.
    */
   pinned_at?: string | null;
+  /**
+   * A session the Inbox runs over ACP works in this thread, or waits on a
+   * permission (packages/server/inbox-acp-runner.ts). Only on the list model
+   * the window and the phone read, never on anything an agent reads.
+   * Additive: absent from an older Inbox.
+   */
+  run?: InboxRowRun | null;
 
   /**
    * Agent messages after the person's last look (a reply of theirs counts as
@@ -1228,7 +1288,37 @@ export interface InboxListRow extends InboxThreadSummary {
    * agent wrote last, a 👍 not sent). Absent from an older Inbox.
    */
   delivery?: InboxRowDelivery | null;
+  /**
+   * What the row's Stopped / Holds up badge holds (approval "inbox-row-badges",
+   * hover card A): each open question or action item that stops the agent or
+   * holds something up, in thread order, at most `INBOX_ROW_WAITS_MAX`, its
+   * words capped (`INBOX_ROW_WAIT_TEXT_MAX`, `INBOX_ROW_WAIT_HOLDS_MAX`). Absent
+   * when none does, and from an older Inbox (the card then lists
+   * `questions.holds_up`). The window's list only: agents' rows never carry it.
+   */
+  waits?: InboxRowWait[];
 }
+
+/** One question behind a row's badge (`InboxListRow.waits`). */
+export interface InboxRowWait {
+  message_id: string;
+  key: string;
+  /** Its place among its message's blocks of its kind: Q1 is 0 (A1 for an action item, `key` starts `a-`). */
+  position: number;
+  prompt: string;
+  /** Its `Stopped:` line, or null. */
+  stopped: string | null;
+  /** Its `Holds up:` entries. */
+  holds_up: string[];
+}
+
+/** At most this many questions on a row's `waits`. */
+export const INBOX_ROW_WAITS_MAX = 8;
+/** A wait's prompt and `Stopped:` line are cut to this many characters ("…"). */
+export const INBOX_ROW_WAIT_TEXT_MAX = 200;
+/** At most this many `Holds up:` entries per wait, each cut to `INBOX_ROW_WAIT_ENTRY_MAX`. */
+export const INBOX_ROW_WAIT_HOLDS_MAX = 8;
+export const INBOX_ROW_WAIT_ENTRY_MAX = 120;
 
 export interface InboxListSection {
   id: InboxSectionId;
@@ -1454,6 +1544,7 @@ export type InboxAgentId =
   | "claude-code"
   | "codex"
   | "gemini"
+  | "qwen"
   | "cursor"
   | "windsurf"
   | "amp"
@@ -1467,6 +1558,7 @@ export const INBOX_AGENT_IDS: readonly InboxAgentId[] = [
   "claude-code",
   "codex",
   "gemini",
+  "qwen",
   "cursor",
   "windsurf",
   "amp",
@@ -1481,6 +1573,7 @@ export const INBOX_AGENT_LABELS: Readonly<Record<InboxAgentId, string>> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   gemini: "Gemini CLI",
+  qwen: "Qwen Code",
   cursor: "Cursor",
   windsurf: "Windsurf / Devin",
   amp: "Amp",
@@ -1496,6 +1589,13 @@ export function inboxAgentList(ids: readonly InboxAgentId[]): string {
   const names = ids.map((id) => INBOX_AGENT_LABELS[id]);
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** An agent connected in another file than this Inbox's environment names (`InboxConnectReport.elsewhere`): where, and how the person moves it. */
+export function inboxElsewhereText(moved: { agent: InboxAgentId; path: string | null; now: string | null }): string {
+  const label = INBOX_AGENT_LABELS[moved.agent];
+  const why = `${moved.agent === "qwen" ? "this Inbox has another QWEN_HOME, so it" : "this Inbox"} looks in ${moved.now ?? "another file"}`;
+  return `${label} is connected in ${moved.path ?? "another file"}, but ${why}. Plannotator left both as they are; Settings → Agents shows it off here, and turning it on moves it.`;
 }
 
 /** What one `plannotator inbox` run did to the agents on this computer. */
@@ -1517,6 +1617,12 @@ export interface InboxConnectReport {
   manual: InboxAgentId[];
   /** Why each manual agent needs a person, said once per reason (the terminal prints these). */
   manual_why?: { agent: InboxAgentId; why: string }[];
+  /**
+   * Connected in another file than this run's environment names (`QWEN_HOME`
+   * differs from when the entry was added): left where it is, said once;
+   * turning the agent on in Settings → Agents moves it.
+   */
+  elsewhere?: { agent: InboxAgentId; path: string | null; now: string | null }[];
   /** Did not finish within the time limits; tried again at the next run. */
   unfinished: InboxAgentId[];
   /** Claude Code's plugin gives it the `plannotator_inbox` tool already. */
@@ -1524,8 +1630,8 @@ export interface InboxConnectReport {
 }
 
 /** The agents whose own instructions file can carry the Inbox note (packages/server/inbox-agent-notes.ts). */
-export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini" | "cursor";
-export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "pi", "opencode", "cursor"];
+export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini" | "qwen" | "cursor";
+export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "qwen", "pi", "opencode", "cursor"];
 
 /**
  * Where an agent's note would go and how it stands:
@@ -1562,7 +1668,7 @@ export interface InboxAgentRow {
   reach: {
     kind: "tool" | "mcp" | "manual" | "none";
     on: boolean;
-    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable";
+    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable" | "elsewhere";
     path: string | null;
     /** PLANNOTATOR_INBOX_TOOL decides it. */
     locked: boolean;
@@ -1790,10 +1896,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
+ * Then where refs link (INBOX_REF_LINK_RULE, 171 characters, on `body`):
+ * 9,591 bytes (+175, about +40 tokens, estimated). With the Board on, the
+ * card's `say` and `you` add a 36-character pointer each: 11,009 (+249,
+ * estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9416, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 9591, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11009, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
@@ -1851,6 +1961,10 @@ export interface InboxRowUnsent {
   picks: number;
   /** Comments (on attached files, the guided review, the messages) waiting for a Send. */
   comments: number;
+  /** Action items marked Done waiting in the reply draft ("Draft · 1 done"; approval "inbox-action-items-in-reply"). Absent: none. */
+  done?: number;
+  /** Action items marked Can't do it waiting in the reply draft ("Draft · 1 can't do"). Absent: none. */
+  cant?: number;
 }
 
 /**
@@ -1866,7 +1980,7 @@ export function inboxRowArchived(row: Pick<InboxListRow, "resolved_at" | "back_f
 
 /** The thread holds something the person has not sent: reply words, picks or comments. */
 export function inboxHasUnsent(unsent: InboxRowUnsent | null | undefined): boolean {
-  return !!unsent && (unsent.reply_at !== null || unsent.picks > 0 || unsent.comments > 0);
+  return !!unsent && (unsent.reply_at !== null || unsent.picks > 0 || unsent.comments > 0 || (unsent.done ?? 0) > 0 || (unsent.cant ?? 0) > 0);
 }
 
 /**
