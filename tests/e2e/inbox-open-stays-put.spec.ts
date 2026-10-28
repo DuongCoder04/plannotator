@@ -610,12 +610,12 @@ test('desktop: a seen update held in New keeps Mark read; it moves the row to Qu
   // otherwise), and an action waits with no time limit: on CI this test twice hung here to its
   // 4-minute timeout (the shots stop at 03-undone), the action never shown to the click, as when
   // the row is still settling back from the Undo as the mouse arrives. Hover until the action
-  // shows (each try bounded), then click it.
+  // shows (each try bounded, all tries within 15 s: toPass has no limit of its own), then click it.
   const rowMarkRead = page.locator(`.ib-lbody [data-row="${first}"] [data-row-mark-read]`);
   await expect(async () => {
     await page.locator(`.ib-lbody [data-row="${first}"]`).hover({ timeout: 2_000 });
     await expect(rowMarkRead).toBeVisible({ timeout: 1_000 });
-  }).toPass();
+  }).toPass({ timeout: 15_000 });
   await rowMarkRead.click({ timeout: 5_000 });
   await expect(row).toHaveCount(0);
   await expect(quietCount).toHaveText('1');
