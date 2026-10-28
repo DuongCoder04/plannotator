@@ -250,7 +250,7 @@ const JJ_DEFAULT_DIFF_TYPE_OPTIONS = [
   { value: 'jj-current', label: 'Current change', description: 'Only the working-copy change (@)' },
   { value: 'jj-last', label: 'Last change', description: 'The change just before the working copy (@-)' },
   { value: 'jj-line', label: 'Line of work', description: 'Every change on your line of work since it left trunk' },
-  { value: 'jj-evolog', label: 'Evolution diff', description: 'How the current change evolved. Opens on Current change when it has no history' },
+  { value: 'jj-evolog', label: 'Evolution diff', description: 'How the current change has evolved' },
   { value: 'jj-all', label: 'All files', description: 'Every file at the working copy, shown as additions' },
 ] as const;
 const JJ_REVIEW_DEFAULTS: VcsReviewSettingsDescriptor = {
