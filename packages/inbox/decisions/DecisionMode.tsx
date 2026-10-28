@@ -770,10 +770,18 @@ export function DecisionMode(props: DecisionModeProps) {
    * The close question let go (Escape, Keep deciding): its buttons leave the page, so focus goes back to the Close
    * button that asked it, never to the page itself (approval "inbox-keyboard-shortcuts", consistent Escape).
    */
+  // Keep deciding puts focus on × once the confirm has gone (the effect below runs after that render, however late:
+  // a frame timer could run before it on a slow machine and focus a × still behind the confirm).
+  const focusCloseAfterConfirm = useRef(false);
   const keepDeciding = () => {
+    focusCloseAfterConfirm.current = true;
     setConfirm(false);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-decision-mode] [data-decision-close]')?.focus());
   };
+  useEffect(() => {
+    if (confirm || !focusCloseAfterConfirm.current) return;
+    focusCloseAfterConfirm.current = false;
+    document.querySelector<HTMLElement>('[data-decision-mode] [data-decision-close]')?.focus();
+  }, [confirm]);
 
   const requestClose = () => {
     const now = closeReasons();

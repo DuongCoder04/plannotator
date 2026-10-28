@@ -328,7 +328,7 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   const imageComment = pane().locator(`textarea[aria-label="Comment on ${world.files.dashboard}"]`);
   await tabTo(imageComment);
   await type('The p95 line needs a label');
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await expect(imageComment).toHaveValue('');
   await press('Escape');
   await at('image comment saved, Escape', { focus: pane(), address: addr(rollout, { view: 'side' }), view: 'side' });
@@ -348,7 +348,7 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   await tabTo(globalComment);
   await press('Enter');
   await type('Add the EU hold to step 4');
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await focusHeld();
   await expect(page.locator('[data-annotation-row], [data-annotation-id]').filter({ hasText: 'Add the EU hold' }).first()).toBeAttached();
 
@@ -407,7 +407,7 @@ test('S1: deep work in one thread, a detour, and back', async () => {
   expect({ bold: await row(rollout).evaluate((el) => el.classList.contains('ib-u')), section: await row(rollout).getAttribute('data-section') }, 'the row reads as it did').toEqual(rolloutLookBefore);
   await press('r');
   await expect(box).toBeFocused();
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   const sentHead = articles().last().locator('[data-fold-head]');
   await at('sent', { focus: sentHead, address: addr(rollout), view: 'thread' });
   await expect(articles().last()).toHaveAttribute('data-author', 'person');
@@ -451,7 +451,7 @@ const keycaps = () => page.locator('kbd[data-shortcut-hint]').filter({ visible: 
 const questionChoice = (n = 0) => page.locator('section.ib-pane input[data-question-control]').nth(n);
 
 /** Search by keys: `/` (or ⌘K), the words, the first result. */
-async function searchOpen(words: string, open: '/' | 'Meta+k' = '/'): Promise<void> {
+async function searchOpen(words: string, open: '/' | 'ControlOrMeta+k' = '/'): Promise<void> {
   await press(open);
   await expect(searchInput()).toBeFocused();
   await type(words);
@@ -495,7 +495,7 @@ test('S2: a morning of triage across the whole Inbox', async () => {
   await press('r');
   await expect(page.locator('section.ib-pane textarea[aria-label^="Reply to"]')).toBeFocused();
   await type('Both picked; go ahead.');
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(stopped), view: 'thread' });
 
   await searchOpen('refund');
@@ -562,7 +562,7 @@ test('S3: interrupted, a half-written reply survives everything', async () => {
   await page.keyboard.press('End');
   await type(' — and keep a log.');
   const words = `${world.holdingDraft} — and keep a log.`;
-  await press('Meta+k');
+  await press('ControlOrMeta+k');
   await expect(searchInput()).toBeFocused();
   await type('checkout');
   await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
@@ -585,7 +585,7 @@ test('S3: interrupted, a half-written reply survives everything', async () => {
   const comment = image.locator(`textarea[aria-label="Comment on ${world.files.image}"]`);
   await tabTo(comment);
   await type('Shadow too heavy');
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await expect(comment).toHaveValue('');
   await press('Escape');
   await at('comment saved', { focus: pane(), address: addr(checkout, { view: 'side' }), view: 'side' });
@@ -619,17 +619,17 @@ test('S3: interrupted, a half-written reply survives everything', async () => {
   await expect(page.locator('[data-toast-undo]')).toHaveCount(0);
   await focusHeld();
 
-  await press('Meta+k');
+  await press('ControlOrMeta+k');
   await type('installer');
   await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
   await press('Enter');
   await expect.poll(hash).toMatch(addr(holding));
   await expect(box).toHaveValue(words);
   await tabTo(box);
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(holding), view: 'thread' });
 
-  await press('Meta+k');
+  await press('ControlOrMeta+k');
   await type('checkout');
   await expect(page.locator('dialog[data-search-palette] [role="option"]').first()).toBeVisible();
   await press('Enter');
@@ -884,7 +884,7 @@ test('J3: answer a question and send a reply; letters typed are words', async ()
   await at('draft kept', { focus: page.locator('section.ib-pane [data-edit-draft]'), address: addr(stopped), view: 'thread' });
   await press('r');
   await expect(box).toHaveValue('e r o j k n ? / g i');
-  await press('Meta+Enter');
+  await press('ControlOrMeta+Enter');
   await at('sent', { focus: articles().last().locator('[data-fold-head]'), address: addr(stopped), view: 'thread' });
 });
 
@@ -1027,7 +1027,7 @@ test('J8: Settings, both shortcut settings, and the keys honour them', async () 
   await expect(page.locator('[data-toast-undo]')).toHaveCount(0);
   // Single-key keycaps are not drawn; ⌘K's still is.
   expect(await keycaps().evaluateAll((caps) => caps.map((c) => c.getAttribute('data-keycap')).filter((k) => k && /^[A-Z?/[\]]$/.test(k)))).toEqual([]);
-  await press('Meta+k');
+  await press('ControlOrMeta+k');
   await expect(searchInput()).toBeFocused();
   await press('Escape');
   await focusHeld();
