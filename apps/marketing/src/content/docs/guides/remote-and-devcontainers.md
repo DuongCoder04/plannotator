@@ -61,6 +61,8 @@ export PLANNOTATOR_PUBLIC_URL=https://plannotator.example.com
 
 Plannotator then prints and opens `https://plannotator.example.com` while continuing to listen on local port `19432`. `PLANNOTATOR_PUBLIC_URL` changes only the address shown; the reverse proxy must route that origin to the configured local port. The server also answers on the public hostname, so a proxy that forwards the browser's `Host` header works without `PLANNOTATOR_ALLOWED_HOSTS`. A plain `http://` public URL behind a proxy that rewrites `Host` also needs its hostname in `PLANNOTATOR_ALLOWED_HOSTS`, or saving and approving are refused.
 
+The public URL is used only in remote mode, even when the tunnel runs on the same machine (cloudflared, code-server). `PLANNOTATOR_REMOTE=1` makes Plannotator listen on all network interfaces, not only localhost, and turns "Ask this session" off. Live app annotation still points at `localhost`, as it does with `PLANNOTATOR_URL_HOST`.
+
 A port range can keep additional sessions available through a directly reachable host while the reverse proxy continues to expose the first port:
 
 ```bash

@@ -12,13 +12,14 @@ function localhostUrl(port: number): string {
   return `http://localhost:${port}`;
 }
 
+/** The public origin fronts one port: the fixed port or a range's first. PLANNOTATOR_PORT=0 (random) never matches. */
 function publicUrlAppliesToPort(port: number): boolean {
   const configured = process.env.PLANNOTATOR_PORT;
   if (!configured) {
     return true;
   }
   const selection = parsePortSelection(configured);
-  return selection?.kind !== "range" || port === selection.ports[0];
+  return selection === null || port === selection.ports[0];
 }
 
 /** Resolve a display-only session URL; public origins apply only to remote fixed/range-start ports. */

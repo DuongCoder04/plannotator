@@ -49,6 +49,13 @@ describe("resolveAdvertisedSessionUrl", () => {
     expect(resolveAdvertisedSessionUrl(19434, true)).toBe("http://localhost:19434");
   });
 
+  // A proxy can't target a random port, so the port-less origin would point nowhere.
+  test("a random port (PLANNOTATOR_PORT=0) advertises the real port, not the public origin", () => {
+    process.env.PLANNOTATOR_PORT = "0";
+    process.env.PLANNOTATOR_PUBLIC_URL = "https://plannotator.example.com";
+    expect(resolveAdvertisedSessionUrl(52113, true)).toBe("http://localhost:52113");
+  });
+
   test("resolves only the override that applies to the bound port", () => {
     const spy = spyOn(process.stderr, "write").mockReturnValue(true);
     try {
