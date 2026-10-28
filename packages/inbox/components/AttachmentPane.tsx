@@ -58,12 +58,16 @@ import { FullScreenMore } from './OpenIn';
 import { fileSwipeMode, useFileSwipe } from '../fileSwipe';
 import { FileSwipeCard } from './FileSwipeCard';
 import { createPortal } from 'react-dom';
+import type { Notice } from './Markup';
+import { MarkupPicture } from './Markup';
+import { isWordlessMarkup, MARKUP_ONLY_TEXT } from '../markup';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
 import { inOverlay, isComposingKey, isEditableTarget, keyTarget, modalOpen } from '../shortcuts/guards';
 import { escapeRung, type EscapeRung } from '../escapeLadder';
 import { storage } from '@plannotator/ui/utils/storage';
 import { Tip } from './Tip';
+import { CopyFileButton } from './CopyFileButton';
 
 /**
  * The pane width below which the 300 px comments panel beside the thread
@@ -89,6 +93,9 @@ export function splitLinked(value: string): { relative: string; hash: string } {
   const at = value.indexOf('#');
   return at < 0 ? { relative: value, hash: '' } : { relative: value.slice(0, at), hash: value.slice(at + 1) };
 }
+
+/** The space between full screen's changed note and the code's top row, which grows under the note (Copy file stays clear of it). */
+export const CODE_ROW_BELOW_NOTE = 8;
 
 /** How long full screen's step chip names the new file. */
 export const FULL_VIEW_CHIP_MS = 1600;
@@ -154,6 +161,17 @@ export interface AttachmentPaneProps {
   full: boolean;
   /** Full screen is the only way the window can show the file (a phone, a narrow window: stack.ts): the toolbar leads with Back to the thread instead of Side by side. */
   fullLocked?: boolean;
+  /**
+   * × and Escape's last rung close the file, back to the thread (fullScreenOrigin.ts): a full screen opened from
+   * the thread alone, and wherever the file can only be full screen. False: they put the file back beside the
+   * thread, where it was before full screen. Absent: only where it can only be full screen.
+   */
+  exitCloses?: boolean;
+  /**
+   * The name of the file × and Escape's last rung go back to when it is another file than this one (a full screen
+   * opened over a file beside the thread): leaving this file, they ask first about a comment not saved yet.
+   */
+  exitLeavesFor?: string | null;
   /** `pick`: the person chose with a button (remembered); Escape's last rung is not a pick. */
   onToggleFull: (pick: boolean) => void;
   /** The view switch's pressed half: the view on screen becomes the remembered one; the frame stays. */
@@ -211,6 +229,8 @@ export interface AttachmentPaneProps {
    * new-tab icon through the tailnet or on a phone (`tab`). Absent: neither.
    */
   openIn?: OpenInSurface;
+  /** The window's toast: a drawing added to the reply says so, with Undo. */
+  onToast?: Notice;
 }
 
 /**
@@ -900,8 +920,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         keepWriting();
         return;
       case 'leave':
-        if (props.fullLocked) close();
-        else toggleFull(false);
+        if (exitCloses) close();
+        else exitFull();
         return;
     }
   }
@@ -1174,7 +1194,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
 
   const edit = (id: string, updates: Partial<Annotation>) => {
     const record = props.records.find((r) => r.id === id);
-    if (record) void save({ ...annotationOf(record), ...updates });
+    if (!record) return;
+    const annotation = annotationOf(record);
+    // A drawing's words emptied again: the agent's stand-in comes back.
+    const text = updates.text !== undefined && updates.text.trim() === '' && isWordlessMarkup(annotation) ? MARKUP_ONLY_TEXT : updates.text;
+    void save({ ...annotation, ...updates, ...(text !== undefined ? { text } : {}) });
   };
 
   // The panel lists the thread's other files too, each under its own name (record 2.4).
@@ -1213,6 +1237,14 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     props.onVersion(next);
   };
   const close = () => leave(null, props.onClose);
+  /** Where × and Escape's last rung go: the thread (the file closes), or back beside it. */
+  const exitCloses = props.exitCloses ?? props.fullLocked === true;
+  /** × and Escape's last rung back beside the thread: through `leave` when that shows another file (a typed comment is asked about). */
+  const exitFull = () => {
+    const to = props.exitLeavesFor ?? null;
+    if (to !== null) leave(to, () => toggleFull(false));
+    else toggleFull(false);
+  };
 
   const sentAt = whenTime(attachment.sent_at);
   /** An image the message's text shows (approval "inbox-image-viewer"). */
@@ -1295,6 +1327,36 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   /** The file changed since it was sent, or is gone: the tucked handle carries an amber dot. */
   const changedSinceSent = currentUnavailable || (view?.attachment ?? attachment).changed_since_sent;
 
+  /**
+   * Full screen's changed note floats at the file's top left, where a code file's top row starts (Copy file, the hint):
+   * the row grows under the note, measured, so the note never covers it. Null: nothing to clear.
+   */
+  const noteShown = full && versionChip !== null && !linkedTop;
+  const [codeClear, setCodeClear] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const section = sectionRef.current;
+    const note = noteShown && isCode && view ? section?.querySelector<HTMLElement>('[data-full-view-changed]') : null;
+    const code = note ? section?.querySelector<HTMLElement>('[data-code-view]') : null;
+    if (!note || !code) {
+      setCodeClear(null);
+      return;
+    }
+    const place = () => {
+      const below = Math.ceil(note.getBoundingClientRect().bottom - code.getBoundingClientRect().top) + CODE_ROW_BELOW_NOTE;
+      setCodeClear(below > CODE_ROW_BELOW_NOTE ? below : null);
+    };
+    place();
+    // The note wraps onto more lines as the window narrows (a phone).
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
+    observer?.observe(note);
+    observer?.observe(code);
+    window.addEventListener('resize', place);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', place);
+    };
+  }, [noteShown, isCode, view]);
+
   return (
     <section
       ref={sectionRef}
@@ -1375,8 +1437,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           }
           moreOpen={moreOpen}
           leave={props.fullLocked ? { kind: 'back', onLeave: close } : { kind: 'exit', onLeave: () => toggleFull() }}
-          // × does what Escape's last step does: back beside the thread, not a pick (Side by side is the pick).
-          onExitFull={props.fullLocked ? undefined : () => toggleFull(false)}
+          // × does what Escape's last step does, never a pick (Side by side is the pick): back where full screen
+          // was opened from, the thread alone (the file closes) or the file beside the thread.
+          onExitFull={props.fullLocked ? undefined : exitCloses ? close : exitFull}
+          exitCloses={exitCloses}
           chord={isHtml ? TOOLS_CHORD : null}
           shifted={drawerMode && drawer && hasPanel}
         />
@@ -1603,6 +1667,9 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               onSwipe={multi ? (dir) => step(dir, 'key') : undefined}
               wheelHint={wheelHint}
               suggestion={suggestion?.comment}
+              onSelect={setSelectedId}
+              onRemove={remove}
+              onNotice={props.onToast}
             />
           )}
           {isVideo && (
@@ -1621,6 +1688,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               phone={phone}
               poster={source.posterUrl?.(attachment) ?? undefined}
               suggestion={suggestion ?? undefined}
+              onRemove={remove}
+              onNotice={props.onToast}
             />
           )}
           {isDownload && (
@@ -1646,7 +1715,13 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
           {view && isCode && (
             <div className="ib-codeview" data-code-view="">
-              {!props.readOnly && <div className="ib-codehint">Click a line number, drag across lines, or select code to comment.</div>}
+              {/* The code's top row: Copy file first (approval "inbox-copy-file"), then how to comment. */}
+              <div className="ib-codehint" style={codeClear === null ? undefined : { paddingTop: codeClear }} data-code-row="">
+                <CopyFileButton text={view.text} name={attachment.name} sent={view.version !== 'current'} announce={announce} />
+                {!props.readOnly && (
+                  <span className="ib-codehint-t">{phone ? 'Tap a line to comment.' : 'Click a line number, drag across lines, or select code to comment.'}</span>
+                )}
+              </div>
               <CodeFileView
                 key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
                 filepath={attachment.name}
@@ -1766,7 +1841,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                             {formatInboxVideoTime(time)}
                           </button>
                         </Tip>
-                        {frame && (
+                        {frame && !isWordlessMarkup(annotation) && (
                           <Tip content={frame.name}>
                           <span className="ib-vframe ib-vframe-sm" data-video-card-frame={annotation.id}>
                             <img src={getImageSrc(frame.path)} alt="" />
@@ -1784,7 +1859,13 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 : undefined
             }
             // The moment and the frame are in the card's header; the quote ("cut.mp4 at 1:42") and the image row would repeat them.
-            cardParts={isVideo ? (annotation) => (readInboxVideoTime(annotation) === null ? {} : { quote: false, images: false }) : undefined}
+            // A drawing with no words is drawn as its picture: no quote, no image row, not the stand-in words the agent gets.
+            cardParts={(annotation) => {
+              const wordless = isWordlessMarkup(annotation);
+              if (isVideo && readInboxVideoTime(annotation) !== null) return wordless ? { quote: false, images: false, text: false } : { quote: false, images: false };
+              return wordless ? { quote: false, images: false, text: false } : {};
+            }}
+            renderCardBody={(annotation) => (isWordlessMarkup(annotation) ? <MarkupPicture image={annotation.images![0]!} /> : null)}
             title={isVideo ? 'Comments' : undefined}
             // A linked page takes no comments: the panel lists the attached page's, and says so.
             titleNote={isVideo ? 'By time' : linkedTop ? `Off on ${linkedTop.name}` : undefined}

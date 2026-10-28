@@ -40,6 +40,27 @@ export function boardViewOf(value: string | null): BoardView {
   return value === 'shipped' || value === 'icebox' ? value : 'lanes';
 }
 
+/**
+ * The Board's project filter (`#board&project=prj_…`, the key the list uses
+ * for a project): only that project's cards, on the lanes, the counts, the
+ * Shipped and Icebox lists and the agents' drops. Null: every card, as
+ * before the filter existed.
+ */
+export function cardsInProject<T extends Pick<InboxCardWire, 'project_id'>>(cards: readonly T[], project: string | null): readonly T[] {
+  return project ? cards.filter((card) => card.project_id === project) : cards;
+}
+
+/**
+ * The projects the Board's Project menu offers: those with a card on the
+ * Board in any column (a project of Shipped or Icebox cards only included),
+ * in the sidebar's order, and the chosen project even with no card left, so
+ * the menu always shows what is picked.
+ */
+export function boardProjects<P extends { id: string }>(cards: readonly Pick<InboxCardWire, 'project_id'>[], projects: readonly P[], chosen: string | null): P[] {
+  const withCards = new Set(cards.map((card) => card.project_id));
+  return projects.filter((project) => withCards.has(project.id) || project.id === chosen);
+}
+
 /** One lane: a live column and its cards, latest move first (the server's order). */
 export interface BoardLane {
   column: InboxCardColumn;
@@ -62,6 +83,24 @@ export function boardLanes(cards: readonly InboxCardWire[]): BoardLane[] {
       .map(({ card }) => card),
   }));
 }
+
+/**
+ * Where a New card goes unless the person picks another: the project the
+ * Board is filtered to, else the project of the card heard from last, else
+ * the first project.
+ */
+export function newCardProject(
+  filter: string | null,
+  projects: readonly { id: string }[],
+  cards: readonly Pick<InboxCardWire, 'project_id' | 'heard_at'>[],
+): string | null {
+  const known = (id: string | null | undefined) => (id && projects.some((p) => p.id === id) ? id : null);
+  const recent = [...cards].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => known(card.project_id));
+  return known(filter) ?? recent?.project_id ?? projects[0]?.id ?? null;
+}
+
+/** Under this page width the Board's Project chip sits on a row of its own under the header (BoardPage). */
+export const BOARD_FILTER_ROW_BELOW = 880;
 
 /** A lane's least width, and the gap between lanes (inbox.css `.ib-lane`, `.ib-blanes`). */
 export const BOARD_LANE_MIN = 188;
@@ -180,6 +219,40 @@ export function cardOwnerName(card: InboxCardWire): string {
   return card.agent?.kind === 'agent' ? inboxAgentName(card.agent) : 'You';
 }
 
+/** What the person owes on a card ("You: …"), only in Your look and Your review; null otherwise. */
+export function cardYou(card: InboxCardWire): string | null {
+  return isInboxCardPersonColumn(card.column) && card.you ? card.you : null;
+}
+
+/**
+ * The thread where the person makes the call a card's "You: …" asks for (owner,
+ * 2026-10-27: "it should take me to the thread where I need to make the call"):
+ * the thread the card was sent in, else the linked thread with the latest
+ * message (the later-linked one when the list does not hold it or on a tie).
+ * Null when the card links no thread: the card opens instead.
+ */
+export function youThread(card: Pick<InboxCardWire, 'threads' | 'sent'>, rowOf: (threadId: string) => { last_at?: string } | null): string | null {
+  const sent = card.sent?.thread_id;
+  // A send links its thread (store.sendCard), and the wire drops a thread that is gone: so linked is enough.
+  if (sent && card.threads.includes(sent)) return sent;
+  let best: string | null = null;
+  let bestAt = -Infinity;
+  for (const threadId of card.threads) {
+    const at = Date.parse(rowOf(threadId)?.last_at ?? '');
+    const time = Number.isNaN(at) ? -Infinity : at;
+    if (best === null || time >= bestAt) {
+      best = threadId;
+      bestAt = time;
+    }
+  }
+  return best;
+}
+
+/** The "You: …" link's accessible name: its visible words first (WCAG 2.5.3), then where it goes: "You: Merge #14, open the thread". */
+export function youLinkLabel(you: string): string {
+  return `You: ${you}, open the thread`;
+}
+
 /** The agent a sent card went to, while it waits in Backlog: "Sent to Codex". */
 export function sentTo(card: InboxCardWire): string | null {
   return isInboxCardSentWaiting(card) && card.sent ? inboxAgentName(card.sent.to) : null;
@@ -224,7 +297,7 @@ export function messageKey(key: string, session: string, body: string): string {
   return `${key}:${session}:${hash.toString(36)}`;
 }
 
-/** "Where is this?": the message "Ask where this is" sends to the card's agent. */
+/** "Where is this?": the message "Ask for an update" sends to the card's agent. */
 export function askWhereBody(card: Pick<InboxCardWire, 'id' | 'title'>): string {
   return `Where is “${card.title}”? (Board card ${card.id}) Move the card, or say where it stands with the card action.`;
 }

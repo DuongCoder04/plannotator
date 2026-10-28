@@ -30,8 +30,10 @@ import {
   putOff,
   skipAnswer,
   swipeChoices,
+  swipeHint,
   answerNeedsConfirm,
   confirmLabel,
+  sessionChips,
 } from './decisions/model';
 
 function question(key: string, extra: Partial<InboxQuestion> = {}): InboxQuestion {
@@ -120,6 +122,14 @@ describe('the queue', () => {
     expect(groupReady(q, groupKeyOf(B1))).toBe(true);
     expect(previousId(q, A1.id)).toBe(B1.id);
     expect(headLine({ ...q, current: A1.id })).toBe('3 of 3 · 1 agent waiting');
+  });
+
+  test('two sessions of one agent get chips that read apart: the later ones say "another session"', () => {
+    const C1 = decision('msg_c/q-4', 'ses_c');
+    const q = mergeDecisions(emptyQueue(), [A1, B1, C1]);
+    expect(sessionChips(q).map((c) => c.name)).toEqual(['Claude Code', 'Claude Code (another session)', 'Claude Code (another session 3)']);
+    // One session of each agent: the names as they are.
+    expect(sessionChips(mergeDecisions(emptyQueue(), [A1, A2])).map((c) => c.name)).toEqual(['Claude Code']);
   });
 
   test('a group of action items alone sends nothing (the actions route sends those)', () => {
@@ -231,6 +241,21 @@ describe('answers', () => {
     expect(skipAnswer(A1.question, 'later').note).toBe('later');
     expect(swipeChoices(A1.question)).toEqual(['Yes', 'No']);
     expect(swipeChoices({ ...A1.question, kind: 'multi' })).toBeNull();
+  });
+
+  test("a picked label's markdown reads as its words on the stamp; the answer keeps the label as written", () => {
+    const linked = { ...A1.question, choices: [{ label: '[15% off](forecast-15.html)' }, { label: '`FLAT10` code' }] } as InboxQuestion;
+    const answer = choiceAnswer(linked, ['[15% off](forecast-15.html)'], '');
+    expect(answer.selected).toEqual(['[15% off](forecast-15.html)']);
+    expect(answerWords(answer)).toBe('15% off');
+    expect(answerWords({ ...answer, selected: ['**20%** for members', '`FLAT10` code'] })).toBe('20% for members, FLAT10 code');
+  });
+
+  test("the swipe hint says the labels' words; the swipe commits the label as written", () => {
+    const linked = { ...A1.question, choices: [{ label: '[Yes](a.html)' }, { label: '`No`' }] } as InboxQuestion;
+    const choices = swipeChoices(linked)!;
+    expect(choices).toEqual(['[Yes](a.html)', '`No`']);
+    expect(swipeHint(choices)).toBe('Swipe right for Yes, left for No.');
   });
 });
 

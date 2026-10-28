@@ -89,6 +89,7 @@ import {
 } from "@plannotator/server/review";
 import { runGuideCli } from "@plannotator/server/guide-cli";
 import { runUpdateCommand } from "./update-command";
+import { runUpdatePrepareCommand } from "@plannotator/server/update-prepare";
 import { takeUpdateHint } from "@plannotator/shared/update-check";
 import {
   startAnnotateServer as startAnnotateServerUnguarded,
@@ -204,6 +205,8 @@ import {
 } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionByAncestorPids, findCopilotSessionForCwd, getRecentCopilotMessages } from "./copilot-session";
 import { resolveLatestVibePlan } from "./vibe-plan";
+import { findQwenSessionLog, getRecentQwenMessages } from "./qwen-session";
+import { isQwenPlanPermissionRequest, qwenPlanFromEvent, qwenPlanHookOutput } from "./qwen-plan";
 import { resolveClaudePlan } from "./claude-plan";
 import { takeModPlanApproval } from "./mod-plan-approval";
 import {
@@ -224,7 +227,7 @@ import { exitOnUnknownSubcommand } from "./unknown-subcommand";
 import { completeAnnotateCommand } from "./annotate-command";
 import { ensureInboxRunning, runInboxCommand, selfCommand as inboxSelfCommand } from "./inbox-command";
 import { runCardCommand } from "./card-command";
-import { runTelemetryCommand } from "./telemetry-command";
+import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
@@ -315,10 +318,14 @@ const rawArgs = process.argv.slice(2);
       }),
     );
   }
-  // Usage counts for experimental features (unreleased, HIDDEN_SUBCOMMANDS):
-  // telemetry-command.ts. Before the strict-annotate parse, which takes `--json`.
-  if (args[0] === "telemetry" && !args.slice(1).some((a) => a === "--help" || a === "-h")) {
-    process.exit(await runTelemetryCommand(args.slice(1), { version: getCliVersion() }));
+}
+// `plannotator feedback --stdin`: the person's feedback about Plannotator,
+// sent to the feedback Worker (feedback-command.ts). Before the strict-annotate
+// parse: it takes its own flags, and its own --help.
+{
+  const args = rawArgs;
+  if (args[0] === "feedback") {
+    process.exit(await runFeedbackCommand(args.slice(1), { env: process.env, version: getCliVersion() ?? "dev" }));
   }
 }
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's
@@ -752,6 +759,13 @@ if (args[0] === "update") {
   process.exit(await runUpdateCommand(rawArgs.slice(rawArgs.indexOf("update") + 1), { currentVersion: getCliVersion() }));
 }
 
+// Internal: the POSIX update wrapper's download step (safe updates, step 1).
+// This binary's own fetch downloads the install script and the expected
+// checksums into a private temp dir and prints the dir (update-prepare.ts).
+if (args[0] === "update-prepare") {
+  process.exit(await runUpdatePrepareCommand(args.slice(1), { platform: process.platform }));
+}
+
 if (args[0] === "install-runtime") {
   const runtime = args[1];
   if (runtime !== "agent-terminal" && runtime !== "call-flow") {
@@ -769,7 +783,7 @@ if (args[0] === "install-runtime") {
 // (inbox/inbox.json). Dispatched before the session registry and the
 // auto-update trigger below, which belong to review sessions.
 if (args[0] === "inbox") {
-  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent() });
+  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent(), json: jsonFlag });
 }
 
 if (isInteractiveNoArgInvocation(args, process.stdin.isTTY)) {
@@ -852,6 +866,14 @@ const pasteApiUrl = process.env.PLANNOTATOR_PASTE_URL || undefined;
 //   > Copilot CLI (COPILOT_CLI)
 //   > OpenCode (OPENCODE)
 //   > Gemini CLI (GEMINI_CLI)
+//   > Qwen Code (QWEN_CODE_SESSION_ID, which Qwen sets for its hooks and its
+//     shell tool; QWEN_CODE=1 is set for the shell tool only). The plan hook
+//     also knows Qwen from its payload (PermissionRequest + exit_plan_mode),
+//     and the extension's hook entry sets PLANNOTATOR_ORIGIN=qwen-code.
+//     Known limit: Qwen exports QWEN_CODE_SESSION_ID to every child, so a
+//     Claude Code started from a Qwen shell reads as Qwen here (and Qwen
+//     started from a Claude shell carries CLAUDECODE, so env alone cannot
+//     tell the nearer host).
 //   > oh-my-pi harness (OMPCODE) — checked last because OMP exports OMPCODE
 //     into every shell it spawns; runtimes launched from an OMP session must
 //     still be detected as themselves. OMPCODE still wins over the terminal
@@ -871,6 +893,7 @@ const detectedOrigin: Origin =
   process.env.COPILOT_CLI ? "copilot-cli" :
   process.env.OPENCODE ? "opencode" :
   process.env.GEMINI_CLI ? "gemini-cli" :
+  (process.env.QWEN_CODE_SESSION_ID || process.env.QWEN_CODE === "1") ? "qwen-code" :
   process.env.OMPCODE ? "oh-my-pi" :
   "claude-code";
 
@@ -1861,6 +1884,7 @@ if (args[0] === "sessions") {
   const isDroid = detectedOrigin === "droid";
   const isCopilot = detectedOrigin === "copilot-cli";
   const isVibe = detectedOrigin === "mistral-vibe";
+  const isQwen = detectedOrigin === "qwen-code";
 
   // Collect up to N recent assistant messages so the user can pick the right
   // one — defaults to the same selection as the legacy "last message"
@@ -1877,7 +1901,7 @@ if (args[0] === "sessions") {
   // earlier branch claims the invocation.
   let copilotLockSessionDir: string | null = null;
   let copilotSessionDir: string | null = null;
-  if (!stdinFlag && !isCodex && !isDroid && !isVibe) {
+  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isQwen) {
     copilotLockSessionDir = findCopilotSessionByAncestorPids();
     copilotSessionDir = copilotLockSessionDir ??
       (isCopilot ? findCopilotSessionForCwd(projectRoot) : null);
@@ -1979,6 +2003,21 @@ if (args[0] === "sessions") {
     if (vibeLog) {
       recentMessages = getRecentVibeMessages(vibeLog, RECENT_MESSAGES_LIMIT)
         .map((m) => ({ messageId: m.messageId, text: m.text, lineNumbers: [], timestamp: m.timestamp }));
+      lastMessage = recentMessages[0] ?? null;
+    }
+  } else if (isQwen) {
+    // Qwen Code path: QWEN_CODE_PROJECT_DIR + QWEN_CODE_SESSION_ID (set for
+    // the shell tool that runs this) name the session's log directly; the
+    // fallback is the newest chat of the cwd's project (qwen-session.ts).
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Qwen Code detected, project root: ${projectRoot}`);
+    }
+    const qwenLog = findQwenSessionLog({ cwd: projectRoot });
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Qwen selected log: ${qwenLog ?? "(none)"}`);
+    }
+    if (qwenLog) {
+      recentMessages = getRecentQwenMessages(qwenLog, RECENT_MESSAGES_LIMIT);
       lastMessage = recentMessages[0] ?? null;
     }
   } else {
@@ -2794,6 +2833,8 @@ if (args[0] === "sessions") {
     origin: "claude-code",
     planFilePath: input.planFilePath,
     permissionMode: input.permissionMode,
+    // A chain under the session root's project is continued after a shell cd (#2197).
+    historyRoot: input.projectRoot,
     planRevisions: true,
     // The mod delivers an approval's notes (planHostResult composes the
     // approved-with-notes prompt). The classic PermissionRequest hook below
@@ -3047,11 +3088,16 @@ if (args[0] === "sessions") {
   let isGemini = false;
   let planFilename = "";
 
+  // Qwen Code: PermissionRequest on exit_plan_mode, the plan inline (qwen-plan.ts).
+  const isQwen = isQwenPlanPermissionRequest(event);
+
   // Detect harness: Gemini sends plan_filename (file on disk), Claude Code sends plan (inline)
-  planFilename = event.tool_input?.plan_filename || event.tool_input?.plan_path || "";
+  planFilename = isQwen ? "" : event.tool_input?.plan_filename || event.tool_input?.plan_path || "";
   isGemini = !!planFilename;
 
-  if (isGemini) {
+  if (isQwen) {
+    planContent = qwenPlanFromEvent(event);
+  } else if (isGemini) {
     // Reconstruct full plan path from transcript_path and session_id:
     // transcript_path = <projectTempDir>/chats/session-...json
     // plan lives at   = <projectTempDir>/<session_id>/plans/<plan_filename>
@@ -3074,12 +3120,21 @@ if (args[0] === "sessions") {
   // Start the plan review server
   const server = await startPlannotatorServer({
     plan: planContent,
-    origin: isGemini ? "gemini-cli" : detectedOrigin,
+    origin: isQwen ? "qwen-code" : isGemini ? "gemini-cli" : detectedOrigin,
     // No approvalNotesSupported: Claude Code's PermissionRequest allow carries
-    // no message, and Gemini CLI shows a systemMessage to the person, not the
-    // model, so notes sent with an approval would be lost.
+    // no message, Gemini CLI shows a systemMessage to the person, not the
+    // model, and Qwen Code ignores a hook's allow on exit_plan_mode, so notes
+    // sent with an approval would be lost.
     // Claude Code writes the plan to disk before the hook fires.
-    planFilePath: isGemini ? undefined : event.tool_input?.planFilePath,
+    planFilePath: isGemini || isQwen ? undefined : event.tool_input?.planFilePath,
+    // Claude Code sets CLAUDE_PROJECT_DIR (the session's project root) for
+    // hooks; a shell cd does not move it, so a chain under its project is
+    // continued (#2197). Gemini CLI and Qwen Code set the same variable as an
+    // alias: left out of the Claude Code check. Qwen's own QWEN_PROJECT_DIR
+    // (the session's working directory) plays the same part for Qwen.
+    historyRoot: isQwen
+      ? process.env.QWEN_PROJECT_DIR || undefined
+      : !isGemini && detectedOrigin === "claude-code" ? process.env.CLAUDE_PROJECT_DIR : undefined,
     permissionMode,
     sharingEnabled,
     shareBaseUrl,
@@ -3114,7 +3169,9 @@ if (args[0] === "sessions") {
   server.stop();
 
   // Output decision in the appropriate format for the harness
-  if (isGemini) {
+  if (isQwen) {
+    console.log(qwenPlanHookOutput(result));
+  } else if (isGemini) {
     if (result.approved) {
       console.log(result.feedback ? JSON.stringify({ systemMessage: result.feedback }) : "{}");
     } else {

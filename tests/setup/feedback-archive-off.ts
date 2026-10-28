@@ -38,12 +38,6 @@ delete process.env.PLANNOTATOR_AGENT_TOOL;
 // (apps/relay/test) sets its `wrangler dev` URL in the env it spawns.
 process.env.PLANNOTATOR_RELAY_URL = "http://127.0.0.1:9";
 
-// Usage counts (packages/shared/usage-counts.ts): a source run sends nowhere
-// unless PLANNOTATOR_TELEMETRY_URL names a loopback endpoint. A contributor's
-// shell must not name one for every test; tests that need it pass it in the
-// env they hand the sender or the process they spawn.
-delete process.env.PLANNOTATOR_TELEMETRY_URL;
-
 // The Inbox publishes itself over the tailnet when this is on: a contributor
 // who set it in their shell must not make every Inbox test run the real
 // `tailscale` CLI. Tests that need it inject a scripted runner.
@@ -62,9 +56,19 @@ process.env.PLANNOTATOR_INBOX_CONNECT = "0";
 // serve a fake API and set this in their own bodies or spawned env.
 process.env.PLANNOTATOR_UPDATE_API_URL = "http://127.0.0.1:9/releases/latest";
 
+// Product feedback (the Inbox's Feedback dialog, `plannotator feedback`): never
+// the live Worker, whose table is append-only, so one stray row needs a trigger
+// dropped by hand. A closed loopback port refuses at once ("Couldn't send
+// feedback right now"). Overrides a contributor's own value too. Tests that
+// send point it (or the Inbox's `feedbackUrl` option) at a local fake in their
+// own bodies or spawned env. tests/feedback-live-url.test.ts guards both.
+process.env.PLANNOTATOR_FEEDBACK_URL = "http://127.0.0.1:9/feedback";
+
 // The install script the update wrapper downloads: never the real one. A closed
 // loopback port refuses at once, so an unintended Update now fails fast.
 process.env.PLANNOTATOR_INSTALL_SCRIPT_URL = "http://127.0.0.1:9/install.sh";
+// The .sha256 files `update-prepare` downloads next to it: never GitHub's.
+process.env.PLANNOTATOR_RELEASE_DOWNLOAD_URL = "http://127.0.0.1:9/download";
 
 // Every session a test starts, in this process or in a child that inherits
 // this environment, runs a program that exits at once instead of a browser.

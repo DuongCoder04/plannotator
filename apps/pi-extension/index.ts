@@ -35,6 +35,7 @@ import {
 } from "./generated/checklist.ts";
 import { loadConfig, resolveAgentTool, resolveUseJina } from "./generated/config.ts";
 import { detectPiHost, setPiHost } from "./pi-host.ts";
+import { warnRuntimeTlsOnce } from "./runtime-tls.ts";
 import { importFresh, isPlannotatorUpdatedError, launchFailureText } from "./package-version.ts";
 import { readImprovementHook } from "./generated/improvement-hooks.ts";
 import { composeImproveContext } from "./generated/pfm-reminder.ts";
@@ -2645,6 +2646,9 @@ Call ${PLAN_MARK_DONE_TOOL} immediately after each completed step and before the
 		for (const warning of loadedConfig.warnings) {
 			ctx.ui.notify(`Plannotator config: ${warning}`, "warning");
 		}
+		// A runtime without the Oct 2026 TLS fixes: one line per Pi start. It
+		// replaces the package's engines floor, which kept updates from installing (#902).
+		warnRuntimeTlsOnce((message) => ctx.ui.notify(message, "warning"));
 
 		// Check --plan flag
 		if (pi.getFlag("plan") === true) {

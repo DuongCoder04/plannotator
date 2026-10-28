@@ -298,11 +298,12 @@ test('an image in a message takes a comment and a markup, like an attached image
   await page.mouse.move(at(0.5, 0.15).x, at(0.5, 0.15).y, { steps: 8 });
   await page.mouse.move(at(0.64, 0.19).x, at(0.64, 0.19).y, { steps: 8 });
   await page.mouse.up();
+  // Enter adds the drawing to the reply at once; the words after it are its note.
   await page.keyboard.press('Enter');
-  await expect(pane().locator('.ib-imgcompose .ib-markup img')).toBeVisible();
-  await pane().getByRole('textbox', { name: 'Comment on checkout-b-steps.png' }).fill('Make step 1 bold, and say which step you are on.');
+  await expect(pane().locator('[data-image-composer] [data-markup-kept] img')).toBeVisible();
+  await pane().getByRole('textbox', { name: 'A note with your drawing on checkout-b-steps.png' }).fill('Make step 1 bold, and say which step you are on.');
   await shot(page, '03-inline-image-comment-and-markup');
-  await pane().getByRole('button', { name: 'Comment', exact: true }).click();
+  await pane().getByRole('button', { name: 'Add note', exact: true }).click();
   await expect(pane().locator('.ib-apanel')).toContainText('Make step 1 bold');
   await shot(page, '04-inline-image-comment-saved');
 });
@@ -430,6 +431,7 @@ test('plan review and annotate get the light version: full screen, ← → acros
       [
         ['plannotator-plan-look-choice-resolved', 'true'],
         ['plannotator-announce-tui-herdr-seen', '1'],
+        ['plannotator-announce-inbox-seen', '1'],
         ['plannotator-announce-ask-session-seen', '1'],
         ['plannotator-announce-agent-tool-seen', '1'],
       ].map(([name, value]) => ({ name: name!, value: value!, url })),
@@ -505,6 +507,7 @@ test('Actual size shows an image at its real size: a tall one scrolls, a small o
       [
         ['plannotator-plan-look-choice-resolved', 'true'],
         ['plannotator-announce-tui-herdr-seen', '1'],
+        ['plannotator-announce-inbox-seen', '1'],
         ['plannotator-announce-ask-session-seen', '1'],
         ['plannotator-announce-agent-tool-seen', '1'],
       ].map(([name, value]) => ({ name: name!, value: value!, url })),
@@ -605,6 +608,7 @@ test('the lightbox zooms: Ctrl + wheel about the pointer, drag pans, a double cl
       [
         ['plannotator-plan-look-choice-resolved', 'true'],
         ['plannotator-announce-tui-herdr-seen', '1'],
+        ['plannotator-announce-inbox-seen', '1'],
         ['plannotator-announce-ask-session-seen', '1'],
         ['plannotator-announce-agent-tool-seen', '1'],
       ].map(([name, value]) => ({ name: name!, value: value!, url })),
@@ -713,6 +717,7 @@ test('on an iPhone (WebKit) a tap beside the image closes the single overlay, an
       [
         ['plannotator-plan-look-choice-resolved', 'true'],
         ['plannotator-announce-tui-herdr-seen', '1'],
+        ['plannotator-announce-inbox-seen', '1'],
         ['plannotator-announce-ask-session-seen', '1'],
         ['plannotator-announce-agent-tool-seen', '1'],
       ].map(([name, value]) => ({ name: name!, value: value!, url })),
@@ -895,9 +900,9 @@ test('the Inbox\'s file viewer zooms like the lightbox: Ctrl + wheel keeps the p
   await page.mouse.move(c.x + c.width * (target.u + reach), c.y + c.height * target.v, { steps: 10 });
   await page.mouse.up();
   await page.keyboard.press('Enter');
-  await expect(pane().locator('.ib-imgcompose .ib-markup img')).toBeVisible();
-  await pane().getByRole('textbox', { name: 'Comment on summary.png' }).fill('Circle the total; it should be bigger.');
-  await pane().getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(pane().locator('[data-image-composer] [data-markup-kept] img')).toBeVisible();
+  await pane().getByRole('textbox', { name: 'A note with your drawing on summary.png' }).fill('Circle the total; it should be bigger.');
+  await pane().getByRole('button', { name: 'Add note', exact: true }).click();
   await page.locator('[data-full-view-comments]').click();
   const drawer = pane().locator('[data-comments-drawer="open"]');
   await expect(drawer).toBeVisible();
@@ -1088,6 +1093,7 @@ test('#2127: in annotate, a plain wheel zooms in, a pause, then the wheel scroll
         [
           ['plannotator-plan-look-choice-resolved', 'true'],
           ['plannotator-announce-tui-herdr-seen', '1'],
+          ['plannotator-announce-inbox-seen', '1'],
           ['plannotator-announce-ask-session-seen', '1'],
           ['plannotator-announce-agent-tool-seen', '1'],
         ].map(([name, value]) => ({ name: name!, value: value!, url })),

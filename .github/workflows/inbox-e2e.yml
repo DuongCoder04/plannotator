@@ -16,8 +16,12 @@ name: Inbox window e2e
 # engine WKWebView is, and the VS Code Guides webview's sanitizer and Mermaid
 # path (vscode-guides-sanitize.spec.ts) and its answer frame
 # (vscode-guides-answer.spec.ts), no binary needed. Runs only when the
-# Inbox, the ui and the guide viewer it composes, the binary entry or the build
-# could have changed.
+# Inbox, the ui and the guide viewer it composes, the plan editor (the Grid
+# paper spec, grid-paper-fill.spec.ts), the plan and annotate servers and the
+# draft storage they share (annotate-*.spec.ts, plan-linked-doc-drafts.spec.ts),
+# the binary entry or the build could have changed. The Pi servers are not
+# listed: these specs drive only the compiled Bun binary, and test.yml runs the
+# Pi mirrors of the same scenarios.
 
 on:
   pull_request:
@@ -28,6 +32,8 @@ on:
       - 'apps/inbox/**'
       - 'packages/server/inbox*'
       - 'packages/server/ref-cards*'
+      - 'packages/shared/ref-cards*'
+      - 'packages/editor/**'
       - 'packages/core/forge-ref*'
       - 'packages/shared/inbox/**'
       - 'packages/core/inbox*'
@@ -37,10 +43,17 @@ on:
       - 'packages/server/html-assets.ts'
       - 'packages/server/tailscale-serve.ts'
       - 'packages/server/request-host-guard.ts'
+      - 'packages/server/index.ts'
+      - 'packages/server/annotate.ts'
+      - 'packages/shared/annotate*'
+      - 'packages/shared/draft.ts'
+      - 'packages/shared/review-draft.ts'
+      - 'packages/shared/doc-resolve.ts'
       - 'packages/shared/tailscale.ts'
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
@@ -74,6 +87,8 @@ on:
       - 'apps/inbox/**'
       - 'packages/server/inbox*'
       - 'packages/server/ref-cards*'
+      - 'packages/shared/ref-cards*'
+      - 'packages/editor/**'
       - 'packages/core/forge-ref*'
       - 'packages/shared/inbox/**'
       - 'packages/core/inbox*'
@@ -83,10 +98,17 @@ on:
       - 'packages/server/html-assets.ts'
       - 'packages/server/tailscale-serve.ts'
       - 'packages/server/request-host-guard.ts'
+      - 'packages/server/index.ts'
+      - 'packages/server/annotate.ts'
+      - 'packages/shared/annotate*'
+      - 'packages/shared/draft.ts'
+      - 'packages/shared/review-draft.ts'
+      - 'packages/shared/doc-resolve.ts'
       - 'packages/shared/tailscale.ts'
       - 'packages/shared/html-assets.ts'
       - 'packages/shared/html-assets-node.ts'
       - 'packages/ui/**'
+      - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
       - 'packages/server/guide/**'
