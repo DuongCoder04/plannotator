@@ -154,7 +154,11 @@ function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
   );
 }
 
-/** The agent's mark in its own column, just before the time (approval "inbox-row-badges"). */
+/**
+ * The agent's mark in a box of its own (approval "inbox-row-badges", and the owner's pick (h) of 2026-10-27):
+ * a wide row's column just before the time; the end of a two-line row's second line; the end of a phone
+ * row's last line. Each box ends on the row's right edge, so every mark lines up.
+ */
 function MarkCol({ row }: { row: InboxListRow }) {
   return (
     <span className="ib-mcol" data-mark-col="">
@@ -400,17 +404,19 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
+      {/* Line 1 is laid out by its own words, nothing reserved: the project … the count, the ✓ and the time. */}
       <div className="ib-l1">
         <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-        <MarkCol row={row} />
-        <span className="ib-t">
+        <span className={`ib-t${count ? '' : ' ib-alone'}`}>
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </div>
+      {/* Line 2: the badge, the thread's name and the subject, then the agent's mark at the bottom right. */}
       <div className="ib-l2">
         {badge}
         <SubjectLine row={row} pinned={pinned} />
+        <MarkCol row={row} />
       </div>
       {pinned && <PinnedWords />}
     </button>
@@ -420,11 +426,11 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
 }
 
 /**
- * A row on a phone, read like a mail app's: who and when on the first line
- * (the agent's mark, the project, or the agent in one project's list, and the
- * time), the subject on up to two lines, then what the thread holds (the
- * badge, the thread's name, the question count, the guided review mark),
- * which wraps rather than pushing anything off the row.
+ * A row on a phone, read like a mail app's: where and when on the first line
+ * (the project, or the agent in one project's list, and the time), the subject
+ * on up to two lines, then what the thread holds (the badge, the thread's
+ * name, the question count, the guided review mark) on one line ended by the
+ * agent's mark. With nothing for that line, the mark ends the subject's last line.
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
@@ -450,27 +456,36 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       <span className="ib-m1">
         <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         {pinned && <PinMark />}
-        <MarkCol row={row} />
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </span>
-      <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-      {(badge || chip || count || guide) && (
-        <span className="ib-m3">
-          {badge}
-          {chip && (
-            <span className="ib-key">
-              <span className="ib-keyt" dir="auto">{chip}</span>
-            </span>
-          )}
-          {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-          {guide && (
-            <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
-              <Icon name="book" size={13} />
-              <span className="ib-att-l">Guided review</span>
-            </span>
-          )}
+      {badge || chip || count || guide ? (
+        <>
+          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
+          {/* One line: the thread's name gives way (it wraps inside its pill) before anything moves to a line of its own. */}
+          <span className="ib-m3">
+            {badge}
+            {chip && (
+              <span className="ib-key">
+                <span className="ib-keyt" dir="auto">{chip}</span>
+              </span>
+            )}
+            {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
+            {guide && (
+              <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
+                <Icon name="book" size={13} />
+                <span className="ib-att-l">Guided review</span>
+              </span>
+            )}
+            <MarkCol row={row} />
+          </span>
+        </>
+      ) : (
+        // Nothing for a third line: the mark ends the subject's last line instead of taking a line of its own.
+        <span className="ib-m2end">
+          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
+          <MarkCol row={row} />
         </span>
       )}
       {pinned && <PinnedWords />}
