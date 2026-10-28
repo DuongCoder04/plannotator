@@ -12,23 +12,27 @@
  * (the fence's source in place of the page) and Full screen (the same page in
  * ui's popout, scrolling).
  *
- * The window keeps the keyboard (`focusGuard`): a page that takes focus the
- * person did not give it gets it taken back at once, and one that keeps doing
- * it is stopped. A link the page hands over is never opened by the page: the
+ * The window keeps the keyboard (`focusGuard`): an inline page sits under a
+ * transparent window-owned shield until the person clicks or taps it (the
+ * shield passes the click, pointer moves and sideways scrolling on to the
+ * page, and vertical scrolling falls through to the thread), so focus the
+ * person did not give is taken back at once, and a page that keeps taking it
+ * is stopped. A link the page hands over is never opened by the page: the
  * window shows its real address and the person opens it (`embedLinkOpenable`
  * refuses the Inbox's own host, this computer and the private network).
  */
 
 import { Code } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   EMBED_SANDBOX,
   EMBED_THEME_TOKENS,
   embedFragment,
-  embedLinkOpenable,
+  embedLinkOffer,
   embedThemeMessage,
   readEmbedMessage,
   type EmbedMode,
+  type EmbedShieldMessage,
   type EmbedTheme,
 } from '@plannotator/core/html-embed';
 import type { Block } from '../../types';
@@ -36,7 +40,7 @@ import { CodeBlock } from '../blocks/CodeBlock';
 import { HostTitle } from '../HostTitle';
 import { PopoutDialog } from '../PopoutDialog';
 import { useTheme } from '../ThemeProvider';
-import { guardEmbedFocus } from './focusGuard';
+import { chooseEmbedFrame, guardEmbedFocus, isEmbedFrameChosen, subscribeEmbedFocus } from './focusGuard';
 import { acquireEmbedLoad, claimEmbedLive, onEmbedLiveFreed, releaseEmbedLive, useNearViewport } from './loadGate';
 
 /** A host that can serve embed documents (the Inbox: POST /api/inbox/embeds). */
@@ -76,24 +80,45 @@ function useEmbedTheme(): EmbedTheme {
   return theme;
 }
 
-/** Grabs (focus taken without the person choosing the frame) that stop a page, within `GRAB_WINDOW_MS`. */
-const GRAB_LIMIT = 3;
-const GRAB_WINDOW_MS = 15_000;
+/**
+ * Grabs (focus taken without the person giving it) that stop a page: a burst
+ * (3 within 15 s), or a page that keeps trying slowly (6 within 10 minutes).
+ */
+const GRAB_LIMITS = [
+  { count: 3, withinMs: 15_000 },
+  { count: 6, withinMs: 600_000 },
+] as const;
+
+/** How long a page has to speak (its bootstrap reports a height) before the block shows its code. */
+let readyTimeoutMs = 10_000;
+/** Tests only. */
+export function setEmbedReadyTimeoutForTests(ms: number): void {
+  readyTimeoutMs = ms;
+}
 
 /**
- * A link the page handed over, as the window will offer it: null for an
- * address it never offers (`embedLinkOpenable`), or when nobody clicked (the
- * page's click handing it over is the person's activation in the window too).
+ * A link the page handed over, as the window will offer it (`embedLinkOffer`:
+ * the address that would open, in full), or null: an address it never
+ * offers, or nobody clicked (a click in the page is the person's activation
+ * in the window too).
  */
 function offeredLink(url: string): string | null {
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (activation && !activation.isActive) return null;
-  return embedLinkOpenable(url, window.location.hostname) ? url : null;
+  return embedLinkOffer(url, window.location.hostname);
+}
+
+/** Post what the shield passes on to the frame's page. */
+function toPage(frame: HTMLIFrameElement | null, message: EmbedShieldMessage): void {
+  frame?.contentWindow?.postMessage(message, '*');
 }
 
 /**
  * One embed frame and its messages. `onLoaded` runs on its first load; a
- * second load means the page went elsewhere (`onLeft`).
+ * second load means the page went elsewhere (`onLeft`). `onReady` runs on the
+ * page's first message (its bootstrap ran: a frame the browser refused never
+ * sends one). Inline, the frame sits under the window's shield until the
+ * person clicks it.
  */
 function EmbedFrame({
   url,
@@ -104,6 +129,7 @@ function EmbedFrame({
   onHeight,
   onEscape,
   onLoaded,
+  onReady,
   onLeft,
   onGrab,
   onLink,
@@ -116,6 +142,7 @@ function EmbedFrame({
   onHeight?: (height: number) => void;
   onEscape: (frame: HTMLIFrameElement | null) => void;
   onLoaded?: () => void;
+  onReady?: () => void;
   onLeft?: () => void;
   onGrab: () => void;
   onLink: (url: string) => void;
@@ -124,14 +151,28 @@ function EmbedFrame({
   const loads = useRef(0);
   // The theme the page starts with rides in the URL (no flash); later ones go by message.
   const [src] = useState(() => url + embedFragment(theme, mode));
-  const handlers = useRef({ onHeight, onEscape, onLoaded, onLeft, onGrab, onLink });
-  handlers.current = { onHeight, onEscape, onLoaded, onLeft, onGrab, onLink };
+  const handlers = useRef({ onHeight, onEscape, onLoaded, onReady, onLeft, onGrab, onLink });
+  handlers.current = { onHeight, onEscape, onLoaded, onReady, onLeft, onGrab, onLink };
+  const spoke = useRef(false);
+  const chosen = useSyncExternalStore(
+    subscribeEmbedFocus,
+    () => isEmbedFrameChosen(ref.current),
+    () => false,
+  );
+  const moveFrame = useRef(0);
 
   useEffect(() => {
     const frame = ref.current;
     if (!frame) return;
-    return guardEmbedFocus(frame, () => handlers.current.onGrab());
-  }, []);
+    // Full screen is modal: there is no window field behind it, so focus there is the page's.
+    return guardEmbedFocus(frame, () => handlers.current.onGrab(), mode === 'full');
+  }, [mode]);
+
+  /** A point on the shield, in the frame's own pixels. */
+  const at = (event: { clientX: number; clientY: number }) => {
+    const box = ref.current!.getBoundingClientRect();
+    return { x: event.clientX - box.left, y: event.clientY - box.top };
+  };
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -139,6 +180,10 @@ function EmbedFrame({
       if (!ref.current || event.source !== ref.current.contentWindow) return;
       const message = readEmbedMessage(event.data);
       if (!message) return;
+      if (!spoke.current) {
+        spoke.current = true;
+        handlers.current.onReady?.();
+      }
       if (message.kind === 'height') handlers.current.onHeight?.(message.height);
       else if (message.kind === 'link') {
         const url = offeredLink(message.url);
@@ -154,7 +199,7 @@ function EmbedFrame({
     if (loads.current > 0) ref.current?.contentWindow?.postMessage(embedThemeMessage(theme), '*');
   }, [theme]);
 
-  return (
+  const iframe = (
     <iframe
       ref={ref}
       src={src}
@@ -177,6 +222,43 @@ function EmbedFrame({
         colorScheme: theme.scheme,
       }}
     />
+  );
+  if (mode === 'full') return iframe;
+  return (
+    <div className="relative">
+      {iframe}
+      {!chosen && (
+        // The window's shield: the person's click or tap lands here, so the window knows the page
+        // was chosen (the page sees its own pointer, so hovering can never count). It passes the
+        // click, pointer moves and sideways scrolling on; vertical scrolling falls through to the
+        // thread (an inline page never scrolls up and down itself).
+        <div
+          aria-hidden="true"
+          data-html-embed-shield=""
+          className="absolute inset-0"
+          onPointerMove={(event) => {
+            if (event.pointerType !== 'mouse') return;
+            const point = at(event);
+            cancelAnimationFrame(moveFrame.current);
+            moveFrame.current = requestAnimationFrame(() => toPage(ref.current, { pnEmbed: 1, kind: 'pointer', ...point }));
+          }}
+          onPointerLeave={() => {
+            cancelAnimationFrame(moveFrame.current);
+            toPage(ref.current, { pnEmbed: 1, kind: 'pointerleave' });
+          }}
+          onClick={(event) => {
+            const frame = ref.current;
+            if (!frame) return;
+            const point = at(event);
+            chooseEmbedFrame(frame);
+            toPage(frame, { pnEmbed: 1, kind: 'click', ...point });
+          }}
+          onWheel={(event) => {
+            if (event.deltaX !== 0) toPage(ref.current, { pnEmbed: 1, kind: 'scroll', dx: event.deltaX });
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -279,17 +361,31 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
     };
   }, [near, showCode, forced, generation, block.content]);
 
+  // Loaded: the load permit goes back. Ready only once the page speaks (a frame the browser
+  // refused loads too, blank, and never speaks).
   const loaded = useCallback(() => {
     releaseLoad.current?.();
     releaseLoad.current = null;
-    setPhase('ready');
   }, []);
+  const ready = useCallback(() => {
+    releaseLoad.current?.();
+    releaseLoad.current = null;
+    setPhase((now) => (now === 'loading' ? 'ready' : now));
+  }, []);
+
+  // A page that never speaks (the frame was refused, or the Inbox lost it): its code instead.
+  useEffect(() => {
+    if (phase !== 'loading' || url === null) return;
+    const timer = setTimeout(() => setPhase((now) => (now === 'loading' ? 'failed' : now)), readyTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [phase, url]);
 
   // Focus is already back in the window; a page that keeps taking it is stopped.
   const grabbed = useCallback(() => {
     const t = Date.now();
-    grabs.current = [...grabs.current.filter((at) => t - at < GRAB_WINDOW_MS), t];
-    if (grabs.current.length < GRAB_LIMIT) return;
+    const longest = GRAB_LIMITS[GRAB_LIMITS.length - 1]!.withinMs;
+    grabs.current = [...grabs.current.filter((at) => t - at < longest), t];
+    if (!GRAB_LIMITS.some(({ count, withinMs }) => grabs.current.filter((at) => t - at < withinMs).length >= count)) return;
     grabs.current = [];
     setFull(false);
     setLink(null);
@@ -371,6 +467,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
                 onHeight={setHeight}
                 onEscape={escapeInline}
                 onLoaded={loaded}
+                onReady={ready}
                 onLeft={() => setPhase('left')}
                 onGrab={grabbed}
                 onLink={setLink}

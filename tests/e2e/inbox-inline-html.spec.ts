@@ -17,7 +17,14 @@
  * - the page takes the keyboard: the person's typing in the reply box reaches
  *   the page (which could send it over https), an Inbox shortcut is swallowed
  *   by a page that focused itself, or a page that keeps doing it is not
- *   stopped (Chromium and WebKit);
+ *   stopped; hovering the page, a Tab that landed on the window, or a web
+ *   frame inside the page lends it the keyboard (Chromium and WebKit);
+ * - the window's shield stops the page working: the person's first click on
+ *   a page button does nothing, hovering it does not reach it, typing into
+ *   its input after clicking it fails, or the wheel over it no longer
+ *   scrolls the thread;
+ * - a window reached on another port (a forward) shows blank pages, or one
+ *   reached at 127.0.0.1 does not run its pages;
  * - in Chromium a busy page freezes the window (the frame is no longer served
  *   from the other loopback name, so it shares the window's process);
  * - a page that navigates its frame to the Inbox gets an answer other than a
@@ -35,6 +42,7 @@
 import { chromium, expect, test, type Browser, type BrowserContext, type Frame, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
+import { connect, createServer, type AddressInfo } from 'node:net';
 import { join, resolve } from 'node:path';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, removeInboxScratch } from './inbox-scratch';
@@ -81,6 +89,44 @@ const AUTOFOCUS = ['<label>Filter <input id="q" autofocus></label>', '<script>',
 /** A page that takes the keyboard once every 2 seconds: alive long enough to race the person's typing. */
 const SLOW_THIEF = ['<input id="grab" aria-label="grab">', '<script>', keyLogger('slow'), "setInterval(() => { document.getElementById('grab').focus(); }, 2000);", '</script>'].join('\n');
 
+/** Grabs only while the pointer is over it, at most once per 5 s (the delta review's probe). */
+const POINTER_THIEF = [
+  '<div style="height:400px;background:#3a6">a chart</div><input id="grab" aria-label="grab">',
+  '<script>',
+  keyLogger('pointer'),
+  "let inside = false, last = 0; document.addEventListener('mousemove', () => { inside = true; }); document.documentElement.addEventListener('mouseleave', () => { inside = false; });",
+  "setInterval(() => { if (inside && !document.hasFocus() && Date.now() - last > 5000) { last = Date.now(); document.getElementById('grab').focus(); } }, 200);",
+  '</script>',
+].join('\n');
+
+/** Grabs once, at a time it publishes: the test presses Tab just before. */
+const TAB_THIEF = [
+  '<input id="grab" aria-label="grab"><p id="at">at</p>',
+  '<script>',
+  keyLogger('tab'),
+  "window.grabAt = Date.now() + 4000; document.getElementById('at').textContent = String(window.grabAt);",
+  "setTimeout(() => { document.getElementById('grab').focus(); }, 4000);",
+  '</script>',
+].join('\n');
+
+/** The page frames a web page that takes the keyboard every 300 ms. */
+const NESTED = `<p id="n">nested</p><iframe id="inner" src="${CDN}/nested.html" style="width:300px;height:80px"></iframe>`;
+const NESTED_DOC = ['<input id="q" autofocus>', '<script>', keyLogger('nested'), "setInterval(() => { window.focus(); document.getElementById('q').focus(); }, 300);", '</script>'].join('\n');
+
+/** An ordinary interactive page: a button, an input, hover, and tall enough for the thread to scroll. */
+const WIDGET = [
+  '<button id="b">Count</button> <span id="n">0</span> <input id="t" aria-label="t"> <span id="hover">none</span>',
+  '<div style="height:1600px"></div>',
+  '<script>',
+  keyLogger('widget'),
+  "let n = 0; document.getElementById('b').addEventListener('click', () => { n += 1; document.getElementById('n').textContent = String(n); });",
+  "document.addEventListener('mousemove', (e) => { document.getElementById('hover').textContent = e.target.id || e.target.tagName; });",
+  '</script>',
+].join('\n');
+
+/** A page that only says it ran. */
+const RAN = '<p id="ok">ok</p><script>document.getElementById("ok").textContent = "ran";</script>';
+
 /** A page that steers its own frame at the Inbox. */
 const WANDERER = "<p>leaving</p><script>setTimeout(() => { location.href = new URL('/api/inbox/threads?wander', location.href).href; }, 300);</script>";
 
@@ -95,6 +141,7 @@ async function stubWeb(context: BrowserContext): Promise<string[]> {
     if (url.endsWith('/lib.js')) return route.fulfill({ status: 200, contentType: 'text/javascript', body: 'window.LIB = "loaded";' });
     if (url.endsWith('/data.json')) return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"ok":true}' });
     if (url.includes('/keys/')) return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' }, body: '' });
+    if (url.endsWith('/nested.html')) return route.fulfill({ status: 200, contentType: 'text/html', body: NESTED_DOC });
     return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>docs</title>docs' });
   });
   return asked;
@@ -156,6 +203,15 @@ async function embedFrame(page: Page, scope = page.locator('body'), ready = '#im
   const frame = (await handle!.contentFrame())!;
   await expect(frame.locator(ready)).not.toHaveText(pending);
   return frame;
+}
+
+/**
+ * The person clicks a spot on the page. Until they do, the window's shield lies over it, so the
+ * click lands on the shield at that spot (Playwright's own frame clicks would see it covered).
+ */
+async function clickInPage(page: Page, frame: Frame, selector: string): Promise<void> {
+  const box = (await frame.locator(selector).boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
 test('an html fence draws as a live, sandboxed page that loads from the web and never reaches the Inbox', async ({ browser, browserName }) => {
@@ -229,7 +285,7 @@ test('an html fence draws as a live, sandboxed page that loads from the web and 
 
     // A link the person clicks: the window shows its real address; it opens on the person's Open.
     const embed = message.locator('[data-html-embed]');
-    await frame.locator('#docs').click();
+    await clickInPage(page, frame, '#docs');
     await expect(embed.locator('[data-html-embed-link-url]')).toHaveText(`${CDN}/docs`);
     expect(context.pages()).toHaveLength(1);
     const opened = context.waitForEvent('page');
@@ -269,13 +325,13 @@ test('an html fence draws as a live, sandboxed page that loads from the web and 
 });
 
 /** Open a thread whose message holds `html`, with the web stubbed. */
-async function openThread(browser: Browser, world: World, subject: string, html: string) {
+async function openThread(browser: Browser, world: World, subject: string, html: string, base = world.url, after: string[] = []) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const web = await stubWeb(context);
   // Its own thread (a session's messages otherwise join its open thread, and a reply draft with it).
-  const sent = await world.agent.send({ project_path: world.project, thread: subject, subject, body: ['A page:', '', fence(html)].join('\n') });
+  const sent = await world.agent.send({ project_path: world.project, thread: subject, subject, body: ['A page:', '', fence(html), ...after].join('\n') });
   const page = await context.newPage();
-  await page.goto(`${world.url}#thread=${sent.thread_id}`);
+  await page.goto(`${base}#thread=${sent.thread_id}`);
   const message = page.locator(`[data-message-id="${sent.message_id as string}"]`);
   return { context, web, page, message, keysAt: (name: string) => web.filter((asked) => asked.includes(`/keys/${name}`)) };
 }
@@ -342,13 +398,162 @@ test('a page that takes the keyboard never gets the person’s typing, and one t
       // The person clicks into it (not mid-typing): theirs to type in.
       await quiet.page.waitForTimeout(800);
       const frame = await embedFrame(quiet.page, quiet.message, '#q', 'never');
-      await frame.locator('#q').click();
+      await clickInPage(quiet.page, frame, '#q');
+      // The click reaches the page by message: its input has focus a moment later.
+      await expect.poll(() => frame.evaluate(() => document.activeElement?.id)).toBe('q');
       await quiet.page.keyboard.type('ab');
       await expect(frame.locator('#q')).toHaveValue('ab');
     } finally {
       await quiet.context.close().catch(() => {});
     }
   } finally {
+    await world.close();
+  }
+});
+
+test('hovering a page, a Tab that lands on the window, or a web frame inside the page never lends it the keyboard', async ({ browser }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-lend-e2e-');
+  try {
+    // The person rests the pointer on the chart while composing: the page sees the hover, never the keys.
+    const pointer = await openThread(browser, world, 'A page that grabs on hover', POINTER_THIEF);
+    try {
+      const iframe = pointer.message.locator('iframe[data-html-embed-frame="inline"]');
+      await expect(iframe).toHaveCount(1);
+      await openReply(pointer.page);
+      await replyBox(pointer.page).click();
+      await pointer.page.keyboard.type('abc', { delay: 40 });
+      const box = (await iframe.boundingBox())!;
+      await pointer.page.mouse.move(box.x + box.width / 2, box.y + 100, { steps: 5 });
+      await pointer.page.waitForTimeout(6000);
+      await pointer.page.mouse.move(box.x + box.width / 2 + 10, box.y + 110, { steps: 3 });
+      await pointer.page.waitForTimeout(1500);
+      await pointer.page.keyboard.type('secret', { delay: 60 });
+      await expect(replyBox(pointer.page)).toHaveValue('abcsecret');
+      expect(pointer.keysAt('pointer')).toEqual([]);
+    } finally {
+      await pointer.context.close().catch(() => {});
+    }
+
+    // A Tab out of the reply box lands on a window element: a grab just after it is taken back.
+    const tab = await openThread(browser, world, 'A page that grabs after a Tab', TAB_THIEF);
+    try {
+      const frame = await embedFrame(tab.page, tab.message, '#at', 'at');
+      const grabAt = await frame.evaluate(() => (window as unknown as { grabAt: number }).grabAt);
+      await openReply(tab.page);
+      await replyBox(tab.page).click();
+      await tab.page.keyboard.type('abc', { delay: 40 });
+      const wait = grabAt - (await frame.evaluate(() => Date.now())) - 400;
+      if (wait > 0) await tab.page.waitForTimeout(wait);
+      await tab.page.keyboard.press('Tab');
+      await tab.page.waitForTimeout(1000);
+      await tab.page.keyboard.type('xyz', { delay: 60 });
+      await tab.page.waitForTimeout(500);
+      expect(tab.keysAt('tab')).toEqual([]);
+      expect(await tab.page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+    } finally {
+      await tab.context.close().catch(() => {});
+    }
+
+    // A web page framed inside the embed grabs every 300 ms: still the window's keyboard.
+    const nested = await openThread(browser, world, 'A page that frames a grabber', NESTED);
+    try {
+      await expect(nested.message.locator('iframe[data-html-embed-frame="inline"], [data-html-embed-grabbed]').first()).toBeVisible();
+      await openReply(nested.page);
+      await replyBox(nested.page).click();
+      await nested.page.keyboard.type('secret words typed slowly', { delay: 120 });
+      await expect(replyBox(nested.page)).toHaveValue('secret words typed slowly');
+      expect(nested.keysAt('nested')).toEqual([]);
+    } finally {
+      await nested.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
+test('the page works through the shield: hover reaches it, the first click works, its input takes typing, the wheel scrolls the thread', async ({ browser }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-shield-e2e-');
+  try {
+    // Enough text after the page for the thread to scroll.
+    const filler = Array.from({ length: 40 }, (_, i) => ['', `Paragraph ${i + 1} of the notes after the page.`]).flat();
+    const opened = await openThread(browser, world, 'An interactive page', WIDGET, world.url, filler);
+    try {
+      const { page, message } = opened;
+      const iframe = message.locator('iframe[data-html-embed-frame="inline"]');
+      const frame = await embedFrame(page, message, '#n', 'never');
+      await expect(message.locator('[data-html-embed-shield]')).toHaveCount(1);
+
+      // Hover reaches the page without a click, and lends it nothing.
+      const button = (await frame.locator('#b').boundingBox())!;
+      await page.mouse.move(button.x + button.width / 2, button.y + button.height / 2, { steps: 3 });
+      await expect(frame.locator('#hover')).toHaveText('b');
+      expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('IFRAME');
+
+      // The person's first click on the page's button works, with nothing in between.
+      await clickInPage(page, frame, '#b');
+      await expect(frame.locator('#n')).toHaveText('1');
+      await expect(message.locator('[data-html-embed-shield]')).toHaveCount(0);
+      // Theirs now: clicking its input and typing.
+      await frame.locator('#t').click();
+      await page.keyboard.type('hi');
+      await expect(frame.locator('#t')).toHaveValue('hi');
+
+      // Back in the window: the shield returns and the keys are the window's.
+      await openReply(page);
+      await replyBox(page).click();
+      await expect(message.locator('[data-html-embed-shield]')).toHaveCount(1);
+      await page.keyboard.type('mine');
+      await expect(replyBox(page)).toHaveValue('mine');
+      expect(opened.keysAt('widget').map((asked) => decodeURIComponent(asked.split('k=')[1] ?? ''))).toEqual(['h', 'i']);
+
+      // The wheel over the page scrolls the thread.
+      const scroller = await iframe.evaluateHandle((el) => {
+        let node: HTMLElement | null = el.parentElement;
+        while (node && !(node.scrollHeight > node.clientHeight && /(auto|scroll)/.test(getComputedStyle(node).overflowY))) node = node.parentElement;
+        return node!;
+      });
+      const before = await scroller.evaluate((el) => (el as HTMLElement).scrollTop);
+      const box = (await iframe.boundingBox())!;
+      const point = { x: box.x + box.width / 2, y: Math.max(box.y, 0) + 100 };
+      await page.mouse.move(point.x, point.y);
+      expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.hasAttribute('data-html-embed-shield'), point)).toBe(true);
+      await page.mouse.wheel(0, 400);
+      await expect.poll(() => scroller.evaluate((el) => (el as HTMLElement).scrollTop)).toBeGreaterThan(before + 100);
+    } finally {
+      await opened.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
+test('a window reached on another port, or at 127.0.0.1, runs its pages', async ({ browser }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-port-e2e-');
+  const inboxPort = Number(new URL(world.url).port);
+  // A plain TCP forward (an ssh -L, a dev proxy): the browser sees another port.
+  const forward = createServer((client) => {
+    const upstream = connect(inboxPort, '127.0.0.1');
+    client.pipe(upstream);
+    upstream.pipe(client);
+    client.on('error', () => upstream.destroy());
+    upstream.on('error', () => client.destroy());
+  });
+  await new Promise<void>((done) => forward.listen(0, '127.0.0.1', () => done()));
+  const forwardPort = (forward.address() as AddressInfo).port;
+  try {
+    for (const base of [`http://localhost:${forwardPort}/`, `http://127.0.0.1:${inboxPort}/`]) {
+      const opened = await openThread(browser, world, `Through ${base}`, RAN, base);
+      try {
+        const frame = await embedFrame(opened.page, opened.message, '#ok', 'ok');
+        await expect(frame.locator('#ok')).toHaveText('ran');
+        await expect(opened.message.locator('[data-html-embed]')).toHaveAttribute('data-html-embed-phase', 'ready');
+        expect(await frame.evaluate(() => self.origin)).toBe('null');
+      } finally {
+        await opened.context.close().catch(() => {});
+      }
+    }
+  } finally {
+    forward.close();
     await world.close();
   }
 });

@@ -97,8 +97,19 @@ export function embedFrameUrl(path: string, location: { protocol: string; hostna
  * other one, `embedFrameUrl`); elsewhere its own origin.
  */
 export function embedFrameAncestors(url: URL): string {
-  if (url.protocol !== "http:" || !url.port || !(LOOPBACK_NAMES as readonly string[]).includes(url.hostname)) return "'self'";
-  return LOOPBACK_NAMES.map((name) => `http://${name}:${url.port}`).join(" ");
+  const origins = embedLoopbackOrigins(url);
+  return origins.length > 0 ? origins.join(" ") : "'self'";
+}
+
+/**
+ * The Inbox's two loopback origins at the port the browser used for `url`
+ * (the request's Host, which a forward such as `ssh -L` may have changed),
+ * or none when `url` is not at a loopback name: the window's `frame-src` and
+ * an embed's `frame-ancestors` on this computer.
+ */
+export function embedLoopbackOrigins(url: URL): string[] {
+  if (url.protocol !== "http:" || !url.port || !(LOOPBACK_NAMES as readonly string[]).includes(url.hostname)) return [];
+  return LOOPBACK_NAMES.map((name) => `http://${name}:${url.port}`);
 }
 
 /** A fence larger than this stays code (and the Inbox refuses to serve it). */
@@ -181,10 +192,40 @@ export const EMBED_BOOTSTRAP = `(function () {
     if (m) { var t = JSON.parse(decodeURIComponent(m[1])); if (t && t.mode === "full") mode = "full"; apply(t); }
   } catch (e) {}
   root.setAttribute("data-pn-embed", mode);
+  // Until the person clicks the page, the window's shield lies over it and passes on what the page
+  // still needs: pointer moves (hover), the first click, sideways scrolling.
+  var hovered = null;
+  var fire = function (el, type, d, Ctor) {
+    try {
+      el.dispatchEvent(new Ctor(type, { bubbles: type !== "mouseenter" && type !== "mouseleave", cancelable: true, composed: true, view: window, clientX: d.x, clientY: d.y, button: 0, buttons: type.indexOf("down") > 0 ? 1 : 0, pointerType: "mouse", isPrimary: true }));
+    } catch (err) {}
+  };
+  var Pointer = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+  var pointer = function (d) {
+    var el = document.elementFromPoint(d.x, d.y);
+    if (el !== hovered) {
+      if (hovered) { fire(hovered, "pointerout", d, Pointer); fire(hovered, "mouseout", d, MouseEvent); }
+      hovered = el;
+      if (el) { fire(el, "pointerover", d, Pointer); fire(el, "mouseover", d, MouseEvent); }
+    }
+    if (el) { fire(el, "pointermove", d, Pointer); fire(el, "mousemove", d, MouseEvent); }
+    return el;
+  };
   addEventListener("message", function (e) {
     if (e.source !== P) return;
     var d = e.data;
-    if (d && d.pnEmbed === 1 && d.kind === "theme") apply(d);
+    if (!d || d.pnEmbed !== 1) return;
+    if (d.kind === "theme") apply(d);
+    else if (d.kind === "pointer" && typeof d.x === "number" && typeof d.y === "number") pointer(d);
+    else if (d.kind === "pointerleave" && hovered) { fire(hovered, "pointerout", { x: -1, y: -1 }, Pointer); fire(hovered, "mouseout", { x: -1, y: -1 }, MouseEvent); hovered = null; }
+    else if (d.kind === "click" && typeof d.x === "number" && typeof d.y === "number") {
+      var el = pointer(d);
+      if (!el) return;
+      fire(el, "pointerdown", d, Pointer); fire(el, "mousedown", d, MouseEvent);
+      if (typeof el.focus === "function") el.focus();
+      fire(el, "pointerup", d, Pointer); fire(el, "mouseup", d, MouseEvent);
+      if (typeof el.click === "function") el.click();
+    } else if (d.kind === "scroll" && typeof d.dx === "number" && document.body) document.body.scrollLeft += d.dx;
   });
   var last = -1;
   var send = function () {
@@ -242,6 +283,13 @@ export function embedThemeMessage(theme: EmbedTheme): { pnEmbed: 1; kind: "theme
   return { pnEmbed: 1, kind: "theme", vars: theme.vars, scheme: theme.scheme };
 }
 
+/** What the window's shield passes on to the page (coordinates in the frame's own pixels). */
+export type EmbedShieldMessage =
+  | { pnEmbed: 1; kind: "pointer"; x: number; y: number }
+  | { pnEmbed: 1; kind: "pointerleave" }
+  | { pnEmbed: 1; kind: "click"; x: number; y: number }
+  | { pnEmbed: 1; kind: "scroll"; dx: number };
+
 export type EmbedMessage = { kind: "height"; height: number } | { kind: "link"; url: string } | { kind: "escape" };
 
 /**
@@ -269,29 +317,41 @@ function privateIpv4(host: string): boolean {
   return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
 }
 
+/** Name endings that are this computer, the local network or the person's tailnet, never the web. */
+const PRIVATE_SUFFIXES = [".localhost", ".local", ".internal", ".lan", ".home.arpa", ".localdomain", ".ts.net", ".intranet", ".corp", ".home"];
+
 /**
- * Whether a link a page handed over may be offered to the person: a web
- * address that is not the Inbox itself (the window's own host, at any port
- * or scheme) and not this computer or the private network (a `localhost`
- * name, a loopback, private or link-local address, an IPv6 literal, a
- * `.local` or `.internal` name). The person still sees the address and opens
- * it with their own click.
+ * The link a page handed over, as the window offers it: the address the
+ * browser would open (`new URL(raw).href`: tabs and newlines dropped, an
+ * international name in its punycode form, so what the person reads is what
+ * opens), or null when it is never offered. Never: anything but http(s), an
+ * address with credentials, the Inbox's own host at any port or scheme, a
+ * name without a dot (`intranet`, `localhost`), a `localhost` or local
+ * network name (`PRIVATE_SUFFIXES`, the person's other tailnet machines
+ * included), a loopback, private, link-local or CGNAT address, or an IPv6
+ * literal. A public name that resolves to this computer (`*.nip.io`) cannot
+ * be told by its name; the Inbox's host guard refuses those.
  */
-export function embedLinkOpenable(raw: string, windowHostname: string): boolean {
+export function embedLinkOffer(raw: string, windowHostname: string): string | null {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return false;
+    return null;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
-  if (url.username || url.password) return false;
-  const host = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (!host || host === windowHostname.toLowerCase()) return false;
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false;
-  if (host.startsWith("[")) return false;
-  if (privateIpv4(host)) return false;
-  return true;
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username || url.password) return null;
+  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
+  if (!host || host === windowHostname.toLowerCase().replace(/\.+$/, "")) return null;
+  if (host.startsWith("[") || !host.includes(".")) return null;
+  if (host === "localhost" || PRIVATE_SUFFIXES.some((suffix) => host.endsWith(suffix))) return null;
+  if (privateIpv4(host)) return null;
+  return url.href;
+}
+
+/** Whether `embedLinkOffer` offers the link at all. */
+export function embedLinkOpenable(raw: string, windowHostname: string): boolean {
+  return embedLinkOffer(raw, windowHostname) !== null;
 }
 
 /** The id the Inbox gives an embed: the first 32 hex digits of the SHA-256 of its HTML. */

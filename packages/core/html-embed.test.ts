@@ -26,7 +26,9 @@ import {
   embedFragment,
   embedFrameAncestors,
   embedFrameUrl,
+  embedLinkOffer,
   embedLinkOpenable,
+  embedLoopbackOrigins,
   embedResponseCsp,
   readEmbedMessage,
 } from "./html-embed";
@@ -146,6 +148,12 @@ describe("where the frame loads from", () => {
     expect(embedResponseCsp(ancestors)).toContain(`frame-ancestors ${ancestors}`);
     expect(embedFrameAncestors(new URL("https://macbook.tail0000.ts.net:8443/api/inbox/embeds/abc"))).toBe("'self'");
   });
+
+  test("the loopback origins follow the port the browser used (a forward), not the one the Inbox listens on", () => {
+    expect(embedLoopbackOrigins(new URL("http://localhost:61000/"))).toEqual(["http://localhost:61000", "http://127.0.0.1:61000"]);
+    expect(embedLoopbackOrigins(new URL("https://macbook.tail0000.ts.net/"))).toEqual([]);
+    expect(embedLoopbackOrigins(new URL("http://[::1]:61000/"))).toEqual([]);
+  });
 });
 
 describe("embedLinkOpenable", () => {
@@ -169,6 +177,14 @@ describe("embedLinkOpenable", () => {
       "http://169.254.169.254/latest/meta-data",
       "http://100.101.102.103/",
       "http://printer.local/",
+      "http://localhost../",
+      "http://LOCALHOST.../x",
+      "https://intranet/",
+      "http://ip6-localhost/",
+      "http://printer.lan/",
+      "http://router.home.arpa/",
+      "http://localhost.localdomain/",
+      "https://other-mac.tail0000.ts.net/",
       "https://user:pass@example.com/",
       "javascript:alert(1)",
       "not a url",
@@ -178,5 +194,13 @@ describe("embedLinkOpenable", () => {
     // Over the tailnet the window's own name is the Inbox: refused at any port or scheme.
     expect(embedLinkOpenable("https://macbook.tail0000.ts.net/api/inbox/threads", "macbook.tail0000.ts.net")).toBe(false);
     expect(embedLinkOpenable("http://MACBOOK.tail0000.ts.net.:80/", "macbook.tail0000.ts.net")).toBe(false);
+  });
+
+  test("what is offered is the address that opens: parsed, in punycode, with nothing hidden", () => {
+    // Reads as example.com, opens evil.com: shown as it opens.
+    expect(embedLinkOffer("https://evil.com\\@example.com", "localhost")).toBe("https://evil.com/@example.com");
+    // A Cyrillic "а": shown in its punycode form.
+    expect(embedLinkOffer("https://\u0430pple.com/", "localhost")).toBe("https://xn--pple-43d.com/");
+    expect(embedLinkOffer("https://exa\tmple.com/a b", "localhost")).toBe("https://example.com/a%20b");
   });
 });

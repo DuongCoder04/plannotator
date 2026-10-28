@@ -99,6 +99,21 @@ describe("the Inbox's embed documents", () => {
     expect(window.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
 
+  test("a window reached through a forward on another port frames its embeds at that port", async () => {
+    const server = await start();
+    const other = server.port === 61999 ? 61998 : 61999;
+    // A forward (ssh -L, a container's -p) keeps the Host the browser used: the window's frame-src names that port.
+    const window = await fetch(at(server, "/"), { headers: { Host: `localhost:${other}` } });
+    expect(window.status).toBe(200);
+    const csp = window.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain(`frame-src 'self' http://localhost:${other} http://127.0.0.1:${other}`);
+    expect(csp).not.toContain(`:${server.port}`);
+    // And the embed it frames there lets that window frame it.
+    const { url } = (await (await keep(server, CHART)).json()) as Json;
+    const page = await fetch(at(server, url), { headers: { Host: `127.0.0.1:${other}` } });
+    expect(page.headers.get("content-security-policy")).toContain(`frame-ancestors http://localhost:${other} http://127.0.0.1:${other}`);
+  });
+
   test("a cross-site frame is drawn only for an embed or an HTML page's assets: an embed steering itself at the Inbox is refused", async () => {
     const server = await start();
     const { url } = (await (await keep(server, CHART)).json()) as Json;

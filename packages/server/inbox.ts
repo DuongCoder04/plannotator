@@ -161,6 +161,7 @@ import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-ru
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
 import { createInboxEmbeds, crossSiteFrameAllowed } from "./inbox-embeds";
+import { embedLoopbackOrigins } from "@plannotator/core/html-embed";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
@@ -3077,8 +3078,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (via === "tailnet") return tailnetWindowPage(req, page);
         return new Response(req.method === "HEAD" ? null : page, {
           headers: {
-            // The window on this computer frames its embeds from the other loopback name.
-            ...windowPageHeaders(`http://localhost:${port} http://127.0.0.1:${port}`),
+            // The window on this computer frames its embeds from the other loopback name, at the
+            // port the browser used (a forward may differ from the one this server listens on).
+            ...windowPageHeaders(embedLoopbackOrigins(url).join(" ")),
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "no-store",
           },
