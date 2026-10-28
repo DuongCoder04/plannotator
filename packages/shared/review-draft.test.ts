@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { contentHash, getDraftDir, loadDraft, saveDraft } from "./draft";
-import { createReviewDraftSession, deleteReviewDraft, loadReviewDraft, localReviewDraftKeys, prDraftTargetKey, reviewDraftState, saveReviewDraft } from "./review-draft";
+import { createReviewDraftSession, deleteReviewDraft, loadReviewDraft, LOCAL_DRAFT_TARGET_TIMEOUT_MS, localGitDraftTargetKey, localReviewDraftKeys, prDraftTargetKey, reviewDraftState, saveReviewDraft } from "./review-draft";
 import type { PRMetadata } from "./pr-types";
 
 const github: PRMetadata = {
@@ -276,3 +276,15 @@ test('a local caller without a page id cannot erase another target by omission o
   session.settle(b, 4);
   expect(loadReviewDraft(a)).toMatchObject({ draft: { codeAnnotations: [{ id: 'a1' }] } });
 });
+
+test('a hung git gives a local review no draft target instead of blocking startup', async () => {
+  // Runtime semantics: a call without timeoutMs never settles; with one, the
+  // process is killed when it expires.
+  const hungGit = (_args: string[], options?: { timeoutMs?: number }) => new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+    if (options?.timeoutMs) setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 137 }), options.timeoutMs);
+  });
+  const started = Date.now();
+  const target = await localGitDraftTargetKey({ cwd: '/repo', diffType: 'uncommitted', base: 'main' }, hungGit);
+  expect(target).toBeNull();
+  expect(Date.now() - started).toBeLessThan(LOCAL_DRAFT_TARGET_TIMEOUT_MS * 1.5);
+}, 10_000);

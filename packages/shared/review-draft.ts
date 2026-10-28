@@ -47,6 +47,9 @@ export interface ReviewDraftKeys {
   legacyPatchKey?: string;
 }
 
+/** Bound on each git call that resolves a local review's draft target. */
+export const LOCAL_DRAFT_TARGET_TIMEOUT_MS = 2000;
+
 export async function localGitDraftTargetKey(
   input: Parameters<typeof localGitReviewIdentity>[0] & {
     /** Locally discovered default, only when automatic base upgrades are allowed. */
@@ -61,7 +64,12 @@ export async function localGitDraftTargetKey(
   // This relies on local default discovery naming the network probe's tracking ref.
   const base = input.defaultBase?.startsWith("origin/") && input.base === input.defaultBase.slice("origin/".length)
     ? input.defaultBase : input.base;
-  const identity = await localGitReviewIdentity({ ...input, base }, runGit);
+  // Awaited before the review server listens: bound each git call (the runtime
+  // kills it). A slow repo falls back to patch-only drafts, as before.
+  const identity = await localGitReviewIdentity(
+    { ...input, base },
+    (args, options) => runGit(args, { ...options, timeoutMs: LOCAL_DRAFT_TARGET_TIMEOUT_MS }),
+  );
   return identity ? `local-${contentHash(JSON.stringify(identity))}` : null;
 }
 

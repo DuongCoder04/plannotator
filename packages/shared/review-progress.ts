@@ -91,13 +91,15 @@ export async function localGitReviewIdentity(
   const cwd = worktree?.path ?? input.cwd;
   const scope = [diffType, ["since-base", "branch", "merge-base"].includes(diffType) ? input.base : null];
   try {
-    const [root, branch] = await Promise.all([
+    // One parallel round, so a bounded caller waits at most one timeout.
+    const [root, branch, commit] = await Promise.all([
       runGit(["rev-parse", "--show-toplevel"], { cwd }),
       runGit(["symbolic-ref", "--quiet", "HEAD"], { cwd }),
+      runGit(["rev-parse", "HEAD"], { cwd }),
     ]);
     if (root.exitCode !== 0 || !root.stdout.trim()) return null;
     // Detached checkouts have no durable branch identity.
-    const head = branch.exitCode === 0 ? branch : await runGit(["rev-parse", "HEAD"], { cwd });
+    const head = branch.exitCode === 0 ? branch : commit;
     if (head.exitCode !== 0 || !head.stdout.trim()) return null;
     return ["git", canonicalPath(root.stdout.trim()), head.stdout.trim(), scope];
   } catch {
