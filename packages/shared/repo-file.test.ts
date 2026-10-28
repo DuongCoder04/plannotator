@@ -1,9 +1,10 @@
 /**
  * readFileCapped / readRepoFile (repo-file.ts): the cap is checked before
- * reading, and a FIFO or directory is refused at once instead of blocking.
+ * reading, and a directory is refused as not a file. FIFOs are covered in a
+ * child process by packages/server/repo-file-endpoints.test.ts, so a
+ * regression there cannot block this process.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,13 +34,6 @@ describe("readFileCapped", () => {
 
 	test("refuses a directory as not a file", async () => {
 		expect(await readFileCapped(dir)).toMatchObject({ ok: false, reason: "not-a-file" });
-	});
-
-	(process.platform === "win32" ? test.skip : test)("refuses a FIFO at once instead of waiting for a writer", async () => {
-		const fifo = join(dir, "pipe");
-		expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
-		const timeout = new Promise((resolve) => setTimeout(() => resolve("blocked"), 2000));
-		expect(await Promise.race([readFileCapped(fifo), timeout])).toMatchObject({ ok: false, reason: "not-a-file" });
 	});
 });
 

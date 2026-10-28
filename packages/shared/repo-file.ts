@@ -110,8 +110,10 @@ export async function readFileCapped(path: string, options: RepoFileReadOptions 
 				maxBytes,
 			};
 		}
-		// Read at most one byte past the cap: a file that grew since fstat
-		// is refused rather than read whole.
+		// Read at most one byte more than fstat reported, so the read never
+		// passes the cap. A file that grew since fstat is refused only when
+		// that extra byte crosses the cap; otherwise what was read is
+		// returned, a snapshot of the file's start.
 		const buffer = Buffer.alloc(Math.min(stats.size, maxBytes) + 1);
 		let length = 0;
 		while (length < buffer.length) {
