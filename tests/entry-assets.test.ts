@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { openPackedApp } from '../packages/shared/packed-app';
+import { openPackedApp, PACKED_ASSETS_MARKER } from '../packages/shared/packed-app';
 
 const root = resolve(import.meta.dir, '..');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
@@ -356,19 +356,27 @@ describe('review entry assets', () => {
     });
   }
 
-  // The bundles are packed (build/pack-app.ts) so a session's first load moves
-  // only the page and its entry chunk; the lazy chunks (Shiki grammars,
-  // Mermaid, ELK, Graphviz, KaTeX) stay in the pack until something imports
-  // them. Re-inlining them (`inlineDynamicImports`, vite-plugin-singlefile)
-  // builds and passes everything else while quietly restoring the ~25 MB
-  // first load over a tailnet or tunnel, so this reads the ARTIFACT.
-  for (const path of bundles) {
-    test.skipIf(!existsSync(resolve(root, path)))(`${path} loads only its entry chunk up front`, () => {
+  // The plan and review bundles are packed (build/pack-app.ts) so a session's
+  // first load moves only the page, its entry chunk and its stylesheet; the
+  // lazy chunks (Shiki grammars, Mermaid, ELK, Graphviz, KaTeX, fonts) stay in
+  // the pack until something imports them. Re-inlining them
+  // (`inlineDynamicImports`, vite-plugin-singlefile) builds and passes
+  // everything else while quietly restoring the ~25 MB first load over a
+  // tailnet or tunnel, so this reads the ARTIFACT.
+  const packedBundles = ['apps/review/dist/index.html', 'apps/hook/dist/index.html', 'apps/hook/dist/review.html'];
+  for (const path of packedBundles) {
+    test.skipIf(!existsSync(resolve(root, path)))(`${path} loads only its entry chunk and stylesheet up front`, async () => {
       const bundle = readFileSync(resolve(root, path), 'utf8');
       const app = openPackedApp(bundle);
-      const entry = app.html.match(/<script type="module" crossorigin src="([^"]+)"/)?.[1] ?? '';
-      const entryBytes = app.asset(entry, undefined)?.body.length ?? bundle.length;
-      expect(entryBytes / bundle.length).toBeLessThan(1 / 3);
+      const upFront = [...app.html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map((m) => m[1]);
+      let bytes = app.html.length;
+      for (const asset of upFront) {
+        const answer = await app.answer(asset, 'GET', null, false);
+        expect({ asset, status: answer.status }).toEqual({ asset, status: 200 });
+        bytes += answer.body.length;
+      }
+      expect(upFront.length).toBeGreaterThan(0);
+      expect(bytes / bundle.length).toBeLessThan(1 / 3);
     });
 
     // Packing before vite:build-import-analysis has rewritten the chunks ships
@@ -376,6 +384,25 @@ describe('review entry assets', () => {
     test.skipIf(!existsSync(resolve(root, path)))(`${path} packs finished chunks`, () => {
       const preloadPlaceholder = readFileSync(resolve(root, path), 'utf8').includes('__VITE_PRELOAD__');
       expect({ path, preloadPlaceholder }).toEqual({ path, preloadPlaceholder: false });
+    });
+
+    // Vite emits KaTeX's woff and ttf fallbacks before katexWoff2Only strips
+    // their url()s, so only the plugin's own prune keeps ~1.1 MB of fonts no
+    // browser reads out of each packed bundle (#1617).
+    test.skipIf(!existsSync(resolve(root, path)))(`${path} packs no KaTeX woff or ttf fallback`, () => {
+      const fallback = /\/assets\/KaTeX_[^"]*\.(?:woff|ttf)"/.test(readFileSync(resolve(root, path), 'utf8'));
+      expect({ path, fallback }).toEqual({ path, fallback: false });
+    });
+  }
+
+  // The Inbox window and the phone's surface stay one self-contained page
+  // each (vite-plugin-singlefile): the Inbox server serves them whole, with no
+  // asset route behind them.
+  for (const path of ['apps/hook/dist/inbox.html', 'apps/hook/dist/surface.html']) {
+    test.skipIf(!existsSync(resolve(root, path)))(`${path} stays single-file`, () => {
+      const html = readFileSync(resolve(root, path), 'utf8');
+      const facts = { path, packed: html.includes(PACKED_ASSETS_MARKER), linksAssets: /(?:src|href)="\/assets\//.test(html) };
+      expect(facts).toEqual({ path, packed: false, linksAssets: false });
     });
   }
 });
