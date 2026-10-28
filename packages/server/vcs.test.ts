@@ -29,6 +29,14 @@ describe("resolveInitialDiffType", () => {
     }, "p4")).toBe("p4-default");
   });
 
+  test("Perforce opens on the default changelist even when it is empty", () => {
+    const p4Context = context({
+      vcsType: "p4",
+      diffOptions: [{ id: "p4-changelist:42", label: "Changelist 42" }],
+    });
+    expect(resolveInitialDiffType(p4Context, "p4-default")).toBe("p4-default");
+  });
+
   test("uses JJ defaults and ignores saved Git defaults for jj contexts", () => {
     const jjContext = context({
       defaultBranch: "trunk()",
@@ -73,6 +81,10 @@ describe.each([
     expect(resolve(legacy, "git")).toBe("merge-base");
     expect(resolve(legacy, "jj")).toBe("jj-current");
     expect(resolve(undefined, "jj")).toBe("jj-current");
+  });
+
+  test("a hand-edited last-commit is not a saved Git default", () => {
+    expect(resolve({ diffOptions: { defaultDiffType: "last-commit" } } as never, "git")).toBe("since-base");
   });
 
   test("an invalid or Git-shaped jj value falls back to jj-current", () => {

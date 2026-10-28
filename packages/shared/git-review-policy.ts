@@ -40,7 +40,8 @@ export const gitReviewPolicy: VcsReviewPolicy = {
 
 function resolveGitDefault(value: unknown): DiffType | undefined {
   if (value === "branch") return "merge-base";
-  return typeof value === "string" && GIT_DIFF_TYPES.has(value)
+  // last-commit is a session view, never a saved default (as before #1499).
+  return typeof value === "string" && value !== "last-commit" && GIT_DIFF_TYPES.has(value)
     ? value as DiffType
     : undefined;
 }
