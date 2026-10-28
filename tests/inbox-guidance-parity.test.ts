@@ -15,7 +15,12 @@
  *  - the session reminder (Claude Code's session start and compaction hook,
  *    Pi, OpenCode 2; the no-wake form on OpenCode 1);
  *  - the opt-in note (Claude Code, Codex, OpenCode, Pi, Gemini CLI, Cursor);
- *  - `plannotator inbox --help` and the `plannotator` skill (everyone).
+ *  - `plannotator inbox --help` and the `plannotator` skill (everyone);
+ *  - the `/plannotator-inbox` command, where the agent reads it: the Claude
+ *    skill (Claude Code without the mod), the core skill (Codex, Kiro, Vibe
+ *    and the rest), OpenCode's stub, Gemini's command, Droid's script output.
+ *    Where a host answers the command itself (the Claude Code mod, Pi,
+ *    OpenCode's plugin, Amp), the agent tool and the reminder carry it.
  *
  * Nothing here starts an Inbox, reads the real home or opens a browser: the
  * help is formatted against a scratch home.
@@ -55,6 +60,22 @@ const entryText = (tool: { description: string; inputSchema: Record<string, unkn
 
 const CLAUDE_CODE_TOOL = "mcp__plannotator__plannotator_inbox";
 
+/**
+ * People type `/plannotator-inbox` expecting it to teach their agent the
+ * Inbox (the owner, 2026-10-28), so each copy the agent reads carries the
+ * guide beside the address. Droid's is a script: its guide is in its source.
+ */
+const INBOX_COMMANDS: Record<string, string> = Object.fromEntries(
+  [
+    "apps/skills/claude/plannotator-inbox/SKILL.md",
+    "apps/skills/core/plannotator-inbox/SKILL.md",
+    "apps/opencode-plugin/commands/plannotator-inbox.md",
+    "apps/gemini/commands/plannotator-inbox.toml",
+    "apps/droid-plugin/commands/plannotator-inbox.js",
+  ].map((path) => [`/plannotator-inbox: ${path}`, readFileSync(join(root, path), "utf8")]),
+);
+const inboxCommands = Object.keys(INBOX_COMMANDS);
+
 const SURFACES: Record<string, string> = {
   "tool: Claude Code (mod copy, bundled list)": entryText(modAgentTool(INBOX_DEFAULT_TOOLS)),
   "tool: Pi, OpenCode 2 (wake)": entryText(inboxAgentTool(INBOX_DEFAULT_TOOLS)),
@@ -71,6 +92,7 @@ const SURFACES: Record<string, string> = {
     agentEnvironment: createAgentEnvironmentFor({ platform: "linux", homeDir: home, env: { HOME: home, PATH: "" } }),
   }),
   "plannotator skill": readFileSync(join(root, "apps/skills/core/plannotator/SKILL.md"), "utf8"),
+  ...INBOX_COMMANDS,
 };
 
 const SENTENCES = {
@@ -101,11 +123,13 @@ const EXCEPTIONS: Record<Sentence, Record<string, string>> = {
     ...Object.fromEntries(reminders.map((s) => [s, "main sessions only: no subagent gets the reminder"])),
     "note (opt-in)": "the note is read by the main agent; every tool and MCP surface carries the line",
     "plannotator skill": "in the skill's description, lowercase in parentheses (checked below)",
+    ...Object.fromEntries(inboxCommands.map((s) => [s, "the person types it in their own session, never a subagent"])),
   },
   "reply_to check": {
     ...Object.fromEntries(reminders.map((s) => [s, "the post-compaction thread list carries it instead"])),
     "MCP instructions: Codex, Gemini, Cursor, Grok, MCP clients": "MCP clients read it on the reply_to and read_thread descriptions (inbox-mcp.ts)",
     "plannotator skill": "the skill defers the reply_to rules to --help",
+    ...Object.fromEntries(inboxCommands.map((s) => [s, "the command defers the reply_to rules to --help"])),
   },
 };
 
@@ -170,6 +194,13 @@ describe("Inbox guidance parity across harnesses", () => {
   test("MCP clients are still told to pass an idempotency_key, in its field (moved there from the server instructions)", () => {
     const field = (INBOX_DEFAULT_TOOLS.find((tool) => tool.name === "send_message")!.inputSchema.properties as Record<string, { description?: string }>).idempotency_key!;
     expect(field.description).toContain("Pass an idempotency_key so a retry never posts twice.");
+  });
+
+  test("every /plannotator-inbox the agent reads still opens the Inbox and points to the full guide", () => {
+    for (const [surface, text] of Object.entries(INBOX_COMMANDS)) {
+      expect([surface, /plannotator inbox --open|"inbox", "--open"/.test(text)]).toEqual([surface, true]);
+      expect([surface, text.includes("`plannotator inbox --help`")]).toEqual([surface, true]);
+    }
   });
 
   test("the skill's description carries the subagent rule", () => {
