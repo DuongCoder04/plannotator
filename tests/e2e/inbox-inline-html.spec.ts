@@ -19,6 +19,11 @@
  *   by a page that focused itself, or a page that keeps doing it is not
  *   stopped; hovering the page, a Tab that landed on the window, or a web
  *   frame inside the page lends it the keyboard (Chromium and WebKit);
+ * - a page that grabs and then blocks the thread is not stopped with a notice,
+ *   or one that grabs while the person types gets any key (the per-engine
+ *   count for a grab before typing is logged);
+ * - the shield is not a button a keyboard reaches, or pressing it does not
+ *   give the page the keyboard;
  * - the window's shield stops the page working: the person's first click on
  *   a page button does nothing, hovering it does not reach it, typing into
  *   its input after clicking it fails, or the wheel over it no longer
@@ -126,6 +131,19 @@ const WIDGET = [
 
 /** A page that only says it ran. */
 const RAN = '<p id="ok">ok</p><script>document.getElementById("ok").textContent = "ran";</script>';
+
+/**
+ * Takes the keyboard once at a time it publishes, then blocks its thread for 2 s: where the frame
+ * shares the window's thread (WebKit; Chromium without site isolation) the window's restore waits.
+ */
+const SPIN = [
+  '<input id="grab" aria-label="grab"><p id="at">at</p>',
+  '<script>',
+  keyLogger('spin'),
+  "window.grabAt = Date.now() + 5000; document.getElementById('at').textContent = String(window.grabAt);",
+  "setTimeout(() => { document.getElementById('grab').focus(); const end = Date.now() + 2000; while (Date.now() < end) {} }, 5000);",
+  '</script>',
+].join('\n');
 
 /** A page that steers its own frame at the Inbox. */
 const WANDERER = "<p>leaving</p><script>setTimeout(() => { location.href = new URL('/api/inbox/threads?wander', location.href).href; }, 300);</script>";
@@ -362,7 +380,7 @@ test('a page that takes the keyboard never gets the person’s typing, and one t
       await expect(replyBox(thief.page)).toHaveValue('secret words');
       expect(thief.keysAt('thief')).toEqual([]);
       if (grabsCertain) {
-        await expect(thief.message.locator('[data-html-embed-grabbed]')).toContainText('kept taking the keyboard');
+        await expect(thief.message.locator('[data-html-embed-grabbed]')).toContainText('so it was stopped');
         await expect(thief.message.locator('iframe[data-html-embed-frame]')).toHaveCount(0);
       }
     } finally {
@@ -527,6 +545,29 @@ test('the page works through the shield: hover reaches it, the first click works
   }
 });
 
+test('a keyboard or screen reader reaches the shield as a button, "Use this page", and pressing it gives the page the keyboard', async ({ browser }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-door-e2e-');
+  try {
+    const ECHO = ['<p id="got">got:</p>', '<script>', "document.addEventListener('keydown', (e) => { document.getElementById('got').textContent += e.key; });", '</script>'].join('\n');
+    const opened = await openThread(browser, world, 'A page for the keyboard', ECHO);
+    try {
+      const frame = await embedFrame(opened.page, opened.message, '#got', 'never');
+      const door = opened.message.getByRole('button', { name: 'Use this page' });
+      await expect(door).toHaveCount(1);
+      await door.focus();
+      await opened.page.keyboard.press('Enter');
+      await expect.poll(() => opened.page.evaluate(() => document.activeElement?.tagName)).toBe('IFRAME');
+      await opened.page.keyboard.type('ok');
+      await expect(frame.locator('#got')).toHaveText('got:ok');
+      await expect(opened.message.locator('[data-html-embed-grabbed]')).toHaveCount(0);
+    } finally {
+      await opened.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
 test('a window reached on another port, or at 127.0.0.1, runs its pages', async ({ browser }) => {
   const world = await startWorld('plannotator-inbox-inline-html-port-e2e-');
   const inboxPort = Number(new URL(world.url).port);
@@ -554,6 +595,70 @@ test('a window reached on another port, or at 127.0.0.1, runs its pages', async 
     }
   } finally {
     forward.close();
+    await world.close();
+  }
+});
+
+/**
+ * Keys sent the way an OS queues them while the window is blocked: none awaited on its own
+ * (CDP in Chromium; parallel presses in WebKit).
+ */
+async function queueKeys(page: Page, browserName: string, word: string): Promise<void> {
+  if (browserName === 'chromium') {
+    const cdp = await page.context().newCDPSession(page);
+    await Promise.all(
+      [...word].map((ch) =>
+        Promise.all([cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch }), cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch })]),
+      ),
+    );
+  } else {
+    await Promise.all([...word].map((ch) => page.keyboard.press(ch)));
+  }
+}
+
+test('a page that takes the keyboard and then blocks the thread is stopped and the person told; while they type, it gets nothing', async ({ browser, browserName }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-spin-e2e-');
+  const stolenKeys = (t: { keysAt: (name: string) => string[] }) => t.keysAt('spin').map((asked) => decodeURIComponent(asked.split('k=')[1] ?? '')).join('');
+  try {
+    // The person is not typing when it grabs, then types during the block. Where the frame shares
+    // the window's thread the restore runs late: the page is stopped and the notice says so. The
+    // keys typed during the block may have reached it (counted below, not asserted): bounded, once.
+    const idle = await openThread(browser, world, 'A page that grabs then spins', SPIN);
+    try {
+      const frame = await embedFrame(idle.page, idle.message, '#at', 'at');
+      const grabAt = await frame.evaluate(() => (window as unknown as { grabAt: number }).grabAt);
+      await openReply(idle.page);
+      await replyBox(idle.page).click();
+      await idle.page.waitForTimeout(grabAt - (await frame.evaluate(() => Date.now())) + 300);
+      await queueKeys(idle.page, browserName, 'password');
+      await expect(idle.message.locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', 'late');
+      await expect(idle.message.locator('[data-html-embed-grabbed]')).toContainText(/held the keyboard for \d+\.\d s, so it was stopped\. What you typed then may have gone to it\./);
+      await idle.page.waitForTimeout(500);
+      console.log(`[${browserName}] grab, then a 2 s block, keys queued during it: reply "${await replyBox(idle.page).inputValue()}", page got "${stolenKeys(idle)}"`);
+    } finally {
+      await idle.context.close().catch(() => {});
+    }
+
+    // The person is typing when it grabs: the page is gone in that same task, so not one key reaches it.
+    const typing = await openThread(browser, world, 'A page that grabs mid-reply then spins', SPIN);
+    try {
+      const frame = await embedFrame(typing.page, typing.message, '#at', 'at');
+      const grabAt = await frame.evaluate(() => (window as unknown as { grabAt: number }).grabAt);
+      await openReply(typing.page);
+      await replyBox(typing.page).click();
+      await typing.page.waitForTimeout(grabAt - (await frame.evaluate(() => Date.now())) - 900);
+      await typing.page.keyboard.type('my ', { delay: 100 });
+      await typing.page.waitForTimeout(grabAt - (await typing.page.evaluate(() => Date.now())) + 300);
+      await queueKeys(typing.page, browserName, 'password');
+      await expect(typing.message.locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', 'typing');
+      await expect(typing.message.locator('[data-html-embed-grabbed]')).toContainText('took the keyboard while you were typing');
+      await typing.page.waitForTimeout(2500);
+      expect(stolenKeys(typing)).toBe('');
+      console.log(`[${browserName}] grab mid-reply, then a 2 s block: reply "${await replyBox(typing.page).inputValue()}", page got "${stolenKeys(typing)}"`);
+    } finally {
+      await typing.context.close().catch(() => {});
+    }
+  } finally {
     await world.close();
   }
 });

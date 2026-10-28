@@ -12,14 +12,31 @@
  *   frame sits under a window-owned shield until then (`HtmlEmbedBlock`
  *   forwards the click, pointer moves and sideways scrolling to the page,
  *   so it still reacts on the first click; `chooseEmbedFrame`);
+ * - the shield's button ("Use this page"): pressed, or left by focus going
+ *   straight from it into its frame (a screen reader moving on into the page);
  * - Tab, when focus goes from the window straight into the frame (a Tab that
  *   lands on any window element, leaves the window, or a window handler
  *   cancelled, lends nothing);
- * - a frame the window trusts outright: the Full screen view, which is modal,
- *   so there is no window field to type into behind it.
+ * - the Full screen view's frame. That dialog is not modal (`PopoutDialog`),
+ *   but it closes as soon as focus leaves it, so no window field takes typing
+ *   while that page holds the keyboard.
  * Anything else is a grab: the window takes focus back to where it was,
  * after the frame's own focus change settles, and tells the frame's owner
  * (`onGrab`), which stops a page that keeps grabbing.
+ *
+ * Where the page shares the window's thread (WebKit always; Chromium without
+ * site isolation, as on Android) a page can grab and then block that thread:
+ * the restore cannot run, and keys typed meanwhile reach the page. Only
+ * removing the frame in the same task wins that race (probed: blurring,
+ * hiding or `inert` do not), so:
+ * - a grab while the person is typing (a key in the window within
+ *   `TYPING_MS`) stops the page at once, in the event that announced the grab
+ *   (`onGrab('typing')`: the owner removes the frame before returning);
+ * - a restore that ran late (`LATE_MS` after the grab: the page held the
+ *   thread) stops the page and says so (`onGrab('late', ms)`). Keys typed
+ *   during that hold may have reached the page: this bounds it, it does not
+ *   close it. Desktop Chrome runs the frame in its own process, so there the
+ *   restore is never held up.
  *
  * Probed in Chromium and WebKit, mouse and touch: `blur` fires on the window
  * with the frame already the active element; a `focus()` made during that
@@ -28,15 +45,24 @@
  * moving from one frame straight to another.
  */
 
+/** Why a grab is reported: one more grab, one while the person typed, or a restore the page held up. */
+export type EmbedGrab = 'grab' | 'typing' | 'late';
+
 /** A Tab this recent explains focus arriving in a frame (only if the Tab moved focus nowhere else). */
 const TAB_MS = 500;
 /** The poll for a grab no event announced. */
 const POLL_MS = 250;
+/** A key in the window this recent means the person is typing: a grab now stops the page at once. */
+const TYPING_MS = 2000;
+/** A restore this late means the page held the thread while it had the keyboard. */
+const LATE_MS = 250;
 
 interface Guarded {
-  onGrab: () => void;
-  /** Focus here is always the person's (the modal Full screen view). */
+  onGrab: (why: EmbedGrab, heldMs?: number) => void;
+  /** Focus here is always the person's (the Full screen view). */
   trusted: boolean;
+  /** The shield's button: focus going from it straight into the frame is the person's. */
+  door: () => HTMLElement | null;
 }
 
 const frames = new Map<HTMLIFrameElement, Guarded>();
@@ -46,6 +72,10 @@ let chosen: HTMLIFrameElement | null = null;
 let tabAt: number | null = null;
 /** The window's own element that had focus last, where a grab sends it back. */
 let lastFocus: HTMLElement | null = null;
+/** The frame whose shield button holds focus now. */
+let atDoor: HTMLIFrameElement | null = null;
+/** The person's last key in the window. */
+let lastKeyAt: number | null = null;
 const listeners = new Set<() => void>();
 let uninstall: (() => void) | null = null;
 
@@ -57,18 +87,28 @@ function setChosen(frame: HTMLIFrameElement | null): void {
   for (const listener of listeners) listener();
 }
 
+function focusBack(frame: HTMLIFrameElement, back: HTMLElement | null): void {
+  frame.blur();
+  const target = back && back.isConnected && back !== frame ? back : null;
+  if (target && document.activeElement === target) target.blur();
+  window.focus();
+  target?.focus({ preventScroll: true });
+}
+
 function restoreFocus(frame: HTMLIFrameElement): void {
   const back = lastFocus;
+  const grabbedAt = now();
   // On the next task: a focus() made while the frame is still taking focus moves the window's
-  // active element in Chromium but leaves the keyboard in the frame (and the element then counts
+  // active element but leaves the keyboard in the frame in Chromium (and the element then counts
   // as focused, so a second focus() would do nothing).
   setTimeout(() => {
     if (chosen === frame) return;
-    frame.blur();
-    const target = back && back.isConnected && back !== frame ? back : null;
-    if (target && document.activeElement === target) target.blur();
-    window.focus();
-    target?.focus({ preventScroll: true });
+    focusBack(frame, back);
+    // Late: the page blocked the thread it shares with the window while it held the keyboard
+    // (a hidden window's timers are slowed, so only a visible one counts).
+    const held = now() - grabbedAt;
+    const guarded = frames.get(frame);
+    if (guarded && held > LATE_MS && document.visibilityState === 'visible') guarded.onGrab('late', held);
   }, 0);
 }
 
@@ -77,13 +117,24 @@ function arrived(frame: HTMLIFrameElement): void {
   if (chosen === frame) return;
   const guarded = frames.get(frame);
   if (!guarded) return;
-  if (guarded.trusted || (tabAt !== null && now() - tabAt < TAB_MS)) {
+  const fromDoor = atDoor === frame;
+  atDoor = null;
+  if (guarded.trusted || fromDoor || (tabAt !== null && now() - tabAt < TAB_MS)) {
     tabAt = null;
     setChosen(frame);
     return;
   }
+  if (lastKeyAt !== null && now() - lastKeyAt < TYPING_MS) {
+    // The person is typing: the page goes in this task, before a key can reach it even if it
+    // blocks the thread next. Then focus goes back (now for Chromium, again later for WebKit).
+    const back = lastFocus;
+    guarded.onGrab('typing');
+    focusBack(frame, back);
+    restoreFocus(frame);
+    return;
+  }
   restoreFocus(frame);
-  guarded.onGrab();
+  guarded.onGrab('grab');
 }
 
 function check(): void {
@@ -95,13 +146,19 @@ function check(): void {
   setChosen(null);
 }
 
+function doorOf(element: EventTarget | null): HTMLIFrameElement | null {
+  for (const [frame, guarded] of frames) if (element !== null && guarded.door() === element) return frame;
+  return null;
+}
+
 function install(): () => void {
   // The element that had focus before any embed was guarded (the reply box the person is in).
   const active = document.activeElement;
   if (active instanceof HTMLElement && active !== document.body && !(active instanceof HTMLIFrameElement)) lastFocus = active;
   const onKey = (event: KeyboardEvent) => {
+    lastKeyAt = now();
     if (event.key !== 'Tab') return;
-    const at = now();
+    const at = lastKeyAt;
     tabAt = at;
     // A Tab the window cancelled (a field that keeps Tab) moves focus nowhere: it lends nothing.
     setTimeout(() => {
@@ -116,6 +173,7 @@ function install(): () => void {
     }
     // Focus landed in the window: a Tab that brought it here lends no frame anything.
     tabAt = null;
+    atDoor = doorOf(target);
     if (target instanceof HTMLElement) lastFocus = target;
     setChosen(null);
   };
@@ -124,9 +182,12 @@ function install(): () => void {
   const onWindowPress = () => setChosen(null);
   const onWindowFocus = () => setChosen(null);
   // The frame is already the active element when the window blurs into it. Focus that left the
-  // window for something else (Tab out to the browser) ends what a Tab could lend.
+  // window for something else (Tab out to the browser) ends what a Tab or the door could lend.
   const onBlur = () => {
-    if (!(document.activeElement instanceof HTMLIFrameElement)) tabAt = null;
+    if (!(document.activeElement instanceof HTMLIFrameElement)) {
+      tabAt = null;
+      atDoor = null;
+    }
     check();
   };
   window.addEventListener('keydown', onKey, true);
@@ -147,17 +208,24 @@ function install(): () => void {
 
 /**
  * Guard one embed frame while it is mounted. `onGrab` runs each time the page
- * took the keyboard without the person giving it (focus is already on its
- * way back). `trusted`: the modal Full screen view, where focus is the page's.
+ * took the keyboard without the person giving it (focus is on its way back);
+ * for `'typing'` the owner must remove the frame before returning. `trusted`:
+ * the Full screen view, where focus is the page's. `door`: the shield's button.
  */
-export function guardEmbedFocus(frame: HTMLIFrameElement, onGrab: () => void, trusted = false): () => void {
-  frames.set(frame, { onGrab, trusted });
+export function guardEmbedFocus(
+  frame: HTMLIFrameElement,
+  onGrab: (why: EmbedGrab, heldMs?: number) => void,
+  trusted = false,
+  door: () => HTMLElement | null = () => null,
+): () => void {
+  frames.set(frame, { onGrab, trusted, door });
   if (!uninstall) uninstall = install();
   // A page may have grabbed before the guard was in place.
   if (document.activeElement === frame) arrived(frame);
   return () => {
     frames.delete(frame);
     if (chosen === frame) setChosen(null);
+    if (atDoor === frame) atDoor = null;
     if (frames.size === 0 && uninstall) {
       uninstall();
       uninstall = null;
@@ -165,7 +233,7 @@ export function guardEmbedFocus(frame: HTMLIFrameElement, onGrab: () => void, tr
   };
 }
 
-/** The person clicked or tapped the frame (on the window's shield): it gets the keyboard. */
+/** The person clicked or tapped the frame (on the window's shield), or pressed its button: it gets the keyboard. */
 export function chooseEmbedFrame(frame: HTMLIFrameElement): void {
   if (!frames.has(frame)) return;
   setChosen(frame);
@@ -190,6 +258,8 @@ export function resetEmbedFocusGuardForTests(): void {
   chosen = null;
   tabAt = null;
   lastFocus = null;
+  atDoor = null;
+  lastKeyAt = null;
   listeners.clear();
   uninstall?.();
   uninstall = null;

@@ -13,7 +13,9 @@
  *   would freeze the window in Chromium), or is served there to a window at
  *   another name;
  * - a page's link to the Inbox, this computer or the private network is
- *   offered to the person.
+ *   offered to the person;
+ * - the bootstrap acts on a click, pointer move or theme from any window but
+ *   the Inbox's (another embed could click this page's buttons).
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -66,6 +68,68 @@ describe("the embed's sandbox and policy", () => {
     expect(directives.get("object-src")).toEqual(["'none'"]);
     expect(directives.get("default-src")).toEqual(["'none'"]);
     expect(directives.get("frame-ancestors")).toEqual(["'self'"]);
+  });
+});
+
+/** Run the bootstrap against a stand-in page; returns what reached its element and the message handler. */
+function runBootstrap() {
+  const parent = { postMessage() {} };
+  const seen: string[] = [];
+  const el = {
+    dispatchEvent(event: { type: string }) {
+      seen.push(event.type);
+      return true;
+    },
+    focus() {
+      seen.push("focus()");
+    },
+    click() {
+      seen.push("click()");
+    },
+  };
+  const themed: string[] = [];
+  const root = {
+    style: { setProperty: (name: string) => themed.push(name), colorScheme: "" },
+    setAttribute() {},
+    getBoundingClientRect: () => ({ height: 0 }),
+  };
+  const doc = { documentElement: root, body: null, elementFromPoint: () => el, addEventListener() {} };
+  let onMessage: ((event: { source: unknown; data: unknown }) => void) | null = null;
+  const listen = (type: string, handler: (event: { source: unknown; data: unknown }) => void) => {
+    if (type === "message") onMessage = handler;
+  };
+  class FakeEvent {
+    constructor(public type: string) {}
+  }
+  new Function("window", "document", "location", "addEventListener", "setTimeout", "ResizeObserver", "PointerEvent", "MouseEvent", EMBED_BOOTSTRAP)(
+    { parent },
+    doc,
+    { hash: "" },
+    listen,
+    () => 0,
+    undefined,
+    FakeEvent,
+    FakeEvent,
+  );
+  return { parent, seen, themed, send: (source: unknown, data: unknown) => onMessage!({ source, data }) };
+}
+
+describe("the bootstrap takes the shield's forwarding from the Inbox's window only", () => {
+  test("a click, pointer move or theme from another window (another embed) does nothing", () => {
+    const page = runBootstrap();
+    const other = {};
+    page.send(other, { pnEmbed: 1, kind: "click", x: 5, y: 5 });
+    page.send(other, { pnEmbed: 1, kind: "pointer", x: 5, y: 5 });
+    page.send(other, { pnEmbed: 1, kind: "theme", vars: { "--foreground": "red" }, scheme: "dark" });
+    expect(page.seen).toEqual([]);
+    expect(page.themed).toEqual([]);
+  });
+
+  test("the same click from the Inbox's window reaches the element under it", () => {
+    const page = runBootstrap();
+    page.send(page.parent, { pnEmbed: 1, kind: "click", x: 5, y: 5 });
+    expect(page.seen).toContain("click()");
+    expect(page.seen).toContain("focus()");
   });
 });
 

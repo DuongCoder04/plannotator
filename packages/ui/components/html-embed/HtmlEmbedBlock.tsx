@@ -12,18 +12,25 @@
  * (the fence's source in place of the page) and Full screen (the same page in
  * ui's popout, scrolling).
  *
- * The window keeps the keyboard (`focusGuard`): an inline page sits under a
- * transparent window-owned shield until the person clicks or taps it (the
- * shield passes the click, pointer moves and sideways scrolling on to the
- * page, and vertical scrolling falls through to the thread), so focus the
- * person did not give is taken back at once, and a page that keeps taking it
- * is stopped. A link the page hands over is never opened by the page: the
- * window shows its real address and the person opens it (`embedLinkOpenable`
- * refuses the Inbox's own host, this computer and the private network).
+ * The window guards the keyboard (`focusGuard`): an inline page sits under a
+ * transparent window-owned shield, a real button ("Use this page"), until the
+ * person clicks, taps or presses it (the shield passes the click, pointer
+ * moves and sideways scrolling on to the page, and vertical scrolling falls
+ * through to the thread). Focus the person did not give is taken back; a page
+ * that takes it while the person types, holds it up, or keeps taking it is
+ * stopped. In desktop Chrome that is the whole story. Where the page shares
+ * the window's thread (Safari/WebKit, Chromium without site isolation) a page
+ * that grabs and then blocks the thread can still catch the keys typed during
+ * that block, once, before it is stopped and the person is told. A link the
+ * page hands over is never opened by the page: the window shows its real
+ * address and the person opens it (`embedLinkOffer` refuses the Inbox's own
+ * host, this computer and the private network), and only from a page the
+ * person is using.
  */
 
 import { Code } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import {
   EMBED_SANDBOX,
   EMBED_THEME_TOKENS,
@@ -40,7 +47,7 @@ import { CodeBlock } from '../blocks/CodeBlock';
 import { HostTitle } from '../HostTitle';
 import { PopoutDialog } from '../PopoutDialog';
 import { useTheme } from '../ThemeProvider';
-import { chooseEmbedFrame, guardEmbedFocus, isEmbedFrameChosen, subscribeEmbedFocus } from './focusGuard';
+import { chooseEmbedFrame, guardEmbedFocus, isEmbedFrameChosen, subscribeEmbedFocus, type EmbedGrab } from './focusGuard';
 import { acquireEmbedLoad, claimEmbedLive, onEmbedLiveFreed, releaseEmbedLive, useNearViewport } from './loadGate';
 
 /** A host that can serve embed documents (the Inbox: POST /api/inbox/embeds). */
@@ -96,13 +103,18 @@ export function setEmbedReadyTimeoutForTests(ms: number): void {
   readyTimeoutMs = ms;
 }
 
+/** How recent a click on the shield must be for a link the page then hands over. */
+const SHIELD_CLICK_MS = 1000;
+
 /**
  * A link the page handed over, as the window will offer it (`embedLinkOffer`:
  * the address that would open, in full), or null: an address it never
- * offers, or nobody clicked (a click in the page is the person's activation
- * in the window too).
+ * offers, nobody clicked (the window's user activation), or the person is not
+ * using this page (it is not chosen and its shield was not just clicked: a
+ * click elsewhere in the window activates the window too).
  */
-function offeredLink(url: string): string | null {
+function offeredLink(url: string, usingPage: boolean): string | null {
+  if (!usingPage) return null;
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (activation && !activation.isActive) return null;
   return embedLinkOffer(url, window.location.hostname);
@@ -144,7 +156,7 @@ function EmbedFrame({
   onLoaded?: () => void;
   onReady?: () => void;
   onLeft?: () => void;
-  onGrab: () => void;
+  onGrab: (why: EmbedGrab, heldMs?: number) => void;
   onLink: (url: string) => void;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
@@ -160,12 +172,15 @@ function EmbedFrame({
     () => false,
   );
   const moveFrame = useRef(0);
+  const shieldRef = useRef<HTMLButtonElement>(null);
+  const shieldClickAt = useRef<number | null>(null);
 
   useEffect(() => {
     const frame = ref.current;
     if (!frame) return;
-    // Full screen is modal: there is no window field behind it, so focus there is the page's.
-    return guardEmbedFocus(frame, () => handlers.current.onGrab(), mode === 'full');
+    // Full screen: its dialog is not modal, but it closes as soon as focus leaves it (Base UI), so
+    // no window field takes typing while its page holds the keyboard: focus there is the page's.
+    return guardEmbedFocus(frame, (why, heldMs) => handlers.current.onGrab(why, heldMs), mode === 'full', () => shieldRef.current);
   }, [mode]);
 
   /** A point on the shield, in the frame's own pixels. */
@@ -186,7 +201,9 @@ function EmbedFrame({
       }
       if (message.kind === 'height') handlers.current.onHeight?.(message.height);
       else if (message.kind === 'link') {
-        const url = offeredLink(message.url);
+        const clickedAt = shieldClickAt.current;
+        const usingPage = isEmbedFrameChosen(ref.current) || (clickedAt !== null && performance.now() - clickedAt < SHIELD_CLICK_MS);
+        const url = offeredLink(message.url, usingPage);
         if (url) handlers.current.onLink(url);
       }
       else handlers.current.onEscape(ref.current);
@@ -226,16 +243,18 @@ function EmbedFrame({
   if (mode === 'full') return iframe;
   return (
     <div className="relative">
-      {iframe}
       {!chosen && (
-        // The window's shield: the person's click or tap lands here, so the window knows the page
-        // was chosen (the page sees its own pointer, so hovering can never count). It passes the
-        // click, pointer moves and sideways scrolling on; vertical scrolling falls through to the
-        // thread (an inline page never scrolls up and down itself).
-        <div
-          aria-hidden="true"
+        // The window's shield, a real button: the person's click, tap or press lands here, so the
+        // window knows the page was chosen (the page sees its own pointer, so hovering can never
+        // count). It passes the click, pointer moves and sideways scrolling on; vertical scrolling
+        // falls through to the thread (an inline page never scrolls up and down itself). Before the
+        // frame in the tab order, so a keyboard or screen reader reaches it first.
+        <button
+          ref={shieldRef}
+          type="button"
+          aria-label="Use this page"
           data-html-embed-shield=""
-          className="absolute inset-0"
+          className="absolute inset-0 z-10 m-0 block h-full w-full cursor-default appearance-none rounded-md border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           onPointerMove={(event) => {
             if (event.pointerType !== 'mouse') return;
             const point = at(event);
@@ -249,15 +268,18 @@ function EmbedFrame({
           onClick={(event) => {
             const frame = ref.current;
             if (!frame) return;
-            const point = at(event);
+            shieldClickAt.current = performance.now();
             chooseEmbedFrame(frame);
-            toPage(frame, { pnEmbed: 1, kind: 'click', ...point });
+            // Enter or Space (or a screen reader's press) has no point: the page just gets the keyboard.
+            if (event.detail === 0) return;
+            toPage(frame, { pnEmbed: 1, kind: 'click', ...at(event) });
           }}
           onWheel={(event) => {
             if (event.deltaX !== 0) toPage(ref.current, { pnEmbed: 1, kind: 'scroll', dx: event.deltaX });
           }}
         />
       )}
+      {iframe}
     </div>
   );
 }
@@ -293,6 +315,18 @@ function LinkOffer({ url, onDone }: { url: string; onDone: () => void }) {
 }
 
 type Phase = 'far' | 'waiting' | 'loading' | 'ready' | 'failed' | 'left' | 'grabbed';
+/** Why a page was stopped for the keyboard. */
+type Stopped = { why: 'kept' } | { why: 'typing' } | { why: 'late'; heldMs: number };
+
+/** The notice for a page stopped for the keyboard. */
+function stoppedNotice(stopped: Stopped): string {
+  if (stopped.why === 'typing') return 'This page took the keyboard while you were typing, so it was stopped.';
+  if (stopped.why === 'late') {
+    const seconds = Math.max(0.1, Math.round(stopped.heldMs / 100) / 10);
+    return `This page held the keyboard for ${seconds.toFixed(1)} s, so it was stopped. What you typed then may have gone to it.`;
+  }
+  return 'This page kept taking the keyboard, so it was stopped.';
+}
 
 export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedHost }) {
   const figureRef = useRef<HTMLElement>(null);
@@ -300,6 +334,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
   const theme = useEmbedTheme();
   const [showCode, setShowCode] = useState(false);
   const [phase, setPhase] = useState<Phase>('far');
+  const [stopped, setStopped] = useState<Stopped>({ why: 'kept' });
   const [url, setUrl] = useState<string | null>(null);
   const [height, setHeight] = useState<number | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
@@ -381,16 +416,27 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
   }, [phase, url]);
 
   // Focus is already back in the window; a page that keeps taking it is stopped.
-  const grabbed = useCallback(() => {
-    const t = Date.now();
-    const longest = GRAB_LIMITS[GRAB_LIMITS.length - 1]!.withinMs;
-    grabs.current = [...grabs.current.filter((at) => t - at < longest), t];
-    if (!GRAB_LIMITS.some(({ count, withinMs }) => grabs.current.filter((at) => t - at < withinMs).length >= count)) return;
+  const stop = useCallback((why: Stopped) => {
     grabs.current = [];
     setFull(false);
     setLink(null);
+    setStopped(why);
     setPhase('grabbed');
   }, []);
+  const grabbed = useCallback(
+    (why: EmbedGrab, heldMs?: number) => {
+      // While the person types: gone in this task, before the page can block the thread and take
+      // the keys that follow (the guard needs the frame out of the document when this returns).
+      if (why === 'typing') return flushSync(() => stop({ why: 'typing' }));
+      // The page held the thread while it had the keyboard: what was typed then may have reached it.
+      if (why === 'late') return stop({ why: 'late', heldMs: heldMs ?? 0 });
+      const t = Date.now();
+      const longest = GRAB_LIMITS[GRAB_LIMITS.length - 1]!.withinMs;
+      grabs.current = [...grabs.current.filter((at) => t - at < longest), t];
+      if (GRAB_LIMITS.some(({ count, withinMs }) => grabs.current.filter((at) => t - at < withinMs).length >= count)) stop({ why: 'kept' });
+    },
+    [stop],
+  );
 
   const reload = useCallback(() => {
     grabs.current = [];
@@ -430,9 +476,11 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
         <div
           data-html-embed-left={phase === 'left' ? '' : undefined}
           data-html-embed-grabbed={phase === 'grabbed' ? '' : undefined}
+          data-html-embed-stopped={phase === 'grabbed' ? stopped.why : undefined}
+          role="status"
           className="flex items-center justify-center gap-3 rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground"
         >
-          {phase === 'left' ? 'The page went to another address.' : 'This page kept taking the keyboard, so it was stopped.'}
+          {phase === 'left' ? 'The page went to another address.' : stoppedNotice(stopped)}
           <button type="button" className="underline hover:text-foreground" onClick={reload}>
             {phase === 'left' ? 'Reload' : 'Load again'}
           </button>
@@ -440,7 +488,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
       );
     }
     return null;
-  }, [showCode, phase, block, height, reload]);
+  }, [showCode, phase, block, height, reload, stopped]);
 
   return (
     <figure ref={figureRef} data-block-id={block.id} data-html-embed="" data-html-embed-phase={showCode ? 'code' : phase} className="my-4">

@@ -30,7 +30,8 @@
  *   this computer and the private network).
  * - On this computer the frame is served from the other loopback name
  *   (`embedFrameUrl`): another site, so another process in Chromium.
- * - The host keeps the keyboard (ui's `focusGuard`), and the Inbox refuses
+ * - The host guards the keyboard (ui's `focusGuard`; bounded, not closed,
+ *   where the frame shares the window's thread), and the Inbox refuses
  *   a cross-site frame navigation to its routes (an embed steering itself).
  */
 

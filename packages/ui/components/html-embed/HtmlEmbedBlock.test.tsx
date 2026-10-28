@@ -11,14 +11,20 @@
  *   serve the page leaves a blank box instead of the code;
  * - a page that takes the keyboard keeps it (the person's typing would go to
  *   the page), hovering it counts as choosing it, a Tab that landed on a
- *   window element lends a frame the keyboard, a page that keeps taking it
- *   (fast or slowly) is not stopped, or the person's click on it no longer
- *   gives it the keyboard and reaches the page;
+ *   window element (or one older than 500 ms) lends a frame the keyboard, a
+ *   page that keeps taking it (fast or slowly) is not stopped, or the
+ *   person's click on it no longer gives it the keyboard and reaches the page;
+ * - a page that grabs while the person types is not removed in the same task,
+ *   or one that holds the thread after a grab is not stopped with a notice;
+ * - the shield is not a button a keyboard or screen reader reaches, pressing
+ *   it does not give the page the keyboard, focus moving from it into the
+ *   page counts as a grab, or the window regaining focus keeps a page chosen;
  * - a frame the browser refused (blank, never speaking) counts as ready
  *   instead of showing the code;
  * - a link the page hands over opens without the person seeing the address
- *   that opens and clicking Open, is offered without a click, or a link to
- *   the Inbox, this computer or the private network is offered at all.
+ *   that opens and clicking Open, is offered without a click or from a page
+ *   the person is not using, or a link to the Inbox, this computer or the
+ *   private network is offered at all.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
@@ -96,6 +102,14 @@ const servedAt = (url: string | null): HtmlEmbedHost & { asked: string[] } => {
 };
 
 const frameOf = (el: HTMLElement) => el.querySelector<HTMLIFrameElement>('iframe[data-html-embed-frame="inline"]');
+const shieldOf = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('[data-html-embed-shield]');
+/** The person clicks the page: on the window's shield, at a point. */
+const clickPage = (el: HTMLElement) =>
+  act(async () => {
+    const shield = shieldOf(el)!;
+    shield.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    shield.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 12, clientY: 7 }));
+  });
 const say = (source: unknown, data: unknown) =>
   act(async () => {
     window.dispatchEvent(new MessageEvent('message', { data, source: source as Window }));
@@ -162,14 +176,13 @@ describe.skipIf(!hasDom)('fences a host draws', () => {
   });
 });
 
-describe.skipIf(!hasDom)('the keyboard stays with the window', () => {
+describe.skipIf(!hasDom)('the window guards the keyboard', () => {
   const box = () => {
     const textarea = document.createElement('textarea');
     document.body.appendChild(textarea);
     textarea.focus();
     return textarea;
   };
-  const shieldOf = (el: HTMLElement) => el.querySelector<HTMLElement>('[data-html-embed-shield]');
   /** What the shield passed on to the page. */
   const toPage = (frame: HTMLIFrameElement) => {
     const sent: unknown[] = [];
@@ -239,10 +252,9 @@ describe.skipIf(!hasDom)('the keyboard stays with the window', () => {
     reply.focus();
     const shield = shieldOf(el)!;
     expect(shield).not.toBeNull();
-    await act(async () => {
-      shield.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-      shield.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 12, clientY: 7 }));
-    });
+    expect(shield.tagName).toBe('BUTTON');
+    expect(shield.getAttribute('aria-label')).toBe('Use this page');
+    await clickPage(el);
     await settle();
     expect(document.activeElement).toBe(frame);
     expect(shieldOf(el)).toBeNull();
@@ -257,43 +269,112 @@ describe.skipIf(!hasDom)('the keyboard stays with the window', () => {
     expect(document.activeElement).not.toBe(frame);
   });
 
-  test('Tab straight into the frame gives it the keyboard; a Tab that lands on a window element lends nothing', async () => {
+  test('the window regaining focus ends the choice: the shield is back', async () => {
+    box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    toPage(frameOf(el)!);
+    await clickPage(el);
+    expect(shieldOf(el)).toBeNull();
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(shieldOf(el)).not.toBeNull();
+  });
+
+  test("the shield is a button a keyboard or screen reader reaches: pressing it, or moving on from it into the page, gives the page the keyboard", async () => {
     const reply = box();
-    const button = document.createElement('button');
-    document.body.appendChild(button);
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    const sent = toPage(frame);
+    // Enter or Space on it (a click with no pointer): chosen, and nothing is clicked in the page.
+    shieldOf(el)!.focus();
+    await act(async () => shieldOf(el)!.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 })));
+    await settle();
+    expect(document.activeElement).toBe(frame);
+    expect(sent.filter((message) => (message as { kind?: string }).kind === 'click')).toEqual([]);
+
+    // Back in the window; then a screen reader moves from the button straight into the page.
+    reply.focus();
+    await settle();
+    expect(shieldOf(el)).not.toBeNull();
+    shieldOf(el)!.focus();
+    await act(async () => frame.focus());
+    await settle();
+    expect(document.activeElement).toBe(frame);
+    expect(el.querySelector('[data-html-embed-grabbed]')).toBeNull();
+  });
+
+  test('a page that takes the keyboard while the person types is stopped at once, in the same task', async () => {
+    const reply = box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    reply.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    // No await: the frame must be out of the document before the page's next line could block the thread.
+    frame.focus();
+    expect(frame.isConnected).toBe(false);
+    await settle();
+    expect(document.activeElement).toBe(reply);
+    expect(el.querySelector('[data-html-embed-stopped]')!.getAttribute('data-html-embed-stopped')).toBe('typing');
+    expect(el.querySelector('[data-html-embed-grabbed]')!.textContent).toContain('while you were typing');
+  });
+
+  test('a page that holds the thread after taking the keyboard is stopped, and the person is told', async () => {
+    const reply = box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    await act(async () => {
+      frame.focus();
+      // The page blocks the thread it shares with the window: the restore runs late.
+      const end = performance.now() + 400;
+      while (performance.now() < end) {}
+    });
+    await settle();
+    expect(document.activeElement).toBe(reply);
+    expect(frameOf(el)).toBeNull();
+    expect(el.querySelector('[data-html-embed-stopped]')!.getAttribute('data-html-embed-stopped')).toBe('late');
+    expect(el.querySelector('[data-html-embed-grabbed]')!.textContent).toMatch(/held the keyboard for 0\.[4-9] s/);
+  });
+
+  test('Tab straight into the frame gives it the keyboard', async () => {
+    const reply = box();
     const el = await mount(servedAt('/api/inbox/embeds/abc'));
     reply.focus();
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
-    await act(async () => button.focus());
-    await act(async () => frameOf(el)!.focus());
-    await settle();
-    expect(document.activeElement).toBe(button);
-
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
     await act(async () => frameOf(el)!.focus());
     await settle();
     expect(document.activeElement).toBe(frameOf(el));
   });
 
-  test('a Tab a window field kept, or one that took focus out of the window, lends nothing', async () => {
-    const button = document.createElement('button');
-    document.body.appendChild(button);
+  test('a Tab lends for 500 ms only', async () => {
+    const reply = box();
     const el = await mount(servedAt('/api/inbox/embeds/abc'));
-    button.focus();
-    const kept = new KeyboardEvent('keydown', { key: 'Tab', cancelable: true });
-    kept.preventDefault();
-    window.dispatchEvent(kept);
-    await settle();
-    await act(async () => frameOf(el)!.focus());
-    await settle();
-    expect(document.activeElement).toBe(button);
+    reply.focus();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
-    button.blur();
-    window.dispatchEvent(new Event('blur'));
-    await act(async () => frameOf(el)!.focus());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    await act(async () => frameOf(el)?.focus());
     await settle();
-    expect(document.activeElement).not.toBe(frameOf(el));
+    expect(document.activeElement).toBe(reply);
   });
+
+  for (const [name, afterTab] of [
+    ['lands on a window element', (button: HTMLButtonElement) => button.focus()],
+    ['takes focus out of the window', () => ((document.activeElement as HTMLElement).blur(), window.dispatchEvent(new Event('blur')))],
+    ['a window field kept (cancelled)', () => undefined],
+  ] as const) {
+    test(`a Tab that ${name} lends nothing: the grab after it is taken back`, async () => {
+      const button = document.createElement('button');
+      document.body.appendChild(button);
+      const el = await mount(servedAt('/api/inbox/embeds/abc'));
+      box();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', cancelable: true });
+      if (name.startsWith('a window field')) tab.preventDefault();
+      window.dispatchEvent(tab);
+      afterTab(button);
+      await settle();
+      await act(async () => frameOf(el)!.focus());
+      await settle();
+      expect(document.activeElement).not.toBe(frameOf(el) ?? undefined);
+      expect(el.querySelector('iframe[data-html-embed-frame="inline"]:focus')).toBeNull();
+    });
+  }
 
   test('a frame whose page never speaks (the browser refused it) shows the code, not a blank box', async () => {
     readyModule!.setEmbedReadyTimeoutForTests(400);
@@ -333,6 +414,7 @@ describe.skipIf(!hasDom)('a link the page hands over', () => {
   test("shows its real address and opens only on the person's Open", async () => {
     const el = await mount(servedAt('/api/inbox/embeds/abc'));
     const frame = frameOf(el)!;
+    await clickPage(el);
     await say(frame.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://example.com/docs?a=1' });
     expect(el.querySelector('[data-html-embed-link-url]')!.textContent).toBe('https://example.com/docs?a=1');
     expect(opened).toEqual([]);
@@ -343,6 +425,7 @@ describe.skipIf(!hasDom)('a link the page hands over', () => {
 
   test('the address shown is the one that opens', async () => {
     const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    await clickPage(el);
     await say(frameOf(el)!.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://evil.com\\@example.com' });
     expect(el.querySelector('[data-html-embed-link-url]')!.textContent).toBe('https://evil.com/@example.com');
     await act(async () => el.querySelector<HTMLButtonElement>('[data-html-embed-link-open]')!.click());
@@ -355,6 +438,7 @@ describe.skipIf(!hasDom)('a link the page hands over', () => {
     Object.defineProperty(navigator, 'userActivation', { configurable: true, get: () => ({ isActive: active, hasBeenActive: true }) });
     try {
       const el = await mount(servedAt('/api/inbox/embeds/abc'));
+      await clickPage(el);
       await say(frameOf(el)!.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://example.com/a' });
       expect(el.querySelector('[data-html-embed-link]')).toBeNull();
       active = true;
@@ -366,9 +450,20 @@ describe.skipIf(!hasDom)('a link the page hands over', () => {
     }
   });
 
+  test('a link from a page the person is not using (they clicked elsewhere in the window) is not offered', async () => {
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    await act(async () => document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })));
+    await say(frameOf(el)!.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://example.com/phish' });
+    expect(el.querySelector('[data-html-embed-link]')).toBeNull();
+    await clickPage(el);
+    await say(frameOf(el)!.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://example.com/docs' });
+    expect(el.querySelector('[data-html-embed-link-url]')!.textContent).toBe('https://example.com/docs');
+  });
+
   test('a link to the Inbox, this computer or the private network is never offered, nor one from another window', async () => {
     const el = await mount(servedAt('/api/inbox/embeds/abc'));
     const frame = frameOf(el)!;
+    await clickPage(el);
     for (const url of [`${window.location.origin}/api/inbox/threads`, 'http://127.0.0.1:54321/api/inbox/threads', 'http://localhost:54321/', 'http://192.168.1.1/']) {
       await say(frame.contentWindow, { pnEmbed: 1, kind: 'link', url });
     }
