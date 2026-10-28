@@ -203,7 +203,7 @@ function parseArgs(args) {
     else if (arg === "--gzip") parsed.gzip = true;
     else if (arg === "--json") parsed.json = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: node tests/bench-plan-load.mjs [options]
+      console.log(`Usage: node scripts/bench-plan-load.mjs [options]
 
 Options:
   --runs <count>       Number of isolated cold loads (default: 3)
