@@ -59,6 +59,7 @@ import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
   readAgentFile,
+  samePlace,
   stripJsonComments,
   withBom,
   writeAgentFileAtomic,
@@ -1041,6 +1042,8 @@ export interface InboxAgentRecord {
   command?: string[];
   /** A JSON add's exact change, so removal gives the file back byte for byte (writeJsonEntry). */
   undo?: JsonEntryUndo;
+  /** Entries Plannotator added in other files that a move could not take back out: uninstall removes them too. */
+  strays?: { path: string; command?: string[]; undo?: JsonEntryUndo }[];
   /** Plannotator created the JSON file: removal deletes it when nothing but the empty containers is left. */
   created?: boolean;
   at: string;
@@ -1220,10 +1223,18 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
   for (const spec of pending) {
     const record = file.agents[spec.id];
     if (!record || record.reach !== "mcp" || (record.state !== "added" && record.state !== "found") || record.removed_outside_at) continue;
+    // Read where the entry was written, whatever the environment names now (read only).
+    const raw = recordedRaw(spec, e, record);
+    const read = raw === null ? null : classify(raw, ourCommands(options, record), true);
+    if (read && read.kind !== "ours" && read.kind !== "unreadable") {
+      record.removed_outside_at = at;
+      continue;
+    }
     if (recordedElsewhere(spec, e, record)) {
       // The environment names another file now (`QWEN_HOME` set in one shell, not in another: an accident of how
-      // this Inbox was started). Neither file is touched and nothing is called removed: the entry stays where it was
-      // written, said once, and only the person moves it (Settings → Agents, turning it on).
+      // this Inbox was started). Neither file is touched: the entry stays where it was written, said once per pair of
+      // places (kept when a run from the other shell matches; cleared when Settings acts), and only the person moves
+      // it (Settings → Agents shows it off, "connected in …"; turning it on moves it).
       const path = displayPath(record.path, e);
       const now = displayPath(spec.file(e), e);
       const key = `${path} -> ${now}`;
@@ -1231,10 +1242,11 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
       (file.elsewhere_said ??= {})[spec.id] = key;
       continue;
     }
-    if (file.elsewhere_said?.[spec.id]) delete file.elsewhere_said[spec.id];
-    const raw = recordedRaw(spec, e, record);
-    const read = raw === null ? null : classify(raw, ourCommands(options, record), true);
-    if (read && read.kind !== "ours" && read.kind !== "unreadable") record.removed_outside_at = at;
+    // This run's environment names the recorded file: a line from a run elsewhere is not this Inbox's to show.
+    if (file.last_report?.elsewhere?.some((moved) => moved.agent === spec.id)) {
+      const elsewhere = file.last_report.elsewhere.filter((moved) => moved.agent !== spec.id);
+      file.last_report = { ...file.last_report, elsewhere };
+    }
   }
   // An agent connected through MCP before its plugin was installed (Pi before `pi install`), whose plugin's tool is
   // on now: the MCP entry Plannotator added goes, so the agent never carries both. Kept when it cannot be removed.
@@ -1403,6 +1415,8 @@ export interface RemovalPlan {
 export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourCommand: readonly string[]): RemovalPlan {
   const file = readInboxAgents(dataDir);
   const items: RemovalPlanItem[] = [];
+  /** After every agent's own entry, so a caller looking for an agent's item finds that one first. */
+  const strays: RemovalPlanItem[] = [];
   const skipped: string[] = [];
   if (!agentHomeAllowed(e)) return { items, skipped };
   for (const spec of AGENT_SPECS) {
@@ -1422,6 +1436,18 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       continue;
     }
     const ours = record.command ? [record.command] : [];
+    // Entries a move left in another file (its new one could not be taken back out): removed too, that entry only.
+    const strayJson = jsonFileFor(spec.id);
+    for (const stray of strayJson ? (record.strays ?? []) : []) {
+      strays.push({
+        agent: spec.id,
+        describe: `MCP server ${NAME} from ${label} (${displayPath(stray.path, e)}, that entry only)`,
+        apply: async () => {
+          const result = writeJsonEntry(stray.path, strayJson!.keys, undefined, stray.command ? [stray.command] : ours, stray.undo, strayJson!.rules);
+          return result.ok ? null : result.reason;
+        },
+      });
+    }
     const read = raw === null ? null : classify(raw, ours, false);
     if (read?.kind === "other") {
       skipped.push(`${label}'s "${NAME}" now runs something else (changed by hand), so it is yours`);
@@ -1461,7 +1487,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       },
     });
   }
-  return { items, skipped };
+  return { items: [...items, ...strays], skipped };
 }
 
 /** The agents whose JSON file Plannotator edits itself: where their entry is and how the file is edited. */
@@ -1492,7 +1518,8 @@ function recordedRaw(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRec
 /** Whether the environment now names another file than the one the agent's recorded entry is in. */
 function recordedElsewhere(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRecord | undefined): boolean {
   const recorded = recordedFile(spec, e, record);
-  return recorded !== null && recorded !== spec.file(e);
+  const now = spec.file(e);
+  return recorded !== null && now !== null && !samePlace(recorded, now, e.platform);
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,7 +1529,7 @@ export interface InboxAgentReachState {
   /** tool: Plannotator's plugin/extension (`inboxTool`); mcp: a plannotator-inbox entry; manual: only a person can add it; none: nothing to switch. */
   kind: "tool" | "mcp" | "manual" | "none";
   on: boolean;
-  state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable";
+  state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable" | "elsewhere";
   /** Where the entry is (`~` for home). */
   path: string | null;
   /** PLANNOTATOR_INBOX_TOOL decides the tool switch. */
@@ -1573,6 +1600,11 @@ export async function inboxAgentReach(id: InboxAgentId, options: ConnectOptions)
   // it reaches the Inbox (without the wake). Checked before the agent is called off.
   if (id === "claude-code" && (way.kind === "manual" || !claudeCodeModOn(e)) && claudeCodeMcpEntry(e, ourCommands(options, record)).kind === "ours") {
     return { kind: "mcp", on: true, state: "connected", path: displayPath(join(envDir(e, "CLAUDE_CONFIG_DIR") ?? e.homeDir, ".claude.json"), e), locked: false, reason: null };
+  }
+  // Connected in another file than the environment names (`QWEN_HOME` differs): off here, the switch moves it.
+  if (record && recordedElsewhere(spec, e, record)) {
+    const raw = recordedRaw(spec, e, record);
+    if (raw && classify(raw, ourCommands(options, record), true).kind === "ours") return { kind: "mcp", on: false, state: "elsewhere", path, locked: false, reason: null };
   }
   if (way.kind === "tool") {
     const locked = parseInboxToolEnv(e.env as NodeJS.ProcessEnv) !== undefined;
@@ -1653,7 +1685,10 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
   const spec = agentSpec(id);
   const way: ConnectWay = id === "claude-code" ? claudeCodeWay(e) : await spec.way(e, true);
   const file = readInboxAgents(options.dataDir);
-  if (way.kind === "manual") return `${INBOX_AGENT_LABELS[id]} is connected by hand: ${way.why}`;
+  // The person acted: the "connected elsewhere" line is said again only for a new pair of places.
+  if (file.elsewhere_said?.[id]) delete file.elsewhere_said[id];
+  const there = file.agents[id] && recordedElsewhere(spec, e, file.agents[id]) ? displayPath(file.agents[id]!.path, e) : null;
+  if (way.kind === "manual") return `${INBOX_AGENT_LABELS[id]} is connected by hand: ${way.why}${there ? `, so it stays connected in ${there}` : ""}`;
   if (way.kind === "none") return `${INBOX_AGENT_LABELS[id]} is connected by hand`;
   if (way.kind === "tool") {
     // Claude Code's tool comes from the plugin's mod: with the mod off a switch here would change nothing.
@@ -1687,13 +1722,18 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
         if (json && added?.path) {
           const undone = writeJsonEntry(added.path, json.keys, undefined, added.command ? [added.command] : [], added.undo, json.rules);
           if (undone.ok && added.created) deleteIfOnlyOurs(added.path, json.keys);
+          if (!undone.ok) {
+            // Both stay: the new one is recorded too, so uninstall removes it.
+            file.agents[id] = { ...previous!, strays: [...(previous!.strays ?? []), { path: added.path, ...(added.command ? { command: added.command } : {}), ...(added.undo ? { undo: added.undo } : {}) }] };
+            writeInboxAgents(options.dataDir, file);
+            return `Plannotator's entry in ${old} could not be removed (${moved}), and the one it had just added in ${displayPath(added.path, e)} could not be taken back out (${undone.reason}). ${INBOX_AGENT_LABELS[id]} has both now; plannotator uninstall removes both`;
+          }
         }
         return `Plannotator's entry in ${old} could not be removed (${moved})${stays}`;
       }
     }
     if ("record" in outcome && outcome.record) file.agents[id] = outcome.record;
     else if (previous) delete file.agents[id];
-    if (file.elsewhere_said) delete file.elsewhere_said[id];
   } else {
     const record = file.agents[id];
     const ours = ourCommands(options, record);

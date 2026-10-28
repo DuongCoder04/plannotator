@@ -86,7 +86,7 @@ export function qwenHome(env: Readonly<Record<string, string | undefined>>, home
   const value = qwenHomeSetting(env, homeDir);
   if (value === null) return join(homeDir, ".qwen");
   const expanded = expandQwenHome(value, homeDir);
-  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(cwd, expanded);
 }
 
 export function qwenSessionsDir(home: string): string {

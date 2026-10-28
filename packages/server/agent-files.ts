@@ -19,7 +19,7 @@
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 /** Files larger than this are never edited. */
 export const AGENT_FILE_MAX_BYTES = 1024 * 1024;
@@ -122,6 +122,35 @@ export function writeAgentFileAtomic(target: string, text: string, mode: number,
     rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/**
+ * A path as the file system names it, so one place spelled two ways is one
+ * place: the real path of its deepest existing folder (a symlinked folder,
+ * `/tmp` and `/private/tmp`), the rest as written, normalized; case-folded on
+ * macOS and Windows, whose file systems ignore case by default.
+ */
+export function placeKey(path: string, platform: NodeJS.Platform): string {
+  let head = resolve(path);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      head = realpathSync.native(head);
+      break;
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) break;
+      rest.unshift(basename(head));
+      head = parent;
+    }
+  }
+  const key = join(head, ...rest);
+  return platform === "darwin" || platform === "win32" ? key.toLowerCase() : key;
+}
+
+/** Whether two paths name one place (`placeKey`). */
+export function samePlace(a: string, b: string, platform: NodeJS.Platform): boolean {
+  return a === b || placeKey(a, platform) === placeKey(b, platform);
 }
 
 /** A short, plain reason for a file-system error. */
