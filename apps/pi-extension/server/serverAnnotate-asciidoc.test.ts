@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startAnnotateServer } from "./serverAnnotate.ts";
-import { NO_BROWSER } from "../../../tests/helpers/no-browser";
+import { NO_BROWSER } from "../../../tests/helpers/no-browser.ts";
 
 const MINIMAL_HTML = "<html><body>editor</body></html>";
 const ADOC = "= Guide\n\n== Install\n\n* step one\n";
