@@ -290,6 +290,7 @@ jobs:
           packages/review-editor/App.agentTool.test.tsx
           packages/review-editor/App.guideViewed.test.tsx
           packages/review-editor/App.commitsJj.test.tsx
+          packages/review-editor/App.localReviewDraft.test.tsx
           packages/review-editor/App.emptyDiffSwitch.test.tsx
           packages/review-editor/App.planLookTwoTabs.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
@@ -320,6 +321,7 @@ jobs:
           packages/review-editor/components/TokenHoverCard.test.tsx
           packages/review-editor/components/TokenHoverAnnouncementDialog.test.tsx
           packages/review-editor/utils/stitchTokenIdentifier.test.ts
+          packages/review-editor/utils/localReviewDraft.test.tsx
           packages/review-editor/utils/diffSelection.test.ts
           packages/review-editor/hooks/useAutoViewed.test.tsx
           packages/review-editor/hooks/useReviewProgress.test.tsx
