@@ -334,6 +334,72 @@ describe("Qwen Code's trusted sender", () => {
     expect(qwenWakeToken(dataDir, qwenHome())).toBe(grants()[0]!.token);
   });
 
+  test("a run under another QWEN_HOME moves no grant: it stays with the entry; turning Qwen Code on in Settings there moves both", async () => {
+    fake.install("qwen");
+    const other = join(fake.root, "other-qwen");
+    await connectInboxAgents(options());
+    const { token } = readQwenTrust(dataDir)!;
+    const run = await connectInboxAgents(options({ QWEN_HOME: other }));
+    expect(run.trusted ?? []).toEqual([]);
+    expect(run.trust_failed ?? []).toEqual([]);
+    expect(controllerCalls("add")).toHaveLength(1);
+    expect(controllerCalls("remove")).toEqual([]);
+    expect(readQwenTrust(dataDir)).toMatchObject({ home: qwenHome(), token });
+    expect(grants(other)).toEqual([]);
+
+    expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other }))).toBeNull();
+    expect(grants()).toEqual([]);
+    expect(grants(other)).toHaveLength(1);
+    expect(readQwenTrust(dataDir)).toMatchObject({ home: other, token: grants(other)[0]!.token });
+    expect(JSON.parse(readFileSync(join(other, "settings.json"), "utf8")).mcpServers["plannotator-inbox"]).toBeDefined();
+  });
+
+  test("a grant waiting to be revoked in another Qwen home is revoked there: at the next run while off, and before a mint when turned on", async () => {
+    fake.install("qwen");
+    const other = join(fake.root, "other-qwen");
+    // Turned off while Qwen refused: the grant in ~/.qwen waits to be revoked.
+    await connectInboxAgents(options());
+    await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
+    expect(readQwenTrust(dataDir)).toMatchObject({ home: qwenHome(), revoke_pending: true });
+    // A run from a shell with another QWEN_HOME: revoked in the grant's own home.
+    await connectInboxAgents(options({ QWEN_HOME: other }));
+    expect(grants()).toEqual([]);
+    expect(existsSync(qwenTrustPath(dataDir))).toBe(false);
+
+    // Again, and this time turned on under the other home: the old one goes before the new one is minted.
+    await setInboxAgentReach("qwen", true, options());
+    await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
+    expect(grants()).toHaveLength(1);
+    expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other }))).toBeNull();
+    expect(grants()).toEqual([]);
+    expect(grants(other)).toHaveLength(1);
+    expect(qwenWakeToken(dataDir, other)).toBe(grants(other)[0]!.token);
+  });
+
+  test("the token leaves the data folder before Qwen is asked to revoke it (written ahead), so a stop mid-call never leaves it to present", async () => {
+    fake.install("qwen");
+    await connectInboxAgents(options());
+    const { id, token } = readQwenTrust(dataDir)!;
+    expect(await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_REMOVE_SEE: qwenTrustPath(dataDir) }))).toBeNull();
+    const seen = readFileSync(`${qwenTrustPath(dataDir)}.seen`, "utf8");
+    expect(seen).not.toContain(token!);
+    expect(JSON.parse(seen)).toMatchObject({ id, revoke_pending: true });
+    expect(existsSync(qwenTrustPath(dataDir))).toBe(false);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a data folder that can't be written: revoking never throws, and says the token is still there", async () => {
+    fake.install("qwen");
+    await connectInboxAgents(options());
+    const folder = join(qwenTrustPath(dataDir), "..");
+    chmodSync(folder, 0o500);
+    try {
+      const result = await qwenTrustRemoval(dataDir, environment({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }))!.apply();
+      expect(result).toMatchObject({ kind: "failed", held: true });
+    } finally {
+      chmodSync(folder, 0o700);
+    }
+  });
+
   test("PLANNOTATOR_INBOX_CONNECT=0 mints nothing", async () => {
     fake.install("qwen");
     await connectInboxAgents(options({ PLANNOTATOR_INBOX_CONNECT: "0" }));

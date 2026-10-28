@@ -138,6 +138,7 @@ function main() {
   // does, with the token itself (Qwen keeps a hash) so a test can tell which token is still good.
   // FAKE_QWEN_CONTROLLERS_FAIL=1 makes every call fail as a write error does.
   // FAKE_QWEN_LIST_OUTPUT: what "list --json" prints instead (a shape a future Qwen might print).
+  // FAKE_QWEN_REMOVE_SEE: a file "remove" copies to <file>.seen as it runs (what was on disk while Qwen was asked).
   if (name === "qwen" && args[0] === "sessions" && args[1] === "controllers") {
     const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
     const file = path.join(home, "peer-controllers.json");
@@ -163,6 +164,9 @@ function main() {
       if (process.env.FAKE_QWEN_LIST_OUTPUT !== undefined) process.stdout.write(process.env.FAKE_QWEN_LIST_OUTPUT);
       else for (const g of grants) process.stdout.write(JSON.stringify({ id: g.id, label: g.label, createdAt: g.createdAt }) + "\n");
     } else if (args[2] === "remove") {
+      if (process.env.FAKE_QWEN_REMOVE_SEE) {
+        try { fs.copyFileSync(process.env.FAKE_QWEN_REMOVE_SEE, process.env.FAKE_QWEN_REMOVE_SEE + ".seen"); } catch {}
+      }
       const at = grants.findIndex((g) => g.id === args[3]);
       if (at < 0) {
         process.stderr.write("Error: no controller has the id \"" + args[3] + "\". Run \"qwen sessions controllers list\" to see them.\n");
