@@ -7305,17 +7305,31 @@ const App: React.FC = () => {
   const regionImageBaseDir = linkedDocHook.isActive ? activeDocBaseDir : imageBaseDir;
   const imageRegionThumbSrc = useCallback((src: string) => loadableImageSrc(src, regionImageBaseDir), [regionImageBaseDir]);
 
-  // `#Heading` links in comment text scroll the document to that heading.
+  // `#Heading` links in comment text scroll the document to that heading,
+  // leaving the phone's annotations stage or the plan diff view first, the way
+  // a question jump does.
   const navigateToAnchor = useCallback((hash: string) => {
-    viewerRef.current?.scrollToAnchor?.(hash);
-  }, []);
+    linkedDocHook.cancelScrollRestore();
+    const go = () => { viewerRef.current?.scrollToAnchor?.(hash); };
+    if (isCompactAnnotationsOpen) {
+      closeCompactPlanSurface(false);
+      requestAnimationFrame(go);
+      return;
+    }
+    if (isPlanDiffActive) {
+      setIsPlanDiffActive(false);
+      requestAnimationFrame(go);
+      return;
+    }
+    go();
+  }, [closeCompactPlanSurface, isCompactAnnotationsOpen, isPlanDiffActive, linkedDocHook.cancelScrollRestore]);
 
   const renderAnnotationPanel = (presentation: 'panel' | 'embedded', isOpen = true) => (
     <AnnotationPanel
       isOpen={isOpen}
       presentation={presentation}
       blocks={blocks}
-      onNavigateAnchor={navigateToAnchor}
+      onNavigateAnchor={isEditingMarkdown ? undefined : navigateToAnchor}
       annotations={allAnnotations}
       selectedId={selectedAnnotationId ?? selectedCodeAnnotationId}
       onSelect={handleSelectAnnotation}

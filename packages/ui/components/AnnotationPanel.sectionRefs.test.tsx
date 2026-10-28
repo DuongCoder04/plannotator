@@ -98,14 +98,17 @@ describe.if(hasDom)('AnnotationPanel #Heading links', () => {
       requestedTop = typeof options === 'number' ? y : options?.top;
     };
 
-    const link = Array.from(el.querySelectorAll('button')).find((b) => b.textContent === 'Rollout steps');
+    const link = el.querySelector<HTMLAnchorElement>('a[href="#rollout-steps"]');
     if (!link) throw new Error('Expected a link for #Rollout steps');
+    expect(link.textContent).toBe('Rollout steps');
     expect(link.closest('p')?.textContent).toBe('This conflicts with Rollout steps below.');
+    const hashBefore = window.location.hash;
 
     await act(async () => link.click());
 
     expect(requestedTop).toBe(450);
     expect(selected).toEqual([]);
+    expect(window.location.hash).toBe(hashBefore);
   });
 
   test('a host without onNavigateAnchor gets plain comment text', async () => {
@@ -121,6 +124,31 @@ describe.if(hasDom)('AnnotationPanel #Heading links', () => {
     );
     const body = Array.from(el.querySelectorAll('p')).find((p) => p.textContent === comment.text);
     expect(body).toBeTruthy();
-    expect(body!.querySelector('button')).toBeNull();
+    expect(body!.querySelector('a')).toBeNull();
+  });
+
+  test("another file's comment in the all-files view gets no link", async () => {
+    const other: Annotation = { ...comment, id: 'o1' };
+    const el = await mount(
+      <AnnotationPanel
+        isOpen
+        annotations={[comment]}
+        blocks={blocks}
+        selectedId={null}
+        onSelect={() => {}}
+        onDelete={() => {}}
+        onNavigateAnchor={() => {}}
+        annotationScope="all"
+        onAnnotationScopeChange={() => {}}
+        documentGroups={[
+          { path: 'open.md', label: 'open.md', annotations: [comment], isCurrent: true },
+          { path: 'other.md', label: 'other.md', annotations: [other], isCurrent: false },
+        ]}
+      />,
+    );
+    const card = (id: string) => el.querySelector(`[data-annotation-id="${id}"]`);
+    expect(card('a1')?.querySelector('a[href="#rollout-steps"]')).toBeTruthy();
+    expect(card('o1')).toBeTruthy();
+    expect(card('o1')!.querySelector('a')).toBeNull();
   });
 });

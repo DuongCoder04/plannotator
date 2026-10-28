@@ -967,19 +967,20 @@ const AnnotationText: React.FC<{
         typeof part === 'string' ? (
           part
         ) : (
-          <button
+          <a
             key={i}
-            type="button"
-            title={`Go to "${part.label}"`}
-            className="cursor-pointer font-medium text-primary hover:underline"
+            href={`#${part.anchor}`}
+            className="rounded-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             onClick={(e) => {
-              // The card's own onSelect would scroll to the annotation instead.
+              // The host scrolls; the card's own onSelect would scroll to the
+              // annotation instead, and the URL hash stays as it was.
+              e.preventDefault();
               e.stopPropagation();
               onNavigateAnchor!(`#${part.anchor}`);
             }}
           >
             {part.label}
-          </button>
+          </a>
         ),
       )}
     </p>
