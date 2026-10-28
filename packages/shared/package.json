@@ -65,6 +65,7 @@
     "./agent-switch": "./agent-switch.ts",
     "./agent-terminal": "./agent-terminal.ts",
     "./config": "./config.ts",
+    "./advertised-url": "./advertised-url.ts",
     "./data-dir": "./data-dir.ts",
     "./update-check": "./update-check.ts",
     "./prompts": "./prompts.ts",

@@ -693,6 +693,12 @@ export function createInboxLiveSessions(options: {
     return out;
   };
 
+  /** Whether a session is live now with a connection that understands tags (so a notice reaches it truthfully). */
+  const wakesTagged = (session: string): boolean => {
+    const entry = sessions.get(session);
+    return !!entry && isLive(entry) && entry.tags;
+  };
+
   /** How a session is connected now (live, no grace), or null when its connection does not poll. */
   const connectionOf = (session: string): InboxRecipientConnection | null => {
     const entry = sessions.get(session);
@@ -1026,5 +1032,6 @@ export function createInboxLiveSessions(options: {
     restartAgents,
     mcpAgents,
     tagTargets,
+    wakesTagged,
   };
 }
