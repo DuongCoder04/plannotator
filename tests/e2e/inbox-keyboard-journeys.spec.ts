@@ -767,7 +767,7 @@ const shownOrder = () =>
 
 test('J1b: J from a thread whose row left the list on screen steps from the slot it had', async () => {
   // E on an opened update moves its row into folded Quiet while the thread stays open (#2265). J and K then go on
-  // from where the row was, never "not in the list". (Without #2265 the open row is held, and this passes as plain J.)
+  // from where the row was, never "not in the list".
   const { news } = world.threads;
   await load();
   await press('g', 'i');
@@ -785,8 +785,10 @@ test('J1b: J from a thread whose row left the list on screen steps from the slot
   };
   await expect.poll(() => sectionOf(news), { timeout: 5000 }).toBe('quiet');
   await press('e');
-  // With Mark read on a seen update (#2265) the row moves into folded Quiet now; before it, E leaves it be.
-  await page.waitForTimeout(800);
+  // Mark read on a seen update held in New (#2265) moves its row into folded Quiet now, the thread still open:
+  // the row has left the rows on screen, so J / K must step from its slot.
+  await expect.poll(shownOrder, 'E took the row out of the rows on screen').not.toContain(news);
+  await expect.poll(hash).toMatch(addr(news));
   await press(key);
   await at('J after E', { focus: row(expected), address: addr(expected), view: 'thread' });
   await expect(page.locator('[data-inbox-live]')).not.toHaveText('This thread is not in the list on screen.');
