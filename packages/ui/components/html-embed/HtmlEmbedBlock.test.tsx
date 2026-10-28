@@ -8,7 +8,13 @@
  *   this frame: only the frame's own page may;
  * - a tall page is not clipped with Show more, or Show more does not open it;
  * - Code no longer swaps the page for its source, or a host that cannot
- *   serve the page leaves a blank box instead of the code.
+ *   serve the page leaves a blank box instead of the code;
+ * - a page that takes the keyboard keeps it (the person's typing would go to
+ *   the page), a page that keeps taking it is not stopped, or a frame the
+ *   person points at and clicks cannot have the keyboard;
+ * - a link the page hands over opens without the person seeing its address
+ *   and clicking Open, or a link to the Inbox, this computer or the private
+ *   network is offered at all.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
@@ -19,6 +25,7 @@ const hasDom = typeof document !== 'undefined';
 const viewerModule = hasDom ? await import('../Viewer') : null;
 const parserModule = hasDom ? await import('../../utils/parser') : null;
 const gateModule = hasDom ? await import('./loadGate') : null;
+const guardModule = hasDom ? await import('./focusGuard') : null;
 
 const PAGE = '<div id="chart">bars</div>';
 const MARKDOWN = ['Here is the chart:', '', '```html', PAGE, '```', '', 'And a drawing:', '', '```svg', '<svg width="10" height="10"><rect width="10" height="10"/></svg>', '```', ''].join('\n');
@@ -30,6 +37,7 @@ let restoreObserver: (() => void) | null = null;
 beforeEach(() => {
   if (!hasDom) return;
   gateModule!.resetEmbedGateForTests();
+  guardModule!.resetEmbedFocusGuardForTests();
   // happy-dom never reports an intersection: without the observer, an embed counts as near at once.
   const saved = (globalThis as Record<string, unknown>).IntersectionObserver;
   delete (globalThis as Record<string, unknown>).IntersectionObserver;
@@ -146,5 +154,99 @@ describe.skipIf(!hasDom)('fences a host draws', () => {
     expect(frameOf(el)).toBeNull();
     expect(el.querySelector('[data-html-embed]')!.getAttribute('data-html-embed-phase')).toBe('failed');
     expect(el.querySelector('[data-html-embed]')!.textContent).toContain('<div id="chart">bars</div>');
+  });
+});
+
+describe.skipIf(!hasDom)('the keyboard stays with the window', () => {
+  const box = () => {
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    textarea.focus();
+    return textarea;
+  };
+
+  test('a page that takes focus by itself gets it taken back; one that keeps doing it is stopped', async () => {
+    const reply = box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    reply.focus();
+    for (let grab = 1; grab <= 2; grab += 1) {
+      await act(async () => frameOf(el)!.focus());
+      await settle();
+      expect(document.activeElement).toBe(reply);
+      expect(frameOf(el)).not.toBeNull();
+    }
+    await act(async () => frameOf(el)!.focus());
+    await settle();
+    expect(document.activeElement).toBe(reply);
+    expect(frameOf(el)).toBeNull();
+    expect(el.querySelector('[data-html-embed-grabbed]')!.textContent).toContain('kept taking the keyboard');
+    // Load again: a fresh page.
+    await act(async () => el.querySelector<HTMLButtonElement>('[data-html-embed-grabbed] button')!.click());
+    await settle();
+    expect(frameOf(el)).not.toBeNull();
+  });
+
+  test('the person pointing at the frame (not typing) chooses it; while they type, a pointer over it is not a choice', async () => {
+    const reply = box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    reply.focus();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    frame.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    await act(async () => frame.focus());
+    await settle();
+    expect(document.activeElement).toBe(reply);
+
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    frame.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    await act(async () => frame.focus());
+    await settle();
+    expect(document.activeElement).toBe(frame);
+  });
+
+  test('Tab into the frame is a choice', async () => {
+    const reply = box();
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    reply.focus();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+    await act(async () => frameOf(el)!.focus());
+    await settle();
+    expect(document.activeElement).toBe(frameOf(el));
+  });
+});
+
+describe.skipIf(!hasDom)('a link the page hands over', () => {
+  let opened: unknown[][] = [];
+  let restoreOpen: (() => void) | null = null;
+  beforeEach(() => {
+    opened = [];
+    const saved = window.open;
+    window.open = ((...args: unknown[]) => (opened.push(args), null)) as typeof window.open;
+    restoreOpen = () => {
+      window.open = saved;
+    };
+  });
+  afterEach(() => restoreOpen?.());
+
+  test("shows its real address and opens only on the person's Open", async () => {
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    await say(frame.contentWindow, { pnEmbed: 1, kind: 'link', url: 'https://example.com/docs?a=1' });
+    expect(el.querySelector('[data-html-embed-link-url]')!.textContent).toBe('https://example.com/docs?a=1');
+    expect(opened).toEqual([]);
+    await act(async () => el.querySelector<HTMLButtonElement>('[data-html-embed-link-open]')!.click());
+    expect(opened).toEqual([['https://example.com/docs?a=1', '_blank', 'noopener,noreferrer']]);
+    expect(el.querySelector('[data-html-embed-link]')).toBeNull();
+  });
+
+  test('a link to the Inbox, this computer or the private network is never offered, nor one from another window', async () => {
+    const el = await mount(servedAt('/api/inbox/embeds/abc'));
+    const frame = frameOf(el)!;
+    for (const url of [`${window.location.origin}/api/inbox/threads`, 'http://127.0.0.1:54321/api/inbox/threads', 'http://localhost:54321/', 'http://192.168.1.1/']) {
+      await say(frame.contentWindow, { pnEmbed: 1, kind: 'link', url });
+    }
+    await say({}, { pnEmbed: 1, kind: 'link', url: 'https://example.com/' });
+    expect(el.querySelector('[data-html-embed-link]')).toBeNull();
+    expect(opened).toEqual([]);
   });
 });

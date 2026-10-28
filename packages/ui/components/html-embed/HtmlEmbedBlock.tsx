@@ -11,6 +11,12 @@
  * fade and "Show more". Under it one quiet line: "HTML · sandboxed", Code
  * (the fence's source in place of the page) and Full screen (the same page in
  * ui's popout, scrolling).
+ *
+ * The window keeps the keyboard (`focusGuard`): a page that takes focus the
+ * person did not give it gets it taken back at once, and one that keeps doing
+ * it is stopped. A link the page hands over is never opened by the page: the
+ * window shows its real address and the person opens it (`embedLinkOpenable`
+ * refuses the Inbox's own host, this computer and the private network).
  */
 
 import { Code } from 'lucide-react';
@@ -19,6 +25,7 @@ import {
   EMBED_SANDBOX,
   EMBED_THEME_TOKENS,
   embedFragment,
+  embedLinkOpenable,
   embedThemeMessage,
   readEmbedMessage,
   type EmbedMode,
@@ -29,6 +36,7 @@ import { CodeBlock } from '../blocks/CodeBlock';
 import { HostTitle } from '../HostTitle';
 import { PopoutDialog } from '../PopoutDialog';
 import { useTheme } from '../ThemeProvider';
+import { guardEmbedFocus } from './focusGuard';
 import { acquireEmbedLoad, claimEmbedLive, onEmbedLiveFreed, releaseEmbedLive, useNearViewport } from './loadGate';
 
 /** A host that can serve embed documents (the Inbox: POST /api/inbox/embeds). */
@@ -68,12 +76,19 @@ function useEmbedTheme(): EmbedTheme {
   return theme;
 }
 
-/** A web link the page handed over: opened only for the person's own click in that frame. */
-function openLinkFrom(frame: HTMLIFrameElement | null, url: string): void {
-  if (!frame || document.activeElement !== frame) return;
+/** Grabs (focus taken without the person choosing the frame) that stop a page, within `GRAB_WINDOW_MS`. */
+const GRAB_LIMIT = 3;
+const GRAB_WINDOW_MS = 15_000;
+
+/**
+ * A link the page handed over, as the window will offer it: null for an
+ * address it never offers (`embedLinkOpenable`), or when nobody clicked (the
+ * page's click handing it over is the person's activation in the window too).
+ */
+function offeredLink(url: string): string | null {
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  if (activation && !activation.isActive) return;
-  window.open(url, '_blank', 'noopener,noreferrer');
+  if (activation && !activation.isActive) return null;
+  return embedLinkOpenable(url, window.location.hostname) ? url : null;
 }
 
 /**
@@ -90,6 +105,8 @@ function EmbedFrame({
   onEscape,
   onLoaded,
   onLeft,
+  onGrab,
+  onLink,
 }: {
   url: string;
   theme: EmbedTheme;
@@ -100,13 +117,21 @@ function EmbedFrame({
   onEscape: (frame: HTMLIFrameElement | null) => void;
   onLoaded?: () => void;
   onLeft?: () => void;
+  onGrab: () => void;
+  onLink: (url: string) => void;
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const loads = useRef(0);
   // The theme the page starts with rides in the URL (no flash); later ones go by message.
   const [src] = useState(() => url + embedFragment(theme, mode));
-  const handlers = useRef({ onHeight, onEscape, onLoaded, onLeft });
-  handlers.current = { onHeight, onEscape, onLoaded, onLeft };
+  const handlers = useRef({ onHeight, onEscape, onLoaded, onLeft, onGrab, onLink });
+  handlers.current = { onHeight, onEscape, onLoaded, onLeft, onGrab, onLink };
+
+  useEffect(() => {
+    const frame = ref.current;
+    if (!frame) return;
+    return guardEmbedFocus(frame, () => handlers.current.onGrab());
+  }, []);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -115,7 +140,10 @@ function EmbedFrame({
       const message = readEmbedMessage(event.data);
       if (!message) return;
       if (message.kind === 'height') handlers.current.onHeight?.(message.height);
-      else if (message.kind === 'link') openLinkFrom(ref.current, message.url);
+      else if (message.kind === 'link') {
+        const url = offeredLink(message.url);
+        if (url) handlers.current.onLink(url);
+      }
       else handlers.current.onEscape(ref.current);
     };
     window.addEventListener('message', onMessage);
@@ -152,7 +180,37 @@ function EmbedFrame({
   );
 }
 
-type Phase = 'far' | 'waiting' | 'loading' | 'ready' | 'failed' | 'left';
+/**
+ * A link the page handed over, offered by the window: its real address in
+ * full, opened only by the person's own click on Open (in a new tab, no
+ * opener, no referrer).
+ */
+function LinkOffer({ url, onDone }: { url: string; onDone: () => void }) {
+  return (
+    <div data-html-embed-link="" role="group" aria-label="A link from the page" className="mt-1 flex items-center gap-2 rounded-md bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">
+      <span className="shrink-0">Link</span>
+      <span data-html-embed-link-url="" className="min-w-0 flex-1 break-all font-mono text-foreground">
+        {url}
+      </span>
+      <button
+        type="button"
+        data-html-embed-link-open=""
+        className="shrink-0 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-background"
+        onClick={() => {
+          window.open(url, '_blank', 'noopener,noreferrer');
+          onDone();
+        }}
+      >
+        Open
+      </button>
+      <button type="button" className="shrink-0 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground" onClick={onDone}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+type Phase = 'far' | 'waiting' | 'loading' | 'ready' | 'failed' | 'left' | 'grabbed';
 
 export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedHost }) {
   const figureRef = useRef<HTMLElement>(null);
@@ -166,6 +224,8 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
   const [full, setFull] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [forced, setForced] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+  const grabs = useRef<number[]>([]);
   const releaseLoad = useRef<(() => void) | null>(null);
   // The host is read when a page is asked for: a new host object (a re-render) never reloads the page.
   const hostRef = useRef(host);
@@ -225,6 +285,23 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
     setPhase('ready');
   }, []);
 
+  // Focus is already back in the window; a page that keeps taking it is stopped.
+  const grabbed = useCallback(() => {
+    const t = Date.now();
+    grabs.current = [...grabs.current.filter((at) => t - at < GRAB_WINDOW_MS), t];
+    if (grabs.current.length < GRAB_LIMIT) return;
+    grabs.current = [];
+    setFull(false);
+    setLink(null);
+    setPhase('grabbed');
+  }, []);
+
+  const reload = useCallback(() => {
+    grabs.current = [];
+    setPhase('far');
+    setGeneration((g) => g + 1);
+  }, []);
+
   const escapeInline = useCallback((frame: HTMLIFrameElement | null) => {
     // Escape in the page hands the keyboard back to the document (the host's own Escape comes next).
     if (frame && document.activeElement === frame) frame.blur();
@@ -235,7 +312,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
   const caption = host.author
     ? `From ${host.author}. It runs in a sandbox: it can load from the web, but cannot reach your Inbox.`
     : 'It runs in a sandbox: it can load from the web, but cannot reach this page.';
-  const live = !showCode && url !== null && phase !== 'left';
+  const live = !showCode && url !== null && phase !== 'left' && phase !== 'grabbed';
 
   const body = useMemo(() => {
     if (showCode || phase === 'failed') return <CodeBlock block={block} isHovered={false} />;
@@ -252,18 +329,22 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
         </button>
       );
     }
-    if (phase === 'left') {
+    if (phase === 'left' || phase === 'grabbed') {
       return (
-        <div data-html-embed-left="" className="flex items-center justify-center gap-3 rounded-lg border border-dashed border-border py-6 text-xs text-muted-foreground">
-          The page went to another address.
-          <button type="button" className="underline hover:text-foreground" onClick={() => { setPhase('far'); setGeneration((g) => g + 1); }}>
-            Reload
+        <div
+          data-html-embed-left={phase === 'left' ? '' : undefined}
+          data-html-embed-grabbed={phase === 'grabbed' ? '' : undefined}
+          className="flex items-center justify-center gap-3 rounded-lg border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground"
+        >
+          {phase === 'left' ? 'The page went to another address.' : 'This page kept taking the keyboard, so it was stopped.'}
+          <button type="button" className="underline hover:text-foreground" onClick={reload}>
+            {phase === 'left' ? 'Reload' : 'Load again'}
           </button>
         </div>
       );
     }
     return null;
-  }, [showCode, phase, block, height]);
+  }, [showCode, phase, block, height, reload]);
 
   return (
     <figure ref={figureRef} data-block-id={block.id} data-html-embed="" data-html-embed-phase={showCode ? 'code' : phase} className="my-4">
@@ -291,6 +372,8 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
                 onEscape={escapeInline}
                 onLoaded={loaded}
                 onLeft={() => setPhase('left')}
+                onGrab={grabbed}
+                onLink={setLink}
               />
             ) : (
               <div aria-hidden="true" style={{ height: height ?? EMBED_FIRST_HEIGHT }} />
@@ -310,6 +393,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
           )}
         </div>
       )}
+      {link !== null && !full && <LinkOffer url={link} onDone={() => setLink(null)} />}
       <figcaption data-html-embed-caption="" className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
         <Code aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
         <HostTitle title={caption}>
@@ -349,8 +433,13 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
           dataAttributes={{ 'data-html-embed-popout': '' }}
         >
           <div className="flex h-9 shrink-0 items-center border-b border-border pl-4 pr-12 text-xs font-medium text-foreground">{title}</div>
+          {link !== null && (
+            <div className="shrink-0 border-b border-border px-3 pb-1.5">
+              <LinkOffer url={link} onDone={() => setLink(null)} />
+            </div>
+          )}
           <div className="min-h-0 flex-1">
-            <EmbedFrame url={url} theme={theme} mode="full" title={title} onEscape={() => setFull(false)} />
+            <EmbedFrame url={url} theme={theme} mode="full" title={title} onEscape={() => setFull(false)} onGrab={grabbed} onLink={setLink} />
           </div>
         </PopoutDialog>
       )}

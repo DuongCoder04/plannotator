@@ -9,13 +9,18 @@
  *   page on the Inbox;
  * - over the tailnet, a page's own request (cross-site, carrying the owner's
  *   tailnet identity) reaches an embed or any other route;
- * - the store grows without bound.
+ * - the store grows without bound;
+ * - the window can no longer frame its embeds from the other loopback name
+ *   (its policy or the embed's `frame-ancestors`), or another site can;
+ * - a frame steered at the Inbox from another site (an embed navigating
+ *   itself) is answered, or the frames the Inbox does draw (embeds, an HTML
+ *   page's assets) are refused.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EMBED_BOOTSTRAP, EMBED_MAX_BYTES, EMBED_RESPONSE_CSP } from "@plannotator/core/html-embed";
+import { EMBED_BOOTSTRAP, EMBED_MAX_BYTES, EMBED_RESPONSE_CSP, embedResponseCsp } from "@plannotator/core/html-embed";
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { createInboxEmbeds, embedIdOf } from "./inbox-embeds";
@@ -73,13 +78,52 @@ describe("the Inbox's embed documents", () => {
 
     const page = await fetch(at(server, url));
     expect(page.status).toBe(200);
-    expect(page.headers.get("content-security-policy")).toBe(EMBED_RESPONSE_CSP);
+    // Asked at 127.0.0.1: only the window, at either loopback name of this port, may frame it.
+    expect(page.headers.get("content-security-policy")).toBe(
+      embedResponseCsp(`http://localhost:${server.port} http://127.0.0.1:${server.port}`),
+    );
     expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
     expect(page.headers.get("referrer-policy")).toBe("no-referrer");
     const doc = await page.text();
     expect(doc).toContain(EMBED_BOOTSTRAP);
     expect(doc.endsWith(CHART)).toBe(true);
+  });
+
+  test("the window on this computer may frame the other loopback name; over the tailnet only its own origin", async () => {
+    const server = await start();
+    const window = await fetch(at(server, "/"), { headers: { Host: `localhost:${server.port}` } });
+    expect(window.headers.get("content-security-policy")).toContain(
+      `frame-src 'self' http://localhost:${server.port} http://127.0.0.1:${server.port}`,
+    );
+    expect(window.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  test("a cross-site frame is drawn only for an embed or an HTML page's assets: an embed steering itself at the Inbox is refused", async () => {
+    const server = await start();
+    const { url } = (await (await keep(server, CHART)).json()) as Json;
+    const frame = (path: string, extra: Record<string, string> = {}) =>
+      fetch(at(server, path), { headers: { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe", ...extra } });
+
+    // The window (at localhost) framing its embed (at 127.0.0.1) is cross-site: answered.
+    expect((await frame(url)).status).toBe(200);
+    // An HTML page's own frames reach its assets (the route answers for itself: no cross_site_frame).
+    const assets = await frame("/api/html-assets/0000000000000000/page.html");
+    expect(((await assets.json().catch(() => ({}))) as Json).code).not.toBe("cross_site_frame");
+
+    // An embed navigating itself (or any site framing the Inbox): refused before any route runs.
+    for (const path of ["/api/inbox/threads", "/api/inbox/health", "/", "/api/inbox/events"]) {
+      const answer = await frame(path);
+      expect(answer.status).toBe(403);
+      expect(((await answer.json()) as Json).code).toBe("cross_site_frame");
+    }
+    for (const dest of ["frame", "embed", "object"]) {
+      expect((await frame("/api/inbox/threads", { "Sec-Fetch-Dest": dest })).status).toBe(403);
+    }
+    // Not a frame, or not cross-site: untouched by this rule (the window's own reads, agents, a tab).
+    expect((await fetch(at(server, "/api/inbox/threads"))).status).toBe(200);
+    expect((await frame("/api/inbox/threads", { "Sec-Fetch-Site": "same-origin" })).status).toBe(200);
+    expect((await frame("/api/inbox/threads", { "Sec-Fetch-Dest": "document" })).status).not.toBe(403);
   });
 
   test("another site and a sandboxed page cannot store a page", async () => {

@@ -24,8 +24,14 @@
  *   request (an opaque origin's requests are all cross-site) and the phone
  *   door wants a phone's bearer token, which no page holds.
  * - The page speaks to the window only through `readEmbedMessage` (its
- *   height, a web link the person clicked, Escape), checked against the
- *   frame's own window by the host.
+ *   height, a web link, Escape), checked against the frame's own window by
+ *   the host. A link is only offered: the window shows its real address and
+ *   the person opens it (`embedLinkOpenable` refuses the Inbox's own host,
+ *   this computer and the private network).
+ * - On this computer the frame is served from the other loopback name
+ *   (`embedFrameUrl`): another site, so another process in Chromium.
+ * - The host keeps the keyboard (ui's `focusGuard`), and the Inbox refuses
+ *   a cross-site frame navigation to its routes (an embed steering itself).
  */
 
 /** The embed frame's sandbox. Exactly this: never `allow-same-origin` (pinned by html-embed.test.ts). */
@@ -39,24 +45,61 @@ export const EMBED_SANDBOX = "allow-scripts";
  */
 export const EMBED_REMOTE_SOURCES = "https:";
 
-/** The embed document's response CSP. `'self'` is never listed: the page never reaches the Inbox. */
-export const EMBED_RESPONSE_CSP = [
-  "sandbox allow-scripts",
-  "default-src 'none'",
-  `script-src 'unsafe-inline' 'unsafe-eval' data: blob: ${EMBED_REMOTE_SOURCES}`,
-  `style-src 'unsafe-inline' data: ${EMBED_REMOTE_SOURCES}`,
-  `img-src data: blob: ${EMBED_REMOTE_SOURCES}`,
-  `font-src data: ${EMBED_REMOTE_SOURCES}`,
-  `media-src data: blob: ${EMBED_REMOTE_SOURCES}`,
-  `connect-src ${EMBED_REMOTE_SOURCES}`,
-  `worker-src blob: ${EMBED_REMOTE_SOURCES}`,
-  `frame-src ${EMBED_REMOTE_SOURCES}`,
-  "object-src 'none'",
-  "manifest-src 'none'",
-  "form-action 'none'",
-  "base-uri 'none'",
-  "frame-ancestors 'self'",
-].join("; ");
+/**
+ * The embed document's response CSP. `'self'` is never a source: the page
+ * never reaches the Inbox. `frameAncestors` names who may frame it: the
+ * Inbox's own window (`embedFrameAncestors`).
+ */
+export function embedResponseCsp(frameAncestors = "'self'"): string {
+  return [
+    "sandbox allow-scripts",
+    "default-src 'none'",
+    `script-src 'unsafe-inline' 'unsafe-eval' data: blob: ${EMBED_REMOTE_SOURCES}`,
+    `style-src 'unsafe-inline' data: ${EMBED_REMOTE_SOURCES}`,
+    `img-src data: blob: ${EMBED_REMOTE_SOURCES}`,
+    `font-src data: ${EMBED_REMOTE_SOURCES}`,
+    `media-src data: blob: ${EMBED_REMOTE_SOURCES}`,
+    `connect-src ${EMBED_REMOTE_SOURCES}`,
+    `worker-src blob: ${EMBED_REMOTE_SOURCES}`,
+    `frame-src ${EMBED_REMOTE_SOURCES}`,
+    "object-src 'none'",
+    "manifest-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    `frame-ancestors ${frameAncestors}`,
+  ].join("; ");
+}
+
+/** The policy for an embed served at a name that is not a loopback one (the tailnet). */
+export const EMBED_RESPONSE_CSP = embedResponseCsp();
+
+/** The two loopback names the Inbox answers at; the window is on one, its embeds on the other. */
+const LOOPBACK_NAMES = ["localhost", "127.0.0.1"] as const;
+
+/**
+ * Where an embed's frame loads from, given the path the Inbox answered and
+ * the window's location. On this computer the window is at `localhost` (the
+ * Inbox redirects its page there), and the frame is served from the OTHER
+ * loopback name: another site, so Chromium runs the page in a process of its
+ * own and a page that spins (a long loop, a heavy chart) cannot freeze the
+ * window. WebKit shares the process either way. Anywhere else (the tailnet's
+ * one HTTPS name) the frame stays on the window's origin.
+ */
+export function embedFrameUrl(path: string, location: { protocol: string; hostname: string; port: string }): string {
+  if (location.protocol !== "http:" || !location.port) return path;
+  const other = location.hostname === "localhost" ? "127.0.0.1" : location.hostname === "127.0.0.1" ? "localhost" : null;
+  return other ? `http://${other}:${location.port}${path}` : path;
+}
+
+/**
+ * Who may frame an embed served at `url`: at a loopback name, the Inbox's
+ * window at either loopback name of this port (the window frames it from the
+ * other one, `embedFrameUrl`); elsewhere its own origin.
+ */
+export function embedFrameAncestors(url: URL): string {
+  if (url.protocol !== "http:" || !url.port || !(LOOPBACK_NAMES as readonly string[]).includes(url.hostname)) return "'self'";
+  return LOOPBACK_NAMES.map((name) => `http://${name}:${url.port}`).join(" ");
+}
 
 /** A fence larger than this stays code (and the Inbox refuses to serve it). */
 export const EMBED_MAX_BYTES = 512 * 1024;
@@ -216,6 +259,39 @@ export function readEmbedMessage(data: unknown): EmbedMessage | null {
   }
   if (m.kind === "escape") return { kind: "escape" };
   return null;
+}
+
+/** An IPv4 address on this computer or a private network (loopback, RFC 1918, link-local, CGNAT, unspecified). */
+function privateIpv4(host: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+/**
+ * Whether a link a page handed over may be offered to the person: a web
+ * address that is not the Inbox itself (the window's own host, at any port
+ * or scheme) and not this computer or the private network (a `localhost`
+ * name, a loopback, private or link-local address, an IPv6 literal, a
+ * `.local` or `.internal` name). The person still sees the address and opens
+ * it with their own click.
+ */
+export function embedLinkOpenable(raw: string, windowHostname: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.username || url.password) return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host || host === windowHostname.toLowerCase()) return false;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false;
+  if (host.startsWith("[")) return false;
+  if (privateIpv4(host)) return false;
+  return true;
 }
 
 /** The id the Inbox gives an embed: the first 32 hex digits of the SHA-256 of its HTML. */

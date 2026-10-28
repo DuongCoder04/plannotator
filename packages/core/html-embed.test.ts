@@ -8,7 +8,12 @@
  * - the bootstrap no longer runs before the agent's own markup, so a page
  *   that writes a doctype, `<html>` or `<head>` would paint before the theme;
  * - the message reader accepts something other than a height, a web link or
- *   Escape, or an unbounded height.
+ *   Escape, or an unbounded height;
+ * - the frame is no longer served from the other loopback name (a busy page
+ *   would freeze the window in Chromium), or is served there to a window at
+ *   another name;
+ * - a page's link to the Inbox, this computer or the private network is
+ *   offered to the person.
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -19,6 +24,10 @@ import {
   EMBED_RESPONSE_CSP,
   EMBED_SANDBOX,
   embedFragment,
+  embedFrameAncestors,
+  embedFrameUrl,
+  embedLinkOpenable,
+  embedResponseCsp,
   readEmbedMessage,
 } from "./html-embed";
 
@@ -114,5 +123,60 @@ describe("readEmbedMessage", () => {
     for (const data of [null, "height", { kind: "height", height: 10 }, { pnEmbed: 2, kind: "escape" }, { pnEmbed: 1, kind: "navigate", url: "https://x" }]) {
       expect(readEmbedMessage(data)).toBeNull();
     }
+  });
+});
+
+describe("where the frame loads from", () => {
+  const at = (hostname: string, port = "54321", protocol = "http:") => ({ protocol, hostname, port });
+
+  test("a window on one loopback name frames its embeds from the other (another site: its own process)", () => {
+    expect(embedFrameUrl("/api/inbox/embeds/abc", at("localhost"))).toBe("http://127.0.0.1:54321/api/inbox/embeds/abc");
+    expect(embedFrameUrl("/api/inbox/embeds/abc", at("127.0.0.1"))).toBe("http://localhost:54321/api/inbox/embeds/abc");
+  });
+
+  test("anywhere else the frame stays on the window's origin", () => {
+    expect(embedFrameUrl("/api/inbox/embeds/abc", at("macbook.tail0000.ts.net", "443", "https:"))).toBe("/api/inbox/embeds/abc");
+    expect(embedFrameUrl("/api/inbox/embeds/abc", at("inbox.plannotator.localhost"))).toBe("/api/inbox/embeds/abc");
+    expect(embedFrameUrl("/api/inbox/embeds/abc", at("localhost", ""))).toBe("/api/inbox/embeds/abc");
+  });
+
+  test("an embed at a loopback name may be framed by the window at either loopback name of that port, and nothing else", () => {
+    const ancestors = embedFrameAncestors(new URL("http://127.0.0.1:54321/api/inbox/embeds/abc"));
+    expect(ancestors.split(" ").sort()).toEqual(["http://127.0.0.1:54321", "http://localhost:54321"]);
+    expect(embedResponseCsp(ancestors)).toContain(`frame-ancestors ${ancestors}`);
+    expect(embedFrameAncestors(new URL("https://macbook.tail0000.ts.net:8443/api/inbox/embeds/abc"))).toBe("'self'");
+  });
+});
+
+describe("embedLinkOpenable", () => {
+  test("a web address elsewhere is offered", () => {
+    for (const url of ["https://example.com/docs", "http://example.com/a?b=1", "https://cdn.example.test/x"]) {
+      expect(embedLinkOpenable(url, "localhost")).toBe(true);
+    }
+  });
+
+  test("the Inbox's own host, this computer and the private network are never offered", () => {
+    for (const url of [
+      "http://localhost:54321/api/inbox/threads",
+      "http://127.0.0.1:54321/api/inbox/threads",
+      "http://127.9.9.9/",
+      "http://[::1]:54321/",
+      "http://0.0.0.0:54321/",
+      "http://inbox.plannotator.localhost/",
+      "http://10.0.0.5/",
+      "http://172.20.1.1/",
+      "http://192.168.1.10/router",
+      "http://169.254.169.254/latest/meta-data",
+      "http://100.101.102.103/",
+      "http://printer.local/",
+      "https://user:pass@example.com/",
+      "javascript:alert(1)",
+      "not a url",
+    ]) {
+      expect(embedLinkOpenable(url, "localhost")).toBe(false);
+    }
+    // Over the tailnet the window's own name is the Inbox: refused at any port or scheme.
+    expect(embedLinkOpenable("https://macbook.tail0000.ts.net/api/inbox/threads", "macbook.tail0000.ts.net")).toBe(false);
+    expect(embedLinkOpenable("http://MACBOOK.tail0000.ts.net.:80/", "macbook.tail0000.ts.net")).toBe(false);
   });
 });
