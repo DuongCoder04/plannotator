@@ -298,6 +298,17 @@ describe("handleServerReady", () => {
     }
   });
 
+  // A reverse-proxy origin has no port to forward; the advice would be wrong.
+  test("a public proxy URL gets the device line, not the forwarding advice", async () => {
+    const url = "https://plannotator.example.com";
+    const { stderr } = await captureStreams(async () => {
+      await handleServerReady(url, true, 19432, { skipBrowserOpen: true });
+    });
+    expectSingleReadyLine(stderr, url);
+    expect(stderr).toContain("  Open it on your device (the URL above).\n");
+    expect(stderr).not.toContain("forward port");
+  });
+
   // PLANNOTATOR_BROWSER=none (or --browser none) opens nothing: the reason
   // goes under the URL, and no launch (so no failure line) follows.
   test.each([
