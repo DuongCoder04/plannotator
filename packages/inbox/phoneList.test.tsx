@@ -119,8 +119,8 @@ describe.if(hasDom)('the list on a phone', () => {
       subject: 'Subject msg_stop',
       chips: ['Stopped', 'mark', '2 questions'],
     });
-    // No badge: the mark starts the line; the long thread name and the guided review mark ride it; nothing shares the subject's line.
-    expect(lines(el, 'msg_wait').chips).toEqual(['mark', 'refund-webhooks-and-the-long-running-reconciliation-job', '2 questions', 'Guided review']);
+    // No badge: the mark starts the line; the long thread name and the guided review mark ride it, the count ends it; nothing shares the subject's line.
+    expect(lines(el, 'msg_wait').chips).toEqual(['mark', 'refund-webhooks-and-the-long-running-reconciliation-job', 'Guided review', '2 questions']);
     // A Sent row says where the reply is; its agent's mark still leads the line under it.
     expect(lines(el, 'msg_sent')).toEqual({
       l1: ['ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],

@@ -2497,7 +2497,7 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-mrow.ib-u .ib-m2 { font-weight: 600; }
   .ib-mrow.ib-sent .ib-m2 { color: var(--muted-foreground); }
   /* The line under the subject: the badge and the agent's mark lead it (approval "inbox-row-mark-left"), then
-     what the thread holds, the count at the line's end. Short of room, the guided review mark keeps only its
+     the thread chip and the guided review mark, the count at the line's end. Short of room, the guided review mark keeps only its
      icon, then the thread's name gives way down to a 7em floor (it wraps inside its pill, below); only past
      that does the line wrap, so the count keeps the pill's line. */
   .ib-m3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; margin-top: 3px; container: ib-m3 / inline-size; }

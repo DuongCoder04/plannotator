@@ -467,7 +467,7 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
  * (the project, or the agent in one project's list, and the time), the subject
  * on up to two lines, then a line led by the badge and the agent's mark
  * (approval "inbox-row-mark-left"), with what the thread holds after them (the
- * thread's name, the question count at the line's end, the guided review mark).
+ * thread's name, the guided review mark, then the question count at the line's end).
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
@@ -507,13 +507,13 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
             <span className="ib-keyt" dir="auto">{chip}</span>
           </span>
         )}
-        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
         {guide && (
           <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
             <Icon name="book" size={13} />
             <span className="ib-att-l">Guided review</span>
           </span>
         )}
+        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
       </span>
       {pinned && <PinnedWords />}
     </button>
