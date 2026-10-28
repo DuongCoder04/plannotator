@@ -63,8 +63,8 @@ import {
  * plus the check before a reply_to into a thread not read in this context
  * window and where a question's recommendation goes (v2, never released, had
  * those two lines after v1's). v4 (2026-10-27): v3 plus the follow-through
- * line (INBOX_FOLLOW_THROUGH_RULE) after the reply line; v3 was never
- * released. An earlier block Plannotator wrote is brought
+ * line (INBOX_FOLLOW_THROUGH_RULE) after the reply line; v3 shipped in
+ * 0.28.34 and is on users' disks. An earlier block Plannotator wrote is brought
  * up to date at the Inbox's next start (refreshInboxNotes) or when the note
  * is added again (`--notes`, the Settings switch); a block the person edited
  * never is. Every version's text is frozen as literals and its block's hash
@@ -93,7 +93,7 @@ const INBOX_NOTE_BODY_V2 = [
   'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
 ].join("\n");
 
-/** v3's body, exactly as builds before v4 wrote it (never released; frozen as literals so such a block still reads as Plannotator's own). */
+/** v3's body, exactly as 0.28.34 wrote it (on users' disks; frozen as literals so such a block still reads as Plannotator's own). */
 const INBOX_NOTE_BODY_V3 = [
   "## Plannotator Inbox",
   "",

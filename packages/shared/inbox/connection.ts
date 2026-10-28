@@ -391,17 +391,19 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
  * before_agent_start message, OpenCode's fixed system line), when the
  * `inboxReminder` switch allows it. Fixed text: it sits in the cached prompt
  * prefix and must never change within a session. For hosts with the wake
- * (the reply comes back as a turn).
+ * (the reply comes back as a turn). The follow-through rule sits under "In
+ * the Inbox:", right after the send and before anything about the chat, so
+ * "in its thread" reads as an Inbox thread, never a message typed here.
  */
 export const INBOX_REMINDER_TEXT =
-  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). ${INBOX_FOLLOW_THROUGH_RULE} Run \`plannotator inbox --help\` for how it works.`
+  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. In the Inbox: ${INBOX_FOLLOW_THROUGH_RULE} Their reply comes back here. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run \`plannotator inbox --help\` for how it works.`
 
 /**
  * The same line for a host without the wake (OpenCode 1): the reply does not
  * come back by itself there, so it names wait_for_reply instead.
  */
 export const INBOX_REMINDER_TEXT_NO_WAKE =
-  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). ${INBOX_FOLLOW_THROUGH_RULE} Run \`plannotator inbox --help\` for how it works.`
+  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. In the Inbox: ${INBOX_FOLLOW_THROUGH_RULE} Call wait_for_reply when you need their answer. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run \`plannotator inbox --help\` for how it works.`
 
 /**
  * The reminder naming the tool as the host registered it. Claude Code defers

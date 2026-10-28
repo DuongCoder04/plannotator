@@ -148,6 +148,19 @@ describe("Inbox guidance parity across harnesses", () => {
     for (const surface of reminders) expect(SURFACES[surface]).toContain(first.replace("writes in the chat", "writes here"));
   });
 
+  test("in the reminder, the follow-through rule is about the Inbox's threads: under 'In the Inbox:', before anything about the chat", () => {
+    for (const surface of reminders) {
+      const text = SURFACES[surface]!;
+      expect(text).toContain(`In the Inbox: ${INBOX_FOLLOW_THROUGH_RULE}`);
+      expect(text.indexOf(INBOX_FOLLOW_THROUGH_RULE)).toBeLessThan(text.indexOf("when the person writes here"));
+    }
+  });
+
+  test("the marketing docs quote the reminder as agents get it", () => {
+    const docs = readFileSync(join(root, "apps/marketing/src/content/docs/reference/inbox.md"), "utf8");
+    expect(docs).toContain(`> ${INBOX_REMINDER_TEXT}\n`);
+  });
+
   test("the skill's description carries the subagent rule", () => {
     expect(SURFACES["plannotator skill"]).toContain(`(${INBOX_SUBAGENT_RULE.charAt(0).toLowerCase()}${INBOX_SUBAGENT_RULE.slice(1, -1)})`);
   });

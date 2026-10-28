@@ -195,7 +195,7 @@ export const SEND_ROUTING_FIELDS = {
     .optional()
     .describe(SUPERSEDES_DESCRIPTION),
   done: z.array(z.string()).optional().describe(INBOX_DONE_DESCRIPTION),
-  idempotency_key: z.string().optional().describe("Any unique string; sending again with the same key answers the first message instead of posting twice."),
+  idempotency_key: z.string().optional().describe("Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message."),
   agent_session: z.string().optional().describe(AGENT_SESSION_DESCRIPTION),
   agent_name: z.string().optional().describe("How the person sees you, e.g. \"Claude Code\"."),
   agent_host: z.string().optional().describe("Your agent host, e.g. claude-code, codex, cursor."),
