@@ -9,7 +9,8 @@
  *   PLANNOTATOR_ORIGIN - Explicit origin override; validated against AGENT_CONFIG
  *                        in packages/shared/agents.ts. Supported values:
  *                        "claude-code", "amp", "droid", "kiro-cli", "mistral-vibe",
- *                        "opencode", "codex", "copilot-cli", "gemini-cli", "pi", "oh-my-pi".
+ *                        "opencode", "codex", "copilot-cli", "gemini-cli", "pi", "oh-my-pi",
+ *                        "qwen-code".
  */
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
