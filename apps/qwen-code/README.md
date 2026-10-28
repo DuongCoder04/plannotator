@@ -17,9 +17,11 @@ The second confirmation is a Qwen Code rule: a hook cannot approve a tool that n
 
 If the `plannotator` command is missing or fails, Qwen Code shows its normal plan confirmation.
 
-## Manual install
+## Install
 
-Install the `plannotator` command first (`curl -fsSL https://plannotator.ai/install.sh | bash`). Then, from a Plannotator checkout:
+The Plannotator installers (`install.sh`, `install.ps1`, `install.cmd`) install the extension and the skills when they find `~/.qwen` (or `$QWEN_HOME`). `--skip-qwen` turns this off. `plannotator uninstall` removes both.
+
+To install by hand, install the `plannotator` command first. Then, from a Plannotator checkout:
 
 ```bash
 qwen extensions install ./apps/qwen-code/extension --consent

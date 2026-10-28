@@ -7,13 +7,15 @@
  * Run: bun test scripts/install.test.ts
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -431,7 +433,7 @@ describe("install.sh", () => {
     expect(script).toContain("continue # explicit false is a veto, never a skip");
     // skills rides the same loop: not an agent, but the same three layers
     // and the same skipInstall key region.
-    expect(script).toContain("for _agent in codex gemini kiro vibe opencode skills claudePlugin; do");
+    expect(script).toContain("for _agent in codex gemini kiro vibe opencode qwen skills claudePlugin; do");
     // The old whole-file grep form is gone.
     expect(script).not.toContain('grep -q \'"codex"[[:space:]]*:[[:space:]]*true\' "$_config_dir/config.json"');
     // Precedence by textual layering (later assignment wins): config grep,
@@ -1117,7 +1119,7 @@ describe("install.cmd", () => {
     // findstr - so a "codex": true under some OTHER key can never opt
     // anyone out and an explicit false inside skipInstall is honored.
     expect(script).toContain("$c.skipInstall.$k");
-    expect(script).toContain("@('codex','gemini','kiro','vibe','opencode','skills','claudePlugin')");
+    expect(script).toContain("@('codex','gemini','kiro','vibe','opencode','qwen','skills','claudePlugin')");
     expect(script).toContain("$v -is [bool] -and $v");
     expect(script).toContain("PLN_CONFIG_JSON");
     expect(script).toContain("skipInstall.codex");
@@ -2207,7 +2209,7 @@ const FAKE_BINARY_SHA256 = createHash("sha256").update(FAKE_BINARY).digest("hex"
 const ATTESTATION_FIXTURE = join(scriptsDir, "fixtures", "attestations-response.json");
 
 type GhBehavior = "reject-bundle" | "fail-all" | "pass-all";
-type GitBehavior = "fail" | "sparse-unsupported" | "network-error" | "real-no-clone";
+type GitBehavior = "fail" | "sparse-unsupported" | "network-error" | "real-no-clone" | "repo-copy";
 
 // git shim that behaves like git 2.23 (macOS with stale Xcode CLT, #1238):
 // `clone --sparse` dies instantly on "unknown option" (exit 129, before any
@@ -2248,6 +2250,26 @@ fi
 exit 0
 `;
 
+// git shim whose clone copies this checkout's real apps/skills and
+// apps/qwen-code (so the installer copies the files that ship), and whose
+// sparse-checkout succeeds and records its paths in $HOME/git-sparse.log.
+const GIT_REPO_COPY_SHIM = `#!/bin/bash
+if [ "$1" = "clone" ]; then
+  dest=""
+  for a in "$@"; do dest="$a"; done
+  dest="\${dest//\\\\//}"
+  mkdir -p "$dest/apps"
+  cp -R "${join(scriptsDir, "..", "apps", "skills")}" "$dest/apps/skills"
+  cp -R "${join(scriptsDir, "..", "apps", "qwen-code")}" "$dest/apps/qwen-code"
+  exit 0
+fi
+if [ "$1" = "sparse-checkout" ]; then
+  printf '%s\\n' "$*" >> "$HOME/git-sparse.log"
+  exit 0
+fi
+exit 0
+`;
+
 // git shim for a genuine (network) clone failure with a distinctive stderr
 // the installer must now surface instead of swallowing (#1238).
 const GIT_NETWORK_ERROR_SHIM = `#!/bin/bash
@@ -2271,6 +2293,8 @@ function gitShimBody(git: GitBehavior): string {
       // The host git for everything but a clone (which would reach the
       // network), so the installer can inspect a real fixture repository.
       return `#!/bin/bash\nif [ "$1" = "clone" ]; then exit 1; fi\nexec "${Bun.which("git")}" "$@"\n`;
+    case "repo-copy":
+      return GIT_REPO_COPY_SHIM;
   }
 }
 
@@ -2928,7 +2952,7 @@ describe("install-flags.json is written by every installer", () => {
   test("install.ps1 and install.cmd record the same neutral ids after both exits", () => {
     const ps = readScript("install.ps1");
     const cmd = readScript("install.cmd");
-    for (const id of ["minimal", "no-minimal", "verify-attestation", "skip-attestation", "with-call-flow", "skip-codex", "skip-gemini", "skip-kiro", "skip-vibe", "skip-opencode", "skip-skills", "skip-claude-plugin"]) {
+    for (const id of ["minimal", "no-minimal", "verify-attestation", "skip-attestation", "with-call-flow", "skip-codex", "skip-gemini", "skip-kiro", "skip-vibe", "skip-opencode", "skip-qwen", "skip-skills", "skip-claude-plugin"]) {
       expect(ps).toContain(`$ids += "${id}"`);
       expect(cmd).toContain(`call :AddInstallFlag ${id}`);
     }
@@ -4072,7 +4096,7 @@ describe("Claude Code plugin update: every installer (source scan)", () => {
     const cmd = readScript("install.cmd");
     expect(sh).toContain("        --skip-claude-plugin)");
     expect(sh).toContain('case "${PLANNOTATOR_SKIP_CLAUDE_PLUGIN_UPDATE:-}" in');
-    expect(sh).toContain("for _agent in codex gemini kiro vibe opencode skills claudePlugin; do");
+    expect(sh).toContain("for _agent in codex gemini kiro vibe opencode qwen skills claudePlugin; do");
     expect(ps).toContain("[switch]$SkipClaudePlugin");
     expect(ps).toContain("$env:PLANNOTATOR_SKIP_CLAUDE_PLUGIN_UPDATE -match");
     expect(ps).toContain("$cfg.skipInstall.claudePlugin -is [bool]");
@@ -4671,3 +4695,410 @@ describe("install.cmd's Pi step", () => {
     expect(extractCmdPiCommand()).not.toMatch(/["%!^]/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Qwen Code (install.sh): the skills go to $QWEN_HOME/skills (default
+// ~/.qwen/skills) and the plannotator extension is installed with Qwen's own
+// `qwen extensions install`. A fake `qwen` on PATH acts like Qwen's extension
+// commands on $QWEN_HOME/extensions/plannotator and logs every call. The git
+// shim hands the installer this checkout's real apps/skills and
+// apps/qwen-code, so the files that ship are the ones installed.
+// ---------------------------------------------------------------------------
+const FAKE_QWEN = `#!/bin/bash
+printf '%s|%s\\n' "$PWD" "$*" >> "$FAKE_QWEN_LOG"
+qhome="\${QWEN_HOME:-$HOME/.qwen}"
+case "$qhome" in "~/"*) qhome="$HOME/\${qhome#??}" ;; esac
+dest="$qhome/extensions/plannotator"
+[ "$1" = "extensions" ] || exit 2
+case "$2" in
+  install)
+    src="$3"
+    if [ -n "$FAKE_QWEN_HANG" ]; then exec sleep 30; fi
+    # Without --consent, Qwen asks on stdin.
+    if [ "$4" != "--consent" ]; then read -r answer; [ "$answer" = "y" ] || exit 1; fi
+    case "$FAKE_QWEN_INSTALL_FAIL" in
+      all) echo "Install failed: disk full" >&2; exit 1 ;;
+      new) case "$src" in */previous) ;; *) echo "Install failed: disk full" >&2; exit 1 ;; esac ;;
+    esac
+    if [ -f "$dest/qwen-extension.json" ]; then
+      echo 'Extension "plannotator" is already installed. Please uninstall it first.' >&2
+      exit 1
+    fi
+    mkdir -p "$qhome/extensions" && cp -R "$src" "$dest" &&
+      printf '{"source":"%s","type":"local"}' "$src" > "$dest/.qwen-extension-install.json"
+    echo 'Extension "plannotator" installed successfully and enabled.'
+    ;;
+  uninstall)
+    if [ -n "$FAKE_QWEN_UNINSTALL_FAIL" ]; then echo "Uninstall failed: busy" >&2; exit 1; fi
+    if [ ! -d "$dest" ]; then echo 'Extension "plannotator" not found.' >&2; exit 1; fi
+    rm -rf "$dest"
+    echo 'Extension "plannotator" successfully uninstalled.'
+    ;;
+  *) exit 2 ;;
+esac
+`;
+
+const QWEN_SKILLS = ["plannotator-review", "plannotator-annotate", "plannotator-last"];
+const QWEN_ARGS = ["--version", "v99.9.9", "--non-interactive", "--no-extras"];
+
+describe.skipIf(process.platform === "win32")("Qwen Code integration (install.sh, fake qwen)", () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function qwenSandbox(opts: { qwenDir?: boolean; qwenCli?: boolean; config?: string } = {}) {
+    const sandbox = setupInstallSandbox({ gh: "pass-all", git: "repo-copy" });
+    roots.push(join(sandbox.home, ".."));
+    // The run's data dir (PLANNOTATOR_DATA_DIR below) is where the installer reads config.json.
+    if (opts.config) {
+      mkdirSync(join(sandbox.home, "plannotator-data"), { recursive: true });
+      writeFileSync(join(sandbox.home, "plannotator-data", "config.json"), opts.config);
+    }
+    if (opts.qwenDir ?? true) mkdirSync(join(sandbox.home, ".qwen"), { recursive: true });
+    if (opts.qwenCli ?? true) writeFileSync(join(sandbox.stub, "qwen"), FAKE_QWEN, { mode: 0o755 });
+    const log = join(sandbox.home, "qwen-calls.log");
+    const run = (args: string[] = [], env: Record<string, string> = {}) =>
+      runInstallSh(sandbox, [...QWEN_ARGS, ...args], {
+        FAKE_QWEN_LOG: log,
+        PLANNOTATOR_DATA_DIR: join(sandbox.home, "plannotator-data"),
+        ...env,
+      });
+    const calls = () =>
+      existsSync(log)
+        ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => line.slice(line.indexOf("|") + 1))
+        : [];
+    const callDirs = () =>
+      existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => line.slice(0, line.indexOf("|"))) : [];
+    const extension = (qwenHome = join(sandbox.home, ".qwen")) => join(qwenHome, "extensions", "plannotator");
+    return { sandbox, home: sandbox.home, run, calls, callDirs, extension };
+  }
+
+  const source = (file: string) => readFileSync(join(scriptsDir, "..", "apps", "qwen-code", "extension", file), "utf8");
+
+  test("installs the extension with qwen and the Qwen skills, and the run still succeeds", () => {
+    const q = qwenSandbox();
+    const r = q.run();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Installing the Qwen Code extension...\nQwen Code extension: installed (restart Qwen Code to load it).\n");
+    expect(q.calls()).toHaveLength(1);
+    expect(q.calls()[0]).toMatch(/^extensions install \S+\/qwen-extension --consent$/);
+    // Run outside any project, so no project's .qwen settings take part.
+    expect(q.callDirs()[0]).toContain("plannotator-qwen.");
+    expect(readFileSync(join(q.extension(), "hooks", "hooks.json"), "utf8")).toBe(source("hooks/hooks.json"));
+    expect(readFileSync(join(q.extension(), "qwen-extension.json"), "utf8")).toBe(source("qwen-extension.json"));
+    for (const skill of QWEN_SKILLS) {
+      expect(readFileSync(join(q.home, ".qwen", "skills", skill, "SKILL.md"), "utf8")).toBe(
+        readFileSync(join(scriptsDir, "..", "apps", "qwen-code", "skills", skill, "SKILL.md"), "utf8"),
+      );
+    }
+    expect(readFileSync(join(q.home, "git-sparse.log"), "utf8")).toContain(" apps/qwen-code");
+    expect(r.out).toContain("  QWEN CODE USERS");
+    expect(r.out).toContain("Qwen Code asks you to confirm the plan");
+  });
+
+  test("a re-run with the same extension runs no qwen command and changes nothing", () => {
+    const q = qwenSandbox();
+    expect(q.run().code).toBe(0);
+    const record = readFileSync(join(q.extension(), ".qwen-extension-install.json"), "utf8");
+    const r = q.run();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Qwen Code extension: already up to date.");
+    expect(q.calls()).toHaveLength(1);
+    expect(readFileSync(join(q.extension(), ".qwen-extension-install.json"), "utf8")).toBe(record);
+  });
+
+  test("a changed extension is uninstalled, then the new one installed", () => {
+    const q = qwenSandbox();
+    expect(q.run().code).toBe(0);
+    writeFileSync(join(q.extension(), "hooks", "hooks.json"), '{"hooks":{}}\n');
+    const r = q.run();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Updating the Qwen Code extension...\nQwen Code extension: updated (restart Qwen Code to load it).\n");
+    expect(q.calls().slice(1)).toEqual([
+      "extensions uninstall plannotator",
+      expect.stringMatching(/^extensions install \S+\/qwen-extension --consent$/),
+    ]);
+    expect(readFileSync(join(q.extension(), "hooks", "hooks.json"), "utf8")).toBe(source("hooks/hooks.json"));
+  });
+
+  test("a failed update puts the previous extension back, and the install still succeeds", () => {
+    const q = qwenSandbox();
+    expect(q.run().code).toBe(0);
+    const old = '{"hooks":{"PermissionRequest":[]}}\n';
+    writeFileSync(join(q.extension(), "hooks", "hooks.json"), old);
+    const r = q.run([], { FAKE_QWEN_INSTALL_FAIL: "new" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(
+      "Qwen Code extension: could not update it (qwen exited 1: Install failed: disk full). The previous version was put back.",
+    );
+    expect(q.calls().slice(1)).toEqual([
+      "extensions uninstall plannotator",
+      expect.stringMatching(/^extensions install \S+\/qwen-extension --consent$/),
+      expect.stringMatching(/^extensions install \S+\/previous --consent$/),
+    ]);
+    expect(readFileSync(join(q.extension(), "hooks", "hooks.json"), "utf8")).toBe(old);
+    expect(r.out).toContain("YOU'RE ALL SET!");
+  });
+
+  test("an update that cannot uninstall leaves the installed extension as it was", () => {
+    const q = qwenSandbox();
+    expect(q.run().code).toBe(0);
+    writeFileSync(join(q.extension(), "hooks", "hooks.json"), '{"hooks":{}}\n');
+    const r = q.run([], { FAKE_QWEN_UNINSTALL_FAIL: "1" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Qwen Code extension: could not update it (qwen exited 1: Uninstall failed: busy). The installed one was left as it was.");
+    expect(q.calls().slice(1)).toEqual(["extensions uninstall plannotator"]);
+    expect(readFileSync(join(q.extension(), "hooks", "hooks.json"), "utf8")).toBe('{"hooks":{}}\n');
+  });
+
+  test("a failed first install is reported and never fails the install", () => {
+    const q = qwenSandbox();
+    const r = q.run([], { FAKE_QWEN_INSTALL_FAIL: "all" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Qwen Code extension: could not install it (qwen exited 1: Install failed: disk full).");
+    expect(r.out).toContain("The plan-review extension could not be installed");
+    expect(existsSync(q.extension())).toBe(false);
+    // The skills still install.
+    expect(existsSync(join(q.home, ".qwen", "skills", "plannotator-review", "SKILL.md"))).toBe(true);
+  });
+
+  test("a qwen that hangs is stopped at the time limit and the install goes on", () => {
+    const q = qwenSandbox();
+    const started = Date.now();
+    const r = q.run([], { FAKE_QWEN_HANG: "1", PLANNOTATOR_QWEN_EXTENSION_TIMEOUT: "1" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Qwen Code extension: could not install it (timed out after 1s).");
+    expect(Date.now() - started).toBeLessThan(25_000);
+  }, 30_000);
+
+  for (const [label, args, env, config, sourceName] of [
+    ["--skip-qwen", ["--skip-qwen"], {}, undefined, "--skip-qwen"],
+    ["PLANNOTATOR_SKIP_QWEN_INSTALL", [], { PLANNOTATOR_SKIP_QWEN_INSTALL: "1" }, undefined, "PLANNOTATOR_SKIP_QWEN_INSTALL"],
+    ["skipInstall.qwen", [], {}, '{ "skipInstall": { "qwen": true } }\n', "config skipInstall.qwen"],
+  ] as const) {
+    test(`${label}: no qwen command, nothing written under ~/.qwen, an installed extension left alone`, () => {
+      const q = qwenSandbox({ config });
+      mkdirSync(join(q.extension(), "hooks"), { recursive: true });
+      writeFileSync(join(q.extension(), "qwen-extension.json"), '{"name":"plannotator","version":"0.0.1"}\n');
+      writeFileSync(join(q.extension(), "hooks", "hooks.json"), '{"hooks":{}}\n');
+      const r = q.run([...args], env);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`Qwen Code: detected, skipped (${sourceName}).`);
+      expect(r.out).toContain("The installed Qwen Code extension was left untouched.");
+      expect(q.calls()).toEqual([]);
+      expect(existsSync(join(q.home, ".qwen", "skills"))).toBe(false);
+      expect(readFileSync(join(q.extension(), "hooks", "hooks.json"), "utf8")).toBe('{"hooks":{}}\n');
+    });
+  }
+
+  test("--skip-qwen is remembered for auto-update", () => {
+    const q = qwenSandbox();
+    expect(q.run(["--skip-qwen"]).code).toBe(0);
+    const flags = JSON.parse(readFileSync(join(q.home, "plannotator-data", "install-flags.json"), "utf8"));
+    expect(flags.flags).toContain("skip-qwen");
+  });
+
+  test("no Qwen folder: nothing Qwen-related runs or prints, even with qwen on PATH", () => {
+    const q = qwenSandbox({ qwenDir: false });
+    const r = q.run();
+    expect(r.code).toBe(0);
+    expect(q.calls()).toEqual([]);
+    expect(existsSync(join(q.home, ".qwen"))).toBe(false);
+    expect(r.out).not.toContain("Qwen Code");
+    expect(r.out).not.toContain("QWEN CODE USERS");
+  });
+
+  test("a Qwen folder without the qwen command: skills installed, the extension reported as not installed", () => {
+    const q = qwenSandbox({ qwenCli: false });
+    const r = q.run();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Qwen Code extension: not installed (the qwen command is not on PATH).");
+    expect(existsSync(join(q.home, ".qwen", "skills", "plannotator-last", "SKILL.md"))).toBe(true);
+    expect(existsSync(q.extension())).toBe(false);
+  });
+
+  test("QWEN_HOME with a leading ~ is the Qwen folder itself", () => {
+    const q = qwenSandbox({ qwenDir: false });
+    mkdirSync(join(q.home, "qwen-home"), { recursive: true });
+    const r = q.run([], { QWEN_HOME: "~/qwen-home" });
+    expect(r.code).toBe(0);
+    expect(existsSync(join(q.home, "qwen-home", "skills", "plannotator-review", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(q.extension(join(q.home, "qwen-home")), "qwen-extension.json"))).toBe(true);
+    expect(existsSync(join(q.home, ".qwen"))).toBe(false);
+  });
+
+  test("--skip-skills: no extension and no Qwen skills, said plainly", () => {
+    const q = qwenSandbox();
+    const r = q.run(["--skip-skills"]);
+    expect(r.code).toBe(0);
+    expect(q.calls()).toEqual([]);
+    expect(existsSync(join(q.home, ".qwen", "skills"))).toBe(false);
+    expect(r.out).toContain("so neither was\ninstalled or changed");
+  });
+
+  test("--model-invocable unlocks the Qwen copy of a chosen skill too", () => {
+    const q = qwenSandbox();
+    const r = q.run(["--model-invocable", "plannotator-review"]);
+    expect(r.code).toBe(0);
+    expect(readFileSync(join(q.home, ".qwen", "skills", "plannotator-review", "SKILL.md"), "utf8")).not.toContain(
+      "disable-model-invocation: true",
+    );
+    expect(readFileSync(join(q.home, ".qwen", "skills", "plannotator-last", "SKILL.md"), "utf8")).toContain(
+      "disable-model-invocation: true",
+    );
+  });
+});
+
+// The Windows installers' Qwen Code extension step, driven under PowerShell
+// with the same fake qwen: install.ps1's region (its function and state), and
+// the exact PowerShell install.cmd hands to `powershell -Command` (its exit
+// code is the result). The source is a copy of the real extension.
+function extractPs1QwenRegion(): string {
+  const ps = readScript("install.ps1");
+  const start = ps.indexOf('$qwenExtensionState = ""');
+  const end = ps.indexOf("\nif (-not $checkoutFailed) {\n    try { Install-QwenExtensionIfPresent");
+  if (start < 0 || end <= start) throw new Error("could not locate the Qwen Code region in install.ps1");
+  return ps.slice(start, end);
+}
+
+function extractCmdQwenCommand(): string {
+  const cmd = readScript("install.cmd");
+  const sub = cmd.slice(cmd.indexOf("\n:InstallQwenExtension\n"));
+  const m = /^powershell -NoProfile -ExecutionPolicy Bypass -Command "(.*)"$/m.exec(sub);
+  if (!m) throw new Error("could not locate the :InstallQwenExtension PowerShell in install.cmd");
+  return m[1];
+}
+
+describe("install.cmd's Qwen Code step", () => {
+  test("its PowerShell carries nothing cmd.exe would reinterpret", () => {
+    expect(extractCmdQwenCommand()).not.toMatch(/["%!^]/);
+  });
+
+  test("runs as a subroutine called outside any parenthesized block", () => {
+    expect(readScript("install.cmd")).toContain(
+      '\nif "!CHECKOUT_FAILED!"=="0" if "!QWEN_AVAILABLE!"=="1" call :InstallQwenExtension\n',
+    );
+  });
+});
+
+describe.skipIf(!pwshBin || process.platform === "win32")(
+  "Windows installers install the Qwen Code extension (PowerShell, fake qwen)",
+  () => {
+    const roots: string[] = [];
+    afterAll(() => {
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
+    });
+
+    function setup() {
+      const root = mkdtempSync(join(tmpdir(), "plannotator-ps-qwen-test-"));
+      roots.push(root);
+      const stub = join(root, "stub-bin");
+      const qwenDir = join(root, "qwen-home");
+      const src = join(root, "qwen-extension");
+      mkdirSync(stub, { recursive: true });
+      mkdirSync(qwenDir, { recursive: true });
+      mkdirSync(join(root, "tmp"), { recursive: true });
+      writeFileSync(join(stub, "qwen"), FAKE_QWEN, { mode: 0o755 });
+      cpSync(join(scriptsDir, "..", "apps", "qwen-code", "extension"), src, { recursive: true });
+      const log = join(root, "qwen-calls.log");
+      const calls = () =>
+        existsSync(log)
+          ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => line.slice(line.indexOf("|") + 1))
+          : [];
+      return { root, stub, qwenDir, src, log, calls, extension: join(qwenDir, "extensions", "plannotator") };
+    }
+
+    function run(
+      runner: "install.ps1" | "install.cmd",
+      s: ReturnType<typeof setup>,
+      opts: { skipSource?: string; env?: Record<string, string> } = {},
+    ) {
+      const driverPath = join(s.root, "driver.ps1");
+      const body =
+        runner === "install.ps1"
+          ? [
+              `$ErrorActionPreference = "Stop"`,
+              `$qwenAvailable = $true`,
+              `$skipQwenResolved = $${opts.skipSource ? "true" : "false"}`,
+              `$skipQwenSource = "${opts.skipSource ?? ""}"`,
+              `$skipSkillsResolved = $false`,
+              `$qwenDir = $env:QWEN_HOME`,
+              extractPs1QwenRegion(),
+              `Install-QwenExtensionIfPresent $env:PLN_QX_SRC`,
+              `Write-Host ("STATE=" + $qwenExtensionState)`,
+              `exit 0`,
+            ]
+          : [extractCmdQwenCommand()];
+      writeFileSync(driverPath, body.join("\n"));
+      const r = Bun.spawnSync([pwshBin!, "-NoProfile", "-File", driverPath], {
+        env: {
+          PATH: `${s.stub}:/usr/bin:/bin`,
+          HOME: s.root,
+          TMPDIR: join(s.root, "tmp"),
+          QWEN_HOME: s.qwenDir,
+          FAKE_QWEN_LOG: s.log,
+          PLN_QX_SRC: s.src,
+          PLN_QX_DEST: s.extension,
+          ...opts.env,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return { code: r.exitCode, out: r.stdout.toString() + r.stderr.toString() };
+    }
+
+    // install.cmd's PowerShell reports its result as its exit code.
+    const CMD_CODE = { "no-cli": 30, current: 31, installed: 32, updated: 33, failed: 34 } as const;
+    const expectState = (runner: string, r: { code: number; out: string }, state: keyof typeof CMD_CODE) => {
+      if (runner === "install.cmd") expect({ code: r.code, out: r.out }).toMatchObject({ code: CMD_CODE[state] });
+      else expect(r.out).toContain(`STATE=${state}`);
+    };
+    const hooksOf = (dir: string) => readFileSync(join(dir, "hooks", "hooks.json"), "utf8");
+
+    for (const runner of ["install.ps1", "install.cmd"] as const) {
+      test(`${runner}: installs, then a re-run changes nothing`, () => {
+        const s = setup();
+        const first = run(runner, s);
+        expectState(runner, first, "installed");
+        expect(first.out).toContain("Qwen Code extension: installed (restart Qwen Code to load it).");
+        expect(s.calls()).toEqual([`extensions install ${s.src} --consent`]);
+        expect(hooksOf(s.extension)).toBe(hooksOf(s.src));
+        const second = run(runner, s);
+        expectState(runner, second, "current");
+        expect(second.out).toContain("Qwen Code extension: already up to date.");
+        expect(s.calls()).toHaveLength(1);
+      }, PWSH_SCANNER_TIMEOUT_MS);
+
+      test(`${runner}: a changed extension is replaced; a failed replace puts the old one back`, () => {
+        const s = setup();
+        run(runner, s);
+        writeFileSync(join(s.extension, "hooks", "hooks.json"), '{"hooks":{}}\n');
+        const failed = run(runner, s, { env: { FAKE_QWEN_INSTALL_FAIL: "new" } });
+        expectState(runner, failed, "failed");
+        expect(failed.out).toContain("The previous version was put back.");
+        expect(hooksOf(s.extension)).toBe('{"hooks":{}}\n');
+        const updated = run(runner, s);
+        expectState(runner, updated, "updated");
+        expect(s.calls().slice(-2)).toEqual(["extensions uninstall plannotator", `extensions install ${s.src} --consent`]);
+        expect(hooksOf(s.extension)).toBe(hooksOf(s.src));
+      }, PWSH_SCANNER_TIMEOUT_MS);
+
+      test(`${runner}: no qwen on PATH is reported, nothing runs`, () => {
+        const s = setup();
+        rmSync(join(s.stub, "qwen"));
+        const r = run(runner, s);
+        expectState(runner, r, "no-cli");
+        expect(r.out).toContain("Qwen Code extension: not installed (the qwen command is not on PATH).");
+        expect(existsSync(s.extension)).toBe(false);
+      }, PWSH_SCANNER_TIMEOUT_MS);
+    }
+
+    test("install.ps1: an opt-out runs nothing and says so", () => {
+      const s = setup();
+      const r = run("install.ps1", s, { skipSource: "-SkipQwen" });
+      expect(r.out).toContain("Qwen Code: detected, skipped (-SkipQwen).");
+      expect(s.calls()).toEqual([]);
+    }, PWSH_SCANNER_TIMEOUT_MS);
+  },
+);

@@ -2261,3 +2261,74 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
     expect(readJson(cursorFile(fixture)).mcpServers).toEqual({ "plannotator-inbox": { command: "theirs" } });
   });
 });
+
+describe("Qwen Code", () => {
+  function writeQwenInstall(qwenDir: string): void {
+    writeJson(join(qwenDir, "extensions", "plannotator", "qwen-extension.json"), { name: "plannotator", version: "1.0.0" });
+    for (const skill of ["plannotator-review", "plannotator-annotate", "plannotator-last"]) {
+      writeText(join(qwenDir, "skills", skill, "SKILL.md"));
+    }
+    writeText(join(qwenDir, "skills", "my-own-skill", "SKILL.md"));
+  }
+
+  test("removes the extension with qwen and the installed skills, and keeps the person's own skill", async () => {
+    const fixture = createFixture();
+    const qwenDir = join(fixture.homeDir, ".qwen");
+    writeQwenInstall(qwenDir);
+
+    const result = await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => (command === "qwen" ? "/fake/qwen" : null) },
+    );
+
+    expect(fixture.commandCalls.map((call) => [call.command, ...call.args])).toEqual([
+      ["/fake/qwen", "extensions", "uninstall", "plannotator"],
+    ]);
+    expect(result.removed).toContain("Qwen Code extension plannotator");
+    for (const skill of ["plannotator-review", "plannotator-annotate", "plannotator-last"]) {
+      expect(existsSync(join(qwenDir, "skills", skill))).toBe(false);
+    }
+    expect(existsSync(join(qwenDir, "skills", "my-own-skill", "SKILL.md"))).toBe(true);
+  });
+
+  test("QWEN_HOME with a leading ~ is the Qwen folder", async () => {
+    const fixture = createFixture();
+    const qwenDir = join(fixture.homeDir, "qwen-home");
+    writeQwenInstall(qwenDir);
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      {
+        ...fixture.environment,
+        env: { QWEN_HOME: "~/qwen-home" },
+        which: (command) => (command === "qwen" ? "/fake/qwen" : null),
+      },
+    );
+
+    expect(fixture.commandCalls.map((call) => call.args)).toEqual([["extensions", "uninstall", "plannotator"]]);
+    expect(existsSync(join(qwenDir, "skills", "plannotator-last"))).toBe(false);
+  });
+
+  test("without the qwen command, the extension is reported with the command to run", async () => {
+    const fixture = createFixture();
+    writeQwenInstall(join(fixture.homeDir, ".qwen"));
+
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+
+    expect(fixture.commandCalls).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain("run `qwen extensions uninstall plannotator`");
+  });
+
+  test("no extension installed: qwen is never run", async () => {
+    const fixture = createFixture();
+    mkdirSync(join(fixture.homeDir, ".qwen"), { recursive: true });
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => `/fake/${command}` },
+    );
+
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen")).toEqual([]);
+  });
+});

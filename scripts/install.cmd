@@ -36,6 +36,7 @@ set "SKIP_GEMINI_FLAG=0"
 set "SKIP_KIRO_FLAG=0"
 set "SKIP_VIBE_FLAG=0"
 set "SKIP_OPENCODE_FLAG=0"
+set "SKIP_QWEN_FLAG=0"
 REM Same shape, but scoped to the skills/slash-command sparse checkout rather
 REM than one agent's home: --skip-skills turns the whole fetch into a no-op for
 REM every scope it writes (Claude, .agents, OpenCode, Gemini, Kiro), including
@@ -175,6 +176,11 @@ if /i "%~1"=="--skip-opencode" (
     shift
     goto parse_args
 )
+if /i "%~1"=="--skip-qwen" (
+    set "SKIP_QWEN_FLAG=1"
+    shift
+    goto parse_args
+)
 if /i "%~1"=="--skip-skills" (
     set "SKIP_SKILLS_FLAG=1"
     shift
@@ -199,7 +205,7 @@ REM unquoted arg containing `&` would re-trigger metacharacter interpretation.
 set "CURRENT_ARG=%~1"
 if "!CURRENT_ARG:~0,1!"=="-" (
     echo Unknown option: "%~1" >&2
-    echo Usage: install.cmd [--version ^<tag^>] [--verify-attestation ^| --skip-attestation] [--with-call-flow] [--extras ^| --no-extras] [--model-invocable ^<list^>] [--minimal ^| --no-minimal] [--skip-codex] [--skip-gemini] [--skip-kiro] [--skip-vibe] [--skip-opencode] [--skip-skills] [--skip-claude-plugin] [--non-interactive] [--reconfigure] >&2
+    echo Usage: install.cmd [--version ^<tag^>] [--verify-attestation ^| --skip-attestation] [--with-call-flow] [--extras ^| --no-extras] [--model-invocable ^<list^>] [--minimal ^| --no-minimal] [--skip-codex] [--skip-gemini] [--skip-kiro] [--skip-vibe] [--skip-opencode] [--skip-skills] [--skip-qwen] [--skip-claude-plugin] [--non-interactive] [--reconfigure] >&2
     exit /b 1
 )
 REM Positional form: install.cmd vX.Y.Z (legacy interface).
@@ -551,6 +557,8 @@ set "SKIP_VIBE=0"
 set "SKIP_VIBE_SOURCE="
 set "SKIP_OPENCODE=0"
 set "SKIP_OPENCODE_SOURCE="
+set "SKIP_QWEN=0"
+set "SKIP_QWEN_SOURCE="
 REM skipInstall.skills is not an agent - it opts out of the skills/slash-command
 REM checkout for every scope at once - but it shares the same three layers.
 set "SKIP_SKILLS=0"
@@ -560,7 +568,7 @@ set "SKIP_CLAUDE_PLUGIN=0"
 set "SKIP_CLAUDE_PLUGIN_SOURCE="
 if exist "!_CONFIG_DIR!\config.json" (
     set "PLN_CONFIG_JSON=!_CONFIG_DIR!\config.json"
-    for /f "usebackq delims=" %%K in (`powershell -NoProfile -Command "try { $c = Get-Content $env:PLN_CONFIG_JSON -Raw | ConvertFrom-Json } catch { exit 0 }; if (-not $c.skipInstall) { exit 0 }; foreach ($k in @('codex','gemini','kiro','vibe','opencode','skills','claudePlugin')) { $v = $c.skipInstall.$k; if ($v -is [bool] -and $v) { $k } }"`) do (
+    for /f "usebackq delims=" %%K in (`powershell -NoProfile -Command "try { $c = Get-Content $env:PLN_CONFIG_JSON -Raw | ConvertFrom-Json } catch { exit 0 }; if (-not $c.skipInstall) { exit 0 }; foreach ($k in @('codex','gemini','kiro','vibe','opencode','qwen','skills','claudePlugin')) { $v = $c.skipInstall.$k; if ($v -is [bool] -and $v) { $k } }"`) do (
         if /i "%%K"=="codex" (
             set "SKIP_CODEX=1"
             set "SKIP_CODEX_SOURCE=config skipInstall.codex"
@@ -580,6 +588,10 @@ if exist "!_CONFIG_DIR!\config.json" (
         if /i "%%K"=="opencode" (
             set "SKIP_OPENCODE=1"
             set "SKIP_OPENCODE_SOURCE=config skipInstall.opencode"
+        )
+        if /i "%%K"=="qwen" (
+            set "SKIP_QWEN=1"
+            set "SKIP_QWEN_SOURCE=config skipInstall.qwen"
         )
         if /i "%%K"=="skills" (
             set "SKIP_SKILLS=1"
@@ -632,6 +644,14 @@ for %%V in (0 false no) do if /i "!PLANNOTATOR_SKIP_OPENCODE_INSTALL!"=="%%V" (
     set "SKIP_OPENCODE=0"
     set "SKIP_OPENCODE_SOURCE="
 )
+for %%V in (1 true yes) do if /i "!PLANNOTATOR_SKIP_QWEN_INSTALL!"=="%%V" (
+    set "SKIP_QWEN=1"
+    set "SKIP_QWEN_SOURCE=PLANNOTATOR_SKIP_QWEN_INSTALL"
+)
+for %%V in (0 false no) do if /i "!PLANNOTATOR_SKIP_QWEN_INSTALL!"=="%%V" (
+    set "SKIP_QWEN=0"
+    set "SKIP_QWEN_SOURCE="
+)
 for %%V in (1 true yes) do if /i "!PLANNOTATOR_SKIP_SKILLS_INSTALL!"=="%%V" (
     set "SKIP_SKILLS=1"
     set "SKIP_SKILLS_SOURCE=PLANNOTATOR_SKIP_SKILLS_INSTALL"
@@ -667,6 +687,10 @@ if "!SKIP_VIBE_FLAG!"=="1" (
 if "!SKIP_OPENCODE_FLAG!"=="1" (
     set "SKIP_OPENCODE=1"
     set "SKIP_OPENCODE_SOURCE=--skip-opencode"
+)
+if "!SKIP_QWEN_FLAG!"=="1" (
+    set "SKIP_QWEN=1"
+    set "SKIP_QWEN_SOURCE=--skip-qwen"
 )
 if "!SKIP_SKILLS_FLAG!"=="1" (
     set "SKIP_SKILLS=1"
@@ -1037,6 +1061,19 @@ REM reads the wrong session.
 if not defined VIBE_HOME set "VIBE_HOME=%USERPROFILE%\.vibe"
 set "VIBE_AVAILABLE=0"
 if exist "!VIBE_HOME!" set "VIBE_AVAILABLE=1"
+
+REM Qwen Code keeps its user files in QWEN_HOME when set, else
+REM %USERPROFILE%\.qwen. QWEN_HOME is the Qwen folder itself, and a leading ~
+REM is expanded, as in Qwen. Detected only when that folder exists, as in
+REM install.sh; the extension step also needs the qwen command.
+set "QWEN_DIR=%USERPROFILE%\.qwen"
+if defined QWEN_HOME set "QWEN_DIR=!QWEN_HOME!"
+if "!QWEN_DIR!"=="~" set "QWEN_DIR=%USERPROFILE%"
+if "!QWEN_DIR:~0,2!"=="~/" set "QWEN_DIR=%USERPROFILE%\!QWEN_DIR:~2!"
+if "!QWEN_DIR:~0,2!"=="~\" set "QWEN_DIR=%USERPROFILE%\!QWEN_DIR:~2!"
+set "QWEN_SKILLS_DIR=!QWEN_DIR!\skills"
+set "QWEN_AVAILABLE=0"
+if exist "!QWEN_DIR!\" set "QWEN_AVAILABLE=1"
 REM HONEST three-state reporting (#1178): detected-but-skipped is its own
 REM state, never conflated with "not detected". A Codex opt-out leaves the
 REM Codex home entirely untouched (no writes, no cleanup, no removal).
@@ -1375,7 +1412,7 @@ if "!SPARSE_UNSUPPORTED!"=="1" (
 
 if "!CLONE_OK!"=="1" (
     pushd "!SKILLS_TMP!\repo"
-    if "!SPARSE_CLONE!"=="1" git sparse-checkout set apps/skills apps/kiro-cli apps/vibe apps/opencode-plugin/commands apps/gemini/commands >nul 2>&1
+    if "!SPARSE_CLONE!"=="1" git sparse-checkout set apps/skills apps/kiro-cli apps/vibe apps/opencode-plugin/commands apps/gemini/commands apps/qwen-code >nul 2>&1
 
     REM Claude Code reads apps\skills\claude\* (injection `!`plannotator ... $ARGUMENTS``
     REM + allowed-tools, so /plannotator-* run with no permission prompt); Codex
@@ -1466,6 +1503,26 @@ if "!CLONE_OK!"=="1" (
         echo Installed Kiro skills to !KIRO_SKILLS_DIR!\ and agent to !KIRO_AGENTS_DIR!\plannotator.json
     )
 
+    REM Qwen Code: its own copies of review, annotate and last ^(they run the
+    REM command in the background, past the shell tool's time limit^). Qwen
+    REM reads QWEN_DIR\skills before ~/.agents/skills, so these take the place
+    REM of the shared copies. The extension is copied out of the checkout here
+    REM and installed after this block ^(:InstallQwenExtension^). A Qwen opt-out
+    REM leaves QWEN_DIR untouched.
+    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if exist "apps\qwen-code\skills" (
+        if not exist "!QWEN_SKILLS_DIR!" mkdir "!QWEN_SKILLS_DIR!"
+        for %%S in (plannotator-review plannotator-annotate plannotator-last) do (
+            if exist "apps\qwen-code\skills\%%S" (
+                if exist "!QWEN_SKILLS_DIR!\%%S" rmdir /s /q "!QWEN_SKILLS_DIR!\%%S" >nul 2>&1
+                xcopy /s /i /y /q "apps\qwen-code\skills\%%S" "!QWEN_SKILLS_DIR!\%%S\" >nul 2>&1
+            )
+        )
+        echo Installed Qwen Code skills to !QWEN_SKILLS_DIR!\
+    )
+    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if exist "apps\qwen-code\extension\qwen-extension.json" (
+        xcopy /s /i /y /q "apps\qwen-code\extension" "!SKILLS_TMP!\qwen-extension\" >nul 2>&1
+    )
+
     REM Vibe - no skills are copied to !VIBE_HOME! on Windows. The apps\vibe
     REM skills use a POSIX env-prefix that Vibe's PowerShell fallback cannot
     REM run; Vibe reads the shell-neutral core skills from ~/.agents/skills.
@@ -1476,6 +1533,8 @@ if "!CLONE_OK!"=="1" (
 )
 
 :skills_checkout_done
+REM The Qwen Code extension, outside any parenthesized block. See :InstallQwenExtension.
+if "!CHECKOUT_FAILED!"=="0" if "!QWEN_AVAILABLE!"=="1" call :InstallQwenExtension
 rmdir /s /q "!SKILLS_TMP!" >nul 2>&1
 
 if "!CHECKOUT_FAILED!"=="1" (
@@ -1554,8 +1613,11 @@ REM unlock - and rewriting a PREVIOUS run's SKILL.md would be a write the
 REM opt-out promised not to make.
 if "!SKIP_SKILLS!"=="0" if defined INVOCABLE_CHOICE if not "!INVOCABLE_CHOICE!"=="none" (
     for %%K in ("!INVOCABLE_CHOICE:,=" "!") do (
-        for %%D in ("!CLAUDE_SKILLS_DIR!" "!AGENTS_SKILLS_DIR!") do (
-            if exist "%%~D\%%~K\SKILL.md" (
+        for %%D in ("!CLAUDE_SKILLS_DIR!" "!AGENTS_SKILLS_DIR!" "!QWEN_SKILLS_DIR!") do (
+            REM A Qwen opt-out leaves QWEN_DIR untouched, a previous run's copies included.
+            set "SCOPE_OK=1"
+            if /i "%%~D"=="!QWEN_SKILLS_DIR!" if not "!QWEN_AVAILABLE!!SKIP_QWEN!"=="10" set "SCOPE_OK=0"
+            if "!SCOPE_OK!"=="1" if exist "%%~D\%%~K\SKILL.md" (
                 findstr /c:"disable-model-invocation: true" "%%~D\%%~K\SKILL.md" >nul 2>&1
                 if !ERRORLEVEL! equ 0 (
                     findstr /v /c:"disable-model-invocation: true" "%%~D\%%~K\SKILL.md" > "%%~D\%%~K\SKILL.md.tmp"
@@ -1707,6 +1769,41 @@ if "!VIBE_AVAILABLE!"=="1" (
     )
 )
 
+REM The Qwen Code section prints only when Qwen Code was detected.
+if "!QWEN_AVAILABLE!"=="1" (
+    echo.
+    echo ==========================================
+    echo   QWEN CODE USERS
+    echo ==========================================
+    echo.
+    if "!SKIP_QWEN!"=="1" (
+        echo Qwen Code was detected, but the integration was skipped ^(!SKIP_QWEN_SOURCE!^).
+        echo No extension was installed or removed, and no files under !QWEN_DIR! were
+        echo written. Re-run without the opt-out to add plan review and the skills.
+    ) else if "!SKIP_SKILLS!"=="1" (
+        echo Qwen Code was detected, but skills were skipped ^(!SKIP_SKILLS_SOURCE!^). The
+        echo Qwen Code extension and skills come from the same download, so neither was
+        echo installed or changed. Re-run without the opt-out to add them.
+    ) else (
+        if "!QWEN_EXTENSION_STATE!"=="ok" (
+            echo Plan review: when the agent calls exit_plan_mode, the plan opens in your
+            echo browser. After you approve it there, Qwen Code asks you to confirm the plan
+            echo once more in the terminal. Restart Qwen Code to load a new extension.
+        ) else if "!QWEN_EXTENSION_STATE!"=="no-cli" (
+            echo The qwen command was not found, so the plan-review extension was not
+            echo installed. Put qwen on PATH and re-run this installer.
+        ) else if "!QWEN_EXTENSION_STATE!"=="not-in-tag" (
+            echo This release has no Qwen Code extension. Install a newer release for plan review.
+        ) else (
+            echo The plan-review extension could not be installed ^(see the message above^).
+            echo Re-run this installer to try again.
+        )
+        echo.
+        echo Skills are installed to !QWEN_SKILLS_DIR!\:
+        echo   /plannotator-review, /plannotator-annotate, /plannotator-last
+    )
+)
+
 echo.
 echo Test the install:
 echo   echo {"tool_input":{"plan":"# Test Plan\\n\\nHello world"}} ^| plannotator
@@ -1799,6 +1896,7 @@ if "!SKIP_GEMINI_FLAG!"=="1" call :AddInstallFlag skip-gemini
 if "!SKIP_KIRO_FLAG!"=="1" call :AddInstallFlag skip-kiro
 if "!SKIP_VIBE_FLAG!"=="1" call :AddInstallFlag skip-vibe
 if "!SKIP_OPENCODE_FLAG!"=="1" call :AddInstallFlag skip-opencode
+if "!SKIP_QWEN_FLAG!"=="1" call :AddInstallFlag skip-qwen
 if "!SKIP_SKILLS_FLAG!"=="1" call :AddInstallFlag skip-skills
 if "!SKIP_CLAUDE_PLUGIN_FLAG!"=="1" call :AddInstallFlag skip-claude-plugin
 if not exist "!_CONFIG_DIR!" mkdir "!_CONFIG_DIR!" >nul 2>&1
@@ -1903,6 +2001,40 @@ REM ======================================================================
 set "PLN_PI_TARGET=!TAG!"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Continue'; $q = [char]34; $src = 'npm:@plannotator/pi-extension'; $t = ([string]$env:PLN_PI_TARGET).TrimStart('v'); $d = $env:PI_CODING_AGENT_DIR; if (-not $d) { $d = Join-Path (Join-Path $env:USERPROFILE '.pi') 'agent' } elseif ($d -eq '~') { $d = $env:USERPROFILE } elseif ($d.StartsWith('~/') -or $d.StartsWith('~\')) { $d = Join-Path $env:USERPROFILE $d.Substring(2) }; function Ver { $p = Join-Path (Join-Path (Join-Path (Join-Path $d 'npm') 'node_modules') '@plannotator') 'pi-extension'; if (-not (Test-Path -LiteralPath $p -PathType Container)) { $p = $null; if (Get-Command npm -ErrorAction SilentlyContinue) { $r = $null; try { $r = & npm root -g 2>$null | Select-Object -First 1 } catch { }; if ($r) { $p = Join-Path (Join-Path ([string]$r).Trim() '@plannotator') 'pi-extension' } } }; if (-not $p) { return '' }; $j = Join-Path $p 'package.json'; if (-not (Test-Path -LiteralPath $j -PathType Leaf)) { return '' }; try { return [string](Get-Content -LiteralPath $j -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop).version } catch { return '' } }; function AtLeast($a, $b) { $x = @(((([string]$a).TrimStart('v') -split '[-+]')[0]).Split('.')); $y = @(((([string]$b).TrimStart('v') -split '[-+]')[0]).Split('.')); for ($i = 0; $i -lt 3; $i++) { $m = 0; $n = 0; if ($i -lt $x.Count) { [void][int]::TryParse($x[$i], [ref]$m) }; if ($i -lt $y.Count) { [void][int]::TryParse($y[$i], [ref]$n) }; if ($m -gt $n) { return $true }; if ($m -lt $n) { return $false } }; return $true }; $s = Join-Path $d 'settings.json'; $txt = ''; if (Test-Path -LiteralPath $s -PathType Leaf) { try { $txt = [string](Get-Content -LiteralPath $s -Raw -ErrorAction Stop) } catch { } }; if ($txt -match ($q + 'npm:@plannotator/pi-extension@v?([0-9]+\.[0-9]+\.[0-9][0-9A-Za-z.+-]*)' + $q)) { Write-Output ('Pi extension: pinned to ' + $Matches[1] + ' in Pi' + [char]39 + 's settings, left as is. To move it: pi install ' + $src + '@' + $t); exit 0 }; $fresh = $false; $b = ''; if (-not ($txt -match ($q + 'npm:@plannotator/pi-extension(@[' + [char]94 + $q + ']*)?' + $q))) { $fresh = $true; Write-Output 'Installing Pi extension...'; & pi install $src; if ($LASTEXITCODE -ne 0) { Write-Output 'Skipping Pi extension install (pi install failed)'; exit 0 }; $b = Ver; if ((-not $b) -or (-not (AtLeast $b $t))) { & pi update $src } } else { Write-Output 'Updating Pi extension...'; $b = Ver; & pi update $src; if ($LASTEXITCODE -ne 0) { & pi install $src } }; $a = Ver; if (-not $a) { Write-Output ('Pi extension: could not read its installed version. To update it: pi update ' + $src) } elseif (-not (AtLeast $a $t)) { $v = ''; if (Get-Command npm -ErrorAction SilentlyContinue) { try { $v = (& npm view ('@plannotator/pi-extension@' + $t) version --fetch-timeout=10000 --fetch-retries=0 2>&1 | Out-String) } catch { $v = '' } }; if ($v -match 'E404') { Write-Output ('Pi extension: still ' + $a + ' (' + $t + ' is not on your npm registry yet). Run this later: pi update ' + $src) } else { Write-Output ('Pi extension: still ' + $a + ' (this release is ' + $t + '). To update it: pi update ' + $src) } } elseif ($fresh) { Write-Output ('Pi extension installed (' + $a + ').') } elseif ($b -eq $a) { Write-Output ('Pi extension already up to date (' + $a + ').') } else { Write-Output ('Pi extension updated to ' + $a + '.') }; exit 0"
 set "PLN_PI_TARGET="
+goto :eof
+
+REM ======================================================================
+REM :InstallQwenExtension - install or update the plannotator Qwen Code
+REM extension with Qwen's own `qwen extensions install`, as install.sh and
+REM install.ps1 do: an installed copy whose manifest and hooks match is left
+REM alone; a changed one is uninstalled first ^(Qwen refuses to install over
+REM it^) and put back from a kept copy when the new install fails. Each qwen
+REM command has a time limit, reads no input and runs in an empty temporary
+REM folder. Inputs travel in PLN_QX_SRC / PLN_QX_DEST, never interpolated; the
+REM command carries no double quote, percent sign, exclamation mark or caret.
+REM Its exit code is the result. Best effort: never fails the install.
+REM ======================================================================
+:InstallQwenExtension
+if "!SKIP_QWEN!"=="1" (
+    echo.
+    echo Qwen Code: detected, skipped ^(!SKIP_QWEN_SOURCE!^).
+    if exist "!QWEN_DIR!\extensions\plannotator\qwen-extension.json" echo The installed Qwen Code extension was left untouched.
+    goto :eof
+)
+if "!SKIP_SKILLS!"=="1" goto :eof
+set "PLN_QX_SRC=!SKILLS_TMP!\qwen-extension"
+set "PLN_QX_DEST=!QWEN_DIR!\extensions\plannotator"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Continue'; $src = $env:PLN_QX_SRC; $dest = $env:PLN_QX_DEST; $q = [char]34; function Same($a, $b) { if (-not (Test-Path -LiteralPath $a -PathType Leaf) -or -not (Test-Path -LiteralPath $b -PathType Leaf)) { return $false }; try { $x = [System.IO.File]::ReadAllBytes($a); $y = [System.IO.File]::ReadAllBytes($b) } catch { return $false }; if ($x.Length -ne $y.Length) { return $false }; for ($i = 0; $i -lt $x.Length; $i++) { if ($x[$i] -ne $y[$i]) { return $false } }; return $true }; function Run($a) { $si = New-Object System.Diagnostics.ProcessStartInfo; $si.FileName = $qw; $si.Arguments = ((@('extensions') + $a) | ForEach-Object { $q + $_ + $q }) -join ' '; $si.WorkingDirectory = $work; $si.UseShellExecute = $false; $si.RedirectStandardInput = $true; $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true; $si.CreateNoWindow = $true; try { $p = [System.Diagnostics.Process]::Start($si) } catch { return 'could not run qwen: ' + $_.Exception.Message }; try { $p.StandardInput.Close() } catch { }; $to = $p.StandardOutput.ReadToEndAsync(); $te = $p.StandardError.ReadToEndAsync(); if (-not $p.WaitForExit($secs * 1000)) { try { $p.Kill($true) } catch { try { $null = & taskkill /T /F /PID $p.Id 2>$null } catch { }; try { $p.Kill() } catch { } }; return 'timed out after ' + $secs + 's' }; $p.WaitForExit(); if ($p.ExitCode -eq 0) { return '' }; $l = $null; foreach ($t in @($te, $to)) { $v = ''; try { if ($t.Wait(5000)) { $v = [string]$t.Result } } catch { }; $l = @($v -split '\r?\n') | ForEach-Object { ($_ -replace ('[' + [char]94 + '\x20-\x7E]'), '').Trim() } | Where-Object { $_ } | Select-Object -Last 1; if ($l) { break } }; if ($l -and $l.Length -gt 200) { $l = $l.Substring(0, 200) }; if ($l) { return 'qwen exited ' + $p.ExitCode + ': ' + $l }; return 'qwen exited ' + $p.ExitCode }; if (-not (Test-Path -LiteralPath (Join-Path $src 'qwen-extension.json') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path (Join-Path $src 'hooks') 'hooks.json') -PathType Leaf)) { exit 35 }; $c = Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $c) { Write-Host 'Qwen Code extension: not installed (the qwen command is not on PATH).'; exit 30 }; $qw = $c.Source; if ((Same (Join-Path $src 'qwen-extension.json') (Join-Path $dest 'qwen-extension.json')) -and (Same (Join-Path (Join-Path $src 'hooks') 'hooks.json') (Join-Path (Join-Path $dest 'hooks') 'hooks.json'))) { Write-Host 'Qwen Code extension: already up to date.'; exit 31 }; $secs = 120; if ($env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT -match '\A[1-9][0-9]*\z') { $secs = [int]$env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT }; $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('plannotator-qwen-' + [System.Guid]::NewGuid().ToString('N')); $work = Join-Path $tmp 'cwd'; try { New-Item -ItemType Directory -Force -Path $work -ErrorAction Stop | Out-Null } catch { Write-Host 'Qwen Code extension: could not install it (no temporary directory).'; exit 34 }; function M { $had = Test-Path -LiteralPath (Join-Path $dest 'qwen-extension.json') -PathType Leaf; $prev = Join-Path $tmp 'previous'; if ($had) { try { Copy-Item -Recurse -Force -LiteralPath $dest -Destination $prev -ErrorAction Stop; Remove-Item -Force -LiteralPath (Join-Path $prev '.qwen-extension-install.json') -ErrorAction SilentlyContinue } catch { Write-Host 'Qwen Code extension: could not update it (could not copy the installed one). It was left as it was.'; return 34 }; Write-Host 'Updating the Qwen Code extension...'; $w = Run @('uninstall', 'plannotator'); if ($w) { Write-Host ('Qwen Code extension: could not update it (' + $w + '). The installed one was left as it was.'); return 34 } } else { Write-Host 'Installing the Qwen Code extension...' }; $w = Run @('install', $src, '--consent'); if (-not $w) { if ($had) { Write-Host 'Qwen Code extension: updated (restart Qwen Code to load it).'; return 33 } else { Write-Host 'Qwen Code extension: installed (restart Qwen Code to load it).'; return 32 } }; if ($had) { $b = Run @('install', $prev, '--consent'); if (-not $b) { Write-Host ('Qwen Code extension: could not update it (' + $w + '). The previous version was put back.') } else { Write-Host ('Qwen Code extension: could not update it (' + $w + '), and the previous version could not be put back (' + $b + ').'); Write-Host 'Qwen Code shows its normal plan confirmation until you re-run this installer.' } } else { Write-Host ('Qwen Code extension: could not install it (' + $w + ').') }; return 34 }; $rc = 34; try { $rc = M } catch { $rc = 34 }; Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue; exit $rc"
+set "PLN_QX_RC=!ERRORLEVEL!"
+set "QWEN_EXTENSION_STATE=failed"
+if "!PLN_QX_RC!"=="30" set "QWEN_EXTENSION_STATE=no-cli"
+if "!PLN_QX_RC!"=="31" set "QWEN_EXTENSION_STATE=ok"
+if "!PLN_QX_RC!"=="32" set "QWEN_EXTENSION_STATE=ok"
+if "!PLN_QX_RC!"=="33" set "QWEN_EXTENSION_STATE=ok"
+if "!PLN_QX_RC!"=="35" set "QWEN_EXTENSION_STATE=not-in-tag"
+set "PLN_QX_RC="
+set "PLN_QX_SRC="
+set "PLN_QX_DEST="
 goto :eof
 
 :AddInstallFlag
