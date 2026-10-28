@@ -1,5 +1,5 @@
 /**
- * The Inbox's update control against a real Inbox server: the daily check
+ * The Inbox's update control against a real Inbox server: the release check
  * (stubbed fetch, never GitHub), the button's states on health, Update now
  * (a recording launcher, never the install script), Remind me tomorrow, the
  * Settings switches (the dialog's "Install new versions automatically"
@@ -11,11 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxUpdate } from "@plannotator/core/inbox-types";
 import { loadConfig, saveConfig } from "@plannotator/shared/config";
-import { readUpdateState, writeUpdateState, type FetchReleaseResult } from "@plannotator/shared/update-check";
+import { readUpdateState, writeReleaseNotes, writeUpdateState, type FetchReleaseResult } from "@plannotator/shared/update-check";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxUsedBefore, startInboxServer, type InboxServer } from "./inbox";
-import { deriveInboxUpdate } from "./inbox-updates";
+import { deriveInboxUpdate, failureDetails } from "./inbox-updates";
 import type { InstallerLaunch } from "./auto-update";
+import { UPDATE_STAGING_PREFIX, UPDATE_TLS_HINT } from "./update-log";
 
 const NOW = Date.now();
 const BODY = [
@@ -66,6 +67,12 @@ const latest = (tag = "v0.28.12"): (() => Promise<FetchReleaseResult>) => async 
   return { ok: true, release: { tag, publishedAt: "2026-10-11T00:00:00Z", body: BODY } };
 };
 
+/** A release by its tag, with notes (the What's new link's fetch). */
+const tagged = (): ((version: string) => Promise<FetchReleaseResult>) => async (version) => ({
+  ok: true,
+  release: { tag: `v${version}`, body: `## What's New in v${version}\n\nNotes for ${version}.\n\n## Install / Update\n` },
+});
+
 async function start(overrides: Parameters<typeof startInboxServer>[0] = {}): Promise<InboxServer> {
   const server = await startInboxServer({
     dataDir,
@@ -74,6 +81,7 @@ async function start(overrides: Parameters<typeof startInboxServer>[0] = {}): Pr
     healthTickMs: 40,
     updates: {
       fetchRelease: latest(),
+      fetchReleaseTag: tagged(),
       isManaged: () => true,
       listSessions: () => [],
       launchInstaller: (launch) => {
@@ -155,6 +163,91 @@ describe("the sidebar button", () => {
   });
 });
 
+describe("when the Inbox asks (the release page, minutes after a release)", () => {
+  const page = (versions: () => string): (() => Promise<FetchReleaseResult>) => async () => {
+    fetches++;
+    return { ok: true, release: { tag: versions() } };
+  };
+  const noApi = async (): Promise<FetchReleaseResult> => {
+    throw new Error("the API is never asked while the page answers");
+  };
+
+  test("every start asks, though the last answer is minutes old: a restart never waits out an old answer", async () => {
+    const minutesAgo = NOW - 5 * 60 * 1000;
+    writeUpdateState({ latestRelease: { tag: "0.28.10", fetchedAt: minutesAgo }, releaseCheck: { attemptedAt: minutesAgo } }, dataDir);
+    const server = await start({
+      updates: { fetchReleasePage: page(() => "0.28.12"), fetchRelease: noApi, fetchReleaseTag: tagged(), isManaged: () => true, listSessions: () => [] },
+    });
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "available", version: "0.28.12" });
+    await Bun.sleep(200);
+    expect(fetches).toBe(1);
+    expect(readUpdateState(dataDir).releaseCheck?.source).toBe("page");
+  });
+
+  test("a page load asks when the answer is over a minute old, never more often", async () => {
+    let clock = NOW;
+    let version = "0.28.10";
+    const server = await start({
+      updates: {
+        now: () => clock,
+        fetchReleasePage: page(() => version),
+        fetchRelease: noApi,
+        fetchReleaseTag: tagged(),
+        isManaged: () => true,
+        listSessions: () => [],
+      },
+    });
+    await waitFor(async () => fetches, (n) => n === 1);
+    expect(await health(server)).toBeNull();
+    version = "0.28.12";
+    // Reloads inside the minute: the cache answers.
+    for (let i = 0; i < 3; i++) await fetch(`http://127.0.0.1:${server.port}/`);
+    await Bun.sleep(150);
+    expect(fetches).toBe(1);
+    // A minute later a reload asks, and the button follows.
+    clock += 61_000;
+    await fetch(`http://127.0.0.1:${server.port}/`);
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "available", version: "0.28.12" });
+    expect(fetches).toBe(2);
+  });
+
+  test("the health tick asks every 10 minutes", async () => {
+    let clock = NOW;
+    let version = "0.28.10";
+    const server = await start({
+      updates: { now: () => clock, fetchReleasePage: page(() => version), fetchRelease: noApi, isManaged: () => true, listSessions: () => [] },
+    });
+    await waitFor(async () => fetches, (n) => n === 1);
+    version = "0.28.12";
+    clock += 9 * 60 * 1000;
+    await Bun.sleep(200);
+    expect(fetches).toBe(1);
+    clock += 60 * 1000;
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ version: "0.28.12" });
+    expect(fetches).toBe(2);
+  });
+
+  test("the redirect carries no notes: the dialog's summary is fetched by the release's tag", async () => {
+    const server = await start({
+      updates: { fetchReleasePage: page(() => "0.28.12"), fetchRelease: noApi, fetchReleaseTag: tagged(), isManaged: () => true, listSessions: () => [] },
+    });
+    await waitFor(() => health(server), (u) => u !== null);
+    const details = await waitFor(
+      async () => (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/update`)).json()) as { summary: string },
+      (d) => d.summary !== "",
+    );
+    expect(details.summary).toBe("Notes for 0.28.12.");
+  });
+
+  test("an API locked out by its rate limit never hides a release the page names", async () => {
+    writeUpdateState({ releaseCheck: { attemptedAt: NOW - 20 * 60 * 1000, apiAttemptedAt: NOW - 20 * 60 * 1000, apiRetryAt: NOW + 5 * 60 * 60 * 1000 } }, dataDir);
+    const server = await start({
+      updates: { fetchReleasePage: page(() => "0.28.12"), fetchRelease: noApi, isManaged: () => true, listSessions: () => [] },
+    });
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "available", version: "0.28.12" });
+  });
+});
+
 describe("Update now", () => {
   test("runs the install script once; a second press while it runs is refused", async () => {
     const server = await start();
@@ -199,6 +292,41 @@ describe("Update now", () => {
     const details = await (await fetch(`http://127.0.0.1:${person.port}/api/inbox/update`)).json();
     expect(details.failure).toMatchObject({ exit_code: 1 });
   });
+
+  // The failure dialog's way out depends on why the download failed: the
+  // last run's lines in update.log carry update-prepare's certificate hint.
+  test("a download refused at TLS says so in the failure details (75 only, the last run only)", async () => {
+    writeUpdateState(
+      { latestRelease: { tag: "0.28.12", fetchedAt: NOW }, pending: { version: "0.28.12", fromVersion: "0.28.10", startedAt: NOW, by: "person" } },
+      dataDir,
+    );
+    writeFileSync(join(dataDir, "update-result.json"), JSON.stringify({ version: "v0.28.12", exitCode: 75 }));
+    writeFileSync(
+      join(dataDir, "update.log"),
+      `update: could not download the update (install script: offline); nothing was changed\n[2026-10-26T00:00:00Z] update: install.sh exited 75\n` +
+        `update: could not download the update (install script: 127.0.0.1: unable to verify the first certificate); nothing was changed\n${UPDATE_TLS_HINT.untrusted}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`,
+    );
+    const server = await start();
+    expect(await waitFor(() => health(server), (u) => u !== null)).toMatchObject({ state: "failed" });
+    const details = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/update`)).json();
+    expect(details.failure).toMatchObject({ exit_code: 75, tls: "untrusted" });
+  });
+
+  test("an untrusted certificate puts the release page first on macOS only", () => {
+    const log = join(dataDir, "update.log");
+    writeFileSync(log, `${UPDATE_TLS_HINT.untrusted}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "darwin")).toEqual({ exit_code: 75, log, tls: "untrusted", release_first: true });
+    expect(failureDetails(75, log, "linux")).toEqual({ exit_code: 75, log, tls: "untrusted" });
+    writeFileSync(log, `${UPDATE_TLS_HINT.revoked}\n[2026-10-27T00:00:00Z] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "darwin")).toEqual({ exit_code: 75, log, tls: "revoked" });
+  });
+
+  test("a 75 whose run could not stage the update carries the plain reason, not a download failure", () => {
+    const log = join(dataDir, "update.log");
+    writeFileSync(log, `${UPDATE_STAGING_PREFIX}the temp folder /tmp is full (ENOSPC); nothing was changed\n[t] update: install.sh exited 75\n`);
+    expect(failureDetails(75, log, "linux")).toEqual({ exit_code: 75, log, prepare: "the temp folder /tmp is full (ENOSPC)" });
+    expect(failureDetails(1, log, "linux")).toEqual({ exit_code: 1, log });
+  });
 });
 
 describe("Remind me tomorrow, Settings, What's new", () => {
@@ -240,6 +368,175 @@ describe("Remind me tomorrow, Settings, What's new", () => {
     server.stop();
     const again = await start();
     expect((await (await fetch(`http://127.0.0.1:${again.port}/api/inbox/threads`)).json()).updated).toBeNull();
+  });
+
+  test("the releases skipped before an update are still listed after it, across restarts", async () => {
+    // The Inbox ran 0.28.7; this run is 0.28.10. The notes for 0.28.10 list 0.28.8 and 0.28.9.
+    writeUpdateState({ inboxVersion: "0.28.7" }, dataDir);
+    writeReleaseNotes(
+      {
+        version: "0.28.10",
+        notes: "Notes for 0.28.10.",
+        highlights: [
+          { version: "0.28.9", text: "Nine" },
+          { version: "0.28.8", text: "Eight" },
+          { version: "0.28.7", text: "Seven" },
+        ],
+      },
+      dataDir,
+    );
+    const whatsNew = async (server: InboxServer, version: string) =>
+      (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/whats-new?version=${version}`)).json()) as {
+        current: string;
+        since: string | null;
+        skipped: { version: string }[];
+      };
+    const first = await start();
+    const page = await whatsNew(first, "0.28.10");
+    expect(page.current).toBe("0.28.10");
+    expect(page.since).toBe("0.28.7");
+    expect(page.skipped.map((h) => h.version)).toEqual(["0.28.9", "0.28.8"]);
+    const state = readUpdateState(dataDir);
+    expect(state.inboxVersion).toBe("0.28.10");
+    expect(state.inboxPreviousVersion).toBe("0.28.7");
+    // A newer release still counts from the version this Inbox runs.
+    expect((await whatsNew(first, "0.28.12")).since).toBe("0.28.10");
+    first.stop();
+
+    // A restart on the same version keeps it.
+    const again = await start();
+    const kept = await whatsNew(again, "0.28.10");
+    expect(kept.since).toBe("0.28.7");
+    expect(kept.skipped.map((h) => h.version)).toEqual(["0.28.9", "0.28.8"]);
+    again.stop();
+
+    // A downgrade forgets it: there is no update to count from.
+    const older = await start({ version: "0.28.9" });
+    expect(readUpdateState(dataDir).inboxPreviousVersion).toBeUndefined();
+    expect((await whatsNew(older, "0.28.10")).since).toBe("0.28.9");
+  });
+});
+
+describe("What's new for a version installed outside the Inbox (no notes saved)", () => {
+  // A fake release API on loopback, reached the way the Inbox reaches GitHub
+  // (PLANNOTATOR_UPDATE_API_URL), so the default tag fetch runs for real.
+  let api: ReturnType<typeof Bun.serve>;
+  let tagRequests: string[];
+  let answer: (version: string) => Response | Promise<Response>;
+  let savedUrl: string | undefined;
+
+  beforeEach(() => {
+    tagRequests = [];
+    answer = (version) =>
+      Response.json({ tag_name: `v${version}`, body: `## What's New in v${version}\n\nWhat ${version} brings.\n\n## Install / Update\n` });
+    api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        const m = /\/releases\/tags\/v(\d+\.\d+\.\d+)$/.exec(path);
+        if (!m) return new Response("not found", { status: 404 });
+        tagRequests.push(m[1]!);
+        return answer(m[1]!);
+      },
+    });
+    savedUrl = process.env.PLANNOTATOR_UPDATE_API_URL;
+    process.env.PLANNOTATOR_UPDATE_API_URL = `http://127.0.0.1:${api.port}/releases/latest`;
+    // The Inbox ran 0.28.9 before; this run is 0.28.10, installed by the script run by hand.
+    writeUpdateState({ inboxVersion: "0.28.9" }, dataDir);
+  });
+
+  afterEach(() => {
+    api.stop(true);
+    if (savedUrl === undefined) delete process.env.PLANNOTATOR_UPDATE_API_URL;
+    else process.env.PLANNOTATOR_UPDATE_API_URL = savedUrl;
+  });
+
+  /** The real tag fetch (no fetchReleaseTag stub). */
+  const startReal = (extra: { whatsNewWaitMs?: number } = {}) =>
+    start({
+      updates: { fetchRelease: latest(), isManaged: () => true, listSessions: () => [], launchInstaller: () => {}, ...extra },
+    });
+  const listUpdated = async (server: InboxServer) =>
+    ((await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/threads`)).json()) as { updated: string | null }).updated;
+  const whatsNew = (server: InboxServer, version: string) =>
+    fetch(`http://127.0.0.1:${server.port}/api/inbox/whats-new?version=${version}`);
+
+  test("the link shows, and the page gets the notes fetched by the release's tag, asked once", async () => {
+    const server = await startReal();
+    expect(await listUpdated(server)).toBe("0.28.10");
+    const res = await whatsNew(server, "0.28.10");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ version: "0.28.10", current: "0.28.10", notes: "What 0.28.10 brings." });
+    expect((await whatsNew(server, "0.28.10")).status).toBe(200);
+    expect(tagRequests).toEqual(["0.28.10"]);
+    expect(await listUpdated(server)).toBe("0.28.10");
+  });
+
+  test("update checks off and no notes saved: no link, no request", async () => {
+    process.env.PLANNOTATOR_UPDATE_CHECK = "0";
+    const server = await startReal();
+    expect(await listUpdated(server)).toBeNull();
+    const res = await whatsNew(server, "0.28.10");
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe("notes_not_found");
+    await Bun.sleep(150); // a few health ticks
+    expect(tagRequests).toEqual([]);
+  });
+
+  test("update checks off but the notes are saved: the link shows", async () => {
+    process.env.PLANNOTATOR_UPDATE_CHECK = "0";
+    writeReleaseNotes({ version: "0.28.10", notes: "Saved before.", highlights: [] }, dataDir);
+    const server = await startReal();
+    expect(await listUpdated(server)).toBe("0.28.10");
+    expect((await (await whatsNew(server, "0.28.10")).json()).notes).toBe("Saved before.");
+    expect(tagRequests).toEqual([]);
+  });
+
+  test("the fetch fails: the link goes away and the page is not asked to wait for nothing", async () => {
+    answer = () => new Response("rate limited", { status: 403 });
+    const server = await startReal();
+    expect(await waitFor(() => listUpdated(server), (v) => v === null)).toBeNull();
+    expect((await whatsNew(server, "0.28.10")).status).toBe(404);
+    // One attempt, then the notes' 6 h back-off: the tick and the route ask no more.
+    await Bun.sleep(150);
+    expect(tagRequests).toEqual(["0.28.10"]);
+  });
+
+  test("a slow answer: the route says notes_loading, and the next ask gets the notes", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    answer = async (version) => {
+      await gate;
+      return Response.json({ tag_name: `v${version}`, body: `## What's New in v${version}\n\nLate notes.\n` });
+    };
+    const server = await startReal({ whatsNewWaitMs: 50 });
+    const first = await whatsNew(server, "0.28.10");
+    expect(first.status).toBe(503);
+    expect(first.headers.get("retry-after")).toBe("1");
+    expect((await first.json()).code).toBe("notes_loading");
+    release();
+    const later = await waitFor(
+      async () => (await whatsNew(server, "0.28.10")).status,
+      (status) => status === 200,
+    );
+    expect(later).toBe(200);
+    expect(tagRequests).toEqual(["0.28.10"]);
+  });
+
+  test("notes saved without a What's New part (before the release body was edited) are fetched again", async () => {
+    writeReleaseNotes({ version: "0.28.10", notes: "", highlights: [] }, dataDir);
+    const server = await startReal();
+    expect(await listUpdated(server)).toBe("0.28.10");
+    expect((await (await whatsNew(server, "0.28.10")).json()).notes).toBe("What 0.28.10 brings.");
+    expect(tagRequests).toEqual(["0.28.10"]);
+  });
+
+  test("a version this Inbox has no reason to show is never fetched", async () => {
+    const server = await startReal();
+    expect((await whatsNew(server, "0.27.1")).status).toBe(404);
+    await whatsNew(server, "0.28.10");
+    expect(tagRequests).toEqual(["0.28.10"]);
   });
 });
 

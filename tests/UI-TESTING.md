@@ -514,7 +514,8 @@ not hand the turn to an earlier dialog.
 ## Ask This Session Announcement Manual Checklist
 
 Not CI. The gate is one cookie, `plannotator-announce-ask-session-seen`. Seed
-`plannotator-announce-tui-herdr-seen=1` (and the other first-run keys) so the chain reaches it.
+`plannotator-announce-tui-herdr-seen=1` and `plannotator-announce-inbox-seen=1` (and the other
+first-run keys) so the chain reaches it.
 
 1. **Who sees it.** Open a review from Claude Code (`/plannotator-review`), Pi or OpenCode 2 and
    don't touch anything: the announcement opens within a few seconds, its headline names that
@@ -570,11 +571,13 @@ play. Run `plannotator annotate <site>/index.html`.
 7. **The chrome survives navigation.** Show the tools (the eye), then follow two HTML links.
    The tools stay shown and the sidebar keeps whatever state you left it in — neither is reset
    to the session defaults mid-session.
-8. **Armed mode still annotates links.** Re-arm with the pen (or `Mod+Shift+A`) and click a
-   link: the comment composer opens on the `<a>` element and no navigation happens.
-9. **Live app sessions are untouched.** Run `plannotator annotate http://localhost:<dev port>`
+8. **Armed: a click follows, Cmd/Ctrl-click pins.** Re-arm with the pen (or `Mod+Shift+A`) and
+   click a link: it follows. Cmd-click (Ctrl-click off macOS) the same link: the comment composer
+   opens on the `<a>` element and no navigation happens. On a phone: a tap follows, a
+   press-and-hold (half a second) opens the composer, and lifting the finger follows nothing.
+9. **Live app sessions follow the same rule.** Run `plannotator annotate http://localhost:<dev port>`
    against any app and click its own in-app links, armed and in Interact: they navigate the app
-   through the proxy exactly as before.
+   through the proxy. Armed, Cmd/Ctrl-click (press-and-hold on a phone) pins the link instead.
 
 Known limitation to expect in step 2: a document in a subfolder loads assets that sit below it,
 but `../style.css` and `../img.png` do not resolve (`/api/html-assets` mints one token per HTML
@@ -624,7 +627,7 @@ If you're stuck:
 
 1. Check this guide again
 2. Review existing code for patterns
-3. Look at `CLAUDE.md` for architecture details
+3. Look at `AGENTS.md` (the map) and the guides in `docs/agent-guides/` for architecture details
 4. Check `tests/README.md` for test script details
 5. Open an issue on GitHub with:
    - What you're trying to do

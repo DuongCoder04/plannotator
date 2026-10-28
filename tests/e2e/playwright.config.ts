@@ -1,18 +1,29 @@
 /**
- * The Inbox window's browser proofs: a real Chromium against the compiled
- * binary (`plannotator inbox`), under a temp PLANNOTATOR_DATA_DIR: the window
- * (inbox.spec.ts), notifications, decisions (inbox-decisions.spec.ts) and
- * guided reviews (inbox-guides.spec.ts), New message
- * (inbox-new-message.spec.ts), the question sound and its one-time dialog (inbox-sound.spec.ts), stepping through a thread's attachments (inbox-attachment-stepping.spec.ts), replying when the asking session has ended (inbox-ended-session.spec.ts), the order inside a section (inbox-order.spec.ts), replaced questions (inbox-replaced.spec.ts), folding a thread (inbox-thread-folding.spec.ts), phones (inbox-phones.spec.ts), the sidebar (inbox-sidebar.spec.ts), the list column's resize edge (inbox-list-resize.spec.ts), images in messages (inbox-message-images.spec.ts), links to attached files (inbox-message-links.spec.ts), Over your tailnet (inbox-tailscale.spec.ts), the update control (inbox-updates.spec.ts), Mark read and the Send that skips (inbox-mark-read.spec.ts), archived threads in Settings (inbox-archived.spec.ts), the row you open staying put and the settle (inbox-open-stays-put.spec.ts), a new message in the thread you have open (inbox-seen-on-sight.spec.ts), the agents on this computer (inbox-agents.spec.ts), the annotation toolstrip painting above the document in the Inbox and annotate (toolstrip-stacking.spec.ts), the window on a phone in WebKit and Chromium (inbox-mobile.spec.ts), Settings in sections (inbox-settings.spec.ts), the worst-case data at every width (inbox-worst-case.spec.ts), and the
- * surface a phone hosts, in WebKit (surface.spec.ts). Build the binary
- * first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
+ * The browser proofs: headless Playwright against the Inbox window, annotate,
+ * plan review, code review and the VS Code Guides webview, mostly on the
+ * compiled binary under a temp PLANNOTATOR_DATA_DIR. Build the binary first
+ * (see inbox.spec.ts), then `bun run test:e2e:inbox`. One spec:
+ * `bunx playwright test -c tests/e2e/playwright.config.ts <name>.spec.ts`.
+ *
+ * Each spec says what it proves in its own header comment. A new
+ * `tests/e2e/*.spec.ts` runs in the `chromium` project with no edit to this
+ * file; name it `*-webkit.spec.ts` to run it in the `webkit` project only.
  */
 import { defineConfig } from '@playwright/test';
 
+/** Specs that their own config runs, never this one: the thread parity harness (inbox-thread-parity.config.ts). */
+const OWN_CONFIG = ['inbox-thread-parity.spec.ts'];
+/** Specs that run in the `webkit` project only. */
+const WEBKIT_ONLY = '*-webkit.spec.ts';
+
 export default defineConfig({
   testDir: '.',
-  testMatch: ['inbox.spec.ts', 'notifications.spec.ts', 'inbox-decisions.spec.ts', 'inbox-attachments.spec.ts', 'inbox-attachments-kinds.spec.ts', 'inbox-attachment-stepping.spec.ts', 'inbox-guides.spec.ts', 'inbox-new-message.spec.ts', 'inbox-ended-session.spec.ts', 'inbox-order.spec.ts', 'inbox-replaced.spec.ts', 'inbox-thread-folding.spec.ts', 'inbox-phones.spec.ts', 'inbox-sidebar.spec.ts', 'inbox-list-resize.spec.ts', 'inbox-message-images.spec.ts', 'inbox-message-links.spec.ts', 'inbox-tailscale.spec.ts', 'inbox-updates.spec.ts', 'inbox-sound.spec.ts', 'inbox-mark-read.spec.ts', 'inbox-archived.spec.ts', 'inbox-open-stays-put.spec.ts', 'inbox-seen-on-sight.spec.ts', 'inbox-mobile.spec.ts', 'toolstrip-stacking.spec.ts', 'inbox-agents.spec.ts', 'inbox-settings.spec.ts', 'inbox-worst-case.spec.ts', 'surface.spec.ts'],
+  testMatch: '*.spec.ts',
+  testIgnore: OWN_CONFIG,
   outputDir: '../../.local/test-results',
+  // A stand-in first on PATH for every agent CLI the Inbox runs itself, and a tripwire that fails the run on a call past --version (tests/helpers/agent-cli-guard.ts).
+  globalSetup: './global-setup.ts',
+  globalTeardown: './global-teardown.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,
@@ -25,4 +36,10 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
   },
+  projects: [
+    // Every spec but the WebKit-only ones, in Chromium. A project's testIgnore replaces the top-level one, so it repeats OWN_CONFIG.
+    { name: 'chromium', testIgnore: [...OWN_CONFIG, WEBKIT_ONLY] },
+    // The WebKit-only specs, and the toolstrip's right-to-left check in WebKit too. No Chromium flags here: WebKit refuses them.
+    { name: 'webkit', testMatch: [WEBKIT_ONLY, 'toolstrip-rtl.spec.ts', 'inbox-inline-html.spec.ts'], use: { browserName: 'webkit', launchOptions: { args: [] } } },
+  ],
 });

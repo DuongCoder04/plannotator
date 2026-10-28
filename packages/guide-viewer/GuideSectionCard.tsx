@@ -1,8 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { GuideSection } from '@plannotator/core/guide';
+import { fileKind, groupByFileKind, type FileKind } from '@plannotator/core/file-kind';
 import type { DiffFile } from './types';
+import { FILE_KIND_LABELS, FileKindIcon } from './FileKindIcon';
 import { renderMarkdownProse } from './renderMarkdownProse';
+import type { GuideLinkRenderer } from './renderInlineMarkdown';
 import { useGuideHost } from './host';
 import { GuideFileCard } from './GuideFileCard';
 
@@ -61,6 +64,96 @@ function FileChip({
   );
 }
 
+/** "Tests 2" / "Generated 1" above a kind's chips, shown only when a chapter mixes kinds. */
+function KindSubhead({ kind, count }: { kind: FileKind; count: number }) {
+  return (
+    <div data-guide-kind-subhead={kind} className="flex items-center gap-1.5 px-0.5 pt-1 text-[10.5px] font-medium text-muted-foreground">
+      <FileKindIcon kind={kind} />
+      <span>{FILE_KIND_LABELS[kind]}</span>
+      <span className="tabular-nums text-muted-foreground/60">{count}</span>
+    </div>
+  );
+}
+
+/** The card's own border colour (`border-border/50`): the tab's outline continues it. */
+const CARD_BORDER = 'color-mix(in oklab, var(--border) 50%, transparent)';
+/** The open card's background (`bg-card`). */
+const CARD_FILL = 'var(--card)';
+/**
+ * The folded card's background (`bg-muted/10`) made opaque over the guide's
+ * ground, so the tab's fill hides the card's top border under it.
+ */
+const FOLDED_CARD_FILL = 'color-mix(in oklab, var(--muted) 10%, var(--background))';
+/** Space around the control inside the tab, and the tab's corner radii (the card's rounded-lg). */
+const TAB_PAD_X = 6;
+const TAB_PAD_Y = 4;
+const TAB_RADIUS = 8;
+/** The inverse radius where the tab's left side meets the card's top edge. */
+const TAB_SHOULDER = 10;
+
+/**
+ * A host's control in a small tab rising out of the card's top edge at its
+ * top right (GuideHostValue.renderSectionTab): the card's own background and
+ * border, only as wide as the control, rounded top corners, and a curved
+ * shoulder into the card's top edge. One SVG path draws it: the fill covers
+ * the card's top border under the tab, a 1px stroke on half-pixel coordinates
+ * continues the card's border, so the outline is one line with no seam. It is
+ * part of the card: it scrolls with it.
+ */
+function SectionTab({ fill, children }: { fill: string; children: React.ReactNode }) {
+  const controlRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = controlRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = Math.ceil(el.offsetWidth);
+      const h = Math.ceil(el.offsetHeight);
+      setSize((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const h = size?.h ?? 0;
+  const w = size?.w ?? 0;
+  const T = h + TAB_PAD_Y * 2; // the tab's height above the card's top edge
+  const s = TAB_SHOULDER;
+  const W = s + w + TAB_PAD_X * 2;
+  const r = TAB_RADIUS;
+  // The card starts right under the row: its top border is the pixel row [T, T+1].
+  const xl = s - 0.5;
+  const xr = W - 0.5;
+  const y0 = 0.5;
+  const yb = T + 0.5;
+  const outline = `M 0 ${yb} A ${s - 0.5} ${s - 0.5} 0 0 0 ${xl} ${yb - (s - 0.5)} L ${xl} ${y0 + r} A ${r} ${r} 0 0 1 ${xl + r} ${y0} L ${xr - r} ${y0} A ${r} ${r} 0 0 1 ${xr} ${y0 + r} L ${xr} ${T + 1}`;
+  return (
+    <div data-guide-section-tab="" style={{ position: 'relative', zIndex: 1, height: T, pointerEvents: 'none' }}>
+      {size && (
+        <svg
+          aria-hidden="true"
+          width={W}
+          height={T + 1}
+          viewBox={`0 0 ${W} ${T + 1}`}
+          style={{ position: 'absolute', right: 0, top: 0, overflow: 'visible' }}
+        >
+          <path d={`${outline} L ${W} ${T + 1} L 0 ${T + 1} Z`} style={{ fill }} />
+          <path d={outline} style={{ fill: 'none', stroke: CARD_BORDER, strokeWidth: 1 }} />
+        </svg>
+      )}
+      <div
+        ref={controlRef}
+        style={{ position: 'absolute', right: TAB_PAD_X, top: TAB_PAD_Y, pointerEvents: 'auto', visibility: size ? undefined : 'hidden' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 interface GuideSectionCardProps {
   section: GuideSection;
   files: DiffFile[];
@@ -75,6 +168,8 @@ interface GuideSectionCardProps {
   revealTarget: { filePath: string; token: number } | null;
   onActivate: (filePath: string) => void;
   onRequestReveal: (filePath: string) => void;
+  /** Renders guide links (`chapter:`, `code:`) in the chapter overview. */
+  renderLink?: GuideLinkRenderer;
 }
 
 /**
@@ -95,6 +190,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
   revealTarget,
   onActivate,
   onRequestReveal,
+  renderLink,
 }) => {
   const [collapsedOverride, setCollapsedOverride] = useState<boolean | null>(null);
   const host = useGuideHost();
@@ -110,6 +206,18 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
     }
     return summaries;
   }, [section.diffs]);
+
+  // Within the chapter, files come together by kind (code, tests, generated),
+  // keeping the author's order inside each kind. Chips and diff cards share it.
+  const chipGroups = useMemo(
+    () => groupByFileKind(section.diffs, (ref) => ref.file, host.generatedFiles),
+    [section.diffs, host.generatedFiles],
+  );
+  const orderedFiles = useMemo(
+    () => groupByFileKind(files, (file) => file.path, host.generatedFiles).flatMap((group) => group.items),
+    [files, host.generatedFiles],
+  );
+  const showKinds = chipGroups.length > 1;
 
   const targetBelongsHere = revealTarget && section.diffs.some((ref) => ref.file === revealTarget.filePath)
     ? revealTarget
@@ -131,9 +239,24 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
     onToggleReviewed?.();
   };
 
+  // A host's control in a tab on this card (the Inbox's diff layout, on the first card); nothing otherwise.
+  const tab = host.renderSectionTab?.(index) ?? null;
+  const tabbed = tab !== null && tab !== undefined && tab !== false;
+  const withTab = (card: React.ReactNode, fill: string) =>
+    tabbed ? (
+      <div data-guide-section-tabbed="">
+        <SectionTab fill={fill}>{tab}</SectionTab>
+        {card}
+      </div>
+    ) : (
+      card
+    );
+  // Squared under the tab, which carries the corner; a jump to the card keeps the tab in view.
+  const tabbedCardStyle: React.CSSProperties | undefined = tabbed ? { borderTopRightRadius: 0, scrollMarginTop: 56 } : undefined;
+
   if (isCollapsed) {
-    return (
-      <div ref={cardRef} className="flex w-full items-center gap-3 rounded-lg border border-border/50 bg-muted/10 px-4 py-3">
+    return withTab(
+      <div ref={cardRef} data-guide-section={index} style={tabbedCardStyle} className="flex w-full items-center gap-3 rounded-lg border border-border/50 bg-muted/10 px-4 py-3">
         {showReviewed && (
           <button
             type="button"
@@ -158,12 +281,13 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
           {position && <span className="flex-shrink-0 font-mono text-[10px] text-muted-foreground/40">{position}</span>}
           <ChevronDown className="flex-shrink-0 -rotate-90 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground" size={13} />
         </button>
-      </div>
+      </div>,
+      FOLDED_CARD_FILL,
     );
   }
 
-  return (
-    <div ref={cardRef} className="scroll-mt-4 overflow-clip rounded-lg border border-border/50 bg-card">
+  return withTab(
+    <div ref={cardRef} data-guide-section={index} style={tabbedCardStyle} className="scroll-mt-4 overflow-clip rounded-lg border border-border/50 bg-card">
       {/* Stacked below md; a proportional chapter column on tablets; the fixed 440px column from lg up (desktop unchanged). */}
       <div className="md:grid md:grid-cols-[minmax(260px,36%)_minmax(0,1fr)] lg:grid-cols-[440px_minmax(0,1fr)]">
         <div className="border-b border-border/40 md:border-b-0 md:border-r">
@@ -200,20 +324,25 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
             )}
 
             {section.overview && (
-              <div className="mt-3.5 space-y-2.5 md:flex-none">{renderMarkdownProse(section.overview, { tone: 'muted' })}</div>
+              <div className="mt-3.5 space-y-2.5 md:flex-none">{renderMarkdownProse(section.overview, { tone: 'muted', renderLink })}</div>
             )}
 
             {section.diffs.length > 0 && (
               <div className="mt-5 space-y-1.5 md:min-h-[84px] md:overflow-y-auto md:overflow-x-hidden">
-                {section.diffs.map((ref) => (
-                  <FileChip
-                    key={ref.file}
-                    filePath={ref.file}
-                    summary={ref.summary}
-                    file={filesByPath.get(ref.file)}
-                    active={focusedFile === ref.file}
-                    onClick={() => onRequestReveal(ref.file)}
-                  />
+                {chipGroups.map((group) => (
+                  <React.Fragment key={group.kind}>
+                    {showKinds && group.kind !== 'code' && <KindSubhead kind={group.kind} count={group.items.length} />}
+                    {group.items.map((ref) => (
+                      <FileChip
+                        key={ref.file}
+                        filePath={ref.file}
+                        summary={ref.summary}
+                        file={filesByPath.get(ref.file)}
+                        active={focusedFile === ref.file}
+                        onClick={() => onRequestReveal(ref.file)}
+                      />
+                    ))}
+                  </React.Fragment>
                 ))}
               </div>
             )}
@@ -221,12 +350,13 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
         </div>
 
         <div className="min-w-0 space-y-4 bg-muted/[0.07] px-1.5 py-3 md:px-4 md:py-4">
-          {files.length > 0 ? (
-            files.map((file) => (
+          {orderedFiles.length > 0 ? (
+            orderedFiles.map((file) => (
               <GuideFileCard
                 key={file.path}
                 file={file}
                 summary={summaryByPath.get(file.path)}
+                kind={fileKind(file.path, host.generatedFiles)}
                 focused={focusedFile === file.path}
                 revealTarget={targetBelongsHere}
                 onActivate={onActivate}
@@ -242,6 +372,7 @@ export const GuideSectionCard: React.FC<GuideSectionCardProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    CARD_FILL,
   );
 };

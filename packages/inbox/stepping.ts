@@ -6,67 +6,78 @@
  */
 
 import { inboxAttachmentKindLabel, type InboxAttachmentState, type InboxMessageWire } from '@plannotator/core/inbox-types';
-import { agentName, whenTime } from './format';
+import { threadArtifacts, type Artifact } from './artifacts';
+import { hasCommandModifier, inOverlay, isComposingKey, isEditableTarget, isRepeatKey } from './shortcuts/guards';
 
 /** One file in the thread's sequence, with the message it came in. */
 export interface AttachmentStep {
   attachment: InboxAttachmentState;
-  /** "Claude Code": who sent the message. */
+  /** "Claude Code": who sent the message ("You" for the person's own). */
   sender: string;
   /** "11:06 AM": when the message was sent. */
   sentAt: string;
   messageId: string;
+  /** An image the message's text shows (`inline_images`), not an attached file. */
+  inline: boolean;
+  /** The same file's other record (attached as well as shown in the text): opening it is this step. */
+  alsoIds?: readonly string[];
 }
 
 /**
- * Every attachment of the thread in thread order: message by message, and in
- * each message in the order of its tiles. A file whose message is not in the
- * thread (it should not happen) goes last, so the count always matches.
+ * Everything the thread shows that opens in the viewer, in reading order
+ * (approval "inbox-image-viewer", 2026-10-15): message by message, the images
+ * its text shows in text order, then its attached files in the order of its
+ * tiles. It is the thread's artifact list (artifacts.ts, the same one the
+ * Artifacts view shows) without the guided reviews, which keep their reader:
+ * the two can never disagree about a file.
  */
-export function attachmentSequence(messages: readonly InboxMessageWire[], attachments: readonly InboxAttachmentState[]): AttachmentStep[] {
+export function attachmentSequence(
+  messages: readonly InboxMessageWire[],
+  attachments: readonly InboxAttachmentState[],
+  inlineImages: readonly InboxAttachmentState[] = [],
+): AttachmentStep[] {
+  return stepsOf(threadArtifacts(messages, attachments, inlineImages));
+}
+
+/** The viewer's steps out of a thread's artifact list: its files, in thread order. */
+export function stepsOf(artifacts: readonly Artifact[]): AttachmentStep[] {
   const steps: AttachmentStep[] = [];
-  const placed = new Set<string>();
-  for (const message of messages) {
-    for (const attachment of attachments) {
-      if (attachment.message_id !== message.id || placed.has(attachment.id)) continue;
-      placed.add(attachment.id);
-      steps.push({ attachment, messageId: message.id, sender: agentName(message.author), sentAt: whenTime(message.created_at) });
-    }
-  }
-  for (const attachment of attachments) {
-    if (placed.has(attachment.id)) continue;
-    steps.push({ attachment, messageId: attachment.message_id, sender: 'the agent', sentAt: whenTime(attachment.sent_at) });
+  for (const artifact of artifacts) {
+    if (artifact.type !== 'file') continue;
+    steps.push({ attachment: artifact.attachment, sender: artifact.sender, sentAt: artifact.sentAt, messageId: artifact.messageId, inline: artifact.inline, ...(artifact.alsoIds.length > 0 ? { alsoIds: artifact.alsoIds } : {}) });
   }
   return steps;
 }
 
-export const LAST_NOTE = 'Last attachment in this thread';
-export const FIRST_NOTE = 'First attachment in this thread';
+/** A file's place in the steps, by its own id or the twin record it was folded into; -1 when it is not there. */
+export function stepIndexOf(steps: readonly AttachmentStep[], attachmentId: string): number {
+  return steps.findIndex((s) => s.attachment.id === attachmentId || (s.alsoIds?.includes(attachmentId) ?? false));
+}
 
-/** "4 of 5, checkout-mobile.png, PNG image, from Claude's 11:06 AM message": what a step says to a screen reader. */
+export const LAST_NOTE = 'Last file in this thread';
+export const FIRST_NOTE = 'First file in this thread';
+
+/**
+ * "3 of 9, checkout-c-drawer.png, PNG image, in Claude Code's 11:22 AM
+ * message" (an image in the text), "… attached to Claude's 11:31 AM message"
+ * (an attached file): what a step says to a screen reader.
+ */
 export function stepAnnouncement(steps: readonly AttachmentStep[], index: number): string {
   const step = steps[index];
   if (!step) return '';
   const { attachment } = step;
   const kind = inboxAttachmentKindLabel(attachment.kind, attachment.name, attachment.media_type);
-  const changed = attachment.changed_since_sent ? ', changed since it was sent' : '';
-  const from = step.sentAt ? `, from ${step.sender}'s ${step.sentAt} message` : `, from ${step.sender}`;
+  const changed = attachment.changed_since_sent ? (attachment.captured === 'on_open' ? ', changed since you first opened it' : ', changed since it was sent') : '';
+  const where = step.inline ? 'in' : 'attached to';
+  const whose = step.sender === 'You' ? 'your' : `${step.sender}'s`;
+  const from = step.sentAt ? `, ${where} ${whose} ${step.sentAt} message` : `, ${where} ${whose} message`;
   return `${index + 1} of ${steps.length}, ${attachment.name}, ${kind}${changed}${from}`;
 }
 
-/** Where focus is a place to type: `[` `]` and the arrows are text there. */
-export function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const el = target as HTMLElement;
-  if (el.isContentEditable) return true;
-  if (el.closest('[contenteditable]:not([contenteditable="false"])')) return true;
-  const tag = el.tagName;
-  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  if (tag === 'INPUT') return !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file', 'image'].includes((el as HTMLInputElement).type);
-  return false;
-}
+/** Where focus is a place to type: the shared rule (shortcuts/guards.ts), kept here for the files that import it from stepping. */
+export { isEditableTarget };
 
-/** Elements that use the arrow keys themselves (the diagram canvas pans, a zoomed image scrolls, menus move). */
+/** Elements that use the arrow keys themselves (the diagram canvas pans, a focused video seeks, menus move). */
 const ARROW_OWNERS =
   '[data-claims-arrows="true"], [data-diagram-canvas], [role="menu"], [role="menubar"], [role="listbox"], [role="tablist"], [role="radiogroup"], [role="slider"], [role="tree"], [role="grid"]';
 
@@ -106,13 +117,13 @@ export function stepKeyIntent(event: KeyboardEvent, context: StepKeyContext): 1 
   const bracket = key === ']' || key === '[';
   const arrow = key === 'ArrowRight' || key === 'ArrowLeft';
   if (!bracket && !arrow) return null;
-  if (event.isComposing || event.repeat) return null;
-  if (event.metaKey || event.ctrlKey || event.altKey) return null;
+  if (isComposingKey(event) || isRepeatKey(event)) return null;
+  if (hasCommandModifier(event)) return null;
   if (context.blocked) return null;
   const target = event.target instanceof Element ? event.target : null;
   if (isEditableTarget(target)) return null;
   // A dialog or popover over the window (the image annotator, a composer) keeps its keys.
-  if (target?.closest('[role="dialog"], [role="alertdialog"], [data-popover-layer], [data-pn-image-annotator-stage]')) return null;
+  if (inOverlay(target)) return null;
   if (typeof document !== 'undefined' && document.querySelector('[data-pn-image-annotator-stage]')) return null;
   if (!context.full) {
     const pane = context.pane;

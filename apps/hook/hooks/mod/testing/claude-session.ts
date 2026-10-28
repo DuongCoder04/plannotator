@@ -33,6 +33,10 @@ export interface RealHostOptions {
 export interface RealHost extends Host {
   /** What `$.prompt.submit` was asked to send, in order. */
   submits: string[]
+  /** User rows `$.session.append` put into the conversation (Send now), in order. */
+  appended: string[]
+  /** Notices `$.session.append` put into the transcript, in order. */
+  notices: string[]
   toasts: string[]
   logs: string[]
   aborted: string[]
@@ -40,17 +44,25 @@ export interface RealHost extends Host {
   timers: Set<ReturnType<typeof setInterval>>
   /** Set by the session: `$.prompt.submit`'s turn. */
   onSubmit: (text: string) => Promise<void>
+  /** Called as `$.session.append` stores a user row (a test ends the turn here). */
+  onAppend: (text: string) => Promise<void>
+  /** Called before every `$.process.run` (a test acts at a given step, e.g. the delivery claim). */
+  onRun: (argv: readonly string[]) => void
 }
 
 export function realHost(options: RealHostOptions): RealHost {
   const host: RealHost = {
     submits: [],
+    appended: [],
+    notices: [],
     toasts: [],
     logs: [],
     aborted: [],
     fetches: [],
     timers: new Set(),
     onSubmit: async () => undefined,
+    onAppend: async () => undefined,
+    onRun: () => undefined,
     now: async () => Date.now(),
     sleep: (ms, signal) =>
       new Promise((resolve, reject) => {
@@ -79,6 +91,7 @@ export function realHost(options: RealHostOptions): RealHost {
       }
     },
     run: async (argv, init) => {
+      host.onRun(argv)
       const proc = Bun.spawn([...argv], {
         cwd: init?.cwd ?? options.cwd,
         env: { ...options.env, ...init?.env },
@@ -106,6 +119,14 @@ export function realHost(options: RealHostOptions): RealHost {
       host.submits.push(text)
       await host.onSubmit(text)
     },
+    appendUserRow: async (text) => {
+      host.appended.push(text)
+      await host.onAppend(text)
+    },
+    sessionAppendAvailable: async () => true,
+    appendNotice: async (text) => {
+      host.notices.push(text)
+    },
     suggest: async () => undefined,
     status: () => undefined,
     log: (text) => host.logs.push(text),
@@ -125,6 +146,13 @@ export function realHost(options: RealHostOptions): RealHost {
   }
   return host
 }
+
+/**
+ * The name the engine gives the registered `plannotator_inbox` tool
+ * (`$.tool.register` answers `mcp__<server>__<name>`; the plugin's server is
+ * `plannotator`). register.ts hands it to the mod as `inboxToolName`.
+ */
+export const CLAUDE_INBOX_TOOL_NAME = 'mcp__plannotator__plannotator_inbox'
 
 /** One Claude Code process on one session, wired to the mod as register.ts wires it. */
 export class ClaudeSession {
@@ -155,7 +183,7 @@ export class ClaudeSession {
       sessionId: options.sessionId,
       dataDir: options.dataDir,
       interactive: true,
-      ...(inboxTools ? { inboxTools, cwd: async () => options.cwd } : {}),
+      ...(inboxTools ? { inboxTools, inboxToolName: CLAUDE_INBOX_TOOL_NAME, cwd: async () => options.cwd } : {}),
     })
     return new ClaudeSession(host, mod, inboxTools, options.dataDir, options.cwd)
   }
@@ -171,7 +199,7 @@ export class ClaudeSession {
       sessionId: newSessionId,
       dataDir: this.dataDir,
       interactive: true,
-      ...(this.inboxTools ? { inboxTools: this.inboxTools, cwd: async () => this.cwd } : {}),
+      ...(this.inboxTools ? { inboxTools: this.inboxTools, inboxToolName: CLAUDE_INBOX_TOOL_NAME, cwd: async () => this.cwd } : {}),
     })
   }
 
@@ -196,6 +224,11 @@ export class ClaudeSession {
     return id
   }
 
+  /** A main-loop model request of the running turn goes out (`turn.step`). */
+  step(): void {
+    if (this.running) this.mod.onMainStep(this.running.id)
+  }
+
   endTurn(answer = 'Done.'): void {
     const turn = this.running
     if (!turn) return
@@ -210,6 +243,18 @@ export class ClaudeSession {
     this.mod.onPromptSubmitting(ref)
     this.mod.onPromptEntered({ ...ref, text })
     if (!this.running) await this.startTurn(text)
+  }
+
+  /**
+   * Another plugin's `$.prompt.submit` (a connector delivering its own message), at idle: our
+   * prompt.submit hook sees it bare with origin `plugin`, then its turn starts under that plugin's frame.
+   */
+  async otherPluginPrompt(name: string, text: string): Promise<string> {
+    if (this.running) throw new Error('another plugin prompts at idle')
+    const ref = { fromUs: false, originKind: 'plugin' }
+    this.mod.onPromptSubmitting(ref)
+    this.mod.onPromptEntered({ ...ref, text })
+    return this.startTurn(`The ${name} plugin sent a message: ${text}`)
   }
 
   /** `$.prompt.submit`: waits for idle, then its turn starts under the plugin's frame. */

@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { inboxAttachmentKindLabel, isInboxAnnotatableKind, readInboxAttachmentKind, type InboxAttachmentState } from '@plannotator/core/inbox-types';
-import { attachmentDownloadUrl, attachmentImageUrl, imageFitsWithin, readableVersion, WIDE_IMAGE_RATIO } from '../attachments';
+import { inboxAttachmentKindLabel, inboxVideoMeta, isInboxAnnotatableKind, readInboxAttachmentKind, type InboxAttachmentState } from '@plannotator/core/inbox-types';
+import { imageFitsWithin, readableVersion, WIDE_IMAGE_RATIO } from '../attachments';
+import { useInboxFileSource } from '../fileSource';
 import { formatBytes, plural, shortTime, whenTime } from '../format';
 import { Icon, type IconName } from '../icons';
 import { FileName } from './FileName';
+import { OpenInTileMenu, type OpenInSurface } from './OpenIn';
+import { Tip } from './Tip';
 
 /** The icon a tile (and the stepper's list) shows for a file of this kind. */
 export function iconOf(attachment: InboxAttachmentState): IconName {
@@ -16,6 +19,8 @@ export function iconOf(attachment: InboxAttachmentState): IconName {
       return 'diagram';
     case 'image':
       return 'photo';
+    case 'video':
+      return 'film';
     case 'file':
       return 'cube';
     default:
@@ -23,10 +28,14 @@ export function iconOf(attachment: InboxAttachmentState): IconName {
   }
 }
 
-/** "1280 × 800, 79 KB" for an image; "PDF, 2.3 MB" otherwise. */
-function sizeLine(attachment: InboxAttachmentState): string {
+/** "1280 × 800, 79 KB" for an image; "MP4 video · 7:41 · 1920 × 1080 · 461 MB" for a video; "PDF, 2.3 MB" otherwise. */
+export function sizeLine(attachment: InboxAttachmentState): string {
   const size = formatBytes(attachment.current?.size ?? attachment.size);
-  if (readInboxAttachmentKind(attachment.kind) === 'image' && attachment.width && attachment.height) return `${attachment.width} × ${attachment.height}, ${size}`;
+  const kind = readInboxAttachmentKind(attachment.kind);
+  if (kind === 'video') {
+    return [inboxAttachmentKindLabel(attachment.kind, attachment.name, attachment.media_type), inboxVideoMeta(attachment), size].filter(Boolean).join(' · ');
+  }
+  if (kind === 'image' && attachment.width && attachment.height) return `${attachment.width} × ${attachment.height}, ${size}`;
   return `${inboxAttachmentKindLabel(attachment.kind, attachment.name, attachment.media_type)}, ${size}`;
 }
 
@@ -38,7 +47,8 @@ export function changedLine(attachment: InboxAttachmentState, short = false): st
   }
   if (attachment.changed_since_sent && attachment.current) {
     // Short (a tile, a caption, the step list): the time today, else the day, so the count beside it keeps its room.
-    return short ? `Changed ${shortTime(attachment.current.mtime)}` : `Changed since it was sent, edited ${whenTime(attachment.current.mtime)}`;
+    if (short) return `Changed ${shortTime(attachment.current.mtime)}`;
+    return `${attachment.captured === 'on_open' ? 'Changed since you first opened it' : 'Changed since it was sent'}, edited ${whenTime(attachment.current.mtime)}`;
   }
   return null;
 }
@@ -86,7 +96,8 @@ function GalleryImage({ image, count, onOpen }: { image: InboxAttachmentState; c
   const shown = Math.min(Math.max(ratio, TALL_RATIO), WIDE_IMAGE_RATIO);
   const tall = ratio < TALL_RATIO;
   const wide = ratio > WIDE_IMAGE_RATIO;
-  const src = attachmentImageUrl(image, readableVersion(image));
+  const source = useInboxFileSource();
+  const src = source.imageUrl(image, readableVersion(image));
   const changed = changedLine(image, true);
   // A changed image keeps its comment count beside the changed line.
   const detail = `${changed ?? sizeLine(image)}${count > 0 ? `, ${plural(count, 'comment')}` : ''}`;
@@ -148,6 +159,8 @@ export function AttachmentTiles({
   onOpen,
   openId = null,
   placement = 'foot',
+  openIn,
+  onOpenAs,
 }: {
   attachments: readonly InboxAttachmentState[];
   annotationCounts: ReadonlyMap<string, number>;
@@ -156,7 +169,12 @@ export function AttachmentTiles({
   openId?: string | null;
   /** Where the tiles sit: at the foot of the message (with their heading and the image gallery), or in the header's band. */
   placement?: 'foot' | 'header';
+  /** "Open in" on this computer (`apps`): each tile gets a ⋯ menu beside its button. Otherwise none. */
+  openIn?: OpenInSurface;
+  /** The tile ⋯'s "Open side by side" / "Open full screen": this file in that view, the remembered choice unchanged. Absent on a phone or a stacked window. */
+  onOpenAs?: (attachment: InboxAttachmentState, view: 'full' | 'side') => void;
 }) {
+  const source = useInboxFileSource();
   if (attachments.length === 0) return null;
   const header = placement === 'header';
   const images = header ? [] : attachments.filter((a) => readInboxAttachmentKind(a.kind) === 'image');
@@ -177,15 +195,17 @@ export function AttachmentTiles({
           // text and what a screen reader hears.
           const changed = changedLine(attachment, true);
           const changedLong = changedLine(attachment);
-          const counted = count > 0 ? `, ${plural(count, 'annotation')}` : '';
+          const isImage = readInboxAttachmentKind(attachment.kind) === 'image';
+          const isVideo = readInboxAttachmentKind(attachment.kind) === 'video';
+          // A video's caption keeps one separator throughout: "WebM video · 81.8 KB · 2 comments".
+          const counted = count > 0 ? (isVideo ? ` · ${plural(count, 'comment')}` : `, ${plural(count, 'annotation')}`) : '';
           const detail = `${changed ?? sizeLine(attachment)}${counted}`;
           const detailLong = `${changedLong ?? sizeLine(attachment)}${counted}`;
           // The header's band shows the same tiles while the foot's are on the page: ids stay unique.
           const detailId = `ib-${header ? 'hatt' : 'att'}-detail-${attachment.id}`;
-          const isImage = readInboxAttachmentKind(attachment.kind) === 'image';
           const icon = isImage ? (
             <span className="ib-fi ib-thumb">
-              <img src={attachmentImageUrl(attachment, readableVersion(attachment))} alt="" loading="lazy" decoding="async" draggable={false} data-small={imageFitsWithin(attachment, 30) ? '' : undefined} />
+              <img src={source.imageUrl(attachment, readableVersion(attachment))} alt="" loading="lazy" decoding="async" draggable={false} data-small={imageFitsWithin(attachment, 30) ? '' : undefined} />
             </span>
           ) : (
             <span className="ib-fi">
@@ -196,12 +216,14 @@ export function AttachmentTiles({
             <span className="ib-att-text">
               <FileName name={attachment.name} className="ib-nm" />
               {changed ? (
-                <span className="ib-ch" title={detailLong}>
-                  <span aria-hidden="true">{detail}</span>
-                  <span className="ib-sr" id={detailId}>
-                    {detailLong}
+                <Tip content={detailLong}>
+                  <span className="ib-ch">
+                    <span aria-hidden="true">{detail}</span>
+                    <span className="ib-sr" id={detailId}>
+                      {detailLong}
+                    </span>
                   </span>
-                </span>
+                </Tip>
               ) : (
                 <span className="ib-kd" id={detailId}>
                   {detail}
@@ -209,13 +231,23 @@ export function AttachmentTiles({
               )}
             </span>
           );
+          // The ⋯ is the tile button's sibling (a button inside a button is invalid), in a wrapper the grid lays out.
+          const withMenu = (tile: React.ReactElement) =>
+            openIn === 'apps' ? (
+              <div className="ib-att-w" key={attachment.id} data-open-in-tile={attachment.id}>
+                {tile}
+                <OpenInTileMenu attachment={attachment} version={readableVersion(attachment)} onOpenAs={onOpenAs && opensInWindow(attachment) ? (view) => onOpenAs(attachment, view) : undefined} />
+              </div>
+            ) : (
+              tile
+            );
           if (!opensInWindow(attachment)) {
             // A download: the whole tile is the link, never a viewer on this origin.
-            return (
+            return withMenu(
               <a
                 className="ib-att-t ib-dl"
                 key={attachment.id}
-                href={attachmentDownloadUrl(attachment, readableVersion(attachment))}
+                href={source.downloadUrl(attachment, readableVersion(attachment))}
                 download={attachment.name}
                 aria-label={`Download ${attachment.name}`}
                 aria-describedby={detailId}
@@ -228,20 +260,20 @@ export function AttachmentTiles({
                 <span className="ib-open" aria-hidden="true">
                   Download
                 </span>
-              </a>
+              </a>,
             );
           }
           // The whole tile is the one control (record 2.1): a click on the
           // icon, the name or the type line opens the file exactly as Open
           // does. "Open" stays as the visual cue inside it.
           const isOpen = attachment.id === openId;
-          return (
+          return withMenu(
             <button
               type="button"
               className={`ib-att-t${isOpen ? ' ib-open-beside' : ''}`}
               key={attachment.id}
               onClick={() => onOpen(attachment)}
-              aria-label={isOpen ? `${attachment.name}, open beside the thread` : `Open ${attachment.name}`}
+              aria-label={isOpen ? `${attachment.name}, open beside the thread` : `${isVideo ? 'Play' : 'Open'} ${attachment.name}`}
               aria-current={isOpen ? 'true' : undefined}
               aria-describedby={detailId}
               data-attachment-id={attachment.id}
@@ -251,9 +283,9 @@ export function AttachmentTiles({
               {icon}
               {text}
               <span className="ib-open" aria-hidden="true">
-                {isOpen ? 'Open beside' : 'Open'}
+                {isOpen ? 'Open beside' : isVideo ? 'Play' : 'Open'}
               </span>
-            </button>
+            </button>,
           );
         })}
       </div>

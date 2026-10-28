@@ -103,6 +103,8 @@ export interface InboxTailscaleContext {
   /** A terminal closing a foreground Inbox (SIGHUP) while published: stop cleanly, then exit. */
   onHangup?: () => void;
   maxRequestBodySize?: number;
+  /** The tailnet listener just opened: the window starts compressing its page for it (#2032). */
+  onListen?: () => void;
 }
 
 /** The words for a route that exposes the window's own port, for Settings and stderr. */
@@ -215,6 +217,7 @@ export function createInboxTailscale(context: InboxTailscaleContext) {
       maxRequestBodySize: context.maxRequestBodySize,
       fetch: listenerFetch,
     } as Parameters<typeof Bun.serve>[0]);
+    context.onListen?.();
     return listener.port as number;
   };
 
@@ -447,7 +450,7 @@ export function createInboxTailscale(context: InboxTailscaleContext) {
       warnedExposure = false;
     }
     saveConfig({ inboxTailscale: on });
-    if (loadConfig().inboxTailscale !== on) throw new InboxError("config_not_saved", "config.json could not be written; nothing changed.");
+    if (loadConfig().inboxTailscale !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     // The saved switch decides from now on, not this run's flag.
     runFlag = false;
     if (on) publish();
@@ -473,6 +476,15 @@ export function createInboxTailscale(context: InboxTailscaleContext) {
     runOnly: () => runFlag && resolve().source === "flag",
     /** The tailnet-only listener's port while published (tests). */
     listenerPort: () => (listener ? (listener.port as number) : null),
+    /**
+     * A request the listener let in came from the machine's owner, not a login
+     * config.json `inboxTailscaleAllow` added: only the owner may start or
+     * steer an agent the Inbox runs (inbox-acp-runner.ts).
+     */
+    isOwnerRequest: (headers: Headers): boolean => {
+      const identity = checkTailnetIdentity(headers, state.allowed);
+      return identity.ok && state.owner !== null && normalizeTailnetLogin(identity.login) === state.owner;
+    },
   };
 }
 

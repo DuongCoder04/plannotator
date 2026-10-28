@@ -332,10 +332,10 @@ test('an image opens beside the thread; it is marked up with the image annotator
   await page.mouse.up();
   await shot('4-image-annotator');
   await page.keyboard.press('Enter');
-  await expect(pane.locator('.ib-imgcompose .ib-markup img')).toBeVisible();
-  await pane.getByRole('textbox', { name: 'Comment on retry-policy-phone.png' }).fill('The on-call note wraps onto three lines on a phone. Can it sit under the field instead?');
+  await expect(pane.locator('[data-image-composer] [data-markup-kept] img')).toBeVisible();
+  await pane.getByRole('textbox', { name: 'A note with your drawing on retry-policy-phone.png' }).fill('The on-call note wraps onto three lines on a phone. Can it sit under the field instead?');
   await shot('5-image-comment-with-markup');
-  await pane.getByRole('button', { name: 'Comment', exact: true }).click();
+  await pane.getByRole('button', { name: 'Add note', exact: true }).click();
   await expect(pane.locator('.ib-apanel')).toContainText('The on-call note wraps');
   // Selecting the comment shows the marked-up copy on the stage.
   await pane.locator('.ib-apanel').getByText('The on-call note wraps').click();
@@ -351,7 +351,7 @@ test('the code file opens in the code view and takes a line comment', async () =
   const line = pane.locator('[data-code-view] [data-line="4"]').first();
   await expect(line).toBeVisible();
   await line.click();
-  await page.locator('textarea[data-pn-mobile-editable="true"]').last().fill('Five attempts with doubling means the last retry waits eight minutes. Three is enough.');
+  await page.locator('[data-comment-popover] textarea[data-pn-mobile-editable="true"]').last().fill('Five attempts with doubling means the last retry waits eight minutes. Three is enough.');
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(pane.locator('.ib-apanel')).toContainText('Three is enough');
   await shot('7-code-line-comment');
@@ -361,7 +361,7 @@ test('Send carries the image comment with its marked-up copy and the code commen
   const page = world.page;
   await page.locator('[data-attachment-pane]').getByRole('button', { name: /^Close / }).click();
   const waiting = world.claude.waitForReply(world.threadId, 40);
-  await page.locator('.ib-pfoot').getByRole('button', { name: 'Edit the reply' }).click();
+  await page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' }).click();
   await expect(page.locator('[data-annotations-chip]')).toHaveText('2 annotations');
   await page.getByRole('textbox', { name: 'Reply to Claude Code' }).fill('Two notes, one on the phone shot and one on the worker.');
   await shot('8-reply-with-annotations');

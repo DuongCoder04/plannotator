@@ -89,9 +89,15 @@ export async function runEmbeddedPlanReview(
     htmlContent: input.htmlContent,
     opencodeClient: input.client,
     sessionBridge: input.sessionBridge,
+    // submit_plan's executor delivers an approval's feedback as the
+    // approved-with-notes prompt.
+    approvalNotesSupported: true,
     ...(input.opencodeToolCapable ? { opencodeToolCapable: true } : {}),
     onReady: async (url, isRemote, port) => {
-      await handleServerReady(url, isRemote, port);
+      // announce: false. This runs in OpenCode's own process, sharing stderr
+      // with its TUI renderer, and input.logReady already shows the URL (a
+      // toast on OpenCode 1, a transcript notice on OpenCode 2).
+      await handleServerReady(url, isRemote, port, { announce: false });
       input.logReady(url, isRemote, port);
     },
   });
@@ -122,6 +128,7 @@ export async function handleEmbeddedCommand(
     client: any;
     htmlContent: string;
     reviewHtmlContent: string;
+    reviewDiagramEngineDir?: string;
     getSharingEnabled: () => Promise<boolean>;
     getShareBaseUrl: () => string | undefined;
     getPasteApiUrl: () => string | undefined;

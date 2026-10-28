@@ -81,10 +81,17 @@ export class SimAgent {
     attachments?: string[];
     /** Earlier questions of the thread this message supersedes: `<message id>` or `<message id>/<key>`. */
     supersedes?: string[];
+    /** Its own action items (`:::action`) of the thread it saw done: `<message id>/<key>` or `<message id>`. */
+    done?: string[];
   }, options: { wakes?: boolean } = {}): Promise<Structured> {
     // `wakes`: send as a connection whose session the person's reply wakes
     // would (the mod, Pi, OpenCode 2), so the Inbox may call it ended later.
     return this.call('send_message', { ...input, agent_name: this.name, agent_host: this.host }, options.wakes ? { [INBOX_WAKES_META_KEY]: true } : undefined);
+  }
+
+  /** The Board's `card` tool (create, move, say, link, ship, drop, list); a refusal throws with the Inbox's words. */
+  card(input: { op: string; project_path?: string; [field: string]: unknown }): Promise<Structured> {
+    return this.call('card', { ...input, agent_name: this.name, agent_host: this.host });
   }
 
   /** get_guide_brief: the method, the guide's shape, the diff steps, the rules and a worked example call. */
@@ -107,16 +114,6 @@ export class SimAgent {
     return this.call('wait_for_reply', { thread_id: threadId, timeout_seconds: timeoutSeconds, ...(cursor === undefined ? {} : { cursor }) });
   }
 
-  /** The project's decisions as an agent reads them (`state`: current by default, or replaced, retired, all). */
-  async listDecisions(projectPath: string, state?: 'current' | 'replaced' | 'retired' | 'all'): Promise<Structured[]> {
-    return (await this.call('list_decisions', { project_path: projectPath, ...(state ? { state } : {}) })).decisions as Structured[];
-  }
-
-  /** An agent records a decision it settled with the person. */
-  recordDecision(input: { project_path: string; text: string; reason?: string; idempotency_key?: string }): Promise<Structured> {
-    return this.call('record_decision', { ...input, agent_name: this.name, agent_host: this.host });
-  }
-
   close(): Promise<void> {
     return this.client.close();
   }
@@ -124,13 +121,12 @@ export class SimAgent {
 
 /** The demo messages: one per section the record draws first. */
 export const DEMO_MESSAGES = {
-  /** Stopped on you: two questions, one records a decision, one holds up two pieces of work. */
+  /** Stopped on you: two questions, one stops the agent, one holds up two pieces of work. */
   stopped: [
     'I checked the 409 row against the Stripe docs. Two things before I go on.',
     '',
     ':::question',
     'Which way should the worker go on a Stripe 409?',
-    'Decision: when answered',
     'Stopped: the retry worker cannot ship without this.',
     '',
     '- [ ] Retry with the same idempotency key',

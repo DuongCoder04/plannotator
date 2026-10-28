@@ -33,6 +33,56 @@ function decide(host: FakeHost, call: RunCall, record: Record<string, unknown>) 
 
 const PLAN = '# Ship it\n\n1. Do the thing.\n'
 
+// The owner's report (2026-10-16): replies in the Plannotator Inbox stayed
+// queued because the session always read as busy. Every hook hears a
+// subagent's turn.start (a background one included), while its end is not
+// counted, so counting the start left the session busy after the main turn
+// ended, and the Inbox wake (which waits for idle) never delivered.
+describe('busy counts the main loop only', () => {
+  test("a subagent's turn start does not make the session busy, and the main turn's end leaves it idle", async () => {
+    const mod = new PlannotatorMod(fakeHost(), SESSION)
+    await mod.onTurnStart('main-1', 'Fix the export.')
+    expect(mod.turns.busy).toBe(true)
+    // A background subagent starts while the main turn runs, and keeps running after it.
+    await mod.onTurnStart('sub-1', 'Explore the repo.', 'agent-1')
+    mod.onTurnComplete('main-1', 'Done.', false)
+    expect(mod.turns.busy).toBe(false)
+    // Its next turn (a notification woke it) is still not the session's.
+    await mod.onTurnStart('sub-2', '', 'agent-1')
+    expect(mod.turns.busy).toBe(false)
+  })
+})
+
+// The failure this guards: another plugin delivers its own messages as turns;
+// Send now (and the Inbox's auto-send) put our reply into such a turn, and that
+// plugin then read the agent's answer to our reply as the answer to its message.
+describe("Send now leaves another plugin's turn alone", () => {
+  function steerable(mod: PlannotatorMod): string | null {
+    return (mod.inbox as unknown as { options: { steerableTurn: () => string | null } }).options.steerableTurn()
+  }
+
+  test("a turn the person started takes it; a turn another plugin's prompt started does not, and the session reads busy", async () => {
+    const mod = new PlannotatorMod(fakeHost(), { ...SESSION, inboxTools: [] })
+    mod.onPromptEntered({ text: 'Fix the export.', fromUs: false, originKind: 'composer' })
+    await mod.onTurnStart('person', 'Fix the export.')
+    expect(steerable(mod)).toBe('person')
+    mod.onTurnComplete('person', 'Done.', false)
+
+    mod.onPromptEntered({ text: 'Review PR 12.', fromUs: false, originKind: 'plugin' })
+    await mod.onTurnStart('plugin-turn', 'The workspaces plugin sent a message: Review PR 12.')
+    expect(steerable(mod)).toBeNull()
+    expect(mod.turns.busy).toBe(true)
+    mod.onTurnComplete('plugin-turn', 'Reviewed.', false)
+    expect(mod.turns.busy).toBe(false)
+
+    // An engine-started turn (a background task's notification) is the session's own: as today.
+    mod.onPromptEntered({ text: 'Task done.', fromUs: false, originKind: 'task-notification' })
+    await mod.onTurnStart('note', 'Task done.')
+    expect(steerable(mod)).toBe('note')
+    mod.dispose()
+  })
+})
+
 describe('plan review', () => {
   test('ExitPlanMode is denied at once and the review starts detached with the plan on stdin', async () => {
     const host = fakeHost()
@@ -48,6 +98,41 @@ describe('plan review', () => {
     expect(launch?.env?.PLANNOTATOR_SESSION_BRIDGE_TOKEN?.length).toBeGreaterThanOrEqual(32)
     const stdin = JSON.parse(host.files.get(`${launchDirOf(launch!)}/stdin`) ?? '{}')
     expect(stdin.plan).toBe(PLAN)
+  })
+
+  // #2197: the CLI names the plan's history project from the session root,
+  // not from its cwd, which a shell cd moves between submits.
+  test("the session root rides the launch's stdin, read once per session", async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    let reads = 0
+    let root = '/work/workspace'
+    const mod = new PlannotatorMod(host, {
+      ...SESSION,
+      root: async () => {
+        reads += 1
+        return root
+      },
+    })
+
+    await mod.onPlanCall({ tool_use_id: 't1', plan: PLAN })
+    root = '/work/workspace/service-a'
+    decide(host, launches(host)[0]!, { surface: 'plan', decision: 'denied', message: 'No.', noop: false })
+    await host.tick()
+    await mod.onPlanCall({ tool_use_id: 't2', plan: `${PLAN}2. And more.\n` })
+
+    const roots = launches(host).map((call) => JSON.parse(host.files.get(`${launchDirOf(call)}/stdin`) ?? '{}').projectRoot)
+    expect(roots).toEqual(['/work/workspace', '/work/workspace'])
+    expect(reads).toBe(1)
+  })
+
+  test('without a session root the stdin names none, so the CLI keeps its cwd', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, { ...SESSION, root: async () => '' })
+    await mod.onPlanCall({ tool_use_id: 't1', plan: PLAN })
+    const stdin = JSON.parse(host.files.get(`${launchDirOf(launches(host)[0]!)}/stdin`) ?? '{}')
+    expect('projectRoot' in stdin).toBe(false)
   })
 
   test('the plan file wins over a stale inline plan (#1667)', async () => {
@@ -122,6 +207,67 @@ describe('plan review', () => {
     expect('deny' in answer).toBe(true)
     expect(mod.onPlanPermission('t2', {})).toBeNull()
     expect(launches(host)).toHaveLength(2)
+  })
+
+  // #2007: on Team/Enterprise accounts Claude Code's built-in guard
+  // (cc-plugin-sec-default) sends classic.PermissionRequest past this mod, so
+  // the plugin's own command hook gets the approved call. The mod records the
+  // approval for it while the call is in flight.
+  test('approved: the passing call is recorded for the classic hook, and the record goes when the call settles', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, SESSION)
+    await mod.onPlanCall({ tool_use_id: 't1', plan: PLAN })
+    decide(host, launches(host)[0]!, {
+      surface: 'plan',
+      decision: 'approved',
+      message: 'Plan approved.',
+      noop: false,
+      approvedPlan: PLAN,
+      permissionMode: 'acceptEdits',
+    })
+    await host.tick()
+
+    const recordPath = '/data/claude-code-mod/session-1/plan-approvals/toolu_02.json'
+    expect(host.files.has(recordPath)).toBe(false)
+    expect(await mod.onPlanCall({ tool_use_id: 'toolu_02', plan: PLAN })).toEqual({ pass: true })
+
+    // Its folder is made owner-only before the record is written.
+    const mkdir = host.runs.find((call) => call.argv[3] === 'plannotator-mkdir' && call.argv[4] === '/data/claude-code-mod/session-1/plan-approvals')
+    expect(mkdir?.argv[2]).toContain('umask 077')
+    const record = JSON.parse(host.files.get(recordPath) ?? '{}')
+    expect(record).toEqual({ v: 1, hash: await host.sha256(PLAN.replace(/\s+$/, '')), plan: PLAN, permissionMode: 'acceptEdits', at: host.clock })
+
+    await mod.onPlanCallSettled('toolu_02')
+    expect(host.files.has(recordPath)).toBe(false)
+  })
+
+  test('a call that is not the approved plan records nothing for the classic hook', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, SESSION)
+    await mod.onPlanCall({ tool_use_id: 't1', plan: PLAN })
+    decide(host, launches(host)[0]!, { surface: 'plan', decision: 'approved', message: 'ok', noop: false, approvedPlan: PLAN })
+    await host.tick()
+
+    await mod.onPlanCall({ tool_use_id: 't2', plan: '# Something else\n' })
+
+    expect([...host.files.keys()].some((path) => path.includes('/plan-approvals/'))).toBe(false)
+  })
+
+  test('a record that cannot be written leaves the approved call passing as before', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, SESSION)
+    await mod.onPlanCall({ tool_use_id: 't1', plan: PLAN })
+    decide(host, launches(host)[0]!, { surface: 'plan', decision: 'approved', message: 'ok', noop: false, approvedPlan: PLAN })
+    await host.tick()
+    const serve = host.onRun
+    host.onRun = (call) => (call.argv[3] === 'plannotator-mkdir' ? { exitCode: 1, stdout: '', stderr: 'read-only' } : serve(call))
+
+    expect(await mod.onPlanCall({ tool_use_id: 't2', plan: PLAN })).toEqual({ pass: true })
+    expect(mod.onPlanPermission('t2', {})?.behavior).toBe('allow')
+    expect([...host.files.keys()].some((path) => path.includes('/plan-approvals/'))).toBe(false)
   })
 
   test('a revision while the review is open goes into the same tab', async () => {
@@ -493,6 +639,51 @@ describe('the plannotator tool', () => {
     expect(host.submits[0]).toStartWith('Plannotator: spec.md (pn-ababab) — Approved.')
     expect(host.submits[0]).toContain('The user approved.')
     expect(host.logs.some((line) => line.includes('notes.md closed with no annotations'))).toBe(true)
+  })
+
+  // #1907: an agent that opens a code review and waits for the sign-off gets
+  // the bare Approve; a review it did not gate (and the slash command) only logs.
+  test('a gated code review delivers the bare Approve; an ungated one does not', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, SESSION)
+    const answer = await mod.runTool({ action: 'review', gate: true })
+    expect('text' in answer && answer.text).toContain('If they approve, an approval message arrives')
+    await mod.runTool({ action: 'review', target: '../wt' })
+    await mod.runCommand('review', '--gate')
+    const [gated, plain, slash] = launches(host)
+    // The gate is the mod's: never passed to the CLI, so an older CLI still opens it.
+    expect(gated?.argv.slice(5)).toEqual(['plannotator', 'review'])
+    expect(slash?.argv.slice(5)).toEqual(['plannotator', 'review', '--gate'])
+
+    const lgtm = { surface: 'review' as const, decision: 'approved' as const, message: '# Code Review\n\nCode review completed — no changes requested.', noop: true, annotationCount: 0 }
+    decide(host, gated!, lgtm)
+    decide(host, plain!, lgtm)
+    decide(host, slash!, lgtm)
+    await host.tick()
+
+    expect(host.submits).toHaveLength(1)
+    expect(host.submits[0]).toMatch(/^Plannotator: .+ \(pn-[0-9a-f]{6}\) — Approved\./)
+    expect(host.submits[0]).toContain('Code review completed — no changes requested.')
+    expect(host.logs.filter((line) => line.includes('approved with no notes'))).toHaveLength(2)
+  })
+
+  test('a gated code review posted to the PR platform is delivered with its status line (#1907)', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const mod = new PlannotatorMod(host, SESSION)
+    await mod.runTool({ action: 'review', target: 'https://github.com/o/r/pull/7', gate: true })
+    await mod.runTool({ action: 'review', target: 'https://github.com/o/r/pull/8' })
+    const [gated, plain] = launches(host)
+    const status = (n: number) => ({ surface: 'review', decision: 'annotated', noop: true, platform: true, message: `Pull request approved on GitHub: https://github.com/o/r/pull/${n}` })
+    decide(host, gated!, status(7))
+    decide(host, plain!, status(8))
+    await host.tick()
+
+    expect(host.submits).toHaveLength(1)
+    expect(host.submits[0]).toMatch(/^Plannotator: .+ \(pn-[0-9a-f]{6}\) — Review posted\./)
+    expect(host.submits[0]).toContain('Pull request approved on GitHub: https://github.com/o/r/pull/7')
+    expect(host.logs.some((line) => line.includes('pull/8'))).toBe(true)
   })
 
   test('the slash command keeps a bare gated approval as a log line', async () => {
@@ -1431,5 +1622,41 @@ describe('a decision claimed but never delivered', () => {
 
     expect(other.logs.filter((line) => line.includes(UNDELIVERED))).toHaveLength(1)
     expect(other.submits).toEqual([])
+  })
+})
+
+// The owner closed the Inbox tab and had no easy way back: /plannotator-inbox
+// opens it again (starting a stopped one detached) and says where it is.
+describe('/plannotator-inbox', () => {
+  test('runs plannotator inbox --open with the data dir and answers with the address', async () => {
+    const host = fakeHost()
+    host.onRun = (call) =>
+      call.argv[1] === 'inbox' ? { exitCode: 0, stdout: 'http://localhost:59812/\n', stderr: '' } : undefined
+    const mod = new PlannotatorMod(host, SESSION)
+    const text = await mod.openInbox()
+    const call = host.runs.find((run) => run.argv[1] === 'inbox')
+    expect(call?.argv).toEqual(['plannotator', 'inbox', '--open'])
+    expect(call?.env?.PLANNOTATOR_DATA_DIR).toBe('/data')
+    expect(text).toContain('http://localhost:59812/')
+    // Nothing is launched: no review, no decision to wait for.
+    expect(host.runs.filter(isLaunch)).toEqual([])
+  })
+
+  test('over SSH the CLI opens no browser and says how to reach the Inbox: the answer passes that on', async () => {
+    const host = fakeHost()
+    host.onRun = () => ({ exitCode: 0, stdout: 'http://localhost:59812/\n', stderr: 'No browser opened: this is a remote session. Forward the port (ssh -L 59812:127.0.0.1:59812 <this host>) and open the URL, or run plannotator inbox --tailscale.\n' })
+    const text = await new PlannotatorMod(host, SESSION).openInbox()
+    expect(text).toContain('http://localhost:59812/')
+    expect(text).toContain('ssh -L 59812:127.0.0.1:59812')
+  })
+
+  test('an older CLI without --open is told to update; any other failure says why', async () => {
+    const host = fakeHost()
+    host.onRun = () => ({ exitCode: 1, stdout: '', stderr: "Unknown inbox option: --open\nRun 'plannotator inbox --help' for usage.\n" })
+    expect(await new PlannotatorMod(host, SESSION).openInbox()).toContain('plannotator update')
+
+    const failing = fakeHost()
+    failing.onRun = () => ({ exitCode: 1, stdout: '', stderr: 'The Plannotator Inbox did not start; see /data/inbox/inbox.log.\n' })
+    expect(await new PlannotatorMod(failing, SESSION).openInbox()).toContain('/data/inbox/inbox.log')
   })
 })

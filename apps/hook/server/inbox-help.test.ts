@@ -22,6 +22,7 @@ import { startInboxServer } from "@plannotator/server/inbox";
 import { INBOX_FILLED_ARGUMENTS } from "@plannotator/shared/inbox/connection";
 import { formatTopLevelHelp } from "./cli";
 import { inboxAttachmentKind, inboxAttachmentNameRefusal } from "@plannotator/core/inbox-types";
+import { INBOX_SERVED_TOOLS } from "@plannotator/server/inbox-mcp";
 import { formatInboxHelp, INBOX_HELP_CODE_EXAMPLES, INBOX_HELP_MCP_URL, INBOX_QUESTION_EXAMPLE, INBOX_REPLACES_EXAMPLE, TOOL_GUIDE } from "./inbox-help";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
 import { createAgentEnvironmentFor } from "@plannotator/server/inbox-agents";
@@ -38,7 +39,20 @@ const help = formatInboxHelp({
   dataDir: DATA_DIR,
   platform: "linux",
   agentEnvironment: createAgentEnvironmentFor({ platform: "linux", homeDir: NOTE_HOME, env: { HOME: NOTE_HOME, PATH: "" } }),
+  board: true,
 });
+/** The same guide with the Board off (the default): nothing of cards. */
+const helpBoardOff = formatInboxHelp({
+  command: COMMAND,
+  dataDir: DATA_DIR,
+  platform: "linux",
+  agentEnvironment: createAgentEnvironmentFor({ platform: "linux", homeDir: NOTE_HOME, env: { HOME: NOTE_HOME, PATH: "" } }),
+});
+
+/** What a person without the Board must never read in a help: the card action, the CLI, the Board. */
+function cardText(text: string): string[] {
+  return [/^### card$/m, /plannotator card/, /\(card\)/, /\bBoard\b/].filter((pattern) => pattern.test(text)).map(String);
+}
 
 let root = "";
 let trapBin = "";
@@ -67,12 +81,14 @@ describe("the guide against what it describes", () => {
     const savedTailscale = process.env.PLANNOTATOR_INBOX_TAILSCALE;
     process.env.PATH = `${trapBin}:${savedPath ?? ""}`;
     delete process.env.PLANNOTATOR_INBOX_TAILSCALE;
-    const server = await startInboxServer({ dataDir: join(root, "served-data") });
+    const server = await startInboxServer({ dataDir: join(root, "served-data"), board: true });
     const client = new Client({ name: "inbox-help-test", version: "1.0.0" });
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
       const { tools } = await client.listTools();
-      expect(tools.map((tool) => tool.name).sort()).toEqual(Object.keys(TOOL_GUIDE).sort());
+      expect(tools.map((tool) => tool.name).sort()).toEqual([...INBOX_SERVED_TOOLS].sort());
+      // A tool held back (the Board's card action, INBOX_CARD_ACTION_ON) has no section until it ships.
+      for (const name of Object.keys(TOOL_GUIDE)) if (!(INBOX_SERVED_TOOLS as readonly string[]).includes(name)) expect(help).not.toContain(`\n### ${name}\n`);
       for (const tool of tools) {
         expect(help).toContain(`\n### ${tool.name}\n`);
         const properties = Object.keys((tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
@@ -147,17 +163,21 @@ describe("the guide against what it describes", () => {
     expect(help).toContain(`\`${join(DATA_DIR, "config.json")}\``);
   });
 
-  test("its Inbox-only question example reads as Stopped, Holds up and a decision to record", () => {
+  test("its Inbox-only question example reads as Stopped and Holds up", () => {
     expect(help).toContain(`\`\`\`markdown\n${INBOX_QUESTION_EXAMPLE}\n\`\`\``);
     const [question, ...rest] = parseInboxQuestionBlocks(INBOX_QUESTION_EXAMPLE);
     expect(rest).toEqual([]);
     expect(question!.prompt).toBe("Which queue should failed webhook deliveries retry on?");
     expect(question!.stopped).toBe("the retry worker cannot start until this is settled");
     expect(question!.holds_up).toEqual(["webhook-retries", "delivery-dashboard"]);
-    expect(question!.decision_on_answer).toBe(true);
     expect(question!.parsed.choices.map((choice) => choice.label)).toEqual(["The existing jobs queue", "A dedicated retries queue"]);
     // The example models the context rule: what the choice affects, plus a link to an attached file.
     expect(question!.parsed.context).toContain("[The load test](load-test.html)");
+  });
+
+  test("it states the bare-negative rule for Stopped: and Holds up:", () => {
+    expect(help).toContain("A negative value (`no`, `none`, `n/a`, a dash) means no stop, so never write `Stopped: no`.");
+    expect(help).toContain("An entry that is only `none` (or another negative word) holds nothing up.");
   });
 
   test("its replacing example reads as a question with a Replaces: id, never as its prompt", () => {
@@ -168,6 +188,17 @@ describe("the guide against what it describes", () => {
     expect(question!.replaces).toHaveLength(1);
     expect(parseInboxSupersedeRef(question!.replaces[0])).not.toBeNull();
     expect(question!.parsed.context ?? "").not.toContain("Replaces");
+  });
+
+  // What regresses: a person who never turned the Board on reads about cards in a help.
+  test("with the Board off, neither help says anything of cards; on, both do", () => {
+    expect(cardText(helpBoardOff)).toEqual([]);
+    expect(cardText(formatTopLevelHelp())).toEqual([]);
+    expect(cardText(formatTopLevelHelp({ board: false }))).toEqual([]);
+    // The check bites: on, both name it.
+    expect(help).toContain("\n### card\n");
+    expect(cardText(help).length).toBeGreaterThan(0);
+    expect(formatTopLevelHelp({ board: true })).toContain("plannotator card ");
   });
 
   // Deliberate: the top-level help is where an agent learns this guide exists.
@@ -200,4 +231,31 @@ describe("plannotator inbox --help as a process", () => {
     }
     expect(existsSync(join(dataDir, "inbox"))).toBe(false);
   }, 30_000);
+
+  test("reads the Board switch from config.json: off, no card text in either help; on, both", async () => {
+    const dataDir = join(root, "cli-board-data");
+    const home = join(root, "home-board");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    const run = async (argv: string[]) => {
+      const proc = Bun.spawn([process.execPath, entry, ...argv], {
+        cwd: root,
+        env: { PATH: `${trapBin}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: home, TMPDIR: tmpdir(), PLANNOTATOR_DATA_DIR: dataDir },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      expect(code, stderr).toBe(0);
+      return stdout;
+    };
+    // No config.json at all: off.
+    for (const argv of [["--help"], ["inbox", "--help"]]) expect(cardText(await run(argv))).toEqual([]);
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxBoard: false }));
+    for (const argv of [["--help"], ["inbox", "--help"]]) expect(cardText(await run(argv))).toEqual([]);
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxBoard: true }));
+    expect(await run(["--help"])).toContain("plannotator card ");
+    expect(await run(["inbox", "--help"])).toContain("\n### card\n");
+    expect(existsSync(join(dataDir, "inbox"))).toBe(false);
+  }, 60_000);
 });

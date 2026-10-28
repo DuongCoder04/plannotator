@@ -6,11 +6,18 @@
  * restart and failure dialogs; the What's new page; Settings → About.
  */
 
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  UPDATE_EXIT_CHECKSUM_MISMATCH,
+  UPDATE_EXIT_DOWNLOAD_FAILED,
+  UPDATE_OTHER_TMPDIR_COMMAND,
+  updateStagingAdvice,
+} from '@plannotator/core/update-exit-codes';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Viewer } from '@plannotator/ui/components/Viewer';
+import { ImageResolverContext, type ImageResolution } from '@plannotator/ui/components/ImageResolverContext';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxHealth } from '@plannotator/core/inbox-types';
-import type { UpdateDetails, UpdateSwitches, WhatsNewModel } from '../api';
+import { whatsNewImageUrl, type UpdateCheckFailing, type UpdateDetails, type UpdateSwitches, type WhatsNewModel } from '../api';
 import { clockTime, dayWords, formatCount, tildePath, whenTime } from '../format';
 import { Icon } from '../icons';
 import { CopyButton } from './ConnectPicker';
@@ -85,10 +92,17 @@ export function UpdateButton({ update, restarting, updated, onPress, onWhatsNew 
     ) : null;
   }
   const busy = restarting || update.state === 'updating';
-  const label = restarting ? 'Restarting…' : LABEL[update.state];
+  // Available and Ready name their version ("Update to 0.28.22"), so the sidebar's
+  // Update and the What's new page's are not two bare "Update"s.
+  const label = restarting
+    ? 'Restarting…'
+    : update.state === 'available' || update.state === 'ready'
+      ? `Update to ${update.version}`
+      : LABEL[update.state];
   const tip = tipFor(update, restarting);
-  const aria =
-    update.state === 'failed' ? `Update failed: Plannotator ${update.version} didn't install` : busy ? label : `Update to Plannotator ${update.version}`;
+  // The name contains the visible words (WCAG 2.5.3 Label in Name: "click Update to 0.28.22" works by voice);
+  // "Plannotator X" stays in the tooltip.
+  const aria = update.state === 'failed' && !restarting ? `Update failed: Plannotator ${update.version} didn't install` : label;
   return (
     <div className="ib-upd" data-update-state={restarting ? 'restarting' : update.state}>
       <button
@@ -100,7 +114,7 @@ export function UpdateButton({ update, restarting, updated, onPress, onWhatsNew 
         onClick={onPress}
       >
         {busy && <span className="ib-spin" aria-hidden="true" />}
-        {label}
+        <span className="ib-upd-l">{label}</span>
       </button>
       <span className="ib-upd-tip" id="ib-upd-tip" role="tooltip">
         {tip}
@@ -307,8 +321,8 @@ export function UpdateDialog({ details, update, error, busy, onUpdateNow, onRemi
       ) : (
         managed && (
           <p className="ib-sum ib-quietline">
-            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: restart those agents
-            afterwards. Pi: run <code>pi update --extensions</code>.
+            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: reload those agents
+            afterwards (Settings, Agents says which). Pi: run <code>pi update --extensions</code>, then <code>/reload</code>.
           </p>
         )
       )}
@@ -360,7 +374,7 @@ export function RestartDialog({ update, subject, onRestart, onCancel }: { update
       <ul className="ib-what" style={{ marginTop: 14 }}>
         <li>
           <Icon name="info" />
-          <span>Your reply to “{subject}” is not sent and will be lost. Picks and comments are saved.</span>
+          <span>The files pasted into your reply to “{subject}” are not saved and will be lost. Its words, picks and comments are kept as a draft.</span>
         </li>
       </ul>
       <div className="ib-acts-row">
@@ -390,18 +404,83 @@ export function FailedDialog({
   onClose: () => void;
 }) {
   const code = details?.failure?.exit_code;
+  const tls = details?.failure?.tls;
+  // Safe updates (step 1): the download didn't match the checksum Plannotator
+  // fetched, or the connection presented a revoked certificate (a blocked
+  // key). Neither offers the `curl | bash` line: it would go through the same
+  // connection, and curl trusts it. Any other failed download can be a lasting
+  // local condition (a proxy, a network that inspects HTTPS), so it keeps the
+  // way out: the install command and the release page.
+  const mismatch = code === UPDATE_EXIT_CHECKSUM_MISMATCH;
+  const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
+  const revoked = couldNotDownload && tls === 'revoked';
+  // Downloaded, but the temp folder could not hold it: not a network problem, so no way out by curl either.
+  const prepare = couldNotDownload ? details?.failure?.prepare : undefined;
+  const sub = prepare
+    ? `Plannotator couldn't prepare the update: ${prepare}. Nothing was changed; Plannotator ${update.current} still works. ${updateStagingAdvice(prepare)}, then try again.`
+    : mismatch
+      ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
+      : revoked
+        ? `The connection presented a revoked certificate, so Plannotator downloaded nothing. Plannotator ${update.current} still works. Don't install Plannotator over this network; try again on another network.`
+        : couldNotDownload
+          ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
+          : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
   return (
-    <Modal label="The update didn't install" onClose={onClose} testId="failed">
-      <h2>The update didn&apos;t install</h2>
-      <p className="ib-sub">
-        Plannotator is still {update.current}.{code !== undefined ? ` The install script exited with code ${code}.` : ''}
-      </p>
+    <Modal label={mismatch ? 'The update stopped' : "The update didn't install"} onClose={onClose} testId="failed">
+      <h2>{mismatch ? 'The update stopped' : <>The update didn&apos;t install</>}</h2>
+      <p className="ib-sub">{sub}</p>
       {details && (
         <>
-          <p className="ib-sum">The log says what went wrong:</p>
+          <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
-          <p className="ib-sum">Or run the install script yourself:</p>
-          <CommandRow text={details.command} />
+          {prepare && (
+            <>
+              <p className="ib-sum">Or update from a terminal with another temp folder:</p>
+              <CommandRow text={UPDATE_OTHER_TMPDIR_COMMAND} />
+            </>
+          )}
+          {couldNotDownload && !revoked && !prepare && (
+            <>
+              {tls === 'untrusted' && (
+                <>
+                  <p className="ib-sum">If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate and update from a terminal:</p>
+                  <CommandRow text="NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update" />
+                </>
+              )}
+              {details.failure?.release_first ? (
+                // macOS curl still trusts emSign G3: should a network holding a
+                // leaked key read as "untrusted", the release page comes first.
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    .
+                  </p>
+                  <p className="ib-sum">Or run the install script yourself:</p>
+                  <CommandRow text={details.command} />
+                </>
+              ) : (
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, install it yourself, or download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    :
+                  </p>
+                  <CommandRow text={details.command} />
+                </>
+              )}
+            </>
+          )}
+          {!mismatch && !couldNotDownload && (
+            <>
+              <p className="ib-sum">Or run the install script yourself:</p>
+              <CommandRow text={details.command} />
+            </>
+          )}
         </>
       )}
       <div className="ib-acts-row">
@@ -418,56 +497,173 @@ export function FailedDialog({
 
 // ───────────────────────────── What's new ─────────────────────────────
 
+/** "October 15, 2026", from an ISO date. */
+function releasedLong(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+}
+
+const STABLE = /^\d+\.\d+\.\d+$/;
+
+/**
+ * Where the person stands relative to the release the page shows (the
+ * header's one chip): on it, on a development build, behind it (with the
+ * releases in between, which the chip jumps to), or past it.
+ */
+export type WhatsNewStanding =
+  | { kind: 'current' }
+  | { kind: 'dev' }
+  | { kind: 'behind'; current: string; between: number }
+  | { kind: 'ahead'; current: string };
+
+export function whatsNewStanding(model: Pick<WhatsNewModel, 'version' | 'current' | 'skipped'>): WhatsNewStanding {
+  if (!STABLE.test(model.current)) return { kind: 'dev' };
+  if (model.current === model.version) return { kind: 'current' };
+  if (newerThan(model.version, model.current)) return { kind: 'behind', current: model.current, between: model.skipped.length };
+  return { kind: 'ahead', current: model.current };
+}
+
+/** The page's Update: only for the release it shows, and only while that release can be installed today. */
+export function whatsNewCanUpdate(model: Pick<WhatsNewModel, 'version'> | null, update: InboxHealth['update']): boolean {
+  return !!model && !!update && update.version === model.version && (update.state === 'available' || update.state === 'ready');
+}
+
+const SKIPPED_ID = 'ib-wn-since';
+
+function StandingChip({ standing, onJump }: { standing: WhatsNewStanding; onJump: () => void }) {
+  switch (standing.kind) {
+    case 'current':
+      return (
+        <span className="ib-wn-chip ib-good" data-whats-new-standing="current">
+          <Icon name="check" />
+          You&apos;re on this version
+        </span>
+      );
+    case 'dev':
+      return (
+        <span className="ib-wn-chip" data-whats-new-standing="dev">
+          Development build
+        </span>
+      );
+    case 'ahead':
+      return (
+        <span className="ib-wn-chip" data-whats-new-standing="ahead">
+          You have {standing.current}
+        </span>
+      );
+    case 'behind':
+      // Nothing listed in between (the notes name none): the version alone, with nowhere to jump.
+      if (standing.between === 0) {
+        return (
+          <span className="ib-wn-chip" data-whats-new-standing="behind">
+            You have {standing.current}
+          </span>
+        );
+      }
+      return (
+        <button type="button" className="ib-wn-chip ib-lk" data-whats-new-standing="behind" aria-controls={SKIPPED_ID} onClick={onJump}>
+          You have {standing.current} · {formatCount(standing.between)} {standing.between === 1 ? 'release' : 'releases'} in between
+          <Icon name="arrowDown" />
+        </button>
+      );
+  }
+}
+
+/**
+ * The What's new page (design of record `.product/approved/inbox-whats-new-header/`,
+ * variant Toolbar): a sticky bar with the way back on the left (`‹ Inbox |
+ * What's new`) and the release link and Update on the right, then the
+ * release itself under it, aligned to the notes: the version large, the date,
+ * and one chip saying where the person stands.
+ */
 export function WhatsNewPage({
   model,
   error,
   update,
   onBack,
   onUpdate,
+  onTakeTour,
 }: {
   model: WhatsNewModel | null;
   error: string | null;
   update: InboxHealth['update'];
   onBack: () => void;
   onUpdate: () => void;
+  /**
+   * The quiet line under the notes (approval "inbox-onboarding-tour",
+   * returning users: no dialog): "New: a 2-minute tour…". The window passes
+   * it while the tour was never taken. Absent: no line.
+   */
+  onTakeTour?: () => void;
 }) {
   const blocks = useMemo(() => parseMarkdownToBlocks(model?.notes ?? '', { frontmatter: false }), [model?.notes]);
-  const released = releasedOn(model?.published_at);
-  const canUpdate = !!model && !!update && update.version === model.version && (update.state === 'available' || update.state === 'ready');
+  // The notes' images load from the copies the Inbox saved (never from GitHub:
+  // the window's CSP allows only its own origin). One not saved is drawn as
+  // its alt text in a quiet chip, never a broken image.
+  const storedImages = useMemo(() => new Set(model?.images ?? []), [model?.images]);
+  const modelVersion = model?.version;
+  const resolveImage = useCallback(
+    (src: string): ImageResolution | null => {
+      if (/^(data|blob):/i.test(src)) return null;
+      if (modelVersion && storedImages.has(src)) return { kind: 'src', src: whatsNewImageUrl(modelVersion, src) };
+      return { kind: 'unavailable', title: 'This image is not saved on this computer. It is in the release on GitHub.' };
+    },
+    [modelVersion, storedImages],
+  );
+  const released = releasedLong(model?.published_at);
+  const canUpdate = whatsNewCanUpdate(model, update);
+  const standing = model ? whatsNewStanding(model) : null;
+  const jumpToSkipped = () => {
+    const section = document.getElementById(SKIPPED_ID);
+    if (!section) return;
+    if (section instanceof HTMLDetailsElement) section.open = true;
+    const reduce = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    section.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    section.focus({ preventScroll: true });
+  };
   return (
     <div className="ib-wn" aria-label="What's new" tabIndex={-1} data-whats-new-page={model?.version ?? ''}>
-      <div className="ib-wn-in">
-        <div className="ib-wn-head">
-          <SidebarTrigger />
-          <div>
-            <h1>What&apos;s new in {model?.version ?? '…'}</h1>
-            {model && (
-              <div className="ib-meta">
-                {released ? `Released ${released} · ` : ''}You have {model.current}
-              </div>
-            )}
-          </div>
-          <div className="ib-acts">
-            <button type="button" className="ib-btn ib-ghost" onClick={onBack}>
-              <Icon name="back" />
-              Inbox
+      <div className="ib-wn-bar">
+        <SidebarTrigger />
+        <button type="button" className="ib-pback" onClick={onBack} data-whats-new-back="">
+          <Icon name="chevL" size={16} />
+          <span className="ib-pback-l">Inbox</span>
+        </button>
+        <span className="ib-wn-div" aria-hidden="true" />
+        <span className="ib-wn-title">What&apos;s new</span>
+        <div className="ib-wn-acts">
+          {model && (
+            <a className="ib-wn-gh" href={model.release_url} target="_blank" rel="noopener noreferrer" data-whats-new-github="">
+              <Icon name="github" />
+              <span className="ib-wn-gh-l">GitHub</span>
+              <span className="ib-sr"> release (opens in a new tab)</span>
+            </a>
+          )}
+          {model && canUpdate && (
+            <button type="button" className="ib-btn ib-pri" onClick={onUpdate} aria-label={`Update to ${model.version}`} data-whats-new-update="">
+              <span>Update</span>
+              {/* Dropped on the narrowest phones; the button's name keeps the version. */}
+              <span className="ib-wn-to">to {model.version}</span>
             </button>
-            {model && (
-              <a className="ib-btn" href={model.release_url} target="_blank" rel="noopener noreferrer">
-                <Icon name="external" />
-                View on GitHub
-              </a>
-            )}
-            {canUpdate && (
-              <button type="button" className="ib-btn ib-pri" onClick={onUpdate}>
-                Update
-              </button>
-            )}
-          </div>
+          )}
         </div>
+      </div>
+      <div className="ib-wn-in">
+        <header className="ib-wn-hero">
+          <p className="ib-wn-pre">What&apos;s new in Plannotator</p>
+          <h1>{model?.version ?? '…'}</h1>
+          {model && (
+            <p className="ib-wn-line">
+              {released && <span>Released {released}</span>}
+              {standing && <StandingChip standing={standing} onJump={jumpToSkipped} />}
+            </p>
+          )}
+        </header>
         {error && <div className="ib-error">{error}</div>}
         {model && model.notes ? (
           <div className="ib-body ib-wn-body">
+            <ImageResolverContext.Provider value={resolveImage}>
             <Viewer
               blocks={blocks}
               markdown={model.notes}
@@ -483,12 +679,21 @@ export function WhatsNewPage({
               answerOnly
               readOnly
             />
+            </ImageResolverContext.Provider>
           </div>
         ) : (
           model && <p className="ib-sum">The release has no notes. They are on GitHub.</p>
         )}
+        {model && onTakeTour && (
+          <p className="ib-wn-tour" data-whats-new-tour="">
+            New: a 2-minute tour of how we built the Inbox with the Inbox.{' '}
+            <button type="button" className="ib-lnk" onClick={onTakeTour}>
+              Take the tour
+            </button>
+          </p>
+        )}
         {/* The skipped releases come after this release's notes, folded when there are more than a few (decision 7). */}
-        {model && model.skipped.length > 0 && <SkippedReleases current={model.current} skipped={model.skipped} />}
+        {model && model.skipped.length > 0 && <SkippedReleases since={model.since ?? model.current} skipped={model.skipped} />}
       </div>
     </div>
   );
@@ -497,7 +702,7 @@ export function WhatsNewPage({
 /** More skipped releases than this are folded under their heading. */
 const SKIPPED_SHOWN = 3;
 
-function SkippedReleases({ current, skipped }: { current: string; skipped: WhatsNewModel['skipped'] }) {
+function SkippedReleases({ since, skipped }: { since: string; skipped: WhatsNewModel['skipped'] }) {
   const items = (
     <ul>
       {skipped.map((h) => (
@@ -507,17 +712,17 @@ function SkippedReleases({ current, skipped }: { current: string; skipped: Whats
       ))}
     </ul>
   );
-  const heading = `Also in the releases since ${current}`;
+  const heading = `Also in the releases since ${since}`;
   if (skipped.length <= SKIPPED_SHOWN) {
     return (
-      <div className="ib-wn-skipped" data-skipped-releases="">
+      <section className="ib-wn-skipped" id={SKIPPED_ID} tabIndex={-1} aria-label={heading} data-skipped-releases="">
         <h2>{heading}</h2>
         {items}
-      </div>
+      </section>
     );
   }
   return (
-    <details className="ib-wn-skipped" data-skipped-releases="">
+    <details className="ib-wn-skipped" id={SKIPPED_ID} tabIndex={-1} data-skipped-releases="">
       <summary>
         <h2>
           {heading} <span className="ib-n">· {skipped.length}</span>
@@ -525,6 +730,181 @@ function SkippedReleases({ current, skipped }: { current: string; skipped: Whats
       </summary>
       {items}
     </details>
+  );
+}
+
+// ──────────────────────── Checking for updates is failing ────────────────────────
+
+/** "can't check for updates since 9:14 AM (GitHub API rate-limited)", from the server's failing record. */
+export function checkFailingWords(failing: UpdateCheckFailing): string {
+  const day = dayWords(failing.since);
+  const when = day === 'today' ? clockTime(failing.since) : day === 'yesterday' ? `yesterday ${clockTime(failing.since)}` : day;
+  return `can't check for updates since ${when} (${failing.error})`;
+}
+
+/**
+ * The command that updates without the check (the install script finds the
+ * newest release by itself), shown wherever checking is failing.
+ */
+export function CheckFailingCommand({ command }: { command: string }) {
+  return (
+    <div className="ib-chkfail" data-update-check-failing="">
+      <span>The install script finds the newest release by itself. To update now, run:</span>
+      <CommandRow text={command} />
+    </div>
+  );
+}
+
+/**
+ * The sidebar's quiet row while checking for updates has failed for hours
+ * and no Update button shows: "Can't check for updates", opening Settings →
+ * About, which says why and gives the command. Never the error colour.
+ */
+export function CheckFailingRow({ failing, onOpen }: { failing: UpdateCheckFailing; onOpen: () => void }) {
+  return (
+    <button type="button" className="ib-nav ib-quiet ib-rw-restart" data-update-check-failing-row="" onClick={onOpen}>
+      <Icon name="info" />
+      <span className="ib-rw-label">Can&apos;t check for updates</span>
+      <span className="ib-sr">. {checkFailingWords(failing).replace(/^./, (c) => c.toUpperCase())}. Opens Settings, About.</span>
+    </button>
+  );
+}
+
+/** "today 2:57 PM", "yesterday 2:57 PM", "Oct 3": when something happened. */
+function whenWords(iso: string): string {
+  const day = dayWords(iso);
+  return day === 'today' || day === 'yesterday' ? `${day} ${clockTime(iso)}` : day;
+}
+
+/**
+ * "Can't check for updates since 9:14 AM (…) · last tried 2:50 PM": the
+ * failing line as Settings → General and About both show it.
+ */
+function checkFailingStatus(failing: UpdateCheckFailing, details: UpdateDetails | null): string {
+  const tried = details?.check.last_attempt_at ? ` · last tried ${whenWords(details.check.last_attempt_at)}` : '';
+  return `${checkFailingWords(failing).replace(/^./, (c) => c.toUpperCase())}${tried}`;
+}
+
+/** A successful check this recent backs "Up to date". */
+export const UP_TO_DATE_FRESH_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What the last checks say, in words that claim nothing they cannot back:
+ * "Up to date" only after a recent successful check with checks on; else
+ * checks off, failing for hours (with when it last tried), the last check
+ * failed, when it last checked, or not checked yet. `news`: an update is
+ * known or in progress, so never "Up to date".
+ */
+export function checkStatusWords(details: UpdateDetails | null, news: boolean, now: number = Date.now()): string {
+  if (!details) return '';
+  const check = details.check;
+  if (!check.on) return 'Update checks are off';
+  if (check.failing) return checkFailingStatus(check.failing, details);
+  if (check.last_failed_at) return `Last check failed ${whenWords(check.last_failed_at)}${check.error ? ` (${check.error})` : ''}`;
+  const ok = details.latest?.fetched_at ?? null;
+  const okAt = ok ? Date.parse(ok) : NaN;
+  if (ok && Number.isFinite(okAt) && now - okAt < UP_TO_DATE_FRESH_MS && okAt - now < 60_000) {
+    return news ? `Checked ${whenWords(ok)}` : `Up to date · checked ${whenWords(ok)}`;
+  }
+  if (ok) return `Last checked ${whenWords(ok)}`;
+  return 'Not checked yet';
+}
+
+// ───────────────────────────── Settings → General ─────────────────────────────
+
+/**
+ * The first row of Settings → General (the owner, 2026-10-26: "the update
+ * button to also show up in the general part of settings"): the version this
+ * Inbox runs and the same action the sidebar's Update button offers, plus
+ * Check now; the failing-check line with the install command when checking
+ * fails. The page never renders it when opened over the tailnet.
+ */
+export function GeneralUpdateRow({
+  version,
+  details,
+  update,
+  restarting,
+  checking,
+  failing,
+  onCheckNow,
+  onUpdate,
+  onWhatsNew,
+}: {
+  version: string;
+  details: UpdateDetails | null;
+  update: InboxHealth['update'];
+  restarting: boolean;
+  checking: boolean;
+  failing: UpdateCheckFailing | null;
+  onCheckNow: () => void;
+  onUpdate: () => void;
+  onWhatsNew: (version: string) => void;
+}) {
+  const known = details?.latest && newerThan(details.latest.version, version) ? details.latest.version : null;
+  const busy = restarting || update?.state === 'updating';
+  let status: ReactNode;
+  if (version === 'dev') status = 'A development build';
+  else if (restarting && update) status = `Restarting into ${update.version}…`;
+  else if (update?.state === 'updating') status = `Installing ${update.version}…`;
+  else if (update?.state === 'ready') status = `${update.version} is installed · restart to use it`;
+  else if (update?.state === 'failed') status = `${update.version} didn't install`;
+  else if (update?.state === 'available')
+    status = (
+      <>
+        {update.version} is available ·{' '}
+        <button type="button" className="ib-lnk" onClick={() => onWhatsNew(update.version)}>
+          What&apos;s new
+        </button>
+      </>
+    );
+  else if (failing) status = checkFailingStatus(failing, details);
+  // A newer release known but not offered (checks off, or Remind me tomorrow): never "Up to date".
+  else status = [checkStatusWords(details, !!known), known && `${known} is available`].filter(Boolean).join(' · ');
+  const label = restarting
+    ? 'Restarting…'
+    : update?.state === 'updating'
+      ? 'Updating…'
+      : update?.state === 'failed'
+        ? 'Update failed…'
+        : update
+          ? `Update to ${update.version}`
+          : null;
+  return (
+    <section className="ib-sgroup ib-sgroup-first" data-settings-update="" data-update-state={restarting ? 'restarting' : (update?.state ?? (failing ? 'check-failing' : 'none'))} aria-label="Plannotator version">
+      <div className="ib-card">
+        <div className="ib-prow">
+          <span className="ib-tile">
+            <Icon name="inbox" />
+          </span>
+          <span className="ib-txt">
+            <span className="ib-l">Plannotator {version}</span>
+            <span className="ib-desc" data-general-update-status="">
+              {status}
+            </span>
+          </span>
+          <span className="ib-ctl">
+            {label && (
+              <button
+                type="button"
+                className={`ib-btn ib-sm${update?.state === 'failed' ? '' : ' ib-pri'}`}
+                onClick={onUpdate}
+                disabled={busy}
+                data-general-update=""
+              >
+                {busy && <span className="ib-spin" aria-hidden="true" />}
+                {label}
+              </button>
+            )}
+            {!busy && (
+              <button type="button" className="ib-btn ib-sm" onClick={onCheckNow} disabled={checking || version === 'dev'} data-general-check="">
+                {checking ? 'Checking…' : 'Check now'}
+              </button>
+            )}
+          </span>
+        </div>
+      </div>
+      {failing && !update && details && <CheckFailingCommand command={details.command} />}
+    </section>
   );
 }
 
@@ -563,16 +943,14 @@ export function AboutBlock({
   where?: { data: string; mcpUrl: string; mcpCommand: string } | null;
 }) {
   const latest = details?.latest;
-  const last = details?.check.last_attempt_at;
+  const failing = details?.check.failing ?? null;
+  // What is happening with the version, beside what the checks say (checkStatusWords).
   let status = '';
   if (version === 'dev') status = 'a development build';
-  else if (details?.check.error) status = `the last check failed: ${details.check.error}`;
   else if (details?.update?.state === 'updating') status = `installing ${details.update.version}`;
   else if (details?.update?.state === 'ready') status = `${details.update.version} is installed; restart to use it`;
   else if (latest && newerThan(latest.version, version)) status = `${latest.version} is available`;
-  else if (last) status = 'up to date';
-  const day = last ? dayWords(last) : '';
-  const checked = !last ? 'not checked yet' : day === 'today' || day === 'yesterday' ? `checked ${day} ${clockTime(last)}` : `checked ${day}`;
+  const checked = version === 'dev' ? 'not checked' : checkStatusWords(details, status !== '');
   const checks = switches?.update_check;
   const auto = switches?.auto_update;
   const autoSupported = details?.auto_update.supported ?? false;
@@ -623,7 +1001,7 @@ export function AboutBlock({
               <span className="ib-l" id="ib-upd-check">
                 Tell me when a new version is out
               </span>
-              <span className="ib-desc">Once a day, from this computer</span>
+              <span className="ib-desc">Every few minutes, from this computer</span>
             </span>
             <span className="ib-ctl">
               <button
@@ -667,6 +1045,7 @@ export function AboutBlock({
               : `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so automatic updates are ${auto?.env ? 'on' : 'off'}.`
             : 'Off makes no request to GitHub at all. Check now always asks.'}
         </div>
+        {failing && details && <CheckFailingCommand command={details.command} />}
         {error && <div className="ib-error">{error}</div>}
       </section>
       {where && (

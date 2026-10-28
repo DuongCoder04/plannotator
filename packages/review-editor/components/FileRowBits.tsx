@@ -22,7 +22,7 @@ export const ViewedControl: React.FC<{
   /** Deprecated no-op — the control is always visible now. */
   forceVisible?: boolean;
 }> = ({ isViewed, onToggle }) => (
-  <Tooltip content={isViewed ? 'Viewed — click to unmark' : 'Mark as viewed'} side="bottom" delayDuration={300}>
+  <Tooltip content={isViewed ? 'Viewed — click to unmark' : 'Mark as viewed'} side="bottom">
     <span
       role="checkbox"
       aria-checked={isViewed}
@@ -73,7 +73,7 @@ export const StageControl: React.FC<{
     );
   }
   return (
-    <Tooltip content="Stage file (git add)" side="bottom" delayDuration={300}>
+    <Tooltip content="Stage file (git add)" side="bottom">
       <span
         role="button"
         // tabIndex + key handling: lives INSIDE the row <button> (a real nested
@@ -141,3 +141,34 @@ export const AnnotationBadge: React.FC<{ count: number }> = ({ count }) => {
     </span>
   );
 };
+
+/** A foldable section header for the left panel lists: the status view's
+ * Committed / Changes / Untracked headers and the tree's kind blocks. Chevron,
+ * optional icon, label, then anything the caller adds (counts). */
+export const PanelSectionHeader: React.FC<{
+  label: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  icon?: React.ReactNode;
+  children?: React.ReactNode;
+}> = ({ label, collapsed, onToggle, icon, children }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    aria-expanded={!collapsed}
+    className="w-full flex items-center gap-1.5 px-2 py-1.5 text-muted-foreground hover:text-foreground transition-colors"
+  >
+    <svg
+      className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+    {icon}
+    <span className="text-[11px] font-medium">{label}</span>
+    {children}
+  </button>
+);

@@ -2,6 +2,7 @@ import type { Block, Annotation, CodeAnnotation, EditorAnnotation, ImageAttachme
 import { planDenyFeedback } from '@plannotator/core/feedback-templates';
 import { resolveReplyParents } from '@plannotator/core/annotation-threads';
 import { diagramAnchorLocationLine, parseDiagramAnchor } from '@plannotator/core/diagram-anchor';
+import { imageRegionLocationLines, parseImageRegion, type ImageRegion } from '@plannotator/core/image-region';
 import {
   formatQuestionAnswerLines,
   formatQuestionAnswerText,
@@ -779,6 +780,8 @@ const isElementPlaceholderQuote = (text: unknown): boolean =>
  *  element instead (`Feedback on the <nav> element — "Primary"`); every other
  *  annotation keeps the quote line exactly as before. */
 const commentHeadingLine = (ann: any): string => {
+  const region = imageRegionOf(ann);
+  if (region) return `Feedback on a region of the image ${safeInline(region.src, 600)}`;
   const element = elementSubject(ann);
   return element ? `Feedback on ${element}` : `Feedback on: "${ann.originalText}"`;
 };
@@ -1001,6 +1004,8 @@ export const exportAnnotationEntry = (ann: any, opts: ElementContextExportOption
     default:
       if (ann?.isQuickLabel) {
         output += `[${ann.text}] ${commentHeadingLine(ann)}\n`;
+        const region = imageRegionOf(ann);
+        if (region) output += imageRegionExportLines(region);
         if (ann.quickLabelTip) output += `> ${ann.quickLabelTip}\n`;
       } else {
         output += `${commentHeadingLine(ann)}\n${diagramLocationExportLine(ann)}> ${ann?.text ?? ''}\n`;
@@ -1021,18 +1026,47 @@ export const exportAnnotationEntry = (ann: any, opts: ElementContextExportOption
   return output;
 };
 
+/** The validated region of a comment on part of an image (#2100), or null
+ *  for every other annotation and for a malformed one (an older or foreign
+ *  writer), which then exports as the ordinary comment it also is. */
+const imageRegionOf = (ann: any): ImageRegion | null =>
+  ann?.imageRegion == null ? null : parseImageRegion(ann.imageRegion);
+
+/** The two location lines under a region comment (the approved prototype):
+ *  `Image: figures/status-colors.png (line 63)` then
+ *  `Region: x=1820 y=380 w=420 h=160 (of 3664×1453)` — the image as written,
+ *  its line, and the box in the image's own pixels. The src is collapsed to
+ *  one line and defused like every page-controlled string. */
+const imageRegionExportLines = (region: ImageRegion): string =>
+  `${imageRegionLocationLines({ ...region, src: safeInline(region.src, 600) })}\n`;
+
 /** The location line under a comment made on a rendered diagram part:
  *  `Diagram node Approve? (D), line 4` — the part's own id (what the agent
  *  greps the fence for) and the DOCUMENT line that declares it. Emits
  *  nothing for every other annotation, keeping their output byte-identical;
  *  a malformed anchor (an older or foreign writer) is skipped, never thrown. */
 const diagramLocationExportLine = (ann: any): string => {
+  const region = imageRegionOf(ann);
+  if (region) return imageRegionExportLines(region);
   const anchor = ann?.diagramAnchor === undefined ? null : parseDiagramAnchor(ann.diagramAnchor);
-  return anchor === null ? '' : `${safeInline(diagramAnchorLocationLine(anchor), 600)}\n`;
+  if (anchor !== null) return `${safeInline(diagramAnchorLocationLine(anchor), 600)}\n`;
+  return hostLocationExportLine(ann);
+};
+
+/** A host's own location line for an entry (the Inbox's "At 1:42 (102.4 s of
+ *  7:41)" on a video comment): `exportLocation`, a string the HOST sets on the
+ *  copy it hands the exporter, never stored and never set by Plannotator, so
+ *  every other annotation's output is byte-identical. One line, capped. */
+const hostLocationExportLine = (ann: any): string => {
+  const line = ann?.exportLocation;
+  return typeof line === 'string' && line.trim() !== '' ? `${safeInline(line, 300)}\n` : '';
 };
 
 const lineLabelForAnnotation = (blocks: Block[], ann: any): string | null => {
   if (!ann.blockId || ann.type === 'GLOBAL_COMMENT') return null;
+  // A region names the line its image is written on, not its block's span.
+  const region = imageRegionOf(ann);
+  if (region?.sourceLine != null) return `line ${region.sourceLine}`;
   if (typeof ann.blockId === 'string' && ann.blockId.startsWith('diff-block-')) return null;
   const block = blocks.find(b => b.id === ann.blockId);
   if (!block || typeof block.startLine !== 'number') return null;
@@ -1605,7 +1639,10 @@ export const formatDraftAnnotationsForAsk = (input: DraftAnnotationsForAsk): str
     } else {
       const subject = elementSubject(ann) ?? quote(ann.originalText);
       const anchor = ann.diagramAnchor === undefined ? null : parseDiagramAnchor(ann.diagramAnchor);
-      const target = anchor ? `${subject} [${safeInline(diagramAnchorLocationLine(anchor), 300)}]` : subject;
+      const region = imageRegionOf(ann);
+      const target = region
+        ? `a region of the image ${quote(region.src)} [${safeInline(imageRegionLocationLines(region).replace('\n', '; '), 300)}]`
+        : anchor ? `${subject} [${safeInline(diagramAnchorLocationLine(anchor), 300)}]` : subject;
       body = ann.isQuickLabel
         ? `label ${quote(ann.text)} on ${target}`
         : `comment on ${target} — ${text(ann.text)}`;

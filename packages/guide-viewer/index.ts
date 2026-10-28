@@ -1,6 +1,6 @@
 export type { DiffFile, DiffFileStatus } from './types';
 export { parseDiffToFiles } from './diffParser';
-export { renderInlineMarkdown } from './renderInlineMarkdown';
+export { renderInlineMarkdown, type GuideLinkRenderer, type InlineMarkdownOptions } from './renderInlineMarkdown';
 export { renderMarkdownProse } from './renderMarkdownProse';
 export {
   GuideHostProvider,
@@ -13,7 +13,9 @@ export {
 } from './host';
 export { GuideView, resolveGuideSectionFiles } from './GuideView';
 export { GuideSectionCard } from './GuideSectionCard';
+export { GuideOverview } from './GuideOverview';
 export { GuideFileCard, estimateDiffHeight } from './GuideFileCard';
 export { GuideViewportProvider, useGuideFileWindow, GUIDE_MAX_MOUNTED_CODE_VIEWS } from './GuideViewportManager';
 export { GuideSectionSkeleton } from './GuideSkeleton';
 export { GuideViewer, type GuideViewerProps } from './GuideViewer';
+export { FileKindIcon, FILE_KIND_LABELS } from './FileKindIcon';

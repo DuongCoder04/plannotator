@@ -1,264 +1,245 @@
 /**
- * Plannotator Inbox decisions (step 3), proved through the server's real
- * doors: a running server on loopback, real `fetch`, the MCP SDK client over
- * streamable HTTP, and the files on disk. What the browser proof
- * (tests/e2e/inbox-decisions.spec.ts) cannot reach lives here: a decision
- * that cannot be written never undoes the sent answer, the records come back
- * after a restart, and the refusals. Every test uses its own temp data dir.
+ * Decision mode (experimental, approval "inbox-decision-mode") on a running
+ * Inbox: the gate (config.json `experimental.decisionMode`, the
+ * PLANNOTATOR_EXPERIMENTAL override, Settings' POST), `GET
+ * /api/inbox/decisions` (its guards, its order, its liveness through the
+ * existing picks and reply routes), and that the phone door leaves it out.
+ * Every test runs under its own temp data dir.
  */
-import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import type { InboxQuestion } from "@plannotator/core/inbox-types";
+import type { InboxDecisionsModel, InboxProjectRepo } from "@plannotator/core/inbox-types";
 import { startInboxServer, type InboxServer } from "./inbox";
-import { decisionProjectCounts, recordAgentDecision, replaceDecision, retireDecision, setQuestionDecision, waitingDecisionCount, waitingDecisions } from "./inbox-decisions";
 
 const roots: string[] = [];
 const servers: InboxServer[] = [];
 const clients: Client[] = [];
+const envBefore = { data: process.env.PLANNOTATOR_DATA_DIR, experimental: process.env.PLANNOTATOR_EXPERIMENTAL };
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close().catch(() => {});
   for (const server of servers.splice(0)) server.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  if (envBefore.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
+  else process.env.PLANNOTATOR_DATA_DIR = envBefore.data;
+  if (envBefore.experimental === undefined) delete process.env.PLANNOTATOR_EXPERIMENTAL;
+  else process.env.PLANNOTATOR_EXPERIMENTAL = envBefore.experimental;
 });
 
-function world(): { dataDir: string; project: string } {
+/** A fresh Inbox whose config.json is its own (the Inbox reads config through PLANNOTATOR_DATA_DIR). */
+async function setup(options: { on?: boolean; phones?: boolean; readProjectRepo?: (root: string) => Promise<InboxProjectRepo | null> } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-decisions-")));
   roots.push(root);
-  const project = join(root, "billing-svc");
-  mkdirSync(project);
-  Bun.spawnSync(["git", "init", "-q"], { cwd: project, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
-  return { dataDir: join(root, "data"), project };
-}
-
-async function start(dataDir: string): Promise<InboxServer> {
-  const server = await startInboxServer({ dataDir });
+  const dataDir = join(root, "data");
+  mkdirSync(dataDir, { recursive: true });
+  process.env.PLANNOTATOR_DATA_DIR = dataDir;
+  delete process.env.PLANNOTATOR_EXPERIMENTAL;
+  if (options.on) writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { decisionMode: true } }));
+  const project = join(root, "billing");
+  mkdirSync(project, { recursive: true });
+  const server = await startInboxServer({ dataDir, binaryPath: null, ...(options.phones ? { phones: true } : {}), ...(options.readProjectRepo ? { readProjectRepo: options.readProjectRepo } : {}) });
   servers.push(server);
-  return server;
-}
-
-async function agent(server: InboxServer) {
   const client = new Client({ name: "inbox-decisions-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
   clients.push(client);
-  return async (name: string, args: Record<string, unknown>) => {
-    const result = (await client.callTool({ name, arguments: args })) as { isError?: boolean; content: { text: string }[]; structuredContent?: any };
-    return result.isError ? { error: result.content[0]!.text } : result.structuredContent;
-  };
+  return { server, client, project, dataDir };
 }
 
-async function post(server: InboxServer, path: string, body: Record<string, unknown>): Promise<{ status: number; body: any }> {
-  const response = await fetch(`http://127.0.0.1:${server.port}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, serverSession: server.serverSession }),
+const base = (server: InboxServer) => `http://127.0.0.1:${server.port}`;
+const block = (prompt: string, extra: string[] = []) => [":::question", prompt, "", ...extra, "- [ ] Yes", "- [ ] No", ":::"].join("\n");
+
+async function send(client: Client, project: string, session: string, host: string, args: Record<string, unknown>) {
+  const result = await client.callTool({
+    name: "send_message",
+    arguments: { project_path: project, agent_session: session, agent_host: host, ...args },
   });
-  return { status: response.status, body: await response.json() };
+  expect(result.isError).toBeFalsy();
+  return result.structuredContent as { message_id: string; thread_id: string };
 }
 
-async function thread(server: InboxServer, threadId: string): Promise<any> {
-  return (await fetch(`http://127.0.0.1:${server.port}/api/inbox/threads/${threadId}`)).json();
+const post = (server: InboxServer, path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+  fetch(`${base(server)}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ serverSession: server.serverSession, ...body }) });
+
+async function decisions(server: InboxServer, query = ""): Promise<InboxDecisionsModel> {
+  const res = await fetch(`${base(server)}/api/inbox/decisions${query}`);
+  expect(res.status).toBe(200);
+  return (await res.json()) as InboxDecisionsModel;
 }
 
-const ASK = [
-  ":::question",
-  "Which way should the worker go on a Stripe 409?",
-  "Decision: when answered",
-  "",
-  "- [ ] Retry with the same idempotency key",
-  "- [ ] Fail the job",
-  ":::",
-].join("\n");
-
-/** An agent asks; the person picks the first choice. Returns the ids and the picked question. */
-async function askAndPick(server: InboxServer, project: string) {
-  const call = await agent(server);
-  const sent = await call("send_message", { project_path: project, body: ASK, agent_name: "Claude Code", agent_host: "claude-code" });
-  const key = sent.questions[0].key as string;
-  const before = (await thread(server, sent.thread_id)).thread.messages[0].questions[0] as InboxQuestion;
-  const answer = { v: 1, key, kind: before.kind, prompt: before.prompt, selected: ["Retry with the same idempotency key"] };
-  const picked = await post(server, `/api/inbox/messages/${sent.message_id}/picks`, { questions: [{ key, revision: 0, answer }] });
-  expect(picked.status).toBe(200);
-  return { call, sent, key };
-}
-
-function decisionsFile(dataDir: string): string {
-  const projects = join(dataDir, "inbox", "projects");
-  return join(projects, readdirSync(projects)[0]!, "decisions.jsonl");
-}
-
-test("a decision that cannot be written never undoes the sent answer, and the Send's retry records it", async () => {
-  const { dataDir, project } = world();
-  const server = await start(dataDir);
-  const { sent, key } = await askAndPick(server, project);
-  // A folder where the decisions file goes: the append fails, as a full or read-only disk would.
-  mkdirSync(decisionsFile(dataDir));
-
-  const send = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "send-1", questions: [{ key, revision: 1 }] });
-  expect(send.status).toBe(200);
-  expect(send.body.decisions).toEqual([]);
-  expect(send.body.decisions_refused).toHaveLength(1);
-  expect(send.body.decisions_refused[0].key).toBe(key);
-  const question = send.body.questions[0] as InboxQuestion;
-  expect(question.state).toBe("sent");
-  expect(question.decision_id).toBeNull();
-  expect((await thread(server, sent.thread_id)).thread.messages.at(-1).author.kind).toBe("person");
-
-  // The window keeps its idempotency key for a retry: the reply is not sent twice, the decision is filled in.
-  rmSync(decisionsFile(dataDir), { recursive: true });
-  const retry = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "send-1", questions: [{ key, revision: 1 }] });
-  expect(retry.body.replayed).toBe(true);
-  expect(retry.body.decisions).toHaveLength(1);
-  expect(retry.body.decisions[0].text).toBe("Retry with the same idempotency key.");
-  expect(retry.body.questions[0].decision_id).toBe(retry.body.decisions[0].id);
-  expect((await thread(server, sent.thread_id)).thread.messages.filter((m: any) => m.author.kind === "person")).toHaveLength(1);
-  // A third replay records nothing more.
-  const again = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "send-1", questions: [{ key, revision: 1 }] });
-  expect(again.body.decisions).toEqual([]);
-  expect(readFileSync(decisionsFile(dataDir), "utf8").trim().split("\n")).toHaveLength(1);
-});
-
-test("the switch, the card's words and the decisions come back after a restart", async () => {
-  const { dataDir, project } = world();
-  const server = await start(dataDir);
-  const { call, sent, key } = await askAndPick(server, project);
-  const kept = await post(server, `/api/inbox/messages/${sent.message_id}/decision`, {
-    key,
-    recording: true,
-    draft: { text: "Retry a 409 with the same key.", reason: null },
+describe("the gate", () => {
+  test("off by default: the route does not exist and Settings says so", async () => {
+    const { server } = await setup();
+    const res = await fetch(`${base(server)}/api/inbox/decisions`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { code: string }).code).toBe("not_found");
+    const settings = (await (await fetch(`${base(server)}/api/inbox/settings`)).json()) as { experimental: unknown };
+    expect(settings.experimental).toEqual({ decision_mode: { on: false, env: null } });
   });
-  expect(kept.body.question.decision_draft).toEqual({ text: "Retry a 409 with the same key.", reason: null });
-  await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "s", questions: [{ key, revision: 1 }] });
-  await call("record_decision", { project_path: project, text: "Webhooks are verified first.", agent_name: "Codex" });
-  server.stop();
-  servers.splice(servers.indexOf(server), 1);
 
-  const again = await start(dataDir);
-  const q = (await thread(again, sent.thread_id)).thread.messages[0].questions[0] as InboxQuestion;
-  expect(q.decision_draft).toEqual({ text: "Retry a 409 with the same key.", reason: null });
-  expect(q.decision_recording).toBe(true);
-  const listed = await (await agent(again))("list_decisions", { project_path: project });
-  expect(listed.decisions.map((d: any) => [d.text, d.source.kind])).toEqual([
-    ["Retry a 409 with the same key.", "answer"],
-    ["Webhooks are verified first.", "agent"],
-  ]);
-  expect(listed.decisions[0].id).toBe(q.decision_id);
-});
-
-test("refusals: a stale version, an ended decision, a reused key with other words, a switch on a sent answer, a stale tab", async () => {
-  const { dataDir, project } = world();
-  const server = await start(dataDir);
-  const { call, sent, key } = await askAndPick(server, project);
-  const recorded = await call("record_decision", { project_path: project, text: "Refunds stay a person's call.", idempotency_key: "k1" });
-  const id = recorded.decision.id as string;
-
-  expect((await post(server, `/api/inbox/decisions/${id}/retire`, { version: 0 })).body.code).toBe("decision_version_conflict");
-  expect((await post(server, `/api/inbox/decisions/${id}/replace`, { version: 1, text: "Refunds stay a person's call." })).body.code).toBe("validation_error");
-  expect((await post(server, `/api/inbox/decisions/${id}/retire`, { version: 1 })).status).toBe(200);
-  const ended = await post(server, `/api/inbox/decisions/${id}/replace`, { version: 2, text: "Something else." });
-  expect([ended.status, ended.body.code]).toEqual([409, "decision_not_current"]);
-
-  expect((await call("record_decision", { project_path: project, text: "Other words.", idempotency_key: "k1" })).error).toStartWith("idempotency_key_reused:");
-  expect((await call("record_decision", { project_path: project, text: "  " })).error).toStartWith("validation_error:");
-
-  await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "s", questions: [{ key, revision: 1 }] });
-  const late = await post(server, `/api/inbox/messages/${sent.message_id}/decision`, { key, recording: false });
-  expect([late.status, late.body.code]).toEqual([409, "question_already_sent"]);
-
-  const stale = await fetch(`http://127.0.0.1:${server.port}/api/inbox/decisions/${id}/retire`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ version: 2, serverSession: "an-older-inbox" }),
-  });
-  expect(stale.status).toBe(409);
-  const crossSite = await fetch(`http://127.0.0.1:${server.port}/api/inbox/messages/${sent.message_id}/decision`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "https://example.com" },
-    body: JSON.stringify({ key, recording: true }),
-  });
-  expect(crossSite.status).toBe(403);
-});
-
-test("the one-pass counts equal each project's Waiting group and current decisions, on a mixed multi-project seed", async () => {
-  const { dataDir, project } = world();
-  const server = await start(dataDir);
-  const store = server.store;
-  const author = { kind: "agent" as const, host: "claude-code", session: "ses_seed", name: "Claude Code" };
-  const agentOf = { host: "claude-code", session: "ses_seed", name: "Claude Code" };
-  const ids: string[] = [];
-  for (let p = 0; p < 4; p++) {
-    const root = join(project, `p${p}`);
-    mkdirSync(root);
-    const prj = store.ensureProject({ name: `p${p}`, root });
-    ids.push(prj.id);
-    for (let q = 0; q < p + 1; q++) {
-      const sent = store.sendMessage({ project_id: prj.id, author: { ...author, session: `ses_${p}_${q}` }, body: ASK.replace("409?", `409 (${q})?`) }).message;
-      // Some questions turn their switch off, some threads are resolved: neither waits.
-      if (q === 1) setQuestionDecision(store, sent.id, { key: store.questionsOf(sent.id)[0]!.key, recording: false });
-      if (q === 2) store.resolveThread(sent.thread_id, true);
+  test("Settings turns it on and off, applied at once, and refuses a bad body", async () => {
+    const { server } = await setup();
+    const on = await post(server, "/api/inbox/settings", { experimental: { decision_mode: true } });
+    expect(on.status).toBe(200);
+    expect(((await on.json()) as { experimental: unknown }).experimental).toEqual({ decision_mode: { on: true, env: null } });
+    expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(200);
+    for (const bad of [true, { decision_mode: "yes" }, { decision_mode: true, other: true }, []]) {
+      const refused = await post(server, "/api/inbox/settings", { experimental: bad });
+      expect(refused.status).toBe(422);
     }
-    // A question without the decision line never waits.
-    store.sendMessage({ project_id: prj.id, author, body: [":::question", "Plain question?", "", "- [ ] A", "- [ ] B", ":::"].join("\n") });
-    for (let d = 0; d < p; d++) {
-      const { decision } = recordAgentDecision(store, { project_id: prj.id, text: `p${p} decision ${d}`, agent: agentOf });
-      if (d === 1) retireDecision(store, decision.id, 1);
-      if (d === 2) replaceDecision(store, decision.id, { version: 1, text: `p${p} decision ${d}, revised` });
+    // Another site's page cannot switch it.
+    const cross = await post(server, "/api/inbox/settings", { experimental: { decision_mode: false } }, { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" });
+    expect(cross.status).toBe(403);
+    const stale = await fetch(`${base(server)}/api/inbox/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverSession: "not-this-one", experimental: { decision_mode: false } }),
+    });
+    expect(stale.status).toBe(409);
+    await post(server, "/api/inbox/settings", { experimental: { decision_mode: false } });
+    expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(404);
+  });
+
+  test("switching decision mode keeps the other experimental flags in config.json", async () => {
+    const { server, dataDir } = await setup();
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { otherFlag: true }, inboxTextSize: 13 }));
+    for (const on of [true, false]) {
+      expect((await post(server, "/api/inbox/settings", { experimental: { decision_mode: on } })).status).toBe(200);
+      const saved = JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8"));
+      expect(saved.experimental).toEqual({ otherFlag: true, decisionMode: on });
+      expect(saved.inboxTextSize).toBe(13);
     }
-  }
-  const counts = decisionProjectCounts(store);
-  expect(counts.map((c) => c.project_id)).toEqual(store.listProjects().map((p) => p.id));
-  for (const id of ids) {
-    const one = counts.find((c) => c.project_id === id)!;
-    expect(one.waiting).toBe(waitingDecisions(store, id).length);
-    expect(one.settled).toBe(store.decisionsOf(id).filter((d) => d.state === "current").length);
-  }
-  // Not vacuous: the seed has waiting questions and settled decisions to count, and some to leave out.
-  expect(counts.map((c) => [c.waiting, c.settled])).toEqual([
-    [1, 0],
-    [1, 1],
-    [1, 1],
-    [2, 2],
-  ]);
-  // The sidebar's Decisions count is the same rule, in the same pass.
-  expect(waitingDecisionCount(store)).toBe(waitingDecisions(store).length);
-  const list = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/threads`)).json();
-  expect(list.decisions_waiting).toBe(5);
+  });
+
+  test("PLANNOTATOR_EXPERIMENTAL decides over config.json, both ways", async () => {
+    const { server, dataDir } = await setup({ on: true });
+    process.env.PLANNOTATOR_EXPERIMENTAL = "other-thing, -decision-mode";
+    expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(404);
+    const settings = (await (await fetch(`${base(server)}/api/inbox/settings`)).json()) as { experimental: unknown };
+    expect(settings.experimental).toEqual({ decision_mode: { on: false, env: false } });
+    process.env.PLANNOTATOR_EXPERIMENTAL = " Decision-Mode ";
+    // While the env var decides, the switch is locked: a save is refused (409, like Over your tailnet) and writes nothing.
+    const before = readFileSync(join(dataDir, "config.json"), "utf8");
+    const locked = await post(server, "/api/inbox/settings", { experimental: { decision_mode: false } });
+    expect(locked.status).toBe(409);
+    expect(((await locked.json()) as { code: string }).code).toBe("experimental_env_decides");
+    expect(readFileSync(join(dataDir, "config.json"), "utf8")).toBe(before);
+    // Nothing else in the same request is saved either.
+    expect((await post(server, "/api/inbox/settings", { experimental: { decision_mode: true }, text_size: 12 })).status).toBe(409);
+    expect(readFileSync(join(dataDir, "config.json"), "utf8")).toBe(before);
+    expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(200);
+  });
 });
 
-test("the Decisions route carries every project's waiting and settled counts, for the project switch", async () => {
-  const { dataDir, project } = world();
-  const server = await start(dataDir);
-  const call = await agent(server);
-  // billing-svc: one question waiting on a decision, two decisions recorded, one of them then retired.
-  const asked = await call("send_message", { project_path: project, body: ASK, agent_name: "Claude Code", agent_host: "claude-code" });
-  await call("record_decision", { project_path: project, text: "Webhooks are verified first.", idempotency_key: "a" });
-  const retired = await call("record_decision", { project_path: project, text: "Refunds stay a person's call.", idempotency_key: "b" });
-  expect((await post(server, `/api/inbox/decisions/${retired.decision.id}/retire`, { version: 1 })).status).toBe(200);
-  // docs: a project with nothing to decide.
-  const docs = join(dataDir, "..", "docs");
-  mkdirSync(docs);
-  await call("send_message", { project_path: docs, body: "The docs build is green." });
+describe("GET /api/inbox/decisions", () => {
+  test("refuses another site and anything but GET", async () => {
+    const { server } = await setup({ on: true });
+    const cross = await fetch(`${base(server)}/api/inbox/decisions`, { headers: { "Sec-Fetch-Site": "cross-site" } });
+    expect(cross.status).toBe(403);
+    const foreign = await fetch(`${base(server)}/api/inbox/decisions`, { headers: { Origin: "http://localhost:1" } });
+    expect(foreign.status).toBe(403);
+    const same = await fetch(`${base(server)}/api/inbox/decisions`, { headers: { "Sec-Fetch-Site": "same-origin" } });
+    expect(same.status).toBe(200);
+    expect((await post(server, "/api/inbox/decisions", {})).status).toBe(405);
+    expect((await fetch(`${base(server)}/api/inbox/decisions?project=prj_nope`)).status).toBe(422);
+  });
 
-  const projects = (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/projects`)).json()).projects as { id: string; name: string }[];
-  const billing = projects.find((p) => p.name === "billing-svc")!;
-  const quiet = projects.find((p) => p.name === "docs")!;
-  const model = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/decisions?project=${quiet.id}`)).json();
-  // Asked from one project, every project's counts come back, in the sidebar's order.
-  expect(model.project_counts).toEqual([
-    { project_id: billing.id, waiting: 1, settled: 1 },
-    { project_id: quiet.id, waiting: 0, settled: 0 },
-  ]);
-  expect(model.project_counts.map((c: { project_id: string }) => c.project_id)).toEqual(projects.map((p) => p.id));
+  test("lists across threads in queue order, with what a card needs", async () => {
+    const { server, client, project } = await setup({ on: true });
+    const plain = await send(client, project, "ses-a", "claude-code", { body: `Some context first.\n\n${block("Rename the flag?")}` });
+    const blocked = await send(client, project, "ses-b", "codex", {
+      body: `${block("Plain one?")}\n\n${block("Retry on 409?", ["Stopped: the worker cannot ship without this."])}`,
+    });
+    await send(client, project, "ses-c", "pi", { body: block("Merge now?", ["Holds up: the release; the docs"]) });
+    const model = await decisions(server);
+    expect(model.serverSession).toBe(server.serverSession);
+    expect(model.decisions.map((d) => d.question.prompt)).toEqual(["Retry on 409?", "Plain one?", "Merge now?", "Rename the flag?"]);
+    const stopped = model.decisions[0]!;
+    expect(stopped.question.stopped).toBe("the worker cannot ship without this.");
+    expect(stopped.thread).toMatchObject({ id: blocked.thread_id, section: "stopped", project: { name: "billing" } });
+    expect(stopped.session).toMatchObject({ host: "codex", session: "ses-b" });
+    const last = model.decisions.at(-1)!;
+    expect(last.message).toMatchObject({ id: plain.message_id, excerpt: "Some context first." });
+    expect(last.id).toBe(`${plain.message_id}/${last.question.key}`);
+    // The project filter keeps the order.
+    const filtered = await decisions(server, `?project=${stopped.thread.project.id}`);
+    expect(filtered.decisions.map((d) => d.id)).toEqual(model.decisions.map((d) => d.id));
+  });
 
-  // The answer sent with its switch on: no longer waiting, one more settled.
-  const key = asked.questions[0].key as string;
-  const before = (await thread(server, asked.thread_id)).thread.messages[0].questions[0] as InboxQuestion;
-  const answer = { v: 1, key, kind: before.kind, prompt: before.prompt, selected: ["Fail the job"] };
-  await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { questions: [{ key, revision: 0, answer }] });
-  await post(server, `/api/inbox/messages/${asked.message_id}/reply`, { idempotency_key: "send", questions: [{ key, revision: 1 }] });
-  const after = await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/decisions?project=${billing.id}`)).json();
-  expect(after.project_counts[0]).toEqual({ project_id: billing.id, waiting: 0, settled: 2 });
+  test("each decision carries its thread project's repo, so a card links refs on that forge", async () => {
+    const seen: string[] = [];
+    const { server, client, project } = await setup({
+      on: true,
+      readProjectRepo: async (root) => {
+        seen.push(root);
+        return { display: "acme/billing", host: "gitlab.example.com" };
+      },
+    });
+    await send(client, project, "ses-a", "claude-code", { body: block("Ship it?") });
+    let repo: InboxProjectRepo | null | undefined;
+    for (let i = 0; i < 50 && !repo; i++) {
+      repo = (await decisions(server)).decisions[0]?.thread.project.repo;
+      if (!repo) await Bun.sleep(20);
+    }
+    expect(repo).toEqual({ display: "acme/billing", host: "gitlab.example.com" });
+    expect(seen).toContain(project);
+  });
+
+  test("follows the existing picks and reply routes: a pick stays with its revision, a Send takes it out", async () => {
+    const { server, client, project } = await setup({ on: true });
+    const asked = await send(client, project, "ses-a", "claude-code", { body: `${block("First?")}\n\n${block("Second?")}` });
+    const [first, second] = (await decisions(server)).decisions;
+    const pick = await post(server, `/api/inbox/messages/${asked.message_id}/picks`, {
+      questions: [{ key: first!.question.key, revision: first!.question.revision, answer: { v: 1, key: first!.question.key, kind: "single", prompt: "First?", selected: ["Yes"] } }],
+    });
+    expect(pick.status).toBe(200);
+    const after = (await decisions(server)).decisions;
+    expect(after.map((d) => [d.question.prompt, d.question.state, d.question.revision])).toEqual([
+      ["First?", "picked", 1],
+      ["Second?", "open", 0],
+    ]);
+    // A stale revision is refused by the picks route as always.
+    const stale = await post(server, `/api/inbox/messages/${asked.message_id}/picks`, {
+      questions: [{ key: first!.question.key, revision: 0, answer: null }],
+    });
+    expect(stale.status).toBe(409);
+    const reply = await post(server, `/api/inbox/messages/${asked.message_id}/reply`, {
+      idempotency_key: "decide-1",
+      words: "",
+      questions: [{ key: first!.question.key, revision: 1 }],
+    });
+    expect(reply.status).toBe(200);
+    expect((await decisions(server)).decisions.map((d) => d.id)).toEqual([second!.id]);
+  });
+
+  test("a pick with unsent_only that raced the Send is refused (question_already_sent), and the answer stays sent", async () => {
+    const { server, client, project } = await setup({ on: true });
+    const asked = await send(client, project, "ses-a", "claude-code", { body: block("Ship it?") });
+    const [d] = (await decisions(server)).decisions;
+    const answer = (selected: string) => ({ v: 1, key: d!.question.key, kind: "single", prompt: "Ship it?", selected: [selected] });
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { questions: [{ key: d!.question.key, revision: 0, answer: answer("Yes") }] })).status).toBe(200);
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/reply`, { idempotency_key: "k1", words: "", questions: [{ key: d!.question.key, revision: 1 }] })).status).toBe(200);
+    // The window read revision 1 before the Send: its pick lands after it.
+    const raced = await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { unsent_only: true, questions: [{ key: d!.question.key, revision: 1, answer: answer("No") }] });
+    expect(raced.status).toBe(409);
+    expect(((await raced.json()) as { code: string }).code).toBe("question_already_sent");
+    expect((await post(server, `/api/inbox/messages/${asked.message_id}/picks`, { unsent_only: "yes", questions: [{ key: d!.question.key, revision: 1, answer: answer("No") }] })).status).toBe(422);
+    expect((await decisions(server)).decisions).toHaveLength(0);
+  });
+
+  test("the phone door does not carry it: `decisions` stays the removed Decisions route, refused", async () => {
+    const { server } = await setup({ on: true, phones: true });
+    const made = (await (await post(server, "/api/inbox/pairing", {})).json()) as { offer: { code: string } };
+    const paired = await fetch(`${base(server)}/api/inbox/device/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: made.offer.code, name: "iPhone", platform: "ios" }),
+    });
+    const { token } = (await paired.json()) as { token: string };
+    const read = await fetch(`${base(server)}/api/inbox/device/decisions`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(read.status).toBe(404);
+    expect(((await read.json()) as { code: string }).code).toBe("device_route_not_found");
+  });
 });

@@ -6,13 +6,13 @@
  * (tests/helpers/fake-agents.ts); config.json lives in the scratch data dir.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "@plannotator/shared/config";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { INBOX_NOTE_START } from "./inbox-agent-notes";
-import { createAgentEnvironmentFor } from "./inbox-agents";
+import { claudePluginStateFromScopes, createAgentEnvironmentFor } from "./inbox-agents";
 
 let fake: FakeAgents;
 let server: InboxServer | null = null;
@@ -76,6 +76,113 @@ test("each agent's reach, reminder and note, read without writing anything", asy
   expect(fake.calls()).toEqual([]);
 });
 
+test("the first-run screen's plugin field: Claude Code found on PATH without the plugin is left to the person; with the plugin it is the tool; Pi and OpenCode say whether theirs is installed", async () => {
+  // A `claude` on PATH that is never run (reading the model runs no agent CLI).
+  writeFileSync(join(fake.bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fake.install("pi", "opencode");
+  mkdirSync(join(fake.home, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
+  const s = await start();
+  const before = (await get(s)) as Model & { agents: (AgentRow & { plugin?: { installed: boolean } | null })[] };
+  const claude = before.agents.find((agent) => agent.id === "claude-code")!;
+  expect(claude).toMatchObject({ detected: true, reach: { kind: "manual", on: false, state: "manual" }, plugin: { installed: false } });
+  expect(before.agents.find((agent) => agent.id === "pi")).toMatchObject({ detected: true, reach: { kind: "tool" }, plugin: { installed: true } });
+  expect(before.agents.find((agent) => agent.id === "opencode")).toMatchObject({ detected: true, reach: { kind: "manual" }, plugin: { installed: false } });
+  expect(before.agents.find((agent) => agent.id === "codex")).toMatchObject({ plugin: null });
+  // Turning Claude Code on without its plugin is refused: there is nothing to turn on.
+  const refused = (await (await post(s, "/api/inbox/agents", { agent: "claude-code", reach: true })).json()) as Model;
+  expect(refused.error).toContain("Claude Code is connected by hand");
+
+  mkdirSync(join(fake.home, ".claude"), { recursive: true });
+  writeFileSync(join(fake.home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "plannotator@plannotator": true } }));
+  const after = (await get(s)) as Model & { agents: (AgentRow & { plugin?: { installed: boolean } | null })[] };
+  expect(after.agents.find((agent) => agent.id === "claude-code")).toMatchObject({ detected: true, reach: { kind: "tool", on: true }, plugin: { installed: true } });
+  expect(fake.calls()).toEqual([]);
+});
+
+test("Claude Code's plugin is found in every scope the Inbox can read: settings.local.json, the plugin registry; an explicit false in settings wins over the registry", async () => {
+  const claude = join(fake.home, ".claude");
+  mkdirSync(join(claude, "plugins"), { recursive: true });
+  const s = await start();
+  const plugin = async () => ((await get(s)) as Model & { agents: (AgentRow & { plugin?: { installed: boolean } | null })[] }).agents.find((a) => a.id === "claude-code")!.plugin;
+  expect(await plugin()).toEqual({ installed: false });
+  writeFileSync(join(claude, "settings.local.json"), JSON.stringify({ enabledPlugins: { "plannotator@plannotator": true } }));
+  expect(await plugin()).toEqual({ installed: true });
+  rmSync(join(claude, "settings.local.json"));
+  // The registry (v2: { plugins: { id: [records] } }) records it: installed, unless a settings scope turns it off.
+  writeFileSync(join(claude, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "plannotator@plannotator": [{ scope: "user" }] } }));
+  expect(await plugin()).toEqual({ installed: true });
+  writeFileSync(join(claude, "settings.json"), JSON.stringify({ enabledPlugins: { "plannotator@plannotator": false } }));
+  // Turned off by name (`claude plugin disable`): not installed for the Inbox, and said, so the screen never offers installing it.
+  expect(await plugin()).toEqual({ installed: false, disabled: true });
+});
+
+test("Claude Code's mod off (claudeCodeMod in config.json, or PLANNOTATOR_CLAUDE_MOD=0): the plugin gives no Inbox tool, so it is not connected", async () => {
+  mkdirSync(join(fake.home, ".claude"), { recursive: true });
+  writeFileSync(join(fake.home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "plannotator@plannotator": true } }));
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ claudeCodeMod: false }));
+  const s = await start();
+  type Row = AgentRow & { tool?: { on: boolean; mod_off?: boolean } | null; plugin?: { installed: boolean } | null };
+  const claude = async (srv: InboxServer) => ((await get(srv)) as Model & { agents: Row[] }).agents.find((a) => a.id === "claude-code")!;
+  expect(await claude(s)).toMatchObject({ detected: true, reach: { kind: "tool", on: false, state: "off" }, tool: { on: false, mod_off: true }, plugin: { installed: true } });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({}));
+  expect(await claude(s)).toMatchObject({ reach: { kind: "tool", on: true }, tool: { on: true } });
+  expect((await claude(s)).tool?.mod_off).toBeUndefined();
+  server?.stop();
+  const env = await start({ PLANNOTATOR_CLAUDE_MOD: "0" });
+  expect(await claude(env)).toMatchObject({ reach: { on: false }, tool: { on: false, mod_off: true } });
+});
+
+test("Claude Code without its plugin, connected by hand (claude mcp add --scope user): it reaches the Inbox through MCP; another program under the name does not count", async () => {
+  writeFileSync(join(fake.bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // CLAUDE_CONFIG_DIR is set in the fake environment, so Claude Code's global config is $CLAUDE_CONFIG_DIR/.claude.json.
+  const file = join(fake.home, ".claude", ".claude.json");
+  mkdirSync(join(fake.home, ".claude"), { recursive: true });
+  writeFileSync(file, JSON.stringify({ numStartups: 3, mcpServers: { "plannotator-inbox": { type: "stdio", command: "/usr/local/bin/plannotator", args: ["inbox", "mcp"] } } }));
+  const s = await start();
+  expect(row(await get(s), "claude-code").reach).toMatchObject({ kind: "mcp", on: true, state: "connected" });
+  writeFileSync(file, JSON.stringify({ mcpServers: { "plannotator-inbox": { command: "my-proxy", args: [] } } }));
+  expect(row(await get(s), "claude-code").reach).toMatchObject({ kind: "manual", on: false });
+  expect(fake.calls()).toEqual([]);
+});
+
+test("OpenCode's generation is the one on PATH: opencode2 is OpenCode 2, opencode alone is OpenCode 1", async () => {
+  const s = await start();
+  const opencode = async () => ((await get(s)) as Model & { agents: (AgentRow & { plugin?: unknown })[] }).agents.find((a) => a.id === "opencode")!.plugin;
+  expect(await opencode()).toEqual({ installed: false });
+  fake.install("opencode");
+  expect(await opencode()).toEqual({ installed: false, generation: "1" });
+  fake.install("opencode2" as never);
+  expect(await opencode()).toEqual({ installed: false, generation: "2" });
+});
+
+test("turning Pi's extension tool on removes the MCP entry Plannotator added before the extension, so Pi never carries both", async () => {
+  fake.install("pi");
+  const s = await start();
+  // Pi without the extension: the window's Connect adds the MCP entry (`pi mcp add`).
+  expect((await (await post(s, "/api/inbox/agents", { agent: "pi", reach: true })).json() as Model).error ?? null).toBeNull();
+  const mcp = join(fake.home, ".pi", "agent", "mcp.json");
+  expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["plannotator-inbox"]).toBeDefined();
+  // The person installs the extension, then turns its tool on.
+  writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
+  const model = (await (await post(s, "/api/inbox/agents", { agent: "pi", reach: true })).json()) as Model;
+  expect(model.error ?? null).toBeNull();
+  expect(row(model, "pi").reach).toMatchObject({ kind: "tool", on: true });
+  expect(loadConfig().inboxTool).toEqual({ pi: true });
+  expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["plannotator-inbox"]).toBeUndefined();
+  expect(fake.calls().map((call) => call.args.slice(0, 2).join(" "))).toEqual(["mcp add", "mcp remove"]);
+});
+
+test("a tool turned off by name in config.json is chosen_off; the host default is not", async () => {
+  mkdirSync(join(fake.home, ".pi", "agent"), { recursive: true });
+  writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
+  const s = await start();
+  const pi = async () => ((await get(s)) as Model & { agents: (AgentRow & { tool?: { on: boolean; chosen_off?: boolean } | null })[] }).agents.find((a) => a.id === "pi")!.tool;
+  expect(await pi()).toMatchObject({ on: false, chosen_off: false });
+  await post(s, "/api/inbox/agents", { agent: "pi", reach: false });
+  expect(await pi()).toMatchObject({ on: false, chosen_off: true });
+});
+
 test("reach off removes Plannotator's entry and stays off at the next run; on adds it again", async () => {
   fake.install("codex");
   const s = await start();
@@ -94,6 +201,43 @@ test("reach off removes Plannotator's entry and stays off at the next run; on ad
   expect(row(on, "codex").reach.state).toBe("connected");
 });
 
+test("Qwen Code connected under another QWEN_HOME: Settings shows it off with where it is; turning it on into a settings.json Qwen would refuse keeps the old entry; fixed, it moves", async () => {
+  fake.install("qwen");
+  const mine = '{\n  // mine\n  "mcpServers": {}\n}\n';
+  mkdirSync(join(fake.home, ".qwen"), { recursive: true });
+  writeFileSync(join(fake.home, ".qwen", "settings.json"), mine);
+  const first = await start();
+  await first.connectAgents();
+  const connected = readFileSync(join(fake.home, ".qwen", "settings.json"), "utf8");
+  expect(connected).toContain("plannotator-inbox");
+  first.stop();
+
+  // The Inbox started from a shell with another QWEN_HOME, whose settings.json has a trailing comma.
+  const other = join(fake.root, "other-qwen");
+  mkdirSync(other, { recursive: true });
+  const trailing = '{\n  "mcpServers": { "x": { "command": "y" }, },\n}\n';
+  writeFileSync(join(other, "settings.json"), trailing);
+  const s = await start({ QWEN_HOME: other });
+  await s.connectAgents();
+  const shown = await get(s);
+  expect(row(shown, "qwen").reach).toMatchObject({ kind: "mcp", on: false, state: "elsewhere", path: "~/.qwen/settings.json" });
+
+  // The switch: on (as the UI sends it), refused, nothing changed anywhere.
+  const refused = (await (await post(s, "/api/inbox/agents", { agent: "qwen", reach: true })).json()) as Model;
+  expect(refused.error).toContain("stays connected in ~/.qwen/settings.json");
+  expect(readFileSync(join(fake.home, ".qwen", "settings.json"), "utf8")).toBe(connected);
+  expect(readFileSync(join(other, "settings.json"), "utf8")).toBe(trailing);
+  expect(row(refused, "qwen").reach.state).toBe("elsewhere");
+
+  // The person fixes it: on moves it, and the old file is theirs again, byte for byte.
+  writeFileSync(join(other, "settings.json"), '{\n  "mcpServers": { "x": { "command": "y" } }\n}\n');
+  const moved = (await (await post(s, "/api/inbox/agents", { agent: "qwen", reach: true })).json()) as Model;
+  expect(moved.error).toBeNull();
+  expect(row(moved, "qwen").reach).toMatchObject({ on: true, state: "connected" });
+  expect(readFileSync(join(fake.home, ".qwen", "settings.json"), "utf8")).toBe(mine);
+  expect(readFileSync(join(other, "settings.json"), "utf8")).toContain("plannotator-inbox");
+});
+
 test("the reminder switch per host, and the tool switch for Pi's extension", async () => {
   mkdirSync(join(fake.home, ".pi", "agent"), { recursive: true });
   writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
@@ -110,7 +254,9 @@ test("PLANNOTATOR_INBOX_TOOL locks the tool and reminder switches", async () => 
   const s = await start({ PLANNOTATOR_INBOX_TOOL: "0" });
   const model = (await (await post(s, "/api/inbox/agents", { agent: "claude-code", reminder: true })).json()) as Model;
   expect(model.error).toBe("PLANNOTATOR_INBOX_TOOL decides this");
-  expect(row(model, "claude-code").reach.locked).toBe(true);
+  // No plugin in this home: the lock shows on the tool switch (with the plugin it is the reach switch).
+  expect(row(model, "claude-code").tool?.locked).toBe(true);
+  expect(row(model, "claude-code").plugin).toEqual({ installed: false });
   expect(loadConfig().inboxReminder).toBeUndefined();
 });
 
@@ -331,4 +477,107 @@ test("the answer's fields are checked", async () => {
   expect((await post(s, "/api/inbox/agents/notes", { add: [], asked: "codex" })).status).toBe(422);
   expect((await post(s, "/api/inbox/agents/notes", { add: [], seen: "yes" })).status).toBe(422);
   expect(loadConfig().inboxAgentNotes).toBeUndefined();
+});
+
+// The independent review's follow-ups on #1974.
+
+type FullRow = AgentRow & { tool?: { on: boolean; mod_off?: boolean } | null; plugin?: Record<string, unknown> | null };
+const claudeRow = async (srv: InboxServer) => ((await get(srv)) as Model & { agents: FullRow[] }).agents.find((a) => a.id === "claude-code")!;
+const claudeSettings = (value: unknown, name = "settings.json") => {
+  mkdirSync(join(fake.home, ".claude"), { recursive: true });
+  writeFileSync(join(fake.home, ".claude", name), JSON.stringify(value));
+};
+
+test("the mod's own precedence: PLANNOTATOR_CLAUDE_MOD in Claude Code's settings env wins over this process's env and config.json", async () => {
+  claudeSettings({ enabledPlugins: { "plannotator@plannotator": true }, env: { PLANNOTATOR_CLAUDE_MOD: "0" } });
+  const s = await start({ PLANNOTATOR_CLAUDE_MOD: "1" });
+  expect(await claudeRow(s)).toMatchObject({ reach: { kind: "tool", on: false }, tool: { mod_off: true }, reminder: { on: false, needs_tool: true } });
+  // Settings → Agents' switch would change nothing: refused with why.
+  const refused = (await (await post(s, "/api/inbox/agents", { agent: "claude-code", reach: true })).json()) as Model;
+  expect(refused.error).toContain("Claude Code mod is off");
+  // settings.local.json, the stronger user scope, turns it back on.
+  claudeSettings({ env: { PLANNOTATOR_CLAUDE_MOD: "1" } }, "settings.local.json");
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ claudeCodeMod: false }));
+  expect(await claudeRow(s)).toMatchObject({ reach: { on: true }, tool: { on: true } });
+  expect((await claudeRow(s)).tool?.mod_off).toBeUndefined();
+});
+
+test("a disabled plugin or the mod off never hides a hand-added MCP entry; ~/.claude.json is read when CLAUDE_CONFIG_DIR is unset, past 1 MiB", async () => {
+  writeFileSync(join(fake.bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  claudeSettings({ enabledPlugins: { "plannotator@plannotator": false } });
+  // A big ~/.claude.json, as Claude Code's project history makes it.
+  const big = { projects: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`/p/${i}`, { history: "x".repeat(5000) }])), mcpServers: { "plannotator-inbox": { command: "/opt/plannotator", args: ["inbox", "mcp"] } } };
+  writeFileSync(join(fake.home, ".claude.json"), JSON.stringify(big));
+  expect(readFileSync(join(fake.home, ".claude.json")).length).toBeGreaterThan(1024 * 1024);
+  const s = await start({ CLAUDE_CONFIG_DIR: "" });
+  expect(await claudeRow(s)).toMatchObject({ reach: { kind: "mcp", on: true, path: "~/.claude.json" }, plugin: { installed: false, disabled: true } });
+  server?.stop();
+  claudeSettings({ enabledPlugins: { "plannotator@plannotator": true } });
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ claudeCodeMod: false }));
+  const mod = await start({ CLAUDE_CONFIG_DIR: "" });
+  expect(await claudeRow(mod)).toMatchObject({ reach: { kind: "mcp", on: true }, tool: { mod_off: true }, plugin: { installed: true } });
+});
+
+test("managed settings turning the plugin off win over the user's true, and say so", () => {
+  expect(claudePluginStateFromScopes([{ scope: "managed", on: false }, { scope: "user", on: true }], true)).toEqual({ state: "disabled", managed: true });
+  expect(claudePluginStateFromScopes([{ scope: "managed", on: undefined }, { scope: "user", on: false }, { scope: "user", on: true }], true)).toEqual({ state: "disabled", managed: false });
+  expect(claudePluginStateFromScopes([{ scope: "user", on: undefined }], true)).toEqual({ state: "enabled", managed: false });
+  expect(claudePluginStateFromScopes([], false)).toEqual({ state: "absent", managed: false });
+});
+
+test("OpenCode's generation from evidence: the global config's shape wins over the commands on PATH", async () => {
+  fake.install("opencode2" as never);
+  const s = await start();
+  const opencode = async () => ((await get(s)) as Model & { agents: FullRow[] }).agents.find((a) => a.id === "opencode")!.plugin;
+  expect(await opencode()).toEqual({ installed: false, generation: "2" });
+  mkdirSync(join(fake.home, ".config", "opencode"), { recursive: true });
+  writeFileSync(join(fake.home, ".config", "opencode", "opencode.json"), JSON.stringify({ plugin: ["some-other-plugin"] }));
+  expect(await opencode()).toEqual({ installed: false, generation: "1" });
+});
+
+test("Turn on removes Pi's MCP entry first: if it cannot be removed, the tool stays off and MCP keeps working", async () => {
+  fake.install("pi");
+  const failFile = join(fake.root, "fail");
+  const s = await start({ FAKE_AGENT_FAIL_FILE: failFile });
+  await post(s, "/api/inbox/agents", { agent: "pi", reach: true });
+  writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
+  writeFileSync(failFile, "pi");
+  const model = (await (await post(s, "/api/inbox/agents", { agent: "pi", reach: true })).json()) as Model;
+  expect(model.error).toContain("could not be removed, so its Inbox tool stays off");
+  expect(loadConfig().inboxTool).toBeUndefined();
+  expect(JSON.parse(readFileSync(join(fake.home, ".pi", "agent", "mcp.json"), "utf8")).mcpServers["plannotator-inbox"]).toBeDefined();
+});
+
+test("the connect run replaces Pi's MCP entry once the extension is there and its tool is on", async () => {
+  fake.install("pi");
+  const s = await start();
+  await s.connectAgents();
+  const mcp = join(fake.home, ".pi", "agent", "mcp.json");
+  expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["plannotator-inbox"]).toBeDefined();
+  writeFileSync(join(fake.home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: ["npm:@plannotator/pi-extension"] }));
+  // The tool still off (Pi's default): the MCP entry is Pi's only way in, so it stays.
+  await s.connectAgents();
+  expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["plannotator-inbox"]).toBeDefined();
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ inboxTool: { pi: true } }));
+  await s.connectAgents();
+  expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["plannotator-inbox"]).toBeUndefined();
+  expect(row(await get(s), "pi").reach).toMatchObject({ kind: "tool", on: true });
+});
+
+test("Cursor's note is copied by hand: the card answers it as shown to copy only when Cursor is here, and never writes a file; Settings has no switch for it", async () => {
+  const s = await start();
+  const missing = (await (await post(s, "/api/inbox/agents/notes", { add: ["cursor"] })).json()) as Model & { results: unknown[] };
+  expect(missing.results).toEqual([{ ok: false, agent: "cursor", reason: "Cursor was not found on this computer", path: null }]);
+  expect(existsSync(join(fake.home, ".cursor"))).toBe(false);
+  s.stop();
+  fake.install("cursor-agent");
+  const found = await start();
+  const answer = (await (await post(found, "/api/inbox/agents/notes", { add: ["cursor"] })).json()) as Model & { results: unknown[] };
+  expect(answer.results).toEqual([{ ok: true, agent: "cursor", action: "manual", path: null }]);
+  expect(existsSync(join(fake.home, ".cursor"))).toBe(false);
+  expect(existsSync(join(dataDir, "inbox", "agent-notes.json"))).toBe(false);
+  const note = row(answer, "cursor").note!;
+  expect(note).toMatchObject({ state: "manual", path: null, create: false });
+  expect(note.reason).toContain("Customize → Rules");
+  expect((await post(found, "/api/inbox/agents", { agent: "cursor", note: true })).status).toBe(422);
 });

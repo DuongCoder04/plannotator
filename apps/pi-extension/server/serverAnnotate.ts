@@ -1,5 +1,5 @@
 import { piUpdateAdvert } from "./update-advert.ts";
-import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
+import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { createServer } from "node:http";
@@ -18,16 +18,19 @@ import { startLiveAppProxyNode } from "../generated/live-proxy-node.ts";
 import type { LiveAppProxy } from "../generated/live-proxy-core.ts";
 
 import { contentHash } from "../generated/draft.ts";
-import { annotateDraftFilePath, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
+import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
 import { isPathAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
+import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
+import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { getPlanVersion, getVersionCount, listVersions } from "../generated/storage.ts";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "../generated/annotate-history.ts";
+import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "../generated/annotate-live-version.ts";
 import { htmlDiff } from "../generated/html-diff.ts";
-import { agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -65,7 +68,7 @@ import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
 
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
-import { getAvailableOpenInApps, openFileInApp } from "./open-in-apps.ts";
+import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
 import {
@@ -91,11 +94,12 @@ import {
 	encodeHtmlAssetPath,
 	htmlAssetBaseHref,
 	htmlAssetDocumentHeaders,
+	htmlAssetHeaders,
 	isFramedEmbeddedDocumentRequest,
 	resolveHtmlAssetRoute,
 	rewriteHtmlAssetReferences,
 } from "../generated/html-assets.ts";
-import { folderSessionAssetAllowed, htmlAssetContext, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES, resolveOpenInTarget } from "../generated/html-assets-node.ts";
+import { folderSessionAssetAllowed, htmlAssetContext, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES } from "../generated/html-assets-node.ts";
 import {
 	supportsAnnotateAgentTerminalMode,
 	type AgentTerminalCapability,
@@ -111,6 +115,8 @@ import { createAnnotateDecisionSettler, isNothingToSendFeedbackBody } from "../g
 
 export interface AnnotateServerResult {
 	port: number;
+	/** The live proxy port, when annotating a running app. */
+	liveProxyPort?: number;
 	portSource: "env" | "remote-default" | "random";
 	url: string;
 	waitForDecision: () => Promise<{ feedback: string; annotations: unknown[]; exit?: boolean; approved?: boolean; selectedMessageId?: string; feedbackScope?: "message" | "messages"; closedBy?: "agent"; unsentAnnotations?: number }>;
@@ -251,9 +257,8 @@ function createHtmlAssetRegistry(folderPath?: string) {
 							"Access-Control-Allow-Origin": "*",
 						}
 					: {
-							"Content-Type": contentType,
-							"Cache-Control": "no-store",
-							"X-Content-Type-Options": "nosniff",
+							// Sandboxed: an SVG or XML asset opened as a document never runs script on this origin (mirrors the Bun route).
+							...htmlAssetHeaders(contentType),
 							"Access-Control-Allow-Origin": "*",
 						},
 			);
@@ -268,6 +273,8 @@ function createHtmlAssetRegistry(folderPath?: string) {
 }
 
 export async function startAnnotateServer(options: {
+	/** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+	refRunner?: RefRunner;
 	/** "Ask this session": the in-process bridge to the Pi session that opened this annotation. */
 	sessionBridge?: SessionBridge;
 	/** Turns on `/api/host/status` and `/api/host/close` for a caller in another process (never in remote mode). */
@@ -374,8 +381,10 @@ export async function startAnnotateServer(options: {
 	// /api/plan and echoed by every decision; a different nonce is refused
 	// with 409 session_mismatch before anything settles. Missing is accepted.
 	const serverSession = createServerSessionNonce();
+	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
+	const refCards = createPiRefCards(options.refRunner);
 	const sendAlreadyDecided = (res: import("node:http").ServerResponse): void => {
-		json(res, { error: "This review session has already been decided." }, 409);
+		json(res, { error: "This review session has already been decided.", code: "already_decided" }, 409);
 	};
 
 	// Last-client abandonment lease: once the tab's client-lease stream
@@ -427,13 +436,20 @@ export async function startAnnotateServer(options: {
 		mode: options.mode || "annotate",
 		filePath: options.filePath,
 	});
+	// A URL or the last message has no file of its own, but its linked
+	// documents do: per-document copies plus the index (#1545), as on Bun.
+	const rootlessDocuments = annotateSessionHasRootlessDocuments({
+		mode: options.mode || "annotate",
+		filePath: options.filePath,
+	});
 	const annotateDrafts = createAnnotateDraftSession({
 		contentKey: draftKey,
 		filePath: draftFilePath,
 		documents:
-			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles
+			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles || rootlessDocuments
 				? {
 						isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+						...(rootlessDocuments ? { indexed: true } : {}),
 					}
 				: null,
 	});
@@ -780,6 +796,13 @@ export async function startAnnotateServer(options: {
 			? initialSingleFileSourceSave.path
 			: resolveUserPath(options.filePath)
 		: null;
+	// The file a live version save (#2037) reads and keys history by: the same
+	// resolved path the open-time save used, so both land in one history.
+	const liveVersionFilePath = annotateLiveVersionFilePath({
+		sourceSaveEligible: singleFileSourceSaveEligible && singleFileLocalAnnotate,
+		resolvedFilePath: resolvePath(options.filePath),
+		realFilePath: initialSingleFileSourcePath,
+	});
 	// A review of several files: Edit Mode may write exactly the bundle's own
 	// files (real paths, captured now, as a single-file session captures its
 	// one file), never a document they link to.
@@ -851,9 +874,12 @@ export async function startAnnotateServer(options: {
 	const server = createServer(async (req, res) => {
 		// Host allowlist first, before any route (request-host-guard.ts).
 		if (requestHostGuard.refuse(req, res)) return;
+		// Then no write from another site, before any route (request-origin-guard.ts).
+		if (refuseCrossOriginWrite(req, res)) return;
 		const url = requestUrl(req);
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
+		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
 		if (await externalAnnotations.handle(req, res, url)) return;
 		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
 
@@ -981,6 +1007,9 @@ export async function startAnnotateServer(options: {
 							diffCurrent: servedIsSnapshot || !servedHtml ? annotateHistory.diffCurrent : servedHtml,
 					  }
 					: {}),
+				// The editor may save a disk change as a version (#2037); absent
+				// when history is off or the file is not Markdown/text.
+				...(liveVersionFilePath && annotateHistoryEnabled ? { liveVersions: true } : {}),
 				sharingEnabled,
 				shareBaseUrl,
 				pasteApiUrl,
@@ -1084,6 +1113,17 @@ export async function startAnnotateServer(options: {
 				slug: annotateHistory.slug,
 				versions: listVersions(annotateProjectName, annotateHistory.slug),
 			});
+		} else if (url.pathname === ANNOTATE_LIVE_VERSION_PATH && req.method === "POST") {
+			// Save the file as it is on disk now as a version (#2037); mirrors
+			// the Bun annotate server (annotate-live-version.ts decides).
+			const outcome = saveAnnotateLiveVersion(await parseBody(req), {
+				serverSession,
+				historyEnabled: annotateHistoryEnabled,
+				resolvedFilePath: liveVersionFilePath,
+				project: annotateProjectName,
+			});
+			if (outcome.status === 200) annotateHistory = outcome.history;
+			json(res, outcome.body, outcome.status);
 		} else if (url.pathname === "/api/share-html" && req.method === "GET") {
 			handleShareHtml(res, url);
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
@@ -1092,8 +1132,12 @@ export async function startAnnotateServer(options: {
 				return;
 			}
 			try {
-				const body = (await parseBody(req)) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
+				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; conventionalComments?: boolean; agentTerminalSide?: unknown; agentTerminalDefaultAgent?: unknown };
 				const toSave: Record<string, unknown> = {};
+				// OpenCode's agent switch (#1390): a known shape or nothing is saved.
+				const agentSwitch = agentSwitchConfigToSave(body);
+				if (agentSwitch === null) return json(res, { error: "Invalid agentSwitch" }, 400);
+				if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
 				if (body.theme !== undefined) toSave.theme = body.theme;
@@ -1105,7 +1149,7 @@ export async function startAnnotateServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
 				if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
-				if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
 				json(res, { ok: true });
 			} catch {
@@ -1132,30 +1176,9 @@ export async function startAnnotateServer(options: {
 				json(res, { ok: false, error: "Open in app is unavailable for this source" }, 400);
 				return;
 			}
-			try {
-				const body = await parseBody(req);
-				const filePath = body.filePath;
-				if (typeof filePath !== "string" || !filePath) {
-					json(res, { ok: false, error: "Missing filePath" }, 400);
-					return;
-				}
-				const appId = typeof body.appId === "string" ? body.appId : undefined;
-				// Confine opens to the same reference roots /api/doc serves from,
-				// so any linked doc the user can view can also be opened.
-				const abs = resolveOpenInTarget(filePath, null, getReferenceRootPaths);
-				if (abs == null) {
-					json(res, { ok: false, error: "Path is outside the allowed directory" }, 403);
-					return;
-				}
-				const result = await openFileInApp(abs, appId);
-				json(res, result, 200);
-			} catch (err) {
-				json(
-					res,
-					{ ok: false, error: err instanceof Error ? err.message : "Failed to open file" },
-					500,
-				);
-			}
+			// Confine opens to the same reference roots /api/doc serves from,
+			// so any linked doc the user can view can also be opened.
+			await handleOpenInRequest(req, res, { serverSession, resolveRoot: getReferenceRootPaths });
 		} else if (url.pathname === "/api/draft") {
 			if (req.method === "POST") {
 				try {
@@ -1176,6 +1199,13 @@ export async function startAnnotateServer(options: {
 			}
 		} else if (url.pathname === "/api/draft/document") {
 			if (req.method === "GET") {
+				// A read marks the copy as this session's (and lists it in a
+				// rootless session's index): a decision then clears it, so it
+				// gets the writes' cross-site guard.
+				if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
+					json(res, crossOriginRefusalBody(), 403);
+					return;
+				}
 				const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
@@ -1408,7 +1438,7 @@ export async function startAnnotateServer(options: {
 				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
-			await handleSaveNotesRequest(req, res);
+			await handleSaveNotesRequest(req, res, { serverSession });
 		} else if (url.pathname.startsWith("/api/")) {
 			handleApiNotFound(res, url.pathname);
 		} else if (isFramedEmbeddedDocumentRequest(firstHeader(req.headers["sec-fetch-dest"]), url.pathname)) {
@@ -1520,6 +1550,7 @@ export async function startAnnotateServer(options: {
 
 	return {
 		port,
+		liveProxyPort: liveProxy?.port,
 		portSource,
 		url: buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,
@@ -1557,6 +1588,8 @@ export async function startAnnotateServer(options: {
 					}
 				}
 			} finally {
+				// Before closeAllConnections, or a session-closed just sent is lost.
+				externalAnnotations.endStreams();
 				server.close();
 				// close() only stops the listener; drain browser keep-alive sockets so a
 				// stopped session's connections die immediately instead of at the

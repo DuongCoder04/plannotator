@@ -2,11 +2,12 @@ import type { Plugin } from "@opencode/plugin";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadConfig, resolveAgentTool, resolveInboxReminder, resolveSharingEnabled } from "@plannotator/shared/config";
-import { INBOX_REMINDER_TEXT, INBOX_TOOL_NAME, inboxReminderText } from "@plannotator/shared/inbox/connection";
+import { loadConfig, resolveAgentTool, resolveInboxReminder, resolveInboxReminderText, resolveSharingEnabled, type PlannotatorConfig } from "@plannotator/shared/config";
+import { INBOX_REMINDER_TEXT, INBOX_REMINDER_TEXT_NO_WAKE, INBOX_TOOL_NAME } from "@plannotator/shared/inbox/connection";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
 import { composeSystemPrompt, stripConflictingPlanModeRules } from "./plan-mode";
+import { replacePlanModeReminders } from "./plan-reminder";
 import {
   isPlanningAgent,
   normalizeWorkflowOptions,
@@ -43,7 +44,7 @@ import type { SessionBridge } from "@plannotator/ai/session-bridge";
 import { createOpenCodeSessionBridge, markPlanReviewPending } from "./opencode-session-bridge";
 import type { PlanEdit } from "./plan-edits";
 import { getPlanningPrompt } from "./planning-prompt";
-import { findInboxConnection, registerInboxOpenCode2, type InboxToolDomainLike } from "./inbox";
+import { dropInboxDuplicates, findInboxConnection, inboxReminderAlreadyAdded, registerInboxOpenCode2, type InboxToolDomainLike } from "./inbox";
 
 const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600;
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -84,6 +85,13 @@ type EmbeddedRuntimeModule = {
 const serverPlugin = {
   id: "plannotator",
   setup: async (ctx) => {
+    // Ends what this plugin generation started that would outlive it: OpenCode 2 unloads a generation
+    // (on `opencode2 reload`, a plugin update, a config change, an hour idle) and calls the cleanup
+    // setup returns. Without it the old generation's Inbox wakes kept polling with a dead context.
+    const lifetime = new AbortController();
+    const cleanup = () => {
+      lifetime.abort();
+    };
     const workflowOptions = normalizeWorkflowOptions(ctx.options as PlannotatorOpenCodeOptions);
     let cachedAgents: OpenCodeBridgeAgent[] | undefined;
 
@@ -141,6 +149,8 @@ const serverPlugin = {
       try {
         await ctx.session.hook("context", (event) => {
           dropSessionUrlNotices(event.messages as unknown[]);
+          // A Send now reply that reached the session twice (its steer row and the fallback queued turn): one copy.
+          dropInboxDuplicates(event.messages as unknown[]);
         });
         // `session.generate` (plan review's "Quick answer from this session")
         // builds its request through its own hook with the same shape
@@ -148,6 +158,7 @@ const serverPlugin = {
         // notice is kept out of those answers too.
         await ctx.session.hook("generate", (event) => {
           dropSessionUrlNotices(event.messages as unknown[]);
+          dropInboxDuplicates(event.messages as unknown[]);
         });
       } catch (error) {
         console.error(`[Plannotator] Could not register the session-URL notice filter: ${error instanceof Error ? error.message : String(error)}`);
@@ -195,7 +206,9 @@ const serverPlugin = {
         const inbox = await findInboxConnection();
         if (inbox) {
           inboxFound = true;
-          await registerInboxOpenCode2(ctx.tool as unknown as InboxToolDomainLike, v2, inbox, (sessionID) => resolveRootSession(v2, sessionID));
+          await registerInboxOpenCode2(ctx.tool as unknown as InboxToolDomainLike, v2, inbox, (sessionID) => resolveRootSession(v2, sessionID), {
+            signal: lifetime.signal,
+          });
         }
       } catch (error) {
         console.error(`[Plannotator] Could not register the plannotator_inbox tool: ${error instanceof Error ? error.message : String(error)}`);
@@ -208,11 +221,14 @@ const serverPlugin = {
       // answer: OpenCode 2 applies a tool transform lazily, per request, so
       // that answer is still false here; `addInboxReminder` checks each
       // request's own tool list instead.
-      if (inboxFound && hasSessionHooks && resolveInboxReminder(loadConfig(), process.env, "opencode")) {
+      // config.json is read only once the Inbox was found, with the hooks to carry the line.
+      const inboxConfig = inboxFound && hasSessionHooks ? loadConfig() : null;
+      if (inboxConfig && resolveInboxReminder(inboxConfig, process.env, "opencode")) {
         try {
           // A host without session.prompt registers the tool without the wake
           // (registerInboxOpenCode2): its line names wait_for_reply instead.
-          const reminder = openCode2InboxReminder(v2);
+          // The person's own line (config.json prompts.inbox) replaces either.
+          const reminder = openCode2InboxReminder(v2, inboxConfig);
           await ctx.session.hook("context", async (event) => {
             await addInboxReminder(event, getAgents, reminder);
           });
@@ -249,7 +265,7 @@ const serverPlugin = {
             "While actively planning with the user, use submit_plan instead. Only use todos once implementation begins or unless the user explicitly asks.";
         }
 
-        replaceStrictPlanReminder(event.messages);
+        replacePlanModeReminders(event.messages);
 
         const systemText = event.system.map((part) => part.text).join("\n").toLowerCase();
         if (systemText.includes("title generator") || systemText.includes("generate a title")) return;
@@ -279,7 +295,9 @@ const serverPlugin = {
       });
     }
 
-    if (!hasToolTransform || !shouldRegisterSubmitPlan(workflowOptions)) return;
+    // No tool domain (OpenCode 1.18 runs this setup too): no Inbox wake was started, so nothing to clean up.
+    if (!hasToolTransform) return;
+    if (!shouldRegisterSubmitPlan(workflowOptions)) return cleanup;
 
     await ctx.tool.transform((tools) => {
       tools.add({
@@ -390,6 +408,7 @@ const serverPlugin = {
         },
       });
     });
+    return cleanup;
   },
 } satisfies Plugin.Plugin;
 
@@ -458,16 +477,19 @@ function getPlanHtml(): string {
  * The embedded runtime's ready hook: put the session URL where a reviewer can
  * see it, and nowhere else.
  *
- * This still must NOT go to `client.app.log`. That is `console.error`, the same
- * stderr stream `handleServerReady` has already printed the URL to, so logging
- * here would duplicate the line in remote mode and add a stray one locally
- * (which is why this hook used to be empty). The transcript notice is a
- * different surface entirely, and on OpenCode 2 it is the only one a remote
- * reviewer can actually see: the host discards a server plugin's stderr unless
- * it was started with `OPENCODE_PRINT_LOGS=1`.
+ * The transcript notice comes first. `client.app.log` is no substitute for it:
+ * that is `console.error`, and on OpenCode 2 the host discards a server
+ * plugin's stderr unless it was started with `OPENCODE_PRINT_LOGS=1`, so it is
+ * only the fallback below for a host without the notice. (`runEmbeddedPlanReview`,
+ * this hook's caller, passes `handleServerReady` `{ announce: false }`: the
+ * embedded runtime shares stderr with OpenCode's TUI renderer, so the raw ready
+ * line is not printed there.) The transcript notice is the surface a reviewer
+ * can actually see, remote or local.
  *
- * Best-effort in both directions: an older host exposes no `session.synthetic`,
- * so `notifyUrl` is absent and this stays silent, exactly as before.
+ * An older host exposes no `session.synthetic`, so `notifyUrl` is absent; the
+ * URL then goes to `client.app.log`, the console output such a host shows only
+ * with `OPENCODE_PRINT_LOGS=1`. (That used to be the ready line
+ * `handleServerReady` printed itself; with `announce: false` it is this log.)
  */
 export function createPlanReadyNotifier(
   client: V2Client,
@@ -481,7 +503,14 @@ export function createPlanReadyNotifier(
       // The list entry is best-effort.
     }
     const notify = client.notifyUrl;
-    if (typeof notify !== "function") return;
+    if (typeof notify !== "function") {
+      try {
+        client.app.log({ level: "info", message: formatSessionUrlNotice(url) });
+      } catch {
+        // Logging is best-effort.
+      }
+      return;
+    }
     try {
       void notify({ url, message: formatSessionUrlNotice(url) }).catch(() => {
         // A cosmetic notice must never surface as an unhandled rejection.
@@ -627,7 +656,7 @@ export function replacePlanningSystemParts(
   system: SystemPart[],
   additions: string[],
 ): void {
-  const stripped = stripConflictingPlanModeRules(system.map((part) => part.text));
+  const stripped = stripConflictingPlanModeRules(system.map((part) => part.text), { openCode2: true });
   const composed = composeSystemPrompt([], [...stripped, ...additions.filter(Boolean)]);
   system.length = 0;
   system.push(...composed.map((text) => ({ type: "text" as const, text })));
@@ -648,12 +677,13 @@ export function pushComposedSystemReminder(
 }
 
 /**
- * The reminder line for this OpenCode 2 host: the wake's wording where the
+ * The reminder line for this OpenCode 2 host: the person's own text from
+ * config.json (`prompts.inbox`) when set, else the wake's wording where the
  * host can deliver a reply as a turn (`session.prompt`), else the no-wake one,
  * as `registerInboxOpenCode2` registers the tool `wakes: false` there.
  */
-export function openCode2InboxReminder(v2: { session?: { prompt?: unknown } }): string {
-  return inboxReminderText(INBOX_TOOL_NAME, { wakes: typeof v2.session?.prompt === "function" });
+export function openCode2InboxReminder(v2: { session?: { prompt?: unknown } }, config: PlannotatorConfig = {}): string {
+  return resolveInboxReminderText(config, "opencode", { toolName: INBOX_TOOL_NAME, wakes: typeof v2.session?.prompt === "function" });
 }
 
 /**
@@ -672,32 +702,12 @@ export async function addInboxReminder(
   if (systemText.includes("title generator") || systemText.includes("generate a title")) return;
   const agent = (await getAgents()).find((candidate) => candidate.name === event.agent);
   if (agent?.mode === "subagent") return;
-  if (systemText.includes(reminder.toLowerCase())) return;
+  // The built-in lines: found anywhere, as always. A person's own text (#2194):
+  // only as the end of the composed part, so a short one the prompt happens to
+  // contain is still added, and the part stays the same from request to request.
+  const builtIn = reminder === INBOX_REMINDER_TEXT || reminder === INBOX_REMINDER_TEXT_NO_WAKE;
+  if (builtIn ? systemText.includes(reminder.toLowerCase()) : inboxReminderAlreadyAdded(event.system.map((part) => part.text), reminder)) return;
   pushComposedSystemReminder(event.system, reminder);
-}
-
-function replaceStrictPlanReminder(messages: unknown[]): void {
-  for (const message of messages) {
-    if (!message || typeof message !== "object" || Reflect.get(message, "role") !== "user") continue;
-    const content = Reflect.get(message, "content");
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (!part || typeof part !== "object" || Reflect.get(part, "type") !== "text") continue;
-      const text = Reflect.get(part, "text");
-      if (typeof text !== "string" || !text.includes("STRICTLY FORBIDDEN")) continue;
-      Reflect.set(part, "text", `<system-reminder>
-# Plan Mode - System Reminder
-
-CRITICAL: Plan mode ACTIVE. You are in a PLANNING phase. The ONLY file modifications
-allowed are writing or editing markdown files (.md) - plans, specs, documentation, etc.
-All other file edits, code modifications, and system changes are STRICTLY FORBIDDEN.
-Do NOT use shell commands to manipulate non-markdown files. Commands may ONLY read/inspect.
-
-Use submit_plan to submit the completed plan for user review. Do not proceed with
-implementation until the plan is approved.
-</system-reminder>`);
-    }
-  }
 }
 
 function getGenericPlanReminder(): string {

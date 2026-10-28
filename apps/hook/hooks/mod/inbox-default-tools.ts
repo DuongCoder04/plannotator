@@ -9,7 +9,7 @@ import type { InboxToolInfo } from './inbox-contract'
 export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
   {
     "name": "send_message",
-    "description": "Message the person in the Plannotator Inbox (markdown), in your session's open thread (see `thread`). One message per real need.\n\n## Asking the reviewer questions\n\nAsk what only the reviewer can decide as a question block. Answers come back at the top of their feedback (\"Answers to your questions\", then \"Unanswered\").\n\n```markdown\n:::question\nWhere should we keep the edit that loses a sync conflict?\n\nWhen two devices edit one note offline, the later save wins and the other edit is lost. Local storage keeps it with no server work.\n\n- [ ] Local only, purged after 30 days — cheap, no server change\n- [ ] Server-side per user — survives reinstall, needs a retention policy\n- [ ] Nowhere — accept silent loss for v1\n\nRecommended: Local only, purged after 30 days\n:::\n```\n\n- `:::question` picks one choice, `:::question-multi` any number, `:::question-text` free text (so does a block with no choices).\n- The first line is the question; the lines after it are context. Never send a bare question: the reviewer switches in cold, thinks at the level of the product, and does not know what you know.\n  - Say what the choice affects, what you know or tried, and why you recommend it, so they can decide without opening anything else.\n  - Be terse: one to three short sentences, plain words, no jargon or internal names they would not know.\n  - Add a screenshot (`![alt](path)`) for anything visual.\n  - Link a file that shows it better (a plan, an HTML mock): `[the mock](mock.html)`. In the Inbox, attach it too; the link opens it beside the thread.\n- Choices: `- [ ] label`, optionally `- [ ] label — why`. The reviewer can also answer \"Other\", add a note, or skip.\n- `Recommended: <label>` marks yours; text matching no choice shows as a suggested answer.\n- Ask only what you cannot decide alone, about 8 a round at most. Do not ask rhetorical questions or questions the codebase answers.\n- `- [x]` marks a settled choice. On resubmit, check the chosen answer, or drop the block and state the decision in prose.\n- Leave blank lines between the parts so the block reads well on GitHub.\n- Each answer comes back under its question (`### Q2. <question> (line N)`) as `Answer: <choice>`, marked `(your recommendation)` when the reviewer took yours, or as `Other: …`, free text in a quote, or `Skipped`, plus any `Note:`. A question you marked `- [x]` is settled and only comes back if the reviewer changed it or added a note.\n- In the Inbox, withdraw your own questions that are still open (read_thread state `open` or `picked`) as the thread moves on: when a newer message replaces them, makes them moot or follows up on them, or the person's reply settled them in words, name them in `supersedes` (or a `Replaces:` line) so they stop keeping the thread at the top of the person's list.\n",
+    "description": "Message the person in the Plannotator Inbox (markdown), in your session's open thread (see `thread`). One message per real need.\n\n## Asking the reviewer questions\n\nAsk what only the reviewer can decide as a question block. Answers come back at the top of their feedback (\"Answers to your questions\", then \"Unanswered\").\n\n```markdown\n:::question\nWhere should we keep the edit that loses a sync conflict?\n\nWhen two devices edit one note offline, the later save wins and the other edit is lost. Local storage keeps it with no server work.\n\n- [ ] Local only, purged after 30 days — cheap, no server change\n- [ ] Server-side per user — survives reinstall, needs a retention policy\n- [ ] Nowhere — accept silent loss for v1\n\nRecommended: Local only, purged after 30 days\n:::\n```\n\n- `:::question` picks one choice, `:::question-multi` any number, `:::question-text` free text (so does a block with no choices).\n- The first line is the question; the lines after it are context. Never send a bare question: the reviewer switches in cold, thinks at the level of the product, and does not know what you know.\n  - Say what the choice affects, what you know or tried, and why you recommend it, so they can decide without opening anything else.\n  - Be terse: one to three short sentences, plain words, no jargon or internal names.\n  - Add a screenshot (`![alt](path)`) for anything visual.\n  - Link a file that shows it better (a plan, a mock): `[the mock](mock.html)`. In the Inbox, attach it too; the link opens it beside the thread.\n- Choices: `- [ ] label`, optionally `- [ ] label — why`. The reviewer can also answer \"Other\", add a note, or skip.\n- `Recommended: <label>` marks yours (`A, B and C` on `:::question-multi`); other text shows as one more answer, tagged Recommended.\n- Ask only what you cannot decide alone, about 8 a round at most. Do not ask rhetorical questions or questions the codebase answers.\n- `- [x]` marks a settled choice. On resubmit, check the chosen answer, or drop the block and state the decision in prose.\n- Leave blank lines between the parts so the block reads well on GitHub.\n- Each answer comes back under its question (`### Q2. <question> (line N)`) as `Answer: <choice>`, marked `(your recommendation)` when the reviewer took yours, or as `Other: …`, free text in a quote, or `Skipped`, plus any `Note:`. A question you marked `- [x]` is settled and only comes back if the reviewer changed it or added a note.\n- In the Inbox, withdraw your own questions that are still open (read_thread state `open` or `picked`) as the thread moves on: when a newer message replaces them, makes them moot or follows up on them, or the person's reply settled them in words, name them in `supersedes` (or a `Replaces:` line) so they stop keeping the thread at the top of the person's list.\n",
     "inputSchema": {
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17,22 +17,22 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
         "body": {
           "type": "string",
           "minLength": 1,
-          "description": "The message, markdown. Question blocks render as answerable cards. In a block, add `Stopped: <why>` only for a question that leaves you nothing else to work on (otherwise leave the line out, never `Stopped: no`); `Holds up: <work>; <work>` names the work that waits while you go on."
+          "description": "The message, markdown. Question blocks render as answerable cards. Blocks fenced as `mermaid` or `dot` draw as diagrams; one fenced as `html` draws as a live, sandboxed page in the message (chart, SVG, mock; https libraries load). Leave its background transparent; use var(--foreground), var(--chart-1)…var(--chart-5). Let content set its height: no vh units or height:100% on html or body.\nA bare #123 links to this project's repository. For an issue or PR in another repo, write owner/repo#123 or its full URL (in a GitLab project, a GitHub one needs its URL).\n\nTwo Inbox-only lines a question block can carry, each on its own line after the question:\n- `Stopped: <why>` only when you truly cannot go on until this is answered: the thread goes first in the person's list, under \"Stopped on you\". Otherwise leave the line out. A negative value (`no`, `none`, `n/a`, `-`) means no stop, so never write `Stopped: no`.\n- `Holds up: <work>; <work>` names the work that waits on the answer while you go on: listed under \"Holding up work\" (a `Stopped:` line wins). A `none` entry holds nothing up.\n\n:::question\nWhich database password should I use for staging?\n\nStopped: can't run the migration without it\nHolds up: staging deploy; release notes\n\n- [ ] The one in 1Password \"staging-db\"\n- [ ] Make a new one\n:::\n\nOptional lines after the question, for a decision that needs them. Most questions need none of these:\n- `Stakes: <one sentence>`: what the choice affects, in product terms. Give one whenever you write `Stopped:` or `Holds up:`.\n- `Shows: ![alt](path)` or `Shows: [name](file)`: the one picture or file the decision is about (put long detail in that file, not the block).\n- `Why: <one line>`, on its own line after `Recommended:`: why you recommend it.\n- `Reversible: no — <why>`: only when the answer cannot be taken back.\n- A picture choice, when the options are visual: `- [ ] Label — ![alt](path) consequence`. The picture picks it; the label is the answer you get back.\n\n:::question\nWhich checkout drawer should ship?\nStakes: ships to all of checkout on Thursday; changing it later costs a week of QA.\n\n- [ ] A · Total on top — ![Drawer A](drawer-a.png) closest to today\n- [ ] B · Total pinned with Pay — ![Drawer B](drawer-b.png) the total never scrolls away\n\nRecommended: B · Total pinned with Pay\n\nWhy: on a phone only B keeps the total next to the button.\n:::\n\nAn action item, only for a true blocker: something the person must go and do outside this conversation before you can go on, that you cannot do yourself (approve a deploy, sign in, touch a security key, click something in another app, merge a pull request you cannot merge). Write it as an Inbox-only `:::action` block: the first line is what to do, as an order; then why, in a line or two. Optional lines: `Where: <url or place>` (a URL becomes an Open button), `Run: <command>` (a command to copy), `Stopped:` / `Holds up:` as for questions, and `Watching: <what you watch>` when you will notice it done by yourself (then pass its id in `done`).\nNever use it for a decision or a question (ask a :::question), for anything you can do yourself, or as a checklist or a status update: one block per real blocker, and most messages need none. The person marks it Done or Can't do it (with a reason); that comes back in their reply under \"Action items you asked for\".\n\n:::action\nApprove the production deploy on Vercel\nThe 4.2 build passed every check and waits under \"Promote to Production\". Nothing else needs changing.\n\nWhere: https://vercel.com/acme/web/deployments\nStopped: release 4.2 cannot go out until it is approved\nWatching: the deployment; I go on by myself once it is Ready\n:::"
         },
         "project_path": {
           "description": "Absolute path of the repository or folder you work in; the thread lands in that project's row. The `plannotator inbox mcp` shim fills it from its working folder.",
           "type": "string"
         },
         "subject": {
-          "description": "A short subject when this starts a thread (ignored when it joins one). Default: the first question's prompt, else the first line.",
+          "description": "A short one-line subject when this starts a thread (ignored when it joins one). Plain text: no line breaks. Default: the first question's prompt, else the first line.",
           "type": "string"
         },
         "thread": {
-          "description": "A short thread name (1-120 characters, one line). Without it, your messages join your session's open thread in this project (a new one the first time, or once the person resolved it; a thread keeps its first subject). With it, the same name in this project is the same open thread, across sessions (compared without case, spacing or invisible characters). Use it to split separate work, or to join another session's thread. Ignored with reply_to.",
+          "description": "A short thread name (1-120 characters, one line). Without it, your messages join your session's open thread in this project (a new one the first time, or once the person resolved it; a thread keeps its first subject). With it, the same name in this project is the same open thread, across sessions (compared without case, spacing or invisible characters). Use it to split separate work, or to join another session's thread. Ignored with reply_to, with one exception: in a thread the person started (read_thread or wait_for_reply says name_this_thread: true, or the Inbox's message asks you to name it), your reply's `thread` names that thread, once: a few words saying what it is about, not the name of another open thread in the project.",
           "type": "string"
         },
         "reply_to": {
-          "description": "A message id: post this as a reply in that message's thread.",
+          "description": "A message id: post this as a reply in that message's thread. Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
           "type": "string"
         },
         "supersedes": {
@@ -42,8 +42,15 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
             "type": "string"
           }
         },
+        "done": {
+          "description": "Your own action items (`:::action` blocks) in this thread that you saw done yourself, e.g. the deployment you were watching is Ready: \"<message id>/<key>\" for one (the key starts with a-; read_thread gives it) or \"<message id>\" for every open action item of that message. The card then says you saw it done, and nothing is sent to the person. Only your own action items that are still open, or that the person marked in a reply draft they have not sent, in the thread this message lands in (use reply_to); otherwise nothing is sent and the refusal, invalid_done, lists the thread's open action items. Never mark done what you did not see happen.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "idempotency_key": {
-          "description": "Any unique string; sending again with the same key answers the first message instead of posting twice.",
+          "description": "Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message.",
           "type": "string"
         },
         "agent_session": {
@@ -59,7 +66,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           "type": "string"
         },
         "attachments": {
-          "description": "Files to show the person beside your message, e.g. [\"docs/plan.md\", \"/tmp/checkout.png\", \"src/retry.mjs\"]: absolute (anywhere you can read) or relative to project_path. Any regular file, any size. Markdown, plain text, config and data files, Mermaid and Graphviz sources and HTML (its relative images and frames load from its folder) open in Plannotator's viewers; images (PNG, JPEG, GIF, WebP, SVG, AVIF, BMP, ICO) show in the message; source code, scripts and other text open as code with line comments; PDFs and anything else are offered as a download. Folders and .env files are refused. The Inbox keeps the version you sent and shows the file as it is now, saying when it changed. The person's annotations, including comments on images and code lines, come back in their reply. Each attachment's kind in the result is markdown, text, html, mermaid, graphviz, code, image, pdf or file; treat any other as file. A markdown link to an attached file in the body, e.g. [the mock](proto/admin.html), opens it beside the thread.",
+          "description": "Files to show the person beside your message, e.g. [\"docs/plan.md\", \"/tmp/checkout.png\", \"src/retry.mjs\"]: absolute (anywhere you can read) or relative to project_path. For something visual, a screenshot or image usually reads fastest; attach the HTML or source too when they should open or click through it. Any regular file, any size. Markdown, plain text, config and data files, Mermaid and Graphviz sources and HTML (its relative images and frames load from its folder) open in Plannotator's viewers; images (PNG, JPEG, GIF, WebP, SVG, AVIF, BMP, ICO) show in the message; videos (MP4, MOV, WebM) play beside it, and the person comments at moments (each comment comes back with its time and the paused frame's path); source code, scripts and other text open as code with line comments; PDFs and anything else are offered as a download. Folders and .env files are refused. The Inbox keeps the version you sent and shows the file as it is now, saying when it changed. The person's annotations, including comments on images and code lines, come back in their reply. Each attachment's kind in the result is markdown, text, html, mermaid, graphviz, code, image, video, pdf or file; treat any other as file. A markdown link to an attached file in the body, e.g. [the mock](proto/admin.html), opens it beside the thread.",
           "type": "array",
           "items": {
             "type": "string"
@@ -74,7 +81,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
   },
   {
     "name": "read_thread",
-    "description": "Read one Inbox thread (thread_id or message_id): every message with its questions and the person's answers. Without an id, list this project's threads, newest activity first, each with its section in the person's list: only the ones you sent in unless asked_by is \"anyone\", and only open ones unless include_resolved.",
+    "description": "Read one Inbox thread (thread_id, or message_id to show that message in full) as a transcript: the questions still waiting on the person (key, state, prompt, choices), the newest messages in full (`limit`, default 6), the person's earlier messages in full (up to 12.0 KB), and every other earlier message as one line with its questions' states and answers; a body over 16.0 KB is cut. `expand` shows messages in full, `before` reads further back, `after` (the result's cursor, or a message id) returns only what is new; `format: \"full\"` returns every full record. A message the person marked 👍 Looks good carries `ack` (they read it and need nothing more; no reply is needed). Without an id, list this project's threads, newest activity first, one short row each (subject, name, section in the person's list, open questions, last author and time, the person's last message, `unread`: the person wrote something you have not read): only the ones you sent in unless asked_by is \"anyone\", and only open ones unless include_resolved. Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
     "inputSchema": {
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -90,7 +97,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           "type": "string"
         },
         "asked_by": {
-          "description": "Default \"me\" when your session is known.",
+          "description": "Default \"me\" (threads you sent in) when your session is known; \"anyone\" lists every thread.",
           "type": "string",
           "enum": [
             "me",
@@ -98,13 +105,52 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           ]
         },
         "include_resolved": {
+          "description": "List archived threads too.",
           "type": "boolean"
         },
         "limit": {
-          "description": "Threads to list (default 20).",
+          "description": "How many: a thread's messages in full (default 6), listed threads (20), search results (10, at most 50).",
           "type": "integer",
           "minimum": 1,
           "maximum": 100
+        },
+        "expand": {
+          "description": "Message ids of this thread to show in full.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "before": {
+          "description": "Only messages before this message id or cursor.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ]
+        },
+        "after": {
+          "description": "Only messages after this message id or cursor (what is new).",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ]
+        },
+        "format": {
+          "description": "Every message as its full record (large).",
+          "type": "string",
+          "enum": [
+            "full"
+          ]
         },
         "agent_session": {
           "description": "Your session id. The `plannotator inbox mcp` shim fills it. send_message joins your session's thread by it; read_thread's asked_by \"me\" and wait_for_reply without a thread match on it.",
@@ -115,8 +161,41 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
     }
   },
   {
+    "name": "search",
+    "description": "Search the Inbox's messages (yours, other agents' and the person's) by words, read-only: in this project unless all_projects. Up to `limit` results (default 10, at most 50; a larger limit answers 50). Every word must match (the last may be the start of a word), questions' prompts, choices and answers included. Each result is one line: the thread, the message, who wrote it, when, and the words around the match. read_thread with that thread_id and message_id shows the message in full.",
+    "inputSchema": {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Words to find."
+        },
+        "project_path": {
+          "description": "Absolute path of the repository or folder you work in; the thread lands in that project's row. The `plannotator inbox mcp` shim fills it from its working folder.",
+          "type": "string"
+        },
+        "all_projects": {
+          "description": "Search every project.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Results (default 10, at most 50).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "wait_for_reply",
-    "description": "Wait for the person's reply in a thread (thread_id or message_id), or in any open thread you asked when neither is given. Returns the reply as soon as it lands, or { status: \"waiting\", cursor } after about 50 seconds: call again with that cursor to keep waiting. Without a cursor, any reply after your last message in the thread counts.",
+    "description": "Wait for the person's reply in a thread (thread_id or message_id), or in any open thread you asked when neither is given. Returns the reply as soon as it lands, { status: \"acknowledged\" } when the person marked your latest message 👍 Looks good instead (no reply is coming for it; go on), or { status: \"waiting\", cursor } after about 50 seconds: call again with that cursor to keep waiting. Without a cursor, any reply after your last message in the thread counts.",
     "inputSchema": {
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -174,80 +253,8 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
     }
   },
   {
-    "name": "list_decisions",
-    "description": "List the decisions that hold in this project (state \"current\", the default), or the replaced, retired or all of them, oldest first. Each has text, reason, source (an answer the person sent, an agent's record_decision, or the person's own words), state, version and, for a replaced one, replacement_id.",
-    "inputSchema": {
-      "type": "object",
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "project_path": {
-          "description": "Absolute path of the repository or folder you work in; the thread lands in that project's row. The `plannotator inbox mcp` shim fills it from its working folder.",
-          "type": "string"
-        },
-        "state": {
-          "description": "Default \"current\".",
-          "type": "string",
-          "enum": [
-            "current",
-            "replaced",
-            "retired",
-            "all"
-          ]
-        },
-        "agent_session": {
-          "description": "Your session id. The `plannotator inbox mcp` shim fills it. send_message joins your session's thread by it; read_thread's asked_by \"me\" and wait_for_reply without a thread match on it.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  {
-    "name": "record_decision",
-    "description": "Record a decision that now holds in this project, one you settled with the person (it shows on their Decisions page as recorded by you). text is the decision as one statement, e.g. \"Webhooks are verified before any database write.\"; reason says why. To have the person's answer to a question recorded instead, write `Decision: when answered` in the question block.",
-    "inputSchema": {
-      "type": "object",
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "text": {
-          "type": "string",
-          "minLength": 1,
-          "description": "The decision, one statement."
-        },
-        "reason": {
-          "description": "Why it holds.",
-          "type": "string"
-        },
-        "project_path": {
-          "description": "Absolute path of the repository or folder you work in; the thread lands in that project's row. The `plannotator inbox mcp` shim fills it from its working folder.",
-          "type": "string"
-        },
-        "idempotency_key": {
-          "description": "Any unique string; recording again with the same key answers the first decision.",
-          "type": "string"
-        },
-        "agent_session": {
-          "description": "Your session id. The `plannotator inbox mcp` shim fills it. send_message joins your session's thread by it; read_thread's asked_by \"me\" and wait_for_reply without a thread match on it.",
-          "type": "string"
-        },
-        "agent_name": {
-          "description": "How the person sees you, e.g. \"Claude Code\".",
-          "type": "string"
-        },
-        "agent_host": {
-          "description": "Your agent host, e.g. claude-code, codex, cursor.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "text"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
     "name": "submit_guide",
-    "description": "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Every file a section names must be in the patch, in one section only; a refusal names the file. Files you leave out show under \"Everything else\". `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.",
+    "description": "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Every file a section names must be in the patch, in one section only; a refusal names the file. Files you leave out show under \"Everything else\". `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes, done and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.",
     "inputSchema": {
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -295,15 +302,15 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           "type": "string"
         },
         "subject": {
-          "description": "A short subject when this starts a thread (ignored when it joins one). Default: the first question's prompt, else the first line.",
+          "description": "A short one-line subject when this starts a thread (ignored when it joins one). Plain text: no line breaks. Default: the first question's prompt, else the first line.",
           "type": "string"
         },
         "thread": {
-          "description": "A short thread name (1-120 characters, one line). Without it, your messages join your session's open thread in this project (a new one the first time, or once the person resolved it; a thread keeps its first subject). With it, the same name in this project is the same open thread, across sessions (compared without case, spacing or invisible characters). Use it to split separate work, or to join another session's thread. Ignored with reply_to.",
+          "description": "A short thread name (1-120 characters, one line). Without it, your messages join your session's open thread in this project (a new one the first time, or once the person resolved it; a thread keeps its first subject). With it, the same name in this project is the same open thread, across sessions (compared without case, spacing or invisible characters). Use it to split separate work, or to join another session's thread. Ignored with reply_to, with one exception: in a thread the person started (read_thread or wait_for_reply says name_this_thread: true, or the Inbox's message asks you to name it), your reply's `thread` names that thread, once: a few words saying what it is about, not the name of another open thread in the project.",
           "type": "string"
         },
         "reply_to": {
-          "description": "A message id: post this as a reply in that message's thread.",
+          "description": "A message id: post this as a reply in that message's thread. Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
           "type": "string"
         },
         "supersedes": {
@@ -313,8 +320,15 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
             "type": "string"
           }
         },
+        "done": {
+          "description": "Your own action items (`:::action` blocks) in this thread that you saw done yourself, e.g. the deployment you were watching is Ready: \"<message id>/<key>\" for one (the key starts with a-; read_thread gives it) or \"<message id>\" for every open action item of that message. The card then says you saw it done, and nothing is sent to the person. Only your own action items that are still open, or that the person marked in a reply draft they have not sent, in the thread this message lands in (use reply_to); otherwise nothing is sent and the refusal, invalid_done, lists the thread's open action items. Never mark done what you did not see happen.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "idempotency_key": {
-          "description": "Any unique string; sending again with the same key answers the first message instead of posting twice.",
+          "description": "Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message.",
           "type": "string"
         },
         "agent_session": {

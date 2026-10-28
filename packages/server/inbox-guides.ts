@@ -28,14 +28,15 @@ import * as z from "zod";
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { GUIDE_REVIEW_PROMPT, GUIDE_SCHEMA_JSON } from "@plannotator/core/guide-prompt";
 import { parseGuideSnapshot, parseGuideSnapshotJson, type GuideSnapshot } from "@plannotator/core/guide-format";
-import type { InboxGuideRef } from "@plannotator/core/inbox-types";
+import { displayInboxSubject, type InboxGuideRef } from "@plannotator/core/inbox-types";
 import { checkServerSession, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
 import { readFileSync } from "node:fs";
 import { inboxBlobPath, writeBlob } from "@plannotator/shared/inbox/attachments";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { buildAuthoredGuideSnapshot } from "./guide/guide-cli";
-import { INBOX_REPLY_ARRIVES_TEXT, SEND_ROUTING_FIELDS, callerWakes, guarded, ok, sendAgentMessage, sendProject, type InboxMcpContext } from "./inbox-mcp";
+import { INBOX_REPLY_ARRIVES_TEXT, INBOX_REPLY_WAITS_TEXT, SEND_ROUTING_FIELDS, senderWakes, guarded, imagesNotShownText, noStakesText, recommendedInLabelText,
+  namingLine, ok, sendAgentMessage, sendProject, type InboxMcpContext } from "./inbox-mcp";
 
 /** How to read the diff to send as `patch` (Workspaces' local-diff steps, for this machine). */
 export const GUIDE_DIFF_STEPS =
@@ -51,7 +52,7 @@ export const GUIDE_RULES = [
 
 /**
  * The brief's worked example: the AUTHORED fixture of guide-cli.test.ts (the
- * `plannotator-guide` skill's worked example) and its two-file patch, as one
+ * `guided-review` skill's worked example) and its two-file patch, as one
  * submit_guide call. The browser proof submits exactly this.
  */
 export const GUIDE_BRIEF_EXAMPLE = {
@@ -72,7 +73,7 @@ export const GET_GUIDE_BRIEF_DESCRIPTION =
   "Get what you need to write a guided review of a code change for the person: Plannotator's method, the JSON shape of the guide, how to read the diff, the rules, and a worked submit_guide call. Read the diff in your checkout, write the guide on your own model, then call submit_guide with the guide and that exact patch.";
 
 export const SUBMIT_GUIDE_DESCRIPTION =
-  "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Every file a section names must be in the patch, in one section only; a refusal names the file. Files you leave out show under \"Everything else\". `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.";
+  "Send the person a guided review of a code change. It lands in the Plannotator Inbox as a message with a \"Guided review\" card that opens in Plannotator's guide viewer. Pass `guide` (the shape get_guide_brief gives) and `patch` (the exact unified diff it describes), or `snapshot` (a complete Plannotator guide snapshot). Every file a section names must be in the patch, in one section only; a refusal names the file. Files you leave out show under \"Everything else\". `body` is your note above the card (default: the guide's intent). thread, reply_to, supersedes, done and idempotency_key work as in send_message; the person's answer comes back through wait_for_reply.\n\nExample: get_guide_brief's `example` is a call that works as it is.";
 
 export type InboxGuideCheck = { ok: true; snapshot: GuideSnapshot } | { ok: false; error: string };
 
@@ -238,14 +239,19 @@ export function registerInboxGuideTools(server: McpServer, context: InboxMcpCont
         if (!checked.ok) throw new InboxError("invalid_guide", checked.error);
         const described = describeInboxGuide(checked.snapshot, inboxGuideInputHash(input));
         const body = input.body?.trim() ? input.body : checked.snapshot.guide.intent;
-        const subject = input.subject ?? (input.body?.trim() ? undefined : `Guided review: ${described.ref.title}`);
-        const sent = await sendAgentMessage(context, project, { ...input, body, subject }, described.ref, callerWakes(ctx));
+        // A reply never gets the default: its only subject is one the agent gives (it may name a thread the person started).
+        // The default is made one line here (displayInboxSubject), so the guide's own title can never fail the subject check.
+        const subject =
+          input.subject ??
+          (input.body?.trim() || input.reply_to ? undefined : (displayInboxSubject(`Guided review: ${described.ref.title}`) ?? undefined));
+        const wakes = await senderWakes(context, ctx, input);
+        const sent = await sendAgentMessage(context, project, { ...input, body, subject }, described.ref, wakes);
         // The blob is written once the message has landed, in the same turn (nothing can ask for it
         // in between); a refused send writes none, and a retry answers the first message's guide.
         if (!sent.replayed) writeBlob(context.store.dir, described.ref.sha256, Buffer.from(described.text, "utf8"));
         const guide = context.store.message(String(sent.structured.message_id))?.guide ?? described.ref;
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} the guided review "${guide.title}" (${guide.sections} section${guide.sections === 1 ? "" : "s"}, ${guide.files} file${guide.files === 1 ? "" : "s"}) to the Plannotator Inbox (thread ${sent.structured.thread_id}, ${sent.structured.url}). ${callerWakes(ctx) ? INBOX_REPLY_ARRIVES_TEXT : "Call wait_for_reply with this thread_id for the person's answer."}`,
+          `${sent.replayed ? "Already sent" : "Sent"} the guided review "${guide.title}" (${guide.sections} section${guide.sections === 1 ? "" : "s"}, ${guide.files} file${guide.files === 1 ? "" : "s"}) to the Plannotator Inbox (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}${recommendedInLabelText(sent.recommendedInLabel)}`,
           { ...sent.structured, guide },
         );
       }),

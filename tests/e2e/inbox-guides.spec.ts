@@ -488,7 +488,10 @@ test('a long thread name plus the Guided review mark never pushes a row out of s
             limit: wideRow ? box('.ib-c').left : el.getBoundingClientRect().right,
             keyRight: box('.ib-key').right,
             keyWidth: box('.ib-key').width,
-            keyTruncated: nameEl.scrollWidth > nameEl.clientWidth,
+            // Cut on one line with "…", or (a phone's row, which wraps the name) clamped at two lines.
+            keyTruncated: nameEl.scrollWidth > nameEl.clientWidth + 1 || nameEl.scrollHeight > nameEl.clientHeight + 1,
+            keyLines: Math.round(nameEl.getBoundingClientRect().height / parseFloat(getComputedStyle(nameEl).lineHeight)),
+            mailRow: el.classList.contains('ib-mrow'),
             markRight: box('[data-guide-mark]').right,
             subjectShown: Math.min(subject.right, line.right) - subject.left,
           };
@@ -502,13 +505,142 @@ test('a long thread name plus the Guided review mark never pushes a row out of s
         expect(measured.lineRight, `the subject line runs into the count ${where}`).toBeLessThanOrEqual(measured.limit);
         // The chip is shown with some of its name, or left out: never a bare border.
         expect(measured.keyWidth === 0 || measured.keyWidth >= 24, `the thread chip is squeezed to its border (${measured.keyWidth}px) ${where}`).toBe(true);
-        if (name.length === 120 && measured.keyWidth > 0) expect(measured.keyTruncated, `the thread chip keeps its ellipsis ${where}`).toBe(true);
+        // A row's chip cuts a long name with "…" on one line. A phone's row (the mail row) wraps it instead
+        // (inbox-polish, item 3): at most two lines, and a name that needs more is clamped there with "…"
+        // (the 120-character name fits two lines at 520 px and wider, and needs three at 360 px).
+        if (name.length === 120 && measured.keyWidth > 0 && (!measured.mailRow || width <= 400)) expect(measured.keyTruncated, `the thread chip keeps its ellipsis ${where}`).toBe(true);
+        expect(measured.keyWidth === 0 || measured.keyLines <= (measured.mailRow ? 2 : 1), `the thread chip's name runs past its lines ${where}`).toBe(true);
       }
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
+test('Split | Unified sits in a tab on the first section card only, switches every diff, is kept where code review reads it, and a phone draws Unified with no tab', async () => {
+  const { claude, page } = world;
+  const guide = { ...FIXTURE_V1_LOCAL, guide: { ...FIXTURE_V1_LOCAL.guide, title: 'Diff layout', reviewed: [false, false] } };
+  const sent = await claude.submitGuide({ project_path: world.ledger, snapshot: guide, thread: 'diff-layout', subject: 'A guided review to read in one column.' });
+  const configPath = join(world.dataDir, 'config.json');
+  const styleOnDisk = () => (existsSync(configPath) ? (JSON.parse(readFileSync(configPath, 'utf8')) as { diffOptions?: { diffStyle?: string } }).diffOptions?.diffStyle : undefined);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${world.url}#thread=${sent.thread_id}&guide=${sent.message_id}`);
+  const viewer = page.getByRole('region', { name: 'Guided review', exact: true });
+  // Pierre's layout per diff, read through its open shadow roots (Unified is `single` there).
+  const layouts = () => viewer.locator('pre[data-diff]').evaluateAll((pres) => pres.map((p) => p.getAttribute('data-diff-type')));
+  const auth = viewer.locator('[data-guide-file-shell="src/auth.ts"]');
+  await expect(auth.locator('[data-line-type="change-addition"]').first()).toBeVisible({ timeout: 30_000 });
+
+  // One tab, on the first card: right above it, and the second card has none.
+  const tabs = viewer.locator('[data-guide-section-tab]');
+  await expect(tabs).toHaveCount(1);
+  await expect(viewer.locator('[data-guide-section-tabbed] > [data-guide-section="0"]')).toHaveCount(1);
+  await expect(viewer.locator('[data-guide-section-tabbed] > [data-guide-section="1"]')).toHaveCount(0);
+  const group = tabs.getByRole('radiogroup', { name: 'Diff layout' });
+  const split = group.getByRole('radio', { name: 'Split' });
+  const unified = group.getByRole('radio', { name: 'Unified' });
+  await expect(split).toBeChecked();
+  await expect.poll(layouts).toEqual(['split', 'split']);
+  // The tab's right edge is the card's: its border runs straight up into the tab.
+  const edges = await viewer.locator('[data-guide-section-tabbed]').evaluate((wrap) => {
+    const tab = wrap.querySelector('[data-guide-section-tab] svg')!.getBoundingClientRect();
+    const card = wrap.querySelector('[data-guide-section="0"]')!.getBoundingClientRect();
+    return { tabRight: tab.right, cardRight: card.right, tabBottom: tab.bottom, cardTop: card.top };
+  });
+  expect(Math.abs(edges.tabRight - edges.cardRight)).toBeLessThan(0.5);
+  expect(edges.tabBottom - edges.cardTop).toBeGreaterThanOrEqual(0);
+  expect(edges.tabBottom - edges.cardTop).toBeLessThanOrEqual(1.5);
+  await shot('4.4-guide-diff-layout-split');
+
+  await unified.check();
+  await expect.poll(layouts).toEqual(['single', 'single']);
+  // Kept where code review reads it: the cookie, and config.json `diffOptions.diffStyle`.
+  await expect.poll(styleOnDisk).toBe('unified');
+  expect((await world.context.cookies()).find((c) => c.name === 'plannotator-diff-style')?.value).toBe('unified');
+  await shot('4.4-guide-diff-layout-unified');
+
+  // A radio group: the arrows choose.
+  await unified.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(split).toBeChecked();
+  await expect.poll(layouts).toEqual(['split', 'split']);
+  await page.keyboard.press('ArrowRight');
+  await expect(unified).toBeChecked();
+  await expect.poll(layouts).toEqual(['single', 'single']);
+
+  // A comment on a line in Unified: the review app's selection, kept by file, side and line.
+  const panel = viewer.locator('[data-guide-comments]');
+  await auth.hover();
+  await auth.locator('[data-line-type="change-addition"][data-column-number="3"]').first().click();
+  const composer = page.getByPlaceholder('Leave feedback...');
+  await expect(composer).toBeVisible();
+  await composer.fill('One column reads fine.');
+  await page.getByRole('button', { name: 'Add Comment' }).click();
+  await expect(panel).toHaveAttribute('data-guide-comments', '1');
+  const model = (await (await page.request.get(`${world.url}api/inbox/threads/${sent.thread_id}/attachments`)).json()) as { annotations: { path: string; guide: { side: string; line_start: number; line_end: number } }[] };
+  expect(model.annotations.map((r) => [r.path, r.guide.side, r.guide.line_start, r.guide.line_end])).toEqual([['src/auth.ts', 'new', 3, 3]]);
+  await shot('4.4-guide-diff-layout-unified-comment');
+
+  // Back to Split, then a phone: no tab, every diff in one column, the saved layout left as it is.
+  await split.check();
+  await expect.poll(styleOnDisk).toBe('split');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(viewer.locator('[data-guide-section-tab]')).toHaveCount(0);
+  await expect.poll(layouts).toEqual(['single', 'single']);
+  await page.waitForTimeout(500);
+  expect(styleOnDisk()).toBe('split');
+  await shot('4.4-guide-diff-layout-phone');
+
+  // The owner's review pictures (PLANNOTATOR_GUIDE_DIFF_TAB_SHOTS): 1440 and 1100, Split and Unified, light and dark, a phone, and the tab close up.
+  const extra = process.env.PLANNOTATOR_GUIDE_DIFF_TAB_SHOTS;
+  if (extra) {
+    mkdirSync(extra, { recursive: true });
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+      for (const width of [1440, 1100]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect(viewer.locator('[data-guide-section-tab]')).toHaveCount(1);
+        for (const style of ['split', 'unified'] as const) {
+          await viewer.getByRole('radio', { name: style === 'split' ? 'Split' : 'Unified' }).check();
+          await expect.poll(layouts).toEqual(style === 'split' ? ['split', 'split'] : ['single', 'single']);
+          await viewer.locator('.ib-gbody').evaluate((el) => el.scrollTo(0, 0));
+          await page.mouse.move(0, 0);
+          await page.waitForTimeout(400);
+          await page.screenshot({ path: join(extra, `tab-${width}-${style}-${scheme}.png`) });
+        }
+      }
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(viewer.locator('[data-guide-section-tab]')).toHaveCount(0);
+      await viewer.locator('.ib-gbody').evaluate((el) => el.scrollTo(0, 0));
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(extra, `phone-unified-${scheme}.png`) });
+      await viewer.locator('[data-guide-file-shell="src/auth.ts"]').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: join(extra, `phone-unified-scrolled-${scheme}.png`) });
+    }
+    // The tab close up, 3x, light and dark.
+    const close = await world.context.browser()!.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 3, colorScheme: 'light' });
+    await close.addCookies((await world.context.cookies()).filter((c) => c.name === 'plannotator-diff-style'));
+    const zoomed = await close.newPage();
+    await zoomed.goto(`${world.url}#thread=${sent.thread_id}&guide=${sent.message_id}`);
+    const zTab = zoomed.locator('[data-guide-section-tab]');
+    await expect(zTab).toHaveCount(1, { timeout: 30_000 });
+    for (const scheme of ['light', 'dark'] as const) {
+      await zoomed.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+      await zoomed.waitForTimeout(400);
+      const box = (await zTab.boundingBox())!;
+      await zoomed.screenshot({ path: join(extra, `tab-detail-${scheme}.png`), clip: { x: box.x + box.width - 260, y: box.y - 16, width: 290, height: box.height + 60 } });
+    }
+    await close.close();
+    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.keyboard.press('Escape');
+});
+
 test('no page errors and no CSP refusals along the way', async () => {
-  expect(world.errors).toEqual([]);
+  // FIXTURE_PATCH_TS_JSON's first hunk declares 4/6 lines and carries 3/5.
+  // It shipped that way and fixtures are never edited; @pierre/diffs 1.5
+  // repairs such a hunk and says so with console.error, which is expected here.
+  const miscountedFixtureHunk = 'parsePatchContent: hunk line count mismatch: "@@ -1,4 +1,6 @@", declared old/new 4/6, parsed old/new 3/5';
+  expect(world.errors.filter((e) => e !== miscountedFixtureHunk)).toEqual([]);
 });

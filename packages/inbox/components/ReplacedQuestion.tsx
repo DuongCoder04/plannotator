@@ -19,6 +19,7 @@ import { QuestionContext } from '@plannotator/ui/components/blocks/QuestionConte
 import type { InboxAuthor, InboxMessageWire, InboxQuestion } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { agentName, whenTime } from '../format';
+import { plainLabel } from '../folding';
 import { Icon } from '../icons';
 
 /** What replaced a question, read from its thread. */
@@ -32,10 +33,10 @@ export interface Replacement {
 /** Where a jump lands: one question's card, or a message. */
 export type JumpTarget = { kind: 'question'; messageId: string; key: string } | { kind: 'message'; messageId: string };
 
-/** The answer's words, as the card's "Your pick" shows them. */
+/** The answer's words, as the card's "Your pick" shows them; a picked label as its plain words (`plainLabel`). */
 export function pickWords(answer: QuestionAnswer): string {
   if (answer.skipped) return 'Skipped';
-  const parts = [...answer.selected];
+  const parts = answer.selected.map(plainLabel);
   if (answer.other) parts.push(answer.other);
   if (answer.text) parts.push(answer.text);
   return parts.join(', ');
@@ -106,6 +107,7 @@ export function ReplacedQuestionCard({
   replacement,
   answer,
   onJump,
+  refRepo,
 }: {
   question: InboxQuestion;
   number: number;
@@ -114,8 +116,11 @@ export function ReplacedQuestionCard({
   /** The pick saved on it (never sent), or null. */
   answer: QuestionAnswer | null;
   onJump: (target: JumpTarget) => void;
+  /** The thread's repo, so `#123` refs in the old prompt and choices link as in the message. */
+  refRepo?: { display: string; host?: string } | null;
 }) {
   const id = useId();
+  const repo = { githubRepo: refRepo?.display, repoHost: refRepo?.host };
   const [open, setOpen] = useState(false);
   const promptId = `${id}-p`;
   const newsId = `${id}-news`;
@@ -141,7 +146,7 @@ export function ReplacedQuestionCard({
         </span>
       </div>
       <p className="ib-q-prompt" id={promptId}>
-        <InlineMarkdown text={question.prompt} />
+        <InlineMarkdown text={question.prompt} {...repo} />
       </p>
       <div className="ib-q-repl" id={newsId} data-replaced-row="">
         <Icon name="turnDown" size={14} />
@@ -182,12 +187,12 @@ export function ReplacedQuestionCard({
                   <input type={question.kind === 'multi' ? 'checkbox' : 'radio'} disabled checked={on} readOnly name={`${id}-old`} />
                   <span className="ib-q-lbl">
                     <b>
-                      <InlineMarkdown text={choice.label} />
+                      <InlineMarkdown text={choice.label} {...repo} />
                     </b>
                     {choice.description && (
                       <span className="ib-q-desc">
                         {' '}
-                        — <InlineMarkdown text={choice.description} />
+                        — <InlineMarkdown text={choice.description} {...repo} />
                       </span>
                     )}
                     {on && <span className="ib-tag ib-t-notsent">Not sent</span>}

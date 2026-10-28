@@ -38,7 +38,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decryptWithKey, deriveRelayKeys, encryptWithKey } from "@plannotator/core/crypto";
-import { inboxAgentName } from "@plannotator/core/inbox-types";
+import { displayInboxSubject, inboxAgentName } from "@plannotator/core/inbox-types";
 import { sha256Hex, type InboxDevice, type InboxDevices } from "@plannotator/shared/inbox/devices";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import type { InboxLine } from "@plannotator/core/inbox-types";
@@ -60,6 +60,21 @@ const APNS_BODY_LIMIT = 4096;
 const WEBSOCKET_MESSAGE_LIMIT = 32 * 1024 * 1024;
 /** The largest answer body the relay reads: base64 makes it 4/3 larger, so a larger one cannot fit one frame. */
 export const RELAY_BODY_LIMIT = Math.floor((WEBSOCKET_MESSAGE_LIMIT * 3) / 4);
+
+/**
+ * One command's result item as it goes up the socket: the answer's bytes as
+ * base64 inside the JSON result, sealed under the phone's key (AES-GCM, then
+ * base64url). Two base64 layers, so a body of n bytes makes a frame of about
+ * 16n/9: a message image at the 10 MB cap (MAX_REVIEW_IMAGE_PREVIEW_BYTES)
+ * is a frame of about 17.8 MiB, inside WEBSOCKET_MESSAGE_LIMIT.
+ */
+export async function sealRelayResult(deviceId: string, id: string, status: number, contentType: string, bytes: Buffer, key: string): Promise<string> {
+  const result = { v: 1, type: "result", id, status, content_type: contentType, body_b64: bytes.toString("base64") };
+  return JSON.stringify({ type: "item", device_id: deviceId, cursor: null, ciphertext: await encryptWithKey(JSON.stringify(result), key) });
+}
+
+/** Cloudflare's WebSocket message limit, exported for the bounds test. */
+export const RELAY_WEBSOCKET_MESSAGE_LIMIT = WEBSOCKET_MESSAGE_LIMIT;
 
 /**
  * An answer's body, or null when it is larger than `cap`: refused from its
@@ -380,10 +395,7 @@ export function createInboxRelay(context: InboxRelayContext) {
 
   /** The result item for a command, sealed under the phone's key; past the WebSocket message limit, a 413 in its place. */
   const resultFrame = async (deviceId: string, id: string, answer: Response, key: string): Promise<string> => {
-    const seal = async (status: number, contentType: string, bytes: Buffer) => {
-      const result = { v: 1, type: "result", id, status, content_type: contentType, body_b64: bytes.toString("base64") };
-      return JSON.stringify({ type: "item", device_id: deviceId, cursor: null, ciphertext: await encryptWithKey(JSON.stringify(result), key) });
-    };
+    const seal = (status: number, contentType: string, bytes: Buffer) => sealRelayResult(deviceId, id, status, contentType, bytes, key);
     // base64 grows a body by 4/3 before the JSON and the seal: anything over
     // 3/4 of the frame limit can never fit, so it is refused without being
     // read, and a body without a length is read only up to that bound.
@@ -499,15 +511,15 @@ export function createInboxRelay(context: InboxRelayContext) {
     const questions = store.questionsOf(messageId);
     const supersedes = store.supersededBy(messageId).length > 0;
     if (questions.length === 0 && !message.guide && !supersedes) return;
-    // Only an open question is ever offered for a lock-screen answer.
-    const open = questions.filter((q) => q.state === "open");
+    // Only an open question is ever offered for a lock-screen answer (an action item, `kind: "action"`, pushes like one but has no lock-screen Done).
+    const open = questions.filter((q) => q.state === "open" && q.kind !== "action");
     const only = open.length === 1 ? open[0]! : null;
     const summary: PushPlaintext = {
       v: 1,
       type: "push",
       thread_id: message.thread_id,
       message_id: message.id,
-      subject: store.threadSubject(message.thread_id) ?? message.subject ?? "",
+      subject: store.threadSubject(message.thread_id) ?? displayInboxSubject(message.subject) ?? "",
       project: store.project(message.project_id)?.name ?? "",
       agent: inboxAgentName(message.author),
       // Apple shows at most four actions: one single-choice question with up to four choices is answered from the lock screen.
@@ -540,7 +552,42 @@ export function createInboxRelay(context: InboxRelayContext) {
     }
   };
 
+  /**
+   * A push that is not a message's own (an agent the Inbox runs waits on a
+   * permission, inbox-acp-runner.ts): the same summary, its subject the
+   * words to show, no lock-screen answer. Collapsed per thread like the rest.
+   */
+  const pushText = async (input: { threadId: string | null; messageId: string | null; subject: string; agent: string }): Promise<void> => {
+    if (!mailbox || !input.threadId) return;
+    const root = store.message(input.threadId);
+    const summary: PushPlaintext = {
+      v: 1,
+      type: "push",
+      thread_id: input.threadId,
+      message_id: input.messageId ?? input.threadId,
+      subject: input.subject.slice(0, 300),
+      project: root ? (store.project(root.project_id)?.name ?? "") : "",
+      agent: input.agent,
+      question: null,
+    };
+    for (const device of devices.list()) {
+      if (!device.carriage) continue;
+      const secret = devices.secret(device.id);
+      if (!secret) continue;
+      try {
+        const { key, collapseKey } = await deriveRelayKeys(secret, device.id);
+        const ciphertext = await sizedEnvelope(summary, key);
+        const collapseId = createHmac("sha256", Buffer.from(collapseKey, "base64url")).update(input.threadId).digest("hex");
+        const answer = await call("POST", mailboxPath("/push"), mailbox.secret, { device_id: device.id, collapse_id: collapseId, ciphertext });
+        log(`push ${summary.message_id} ${device.id} ${answer.status}`);
+      } catch (error) {
+        log(`push ${summary.message_id} ${device.id} failed: ${error instanceof Error ? error.name : "error"}`);
+      }
+    }
+  };
+
   return {
+    pushText,
     /** A phone just paired: the mailbox (made now when there is none), its registration, the socket. Null when the relay cannot be reached. */
     async paired(device: InboxDevice): Promise<{ url: string; mailbox_id: string } | null> {
       const made = await ensureMailbox();

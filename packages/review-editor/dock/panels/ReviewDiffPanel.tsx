@@ -4,6 +4,7 @@ import { DiffViewer } from '../../components/DiffViewer';
 import { useReviewState } from '../ReviewStateContext';
 import { getReviewDiffPanelFilePath, type ReviewDiffPanelParams } from '../reviewPanelTypes';
 import { annotationMatchesPrScope } from '../../utils/annotationScope';
+import { fileKind } from '@plannotator/core/file-kind';
 
 /**
  * Thin adapter between dockview's panel API and the existing DiffViewer.
@@ -81,9 +82,11 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         imagePreviewAvailable={state.imagePreviewAvailable}
         imageSnapshotId={state.snapshotId}
         contextExpansionAvailable={state.contextExpansionAvailable}
+        packageChangesAvailable={state.contextExpansionAvailable !== false}
         prUrl={state.prMetadata?.url}
         prDiffScope={state.prDiffScope}
         isFocused={isFocusedFile}
+        changeNavigation={isFocusedFile && state.isDiffPanelActive === true}
         diffStyle={state.diffStyle}
         diffOverflow={state.diffOverflow}
         diffIndicators={state.diffIndicators}
@@ -106,6 +109,7 @@ export const ReviewDiffPanel: React.FC<IDockviewPanelProps> = (props) => {
         onDeleteAnnotation={state.onDeleteAnnotation}
         isViewed={state.viewedFiles.has(file.path)}
         isGenerated={state.generatedFiles.has(file.path)}
+        isTest={fileKind(file.path, state.generatedFiles) === 'test'}
         onToggleViewed={() => state.onToggleViewed(file.path)}
         showViewedControls={state.showViewedControls}
         isStaged={state.stagedFiles.has(file.path)}
