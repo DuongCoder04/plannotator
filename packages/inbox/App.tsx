@@ -37,7 +37,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -806,13 +806,15 @@ function Inbox() {
   /**
    * The list on screen catches up: with the person's own reads and actions
    * (`own`: closing a thread; agent activity still waits behind "N new"), or
-   * with everything (`all`: Show, another folder or page).
+   * with everything (`all`: Show, another folder or page). `opening`: the
+   * thread a covered list settles behind (a phone, a stacked window), which
+   * settles as it now is, like the thread just closed.
    */
   const settleList = useCallback(
-    (what: 'own' | 'all', slide: boolean) => {
+    (what: 'own' | 'all', slide: boolean, opening?: OpenThread) => {
       cancelSettle();
       // The thread just closed settles as it now is, an arrival there included (held.ts settleOwn).
-      const closed = closing.current;
+      const closed = opening ?? closing.current;
       closing.current = null;
       const next = latestRef.current;
       if (!next) return;
@@ -1263,7 +1265,12 @@ function Inbox() {
         opened = landed();
       }
       closing.current = null;
-      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false);
+      // The thread opening settles as it now is too: an agent message the list
+      // held there is the person's to read now, not news for "N new". Held,
+      // its row kept the state the list showed (Quiet, say) and Back, which
+      // settles nothing when every message is seen, left it there with its
+      // questions open.
+      if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') settleList('own', false, { threadId });
       // The look covers what this read showed, not a message that lands before the server takes it.
       await inboxApi.seen(threadId, latestAgentSeq(opened)).catch(() => {});
       if (!cancelled) await refreshList(false);
@@ -1321,11 +1328,18 @@ function Inbox() {
     if (body && lastInput === 'keyboard' && (!active || active === document.body)) rowElement(body, closed)?.focus({ preventScroll: true });
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
-      // when a message arrived there that they did not see: it comes back
-      // unread, in the section its state gives it (held.ts settleThread).
+      // when a message arrived there that they did not see, or when it now
+      // waits on them and is drawn in another group (an agent asked while it
+      // was open): it takes the section its state gives it (held.ts
+      // settlesOnBack, settleThread).
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
-      if (next && next.unseen > 0) setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
+        // Back put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect):
+        // after a key, and after a stacked window's Back by mouse (#1866 hands that focus to the row too); never after a phone's tap.
+        if (lastInput === 'keyboard' || !isPhone()) refocusRow.current = closed;
+        setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      }
       return;
     }
     if (prefersReducedMotion()) settleList('own', false);
@@ -3032,6 +3046,8 @@ function Inbox() {
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
   const focusAfterShow = useRef(false);
+  /** The row Back over a covered list focused (a key, or a stacked window's mouse Back), which its settle redraws in another group. */
+  const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
     const from = slideFrom.current;
@@ -3056,9 +3072,14 @@ function Inbox() {
     const shownAll = focusAfterShow.current;
     focusAfterShow.current = false;
     const gone = listFocus.current;
+    const refocus = refocusRow.current;
+    refocusRow.current = null;
     const active = document.activeElement;
     const lost = !active || active === document.body;
-    if (body && lost && shownAll) {
+    const moved = body && refocus ? rowElement(body, refocus) : null;
+    if (moved && lost) {
+      moved.focus({ preventScroll: true });
+    } else if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
     } else if (body && lastInput === 'keyboard' && gone && lost && !rowElement(body, gone)) {
