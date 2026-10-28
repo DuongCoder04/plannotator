@@ -36,7 +36,7 @@ import {
   type WhatsNewModel,
 } from './api';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
-import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
+import { addOwnThreads, adoptKeepingOpen, filterSections, heldNotice, markHeldRowArchived, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
 import {
   captureSettle,
@@ -1316,11 +1316,13 @@ function Inbox() {
     if (body && lastInput === 'keyboard' && (!active || active === document.body)) rowElement(body, closed)?.focus({ preventScroll: true });
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
-      // when a message arrived there that they did not see: it comes back
-      // unread, in the section its state gives it (held.ts settleThread).
+      // when a message arrived there that they did not see, or when it now
+      // waits on them and is drawn in another group (an agent asked while it
+      // was open): it takes the section its state gives it (held.ts
+      // settlesOnBack, settleThread).
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
-      if (next && next.unseen > 0) setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
+      if (next) setShown((current) => (current && settlesOnBack(current, next) ? settleThread(current, latestRef.current!.sections, closed) : current));
       return;
     }
     if (prefersReducedMotion()) settleList('own', false);
