@@ -17,6 +17,7 @@ import {
   connectInboxAgents,
   createAgentEnvironmentFor,
   formatConnectReport,
+  inboxAgentReach,
   planInboxAgentRemoval,
   qwenDir,
   readAgentEntry,
@@ -192,11 +193,16 @@ describe("connecting Qwen Code", () => {
 describe("QWEN_HOME is not the same as when the entry was added (set in one shell, not in another)", () => {
   const other = () => join(fake.root, "other-qwen");
   const otherSettings = () => join(other(), "settings.json");
-
-  test("uninstall removes the entry from the file it was written in, byte for byte, and touches nothing in the other home", async () => {
+  /** Connected in ~/.qwen with the person's settings, as the shell without QWEN_HOME left it. */
+  const connectedInA = async () => {
     fake.install("qwen");
     writeSettings(MINE);
     await connect();
+    return { text: readFileSync(settingsPath(), "utf8"), record: readInboxAgents(dataDir).agents.qwen! };
+  };
+
+  test("uninstall removes the entry from the file it was written in, byte for byte, and touches nothing in the other home", async () => {
+    await connectedInA();
     const plan = planInboxAgentRemoval(dataDir, environment({ QWEN_HOME: other() }), OURS);
     expect(plan.skipped).toEqual([]);
     expect(plan.items.map((item) => item.describe)).toEqual(["MCP server plannotator-inbox from Qwen Code (~/.qwen/settings.json, that entry only)"]);
@@ -205,61 +211,109 @@ describe("QWEN_HOME is not the same as when the entry was added (set in one shel
     expect(existsSync(other())).toBe(false);
   });
 
-  test("a run under the new home moves the entry: out of the old file (back byte for byte), into the new one, never called removed outside", async () => {
-    fake.install("qwen");
-    writeSettings(MINE);
-    await connect();
-    const moved = await connect({ QWEN_HOME: other() });
-    expect(moved.added).toEqual(["qwen"]);
-    expect(moved.failed).toEqual([]);
+  test("a run under another QWEN_HOME touches neither file and moves nothing: said once, with how to move it; Settings still shows where it is", async () => {
+    const a = await connectedInA();
+    const run = await connect({ QWEN_HOME: other() });
+    expect(run.added).toEqual([]);
+    expect(run.failed).toEqual([]);
+    expect(run.elsewhere).toEqual([{ agent: "qwen", path: "~/.qwen/settings.json", now: otherSettings() }]);
+    const said = formatConnectReport(run).join("\n");
+    expect(said).toContain("~/.qwen/settings.json");
+    expect(said).toContain("Settings → Agents");
+    expect(readFileSync(settingsPath(), "utf8")).toBe(a.text);
+    expect(existsSync(other())).toBe(false);
+    expect(readInboxAgents(dataDir).agents.qwen).toEqual(a.record);
+    expect((await connect({ QWEN_HOME: other() })).elsewhere ?? []).toEqual([]);
+    expect(await inboxAgentReach("qwen", options({ QWEN_HOME: other() }))).toMatchObject({ on: true, state: "connected", path: "~/.qwen/settings.json" });
+  });
+
+  test("an entry the person removed by hand is never added again by a run under another QWEN_HOME", async () => {
+    await connectedInA();
+    writeFileSync(settingsPath(), MINE);
+    await connect({ QWEN_HOME: other() });
+    expect(existsSync(other())).toBe(false);
     expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
-    expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
-    const record = readInboxAgents(dataDir).agents.qwen!;
-    expect(record).toMatchObject({ state: "added", path: otherSettings() });
-    expect(record.removed_outside_at).toBeUndefined();
-    // Only the new file's entry is left for uninstall, from whichever shell it runs.
-    const plan = planInboxAgentRemoval(dataDir, environment(), OURS);
-    expect(await plan.items[0]!.apply()).toBeNull();
-    expect(existsSync(otherSettings())).toBe(false);
+    // Back in the shell it was added from: removed outside, and still never added again.
+    expect((await connect()).added).toEqual([]);
+    expect(readInboxAgents(dataDir).agents.qwen?.removed_outside_at).toEqual(expect.any(String));
     expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
   });
 
-  test.skipIf(process.getuid?.() === 0)("an old file that cannot be written keeps the entry and its record: said once, nothing added in the new home, moved at a later run", async () => {
-    fake.install("qwen");
-    writeSettings(MINE);
-    await connect();
-    const added = readFileSync(settingsPath(), "utf8");
-    chmodSync(settingsPath(), 0o444);
-    try {
-      const first = await connect({ QWEN_HOME: other() });
-      expect(first.added).toEqual([]);
-      expect(first.failed).toHaveLength(1);
-      expect(first.failed[0]!.reason).toContain("could not be moved");
-      expect((await connect({ QWEN_HOME: other() })).failed).toEqual([]);
-      expect(readFileSync(settingsPath(), "utf8")).toBe(added);
-      expect(existsSync(otherSettings())).toBe(false);
-      expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", path: settingsPath() });
-      expect(readInboxAgents(dataDir).agents.qwen?.removed_outside_at).toBeUndefined();
-    } finally {
-      chmodSync(settingsPath(), 0o644);
-    }
-    expect((await connect({ QWEN_HOME: other() })).added).toEqual(["qwen"]);
-    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
-  });
-
-  test("the Settings switch acts on the recorded file: off removes it there; on in a new home takes the old one out first", async () => {
-    fake.install("qwen");
-    writeSettings(MINE);
-    await connect();
-    expect(await setInboxAgentReach("qwen", false, options({ QWEN_HOME: other() }))).toBeNull();
-    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
-    expect(readInboxAgents(dataDir).agents.qwen?.state).toBe("off");
-
-    expect(await setInboxAgentReach("qwen", true, options())).toBeNull();
+  test("turning Qwen Code on in Settings under the new QWEN_HOME moves it: added there, then out of the old file (back byte for byte)", async () => {
+    await connectedInA();
+    await connect({ QWEN_HOME: other() });
     expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }))).toBeNull();
     expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
     expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
     expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", path: otherSettings() });
+    // Only the new file's entry is left for uninstall, from whichever shell it runs.
+    expect(await planInboxAgentRemoval(dataDir, environment(), OURS).items[0]!.apply()).toBeNull();
+    expect(existsSync(otherSettings())).toBe(false);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+  });
+
+  const cannotTake: [string, () => Record<string, string>, () => void][] = [
+    ["its settings.json has a trailing comma", () => ({ QWEN_HOME: other() }), () => writeSettings('{\n  "mcpServers": { "x": { "command": "y" }, },\n}\n', otherSettings())],
+    ["its settings.json is read-only", () => ({ QWEN_HOME: other() }), () => {
+      writeSettings('{\n  "mcpServers": {}\n}\n', otherSettings());
+      chmodSync(otherSettings(), 0o444);
+    }],
+    ["QWEN_HOME is relative", () => ({ QWEN_HOME: "rel/q" }), () => {}],
+    ["the qwen on PATH is not Qwen Code", () => ({ QWEN_HOME: other(), FAKE_QWEN_VERSION: "qwen (image viewer) 3.1" }), () => {}],
+  ];
+  for (const [what, env, prepare] of cannotTake) {
+    test.skipIf(process.getuid?.() === 0 && what.includes("read-only"))(`a new home that cannot take the entry (${what}): the old entry and its record stay, the run and Settings say why`, async () => {
+      const a = await connectedInA();
+      prepare();
+      const otherBefore = existsSync(otherSettings()) ? readFileSync(otherSettings(), "utf8") : null;
+      try {
+        await connect(env());
+        const problem = await setInboxAgentReach("qwen", true, options(env()));
+        expect(problem).not.toBeNull();
+        expect(readFileSync(settingsPath(), "utf8")).toBe(a.text);
+        expect(readInboxAgents(dataDir).agents.qwen).toEqual(a.record);
+        expect(existsSync(otherSettings()) ? readFileSync(otherSettings(), "utf8") : null).toBe(otherBefore);
+        expect(existsSync(join(fake.home, "rel"))).toBe(false);
+      } finally {
+        if (existsSync(otherSettings())) chmodSync(otherSettings(), 0o644);
+      }
+    });
+  }
+
+  test("an old file the person broke is never cut around: the new entry is taken back out, the broken file stays as it is, the record kept", async () => {
+    const a = await connectedInA();
+    const broken = `${a.text.trimEnd()},\n`;
+    writeFileSync(settingsPath(), broken);
+    const problem = await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }));
+    expect(problem).toContain("can't be read");
+    expect(problem).toContain("stays connected in ~/.qwen/settings.json");
+    expect(readFileSync(settingsPath(), "utf8")).toBe(broken);
+    // The entry it had added there is taken back out (the file it created with it, too).
+    expect(existsSync(otherSettings())).toBe(false);
+    expect(readInboxAgents(dataDir).agents.qwen).toEqual(a.record);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("an old file that cannot be written: the new entry is taken back out, so only the recorded one is ever left", async () => {
+    const a = await connectedInA();
+    chmodSync(settingsPath(), 0o444);
+    try {
+      const problem = await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }));
+      expect(problem).toContain("could not be removed");
+      expect(problem).toContain("stays connected in ~/.qwen/settings.json");
+      expect(readFileSync(settingsPath(), "utf8")).toBe(a.text);
+      expect(existsSync(otherSettings())).toBe(false);
+      expect(readInboxAgents(dataDir).agents.qwen).toEqual(a.record);
+    } finally {
+      chmodSync(settingsPath(), 0o644);
+    }
+  });
+
+  test("Settings off under another QWEN_HOME removes it from the recorded file", async () => {
+    await connectedInA();
+    expect(await setInboxAgentReach("qwen", false, options({ QWEN_HOME: other() }))).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(existsSync(other())).toBe(false);
+    expect(readInboxAgents(dataDir).agents.qwen?.state).toBe("off");
   });
 });
 

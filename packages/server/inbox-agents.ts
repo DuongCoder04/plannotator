@@ -40,6 +40,7 @@ import {
   INBOX_AGENT_IDS,
   INBOX_AGENT_LABELS,
   inboxAgentList,
+  inboxElsewhereText,
   type InboxAgentId,
   type InboxConnectReport,
 } from "@plannotator/core/inbox-types";
@@ -1090,6 +1091,8 @@ export interface InboxAgentsFile {
   failures?: Partial<Record<InboxAgentId, string>>;
   /** Each agent's last "connect it by hand" reason, so it is said once (said again when it changes). */
   manual_said?: Partial<Record<InboxAgentId, string>>;
+  /** Each agent last said to be connected in another file than the environment names (`recorded -> now`): said once. */
+  elsewhere_said?: Partial<Record<InboxAgentId, string>>;
 }
 
 export function inboxAgentsPath(dataDir: string): string {
@@ -1250,17 +1253,17 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     const record = file.agents[spec.id];
     if (!record || record.reach !== "mcp" || (record.state !== "added" && record.state !== "found") || record.removed_outside_at) continue;
     if (recordedElsewhere(spec, e, record)) {
-      // The environment names another file now (`QWEN_HOME` changed): the entry moves there, the one Plannotator added
-      // taken out of the file it was written in first, so only one is ever left behind for uninstall.
-      const moved = await moveRecordedEntry(spec, options, record);
-      if (moved === null) delete file.agents[spec.id];
-      else {
-        const reason = `its entry in ${displayPath(record.path, e)} could not be moved to ${displayPath(spec.file(e), e)} (${moved})`;
-        if (file.failures?.[spec.id] !== reason) report.failed.push({ agent: spec.id, reason, path: displayPath(record.path, e) });
-        (file.failures ??= {})[spec.id] = reason;
-      }
+      // The environment names another file now (`QWEN_HOME` set in one shell, not in another: an accident of how
+      // this Inbox was started). Neither file is touched and nothing is called removed: the entry stays where it was
+      // written, said once, and only the person moves it (Settings → Agents, turning it on).
+      const path = displayPath(record.path, e);
+      const now = displayPath(spec.file(e), e);
+      const key = `${path} -> ${now}`;
+      if (file.elsewhere_said?.[spec.id] !== key) (report.elsewhere ??= []).push({ agent: spec.id, path, now });
+      (file.elsewhere_said ??= {})[spec.id] = key;
       continue;
     }
+    if (file.elsewhere_said?.[spec.id]) delete file.elsewhere_said[spec.id];
     const raw = recordedRaw(spec, e, record);
     const read = raw === null ? null : classify(raw, ourCommands(options, record), true);
     if (read && read.kind !== "ours" && read.kind !== "unreadable") record.removed_outside_at = at;
@@ -1382,7 +1385,13 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     if (retry?.kind === "failed" && !retry.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: retry.reason });
   }
   if (report.added.length > 0 && !file.first_connected_at) file.first_connected_at = at;
-  const news = report.added.length > 0 || report.failed.length > 0 || report.foreign.length > 0 || (report.trusted?.length ?? 0) > 0 || (report.trust_failed?.length ?? 0) > 0;
+  const news =
+    report.added.length > 0 ||
+    report.failed.length > 0 ||
+    report.foreign.length > 0 ||
+    (report.elsewhere?.length ?? 0) > 0 ||
+    (report.trusted?.length ?? 0) > 0 ||
+    (report.trust_failed?.length ?? 0) > 0;
   file.last_report = news ? { ...report, seen: false } : file.last_report;
   try {
     writeInboxAgents(options.dataDir, file);
@@ -1425,6 +1434,7 @@ export function formatConnectReport(report: InboxConnectReport): string[] {
   for (const foreign of report.foreign) {
     lines.push(`${INBOX_AGENT_LABELS[foreign.agent]} has its own ${INBOX_MCP_SERVER_NAME} entry${foreign.path ? ` in ${foreign.path}` : ""}; left alone.`);
   }
+  for (const moved of report.elsewhere ?? []) lines.push(inboxElsewhereText(moved));
   if (report.added.length > 0 && report.first) {
     lines.push(`Agents use it from their next session. ${INBOX_CONNECT_ENV}=0 skips this step; plannotator uninstall removes what it added.`);
   }
@@ -1624,8 +1634,9 @@ export async function inboxAgentReach(id: InboxAgentId, options: ConnectOptions)
   const e = options.environment;
   const spec = agentSpec(id);
   const way: ConnectWay = id === "claude-code" ? claudeCodeWay(e) : await spec.way(e);
-  const path = displayPath(spec.file(e), e);
   const record = readInboxAgents(options.dataDir).agents[id];
+  // Where its recorded entry is (`QWEN_HOME` may name another file now): that is what Settings shows and switches.
+  const path = displayPath(recordedFile(spec, e, record), e);
   // Claude Code connected by hand through MCP, where the plugin gives it no tool (not installed, disabled, or its mod off):
   // it reaches the Inbox (without the wake). Checked before the agent is called off.
   if (id === "claude-code" && (way.kind === "manual" || !claudeCodeModOn(e)) && claudeCodeMcpEntry(e, ourCommands(options, record)).kind === "ours") {
@@ -1640,7 +1651,8 @@ export async function inboxAgentReach(id: InboxAgentId, options: ConnectOptions)
   }
   if (way.kind === "manual") return { kind: "manual", on: false, state: "manual", path, locked: false, reason: way.why };
   if (way.kind === "none") return { kind: "none", on: false, state: "manual", path, locked: false, reason: null };
-  const read = readAgentEntry(id, e, ourCommands(options, record), true);
+  const raw = recordedRaw(spec, e, record);
+  const read = raw === null ? null : classify(raw, ourCommands(options, record), true);
   if (read?.kind === "ours") return { kind: "mcp", on: true, state: "connected", path, locked: false, reason: null };
   if (read?.kind === "other") return { kind: "mcp", on: false, state: "foreign", path, locked: false, reason: null };
   if (read?.kind === "unreadable") return { kind: "mcp", on: false, state: "unreadable", path, locked: false, reason: read.reason };
@@ -1689,10 +1701,11 @@ async function removeOurMcpEntry(id: InboxAgentId, options: ConnectOptions, reco
 }
 
 /**
- * Before an entry is added where the environment names now: take the one
- * Plannotator added out of the file its record names (that entry only). A
- * found entry is the person's and stays; one gone or changed by hand is left
- * too. Returns an error reason (the old file cannot be read or written), or null.
+ * Once the entry is added where the environment names now (the person turned
+ * the agent on in Settings): take the one Plannotator added out of the file
+ * its record names (that entry only). A found entry is the person's and stays;
+ * one gone or changed by hand is left too. Returns an error reason (the old
+ * file cannot be read or written: the caller takes the new entry back out), or null.
  */
 async function moveRecordedEntry(spec: AgentSpec, options: ConnectOptions, record: InboxAgentRecord): Promise<string | null> {
   if (record.reach !== "mcp" || record.state !== "added") return null;
@@ -1726,19 +1739,36 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     file.agents[id] = { state: on ? "added" : "off", reach: "tool", path: null, at };
   } else if (on) {
     const previous = file.agents[id];
-    if (previous && recordedElsewhere(spec, e, previous)) {
-      // Its entry is in another file than the environment names now (`QWEN_HOME` changed): taken out there first.
-      const moved = await moveRecordedEntry(spec, options, previous);
-      if (moved) return `Plannotator's entry in ${displayPath(previous.path, e)} could not be removed first, so nothing was added: ${moved}`;
-    }
+    // Its entry is in another file than the environment names now (`QWEN_HOME` changed): the person moves it here.
+    // The old entry stays until the new file has one, so a problem in the new home never leaves the agent with none.
+    const moving = previous !== undefined && recordedElsewhere(spec, e, previous);
+    const old = moving ? displayPath(previous!.path, e) : null;
+    const stays = moving ? `, so ${INBOX_AGENT_LABELS[id]} stays connected in ${old}` : "";
     const outcome = await connectOne(spec, options, at);
-    if (outcome.kind === "failed") return outcome.reason;
-    if (outcome.kind === "foreign") return `${displayPath(outcome.path, e) ?? INBOX_AGENT_LABELS[id]} has its own ${NAME} entry`;
-    if (outcome.kind === "manual") return `${INBOX_AGENT_LABELS[id]} is connected by hand: ${outcome.why}`;
+    if (outcome.kind === "failed") return `${outcome.reason}${stays}`;
+    if (outcome.kind === "foreign") return `${displayPath(outcome.path, e) ?? INBOX_AGENT_LABELS[id]} has its own ${NAME} entry${stays}`;
+    if (outcome.kind === "manual") return `${INBOX_AGENT_LABELS[id]} is connected by hand: ${outcome.why}${stays}`;
+    if (moving) {
+      const moved = await moveRecordedEntry(spec, options, previous!);
+      if (moved) {
+        // The old one cannot go: the new one is taken back out, so only the recorded entry is ever left.
+        const json = jsonFileFor(id);
+        const added = outcome.kind === "added" ? outcome.record : null;
+        if (json && added?.path) {
+          const undone = writeJsonEntry(added.path, json.keys, undefined, added.command ? [added.command] : [], added.undo, json.rules);
+          if (undone.ok && added.created) deleteIfOnlyOurs(added.path, json.keys);
+        }
+        return `Plannotator's entry in ${old} could not be removed (${moved})${stays}`;
+      }
+    }
     if ("record" in outcome && outcome.record) file.agents[id] = outcome.record;
     else if (previous) delete file.agents[id];
-    // Turned on by the person: also a trusted sender again, even after a revoke in Qwen. A failure leaves it reached through MCP, and is said.
+    if (file.elsewhere_said) delete file.elsewhere_said[id];
+    // Turned on by the person: also a trusted sender again, even after a revoke in Qwen (its grant moves with the
+    // entry, to this Qwen home). A failure leaves it reached through MCP, and is said.
     if (id === "qwen" && INBOX_QWEN_TRUST_ON_CONNECT) {
+      // The record first: the Inbox stopping during the qwen call never leaves the entry unrecorded.
+      writeInboxAgents(options.dataDir, file);
       notice = await setQwenTrust(true, options.dataDir, e).catch((error: unknown) => `Qwen Code won't get your replies by itself: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
@@ -1753,6 +1783,9 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     file.agents[id] = { state: "off", reach: "mcp", path: spec.file(e), at };
     // Then Qwen Code's trusted-sender token: off is kept either way (no later run mints one for an agent turned off).
     if (id === "qwen") {
+      // Off is recorded first: the Inbox stopping during the qwen call never reads as removed outside (the revoke
+      // itself is written ahead: inbox-qwen-trust.ts).
+      writeInboxAgents(options.dataDir, file);
       notice = await setQwenTrust(false, options.dataDir, e).catch((error: unknown) => `Plannotator's trusted-sender token in Qwen Code could not be removed (${error instanceof Error ? error.message : String(error)})`);
     }
   }

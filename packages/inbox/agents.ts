@@ -6,6 +6,7 @@
 import {
   INBOX_AGENT_LABELS,
   INBOX_NOTE_AGENT_IDS,
+  inboxElsewhereText,
   type InboxAgentId,
   type InboxAgentRow,
   type InboxAgentsModel,
@@ -49,7 +50,13 @@ export function cardReport(model: InboxAgentsModel): InboxConnectReport | null {
   const report = model.last_report;
   if (!report || report.seen || report.skipped) return null;
   const news =
-    report.added.length + report.failed.length + report.foreign.length + (report.manual_why?.length ?? 0) + (report.trusted?.length ?? 0) + (report.trust_failed?.length ?? 0);
+    report.added.length +
+    report.failed.length +
+    report.foreign.length +
+    (report.manual_why?.length ?? 0) +
+    (report.trusted?.length ?? 0) +
+    (report.trust_failed?.length ?? 0) +
+    (report.elsewhere?.length ?? 0);
   return news > 0 ? report : null;
 }
 
@@ -63,6 +70,8 @@ export interface BandLines {
   byHand: string | null;
   failed: { agent: InboxAgentId; text: string }[];
   foreign: { agent: InboxAgentId; text: string }[];
+  /** Connected in another file than this Inbox's environment names (`QWEN_HOME` differs): left there; Settings moves it. */
+  elsewhere: { agent: InboxAgentId; text: string }[];
 }
 
 export function bandLines(report: InboxConnectReport): BandLines {
@@ -77,6 +86,7 @@ export function bandLines(report: InboxConnectReport): BandLines {
     byHand: manual.length > 0 ? `${joinNames(manual.map(label))} ${manual.length === 1 ? 'needs' : 'need'} connecting by hand:` : null,
     failed: report.failed.map((f) => ({ agent: f.agent, text: `Couldn't connect ${label(f.agent)}: ${sentence(tidyReason(f.reason))}` })),
     foreign: report.foreign.map((f) => ({ agent: f.agent, text: `${label(f.agent)} has its own plannotator-inbox entry${f.path ? ` in ${f.path}` : ''}; Plannotator left it alone.` })),
+    elsewhere: (report.elsewhere ?? []).map((moved) => ({ agent: moved.agent, text: inboxElsewhereText(moved) })),
   };
 }
 

@@ -86,6 +86,17 @@ test('a trusted sender that failed, or was removed in Qwen, is news in the band,
   expect(line?.text).toContain('removed in Qwen');
 });
 
+test('an agent connected in another QWEN_HOME is news for the band: where it is, and that Settings moves it', () => {
+  const report = { at: '', first: false, added: [], already: [], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false };
+  const elsewhere = [{ agent: 'qwen' as const, path: '~/.qwen/settings.json', now: '/srv/q/settings.json' }];
+  expect(cardReport(model({ last_report: report }))).toBeNull();
+  expect(cardReport(model({ last_report: { ...report, elsewhere } }))).not.toBeNull();
+  const [line] = bandLines({ ...report, elsewhere }).elsewhere;
+  expect(line!.text).toContain('~/.qwen/settings.json');
+  expect(line!.text).toContain('/srv/q/settings.json');
+  expect(line!.text).toContain('Settings → Agents');
+});
+
 test('the primary: up to three names, then a count; nothing ticked closes without adding', () => {
   expect(primaryAction(['Codex'])).toEqual({ label: 'Add to Codex', add: true });
   expect(primaryAction(['Codex', 'Gemini CLI', 'Claude Code'])).toEqual({ label: 'Add to Codex, Gemini CLI and Claude Code', add: true });
