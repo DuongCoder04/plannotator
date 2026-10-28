@@ -9,6 +9,9 @@
 ### Removed
 - Guided Reviews: the chapter side view, reading a guide file by file in VS Code's diff editor, the CodeLens line on guide files and the comment-thread question box. The **Guided Reviews** side bar stays as the guide's outline; right-click **Ask the Agent About This…** stays in VS Code's own diff of a guide's file (a quick input now).
 
+### Fixed
+- Guided Reviews: the Claude Code and Codex adapters run your own `claude` / `codex` (via `CLAUDE_CODE_EXECUTABLE` / `CODEX_PATH`), not the copy each adapter bundles. The bundled copy still runs when the CLI is not on PATH, on Windows when the CLI is not an `.exe`, or with the new `plannotator.guides.useInstalledCli` turned off. The output channel names the copy on each launch, and a failed start with your CLI says so.
+
 ### Added
 - Guided Reviews: ask the agent about selected code, a file or a chapter, and read its answer as a page beside the diff (the agent's own HTML, scripts included, in a sandboxed frame; Mermaid drawn by the Guide tab's engine). The guide's own ACP session answers when the agent can load it; answers are saved with the guide and listed under the chapter, with follow-ups in the same conversation. Selected lines (and the file's CodeLens) open the question box right under the lines, as a comment thread that shows the agent's progress and links to the answer.
 - Guides view: write a Guided Review of a pull request or your local changes with Claude Code over ACP, watch it build, and read it chapter by chapter in the native diff editor (overview with a Mermaid diagram and code links, chapter and file ticks, CodeLens, status bar). Guides are shared with Plannotator's web app. A pull request's own Claude Code settings and MCP servers are never loaded; guide history off (`PLANNOTATOR_GUIDE_HISTORY=0`) is honored.

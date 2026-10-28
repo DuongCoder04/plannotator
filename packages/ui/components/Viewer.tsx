@@ -10,6 +10,7 @@ import { useFenceTheme } from '../hooks/useFenceTheme';
 import { computeListIndices, groupBlocks, selectionSourceLines, type Frontmatter, type FrontmatterValue } from '../utils/parser';
 import { buildHeadingSlugMap } from '../utils/slugify';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { getRichCopyEnabled } from '../utils/richCopyPolicy';
 import { BlockRenderer } from './BlockRenderer';
 import { BELOW_TITLE_SLOT_MARKER } from '../utils/belowTitleSlot';
 import { indexQuestionBlocks, type IndexedQuestion, type ParsedQuestion, type QuestionAnswer } from '@plannotator/core/question-block';
@@ -38,6 +39,9 @@ import { FloatingQuickLabelPicker } from './FloatingQuickLabelPicker';
  */
 const MermaidBlock = lazy(async () => ({ default: (await import('./MermaidBlock')).MermaidBlock }));
 const GraphvizBlock = lazy(async () => ({ default: (await import('./GraphvizBlock')).GraphvizBlock }));
+/** ```html and ```svg fences drawn, for a host that opts in (`htmlEmbeds`); loaded only then. */
+const HtmlEmbedBlock = lazy(async () => ({ default: (await import('./html-embed/HtmlEmbedBlock')).HtmlEmbedBlock }));
+const SvgFenceBlock = lazy(async () => ({ default: (await import('./html-embed/SvgFenceBlock')).SvgFenceBlock }));
 
 // Debug error boundary to catch silent toolbar crashes
 class ToolbarErrorBoundary extends React.Component<
@@ -64,6 +68,8 @@ import { MessagesIcon } from './icons/MessagesIcon';
 import { DiagramAnchorClaims, DiagramAnchorClaimsContext } from './diagram/anchorClaims';
 import { DiagramBlockPending } from './diagram/DiagramPending';
 import { isGraphvizLanguage, isMermaidLanguage } from './diagramLanguages';
+import { isHtmlEmbedLanguage, isSvgFenceLanguage } from './html-embed/languages';
+import type { HtmlEmbedHost } from './html-embed/HtmlEmbedBlock';
 import { getIdentity } from '../utils/identity';
 import { type QuickLabel } from '../utils/quickLabels';
 import type { SelectionAction } from '../utils/selectionActions';
@@ -154,6 +160,14 @@ export interface ViewerProps {
   annotationHeader?: ViewerAnnotationHeaderConfig;
   /** Render the plan as a floating card on a grid background (shadow/border/padding). Default false. */
   gridEnabled?: boolean;
+  /**
+   * Grow the document card to the full height the parent gives the Viewer, so
+   * a short document's card still runs to the bottom of the view instead of
+   * stopping halfway down the grid paper. The parent must give the Viewer a
+   * height (a stretched flex item does). Default false: the card sizes to its
+   * content.
+   */
+  fillHeight?: boolean;
   onOpenLinkedDoc?: (path: string) => void;
   onOpenCodeFile?: (path: string) => void;
   /**
@@ -281,6 +295,20 @@ export interface ViewerProps {
    *  `Decision:` line is shown as context and no question carries a decision
    *  tag or row from it. The prompt, key and numbering are unchanged. */
   questionDecisionLines?: boolean;
+  /** Whether `:::question` cards read the contract lines (`Stakes:`,
+   *  `Shows:`, `Why:`, `Reversible:`) into the card's Stakes line, Shows
+   *  chip, Why line and "Can't be undone" tag. Default false: the lines show
+   *  as context (plain text), as plan review and annotate draw them. The
+   *  Plannotator Inbox passes true. The prompt, key, choices and numbering
+   *  are the same either way. */
+  questionContractLines?: boolean;
+  /** Whether picture choices (`- [ ] Label — ![alt](path)`) draw as picture
+   *  tiles (default true; see `QuestionBlock` `pictureChoices`). False: text
+   *  rows. */
+  questionPictureChoices?: boolean;
+  /** A small label over each picture tile's picture (see `QuestionBlock`
+   *  `pictureBadge`); absent: none. */
+  questionPictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
   /** Makes a question's "Records a decision" tag a toggle button
    *  (`aria-pressed`); a click calls this with the question's key and the
    *  next state, which the host stores and returns from
@@ -349,6 +377,14 @@ export interface ViewerProps {
    */
   answerOnly?: boolean;
   /**
+   * Opt-in host capability (approval "inbox-inline-html"): a host that serves
+   * embed documents (see `HtmlEmbedHost`, @plannotator/core/html-embed) draws
+   * a ```html fence as a live, sandboxed page and a ```svg fence as an
+   * image, each with a Code button for the source. Absent → both stay code,
+   * unchanged (plan review, annotate and code review pass nothing).
+   */
+  htmlEmbeds?: HtmlEmbedHost;
+  /**
    * Opt-in host capability, with `answerOnly`: the reader may comment on the
    * text. A text selection opens the selection toolbar, comment-only
    * (Comment and the one-click 👍; no Delete, no label picker), and its
@@ -360,6 +396,12 @@ export interface ViewerProps {
    * without `answerOnly` and under `readOnly`. Absent → unchanged.
    */
   textComments?: boolean;
+  /**
+   * Opt-in: words a text-selection comment box opens with, for the selected
+   * text (a host's suggested comment, kept with one press or written over).
+   * Returning undefined opens an empty box. Absent → unchanged.
+   */
+  suggestComment?: (selectedText: string) => string | undefined;
   /** Opt-in Vim-style keyboard selection. Default false for compatibility. */
   vimModeEnabled?: boolean;
   /** Replace the compact Vim badge with the live video-style key HUD. */
@@ -736,6 +778,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   stickyActions = true,
   annotationHeader,
   gridEnabled = false,
+  fillHeight = false,
   planDiffStats,
   isPlanDiffActive,
   onPlanDiffToggle,
@@ -773,6 +816,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   questionDecisionRecording,
   questionDecisionScope,
   questionDecisionLines = true,
+  questionContractLines = false,
+  questionPictureChoices = true,
+  questionPictureBadge,
   onToggleQuestionDecisionRecording,
   onOpenQuestionDecision,
   questionDecisionLocked,
@@ -786,7 +832,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   allowImages = true,
   readOnly = false,
   answerOnly = false,
+  htmlEmbeds,
   textComments = false,
+  suggestComment,
   vimModeEnabled = false,
   vimHudEnabled = false,
   vimHudKeyPanelEnabled = true,
@@ -883,9 +931,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   // annotations that carry `questionAnswer` (matched by question key, so an
   // answer follows its question across re-parses).
   const questionIndex = useMemo(() => {
-    const list = indexQuestionBlocks(blocks, { decisionLines: questionDecisionLines });
+    const list = indexQuestionBlocks(blocks, { decisionLines: questionDecisionLines, contractLines: questionContractLines });
     return { byBlock: new Map(list.map((q) => [q.blockId, q])), total: list.length };
-  }, [blocks, questionDecisionLines]);
+  }, [blocks, questionDecisionLines, questionContractLines]);
   // A host that keeps answers itself (`questionAnswers`) replaces the
   // annotation-derived map; each entry is validated like any other reader.
   const answersByKey = useMemo(
@@ -1638,7 +1686,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     <CodePathValidationContext.Provider value={codePathValidation}>
     <LocalLinkContext.Provider value={resolveLocalLink ?? null}>
     <DiagramAnchorClaimsContext.Provider value={diagramClaims}>
-    <div className="relative z-50 w-full" style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}>
+    <div
+      className={`relative z-50 w-full${fillHeight ? ' flex flex-col print:block' : ''}`}
+      data-viewer-fill-height={fillHeight ? '' : undefined}
+      style={maxWidth === null ? undefined : { maxWidth: maxWidth ?? 832 }}
+    >
       {taterMode && <TaterSpriteSitting />}
       <article
         ref={containerRef}
@@ -1653,7 +1705,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         onFocus={vim.onFocus}
         onBlur={vim.onBlur}
         onMouseDown={vim.onMouseDown}
-        className={`w-full bg-card rounded-xl py-5 md:py-8 lg:py-10 xl:py-12 relative ${gridEnabled ? 'px-5 md:px-8 lg:px-10 xl:px-12 shadow-xl border border-border/50' : ''} ${inputMethod === 'pinpoint' ? 'cursor-pointer' : ''}`}
+        className={`w-full bg-card rounded-xl py-5 md:py-8 lg:py-10 xl:py-12 relative ${fillHeight ? 'flex-1 ' : ''}${gridEnabled ? 'px-5 md:px-8 lg:px-10 xl:px-12 shadow-xl border border-border/50' : ''} ${inputMethod === 'pinpoint' ? 'cursor-pointer' : ''}`}
         style={{
           WebkitTouchCallout: 'none',
           ...(vimModeActive ? { outline: 'none' } : {}),
@@ -1748,6 +1800,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                 </div>
               );
             })()
+          ) : htmlEmbeds && group.block.type === 'code' && isHtmlEmbedLanguage(group.block.language) ? (
+            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
+              <HtmlEmbedBlock block={group.block} host={htmlEmbeds} />
+            </Suspense>
+          ) : htmlEmbeds && group.block.type === 'code' && isSvgFenceLanguage(group.block.language) ? (
+            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
+              <SvgFenceBlock block={group.block} />
+            </Suspense>
           ) : group.block.type === 'code' && isMermaidLanguage(group.block.language) ? (
             <Suspense key={group.block.id} fallback={<DiagramBlockPending block={group.block} kind="mermaid" />}>
               <MermaidBlock
@@ -1894,6 +1954,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                   questionStatusTag={questionStatusTag}
                   questionStatusLabel={questionStatusLabel}
                   renderQuestionBelowPrompt={renderQuestionBelowPrompt}
+                  questionContractLines={questionContractLines}
+                  questionPictureChoices={questionPictureChoices}
+                  questionPictureBadge={questionPictureBadge}
                 />
               );
               // `textComments`: a question card's words are not commented on
@@ -1926,6 +1989,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               selectionActionsIcon={selectionActionsIcon}
               quickLabels={quickLabels}
               copyText={toolbarState.selectionText}
+              getRichCopy={getRichCopyEnabled() ? toolbarState.getRichCopy : undefined}
               hideCopyButton={!isTouchDevice}
               closeOnScrollOut
             />
@@ -2057,7 +2121,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               anchorEl={hookCommentPopover.anchorEl}
               contextText={hookCommentPopover.contextText}
               isGlobal={false}
-              initialText={hookCommentPopover.initialText}
+              initialText={hookCommentPopover.initialText || suggestComment?.(hookCommentPopover.selectedText ?? hookCommentPopover.contextText) || undefined}
               draftKey={`plan:${commentDraftScope}:${hookCommentPopover.draftKey}`}
               onSubmit={hookCommentSubmit}
               onClose={hookCommentClose}

@@ -131,6 +131,10 @@ interface CommentPopoverProps {
   /** Opt-in: the stacking level, for a composer over a surface that is
    *  itself above the page (the image viewer is z-200). Absent → 100. */
   zIndex?: number;
+  /** Opt-out: `false` mounts the composer without taking focus (an HTML
+   *  pin's composer shown again when its hidden target returns, so focus
+   *  stays where the person is). Absent → focuses on mount, as always. */
+  autoFocus?: boolean;
 }
 
 const MAX_POPOVER_WIDTH = 384;
@@ -226,6 +230,7 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   headerText,
   placement = 'below',
   zIndex,
+  autoFocus = true,
 }) => {
   const visibleBounds = useVisibleViewportBounds(16);
   const coarsePointer = hasPrimaryCoarsePointer();
@@ -334,7 +339,7 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   // renders after `position` is measured, and WebKit fires 0ms timers ahead of
   // that commit, so an effect keyed on mode alone can run before the textarea
   // exists and never focus it (e.g. in WKWebView hosts like Glimpse).
-  const shouldAutoFocus = !coarsePointer || initialText.length > 0 || isGlobal;
+  const shouldAutoFocus = autoFocus && (!coarsePointer || initialText.length > 0 || isGlobal);
   const focusOnMountRef = useCallback((el: HTMLTextAreaElement | null) => {
     textareaRef.current = el;
     if (!el || !shouldAutoFocus) return;
@@ -349,13 +354,13 @@ export const CommentPopover: React.FC<CommentPopoverProps> = ({
   // summon the software keyboard), but hardware-keyboard users still need a
   // coherent focus target and Escape dismissal.
   useEffect(() => {
-    if (mode !== 'dialog' || shouldAutoFocus) return;
+    if (mode !== 'dialog' || shouldAutoFocus || !autoFocus) return;
     const timer = setTimeout(() => {
       if (!popoverRef.current?.isConnected) return;
       popoverRef.current.focus({ preventScroll: true });
     }, 0);
     return () => clearTimeout(timer);
-  }, [mode, shouldAutoFocus]);
+  }, [autoFocus, mode, shouldAutoFocus]);
 
   const restoreOpeningFocus = useCallback(() => {
     const target = openingFocusRef.current;
