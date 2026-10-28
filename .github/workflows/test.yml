@@ -638,12 +638,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       # The release workflow (guides-show-deploy.yml) refuses to publish when
-      # the viewer build blows its size budgets or the checked-in manifest no
-      # longer matches it, but that gate fires at the tag. The manifest pin is
-      # compiled into the release binaries independently of the viewer deploy,
-      # so a budget or manifest break has to surface on the PR that causes it.
-      # Regenerate with `bun run --cwd apps/guides-show build:viewer &&
-      # bun run --cwd apps/guides-show sync:manifest`.
+      # the viewer build blows its size budgets, but that gate fires at the
+      # tag, so a budget break has to surface on the PR that causes it.
       - name: Build viewer
         if: steps.gate.outputs.run == 'true'
         run: bun run --cwd apps/guides-show build:viewer
@@ -652,26 +648,15 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: bun run --cwd apps/guides-show check:budgets
 
-      # The viewer build is deterministic across platforms at the pinned Bun and
-      # lockfile (macOS and Linux produce identical hashes from a clean install),
-      # but a drifted local environment silently builds different bytes: a bun
-      # store with stale duplicate package versions reproduced exactly that. This
-      # Linux build is the authority the pin must match, so publish its manifest;
-      # when the check below fails and a fresh local regen still disagrees,
-      # download this artifact to apps/guides-show/dist/viewer/manifest.json, run
-      # `bun run --cwd apps/guides-show sync:manifest`, commit the result, and
-      # rebuild your environment (rm -rf node_modules && bun install --frozen-lockfile).
-      - name: Publish built viewer manifest for pin regeneration
-        if: always() && steps.gate.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: guide-viewer-manifest
-          path: apps/guides-show/dist/viewer/manifest.json
-          retention-days: 7
-
-      - name: Checked-in manifest matches this build
+      # The viewer pin (packages/core/guide-viewer-manifest.ts) is generated,
+      # never committed: every shipping build runs `bun run build:viewer-pin`.
+      # Prove the generator still turns this build into a module core accepts,
+      # since the release, the guides.show deploy and core's prepack rely on it.
+      - name: Generate the viewer pin from this build
         if: steps.gate.outputs.run == 'true'
-        run: bun run --cwd apps/guides-show check:manifest
+        run: |
+          bun run --cwd apps/guides-show sync:manifest
+          cd packages/core && bunx tsc --noEmit -p tsconfig.json
 
   uninstall-windows:
     # Run the filesystem and path logic under real Windows path semantics.

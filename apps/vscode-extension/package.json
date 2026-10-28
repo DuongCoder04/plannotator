@@ -542,7 +542,7 @@
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.guides.json && tsc --noEmit -p tsconfig.webview.json",
     "typecheck:reader": "tsc --noEmit -p tsconfig.reader.json",
     "vsce-package": "vsce package --no-dependencies",
-    "package": "bun run build && bun run vsce-package",
+    "package": "bun run --cwd ../.. build:viewer-pin && bun run build && bun run vsce-package",
     "clean": "rm -rf ./dist"
   },
   "dependencies": {
