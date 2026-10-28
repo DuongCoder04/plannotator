@@ -542,8 +542,9 @@ describe("What's new for a version installed outside the Inbox (no notes saved)"
 
 describe("the question sound (config.json inboxSound)", () => {
   const settingsOf = async (server: InboxServer) => (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/settings`)).json()).sound;
+  // These tests restart servers; never reuse a socket from a stopped instance.
   const postJson = (server: InboxServer, path: string, body: unknown) =>
-    fetch(`http://127.0.0.1:${server.port}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    fetch(`http://127.0.0.1:${server.port}${path}`, { keepalive: false, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const claim = async (server: InboxServer) => (await (await postJson(server, "/api/inbox/sound/dialog", { serverSession: server.serverSession })).json()).show;
 
   test("on at 60 unless set; saved field by field; anything else refused with nothing written", async () => {
