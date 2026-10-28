@@ -109,7 +109,7 @@ import { DraftsPage } from './compose/DraftsPage';
 import { BoardPage, type BoardMove } from './board/BoardPage';
 import { BoardOff } from './board/BoardOff';
 import { CardChip } from './board/CardChip';
-import { boardViewOf, type BoardView } from './board/model';
+import { boardViewOf, newCardProject, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
 import type { CardsModel, DraftView, UpdateCheckFailing } from './api';
@@ -3283,8 +3283,6 @@ function Inbox() {
     for (const row of latest?.pins ?? []) if (!rowById.has(row.thread_id)) rowById.set(row.thread_id, row);
     // The cards' own answer names threads the list leaves out (archived): the opened card still names them.
     for (const [id, row] of Object.entries(cards?.threads ?? {})) if (row && !rowById.has(id)) rowById.set(id, row);
-    // A New card goes in the project of the card heard from last, else the first project.
-    const recent = [...(cards?.cards ?? [])].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => projects.some((p) => p.id === card.project_id));
     main = (
       <BoardPage
         view={route.board ?? 'lanes'}
@@ -3293,8 +3291,8 @@ function Inbox() {
         visitLook={boardVisit ? boardVisit.look : (cards?.seen_seq ?? null)}
         handled={boardVisit?.handled ?? EMPTY_SET}
         projects={projects}
-        // Filtered to a project: a New card goes there.
-        defaultProject={(route.project && projects.some((p) => p.id === route.project) ? route.project : null) ?? recent?.project_id ?? projects[0]?.id ?? null}
+        // The filtered project, else the project of the card heard from last, else the first.
+        defaultProject={newCardProject(route.project, projects, cards?.cards ?? [])}
         home={settings?.home ?? null}
         mcpCommand={settings?.mcp_command ?? null}
         phone={phone}

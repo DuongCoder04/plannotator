@@ -84,6 +84,21 @@ export function boardLanes(cards: readonly InboxCardWire[]): BoardLane[] {
   }));
 }
 
+/**
+ * Where a New card goes unless the person picks another: the project the
+ * Board is filtered to, else the project of the card heard from last, else
+ * the first project.
+ */
+export function newCardProject(
+  filter: string | null,
+  projects: readonly { id: string }[],
+  cards: readonly Pick<InboxCardWire, 'project_id' | 'heard_at'>[],
+): string | null {
+  const known = (id: string | null | undefined) => (id && projects.some((p) => p.id === id) ? id : null);
+  const recent = [...cards].sort((a, b) => b.heard_at.localeCompare(a.heard_at)).find((card) => known(card.project_id));
+  return known(filter) ?? recent?.project_id ?? projects[0]?.id ?? null;
+}
+
 /** Under this page width the Board's Project chip sits on a row of its own under the header (BoardPage). */
 export const BOARD_FILTER_ROW_BELOW = 880;
 
