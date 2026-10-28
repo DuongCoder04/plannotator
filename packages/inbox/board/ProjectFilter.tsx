@@ -12,14 +12,15 @@ export interface ProjectFilterProps {
   /** The project the Board shows, or null for all of them. */
   value: string | null;
   phone: boolean;
-  /** False: no menu, only "in <project>" with × (the sidebar picks the project). */
+  /** False: no menu, only the project with × (the sidebar picks the project). */
   menu?: boolean;
   onChange: (project: string | null) => void;
 }
 
 /**
  * The Board's Project filter: the search palette's Project chip, in the
- * Board's header. "All projects", or "in <project>" with × to clear it; the
+ * Board's header. "All projects", or the project's name with × to clear it
+ * (no "in": the owner, 2026-10-28; search's chip keeps its own words); the
  * menu is the Board's own (Base UI Menu, `.ib-pm`, as the opened card's
  * column menu), one choice, so radio items with the picked one checked.
  * Base UI carries the keys: arrows, Home/End, type-ahead, Escape and Tab
@@ -32,7 +33,7 @@ export function ProjectFilter({ projects, names, value, phone, menu = true, onCh
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   useEffect(() => setPortal(trigger.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
   const name = value ? (names.get(value) ?? null) : null;
-  const label = value ? `in ${name ?? 'another project'}` : 'All projects';
+  const label = value ? (name ?? 'Another project') : 'All projects';
   const clear = value && (
     <button
       type="button"
@@ -55,6 +56,7 @@ export function ProjectFilter({ projects, names, value, phone, menu = true, onCh
           <span className="ib-bpf-btn ib-bpf-static">
             <Icon name="folder" size={14} />
             <span className="ib-bpf-l" dir="auto">
+              <span className="ib-sr">Project: </span>
               {label}
             </span>
           </span>
@@ -69,6 +71,7 @@ export function ProjectFilter({ projects, names, value, phone, menu = true, onCh
           <Menu.Trigger ref={trigger} className="ib-bpf-btn" data-board-project-chip="">
             <Icon name="folder" size={14} />
             <span className="ib-bpf-l" dir="auto">
+              <span className="ib-sr">Project: </span>
               {label}
             </span>
             <Icon name="chevD" size={13} />

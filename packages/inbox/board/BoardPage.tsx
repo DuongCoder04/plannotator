@@ -90,7 +90,7 @@ export interface BoardPageProps {
   onProject?: (project: string | null) => void;
   /**
    * How the filter is drawn (throwaway, `?variant=`): 'menu' the Project chip with its menu, 'clear'
-   * only "in <project>" with × while the sidebar picks it, 'none' nothing.
+   * only the project with × while the sidebar picks it, 'none' nothing.
    */
   projectChip?: 'menu' | 'clear' | 'none';
 }
