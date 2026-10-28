@@ -1199,7 +1199,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     if (typeof body.note === "boolean") {
       if (!(INBOX_NOTE_AGENT_IDS as readonly string[]).includes(agent)) throw new InboxError("validation_error", "note: this agent has no Inbox note workflow.", { field: "note" });
-      if (agent === "cursor") throw new InboxError("validation_error", "Cursor rules must be copied manually from Settings → Agents.", { field: "note" });
+      if (agent === "cursor") throw new InboxError("validation_error", "note: Cursor's note is copied by hand into Customize → Rules; Show note in Settings → Agents.", { field: "note" });
       if (inboxNotesDisabled(agentEnvironment.env) && body.note) throw new InboxError("notes_disabled", "PLANNOTATOR_INBOX_NOTES=0 is set: notes are off.");
       // Adding one needs the agent here, as the note dialog and --notes ask; switching one off never does.
       if (body.note && !agentSpec(agent).detect(agentEnvironment)) {
@@ -1225,10 +1225,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const isNoteList = (value: unknown) => Array.isArray(value) && value.every((id) => typeof id === "string" && (INBOX_NOTE_AGENT_IDS as readonly string[]).includes(id));
     const add = body.add;
     if (!isNoteList(add)) {
-      throw new InboxError("validation_error", "add: a list of agents (claude-code, codex, gemini, pi, opencode).", { field: "add" });
+      throw new InboxError("validation_error", "add: a list of agents (claude-code, codex, gemini, pi, opencode, cursor).", { field: "add" });
     }
     if (body.asked !== undefined && !isNoteList(body.asked)) {
-      throw new InboxError("validation_error", "asked: a list of agents (claude-code, codex, gemini, pi, opencode).", { field: "asked" });
+      throw new InboxError("validation_error", "asked: a list of agents (claude-code, codex, gemini, pi, opencode, cursor).", { field: "asked" });
     }
     if (body.seen !== undefined && typeof body.seen !== "boolean") throw new InboxError("validation_error", "seen: a boolean.", { field: "seen" });
     const adding = [...new Set(add as InboxNoteAgentId[])];
@@ -1237,12 +1237,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // Read before adding: an agent whose note is added is no longer a candidate.
     const shown = (body.asked as InboxNoteAgentId[] | undefined) ?? (await noteCandidateIds(options));
     const results = adding.map((agent) =>
-      agent === "cursor"
-        ? ({ ok: true, agent, action: "manual", path: null } as const)
-        // Never a file for an agent that is not on this computer.
-        : agentSpec(agent).detect(agentEnvironment)
-          ? addInboxNote(agent, dataDir, agentEnvironment)
-          : ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const),
+      // Never a note, written or to copy, for an agent that is not on this computer.
+      !agentSpec(agent).detect(agentEnvironment)
+        ? ({ ok: false, agent, reason: `${INBOX_AGENT_LABELS[agent]} was not found on this computer`, path: null } as const)
+        : agent === "cursor"
+          ? // Cursor keeps its rules in the app: nothing is written, the window shows the note to copy.
+            ({ ok: true, agent, action: "manual", path: null } as const)
+          : addInboxNote(agent, dataDir, agentEnvironment),
     );
     const failed = new Set(results.filter((result) => !result.ok).map((result) => result.agent));
     await markNotesAsked([...new Set([...shown, ...adding])].filter((id) => !failed.has(id)), options);
@@ -2772,16 +2773,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json(result);
       }
 
-      // An action item (approval "inbox-next-actions"): the person's Done (with an
-      // optional note) or Can't do it (with a reason), sent to the agent once
-      // the Undo window passes; `{ outcome: null }` is the Undo.
+      // An action item: the person's Done (with an optional note) or Can't do it
+      // (with a reason). `staged: true` (the window; approval
+      // "inbox-action-items-in-reply") puts it in the reply draft, sent with the
+      // person's Send; without it (approval "inbox-next-actions") it is sent once
+      // the Undo window passes. `{ outcome: null }` takes it back. `note_only`
+      // (a note typed under the marked row) never marks an item taken back.
       const actionMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/actions\/(a-[0-9a-f]{8}(?:-\d{1,3})?)$/.exec(path);
       if (actionMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note });
-        if (body.outcome !== null) scheduleActionSettle();
+        const questions = store.markAction(actionMatch[1]!, actionMatch[2]!, { outcome: body.outcome, note: body.note, staged: body.staged, note_only: body.note_only });
+        // A staged mark waits for the person's Send: no timer.
+        if (body.outcome !== null && body.staged !== true) scheduleActionSettle();
         return json({ questions });
       }
 
@@ -2910,6 +2915,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 // The questions the person chose to skip ("Skip them"): only these. The old
                 // `skip_unanswered` flag is ignored (approval "inbox-explicit-skip", 2026-10-21).
                 skip: body.skip,
+                actions: body.actions,
               });
             } catch (error) {
               removeInboxAttachmentFiles(store.dir, attachments);
