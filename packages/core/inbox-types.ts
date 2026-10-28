@@ -1560,6 +1560,13 @@ export function inboxAgentList(ids: readonly InboxAgentId[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/** An agent connected in another file than this Inbox's environment names (`InboxConnectReport.elsewhere`): where, and how the person moves it. */
+export function inboxElsewhereText(moved: { agent: InboxAgentId; path: string | null; now: string | null }): string {
+  const label = INBOX_AGENT_LABELS[moved.agent];
+  const why = `${moved.agent === "qwen" ? "this Inbox has another QWEN_HOME, so it" : "this Inbox"} looks in ${moved.now ?? "another file"}`;
+  return `${label} is connected in ${moved.path ?? "another file"}, but ${why}. Plannotator left both as they are; turn ${label} on in Settings → Agents to move it there.`;
+}
+
 /** What one `plannotator inbox` run did to the agents on this computer. */
 export interface InboxConnectReport {
   at: string;
@@ -1579,6 +1586,12 @@ export interface InboxConnectReport {
   manual: InboxAgentId[];
   /** Why each manual agent needs a person, said once per reason (the terminal prints these). */
   manual_why?: { agent: InboxAgentId; why: string }[];
+  /**
+   * Connected in another file than this run's environment names (`QWEN_HOME`
+   * differs from when the entry was added): left where it is, said once;
+   * turning the agent on in Settings → Agents moves it.
+   */
+  elsewhere?: { agent: InboxAgentId; path: string | null; now: string | null }[];
   /** Did not finish within the time limits; tried again at the next run. */
   unfinished: InboxAgentId[];
   /** Claude Code's plugin gives it the `plannotator_inbox` tool already. */

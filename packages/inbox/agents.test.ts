@@ -7,7 +7,7 @@
  */
 import { expect, test } from 'bun:test';
 import type { InboxAgentRow, InboxAgentsModel } from '@plannotator/core/inbox-types';
-import { cardReport, notePrimaryAction, noteQuestionRows, noteWithoutMarkers, primaryAction, sentence, splitPath, tidyReason } from './agents';
+import { bandLines, cardReport, notePrimaryAction, noteQuestionRows, noteWithoutMarkers, primaryAction, sentence, splitPath, tidyReason } from './agents';
 
 function row(id: InboxAgentRow['id'], over: Partial<InboxAgentRow> = {}): InboxAgentRow {
   return {
@@ -62,6 +62,17 @@ test('the band reads only unseen news, and never a skipped run', () => {
   expect(cardReport(model({ last_report: report }))).not.toBeNull();
   expect(cardReport(model({ last_report: { ...report, seen: true } }))).toBeNull();
   expect(cardReport(model({ last_report: { ...report, added: [] } }))).toBeNull();
+});
+
+test('an agent connected in another QWEN_HOME is news for the band: where it is, and that Settings moves it', () => {
+  const report = { at: '', first: false, added: [], already: [], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false };
+  const elsewhere = [{ agent: 'qwen' as const, path: '~/.qwen/settings.json', now: '/srv/q/settings.json' }];
+  expect(cardReport(model({ last_report: report }))).toBeNull();
+  expect(cardReport(model({ last_report: { ...report, elsewhere } }))).not.toBeNull();
+  const [line] = bandLines({ ...report, elsewhere }).elsewhere;
+  expect(line!.text).toContain('~/.qwen/settings.json');
+  expect(line!.text).toContain('/srv/q/settings.json');
+  expect(line!.text).toContain('Settings → Agents');
 });
 
 test('the primary: up to three names, then a count; nothing ticked closes without adding', () => {
