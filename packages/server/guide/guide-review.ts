@@ -2,7 +2,8 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
-import { loadConfig, resolveCursorSandbox } from "../config";
+import { loadConfig, resolveClaudeSandbox, resolveCursorSandbox } from "../config";
+import { claudeJobIsolationArgs, claudeJobToolArgs, findClaudeStructuredOutput, type ClaudeJobCommandOptions } from "../claude-review";
 import {
   GUIDE_NO_SECTIONS_ERROR,
   GUIDE_REVIEW_PROMPT,
@@ -13,7 +14,7 @@ import {
   type GuideChangedFile,
 } from "@plannotator/shared/guide-prompt";
 import type { DiffType } from "../vcs";
-import type { PRMetadata } from "../pr";
+import { getPRPlatformCapabilities, type PRMetadata } from "../pr";
 import type { WorkspaceReviewPromptContext } from "../agent-review-message";
 import {
   MARKER_ENGINES,
@@ -88,34 +89,12 @@ export interface GuideClaudeCommandResult {
   stdinPrompt: string;
 }
 
-export function buildGuideClaudeCommand(prompt: string, model: string = "sonnet", effort?: string): GuideClaudeCommandResult {
-  const allowedTools = [
-    "Agent", "Read", "Glob", "Grep",
-    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
-    "Bash(git show:*)", "Bash(git blame:*)", "Bash(git branch:*)",
-    "Bash(git grep:*)", "Bash(git ls-remote:*)", "Bash(git ls-tree:*)",
-    "Bash(git merge-base:*)", "Bash(git remote:*)", "Bash(git rev-parse:*)",
-    "Bash(git show-ref:*)", "Bash(git -C:*)",
-    "Bash(jj status:*)", "Bash(jj diff:*)", "Bash(jj log:*)",
-    "Bash(jj show:*)", "Bash(jj file show:*)", "Bash(jj cat:*)",
-    "Bash(jj bookmark list:*)",
-    "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr list:*)",
-    "Bash(gh api repos/*/*/pulls/*)", "Bash(gh api repos/*/*/pulls/*/files*)",
-    // The guide prompt follows linked issues (`Fixes #123`, `Closes owner/repo#456`),
-    // so the allowlist has to permit the issue-read commands.
-    "Bash(gh issue view:*)", "Bash(gh api repos/*/*/issues/*)",
-    "Bash(glab mr view:*)", "Bash(glab mr diff:*)",
-    "Bash(glab issue view:*)",
-    "Bash(wc:*)",
-  ].join(",");
-
-  const disallowedTools = [
-    "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
-    "Bash(python:*)", "Bash(python3:*)", "Bash(node:*)", "Bash(npx:*)",
-    "Bash(bun:*)", "Bash(bunx:*)", "Bash(sh:*)", "Bash(bash:*)", "Bash(zsh:*)",
-    "Bash(curl:*)", "Bash(wget:*)",
-  ].join(",");
-
+export function buildGuideClaudeCommand(
+  prompt: string,
+  model: string = "sonnet",
+  effort?: string,
+  opts?: ClaudeJobCommandOptions,
+): GuideClaudeCommandResult {
   return {
     command: [
       "claude", "-p",
@@ -126,9 +105,8 @@ export function buildGuideClaudeCommand(prompt: string, model: string = "sonnet"
       "--no-session-persistence",
       "--model", model,
       ...(effort ? ["--effort", effort] : []),
-      "--tools", "Agent,Bash,Read,Glob,Grep",
-      "--allowedTools", allowedTools,
-      "--disallowedTools", disallowedTools,
+      ...claudeJobToolArgs(),
+      ...claudeJobIsolationArgs(opts),
     ],
     stdinPrompt: prompt,
   };
@@ -455,39 +433,24 @@ export function parseGuideMarkerOutput(stdout: string, engine: MarkerEngine, non
 }
 
 export function parseGuideStreamOutput(stdout: string): CodeGuideOutput | null {
-  if (!stdout.trim()) return null;
-
-  const lines = stdout.trim().split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    try {
-      const event = JSON.parse(line);
-      if (event.type === 'result') {
-        if (event.is_error) return null;
-        const output = event.structured_output;
-        // A guide with no sections isn't a guide — treat as invalid so the UI
-        // error state fires instead of rendering an empty screen.
-        if (!output || !Array.isArray(output.sections) || output.sections.length === 0) return null;
-        return output as CodeGuideOutput;
-      }
-    } catch {
+  return findClaudeStructuredOutput(
+    stdout,
+    (output) => {
+      // A guide with no sections isn't a guide — treat as invalid so the UI
+      // error state fires instead of rendering an empty screen.
+      const sections = output && typeof output === 'object' ? (output as { sections?: unknown }).sections : undefined;
+      return Array.isArray(sections) && sections.length > 0 ? (output as CodeGuideOutput) : null;
+    },
+    (line) => {
       // Not valid JSON as a whole line — this can happen when the final
       // NDJSON line (the schema-constrained result event) is truncated
       // mid-stream. If it still carries the structured_output key, try
-      // mechanically repairing just that embedded value before giving up on
-      // this line.
+      // mechanically repairing just that embedded value before moving on.
       const marker = '"structured_output":';
       const idx = line.indexOf(marker);
-      if (idx !== -1) {
-        const repaired = repairGuideJsonText(line.slice(idx + marker.length));
-        if (repaired) return repaired;
-      }
-    }
-  }
-
-  return null;
+      return idx === -1 ? null : repairGuideJsonText(line.slice(idx + marker.length));
+    },
+  );
 }
 
 /** Reads and deletes a Codex `--output-file` JSON payload. Deletion happens
@@ -681,10 +644,13 @@ function extractMarkerFailedPayload(engine: MarkerEngine, stdout: string, nonce:
   return stdout;
 }
 
-/** Finds the last NDJSON `result` event in Claude stream-json stdout,
- *  regardless of whether it carries a valid structured_output — used only
- *  for failed-payload capture, never for the trusted parse path. */
-function findLastClaudeResultEvent(stdout: string): Record<string, unknown> | null {
+/** Finds the newest NDJSON `result` event in Claude stream-json stdout that
+ *  carries a `structured_output` key, regardless of whether that value is
+ *  valid — used only for failed-payload capture, never for the trusted parse
+ *  path. A run with background subagents emits several result events and the
+ *  trailing ones often carry no output, so "the last result event" would
+ *  usually hand the repair UI nothing. */
+function findLastClaudeResultWithOutput(stdout: string): Record<string, unknown> | null {
   if (!stdout.trim()) return null;
   const lines = stdout.trim().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -692,7 +658,8 @@ function findLastClaudeResultEvent(stdout: string): Record<string, unknown> | nu
     if (!line) continue;
     try {
       const event = JSON.parse(line);
-      if (event && typeof event === "object" && (event as Record<string, unknown>).type === "result") {
+      if (event && typeof event === "object" && (event as Record<string, unknown>).type === "result"
+        && (event as Record<string, unknown>).structured_output !== undefined) {
         return event as Record<string, unknown>;
       }
     } catch {
@@ -703,11 +670,11 @@ function findLastClaudeResultEvent(stdout: string): Record<string, unknown> | nu
 }
 
 /** Best-effort raw-candidate extraction for a failed Claude-engine job: the
- *  structured_output value if the last result event carried one (even if it
- *  failed shape validation), else the raw stdout tail. */
+ *  structured_output value of the newest result event that carried one (even
+ *  if it failed shape validation), else the raw stdout tail. */
 function extractClaudeFailedPayload(stdout: string): string {
-  const event = findLastClaudeResultEvent(stdout);
-  if (event && event.structured_output !== undefined) {
+  const event = findLastClaudeResultWithOutput(stdout);
+  if (event) {
     try {
       return JSON.stringify(event.structured_output);
     } catch {
@@ -766,7 +733,7 @@ export function createGuideSession(): GuideSession {
           return { command, outputPath, prompt: repairPrompt, label: "Guide Repair", engine: "codex", model, reasoningEffort: "low" };
         }
 
-        const { command, stdinPrompt } = buildGuideClaudeCommand(repairPrompt, model, "low");
+        const { command, stdinPrompt } = buildGuideClaudeCommand(repairPrompt, model, "low", { sandbox: resolveClaudeSandbox(loadConfig()) });
         return { command, stdinPrompt, prompt: repairPrompt, cwd, label: "Guide Repair", captureStdout: true, engine: "claude", model, effort: "low" };
       }
 
@@ -779,7 +746,10 @@ export function createGuideSession(): GuideSession {
           ? config.instructions
           : undefined;
 
-      const userMessage = buildGuideUserMessage(patch, diffType, options, prMetadata, changedFiles);
+      const promptPRMetadata = prMetadata && !getPRPlatformCapabilities(prMetadata).agentCliAccess
+        ? { ...prMetadata, inlineDiff: true }
+        : prMetadata;
+      const userMessage = buildGuideUserMessage(patch, diffType, options, promptPRMetadata, changedFiles);
 
       // Marker engines (Cursor, OpenCode, Pi) — none has a schema flag, so the
       // guide contract's marker-delimited JSON block (composeGuideMarkerPrompt)
@@ -804,7 +774,7 @@ export function createGuideSession(): GuideSession {
         return { command, outputPath, prompt, label: "Guided Review", engine: "codex", model, reasoningEffort, fastMode: fastMode || undefined };
       }
 
-      const { command, stdinPrompt } = buildGuideClaudeCommand(prompt, model, effort);
+      const { command, stdinPrompt } = buildGuideClaudeCommand(prompt, model, effort, { sandbox: resolveClaudeSandbox(loadConfig()) });
       return { command, stdinPrompt, prompt, cwd, label: "Guided Review", captureStdout: true, engine: "claude", model, effort };
     },
 

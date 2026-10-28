@@ -9,17 +9,15 @@ import { useTheme } from '@plannotator/ui/components/ThemeProvider';
 import { THEME_MODES } from '@plannotator/ui/components/themeModes';
 import { MenuVersionSection } from '@plannotator/ui/components/MenuVersionSection';
 import { ReviewAgentsIcon } from '@plannotator/ui/components/ReviewAgentsIcon';
-import { TextShimmer } from '@plannotator/ui/components/TextShimmer';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
-import { GitHubIcon } from '@plannotator/ui/components/GitHubIcon';
-import { GitLabIcon } from '@plannotator/ui/components/GitLabIcon';
+import { PRPlatformIcon } from '@plannotator/ui/components/PRPlatformIcon';
 import { modKey } from '@plannotator/ui/utils/platform';
 import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
 import type { Origin } from '@plannotator/shared/agents';
 
 export interface CompactReviewDestination {
   value: 'agent' | 'platform';
-  platform: 'github' | 'gitlab';
+  platform: 'github' | 'gitlab' | 'bitbucket';
   platformLabel: string;
   onChange: (value: 'agent' | 'platform') => void;
 }
@@ -104,13 +102,8 @@ export const ReviewHeaderMenu: React.FC<ReviewHeaderMenuProps> = ({
           aria-expanded={isOpen}
         >
           {isOpen ? <CloseIcon /> : <MenuIcon />}
-          {showUpdateDot ? (
-            <TextShimmer className="hidden lg:inline text-xs font-medium" duration={2.5} spread={1.5}>
-              Options
-            </TextShimmer>
-          ) : (
-            <span className="hidden lg:inline">Options</span>
-          )}
+          {/* The dot says an update is out; the label never moves (no shimmer). */}
+          <span className="hidden lg:inline">Options</span>
           {showUpdateDot && (
             <span className="absolute top-0.5 right-0.5 lg:-top-0.5 lg:-right-0.5 w-2 h-2 rounded-full bg-primary ring-2 ring-background" />
           )}
@@ -142,9 +135,7 @@ export const ReviewHeaderMenu: React.FC<ReviewHeaderMenuProps> = ({
                           }`}
                         >
                           {destination === 'platform'
-                            ? compactDestination.platform === 'gitlab'
-                              ? <GitLabIcon className="w-3.5 h-3.5" />
-                              : <GitHubIcon className="w-3.5 h-3.5" />
+                            ? <PRPlatformIcon platform={compactDestination.platform} className="w-3.5 h-3.5" />
                             : <AgentDestinationIcon />
                           }
                           <span className="truncate">{label}</span>

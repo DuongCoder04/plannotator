@@ -22,6 +22,10 @@ import {
 export interface GuidePromptPRMetadata {
   url: string;
   baseBranch: string;
+  /** Carry the diff inline when there is no local checkout: set for platforms
+   *  no agent-allowed CLI can read (Bitbucket), where the URL alone is not
+   *  enough. Absent keeps the URL-only message. */
+  inlineDiff?: boolean;
 }
 
 /** Generic structural validation failure (no sections / blank overviews).
@@ -70,8 +74,8 @@ export const GUIDE_SCHEMA_JSON = JSON.stringify({
 
 /**
  * The Guided Review methodology. MIRRORED VERBATIM into the standalone
- * `plannotator-guide` agent skill (github.com/plannotator/guides,
- * skills/plannotator-guide/SKILL.md, section "2. Write the guide"), where only
+ * `guided-review` agent skill (github.com/plannotator/guides,
+ * skills/guided-review/SKILL.md, section "2. Write the guide"), where only
  * the mechanics differ (the diff is guide.patch, the output is guide.json).
  * When this text changes, update the skill in the same change: a guide made by
  * an agent must follow the same rules as one made in-app.
@@ -335,6 +339,18 @@ export function buildGuideUserMessage(
         "",
         "Organize this PR's changeset into a guided review.",
         ...changedFilesBlock,
+      ].join("\n");
+    }
+    if (prMetadata.inlineDiff) {
+      return [
+        prMetadata.url,
+        "",
+        "Organize this PR's changeset into a guided review. The PR diff is below.",
+        ...changedFilesBlock,
+        "",
+        "```diff",
+        patch,
+        "```",
       ].join("\n");
     }
     return [

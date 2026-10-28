@@ -64,6 +64,7 @@ const memoryBackend: StorageBackend = {
 function seedFirstRunSeen(): void {
   memory.set("plannotator-plan-look-choice-resolved", "true");
   memory.set("plannotator-announce-tui-herdr-seen", "1");
+  memory.set("plannotator-announce-inbox-seen", "1");
   memory.set("plannotator-guide-intro-seen", "2");
   memory.set("plannotator-guide-hint-acked", "true");
   memory.set("plannotator-edit-mode-announcement-seen", "3");
@@ -117,6 +118,8 @@ interface SubmittedBody {
   body?: string;
   approved?: boolean;
   feedback?: string;
+  /** /api/feedback only: set by the platform path's status post, never by an agent-path decision. */
+  platform?: unknown;
   annotations?: Array<{
     id?: string;
     type?: string;
@@ -132,6 +135,9 @@ let submissions: SubmittedBody[] = [];
 /** How many upcoming /api/feedback POSTs answer 500. Each failed attempt is
  *  still recorded in `submissions` so its captured body can be asserted. */
 let failFeedbackPosts = 0;
+/** Upcoming /api/feedback POSTs that reject as a network error (a stopped
+ *  server), recorded first. */
+let feedbackNetworkFailures = 0;
 /** When true, /api/diff carries `approvalNotesSupported: true` — the capable
  *  server. Default false mimics an OLD server whose payload has no such
  *  field at all, pinning that absent reads as not-capable. */
@@ -139,6 +145,8 @@ let advertiseApprovalNotes = false;
 /** Extra fields merged into the /api/diff payload — a PR session is entered by
  *  shipping `prMetadata` (+ `platformUser`) exactly the way the server does. */
 let prDiffExtras: Record<string, unknown> | null = null;
+/** What /api/ai/capabilities answers; Ask AI is off unless a test says so. */
+let aiCapabilities: Record<string, unknown> = { available: false, providers: [] };
 
 /** GithubPRMetadata shape the diff payload carries in PR mode. */
 const PR_METADATA = {
@@ -218,7 +226,7 @@ function makeFetch(): typeof fetch {
       return Response.json({ ok: true, submission: { status: "complete" } });
     }
     if (url.pathname === "/api/diff/fresh") return Response.json({ fresh: true });
-    if (url.pathname === "/api/ai/capabilities") return Response.json({ available: false, providers: [] });
+    if (url.pathname === "/api/ai/capabilities") return Response.json(aiCapabilities);
     if (url.pathname === "/api/draft") return Response.json({ error: "Not found" }, { status: 404 });
     if (url.pathname === "/api/feedback") {
       submissions.push({
@@ -228,6 +236,10 @@ function makeFetch(): typeof fetch {
       if (failFeedbackPosts > 0) {
         failFeedbackPosts -= 1;
         return Response.json({ error: "boom" }, { status: 500 });
+      }
+      if (feedbackNetworkFailures > 0) {
+        feedbackNetworkFailures -= 1;
+        throw new TypeError("Failed to fetch");
       }
       return Response.json({ ok: true });
     }
@@ -341,8 +353,10 @@ afterEach(async () => {
   if (hasDom && originalMatchMedia) window.matchMedia = originalMatchMedia;
   submissions = [];
   failFeedbackPosts = 0;
+  feedbackNetworkFailures = 0;
   advertiseApprovalNotes = false;
   prDiffExtras = null;
+  aiCapabilities = { available: false, providers: [] };
   seededExternalAnnotations = [];
   memory.clear();
   resetStorageBackend();
@@ -387,6 +401,9 @@ describe.if(hasDom)("review decision control (agent mode)", () => {
     expect(body.approved).toBe(false);
     expect((body.annotations ?? []).some((a) => a.id === "ext-1")).toBe(true);
     expect(body.feedback).toContain("still drops null");
+    // Agent-path feedback is never marked as the platform status post: a host
+    // that saw the flag would log it instead of delivering it.
+    expect("platform" in body).toBe(false);
   });
 
   test("Request changes… delivers the note as a scope:'general' sentinel annotation and in the export", async () => {
@@ -657,6 +674,106 @@ describe.if(hasDom)("review decision control (agent mode)", () => {
     expect(submissions).toHaveLength(0);
   });
 
+  test("the Inbox announcement shows once, links to the Inbox page, and Mod+Enter cannot post behind it", async () => {
+    const DIALOG = "[data-inbox-announcement-dialog]";
+    const isOpen = () => document.querySelector(DIALOG) !== null;
+    const seed = () => {
+      seedFirstRunSeen();
+      memory.set("plannotator-token-hover-announcement-seen", "1");
+      memory.delete("plannotator-announce-inbox-seen");
+    };
+    await mount(isOpen, seed);
+    expect(isOpen()).toBe(true);
+
+    const link = document.querySelector<HTMLAnchorElement>(`${DIALOG} a[data-inbox-announcement-learn-more]`);
+    expect(link?.getAttribute("href")).toBe("https://plannotator.ai/inbox");
+    expect(link?.getAttribute("target")).toBe("_blank");
+
+    const close = document.querySelector<HTMLButtonElement>(`${DIALOG} [data-inbox-announcement-close]`);
+    if (!close) throw new Error("Close action did not render");
+    await act(async () => {
+      close.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    });
+    await settle();
+    expect(submissions).toHaveLength(0);
+
+    await act(async () => close.click());
+    await settle();
+    expect(isOpen()).toBe(false);
+    expect(memory.get("plannotator-announce-inbox-seen")).toBe("1");
+    expect(submissions).toHaveLength(0);
+
+    // Seen: the next load does not show it again.
+    await act(async () => root?.unmount());
+    root = null;
+    host?.remove();
+    host = null;
+    await mount(() => document.body.textContent?.includes("Approve"), () => {});
+    expect(isOpen()).toBe(false);
+  });
+
+  test("the Inbox announcement never shows in the VS Code webview", async () => {
+    const target = window as { __PLANNOTATOR_VSCODE?: unknown };
+    target.__PLANNOTATOR_VSCODE = true;
+    try {
+      await mount(() => document.body.textContent?.includes("Approve"), () => {
+        seedFirstRunSeen();
+        memory.set("plannotator-token-hover-announcement-seen", "1");
+        memory.delete("plannotator-announce-inbox-seen");
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) await settle();
+      expect(document.querySelector("[data-inbox-announcement-dialog]") !== null).toBe(false);
+      expect(memory.has("plannotator-announce-inbox-seen")).toBe(false);
+    } finally {
+      delete target.__PLANNOTATOR_VSCODE;
+    }
+  });
+
+  test("the Ask this session announcement takes the last turn, and Mod+Enter cannot post behind it", async () => {
+    const DIALOG = "[data-ask-session-announcement-dialog]";
+    aiCapabilities = {
+      available: true,
+      providers: [{
+        id: "session-bridge",
+        name: "session-bridge",
+        label: "Ask this session · Claude Code",
+        capabilities: {},
+        models: [],
+        sessionBridge: { host: "claude-code", status: "ready", modes: { turn: true, transient: false } },
+      }],
+      defaultProvider: null,
+    };
+    await mount(() => document.querySelector(DIALOG), () => {
+      seedFirstRunSeen();
+      memory.set("plannotator-token-hover-announcement-seen", "1");
+    });
+
+    expect(document.querySelector(DIALOG)?.getAttribute("data-ask-session-agent")).toBe("claude-code");
+    expect(document.querySelector(`${DIALOG} [data-ask-session-status="connected"]`)).not.toBeNull();
+
+    const gotIt = Array.from(document.querySelectorAll<HTMLButtonElement>(`${DIALOG} button`))
+      .find((button) => button.textContent?.trim() === "Got it");
+    if (!gotIt) throw new Error("Dismiss action did not render");
+    await act(async () => {
+      gotIt.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    });
+    await settle();
+    expect(submissions).toHaveLength(0);
+
+    await act(async () => gotIt.click());
+    await settle();
+    expect(document.querySelector(DIALOG)).toBeNull();
+    expect(memory.get("plannotator-announce-ask-session-seen")).toBe("1");
+    expect(submissions).toHaveLength(0);
+  });
+
+  test("the Ask this session announcement never shares a load with the terminal-tools one", async () => {
+    aiCapabilities = { available: true, providers: [], defaultProvider: null };
+    await mount(() => document.querySelector("[data-terminal-tools-announcement-dialog]"), seedFirstRunSeenExceptTerminalTools);
+    expect(document.querySelector("[data-ask-session-announcement-dialog]")).toBeNull();
+    expect(memory.has("plannotator-announce-ask-session-seen")).toBe(false);
+  });
+
   test("compact touch offers a positive decision row at zero and it posts", async () => {
     // SAFETY: implements the MediaQueryList surface the shell hooks consume;
     // coarse-pointer matches put the app in its compact touch layout.
@@ -777,6 +894,32 @@ describe.if(hasDom)("review decision control (platform mode)", () => {
     expect(posted[0]!.action).toBe("request_changes");
     // GitHub refuses an empty REQUEST_CHANGES body; inline-only gets the placeholder.
     expect(posted[0]!.body?.trim()).toBeTruthy();
+  });
+
+  // The status post that follows a platform submission is the ONLY
+  // /api/feedback body that may carry `platform: true`. Hosts used to infer it
+  // from an empty annotations array, which silently dropped agent-path
+  // feedback made only of PR description / PR comment / editor comments.
+  test("the status post after a platform submission marks itself platform: true", async () => {
+    seedPlatformSession();
+    seededExternalAnnotations = [EXTERNAL_FINDING];
+    await mountReview();
+    await settle();
+    await settle();
+
+    await act(async () => primaryButton()!.click());
+    await settle();
+    const confirm = dialogConfirm("Post Comments");
+    if (!confirm) throw new Error("Post Comments confirm did not render");
+    await act(async () => confirm.click());
+    await settle();
+    await settle();
+
+    expect(submissions.filter((s) => s.endpoint === "pr-action")).toHaveLength(1);
+    const status = submissions.filter((s) => s.endpoint === "feedback");
+    expect(status).toHaveLength(1);
+    expect(status[0]!.platform).toBe(true);
+    expect(status[0]!.annotations).toEqual([]);
   });
 
   test("empty-state Request changes… preselects Request changes and posts it", async () => {
@@ -944,5 +1087,78 @@ describe.if(hasDom)("review decision control (platform mode)", () => {
     await doubleTapAlt();
     expect(primaryButton()!.textContent).toContain("Post Comments");
     expect(submissions).toHaveLength(0);
+  });
+});
+
+/**
+ * #1392 in code review: a send to a stopped server (or one that answered
+ * 500) used to set a "Failed to send" string nothing displayed, so the page
+ * looked the same as before the click. It must say the feedback was not sent
+ * and offer Retry and Copy feedback, with the review left as it was.
+ */
+describe.if(hasDom)("review: a send that does not reach Plannotator", () => {
+  // Sonner keeps earlier tests' toasts in its module store, so find this one
+  // by its title rather than taking the first toast on the page.
+  const failureToast = () =>
+    Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]"))
+      // A dismissed toast stays in the DOM while it animates out.
+      .filter((el) => el.getAttribute("data-removed") !== "true")
+      .find((el) => el.querySelector("[data-title]")?.textContent?.endsWith(" not sent"));
+  const toastButton = (label: string) =>
+    Array.from(failureToast()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === label);
+  const completionState = () => document.querySelector("[data-completion-state]")?.getAttribute("data-completion-state") ?? null;
+
+  async function waitFor(check: () => unknown, what: string): Promise<void> {
+    for (let attempt = 0; attempt < 40 && !check(); attempt += 1) await settle();
+    if (!check()) throw new Error(`timed out waiting for ${what}`);
+  }
+
+  test("Send Feedback with the server gone: the message, Copy feedback, then Retry sends it", async () => {
+    feedbackNetworkFailures = 1;
+    const clipboard = navigator.clipboard;
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => void copied.push(text) },
+    });
+    try {
+      seededExternalAnnotations = [EXTERNAL_FINDING];
+      await mountReview();
+      await settle();
+      await settle();
+      expect(primaryButton()!.title).toContain("Send");
+      await act(async () => primaryButton()!.click());
+      await waitFor(failureToast, "the failure message");
+
+      expect(completionState()).toBeNull();
+      // Deliberate copy: the title says the feedback did not go out, and why.
+      expect(failureToast()!.textContent).toContain("Feedback not sent");
+      expect(failureToast()!.textContent).toContain("isn't running");
+
+      await act(async () => toastButton("Copy feedback")!.click());
+      await waitFor(() => copied.length > 0, "the copy");
+      // The same markdown the review's Copy feedback copies and the send carried.
+      expect(copied[0]).toBe(submissions[0]!.feedback!);
+
+      await act(async () => toastButton("Retry")!.click());
+      await waitFor(() => completionState(), "the completion screen");
+      expect(submissions).toHaveLength(2);
+      expect(submissions[1]!.feedback).toContain("still drops null");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    }
+  });
+
+  test("a bare Approve answered 500: Approval not sent, nothing to copy, no Approved screen", async () => {
+    failFeedbackPosts = 1;
+    await mountReview();
+    await act(async () => primaryButton()!.click());
+    await waitFor(failureToast, "the failure message");
+
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("Approval not sent");
+    expect(failureToast()!.textContent).toContain("500");
+    expect(Boolean(toastButton("Copy feedback"))).toBe(false);
+    expect(primaryButton()!.title).toContain("Approve");
   });
 });

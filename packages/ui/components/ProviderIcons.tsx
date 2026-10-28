@@ -14,11 +14,17 @@ export const CodexIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h
   <img src={codexPng} alt="" className={`${className} rounded-sm`} />
 );
 
-/** Pi icon — extracted from apps/marketing/public/assets/icon-pi.svg */
+/**
+ * Pi icon: the pi.dev logo (https://pi.dev/logo.svg), the same file as
+ * apps/marketing/public/assets/icon-pi.svg. It keeps its own three colours in
+ * every theme; the viewBox crops pi.dev's 800-unit canvas to the mark plus an
+ * even margin so it sits level with the other marks.
+ */
 export const PiIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" className={className}>
-    <path fill="currentColor" fillRule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/>
-    <path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z"/>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="130 130 540 540" className={className}>
+    <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/>
+    <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/>
+    <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/>
   </svg>
 );
 
@@ -30,10 +36,24 @@ export const OpenCodeIcon: React.FC<{ className?: string }> = ({ className = 'w-
   </svg>
 );
 
+/** Qwen Code icon: the Qwen Code logo (QwenLM/qwen-code), in its brand purple. */
+export const QwenIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 141.38 140" className={className}>
+    <path d="m140.93 85-16.35-28.33-1.93-3.34 8.66-15a3.323 3.323 0 0 0 0-3.34l-9.62-16.67c-.3-.51-.72-.93-1.22-1.22s-1.07-.45-1.67-.45H82.23l-8.66-15a3.33 3.33 0 0 0-2.89-1.67H51.43c-.59 0-1.17.16-1.66.45-.5.29-.92.71-1.22 1.22L32.19 29.98l-1.92 3.33H12.96c-.59 0-1.17.16-1.66.45-.5.29-.93.71-1.22 1.22L.45 51.66a3.323 3.323 0 0 0 0 3.34l18.28 31.67-8.66 15a3.32 3.32 0 0 0 0 3.34l9.62 16.67c.3.51.72.93 1.22 1.22s1.07.45 1.67.45h36.56l8.66 15a3.35 3.35 0 0 0 2.89 1.67h19.25a3.34 3.34 0 0 0 2.89-1.67l18.28-31.67h17.32c.6 0 1.17-.16 1.67-.45s.92-.71 1.22-1.22l9.62-16.67a3.323 3.323 0 0 0 0-3.34ZM51.44 3.33 61.07 20l-9.63 16.66h76.98l-9.62 16.66H45.67l-11.54-20zM57.21 120H22.58l9.63-16.67h19.25l-38.5-66.67h19.25l9.62 16.67L68.78 100l-11.55 20Zm61.59-33.34-9.62-16.67-38.49 66.67-9.63-16.67 9.63-16.66 26.94-46.67h23.1l17.32 30z" fill="#6D44E8" />
+  </svg>
+);
+
 /** Generic fallback icon for unknown providers */
 const GenericProviderIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 00.659 1.591L19 14.5m-4.75-11.396c.251.023.501.05.75.082M12 21a8.966 8.966 0 005.982-2.275M12 21a8.966 8.966 0 01-5.982-2.275M12 21V14.5" />
+  </svg>
+);
+
+/** "Ask this session": a speech bubble, since the answer comes from the agent session itself. */
+const SessionIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h8M8 14h5m-7 6 2.5-3H18a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3z" />
   </svg>
 );
 
@@ -43,9 +63,15 @@ export const PROVIDER_META: Record<string, { label: string; icon: React.FC<{ cla
   'codex-sdk': { label: 'Codex', icon: CodexIcon },
   'pi-sdk': { label: 'Pi', icon: PiIcon },
   'opencode-sdk': { label: 'OpenCode', icon: OpenCodeIcon },
+  'qwen-sdk': { label: 'Qwen Code', icon: QwenIcon },
+  'session-bridge': { label: 'Ask this session', icon: SessionIcon },
 };
 
-/** Get provider metadata, with fallback for unknown providers. */
-export function getProviderMeta(providerName: string): { label: string; icon: React.FC<{ className?: string }> } {
-  return PROVIDER_META[providerName] ?? { label: providerName, icon: GenericProviderIcon };
+/**
+ * Get provider metadata, with fallback for unknown providers. A server-sent
+ * `label` (e.g. "Ask this session · Pi") overrides the name lookup.
+ */
+export function getProviderMeta(providerName: string, label?: string): { label: string; icon: React.FC<{ className?: string }> } {
+  const meta = PROVIDER_META[providerName] ?? { label: providerName, icon: GenericProviderIcon };
+  return label ? { ...meta, label } : meta;
 }

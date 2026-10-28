@@ -23,6 +23,7 @@ import { useAgentSettings } from '../hooks/useAgentSettings';
 import type { AgentEngine, AgentMode, ReviewEngine } from '../hooks/useAgentSettings';
 import type { AgentLaunchParams } from '../hooks/useAgentJobs';
 import { ConfigRow, SegmentedPicker, Toggle, SelectMenu } from './AgentControls';
+import { ModelSourceHint } from './ModelSourceHint';
 import {
   CLAUDE_FALLBACK_MODELS,
   CODEX_FALLBACK_MODELS,
@@ -30,6 +31,7 @@ import {
   effortSelectOptions,
   modelLabel,
   modelSelectOptions,
+  PI_THINKING_LEVELS,
   type CatalogModel,
 } from '@plannotator/core/model-catalog';
 import { useModelCatalogs, type ModelCatalogs } from '../hooks/useModelCatalogs';
@@ -74,15 +76,14 @@ const COPILOT_MODELS: Array<{ value: string; label: string }> = [
 ];
 
 // Pi's unified reasoning knob (`--thinking`), applied to whichever model is
-// selected. xhigh is accepted only by codex-max models.
-export const PI_THINKING: Array<{ value: string; label: string }> = [
-  { value: 'off', label: 'Off' },
-  { value: 'minimal', label: 'Min' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Med' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
-];
+// selected; pi clamps a level the model does not support. Pi's own level
+// vocabulary minus `max`, which pi only accepts on `--thinking` since 0.80.6
+// (an older pi would reject the whole job). Short labels fit the segmented
+// picker.
+const PI_THINKING_SHORT_LABELS: Record<string, string> = { minimal: 'Min', medium: 'Med' };
+export const PI_THINKING: Array<{ value: string; label: string }> = PI_THINKING_LEVELS
+  .filter((level) => level !== 'max')
+  .map((level) => ({ value: level, label: PI_THINKING_SHORT_LABELS[level] ?? EFFORT_LABELS[level] ?? level }));
 
 const MODE_LABEL: Record<AgentMode, string> = {
   review: 'Code Review',
@@ -422,11 +423,17 @@ function JobCard({
             e.stopPropagation();
             onKill();
           }}
-          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
           title="Kill agent"
         >
           <X size={12} />
         </button>
+      )}
+
+      {job.warning && (
+        <p role="status" data-agent-job-warning className="mt-1.5 ml-4 text-[10px] leading-snug text-warning">
+          {job.warning}
+        </p>
       )}
 
       {/* Error details — fallback for when the dockview detail panel is not available */}
@@ -1015,7 +1022,10 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   ) => (
     <ConfigRow label="Model" stacked>
       {catalogs[engine].settled ? (
-        <SelectMenu value={value} options={modelSelectOptions(catalogs[engine].models, value)} onChange={onChange} />
+        <>
+          <SelectMenu value={value} options={modelSelectOptions(catalogs[engine].models, value)} onChange={onChange} />
+          <ModelSourceHint tool={engine} info={catalogs[engine]} className="text-[10px] text-muted-foreground/50" />
+        </>
       ) : (
         renderStaticChoice('Loading models…', <Loader2 className="animate-spin text-muted-foreground" size={11} />)
       )}

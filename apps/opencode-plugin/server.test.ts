@@ -4,7 +4,7 @@ import serverPlugin, {
   pushComposedSystemReminder,
   replacePlanningSystemParts,
 } from "./server";
-import { createV2BridgeClient, formatSessionUrlNotice } from "./v2-client";
+import { commandFailureNoticeText, createV2BridgeClient, dropSessionUrlNotices, formatCommandFailureNotice, formatInboxNotice, formatSessionUrlNotice, inboxNoticeText } from "./v2-client";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -35,6 +35,8 @@ function createContext(
 ) {
   let toolDefinition: Record<string, any> | undefined;
   let sessionContextHook: SessionContextHook | undefined;
+  const contextHooks: SessionContextHook[] = [];
+  const generateHooks: SessionContextHook[] = [];
   const sessionGet = mock(async () => ({ location: { directory: "/project" } }));
 
   return {
@@ -50,7 +52,11 @@ function createContext(
       session: {
         get: sessionGet,
         hook: async (name: string, callback: SessionContextHook) => {
-          if (name === "context") sessionContextHook = callback;
+          if (name === "context") {
+            sessionContextHook = callback;
+            contextHooks.push(callback);
+          }
+          if (name === "generate") generateHooks.push(callback);
           return { dispose: async () => {} };
         },
       },
@@ -67,6 +73,13 @@ function createContext(
     },
     getToolDefinition: () => toolDefinition,
     getSessionContextHook: () => sessionContextHook,
+    /** Run every registered context hook, in registration order, like the host. */
+    runContextHooks: async (event: Parameters<SessionContextHook>[0]) => {
+      for (const hook of contextHooks) await hook(event);
+    },
+    runGenerateHooks: async (event: Parameters<SessionContextHook>[0]) => {
+      for (const hook of generateHooks) await hook(event);
+    },
     sessionGet,
   };
 }
@@ -76,6 +89,15 @@ describe("OpenCode V2 server plugin", () => {
     expect(serverPlugin.id).toBe("plannotator");
     expect(serverPlugin.setup).toBeInstanceOf(Function);
   });
+
+  // OpenCode 1.18.34 also runs this V2 setup, with a context that has no
+  // `session` or `tool` domain (seen live). Failure caught: setup throwing on
+  // an unguarded `ctx.session.hook` / `ctx.tool.transform` there.
+  for (const workflow of ["plan-agent", "all-agents", "manual"] as const) {
+    test(`${workflow}: setup completes on a context without session or tool domains`, async () => {
+      await expect(serverPlugin.setup({ options: { workflow } } as never)).resolves.toBeUndefined();
+    });
+  }
 
   test("registers submit_plan with the V2 JSON Schema tool contract", async () => {
     const testContext = createContext();
@@ -194,6 +216,47 @@ describe("OpenCode V2 server plugin", () => {
     expect(strippedSystemText.join("\n")).not.toContain("undefined");
   });
 
+  test("rewrites OpenCode 2's Plan mode reminder in the plan agent's history so the model submits with submit_plan (#2101)", async () => {
+    const enter = `<system-reminder>
+You are in Plan mode. Discuss the plan with the user directly in the conversation. Do not create or update plan files unless the user explicitly asks you to; when they do, write them only in:
+/home/dev/.opencode/plan
+
+Do not modify any other files or ask a subagent to do so.
+
+You remain in Plan mode until the user switches agents. If the user asks you to implement changes, do not do so. Tell them they need to switch agents.
+</system-reminder>`;
+    const testContext = createContext({ workflow: "plan-agent" });
+    await serverPlugin.setup(testContext.context as never);
+    const request = () => ({
+      agent: "plan",
+      system: [{ type: "text" as const, text: "Base system prompt" }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: enter }] },
+        { role: "user", content: [{ type: "text", text: "Create an execution plan for the cache." }] },
+      ] as unknown[],
+      tools: { submit_plan: { description: "Submit", input: {} } },
+    });
+    const first = request();
+    await testContext.runContextHooks(first);
+    const reminder = (first.messages[0] as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(reminder).toContain("submit it with the submit_plan tool");
+    expect(reminder).not.toContain("Discuss the plan with the user directly");
+    expect((first.messages[1] as { content: Array<{ text: string }> }).content[0]!.text).toBe("Create an execution plan for the cache.");
+    expect(first.tools.submit_plan).toBeDefined();
+    expect(first.system[0]!.text).toContain("## Plannotator");
+
+    // Prompt caching: the next request with the same history carries the same bytes.
+    const second = request();
+    await testContext.runContextHooks(second);
+    expect(JSON.stringify(second.messages)).toBe(JSON.stringify(first.messages));
+    expect(JSON.stringify(second.system)).toBe(JSON.stringify(first.system));
+
+    // Another agent under plan-agent: the history is left as OpenCode sent it.
+    const build = { ...request(), agent: "build" };
+    await testContext.runContextHooks(build);
+    expect((build.messages[0] as { content: Array<{ text: string }> }).content[0]!.text).toBe(enter);
+  });
+
   test("keeps all-agents mode scoped to primary agents by default", async () => {
     delete process.env.PLANNOTATOR_ALLOW_SUBAGENTS;
     const testContext = createContext(
@@ -229,6 +292,7 @@ describe("OpenCode V2 server plugin", () => {
       "plannotator-review",
       "plannotator-annotate",
       "plannotator-last",
+      "plannotator-inbox",
     ]);
 
     // No command domain: nothing registered, and the pre-existing submit_plan
@@ -288,7 +352,7 @@ describe("OpenCode V2 server plugin", () => {
     });
     await serverPlugin.setup(testContext.context as never);
 
-    expect(registered).toHaveLength(3);
+    expect(registered).toHaveLength(4);
     expect(testContext.getToolDefinition()).toBeUndefined();
   });
 
@@ -410,11 +474,11 @@ describe("V2 plan review URL delivery", () => {
     });
   });
 
-  // Regression: the fallback must stay SILENT, not fall back to app.log. That
-  // is console.error, the same stderr handleServerReady has already printed the
-  // URL to, so logging here would duplicate the line in remote mode and add a
-  // stray one locally. This hook was empty for exactly that reason.
-  test("without session.synthetic the plan path stays silent", () => {
+  // Without session.synthetic the URL falls back to the console log, which an
+  // older host shows with OPENCODE_PRINT_LOGS=1. handleServerReady no longer
+  // prints the ready line here (the embedded path passes announce: false), so
+  // this log is the only place the URL can reach on such a host.
+  test("without session.synthetic the plan path logs the URL once", () => {
     const log = mock((_entry: unknown) => {});
     const client = createV2BridgeClient({
       ctx: { session: {} },
@@ -425,7 +489,8 @@ describe("V2 plan review URL delivery", () => {
 
     expect(client.notifyUrl).toBeUndefined();
     expect(() => createPlanReadyNotifier(client)(SESSION_URL)).not.toThrow();
-    expect(log).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]![0]).toEqual({ level: "info", message: formatSessionUrlNotice(SESSION_URL) });
   });
 
   // Regression: the notifier tests above all pass while the plan path itself is
@@ -468,5 +533,119 @@ describe("V2 plan review URL delivery", () => {
     expect(() => createPlanReadyNotifier(client)(SESSION_URL)).not.toThrow();
     await Promise.resolve();
     await Promise.resolve();
+  });
+});
+
+// After a plan decision the still-pending session-URL notice (a steer) is
+// promoted at the boundary right after the tool result, so the model read the
+// notice LAST and could answer it instead of the decision (seen live on
+// 2.0.22). The notice is for the person; the model never needs it.
+describe("session-URL notices stay out of the model context", () => {
+  const notice = (url = "http://localhost:19432") => ({ role: "user", content: [{ type: "text", text: formatSessionUrlNotice(url) }] });
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
+  const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+  const toolResult = (text: string) => ({ role: "tool", content: [{ type: "tool-result", id: "call_1", name: "submit_plan", result: { type: "text", value: text } }] });
+
+  test("a notice promoted after the decision is dropped, so the decision is read last", () => {
+    const messages: unknown[] = [
+      user("make a plan"),
+      assistant("calling submit_plan"),
+      toolResult("YOUR PLAN WAS NOT APPROVED."),
+      user("<system-reminder>plan mode</system-reminder>"),
+      notice(),
+    ];
+
+    expect(dropSessionUrlNotices(messages)).toBe(1);
+    expect(messages).toEqual([
+      user("make a plan"),
+      assistant("calling submit_plan"),
+      toolResult("YOUR PLAN WAS NOT APPROVED."),
+      user("<system-reminder>plan mode</system-reminder>"),
+    ]);
+  });
+
+  test("older notices in history and notices beside feedback are dropped too", () => {
+    const messages: unknown[] = [notice("http://localhost:1"), user("q"), assistant("a"), notice("http://localhost:2"), user("# Code Review Feedback")];
+    expect(dropSessionUrlNotices(messages)).toBe(2);
+    expect(messages).toEqual([user("q"), assistant("a"), user("# Code Review Feedback")]);
+  });
+
+  test("a lone notice after the model's reply is kept rather than ending the request on the assistant", () => {
+    const messages: unknown[] = [user("q"), assistant("a"), notice()];
+    expect(dropSessionUrlNotices(messages)).toBe(0);
+    expect(messages).toHaveLength(3);
+  });
+
+  // Failure caught: a slash command's failure notice (for the person) read by
+  // the model alongside the next message it answers.
+  test("a slash command's failure notice is dropped like the URL notice", () => {
+    const failure = user(commandFailureNoticeText("plannotator-annotate", "File not found: nothere.md"));
+    const messages: unknown[] = [user("q"), assistant("a"), failure, user("annotate notes.md instead")];
+    expect(dropSessionUrlNotices(messages)).toBe(1);
+    expect(messages).toEqual([user("q"), assistant("a"), user("annotate notes.md instead")]);
+  });
+
+  // Failure caught: /plannotator-inbox's notices (where the Inbox is, or why
+  // it did not open) read by the model as a request.
+  test("/plannotator-inbox's notice and failure notice are dropped; a pasted copy of the address line is not", () => {
+    const opened = user(inboxNoticeText("http://localhost:61234/", "No browser opened: this is a remote session."));
+    const failed = user(commandFailureNoticeText("plannotator-inbox", "The plannotator on PATH is older than /plannotator-inbox."));
+    const pasted = user(`${formatInboxNotice("http://localhost:61234/")} is this right?`);
+    const messages: unknown[] = [user("q"), assistant("a"), opened, failed, pasted];
+    expect(dropSessionUrlNotices(messages)).toBe(2);
+    expect(messages).toEqual([user("q"), assistant("a"), pasted]);
+  });
+
+  // Failure caught: the person pasting the failure line they SAW (the
+  // notice's description) to ask about it, and that message vanishing from
+  // every later model request.
+  test("a typed or pasted copy of the failure line is never dropped", () => {
+    const seen = formatCommandFailureNotice("plannotator-annotate", "File not found: nothere.md");
+    const messages: unknown[] = [user(seen), assistant("a"), user(`${seen}\n\nwhy?`), assistant("b"), user("next")];
+    expect(dropSessionUrlNotices(messages)).toBe(0);
+    expect(messages).toHaveLength(5);
+  });
+
+  test("text that only resembles a notice is left alone", () => {
+    const messages: unknown[] = [
+      user("Plannotator session ready: http://localhost:1 — what is this?"),
+      { role: "assistant", content: [{ type: "text", text: formatSessionUrlNotice("http://localhost:1") }] },
+      { role: "user", content: [{ type: "text", text: formatSessionUrlNotice("http://localhost:1") }, { type: "text", text: "more" }] },
+    ];
+    expect(dropSessionUrlNotices(messages)).toBe(0);
+  });
+
+  for (const workflow of ["plan-agent", "manual"] as const) {
+    test(`${workflow}: the plugin filters every model request`, async () => {
+      const testContext = createContext({ workflow });
+      await serverPlugin.setup(testContext.context as never);
+      const event = {
+        agent: "build",
+        system: [{ type: "text" as const, text: "system" }],
+        messages: [user("q"), assistant("calling"), toolResult("Plan approved!"), notice()] as unknown[],
+        tools: {},
+      };
+
+      await testContext.runContextHooks(event);
+
+      expect(event.messages).toEqual([user("q"), assistant("calling"), toolResult("Plan approved!")]);
+    });
+  }
+
+  // Plan review's "Quick answer from this session" is a `session.generate`
+  // request, built through the `generate` hook rather than `context`.
+  test("session.generate requests (plan review quick answers) are filtered too", async () => {
+    const testContext = createContext({ workflow: "plan-agent" });
+    await serverPlugin.setup(testContext.context as never);
+    const event = {
+      agent: "plan",
+      system: [{ type: "text" as const, text: "system" }],
+      messages: [user("make a plan"), assistant("calling submit_plan"), notice(), user("[Plannotator Ask AI] why step 2?")] as unknown[],
+      tools: {},
+    };
+
+    await testContext.runGenerateHooks(event);
+
+    expect(event.messages).toEqual([user("make a plan"), assistant("calling submit_plan"), user("[Plannotator Ask AI] why step 2?")]);
   });
 });

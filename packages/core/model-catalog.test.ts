@@ -4,7 +4,11 @@ import {
   CODEX_FALLBACK_MODELS,
   claudeCatalogFromSdk,
   claudeModelVersion,
+  cliVersionFrom,
   modelSelectOptions,
+  piCatalogFromRpc,
+  piThinkingLevelsSupported,
+  qwenCatalogFromSettings,
   resolveEffortChoice,
   resolveModelChoice,
   type CatalogModel,
@@ -211,4 +215,119 @@ test("claudeModelVersion reads major.minor and ignores date and [1m] suffixes", 
   expect(claudeModelVersion("claude-sonnet-4-20250514")).toBe("4");
   expect(claudeModelVersion("gpt-6-sol")).toBeUndefined();
   expect(claudeModelVersion(undefined)).toBeUndefined();
+});
+
+test("the Codex fallback defaults to GPT-6-Sol, which codex >= 0.155 lists", () => {
+  expect(CODEX_FALLBACK_MODELS.filter((m) => m.default).map((m) => m.id)).toEqual(["gpt-6-sol"]);
+});
+
+test("cliVersionFrom reads the version from claude --version and the codex userAgent", () => {
+  expect(cliVersionFrom("2.1.282 (Claude Code)\n")).toBe("2.1.282");
+  expect(cliVersionFrom("plannotator/0.155.1 (Mac OS 26.3.0; arm64) ghostty/1.3.1 (plannotator; 0)")).toBe("0.155.1");
+  expect(cliVersionFrom("codex_cli_rs/0.156.0-alpha.2 (Linux)")).toBe("0.156.0-alpha.2");
+  expect(cliVersionFrom("")).toBeUndefined();
+  expect(cliVersionFrom(undefined)).toBeUndefined();
+});
+
+test("cliVersionFrom prefers the line naming the tool, else the first line", () => {
+  const noisy = "node 18.2.0 warning: something\n2.1.282 (Claude Code)\n";
+  expect(cliVersionFrom(noisy, /claude code/i)).toBe("2.1.282");
+  // No line names the tool: the first line's version, never a later line's.
+  expect(cliVersionFrom("2.1.282\nnode 18.2.0", /claude code/i)).toBe("2.1.282");
+  expect(cliVersionFrom("no version here\n1.2.3")).toBeUndefined();
+});
+
+test("cliVersionFrom refuses an unbounded prerelease suffix", () => {
+  expect(cliVersionFrom(`0.156.0-${"a".repeat(200)}`)).toBeUndefined();
+  expect(cliVersionFrom("0.156.0-alpha.2")).toBe("0.156.0-alpha.2");
+});
+
+describe("piCatalogFromRpc", () => {
+  // get_available_models rows shaped like pi 0.85's (fields not read omitted).
+  const ROWS = [
+    // A map that nulls `off` and names xhigh and max: no Off, both extras offered.
+    { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", reasoning: true,
+      thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh", max: "max" } },
+    // No map: pi's rule gives off..high and never xhigh/max.
+    { provider: "openrouter", id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: true },
+    // xhigh mapped, max nulled.
+    { provider: "openai", id: "gpt-6-sol", name: "GPT-6-Sol", reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh", max: null } },
+    // Not a reasoning model: no picker at all.
+    { provider: "groq", id: "llama", name: "Llama", reasoning: false },
+  ];
+  const levelsOf = (models: CatalogModel[], id: string) =>
+    models.find((m) => m.id === id)?.reasoningEfforts?.map((e) => e.id);
+
+  test("levels follow each model's thinkingLevelMap the way pi's getSupportedThinkingLevels does", () => {
+    const models = piCatalogFromRpc(ROWS, "0.85.1");
+    expect(levelsOf(models, "anthropic/claude-opus-5-5")).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(levelsOf(models, "openrouter/anthropic/claude-opus-5-5")).toEqual(["off", "minimal", "low", "medium", "high"]);
+    expect(levelsOf(models, "openai/gpt-6-sol")).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"]);
+    expect(levelsOf(models, "groq/llama")).toBeUndefined();
+    // pi reports no default level, so nothing claims one (the bar reads Auto).
+    expect(models.some((m) => m.defaultReasoningEffort)).toBe(false);
+    expect(models.filter((m) => m.default).map((m) => m.id)).toEqual(["anthropic/claude-opus-5-5"]);
+  });
+
+  test("labels name the provider, falling back to provider/id only where they would still collide", () => {
+    const models = piCatalogFromRpc(
+      [...ROWS, { provider: "openai", id: "gpt-6-sol-2", name: "GPT-6-Sol" }],
+      "0.85.1",
+    );
+    expect(models.map((m) => m.label)).toEqual([
+      "Claude Opus 5.5 (anthropic)",
+      "Claude Opus 5.5 (openrouter)",
+      "openai/gpt-6-sol",
+      "Llama (groq)",
+      "openai/gpt-6-sol-2",
+    ]);
+  });
+
+  test("a pi that would persist set_thinking_level globally, or an unknown version, is offered no levels", () => {
+    for (const version of ["0.84.2", "0.79.1", undefined]) {
+      expect(piCatalogFromRpc(ROWS, version).some((m) => m.reasoningEfforts)).toBe(false);
+    }
+    expect(piThinkingLevelsSupported("0.84.3")).toBe(true);
+    expect(piThinkingLevelsSupported("1.0.0")).toBe(true);
+    expect(piThinkingLevelsSupported("0.84.2")).toBe(false);
+    expect(piThinkingLevelsSupported("garbage")).toBe(false);
+  });
+});
+
+describe("qwenCatalogFromSettings", () => {
+  const PROVIDERS = {
+    openai: [
+      { id: "qwen3-coder-plus", name: "Qwen3 Coder Plus" },
+      { id: "gpt-local" },
+      { id: "qwen3-coder-plus", name: "Duplicate" },
+      { name: "no id" },
+      null,
+    ],
+    anthropic: [{ id: "claude-via-qwen", name: "Claude" }],
+  };
+
+  test("lists the selected auth type's models, the active model as default", () => {
+    expect(qwenCatalogFromSettings({ model: { name: "gpt-local" }, modelProviders: PROVIDERS })).toEqual([
+      { id: "qwen3-coder-plus", label: "Qwen3 Coder Plus" },
+      { id: "gpt-local", label: "gpt-local", default: true },
+    ]);
+    // `qwen -m` resolves against the selected type only, so another type's models are not offered.
+    expect(
+      qwenCatalogFromSettings({ security: { auth: { selectedType: "anthropic" } }, modelProviders: PROVIDERS }),
+    ).toEqual([{ id: "claude-via-qwen", label: "Claude", default: true }]);
+  });
+
+  test("an active model the list does not name comes first; no settings means no models", () => {
+    expect(qwenCatalogFromSettings({ model: { name: "coder-model" }, modelProviders: PROVIDERS }).slice(0, 2)).toEqual([
+      { id: "coder-model", label: "coder-model", default: true },
+      { id: "qwen3-coder-plus", label: "Qwen3 Coder Plus" },
+    ]);
+    expect(qwenCatalogFromSettings({ security: { auth: { selectedType: "qwen-oauth" } }, model: { name: "coder-model" } })).toEqual([
+      { id: "coder-model", label: "coder-model", default: true },
+    ]);
+    expect(qwenCatalogFromSettings({})).toEqual([]);
+    expect(qwenCatalogFromSettings(null)).toEqual([]);
+    expect(qwenCatalogFromSettings({ modelProviders: { openai: "not a list" } })).toEqual([]);
+  });
 });

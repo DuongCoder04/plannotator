@@ -16,6 +16,30 @@ The `/plannotator-review` command opens an interactive code review UI for your l
 /plannotator-review
 ```
 
+**Review another repository or worktree:**
+
+```bash
+plannotator review ../feature-worktree
+plannotator review "../my repo" --base main
+```
+
+The slash command accepts the same target: `/plannotator-review ./backend`.
+Paths resolve relative to the invoking terminal or agent session. A directory
+inside a repository selects its root; a non-repository parent reviews its nested
+repositories together. The target selects the review workspace, not a file filter.
+Feedback returns to the invoking session and names the directory active at submission,
+including after switching worktrees.
+
+Supply one directory or PR URL. A sole word is a directory target: a file, or a
+missing path-shaped word (containing `/`, or starting with `.` or `~`), is an error.
+Inside a sentence, a path-shaped word that names an existing directory is the target;
+one that names nothing or a file is prose. Two directories, or a directory combined
+with `--patch-file`, is an error. Other words are ignored as prose with a notice, so
+`/plannotator-review review the frontend/backend split` still reviews the current
+workspace; write `./backend` rather than a bare `backend` inside a sentence. OpenCode directory
+targets require an updated Plannotator CLI; an older binary is rejected instead of
+opening the wrong repo.
+
 **Review a GitHub pull request:**
 
 ```
@@ -25,6 +49,8 @@ The `/plannotator-review` command opens an interactive code review UI for your l
 PR review uses the `gh` CLI for authentication, so private repos work automatically if you're authenticated with `gh auth login`.
 
 GitLab merge request URLs are also supported when the `glab` CLI is installed and authenticated.
+
+Bitbucket Cloud pull request URLs (`https://bitbucket.org/<workspace>/<repo>/pull-requests/<id>`) work with an Atlassian API token instead of a CLI. See [Bitbucket Cloud PR review](/docs/guides/bitbucket/).
 
 **Review a patch file, with no repository:**
 
@@ -44,7 +70,7 @@ no diff-staleness refresh. Annotating, Ask AI, Guided Review and submitting
 feedback all work as usual, and the header names the patch instead of a branch.
 
 Because it replaces VCS detection entirely, `--patch-file` cannot be combined
-with a PR/MR URL, `--base`, `--diff-type`, `--git`/`--gitbutler`, or
+with a directory, a PR/MR URL, `--base`, `--diff-type`, `--git`/`--gitbutler`, or
 `--local`/`--no-local`; each combination is a startup error naming the conflict,
 as is an empty or unreadable patch.
 
@@ -67,6 +93,8 @@ Send Feedback → feedback sent to agent
 Approve → configured approval prompt sent to agent
 ```
 
+In Claude Code, a bare Approve (no notes) on a review you opened yourself is only logged. An agent that opens a review and waits for your sign-off passes `gate: true` to its `plannotator` tool (or runs `plannotator review --gate`), and then your bare Approve reaches it too.
+
 **PR review:**
 
 ```
@@ -84,7 +112,7 @@ Send Feedback → PR context included in feedback
 Approve → configured approval prompt sent to agent
 ```
 
-When you switch the review destination to the PR or MR itself, the header posts a platform review instead. **Post Comments** posts a neutral comment review. **Post comments, then…** opens the submission dialog with a choice between **Comment** and **Request changes**, and the empty-state **Request changes…** opens it with Request changes selected. On GitHub, Request changes posts a real "Changes requested" review. GitHub does not let you request changes on your own pull request, so that option is disabled there. GitLab has no request-changes review, so on GitLab the review posts as a comment.
+When you switch the review destination to the PR or MR itself, the header posts a platform review instead. **Post Comments** posts a neutral comment review. **Post comments, then…** opens the submission dialog with a choice between **Comment** and **Request changes**, and the empty-state **Request changes…** opens it with Request changes selected. On GitHub, Request changes posts a real "Changes requested" review. GitHub does not let you request changes on your own pull request, so that option is disabled there. GitLab has no request-changes review, so on GitLab the review posts as a comment. On Bitbucket Cloud, Approve and Request changes set your decision on the pull request (Bitbucket's Approve and Request changes buttons), after your comments are posted.
 
 ## Stacked PRs and MRs
 
@@ -192,6 +220,25 @@ The review UI shows your changes in a familiar diff format:
 - **Unified diff** showing additions and deletions in context
 - **Annotation tools** with the same annotation types as plan review (delete, comment, quick label, "looks good")
 
+### Viewed tracking
+
+For local Git and pull-request reviews, viewed marks are saved independently of
+annotation drafts. They survive feedback submission, server restarts, and reopening
+the same review—even with **Auto-mark viewed** turned off. Unchanged files keep
+their marks; changed files become unviewed. Local Git progress is scoped to the
+worktree, branch, and comparison selection; pull-request progress is scoped to the
+PR and its Layer or Full-stack view.
+
+Files whose content cannot be reliably identified, such as oversized untracked
+files, do not restore as viewed. Workspace, non-Git, and piped-patch reviews retain
+their existing draft-based viewed tracking.
+
+Progress is stored under `~/.plannotator/review-progress/` (or
+`PLANNOTATOR_DATA_DIR`), one small record per file that includes the file's path.
+Nothing prunes it; `plannotator uninstall --purge` removes it. To turn it off, set
+`PLANNOTATOR_REVIEW_PROGRESS=0` or add `{ "reviewProgress": false }` to
+`~/.plannotator/config.json`; viewed marks then use the draft-based tracking.
+
 ### Auto-mark viewed
 
 Files check themselves off as you read. On the all-files surface a file is
@@ -245,6 +292,10 @@ Select any text in the diff to annotate it, just like in plan review. Your annot
 
 When an AI provider is available, the diff viewer includes inline AI chat. Select lines in the diff and choose "Ask AI" to ask questions about the code. Responses stream into a sidebar panel grouped by file.
 
+### Ask this session
+
+When the review was opened from Claude Code (with the [Plannotator mod](/docs/guides/claude-code/#the-plannotator-mod)), Pi, or OpenCode 2, Ask AI is answered by that agent session. It is the only option: there is no provider picker. Your question shows in the agent's chat. If the agent is busy, choose **Ask when it finishes** or **Interrupt and ask now**. In remote mode, from another Tailscale login than the computer owner's on a `--tailscale` session, from OpenCode 1, or with the Claude Code mod off, you pick a provider as described below. Review agents, Code Tour and Guided Review still run their own Claude or Codex models. See [Ask this session](/docs/guides/ai-features/#ask-this-session).
+
 ### Supported providers
 
 Plannotator supports multiple AI providers. Providers are auto-detected based on which CLI tools are installed on your system:
@@ -272,7 +323,7 @@ Open it with the **Guide** button in the review header (or `Mod+Shift+G`), pick 
 
 **Download portable guide** (top-right of a guide) saves the guide as one small HTML file you can send to anyone: it contains the guide, the exact diff it was generated against, and where the change came from (repo, branch, PR link, generating agent). The file renders identically to the in-app guide — same chapters, same diff viewer, syntax highlighting, light/dark — by loading the viewer from `guides.show`, so its size is roughly the size of the diff, never the app. It opens straight from disk. Without internet the file still shows the guide text and file list.
 
-The same export is available from the command line — `plannotator guide list` shows saved guides, `plannotator guide export --id <id>` writes the HTML — and `plannotator guide export --guide guide.json --patch guide.patch` wraps a guide an agent wrote itself (the standalone `plannotator-guide` skill; see [portable guide format](/docs/reference/portable-guides/)). Guides generated before this feature have no retained diff and are not exportable.
+The same export is available from the command line — `plannotator guide list` shows saved guides, `plannotator guide export --id <id>` writes the HTML — and `plannotator guide export --guide guide.json --patch guide.patch` wraps a guide an agent wrote itself (the standalone `guided-review` skill, `npx skills add plannotator/guides`; see [portable guide format](/docs/reference/portable-guides/)). The skill was called `plannotator-guide` before; to switch, run `npx skills remove plannotator-guide` (add `-g` if you installed it globally), then `npx skills add plannotator/guides`. The same command also offers `guided-plan`, which turns a plan for a change into one cited, readable page. Guides generated before this feature have no retained diff and are not exportable.
 
 **Create share link** (in the same Share menu, or `plannotator guide share`) uploads the guide and its diff once to guides.show and gives you a link instead of a file; the upload is encrypted by default with the key carried only in the link, and the one-time delete token (or **Remove link**) takes it down. See [share links](/docs/reference/portable-guides/#share-links).
 
@@ -330,6 +381,7 @@ Runtime keys use Plannotator's runtime identifiers. For code review, the current
 | `/api/image` | GET | Serve image by path |
 | `/api/upload` | POST | Upload image attachment |
 | `/api/draft` | GET/POST/DELETE | Auto-save annotation drafts |
+| `/api/review-progress?snapshot=<snapshotId>` | GET/POST | Load or save durable viewed-file progress; writes carry the scope key and per-file fingerprints, and stale snapshots are rejected |
 | `/api/ai/capabilities` | GET | Check available AI providers |
 | `/api/ai/session` | POST | Create or fork an AI session |
 | `/api/ai/query` | POST | Send prompt, stream SSE response |

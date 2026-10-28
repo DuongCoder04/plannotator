@@ -37,12 +37,14 @@ const hasDom = typeof document !== "undefined";
 if (hasDom) {
   document.cookie = "plannotator-look-feel-announcement-seen=2; path=/";
   document.cookie = "plannotator-announce-tui-herdr-seen=1; path=/";
+  document.cookie = "plannotator-announce-inbox-seen=1; path=/";
   document.cookie = "plannotator-vim-mode-announcement-seen=2; path=/";
   document.cookie = "plannotator-plan-ai-announcement-seen=1; path=/";
 }
 
 const appModule = hasDom ? await import("./App") : null;
 const App = appModule?.default as typeof import("./App")["default"];
+const fileBrowserModule = hasDom ? await import("@plannotator/ui/hooks/useFileBrowser") : null;
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
 const originalMatchMedia = hasDom ? window.matchMedia : undefined;
@@ -57,6 +59,7 @@ const memoryBackend: StorageBackend = {
 function seedAnnouncementsSeen(): void {
   memory.set("plannotator-look-feel-announcement-seen", "2");
   memory.set("plannotator-announce-tui-herdr-seen", "1");
+  memory.set("plannotator-announce-inbox-seen", "1");
   memory.set("plannotator-vim-mode-announcement-seen", "2");
   memory.set("plannotator-plan-ai-announcement-seen", "1");
 }
@@ -65,6 +68,9 @@ function seedAnnouncementsSeen(): void {
  *  can seed the session with pre-existing feedback without driving the DOM
  *  annotation flow. Read by the EventSource double at construction time. */
 let seededExternalAnnotations: unknown[] = [];
+/** Per-document saved drafts (`/api/draft/document`), keyed by absolute path:
+ *  merged into a folder-session document the first time it opens. */
+const savedDocumentDrafts = new Map<string, unknown[]>();
 
 class StubEventSource {
   static readonly CONNECTING = 0;
@@ -104,12 +110,21 @@ interface SubmittedBody {
   feedback?: string;
   annotations?: Array<{ type?: string; text?: string; originalText?: string }>;
   codeAnnotations?: unknown[];
+  nothingToSend?: boolean;
 }
 
 let submissions: SubmittedBody[] = [];
 /** How many upcoming /api/feedback POSTs answer 500. Each failed attempt is
  *  still recorded in `submissions` so its captured body can be asserted. */
 let failFeedbackPosts = 0;
+/** Upcoming /api/feedback POSTs that reject as a network error (a stopped
+ *  server), recorded first. */
+let feedbackNetworkFailures = 0;
+/** Upcoming /api/approve POSTs that answer 500, recorded first. */
+let failApprovePosts = 0;
+/** When true, the next /api/feedback POST gets the servers' already-decided
+ *  refusal (another window sent first), recorded first. */
+let refuseNextFeedbackAsDecided = false;
 
 const MARKDOWN = "# Notes\n\nSome body text.\n";
 
@@ -136,6 +151,18 @@ function makeFetch(plan: unknown): typeof fetch {
     if (url.pathname === "/api/plan") return Response.json(plan);
     if (url.pathname === "/api/ai/capabilities") return Response.json({ available: false, providers: [] });
     if (url.pathname === "/api/draft") return Response.json({ error: "Not found" }, { status: 404 });
+    if (url.pathname === "/api/draft/document") {
+      const saved = savedDocumentDrafts.get(url.searchParams.get("path") ?? "");
+      if (!saved || (init?.method ?? "GET") !== "GET") {
+        return saved ? Response.json({ ok: true }) : Response.json({ error: "Not found" }, { status: 404 });
+      }
+      return Response.json({ annotations: saved, globalAttachments: [] });
+    }
+    if (url.pathname === "/api/doc") {
+      const filepath = url.searchParams.get("path") ?? "";
+      const name = filepath.split("/").pop() ?? filepath;
+      return Response.json({ markdown: `# ${name}\n\nBody of ${name}.\n`, filepath, renderAs: "markdown" });
+    }
     if (url.pathname === "/api/feedback" || url.pathname === "/api/approve") {
       submissions.push({
         endpoint: url.pathname === "/api/feedback" ? "feedback" : "approve",
@@ -143,6 +170,18 @@ function makeFetch(plan: unknown): typeof fetch {
       });
       if (url.pathname === "/api/feedback" && failFeedbackPosts > 0) {
         failFeedbackPosts -= 1;
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      if (url.pathname === "/api/feedback" && refuseNextFeedbackAsDecided) {
+        refuseNextFeedbackAsDecided = false;
+        return Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
+      }
+      if (url.pathname === "/api/feedback" && feedbackNetworkFailures > 0) {
+        feedbackNetworkFailures -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      if (url.pathname === "/api/approve" && failApprovePosts > 0) {
+        failApprovePosts -= 1;
         return Response.json({ error: "boom" }, { status: 500 });
       }
       return Response.json({ ok: true });
@@ -239,7 +278,12 @@ afterEach(async () => {
   if (hasDom && originalMatchMedia) window.matchMedia = originalMatchMedia;
   submissions = [];
   failFeedbackPosts = 0;
+  feedbackNetworkFailures = 0;
+  failApprovePosts = 0;
+  refuseNextFeedbackAsDecided = false;
   seededExternalAnnotations = [];
+  savedDocumentDrafts.clear();
+  fileBrowserModule?.resetFileTreeBackend();
   memory.clear();
   resetStorageBackend();
   if (hasDom) document.body.replaceChildren();
@@ -264,6 +308,8 @@ describe.if(hasDom)("annotate decision control", () => {
     expect(body.feedback).toBe(ANNOTATE_NO_FEEDBACK_SENTENCE);
     expect(body.annotations).toEqual([]);
     expect(body.codeAnnotations).toEqual([]);
+    // #1701: marked so a host can skip the agent turn without reading the sentence.
+    expect(body.nothingToSend).toBe(true);
   });
 
   test("Mod+Enter fires the same primary the header shows", async () => {
@@ -298,6 +344,7 @@ describe.if(hasDom)("annotate decision control", () => {
     expect(notes[0]!.text).toBe("tighten the intro");
     expect(body.feedback).toContain("tighten the intro");
     expect(body.feedback!.startsWith(ANNOTATE_NO_FEEDBACK_SENTENCE)).toBe(false);
+    expect(body.nothingToSend).toBeUndefined();
   });
 
   // Maintainer ruling (empty-menu collapse): the non-gate empty menu is ONE
@@ -524,5 +571,379 @@ describe.if(hasDom)("annotate decision control", () => {
     expect(submissions[0]!.endpoint).toBe("feedback");
     expect(submissions[0]!.feedback).toBe(ANNOTATE_NO_FEEDBACK_SENTENCE);
     expect(submissions[0]!.annotations).toEqual([]);
+  });
+});
+
+/** A file row in the folder session's sidebar tree (labelled without `.md`). */
+function fileButton(name: string): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent?.trim() === name);
+}
+
+/** The completion overlay's state attribute, or null while no overlay shows. */
+function completionState(): string | null {
+  return document.querySelector("[data-completion-state]")?.getAttribute("data-completion-state") ?? null;
+}
+
+function completionTitle(): string | null {
+  return document.querySelector("[data-completion-state] h2")?.textContent ?? null;
+}
+
+/**
+ * The completion screen must say what actually happened. A Done with nothing
+ * to send posts the nothing-to-send body, which every host treats as a no-op
+ * (Pi: "Annotation closed (no feedback).", OpenCode: no turn, the Claude Code
+ * mod: a logged no-op), so a "Feedback Sent" / "will address your feedback"
+ * screen there told the reviewer the agent got something it never did.
+ */
+describe.if(hasDom)("annotate completion screen", () => {
+  type GlimpseWindow = Window & { glimpse?: { close?: () => void } };
+
+  // The footer's "Your response has been sent." line renders in the auto-close
+  // `closed` phase: an immediate auto-close whose close request went to a host
+  // window (Glimpse, or the VS Code panel's parent frame), so the tab stays up.
+  // With the default delay the footer shows the auto-close prompt instead and
+  // an assertion about the line would pass vacuously.
+  afterEach(() => {
+    delete (window as GlimpseWindow).glimpse;
+  });
+
+  function useImmediateHostClose(): void {
+    memory.set("plannotator-auto-close", "0");
+    (window as GlimpseWindow).glimpse = { close: () => {} };
+  }
+
+  async function clickPrimary(): Promise<void> {
+    await act(async () => primaryButton()!.click());
+    await settle();
+  }
+
+  function completionText(): string {
+    return document.querySelector("[data-completion-state]")?.textContent ?? "";
+  }
+
+  function expectNoSentClaim(): void {
+    const text = completionText();
+    expect(text).not.toContain("Feedback Sent");
+    expect(text).not.toContain("address your feedback");
+    expect(text).not.toContain("has been sent");
+  }
+
+  test("Done with nothing to send shows the Done screen, not Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    useImmediateHostClose();
+    await mountAnnotate();
+
+    await clickPrimary();
+
+    expect(submissions[0]!.nothingToSend).toBe(true);
+    expect(completionState()).toBe("done");
+    // Deliberate label: the title names the decision the reviewer made.
+    expect(completionTitle()).toBe("Done");
+    expectNoSentClaim();
+  });
+
+  test("a note that was sent still shows Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    useImmediateHostClose();
+    await mountAnnotate();
+
+    await openComposer("Send a note");
+    await typeNote("tighten the intro");
+    await pressNoteKey("Enter", { metaKey: true });
+
+    expect(submissions[0]!.nothingToSend).toBeUndefined();
+    expect(completionState()).toBe("denied");
+    expect(completionTitle()).toBe("Feedback Sent");
+    // Something was sent, so the footer still says so (this also proves the
+    // harness reaches the footer line the nothing-sent tests assert away).
+    expect(completionText()).toContain("has been sent");
+  });
+
+  test("Close keeps Session Closed but does not claim a response was sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    useImmediateHostClose();
+    await mountAnnotate();
+
+    const close = document.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Close session without sending"]',
+    );
+    if (!close) throw new Error("Close button not found");
+    await act(async () => close.click());
+    await settle();
+
+    expect(submissions).toHaveLength(0);
+    expect(completionState()).toBe("exited");
+    expect(completionTitle()).toBe("Session Closed");
+    expectNoSentClaim();
+  });
+
+  test("folder: a comment on another document still shows Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    useImmediateHostClose();
+    fileBrowserModule!.setFileTreeBackend({
+      loadTree: async () => Response.json({
+        tree: [
+          { name: "alpha.md", path: "alpha.md", type: "file" },
+          { name: "beta.md", path: "beta.md", type: "file" },
+        ],
+      }),
+      loadVaultTree: async () => Response.json({ error: "Unavailable" }, { status: 404 }),
+      watchTrees: () => undefined,
+    });
+    // alpha.md carries a saved comment, merged in when the file opens.
+    savedDocumentDrafts.set("/repo/alpha.md", [{
+      id: "alpha-1",
+      blockId: "",
+      startOffset: 0,
+      endOffset: 0,
+      type: "COMMENT",
+      text: "alpha needs work",
+      originalText: "Body of alpha.md.",
+      createdA: 1,
+    }]);
+    await mount(annotatePlan({
+      plan: "",
+      mode: "annotate-folder",
+      filePath: "/repo",
+      projectRoot: "/repo",
+      documentDrafts: true,
+    }), () => fileButton("alpha"));
+
+    async function openFile(name: string): Promise<void> {
+      await act(async () => fileButton(name)!.click());
+      for (let attempt = 0; attempt < 20; attempt += 1) await settle();
+    }
+    await openFile("alpha");
+    await openFile("beta"); // the comment now lives on a document that is not open
+
+    await clickPrimary();
+
+    expect(submissions).toHaveLength(1);
+    const body = submissions[0]!;
+    expect(body.endpoint).toBe("feedback");
+    expect(body.feedback).toContain("alpha needs work");
+    expect(body.nothingToSend).toBeUndefined();
+    expect(completionState()).toBe("denied");
+    expect(completionTitle()).toBe("Feedback Sent");
+  });
+
+  test("discarding every annotation finishes on the Done screen", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    seededExternalAnnotations = [{
+      id: "ext-1",
+      blockId: "",
+      startOffset: 0,
+      endOffset: 0,
+      type: "COMMENT",
+      text: "existing finding",
+      originalText: "Some body text.",
+      createdA: 1,
+      source: "eslint",
+    }];
+    await mountAnnotate();
+    await settle();
+    await settle();
+
+    await act(async () => caretButton()!.click());
+    await settle();
+    await act(async () => menuItem("discard 1 annotation")!.click());
+    await settle();
+    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .find((el) => el.textContent === "Discard & finish");
+    await act(async () => confirm!.click());
+    await settle();
+
+    expect(submissions).toHaveLength(1);
+    expect(completionState()).toBe("done");
+    expectNoSentClaim();
+  });
+
+  test("gate: the empty Approve keeps the approval screen", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountAnnotate({ gate: true });
+
+    await clickPrimary();
+
+    expect(submissions[0]!.endpoint).toBe("approve");
+    expect(completionState()).toBe("approved");
+  });
+
+  test("annotate-last: Done with nothing to send shows the Done screen", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountAnnotate({ mode: "annotate-last", filePath: undefined });
+
+    await clickPrimary();
+
+    expect(submissions[0]!.nothingToSend).toBe(true);
+    expect(completionState()).toBe("done");
+    expectNoSentClaim();
+  });
+
+  test("raw HTML: Done with nothing to send shows the Done screen", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    await mountAnnotate({
+      filePath: "/tmp/page.html",
+      renderAs: "html",
+      rawHtml: "<h1>Rendered page</h1><p>Body copy.</p>",
+      plan: "",
+    });
+
+    await clickPrimary();
+
+    expect(submissions[0]!.nothingToSend).toBe(true);
+    expect(completionState()).toBe("done");
+    expectNoSentClaim();
+  });
+});
+
+/**
+ * #1392: `plannotator annotate`, the server stopped with the page open, Send
+ * feedback: the POST rejected and the page showed nothing, so the reviewer
+ * believed it was sent. A failed send must keep the session as it was, say
+ * the feedback was not sent, and offer Retry and Copy feedback.
+ */
+describe.if(hasDom)("annotate: a send that does not reach Plannotator", () => {
+  // Sonner keeps earlier tests' toasts in its module store, so find this one
+  // by its title rather than taking the first toast on the page.
+  const failureToast = () =>
+    Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]"))
+      // A dismissed toast stays in the DOM while it animates out.
+      .filter((el) => el.getAttribute("data-removed") !== "true")
+      .find((el) => el.querySelector("[data-title]")?.textContent?.endsWith(" not sent"));
+  const toastButton = (label: string) =>
+    Array.from(failureToast()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent === label);
+
+  async function waitFor(check: () => unknown, what: string): Promise<void> {
+    for (let attempt = 0; attempt < 40 && !check(); attempt += 1) await settle();
+    if (!check()) throw new Error(`timed out waiting for ${what}`);
+  }
+
+  async function sendNote(text: string): Promise<void> {
+    await openComposer("Send a note");
+    await typeNote(text);
+    await pressNoteKey("Enter", { metaKey: true });
+  }
+
+  test("server gone: no sent screen, Feedback not sent, and Copy feedback copies the panel's Copy text", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    feedbackNetworkFailures = 1;
+    const clipboard = navigator.clipboard;
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => void copied.push(text) },
+    });
+    try {
+      await mountAnnotate();
+      await sendNote("keep the second example");
+      await waitFor(failureToast, "the failure message");
+
+      expect(submissions).toHaveLength(1);
+      expect(completionState()).toBeNull();
+      // Deliberate copy: the title says the feedback did not go out, and why.
+      expect(failureToast()!.textContent).toContain("Feedback not sent");
+      expect(failureToast()!.textContent).toContain("isn't running");
+      expect(primaryButton()!.disabled).toBe(false);
+
+      await act(async () => toastButton("Copy feedback")!.click());
+      await waitFor(() => copied.length > 0, "the copy");
+      // The annotate-file framing Copy adds (it names the file) around the note.
+      expect(copied[0]).toContain("keep the second example");
+      expect(copied[0]).toContain("/tmp/notes.md");
+      await waitFor(() => toastButton("Copied"), "the Copied label");
+      expect(Boolean(toastButton("Retry"))).toBe(true);
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    }
+  });
+
+  test("answered 500: Retry sends the same note once and only then shows Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    failFeedbackPosts = 1;
+    await mountAnnotate();
+    await sendNote("hold the line");
+    await waitFor(failureToast, "the failure message");
+
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("500");
+
+    await act(async () => toastButton("Retry")!.click());
+    await waitFor(() => completionState(), "the completion screen");
+    expect(submissions).toHaveLength(2);
+    const notes = globalComments(submissions[1]!);
+    expect(notes.map((n) => n.text)).toEqual(["hold the line"]);
+    expect(completionState()).toBe("denied");
+  });
+
+  test("annotate-last: server gone keeps the message review open and says so", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    feedbackNetworkFailures = 1;
+    await mountAnnotate({ mode: "annotate-last", filePath: undefined });
+    await sendNote("answer the second question too");
+    await waitFor(failureToast, "the failure message");
+
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("Feedback not sent");
+    expect(Boolean(toastButton("Copy feedback"))).toBe(true);
+  });
+
+  test("gate: an Approve answered 500 says Approval not sent and shows no Approved screen", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    failApprovePosts = 1;
+    await mountAnnotate({ gate: true });
+    await act(async () => primaryButton()!.click());
+    await waitFor(failureToast, "the failure message");
+
+    expect(submissions[0]!.endpoint).toBe("approve");
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("Approval not sent");
+    // A bare approval carries no text, so there is nothing to copy.
+    expect(Boolean(toastButton("Copy feedback"))).toBe(false);
+  });
+
+  test("a send that then succeeds leaves no failure message over Feedback Sent", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    failFeedbackPosts = 1;
+    await mountAnnotate();
+    await sendNote("tighten the intro");
+    await waitFor(failureToast, "the failure message");
+
+    await act(async () => primaryButton()!.click());
+    await waitFor(() => completionState(), "the completion screen");
+    expect(completionState()).toBe("denied");
+    expect(failureToast()).toBeUndefined();
+  });
+
+  // Another window (or the agent) decided this review first: the server
+  // refuses with 409 already_decided. Retrying can never work, so the
+  // message says why and offers only Copy feedback.
+  test("already decided elsewhere: its own message, Copy feedback, no Retry", async () => {
+    setStorageBackend(memoryBackend);
+    seedAnnouncementsSeen();
+    refuseNextFeedbackAsDecided = true;
+    await mountAnnotate();
+    await sendNote("one more thing");
+    await waitFor(failureToast, "the failure message");
+
+    expect(completionState()).toBeNull();
+    expect(failureToast()!.textContent).toContain("Feedback not sent");
+    expect(failureToast()!.textContent).toContain("already decided");
+    expect(failureToast()!.textContent).not.toContain("409");
+    expect(Boolean(toastButton("Retry"))).toBe(false);
+    expect(Boolean(toastButton("Copy feedback"))).toBe(true);
   });
 });

@@ -5,6 +5,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { prepareAppHtml } from "../generated/app-html.ts";
 import { openPackedApp } from "../generated/packed-app.ts";
 
 /** The raw request body as text (for endpoints where an empty body is meaningful, e.g. all-optional JSON). */
@@ -55,12 +56,20 @@ export function handleApiNotFound(
 	json(res, { error: "Not found", path }, 404);
 }
 
-export function html(
+/**
+ * Serve the single-file app HTML, compressed when the session is remote and the
+ * client accepts br/gzip (#1617); local sessions get the page unchanged. Negotiation and the per-process compression cache are shared with
+ * the Bun servers via generated/app-html.ts; identity sends the string as-is.
+ */
+export async function html(
+	req: IncomingMessage,
 	res: import("node:http").ServerResponse,
 	content: string,
-): void {
-	res.writeHead(200, { "Content-Type": "text/html" });
-	res.end(content);
+	compress: boolean,
+): Promise<void> {
+	const prepared = await prepareAppHtml(content, req.headers["accept-encoding"], compress);
+	res.writeHead(200, prepared.headers);
+	res.end(prepared.body);
 }
 
 /**
@@ -70,12 +79,12 @@ export function html(
  */
 export function createAppHandler(
 	htmlContent: string,
-): (req: IncomingMessage, res: ServerResponse, url: URL) => void {
+): (req: IncomingMessage, res: ServerResponse, url: URL, compress: boolean) => Promise<void> {
 	const app = openPackedApp(htmlContent);
-	return (req, res, url) => {
+	return async (req, res, url, compress) => {
 		const asset = app.asset(url.pathname, req.headers["accept-encoding"]);
 		if (asset) send(res, asset.body, 200, asset.headers);
-		else html(res, app.html);
+		else await html(req, res, app.html, compress);
 	};
 }
 

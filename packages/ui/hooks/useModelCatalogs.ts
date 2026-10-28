@@ -3,6 +3,7 @@ import {
   CLAUDE_FALLBACK_MODELS,
   CODEX_FALLBACK_MODELS,
   type CatalogModel,
+  type ModelsSource,
 } from '@plannotator/core/model-catalog';
 import type { AgentCapabilities } from '../types';
 
@@ -13,7 +14,10 @@ export { effortSelectOptions, modelSelectOptions } from '@plannotator/core/model
  * Claude / Codex model catalogs for the agent launchers (review, Code Tour,
  * Guided Review) — the SAME lists Ask AI shows. Each is the Ask AI provider's
  * discovered list, fetched through `/api/ai/capabilities?activate=<id>` (which
- * runs the provider's server-cached discovery). Nothing is fetched until a
+ * runs the provider's server-cached discovery). When a session bridge makes
+ * Ask AI bridge-only, the server reports these under `catalogProviders`
+ * instead of `providers`, so the launchers keep them while Ask AI cannot
+ * offer them. Nothing is fetched until a
  * surface asks for one engine with `useModelCatalogs(...).load(engine)`, and
  * only when that engine is installed, so opening a launcher spawns only the
  * selected CLI. While a fetch is in flight the static fallback is shown with
@@ -26,7 +30,13 @@ export type CatalogEngine = 'claude' | 'codex';
 export interface ModelCatalog {
   models: CatalogModel[];
   settled: boolean;
+  /** Where the server says the list came from; absent when it did not say. */
+  modelsSource?: ModelsSource;
+  /** The installed CLI's version, when the server reports it. */
+  toolVersion?: string;
 }
+
+type LoadedCatalog = Pick<ModelCatalog, 'models' | 'modelsSource' | 'toolVersion'>;
 
 export interface ModelCatalogs extends Record<CatalogEngine, ModelCatalog> {
   /** Fetch one engine's catalog (no-op for other engines or when not installed). */
@@ -47,32 +57,46 @@ const isCatalogEngine = (engine: unknown): engine is CatalogEngine => engine ===
 
 // One request per engine per page: every launcher surface shares the answer.
 // A failed request is forgotten so the next load retries it.
-const loads = new Map<CatalogEngine, Promise<CatalogModel[]>>();
+const loads = new Map<CatalogEngine, Promise<LoadedCatalog>>();
 
-export function loadModelCatalog(engine: CatalogEngine): Promise<CatalogModel[]> {
+function loadCatalogEntry(engine: CatalogEngine): Promise<LoadedCatalog> {
   let load = loads.get(engine);
   if (!load) {
     const id = AI_PROVIDER_ID[engine];
-    const failed = () => {
+    const failed = (): LoadedCatalog => {
       loads.delete(engine);
-      return FALLBACK_MODELS[engine];
+      return { models: FALLBACK_MODELS[engine] };
     };
     load = fetch(`/api/ai/capabilities?activate=${encodeURIComponent(id)}`)
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        const provider = data?.providers?.find((p: { id?: string; name?: string }) => p.id === id || p.name === id);
+      .then((data): LoadedCatalog => {
+        // A server whose Ask AI is a session bridge lists the SDK providers
+        // only under `catalogProviders` (never under `providers`, which Ask AI
+        // reads), so the launchers look in both.
+        const matches = (p: { id?: string; name?: string }) => p.id === id || p.name === id;
+        const provider = data?.providers?.find(matches) ?? data?.catalogProviders?.find(matches);
         const models = provider?.models;
         if (!Array.isArray(models) || models.length === 0) return failed();
         // The server answers 200 with its static fallback when discovery
         // failed; show it, but forget it so the next load retries (the
         // server's own cooldown bounds how often that spawns the CLI).
         if (provider.modelsSource === 'fallback') loads.delete(engine);
-        return models as CatalogModel[];
+        return {
+          models: models as CatalogModel[],
+          ...(provider.modelsSource === 'fallback' || provider.modelsSource === 'discovered'
+            ? { modelsSource: provider.modelsSource as ModelsSource }
+            : {}),
+          ...(typeof provider.toolVersion === 'string' && provider.toolVersion ? { toolVersion: provider.toolVersion } : {}),
+        };
       })
       .catch(failed);
     loads.set(engine, load);
   }
   return load;
+}
+
+export function loadModelCatalog(engine: CatalogEngine): Promise<CatalogModel[]> {
+  return loadCatalogEntry(engine).then((entry) => entry.models);
 }
 
 /** Test seam: forget cached catalogs. */
@@ -85,7 +109,7 @@ export function useModelCatalogs(capabilities: AgentCapabilities | null): ModelC
     capabilities?.providers.some((p) => p.id === id && p.available) ?? false;
   const claudeOn = available('claude');
   const codexOn = available('codex');
-  const [loaded, setLoaded] = useState<Partial<Record<CatalogEngine, CatalogModel[]>>>({});
+  const [loaded, setLoaded] = useState<Partial<Record<CatalogEngine, LoadedCatalog>>>({});
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -98,8 +122,8 @@ export function useModelCatalogs(capabilities: AgentCapabilities | null): ModelC
     (engine: string | null | undefined) => {
       if (!isCatalogEngine(engine)) return;
       if (!(engine === 'claude' ? claudeOn : codexOn)) return;
-      void loadModelCatalog(engine).then((models) => {
-        if (mounted.current) setLoaded((prev) => (prev[engine] === models ? prev : { ...prev, [engine]: models }));
+      void loadCatalogEntry(engine).then((entry) => {
+        if (mounted.current) setLoaded((prev) => (prev[engine] === entry ? prev : { ...prev, [engine]: entry }));
       });
     },
     [claudeOn, codexOn],
@@ -107,8 +131,8 @@ export function useModelCatalogs(capabilities: AgentCapabilities | null): ModelC
 
   return useMemo(
     () => ({
-      claude: { models: loaded.claude ?? FALLBACK_MODELS.claude, settled: !!loaded.claude },
-      codex: { models: loaded.codex ?? FALLBACK_MODELS.codex, settled: !!loaded.codex },
+      claude: loaded.claude ? { ...loaded.claude, settled: true } : { models: FALLBACK_MODELS.claude, settled: false },
+      codex: loaded.codex ? { ...loaded.codex, settled: true } : { models: FALLBACK_MODELS.codex, settled: false },
       load,
     }),
     [loaded, load],

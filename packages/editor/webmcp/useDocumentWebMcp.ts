@@ -46,7 +46,7 @@ export interface DocumentWebMcpInputs {
   livePageUrl: string;
   archiveMode: boolean;
   gate: boolean;
-  submitted: 'approved' | 'denied' | 'exited' | null;
+  submitted: 'approved' | 'denied' | 'done' | 'exited' | null;
   renderAs: 'markdown' | 'html';
   rawHtml: string;
   displayedMarkdown: string;
@@ -65,6 +65,8 @@ export interface DocumentWebMcpInputs {
     error: string | null;
     getDocAnnotations: () => Map<string, CachedDocState>;
     open: (path: string) => Promise<void>;
+    /** Stop a Back scroll restore still settling, before a reveal scrolls. */
+    cancelScrollRestore?: () => void;
   };
   /** Folder sessions: the file browser's loaded directories (absolute dir path + relative tree). */
   fileBrowserDirs: DocumentWebMcpFileBrowserDir[];
@@ -232,7 +234,7 @@ export function useDocumentWebMcp(inputs: DocumentWebMcpInputs): { available: bo
             : i.annotateMode
               ? i.liveApp ? 'annotate-app' : i.annotateSource === 'folder' ? 'annotate-folder' : i.annotateSource === 'message' ? 'annotate-last' : 'annotate'
               : 'plan';
-        const decision: SessionDecision = i.submitted === 'approved' ? 'approved' : i.submitted === 'denied' ? 'feedback-sent' : i.submitted === 'exited' ? 'exited' : 'pending';
+        const decision: SessionDecision = i.submitted === 'approved' ? 'approved' : i.submitted === 'denied' ? 'feedback-sent' : i.submitted === 'done' ? 'done' : i.submitted === 'exited' ? 'exited' : 'pending';
         const currentSurface: DocumentSurface = i.liveApp ? 'live-app' : i.renderAs === 'html' ? 'html' : 'markdown';
         return {
           mode,
@@ -326,6 +328,7 @@ export function useDocumentWebMcp(inputs: DocumentWebMcpInputs): { available: bo
         }
         const exists = annotations().some((a) => a.id === id);
         if (!exists) return false;
+        current().linkedDoc.cancelScrollRestore?.();
         current().selectAnnotation(id);
         return true;
       },
@@ -337,6 +340,7 @@ export function useDocumentWebMcp(inputs: DocumentWebMcpInputs): { available: bo
         if (typeof document === 'undefined') return false;
         const target = document.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
         if (!target) return false;
+        current().linkedDoc.cancelScrollRestore?.();
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         return true;
       },

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readlinkSync } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import {
@@ -16,7 +16,9 @@ import {
 	prepareGitCommand,
 	runGitDiff as runGitDiffCore,
 } from "../generated/review-core.ts";
+import { readFileCapped } from "../generated/repo-file.ts";
 import {
+	JJ_COLOR_FREE_ARGS,
 	type ReviewJjRuntime,
 } from "../generated/jj-core.ts";
 import {
@@ -133,7 +135,7 @@ function runCommandBytes(
 					const killed = spawnSync(
 						"taskkill.exe",
 						["/pid", String(proc.pid), "/t", "/f"],
-						{ stdio: "ignore", windowsHide: true },
+						{ env: process.env, stdio: "ignore", windowsHide: true },
 					);
 					if (killed.status === 0) return;
 				}
@@ -188,6 +190,21 @@ function runCommandBytes(
 	});
 }
 
+/**
+ * `reviewRuntime` with `extraEnv` added to every git child's environment
+ * (after the process env, so it wins). A GitHub PR checkout uses it to run
+ * its fetches as the gh account chosen for that PR (#2157), so git through
+ * gh's credential helper gets that account's token; nothing else does.
+ */
+export function reviewRuntimeWithEnv(extraEnv: Record<string, string>): ReviewGitRuntime {
+	const run = (args: string[], options?: GitCommandOptions): Promise<GitCommandResult> => {
+		const environment = { ...process.env, ...extraEnv };
+		const command = prepareGitCommand(args, options, environment);
+		return runCommand("git", command.args, "git not found", options, command, environment);
+	};
+	return { ...reviewRuntime, runGit: run };
+}
+
 export const reviewRuntime: ReviewGitRuntime = {
 	runGit(
 		args: string[],
@@ -206,11 +223,10 @@ export const reviewRuntime: ReviewGitRuntime = {
 	},
 
 	async readTextFile(path: string): Promise<string | null> {
-		try {
-			return readFileSync(path, "utf-8");
-		} catch {
-			return null;
-		}
+		// Capped and non-blocking (repo-file.ts): a FIFO swapped in after the
+		// caller's lstat cannot block Pi's event loop.
+		const read = await readFileCapped(path);
+		return read.ok ? read.content : null;
 	},
 
 	async readFileBytes(path: string, maxBytes: number): Promise<Uint8Array | null> {
@@ -272,13 +288,13 @@ export const jjRuntime: ReviewJjRuntime = {
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number },
 	): Promise<GitCommandResult> {
-		return runCommand("jj", args, "jj not found", options);
+		return runCommand("jj", [...JJ_COLOR_FREE_ARGS, ...args], "jj not found", options);
 	},
 	runJjBytes(
 		args: string[],
 		options?: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number },
 	): Promise<GitBytesCommandResult> {
-		return runCommandBytes("jj", args, "jj not found", options);
+		return runCommandBytes("jj", [...JJ_COLOR_FREE_ARGS, ...args], "jj not found", options);
 	},
 };
 

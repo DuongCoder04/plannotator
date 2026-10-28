@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef, type RefObject } from "react";
-import { AnnotationType, type Annotation, type EditorMode, type HtmlAnnotationTarget, type HtmlElementAnchor, type HtmlElementContext, type ImageAttachment } from "../../types";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, type RefObject } from "react";
+import { AnnotationType, type Annotation, type EditorMode, type HostDraft, type HtmlAnnotationTarget, type HtmlElementAnchor, type HtmlElementContext, type ImageAttachment } from "../../types";
 import { THUMBS_UP_LABEL, type QuickLabel } from "../../utils/quickLabels";
 import { getIdentity } from "../../utils/identity";
 import type {
@@ -9,6 +9,12 @@ import type {
   UseAnnotationHighlighterReturn,
 } from "../../hooks/useAnnotationHighlighter";
 import { BRIDGE_PROTOCOL_VERSION } from "./bridge-script";
+import {
+  MAX_RICH_CLIPBOARD_HTML_LENGTH,
+  MAX_RICH_CLIPBOARD_OUTPUT_LENGTH,
+  sanitizeRichHtml,
+  type RichCopySource,
+} from "../../utils/richClipboard";
 import {
   parseHtmlElementContext,
   MAX_ELEMENT_CONTEXT_BYTES,
@@ -90,7 +96,26 @@ interface BridgeSelectionMessage {
   targetLabel?: string;
   /** Agent-facing element description (pinpoint clicks) — validated, size-capped. */
   context?: HtmlElementContext;
+  /** The bridge answers `rich-copy-request` for this text selection. */
+  richCopy?: boolean;
+  /** `text` was cut to MAX_SELECTION_TEXT_LENGTH (the page's selection is longer). */
+  textCut?: boolean;
 }
+
+/** The bridge's answer to `rich-copy-request`: the pending range's markup
+ *  (sanitized again here) and its text up to 256 KiB (`truncated` past it),
+ *  or too large for rich text. */
+interface BridgeRichCopyMessage {
+  type: `${typeof PREFIX}rich-copy`;
+  id: string;
+  html: string;
+  text: string;
+  truncated: boolean;
+  tooLarge: boolean;
+}
+
+/** How long the rich-text Copy waits for the bridge before copying the quote as plain text. */
+export const RICH_COPY_TIMEOUT_MS = 1500;
 
 /** One draft target in an in-flight multi-select comment. Index 0 is primary. */
 export interface HtmlDraftTarget {
@@ -119,10 +144,12 @@ interface BridgeRect {
 
 type BridgeMessage =
   | BridgeSelectionMessage
+  | BridgeRichCopyMessage
   | BridgeMultiTargetAddedMessage
   | { type: `${typeof PREFIX}multi-target-removed`; key: string }
   | { type: `${typeof PREFIX}pointer`; x: number; y: number; shift: boolean }
   | { type: `${typeof PREFIX}selection-clear` }
+  | { type: `${typeof PREFIX}pin-visibility`; visible: boolean }
   | { type: `${typeof PREFIX}selection-rect`; rect: BridgeRect }
   | { type: `${typeof PREFIX}keytype`; key: string }
   | { type: `${typeof PREFIX}mark-click`; id: string }
@@ -199,6 +226,10 @@ export interface UseHtmlAnnotationOptions {
   /** scrollIntoView behavior for scroll-to (selecting an annotation).
    *  Absent: smooth, as before; pass 'auto' to honor reduced motion. */
   scrollBehavior?: 'smooth' | 'auto';
+  /** The composer handed to the host (see `HostDraft` and HtmlViewer's
+   *  `onHostDraft`): a selection or a pin reports a draft instead of opening
+   *  the toolbar or the composer. Absent: unchanged. */
+  onHostDraft?: (draft: HostDraft | null) => void;
 }
 
 /** Clamp a host cap into the package's bound; anything unusable is the default. */
@@ -359,6 +390,8 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
       return {
         type: value.type,
         text: capSelectionText(value.text),
+        ...(value.richCopy === true ? { richCopy: true } : {}),
+        ...(value.textCut === true ? { textCut: true } : {}),
         rect,
         modeOverride: parseEditorMode(value.modeOverride),
         anchor: parseHtmlElementAnchor(value.anchor) ?? undefined,
@@ -391,6 +424,24 @@ export function parseBridgeMessage(value: unknown): BridgeMessage | null {
         : null;
     case `${PREFIX}selection-clear`:
       return { type: value.type };
+    case `${PREFIX}rich-copy`: {
+      // Oversized or malformed markup reads as none (plain text is copied).
+      if (typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64) return null;
+      const text = typeof value.text === "string" && value.text.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
+        ? value.text : "";
+      const html = typeof value.html === "string" && value.html.length <= MAX_RICH_CLIPBOARD_HTML_LENGTH
+        ? value.html : "";
+      return {
+        type: value.type,
+        id: value.id,
+        html,
+        text,
+        truncated: value.truncated === true,
+        tooLarge: value.tooLarge === true,
+      };
+    }
+    case `${PREFIX}pin-visibility`:
+      return typeof value.visible === 'boolean' ? { type: value.type, visible: value.visible } : null;
     case `${PREFIX}selection-rect`: {
       const rect = parseBridgeRect(value.rect);
       return rect ? { type: value.type, rect } : null;
@@ -465,10 +516,17 @@ export function useHtmlAnnotation({
   onUnanchoredChange,
   maxAdditionalTargets,
   scrollBehavior,
+  onHostDraft,
 }: UseHtmlAnnotationOptions): Omit<
   UseAnnotationHighlighterReturn,
   "highlighterRef" | "highlightRange" | "highlightMathElement"
 > & {
+  /** Whether any pinned draft target is still displayed by the page. Always
+   *  true while no composer is open. */
+  pinVisible: boolean;
+  /** False once this draft's composer was hidden with its target: shown
+   *  again, it must not take focus from where the person is. */
+  composerAutoFocus: boolean;
   /** In-flight multi-select targets (index 0 = primary); empty outside pinpoint drafts. */
   draftTargets: HtmlDraftTarget[];
   /** Remove one draft target (chip X). Removing the last cancels the draft. */
@@ -477,8 +535,8 @@ export function useHtmlAnnotation({
   flashDraftTarget: (key: string) => void;
   /** Bumped after every target add/remove so the composer can refocus its textarea. */
   composerFocusToken: number;
-  /** Composer one-click "Looks good": submits the hardcoded positive label
-   *  with the same anchor and multi-select targets a typed comment would carry. */
+  /** Composer one-click 👍: submits the hardcoded positive label with the
+   *  same anchor and multi-select targets a typed comment would carry. */
   handleCommentLooksGood: () => void;
   /** Ids this module minted for locally created annotations (create-mark),
    *  for the unanchored union: a minted id the host never listed is a
@@ -490,6 +548,17 @@ export function useHtmlAnnotation({
   const [quickLabelPicker, setQuickLabelPicker] = useState<QuickLabelPickerState | null>(null);
   const [draftTargets, setDraftTargets] = useState<HtmlDraftTarget[]>([]);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const [pinVisible, setPinVisible] = useState(true);
+  const [composerWasHidden, setComposerWasHidden] = useState(false);
+  const pinVisibleRef = useRef(pinVisible);
+  pinVisibleRef.current = pinVisible;
+  // Visibility belongs to one draft: whatever closes the composer (save, 👍,
+  // close, Escape, a cancelled multi-select, disabling) resets it.
+  useEffect(() => {
+    if (commentPopover) return;
+    setPinVisible(true);
+    setComposerWasHidden(false);
+  }, [commentPopover]);
 
   const pendingTextRef = useRef<string>("");
   // Element anchor for the pending pinpoint selection — committed onto the
@@ -536,6 +605,10 @@ export function useHtmlAnnotation({
   onPageChangeRef.current = onPageChange;
   const onLinkClickRef = useRef(onLinkClick);
   onLinkClickRef.current = onLinkClick;
+  const onHostDraftRef = useRef(onHostDraft);
+  onHostDraftRef.current = onHostDraft;
+  // The id of the draft the host holds, so a stale cancel cannot drop a newer one.
+  const hostDraftIdRef = useRef<string | null>(null);
   // The effective cap and whether the host set one: only an explicit cap
   // rides on arm-multi-select, so an unconfigured viewer posts today's message.
   const maxTargetsRef = useRef(resolveMaxAdditionalTargets(maxAdditionalTargets));
@@ -544,6 +617,9 @@ export function useHtmlAnnotation({
   hostCapRef.current = maxAdditionalTargets !== undefined;
 
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  /** Rich-text Copy requests waiting for the bridge's markup, by id. An
+   *  answer with an id not in here (unsolicited, or after its timeout) is ignored. */
+  const richCopyRequestsRef = useRef(new Map<string, (answer: BridgeRichCopyMessage) => void>());
 
   /** Post into the iframe with the live token + targetOrigin when a live
    *  session is active; srcdoc posts keep targetOrigin "*" and no token. */
@@ -628,7 +704,9 @@ export function useHtmlAnnotation({
     [iframeRef, getOrCreateAnchor],
   );
 
-  useEffect(() => {
+  // A layout effect, like HtmlViewer's own listener: listening from the
+  // commit that inserts the iframe, before its document can post anything.
+  useLayoutEffect(() => {
     function handler(e: MessageEvent<unknown>) {
       if (e.source !== iframeRef.current?.contentWindow) return;
       // Live sessions verify origin + session token BEFORE parsing. The
@@ -654,11 +732,59 @@ export function useHtmlAnnotation({
         return;
       }
 
+      if (type === `${PREFIX}rich-copy`) {
+        const answer = richCopyRequestsRef.current.get(message.id);
+        if (!answer) return;
+        richCopyRequestsRef.current.delete(message.id);
+        answer(message);
+        return;
+      }
+
+      if (type === `${PREFIX}pin-visibility`) {
+        setPinVisible(message.visible);
+        if (!message.visible && commentPopoverRef.current) setComposerWasHidden(true);
+      }
+
       if (type === `${PREFIX}selection`) {
+        setPinVisible(true);
+        setComposerWasHidden(false);
         pendingTextRef.current = message.text;
         pendingAnchorRef.current = message.anchor ?? null;
         pendingContextRef.current = message.context ?? null;
         setDraftTargets([]); // a new selection always starts a fresh draft
+        const reportDraft = onHostDraftRef.current;
+        if (reportDraft) {
+          // The host composes: HTML is comment-only, so every selection or
+          // pin is a comment draft, and nothing of ours opens.
+          const id = nextHtmlAnnId();
+          hostDraftIdRef.current = id;
+          reportDraft({
+            annotation: {
+              id,
+              blockId: "",
+              startOffset: 0,
+              endOffset: 0,
+              type: AnnotationType.COMMENT,
+              text: "",
+              originalText: message.text,
+              author: getIdentity(),
+              createdA: Date.now(),
+              htmlAnchor: message.anchor,
+              elementContext: message.context,
+            },
+            intent: message.pinpoint ? "compose" : "selection",
+            label: message.targetLabel,
+            cancel: () => {
+              if (hostDraftIdRef.current !== id) return;
+              hostDraftIdRef.current = null;
+              post({ type: `${PREFIX}cancel-selection` });
+              pendingTextRef.current = "";
+              pendingAnchorRef.current = null;
+              pendingContextRef.current = null;
+            },
+          });
+          return;
+        }
         const anchor = positionAnchor(message.rect);
         if (!anchor) return;
 
@@ -716,6 +842,35 @@ export function useHtmlAnnotation({
             element: anchor,
             source: null,
             selectionText: message.text,
+            // The markup is built only when Copy is pressed: ask
+            // the bridge for the pending range's HTML and wait a moment.
+            ...(message.richCopy ? {
+              getRichCopy: () => new Promise<RichCopySource>((resolve) => {
+                const id = `rc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                const requests = richCopyRequestsRef.current;
+                // Without an answer only the quote is here: plain text, marked
+                // as cut when the bridge cut it.
+                const quote = { html: "", text: message.text, truncated: message.textCut === true };
+                requests.set(id, (answer) => {
+                  const text = answer.text || quote.text;
+                  const truncated = answer.text ? answer.truncated : quote.truncated;
+                  if (answer.tooLarge) {
+                    resolve({ tooLarge: true, text, truncated });
+                    return;
+                  }
+                  const html = answer.html ? sanitizeRichHtml(answer.html) : null;
+                  if (html && html.length > MAX_RICH_CLIPBOARD_OUTPUT_LENGTH) {
+                    resolve({ tooLarge: true, text, truncated });
+                    return;
+                  }
+                  resolve({ html: html ?? "", text, truncated });
+                });
+                window.setTimeout(() => {
+                  if (requests.delete(id)) resolve(quote);
+                }, RICH_COPY_TIMEOUT_MS);
+                post({ type: `${PREFIX}rich-copy-request`, id });
+              }),
+            } : {}),
           });
         }
       }
@@ -754,7 +909,23 @@ export function useHtmlAnnotation({
       }
 
       if (type === `${PREFIX}selection-clear`) {
+        if (onHostDraftRef.current && hostDraftIdRef.current) {
+          hostDraftIdRef.current = null;
+          onHostDraftRef.current(null);
+        }
         setToolbarState(null);
+        // The bridge closed the draft (its Escape rung) while the composer was
+        // hidden with its target: close the hidden composer too, or nothing on
+        // screen could ever close it. Its text stays in the draft store.
+        if (commentPopoverRef.current && !pinVisibleRef.current) {
+          post({ type: `${PREFIX}cancel-selection` });
+          setCommentPopover(null);
+          setDraftTargets([]);
+          pendingTextRef.current = "";
+          pendingAnchorRef.current = null;
+          pendingContextRef.current = null;
+          return;
+        }
         // Keep the captured text alive while a comment/quick-label is open: the user
         // is composing, and the selection collapsing or scrolling out of view must
         // not drop the annotation on submit. It's overwritten on the next selection.
@@ -910,8 +1081,14 @@ export function useHtmlAnnotation({
     [getOrCreateAnchor],
   );
 
-  const handleCommentSubmit = useCallback(
-    (comment: string, images?: ImageAttachment[], mentions?: readonly string[]) => {
+  // One commit path for everything the pinpoint composer submits (a typed
+  // comment or the one-click 👍), so both carry the same anchor, element
+  // context and multi-select targets.
+  const commitComposerDraft = useCallback(
+    (
+      body: Pick<Annotation, "text"> &
+        Partial<Pick<Annotation, "images" | "mentions" | "isQuickLabel" | "quickLabelTip">>,
+    ) => {
       if (!enabledRef.current) return;
       // Prefer the text captured when the popover opened — it can't be clobbered by
       // a later selection change or clear while the user is composing the comment.
@@ -939,14 +1116,10 @@ export function useHtmlAnnotation({
         startOffset: 0,
         endOffset: 0,
         type: AnnotationType.COMMENT,
-        text: comment,
         originalText: text,
         author: getIdentity(),
         createdA: Date.now(),
-        images,
-        // Host capability: present only when a mentionSource was supplied AND
-        // a token survived, so a comment without one is unchanged.
-        ...(mentions && mentions.length > 0 ? { mentions } : {}),
+        ...body,
         htmlAnchor: pendingAnchorRef.current ?? undefined,
         elementContext: pendingContextRef.current ?? undefined,
         htmlAdditionalTargets: additionalTargets,
@@ -961,53 +1134,32 @@ export function useHtmlAnnotation({
     [post],
   );
 
-  // The composer's one-click "Looks good" (the restored thumbs-up for
-  // comment-only surfaces, where pinpoint clicks land straight in the
-  // composer and never see the selection toolbar). Mirrors
-  // handleCommentSubmit — same anchor, same multi-select targets — but
-  // emits the hardcoded positive label instead of typed prose.
-  const handleCommentLooksGood = useCallback(() => {
-    if (!enabledRef.current) return;
-    const text = commentPopoverRef.current?.selectedText || pendingTextRef.current;
-    if (!text) return;
+  const handleCommentSubmit = useCallback(
+    (comment: string, images?: ImageAttachment[], mentions?: readonly string[]) =>
+      commitComposerDraft({
+        text: comment,
+        images,
+        // Host capability: present only when a mentionSource was supplied AND
+        // a token survived, so a comment without one is unchanged.
+        ...(mentions && mentions.length > 0 ? { mentions } : {}),
+      }),
+    [commitComposerDraft],
+  );
 
-    const targets = draftTargetsRef.current;
-    const additionalTargets: HtmlAnnotationTarget[] | undefined =
-      targets.length > 1
-        ? targets.slice(1, 1 + maxTargetsRef.current).map((t) => ({
-            label: t.label,
-            text: t.text,
-            anchor: t.anchor ?? undefined,
-            ...(t.context ? { context: t.context } : {}),
-          }))
-        : undefined;
-
-    const id = nextHtmlAnnId();
-    mintedIdsRef.current.add(id);
-    post({ type: `${PREFIX}create-mark`, id, annotationType: "comment" });
-    onAddRef.current?.({
-      id,
-      blockId: "",
-      startOffset: 0,
-      endOffset: 0,
-      type: AnnotationType.COMMENT,
-      text: THUMBS_UP_LABEL.text,
-      originalText: text,
-      isQuickLabel: true,
-      quickLabelTip: THUMBS_UP_LABEL.tip,
-      author: getIdentity(),
-      createdA: Date.now(),
-      htmlAnchor: pendingAnchorRef.current ?? undefined,
-      elementContext: pendingContextRef.current ?? undefined,
-      htmlAdditionalTargets: additionalTargets,
-    });
-
-    setCommentPopover(null);
-    setDraftTargets([]);
-    pendingTextRef.current = "";
-    pendingAnchorRef.current = null;
-    pendingContextRef.current = null;
-  }, [post]);
+  // The composer's one-click 👍. A pinpoint click opens this composer
+  // directly and never shows the selection toolbar, so without it a reviewer
+  // could not mark an element "looks good" in one click. Emits the same
+  // hardcoded positive label as the toolbar's 👍 (the only label comment-only
+  // surfaces may create), on the pinned element(s).
+  const handleCommentLooksGood = useCallback(
+    () =>
+      commitComposerDraft({
+        text: THUMBS_UP_LABEL.text,
+        isQuickLabel: true,
+        quickLabelTip: THUMBS_UP_LABEL.tip,
+      }),
+    [commitComposerDraft],
+  );
 
   const handleCommentClose = useCallback(() => {
     post({ type: `${PREFIX}cancel-selection` });
@@ -1128,6 +1280,8 @@ export function useHtmlAnnotation({
 
   return {
     toolbarState,
+    pinVisible: pinVisible || !commentPopover,
+    composerAutoFocus: !composerWasHidden,
     commentPopover,
     quickLabelPicker,
     handleAnnotate,

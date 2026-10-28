@@ -25,6 +25,7 @@ export interface CatalogModel {
 }
 
 export const EFFORT_LABELS: Record<string, string> = {
+  off: 'Off',
   minimal: 'Minimal',
   low: 'Low',
   medium: 'Medium',
@@ -58,11 +59,177 @@ export const CLAUDE_FALLBACK_MODELS: CatalogModel[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
 ];
 
-const CODEX_EFFORTS = effortList(['low', 'medium', 'high', 'xhigh']);
+const codex = (id: string, label: string, efforts: readonly string[], defaultReasoningEffort: string, extra: Partial<CatalogModel> = {}): CatalogModel => ({
+  id,
+  label,
+  reasoningEfforts: effortList(efforts),
+  defaultReasoningEffort,
+  fastMode: true,
+  ...extra,
+});
+const CODEX_TO_ULTRA = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const CODEX_TO_MAX = ['low', 'medium', 'high', 'xhigh', 'max'];
+// What codex 0.155.1's `model/list` reports (GPT-6 is listed only to codex
+// >= 0.155); every model offers the fast (`priority`) tier.
 export const CODEX_FALLBACK_MODELS: CatalogModel[] = [
-  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', default: true, reasoningEfforts: CODEX_EFFORTS, defaultReasoningEffort: 'medium', fastMode: true },
-  { id: 'gpt-5.5', label: 'GPT-5.5', reasoningEfforts: CODEX_EFFORTS, defaultReasoningEffort: 'medium', fastMode: true },
+  codex('gpt-6-sol', 'GPT-6-Sol', CODEX_TO_ULTRA, 'medium', { default: true }),
+  codex('gpt-6-astra', 'GPT-6-Astra', CODEX_TO_ULTRA, 'medium'),
+  codex('gpt-6-luna', 'GPT-6-Luna', CODEX_TO_MAX, 'medium'),
+  codex('gpt-5.6-sol', 'GPT-5.6-Sol', CODEX_TO_ULTRA, 'low'),
+  codex('gpt-5.6-terra', 'GPT-5.6-Terra', CODEX_TO_ULTRA, 'medium'),
+  codex('gpt-5.6-luna', 'GPT-5.6-Luna', CODEX_TO_MAX, 'medium'),
+  codex('gpt-5.5', 'GPT-5.5', ['low', 'medium', 'high', 'xhigh'], 'medium'),
 ];
+
+/** Where a provider's model list came from: the installed tool, or the static fallback. */
+export type ModelsSource = 'fallback' | 'discovered';
+
+/**
+ * Every thinking level Pi names, in its own order (pi-ai's
+ * `EXTENDED_THINKING_LEVELS`). The vocabulary only: which of them one model
+ * accepts comes from that model's `get_available_models` row
+ * (`piSupportedThinkingLevels`).
+ */
+export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/**
+ * The first pi whose RPC `set_thinking_level` (and `set_model`) change only
+ * the running session. Before it (pi commit 2ff8ba622, released in 0.84.3)
+ * both commands also rewrote the user's global defaults in
+ * `~/.pi/agent/settings.json`, so an Ask AI pick would have changed the
+ * thinking level of every later `pi` the user starts.
+ */
+export const PI_SESSION_SCOPED_THINKING_VERSION = '0.84.3';
+
+function parseVersionTriple(version: string): [number, number, number] | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+}
+
+/**
+ * Whether Plannotator may set a thinking level on a pi of this version (see
+ * `PI_SESSION_SCOPED_THINKING_VERSION`). An unknown version is refused: the
+ * cost of guessing wrong is a silently changed user default.
+ */
+export function piThinkingLevelsSupported(version: string | undefined): boolean {
+  const actual = version ? parseVersionTriple(version) : undefined;
+  const minimum = parseVersionTriple(PI_SESSION_SCOPED_THINKING_VERSION)!;
+  if (!actual) return false;
+  for (let i = 0; i < 3; i++) {
+    if (actual[i] !== minimum[i]) return actual[i] > minimum[i];
+  }
+  return true;
+}
+
+/**
+ * The thinking levels one Pi model accepts, from its `get_available_models`
+ * row. Mirrors pi-ai's `getSupportedThinkingLevels`: `off` through `high` are
+ * available to every reasoning model unless the map marks the level `null`,
+ * while `xhigh` and `max` are offered only when the map names them. A model
+ * without `reasoning` gets none (pi answers `["off"]` for it, which is not a
+ * choice worth a picker).
+ */
+export function piSupportedThinkingLevels(
+  reasoning: boolean | undefined,
+  thinkingLevelMap?: Readonly<Record<string, string | null | undefined>> | null,
+): string[] {
+  if (!reasoning) return [];
+  return PI_THINKING_LEVELS.filter((level) => {
+    const mapped = thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === 'xhigh' || level === 'max') return mapped !== undefined;
+    return true;
+  });
+}
+
+/** The subset of a pi `get_available_models` row the catalog reads. */
+export interface PiRpcModel {
+  provider: string;
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null | undefined> | null;
+}
+
+/**
+ * Build the Pi catalog from `get_available_models`. Labels read
+ * "Name (provider)" like OpenCode's, so two providers serving the same model
+ * stay distinguishable; rows that would still collide fall back to
+ * "provider/id". Thinking levels are listed per model, and only when the
+ * installed pi takes them session-scoped (`piThinkingLevelsSupported`).
+ * No `defaultReasoningEffort`: pi's default level is the user's own setting,
+ * which the RPC does not report, so an unpicked level reads "Auto" and nothing
+ * is sent.
+ */
+export function piCatalogFromRpc(rows: readonly PiRpcModel[], toolVersion: string | undefined): CatalogModel[] {
+  const valid = rows.filter((m) => m && typeof m.provider === 'string' && m.provider && typeof m.id === 'string' && m.id);
+  const withLevels = piThinkingLevelsSupported(toolVersion);
+  const labelOf = (m: PiRpcModel) => `${(typeof m.name === 'string' && m.name.trim()) || m.id} (${m.provider})`;
+  const counts = new Map<string, number>();
+  for (const m of valid) counts.set(labelOf(m), (counts.get(labelOf(m)) ?? 0) + 1);
+  return valid.map((m, i) => {
+    const label = labelOf(m);
+    const levels = withLevels ? piSupportedThinkingLevels(m.reasoning, m.thinkingLevelMap) : [];
+    return {
+      id: `${m.provider}/${m.id}`,
+      label: (counts.get(label) ?? 0) > 1 ? `${m.provider}/${m.id}` : label,
+      ...(i === 0 ? { default: true } : {}),
+      ...(levels.length ? { reasoningEfforts: effortList(levels) } : {}),
+    };
+  });
+}
+
+/** The subset of one Qwen Code `modelProviders.<authType>[]` entry the catalog reads. */
+export interface QwenSettingsModel {
+  id?: unknown;
+  name?: unknown;
+}
+
+/**
+ * Build the Qwen Code catalog from its `settings.json` (already parsed), so no
+ * `qwen` process runs. `qwen -m <id>` resolves the id against the models
+ * configured for the selected auth type (`security.auth.selectedType`, else
+ * `openai`), so only `modelProviders[<that type>]` is listed: a model of
+ * another type would not run. `model.name` is the model qwen uses without
+ * `-m`; it is the default, and it is listed first when the provider list
+ * does not name it (a built-in model). No reasoning efforts: qwen takes no
+ * per-run effort flag.
+ */
+export function qwenCatalogFromSettings(settings: unknown): CatalogModel[] {
+  if (!settings || typeof settings !== 'object') return [];
+  const root = settings as {
+    model?: { name?: unknown };
+    modelProviders?: Record<string, unknown>;
+    security?: { auth?: { selectedType?: unknown } };
+  };
+  const selected = root.security?.auth?.selectedType;
+  const authType = typeof selected === 'string' && selected.trim() ? selected.trim() : 'openai';
+  const entries = root.modelProviders && typeof root.modelProviders === 'object' ? root.modelProviders[authType] : undefined;
+  const rows: CatalogModel[] = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { id, name } = entry as QwenSettingsModel;
+    if (typeof id !== 'string' || !id.trim() || rows.some((r) => r.id === id.trim())) continue;
+    rows.push({ id: id.trim(), label: (typeof name === 'string' && name.trim()) || id.trim() });
+  }
+  const active = typeof root.model?.name === 'string' ? root.model.name.trim() : '';
+  if (active && !rows.some((r) => r.id === active)) rows.unshift({ id: active, label: active });
+  const defaultId = active || rows[0]?.id;
+  return rows.map((r) => (r.id === defaultId ? { ...r, default: true } : r));
+}
+
+/**
+ * The version in a CLI's own output: `claude --version` ("2.1.282 (Claude
+ * Code)") or the codex app-server initialize `userAgent` ("plannotator/0.155.1
+ * (Mac OS 26.3.0; arm64) …", where the first version is codex's). Reads the
+ * line `toolLine` matches when one does (so a stray `node 18.2.0` line cannot
+ * win), else the first non-empty line; the prerelease suffix is capped.
+ */
+export function cliVersionFrom(text: string | null | undefined, toolLine?: RegExp): string | undefined {
+  const lines = (text ?? '').split(/\r?\n/).filter((l) => l.trim());
+  const line = (toolLine && lines.find((l) => toolLine.test(l))) ?? lines[0] ?? '';
+  return /\b(\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.]{1,24})?)(?![0-9A-Za-z.-])/.exec(line)?.[1];
+}
 
 /** The subset of the Agent SDK's `ModelInfo` the catalog reads. */
 export interface ClaudeSdkModelInfo {
