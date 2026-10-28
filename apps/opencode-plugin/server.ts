@@ -331,6 +331,7 @@ const serverPlugin = {
               description: "Array of line-range edits to apply to the plan.",
             },
           },
+          required: ["edits"],
           additionalProperties: false,
         },
         options: { codemode: false },

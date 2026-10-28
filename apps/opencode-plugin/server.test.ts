@@ -126,18 +126,19 @@ describe("OpenCode V2 server plugin", () => {
           description: "Array of line-range edits to apply to the plan.",
         },
       },
+      required: ["edits"],
       additionalProperties: false,
     });
     expect(tool?.options).toEqual({ codemode: false });
     expect(tool?.execute).toBeInstanceOf(Function);
   });
 
-  test.each([{}, { edits: [] }])("resolves cwd and returns a recoverable error for %j", async (input) => {
+  test("resolves cwd from the V2 session and returns V2 tool content", async () => {
     const testContext = createContext();
     await serverPlugin.setup(testContext.context as never);
 
     const result = await testContext.getToolDefinition()?.execute(
-      input,
+      { edits: [] },
       {
         sessionID: "session-1",
         agent: "plan",

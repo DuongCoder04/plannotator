@@ -683,7 +683,6 @@ Do NOT proceed with implementation until your plan is approved.`;
                 content: tool.schema.string().describe("Replacement content. Empty string deletes the line range."),
               }),
             )
-            .optional()
             .describe("Array of line-range edits to apply to the plan."),
         },
 
