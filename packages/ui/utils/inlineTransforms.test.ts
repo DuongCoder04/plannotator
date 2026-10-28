@@ -1,6 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { stripInlineMarkdown, transformPlainText } from './inlineTransforms';
-import { slugifyHeading } from './slugify';
+import { transformPlainText } from './inlineTransforms';
 
 describe('transformPlainText — emoji shortcodes', () => {
   test('replaces known shortcode with unicode emoji', () => {
@@ -45,37 +44,5 @@ describe('transformPlainText — smart punctuation', () => {
 
   test('curls single quotes around a phrase', () => {
     expect(transformPlainText("he said 'hi'")).toBe('he said ‘hi’');
-  });
-});
-
-describe('stripInlineMarkdown', () => {
-  // Each row is a source fragment an agent can faithfully copy out of
-  // /api/plan whose rendered form carries none of that syntax. These are the
-  // quotes that were accepted, listed, and silently never highlighted.
-  test.each([
-    ['**Install** now', 'Install now'],
-    ['Setup `bun`', 'Setup bun'],
-    ['[Setup](./setup.md)', 'Setup'],
-    ['see [[architecture]]', 'see architecture'],
-    ['_em_ and ~~struck~~', 'em and struck'],
-  ])('%p renders as %p', (source, rendered) => {
-    expect(stripInlineMarkdown(source)).toBe(rendered);
-  });
-
-  test('leaves text without inline markup untouched', () => {
-    expect(stripInlineMarkdown('plain sentence, 3.1 included')).toBe('plain sentence, 3.1 included');
-  });
-});
-
-describe('slugifyHeading after sharing the stripper', () => {
-  // Extracting the stripper must not move any anchor: a changed slug silently
-  // breaks every `#anchor` already written against these documents.
-  test.each([
-    ['**Install** `bun`', 'install-bun'],
-    ['[Setup](./s.md)', 'setup'],
-    ['[[architecture]] notes', 'architecture-notes'],
-    ['snake_case config', 'snakecase-config'],
-  ])('%p slugs to %p', (heading, slug) => {
-    expect(slugifyHeading(heading)).toBe(slug);
   });
 });

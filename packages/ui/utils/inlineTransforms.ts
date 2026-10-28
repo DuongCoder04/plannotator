@@ -36,30 +36,6 @@ function smartypants(s: string): string {
     .replace(/'/g, '’');
 }
 
-/**
- * Approximate the renderer's inline output for a fragment of source markdown:
- * drop the syntax that `InlineMarkdown` consumes without rendering.
- *
- * Only `slugifyHeading` calls this now. Annotation restore used to, and that is
- * what made leaving the crudeness in place affordable; it now asks the renderer
- * directly (`utils/renderedText`), because approximating an inverse that does
- * not exist cost four rungs of a ladder and still could not see text the DOM
- * ADDS — a bullet, an ordered numeral, a match-count badge.
- *
- * Slugs stay here on purpose. `slugifyHeading` is pure and runs where no DOM
- * exists, which `renderedText` cannot do, and its output is anchor ids that
- * live in URLs — so the one place the two would disagree (`snake_case` slugging
- * to `snakecase` rather than `snake-case`) is a link-stability question, not a
- * correctness one. Stripping every `*_`~` rather than only paired ones is safe
- * for that caller: a heading is slugged whole, never matched against anything.
- */
-export function stripInlineMarkdown(text: string): string {
-  return text
-    .replace(/\[\[([^\]]+)\]\]/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/[*_`~]/g, '');
-}
-
 export function transformPlainText(text: string): string {
   return smartypants(replaceEmoji(text));
 }
