@@ -10,6 +10,8 @@ const DOC = [
   heading('b4', '**Install** now'),
   heading('b5', 'Intro'),
   heading('b6', '개요'),
+  heading('b7', 'Café'),
+  heading('b8', "**Don't** ship"),
 ];
 const index = buildSectionRefIndex(DOC);
 const links = (text: string) => parseSectionRefs(text, index).filter((p) => typeof p !== 'string');
@@ -44,8 +46,14 @@ describe('parseSectionRefs', () => {
     ['a hash welded to a word', 'C#Overview'],
     ['a code span', 'run `#Overview` here'],
     ['a longer word that starts with a heading title', '#Introduction'],
+    ['a longer accented word that starts with a heading title', '#Cafés'],
   ])('leaves %s as plain text', (_, text) => {
     expect(parseSectionRefs(text, index)).toEqual([text]);
+  });
+
+  test('a heading with markdown and a straight quote matches as typed', () => {
+    expect(links("#Don't ship")).toEqual([{ label: "Don't ship", anchor: 'don-t-ship' }]);
+    expect(links('#Café, then')).toHaveLength(1);
   });
 
   test('a stray backtick does not switch links off for the rest of the comment', () => {

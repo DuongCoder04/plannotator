@@ -18,20 +18,19 @@ export interface SectionRefSegment {
 
 export type SectionRefPart = string | SectionRefSegment;
 
-/** The text a heading shows once its inline markdown is rendered. */
-function renderedHeadingText(content: string): string {
-  return transformPlainText(
-    content
-      .replace(/\[\[([^\]]+)\]\]/g, '$1')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .replace(/[*_`~]/g, ''),
-  );
+/** A heading's text without its inline markdown syntax. */
+function stripHeadingMarkdown(content: string): string {
+  return content
+    .replace(/\[\[([^\]]+)\]\]/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_`~]/g, '');
 }
 
 /**
- * Heading text → anchor id. Each heading is indexed under the text the page
- * shows (`Install now`) and its markdown source (`**Install** now`). A title
- * that two different headings share is left out: it could mean either.
+ * Heading text → anchor id. Each heading is indexed under its markdown source
+ * (`**Don't** ship`), the text the page shows (`Don’t ship`), and that text as
+ * typed with straight quotes (`Don't ship`). A title that two different
+ * headings share is left out: it could mean either.
  */
 export function buildSectionRefIndex(
   blocks: Array<{ id: string; type: string; content: string }>,
@@ -52,8 +51,10 @@ export function buildSectionRefIndex(
     if (block.type !== 'heading') continue;
     const anchor = slugs.get(block.id);
     if (!anchor) continue;
+    const stripped = stripHeadingMarkdown(block.content);
     register(block.content, anchor);
-    register(renderedHeadingText(block.content), anchor);
+    register(stripped, anchor);
+    register(transformPlainText(stripped), anchor);
   }
 
   for (const title of ambiguous) index.delete(title);
@@ -63,7 +64,7 @@ export function buildSectionRefIndex(
 // A reference starts a word: at the start, after whitespace, or after an
 // opening bracket or quote. This keeps `C#`, `issue#4` and `page/#intro` plain.
 const REF_START = /[\s([{"'“‘「]/u;
-const LATIN_WORD = /[A-Za-z0-9_]/;
+const SPACED_WORD = /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}_]/u;
 
 function matchAt(text: string, hash: number, titles: string[]): string | null {
   // `# Title` is a markdown heading, not a reference.
@@ -71,10 +72,12 @@ function matchAt(text: string, hash: number, titles: string[]): string | null {
   // Longest first, so `#3.1 Scope` beats a sibling heading named `3.1`.
   for (const title of titles) {
     if (!text.startsWith(title, hash + 1)) continue;
-    // `#Intro` must not link inside `#Introduction`. Only Latin words need the
-    // boundary: in scripts without spaces a suffix follows the title directly.
-    const next = text[hash + 1 + title.length];
-    if (next && LATIN_WORD.test(next) && LATIN_WORD.test(title[title.length - 1]!)) continue;
+    // `#Intro` must not link inside `#Introduction`. Only scripts that space
+    // their words need the boundary: elsewhere a suffix follows the title directly.
+    const end = hash + 1 + title.length;
+    const next = text.slice(end, end + 2).match(/^./su)?.[0];
+    const last = title.match(/.$/su)?.[0];
+    if (next && last && SPACED_WORD.test(next) && SPACED_WORD.test(last)) continue;
     return title;
   }
   return null;
