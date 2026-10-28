@@ -1832,7 +1832,7 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   font-size: calc(12.5px * var(--doc-text-scale, 1));
 }
 /* Fenced code (`pre code.pn-code`, 0.8125rem in the app's stylesheet). */
-[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *) pre code.pn-code {
+[data-doc-text-size] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *) pre code.pn-code {
   font-size: calc(0.8125rem * var(--doc-text-scale, 1));
 }
 /* A question card's context (QuestionContext's own stylesheet). */
