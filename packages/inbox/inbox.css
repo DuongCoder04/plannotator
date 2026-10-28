@@ -5184,6 +5184,35 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-babout:hover { color: var(--foreground); background: var(--ib-hover); }
 .ib-bempty { position: absolute; left: 0; right: 0; top: 42%; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); pointer-events: none; }
 .ib-bempty .ib-btn { pointer-events: auto; }
+/* The Board's Project filter (board/ProjectFilter.tsx): the search palette's Project chip ("All projects",
+   or the project's name with ×; no "in") at the header's size; its menu is the Board's own (.ib-pm, radio items). */
+.ib-bpf { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 260px; border-radius: 8px; }
+.pn-inbox .ib-bpf-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 0; max-width: 100%; padding: 0 10px; border-radius: 8px; border: 1px solid var(--ib-line); background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-13, 13px); white-space: nowrap; cursor: pointer; }
+.pn-inbox .ib-bpf-btn:hover, .pn-inbox .ib-bpf-btn[data-popup-open] { color: var(--foreground); border-color: var(--border); }
+.pn-inbox .ib-bpf-btn svg.ib-ic { flex: none; }
+.ib-bpf-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pn-inbox .ib-bpf[data-set] { border: 1px solid color-mix(in oklch, var(--primary) 40%, transparent); background: color-mix(in oklch, var(--primary) 10%, transparent); }
+.pn-inbox .ib-bpf[data-set] .ib-bpf-btn { height: 28px; border: 0; background: none; padding-right: 2px; color: var(--primary); }
+.pn-inbox .ib-bpf-x { flex: none; width: 24px; height: 24px; margin-right: 2px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 0; background: none; color: var(--primary); cursor: pointer; }
+.pn-inbox .ib-bpf-x:hover { background: color-mix(in oklch, var(--primary) 16%, transparent); }
+.ib-bpf-menu { max-width: 320px; max-height: min(360px, 60vh); overflow-y: auto; overscroll-behavior: contain; }
+.ib-bpf-menu .ib-pmi-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ib-bempty b { color: var(--foreground); font-weight: 600; overflow-wrap: anywhere; }
+.ib-bempty > span { max-width: min(520px, 90%); text-align: center; }
+/* A phone: the chip on its own row under the header; the empty line in the page's flow. */
+.ib-bfbar { display: flex; padding: 0 22px 10px; margin-top: -6px; min-width: 0; }
+.ib-bfbar .ib-bpf { max-width: 100%; }
+.ib-bempty.ib-bempty-in { position: static; padding: 56px 16px; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .ib-bfbar { padding: 10px 12px 0; margin-top: 0; }
+  /* The sheet spans the phone's width, as every bottom sheet does. */
+  .ib-pm-pos[data-phone] .ib-bpf-menu { max-width: none; max-height: 60vh; }
+  .pn-inbox .ib-bpf-btn { height: 44px; padding: 0 12px; font-size: var(--ib-fs-15, 15px); }
+  /* Picked: the ring is drawn inside (no border), so the button and × are each a whole 44 px target. */
+  .pn-inbox .ib-bpf[data-set] { border: 0; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 40%, transparent); }
+  .pn-inbox .ib-bpf[data-set] .ib-bpf-btn { height: 44px; }
+  .pn-inbox .ib-bpf-x { width: 44px; height: 44px; margin-right: 0; }
+}
 /* The Board off (a #board link): what it is, and Turn it on. */
 .ib-boff { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px 24px 15vh; text-align: center; }
 .ib-boff-icon { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: var(--ib-lr-md, 9px); background: var(--ib-lane-bg); color: var(--muted-foreground); }
