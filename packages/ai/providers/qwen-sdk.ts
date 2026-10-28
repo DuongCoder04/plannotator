@@ -16,9 +16,10 @@
  * - `--approval-mode plan`, plus the tools in QWEN_EXCLUDED_TOOLS turned
  *   off. Plan mode alone is not read-only: Qwen runs a tool the user's
  *   settings auto-approve before it applies the plan-mode block. So the
- *   file-writing and memory tools are removed outright. Still allowed:
- *   tools of MCP servers the user marked trusted, and a shell command
- *   Qwen's plan-mode shell policy accepts.
+ *   file-writing, memory and worktree tools are removed outright. Still
+ *   allowed: any other tool the user's Qwen settings auto-approve (a
+ *   trusted MCP server, or an allow rule), and a shell command Qwen's
+ *   plan-mode shell policy accepts.
  * - `exit_plan_mode` is off too: the Plannotator Qwen extension opens a plan
  *   review on it, and an Ask AI answer must never do that.
  * - `--max-wall-time` bounds the run; qwen exits with code 55 when it is
@@ -67,7 +68,13 @@ export const QWEN_EXCLUDED_TOOLS = [
 	"notebook_edit",
 	"save_memory",
 	"manage_memory",
+	// Allowed by default, so plan mode runs them: they make a branch and a
+	// checkout under <repo>/.qwen/worktrees.
+	"enter_worktree",
+	"exit_worktree",
 ] as const;
+/** What qwen prints when `--resume <id>` names no saved session (Qwen's config.ts). */
+const QWEN_NO_SAVED_SESSION_TEXT = "No saved session found";
 /** The run's wall-clock budget (qwen's `--max-wall-time`). */
 const QWEN_MAX_WALL_TIME = "10m";
 /** qwen's exit code when `--max-wall-time` ran out. */
@@ -506,11 +513,18 @@ class QwenSDKSession extends BaseSession {
 				this.qwenSessionId = newQwenAskAISessionId();
 			}
 		}
-		// A resume that printed nothing and exited with an error: qwen found no
-		// saved session ("No saved session found", exit 1). Not a start failure,
-		// and not the wall-time stop, which would only take 10 minutes again.
+		// A resume that printed nothing, exited with an error and said Qwen's
+		// fixed "No saved session found with ID …" (exit 1). Any other startup
+		// failure (sign-in, network, a bad model, an unknown flag) is shown as
+		// the error and the conversation is kept: Qwen still has it.
 		const noSavedSession =
-			resumed && !answered && !startFailed && exitCode !== null && exitCode !== 0 && exitCode !== QWEN_WALL_TIME_EXIT;
+			resumed &&
+			!answered &&
+			!startFailed &&
+			exitCode !== null &&
+			exitCode !== 0 &&
+			exitCode !== QWEN_WALL_TIME_EXIT &&
+			child.stderr.includes(QWEN_NO_SAVED_SESSION_TEXT);
 		return { error, noSavedSession };
 	}
 

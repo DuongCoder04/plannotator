@@ -4,6 +4,7 @@
  * QWEN_HOME always points into a temp folder.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,16 +14,19 @@ import { QWEN_ASK_AI_SESSION_PREFIX, QwenSDKProvider, qwenHomeDir } from "./qwen
 
 const tempDirs: string[] = [];
 const providers: QwenSDKProvider[] = [];
-const fakeLogs: string[] = [];
+const fakes: Array<{ log: string; script: string }> = [];
 const savedQwenHome = process.env.QWEN_HOME;
 
 afterEach(() => {
 	if (savedQwenHome === undefined) delete process.env.QWEN_HOME;
 	else process.env.QWEN_HOME = savedQwenHome;
 	for (const provider of providers.splice(0)) provider.dispose();
-	// No fake qwen outlives its test, whatever the test did.
-	for (const log of fakeLogs.splice(0)) {
-		for (const run of fakeQwenRuns(log)) {
+	// No fake qwen outlives its test: kill a run this test started only while
+	// its pid still runs this test's fake script (a pid can be reused).
+	for (const fake of fakes.splice(0)) {
+		for (const run of fakeQwenRuns(fake.log)) {
+			const ps = spawnSync("ps", ["-o", "command=", "-p", String(run.pid)], { env: process.env, encoding: "utf8" });
+			if (ps.status !== 0 || !ps.stdout.includes(fake.script)) continue;
 			try {
 				process.kill(run.pid, "SIGKILL");
 			} catch {
@@ -40,7 +44,7 @@ function setup() {
 	const fake = fakeQwenCli(dir);
 	const provider = new QwenSDKProvider({ type: "qwen-sdk", cwd: dir, qwenExecutablePath: fake.bin });
 	providers.push(provider);
-	fakeLogs.push(fake.log);
+	fakes.push({ log: fake.log, script: fake.script });
 	return { dir, fake, provider };
 }
 
@@ -69,7 +73,7 @@ function pidAlive(pid: number): boolean {
 const posix = process.platform !== "win32";
 
 describe("QwenSDKProvider", () => {
-	test.if(posix)("the first question starts a read-only qwen session with the context on stdin; the next continues it", async () => {
+	test.if(posix)("the first question starts a plan-mode qwen session with the write tools off and the context on stdin; the next continues it", async () => {
 		const { fake, provider } = setup();
 		const session = await newSession(provider, "qwen3-coder-plus");
 
@@ -90,7 +94,7 @@ describe("QwenSDKProvider", () => {
 			"--output-format", "stream-json", "--include-partial-messages",
 			"--approval-mode", "plan",
 			// Plan mode alone runs a write tool the user's settings auto-approve.
-			"--exclude-tools=exit_plan_mode,edit,write_file,notebook_edit,save_memory,manage_memory",
+			"--exclude-tools=exit_plan_mode,edit,write_file,notebook_edit,save_memory,manage_memory,enter_worktree,exit_worktree",
 			"--max-wall-time", "10m",
 			"--model", "qwen3-coder-plus",
 		];
@@ -119,10 +123,14 @@ describe("QwenSDKProvider", () => {
 	test.if(posix)("a first question that got no answer is retried as a new qwen session, not a resume", async () => {
 		const { fake, provider } = setup();
 		const session = await newSession(provider);
-		fake.setMode("silent");
+		// Even with Qwen's "No saved session found" on stderr: a first question
+		// has no session to lose, so it is not asked again in the same query.
+		fake.setMode("no-session");
 		const failed = await ask(session, "First try");
 		expect(failed[0]).toMatchObject({ type: "error", code: "qwen_process_exit" });
 		expect((failed[0] as { error: string }).error).toContain("exited with code 1");
+		// A failing first question runs once: there is no saved session to miss.
+		expect(fakeQwenRuns(fake.log)).toHaveLength(1);
 
 		fake.setMode("answer");
 		const retried = await ask(session, "Second try");
@@ -179,6 +187,25 @@ describe("QwenSDKProvider", () => {
 		// Later questions continue the new session.
 		expect(run4!.args.slice(0, 2)).toEqual(["--resume", run3!.args[1]]);
 		expect(run4!.stdin).not.toContain("# The plan under review");
+	});
+
+	test.if(posix)("a follow-up that fails at startup for another reason shows the error and keeps the conversation", async () => {
+		const { fake, provider } = setup();
+		const session = await newSession(provider);
+		await ask(session, "First");
+		fake.setMode("resume-startup-fails");
+		const failed = await ask(session, "Second");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ type: "error", code: "qwen_process_exit" });
+		expect((failed[0] as { error: string }).error).toContain("authentication failed");
+		fake.setMode("answer");
+		await ask(session, "Third");
+		const runs = fakeQwenRuns(fake.log);
+		// Not asked again as a new session, and the next question resumes the same one.
+		expect(runs).toHaveLength(3);
+		expect(runs[1]!.args.slice(0, 2)).toEqual(["--resume", runs[0]!.args[1]]);
+		expect(runs[2]!.args.slice(0, 2)).toEqual(["--resume", runs[0]!.args[1]]);
+		expect(runs[2]!.stdin).not.toContain("# The plan under review");
 	});
 
 	test.if(posix)("a follow-up that fails another way keeps the conversation for the next question", async () => {

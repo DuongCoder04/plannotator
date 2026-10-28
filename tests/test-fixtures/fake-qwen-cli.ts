@@ -12,11 +12,15 @@
  *   --include-partial-messages` writes. The answer is "pong".
  * - `wall-time`: a line on stderr, then exit 55 (qwen's `--max-wall-time`).
  * - `silent`: exit 1 with no output.
+ * - `no-session`: every run prints "No saved session found" on stderr and
+ *   exits 1, whatever its flags.
  * - `hang`: the init line, then waits (for abort tests).
  * - `linger`: the answer, then stays running for 30 s (a qwen that has not
  *   exited after its result line).
  * - `resume-fails`: a `--resume` run prints "No saved session found" on
  *   stderr and exits 1 (Qwen with chat recording off); any other run answers.
+ * - `resume-startup-fails`: a `--resume` run prints a sign-in error on stderr
+ *   and exits 1 (any startup failure other than a missing session).
  *
  * The script runs under the current Bun (process.execPath), so the test PATH
  * does not need node.
@@ -30,7 +34,9 @@ export interface FakeQwen {
   /** One JSON line per run: `{ args, stdin, cwd, qwenHome, pid, at }`. */
   log: string;
   /** Write the mode the next run uses. */
-  setMode(mode: "answer" | "wall-time" | "silent" | "hang" | "linger" | "resume-fails"): void;
+  setMode(mode: "answer" | "wall-time" | "silent" | "no-session" | "hang" | "linger" | "resume-fails" | "resume-startup-fails"): void;
+  /** The fake's script path; its runs carry it in their command line. */
+  script: string;
 }
 
 export interface FakeQwenRun {
@@ -66,8 +72,16 @@ process.stdin.on("end", () => {
   const at = args.indexOf("--session-id") >= 0 ? args.indexOf("--session-id") : args.indexOf("--resume");
   const session_id = args[at + 1];
   if (mode === "silent") process.exit(1);
+  if (mode === "no-session") {
+    process.stderr.write("No saved session found with ID " + session_id + ".\\n");
+    process.exit(1);
+  }
   if (mode === "resume-fails" && args.includes("--resume")) {
     process.stderr.write("No saved session found with ID " + session_id + ".\\n");
+    process.exit(1);
+  }
+  if (mode === "resume-startup-fails" && args.includes("--resume")) {
+    process.stderr.write("Error: authentication failed, sign in again with qwen auth.\\n");
     process.exit(1);
   }
   if (mode === "wall-time") {
@@ -93,6 +107,7 @@ process.stdin.on("end", () => {
   return {
     bin,
     log,
+    script,
     setMode: (mode) => writeFileSync(modeFile, mode),
   };
 }
