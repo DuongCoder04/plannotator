@@ -1573,7 +1573,7 @@ export function inboxAgentList(ids: readonly InboxAgentId[]): string {
 export function inboxElsewhereText(moved: { agent: InboxAgentId; path: string | null; now: string | null }): string {
   const label = INBOX_AGENT_LABELS[moved.agent];
   const why = `${moved.agent === "qwen" ? "this Inbox has another QWEN_HOME, so it" : "this Inbox"} looks in ${moved.now ?? "another file"}`;
-  return `${label} is connected in ${moved.path ?? "another file"}, but ${why}. Plannotator left both as they are; turn ${label} on in Settings → Agents to move it there.`;
+  return `${label} is connected in ${moved.path ?? "another file"}, but ${why}. Plannotator left both as they are; Settings → Agents shows it off here, and turning it on moves it.`;
 }
 
 /** What one `plannotator inbox` run did to the agents on this computer. */
@@ -1654,7 +1654,7 @@ export interface InboxAgentRow {
   reach: {
     kind: "tool" | "mcp" | "manual" | "none";
     on: boolean;
-    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable";
+    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable" | "elsewhere";
     path: string | null;
     /** PLANNOTATOR_INBOX_TOOL decides it. */
     locked: boolean;
