@@ -60,7 +60,7 @@ import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActi
 import { isSessionBridgeProvider } from '@plannotator/ui/utils/aiProvider';
 import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskNotice';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
-import { markLookAndFeelChoiceResolved, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { markLookAndFeelChoiceResolved, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
 import {
   markTerminalToolsAnnouncementSeen,
@@ -1210,7 +1210,9 @@ const ReviewApp: React.FC = () => {
   });
   // The explicit choice marker is shared, so resolving this in either app
   // suppresses the chooser everywhere without release-version milestones.
-  const [showLookAndFeel, setShowLookAndFeel] = useState(needsLookAndFeelAnnouncement);
+  // The first-run chooser, or the one-time "moved to Clean" notice. Read once per page load.
+  const [lookAndFeelPrompt] = useState(planLookPrompt);
+  const [showLookAndFeel, setShowLookAndFeel] = useState(lookAndFeelPrompt !== null);
   const dismissLookAndFeel = useCallback(() => {
     configStore.set('gridEnabled', gridEnabled);
     markLookAndFeelChoiceResolved();
@@ -6155,6 +6157,7 @@ const ReviewApp: React.FC = () => {
             setup → edit mode) — the chain dialogs never stack. */}
         <LookAndFeelAnnouncementDialog
           isOpen={showLookAndFeel && !guideIntroVisible}
+          variant={lookAndFeelPrompt === 'moved' ? 'moved' : 'first-run'}
           gridEnabled={gridEnabled}
           onToggleGrid={(v) => configStore.set('gridEnabled', v)}
           onDismiss={dismissLookAndFeel}

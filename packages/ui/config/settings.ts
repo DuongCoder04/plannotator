@@ -201,7 +201,9 @@ export const SETTINGS = {
       // ConfigStore writes the default into this cookie on first load, so every
       // browser that ran an older build stored 'true' (the old default) without
       // anyone choosing it. The stored value counts only once the person has
-      // resolved the Grid/Clean choice; until then they get the default, Clean.
+      // resolved the Grid/Clean choice under the Clean default (the v2 marker;
+      // a v1 marker with Grid stored is moved to Clean once, see
+      // utils/lookAndFeelAnnouncement); until then they get Clean.
       if (!isLookChoiceResolved()) return undefined;
       const v = storage.getItem('plannotator-grid-enabled');
       return v === 'true' ? true : v === 'false' ? false : undefined;
