@@ -239,6 +239,18 @@ describe("when the Inbox asks (the release page, minutes after a release)", () =
     expect(details.summary).toBe("Notes for 0.28.12.");
   });
 
+  test("the dialog's open reviews leave out OpenCode's in-process ones (they keep no binary open)", async () => {
+    const open = (mode: "plan" | "review", host?: "opencode") => ({
+      pid: 4242, port: 1, url: "http://localhost:1", mode, project: "p", startedAt: "2026-10-01T00:00:00Z", label: mode, ...(host ? { host } : {}),
+    });
+    const server = await start({
+      updates: { fetchRelease: latest(), fetchReleaseTag: tagged(), isManaged: () => true, listSessions: () => [open("plan"), open("review", "opencode")] },
+    });
+    await waitFor(() => health(server), (u) => u !== null);
+    const details = (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/update`)).json()) as { sessions: { mode: string }[] };
+    expect(details.sessions.map((s) => s.mode)).toEqual(["plan"]);
+  });
+
   test("an API locked out by its rate limit never hides a release the page names", async () => {
     writeUpdateState({ releaseCheck: { attemptedAt: NOW - 20 * 60 * 1000, apiAttemptedAt: NOW - 20 * 60 * 1000, apiRetryAt: NOW + 5 * 60 * 60 * 1000 } }, dataDir);
     const server = await start({
@@ -542,8 +554,9 @@ describe("What's new for a version installed outside the Inbox (no notes saved)"
 
 describe("the question sound (config.json inboxSound)", () => {
   const settingsOf = async (server: InboxServer) => (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/settings`)).json()).sound;
+  // These tests restart servers; never reuse a socket from a stopped instance.
   const postJson = (server: InboxServer, path: string, body: unknown) =>
-    fetch(`http://127.0.0.1:${server.port}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    fetch(`http://127.0.0.1:${server.port}${path}`, { keepalive: false, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const claim = async (server: InboxServer) => (await (await postJson(server, "/api/inbox/sound/dialog", { serverSession: server.serverSession })).json()).show;
 
   test("on at 60 unless set; saved field by field; anything else refused with nothing written", async () => {
