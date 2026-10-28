@@ -15,6 +15,7 @@ import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { homedir } from "node:os";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import {
   answerDiagramEngineRequest,
   createDiagramEngineAssets,
@@ -105,7 +106,7 @@ import { createCommitAvatarResolver } from "@plannotator/shared/commit-avatars";
 import { detectGeneratedFiles, detectGeneratedFilesByName } from "@plannotator/shared/generated-files";
 import { getRepoInfo } from "./repo";
 import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleApiNotFound, handleFavicon, createAppHandler, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleApiNotFound, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash } from "./draft";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "@plannotator/shared/review-draft";
 import { captureReviewProgress, handleReviewProgress } from "@plannotator/shared/review-progress";
@@ -1911,7 +1912,7 @@ export async function startReviewServer(
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
-  const serveApp = createAppHandler(htmlContent, compressAppHtml);
+  const app = openPackedApp(htmlContent);
   // Hashed off the request path, so `/api/diff` finds it ready.
   const diagramEngineAssets = createDiagramEngineAssets(options.diagramEngine);
   diagramEngineAssets.warm();
@@ -4412,7 +4413,7 @@ export async function startReviewServer(
           }
 
           // Serve the app for all other routes (SPA): the page or a packed asset
-          return serveApp(req, url);
+          return packedAppResponse(app, req, url.pathname, compressAppHtml);
         },
 
         error(err) {
@@ -4450,7 +4451,7 @@ export async function startReviewServer(
   // Start the likely encoding now (gzip for plain-http remote mode, brotli
   // behind tailscale serve) so the first load does not wait for it.
   if (compressAppHtml) {
-    prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(options.tailnetPublished === true));
+    prewarmAppHtml(app.html, likelyAppHtmlEncoding(options.tailnetPublished === true));
   }
 
   // Notify caller that server is ready. An async ready handler that rejects

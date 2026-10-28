@@ -7,6 +7,7 @@
  */
 
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import type { Origin } from "@plannotator/shared/agents";
 import {
   createFactsResult,
@@ -22,7 +23,6 @@ import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import {
-  createAppHandler,
   handleFavicon,
   handleImage,
   handleServerReady,
@@ -84,7 +84,7 @@ export async function startGoalSetupServer(
 ): Promise<GoalSetupServerResult> {
   const { bundle, htmlContent, origin = "claude-code", onReady } = options;
   const isRemote = isRemoteSession();
-  const serveApp = createAppHandler(htmlContent, isRemote);
+  const app = openPackedApp(htmlContent);
   const wslFlag = await isWSL();
   const repoInfo = await getRepoInfo();
   const gitUser = detectGitUser();
@@ -212,7 +212,7 @@ export async function startGoalSetupServer(
 
           if (url.pathname === "/favicon.png") return handleFavicon();
 
-          return serveApp(req, url);
+          return packedAppResponse(app, req, url.pathname, isRemote);
         },
 
         error(err) {
@@ -229,7 +229,7 @@ export async function startGoalSetupServer(
   const serverUrl = buildAdvertisedUrl(port);
   // Remote sessions serve the app page compressed (#1617); start the likely
   // encoding (gzip over plain http) now so the first load does not wait.
-  if (isRemote) prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(false));
+  if (isRemote) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
   onReady?.(serverUrl, isRemote, port);
 
   return {

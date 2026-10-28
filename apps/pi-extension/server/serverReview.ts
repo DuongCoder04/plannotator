@@ -4,6 +4,7 @@ import { parseDiffToFiles } from "../generated/diff-files.ts";
 import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
+import { openPackedApp } from "../generated/packed-app.ts";
 import {
 	answerDiagramEngineRequest,
 	createDiagramEngineAssets,
@@ -135,7 +136,7 @@ import {
 	readDraftGenerationFromUrl,
 	handleUploadRequest,
 } from "./handlers.ts";
-import { createAppHandler, handleApiNotFound, json, parseBody, parseJsonBody, readBody, requestUrl, send } from "./helpers.ts";
+import { handleApiNotFound, serveApp, json, parseBody, parseJsonBody, readBody, requestUrl, send } from "./helpers.ts";
 import { captureReviewProgress, handleReviewProgress } from "../generated/review-progress.ts";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
@@ -2211,7 +2212,7 @@ export async function startReviewServer(options: {
 		env: process.env,
 	});
 
-	const serveApp = createAppHandler(options.htmlContent);
+	const app = openPackedApp(options.htmlContent);
 	const requestHostGuard = createRequestHostGuard();
 	const server = createServer(async (req, res) => {
 		// Host allowlist first, before any route (request-host-guard.ts).
@@ -4136,7 +4137,7 @@ export async function startReviewServer(options: {
 		} else if (url.pathname.startsWith("/api/")) {
 			handleApiNotFound(res, url.pathname);
 		} else {
-			await serveApp(req, res, url, isRemoteSession());
+			await serveApp(app, req, res, url.pathname, isRemoteSession());
 		}
 	});
 
@@ -4145,7 +4146,7 @@ export async function startReviewServer(options: {
 	boundPort = port;
 	// Remote sessions serve the app page compressed (#1617); start gzip (what
 	// browsers ask for over plain http) now so the first load does not wait.
-	if (isRemoteSession()) prewarmAppHtml(options.htmlContent, likelyAppHtmlEncoding(false));
+	if (isRemoteSession()) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
 	serverUrl = buildAdvertisedUrl(port);
 	agentApiUrl = `http://127.0.0.1:${port}`;
 	const exitHandler = () => agentJobs.killAll();

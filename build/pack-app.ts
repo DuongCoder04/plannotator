@@ -1,6 +1,6 @@
 import { extname } from 'node:path';
 import type { Plugin } from 'vite';
-import { packApp, type PackedAsset } from '../packages/shared/packed-app';
+import { packApp, PACKED_ASSET_ROUTE_PREFIX, type PackedAsset } from '../packages/shared/packed-app';
 
 /**
  * Every file type the app builds emit. A new one fails the build loudly rather
@@ -41,8 +41,11 @@ export function packedApp(): Plugin {
           if (output === page) continue;
           const type = CONTENT_TYPES[extname(output.fileName)];
           if (!type) throw new Error(`packed-app: no content type for ${output.fileName}`);
+          // The servers answer packed files under this prefix only.
+          const path = `/${output.fileName}`;
+          if (!path.startsWith(PACKED_ASSET_ROUTE_PREFIX)) throw new Error(`packed-app: ${output.fileName} is outside ${PACKED_ASSET_ROUTE_PREFIX}`);
           const source = output.type === 'chunk' ? output.code : output.source;
-          assets[`/${output.fileName}`] = typeof source === 'string'
+          assets[path] = typeof source === 'string'
             ? { type, text: source }
             : { type, base64: Buffer.from(source).toString('base64') };
           delete bundle[output.fileName];

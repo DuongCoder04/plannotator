@@ -15,6 +15,7 @@
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import type { Origin } from "@plannotator/shared/agents";
 import { isAbsolute, resolve } from "path";
 import { statSync } from "node:fs";
@@ -57,7 +58,7 @@ import { appendFeedbackRecord, type FeedbackDecision } from "@plannotator/shared
 import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { readImprovementHook, getImprovementHookExpectedPath } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, createAppHandler, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft, loadDraft } from "./draft";
 import { handleDoc, handleDocExists, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, handleFileBrowserFiles } from "./reference-handlers";
 import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
@@ -269,7 +270,7 @@ export async function startPlannotatorServer(
   };
 
   const isRemote = isRemoteSession();
-  const serveApp = createAppHandler(htmlContent, isRemote);
+  const app = openPackedApp(htmlContent);
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for,
   // and never in remote mode, where anyone who reaches the URL could drive the user's gh / glab.
   const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
@@ -925,7 +926,7 @@ export async function startPlannotatorServer(
           }
 
           // Serve the app for all other routes (SPA): the page or a packed asset
-          return serveApp(req, url);
+          return packedAppResponse(app, req, url.pathname, isRemote);
         },
 
         error(err) {
@@ -956,7 +957,7 @@ export async function startPlannotatorServer(
 
   // Remote sessions serve the app page compressed (#1617); start the likely
   // encoding (gzip over plain http) now so the first load does not wait.
-  if (isRemote) prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(false));
+  if (isRemote) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
 
   // The cache warm must never gate the listening socket. Its async filesystem
   // walk yields between directories while requests remain serviceable.

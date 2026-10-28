@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { openPackedApp, packApp, PACKED_ASSETS_MARKER } from "./packed-app";
 
 const PAGE = '<!doctype html><script type="module" src="/assets/app.js"></script>';
@@ -15,38 +15,77 @@ const app = openPackedApp(packApp(PAGE, {
   "/assets/font.woff2": { type: "font/woff2", base64: Buffer.from(FONT).toString("base64") },
 }));
 
+const text = (body: string | Buffer) => (typeof body === "string" ? body : body.toString("utf8"));
+
 describe("packed app", () => {
-  test("serves the page without the pack", () => {
+  test("serves the page without the pack, at any path outside /assets/", async () => {
     expect(app.html).toBe(PAGE);
+    for (const path of ["/", "/some/route", "/assets"]) {
+      const page = await app.answer(path, "GET", "gzip", false);
+      expect({ path, status: page.status, body: text(page.body) }).toEqual({ path, status: 200, body: PAGE });
+      expect(page.headers["Content-Type"]).toBe("text/html");
+    }
   });
 
-  test("text assets round-trip exactly, gzipped only when the client accepts it", () => {
-    const gzipped = app.asset("/assets/app.js", "gzip, deflate, br")!;
-    expect(gzipped.headers["Content-Encoding"]).toBe("gzip");
-    expect(gunzipSync(gzipped.body).toString()).toBe(SCRIPT);
-    expect(gzipped.headers["Vary"]).toBe("Accept-Encoding");
+  test("serves each asset by its exact name, as built, with its type, nosniff and an immutable cache", async () => {
+    const script = await app.answer("/assets/app.js", "GET", "gzip, br", false);
+    expect(script.status).toBe(200);
+    expect(text(script.body)).toBe(SCRIPT);
+    expect(script.headers).toMatchObject({
+      "Content-Type": "text/javascript; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "Content-Length": String(Buffer.byteLength(SCRIPT)),
+    });
+    // A local session never compresses (#1617's rule for the page).
+    expect(script.headers["Content-Encoding"]).toBeUndefined();
 
-    const identity = app.asset("/assets/style.css", undefined)!;
+    expect(text((await app.answer("/assets/style.css", "HEAD", null, false)).body)).toBe(STYLE);
+    const font = await app.answer("/assets/font.woff2", "GET", null, false);
+    expect(new Uint8Array(font.body as Buffer)).toEqual(FONT);
+    expect(font.headers["Content-Type"]).toBe("font/woff2");
+  });
+
+  test("a name not in the pack is 404, never the page", async () => {
+    for (const path of ["/assets/missing.js", "/assets/APP.js", "/assets/app.js/", "/assets/../assets/app.js", "/assets/"]) {
+      const miss = await app.answer(path, "GET", null, false);
+      expect({ path, status: miss.status }).toEqual({ path, status: 404 });
+      expect(miss.headers["X-Content-Type-Options"]).toBe("nosniff");
+      expect(text(miss.body)).not.toContain("<script");
+    }
+  });
+
+  test("anything but GET and HEAD under /assets/ is 405", async () => {
+    for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+      const refused = await app.answer("/assets/app.js", method, null, false);
+      expect({ method, status: refused.status }).toEqual({ method, status: 405 });
+      expect(refused.headers.Allow).toBe("GET, HEAD");
+    }
+  });
+
+  test("a compressing session sends text the client can decode, and binary as is", async () => {
+    const gzip = await app.answer("/assets/app.js", "GET", "gzip, deflate", true);
+    expect(gzip.headers["Content-Encoding"]).toBe("gzip");
+    expect(gzip.headers.Vary).toBe("Accept-Encoding");
+    expect(gunzipSync(gzip.body as Buffer).toString()).toBe(SCRIPT);
+
+    const br = await app.answer("/assets/app.js", "GET", "gzip, br", true);
+    expect(br.headers["Content-Encoding"]).toBe("br");
+    expect(brotliDecompressSync(br.body as Buffer).toString()).toBe(SCRIPT);
+
+    const identity = await app.answer("/assets/app.js", "GET", undefined, true);
     expect(identity.headers["Content-Encoding"]).toBeUndefined();
-    expect(identity.body.toString()).toBe(STYLE);
-    expect(identity.headers["Content-Type"]).toBe("text/css; charset=utf-8");
-  });
+    expect(text(identity.body)).toBe(SCRIPT);
 
-  test("binary assets are decoded and never re-compressed", () => {
-    const font = app.asset("/assets/font.woff2", "gzip")!;
-    expect(new Uint8Array(font.body)).toEqual(FONT);
+    const font = await app.answer("/assets/font.woff2", "GET", "gzip", true);
     expect(font.headers["Content-Encoding"]).toBeUndefined();
-    expect(font.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+    expect(new Uint8Array(font.body as Buffer)).toEqual(FONT);
   });
 
-  test("a path outside the pack is not an asset, so it falls through to the page", () => {
-    expect(app.asset("/assets/missing.js", "gzip")).toBeUndefined();
-    expect(app.asset("/", "gzip")).toBeUndefined();
-  });
-
-  test("an unpacked page serves as-is", () => {
+  test("an unpacked page serves as-is and has no assets", async () => {
     const plain = openPackedApp(PAGE);
     expect(plain.html).toBe(PAGE);
-    expect(plain.asset("/assets/app.js", "gzip")).toBeUndefined();
+    expect(text((await plain.answer("/", "GET", null, false)).body)).toBe(PAGE);
+    expect((await plain.answer("/assets/app.js", "GET", null, false)).status).toBe(404);
   });
 });

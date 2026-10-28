@@ -290,13 +290,30 @@ describe("API route 404 guards", () => {
         expect(spaResponse.headers.get("content-type")).toContain("text/html");
         expect(await spaResponse.text()).toBe(SPA_HTML);
 
+        // A local session: the chunk as built, uncompressed like the page.
         const chunkResponse = await fetch(`${server.url}/assets/index-test.js`, {
           headers: { "Accept-Encoding": "gzip" },
         });
         expect(chunkResponse.status).toBe(200);
         expect(chunkResponse.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-        expect(chunkResponse.headers.get("content-encoding")).toBe("gzip");
+        expect(chunkResponse.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(chunkResponse.headers.get("content-encoding")).toBeNull();
         expect(await chunkResponse.text()).toBe(SPA_CHUNK);
+        const head = await fetch(`${server.url}/assets/index-test.js`, { method: "HEAD" });
+        expect(head.status).toBe(200);
+        expect(head.headers.get("content-length")).toBe(String(SPA_CHUNK.length));
+        expect(await head.text()).toBe("");
+
+        // Under /assets/ only exact packed names answer; nothing falls back to the page.
+        for (const path of ["/assets/missing.js", "/assets/index-test.js.map", "/assets/INDEX-TEST.js"]) {
+          const missing = await fetch(`${server.url}${path}`);
+          expect({ path, status: missing.status }).toEqual({ path, status: 404 });
+          expect(missing.headers.get("x-content-type-options")).toBe("nosniff");
+          expect(await missing.text()).not.toContain("SPA fallback");
+        }
+        const post = await fetch(`${server.url}/assets/index-test.js`, { method: "POST" });
+        expect(post.status).toBe(405);
+        expect(post.headers.get("allow")).toBe("GET, HEAD");
       } finally {
         server.stop();
       }

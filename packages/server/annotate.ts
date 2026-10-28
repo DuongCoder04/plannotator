@@ -13,6 +13,7 @@
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
@@ -20,7 +21,7 @@ import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import type { Origin } from "@plannotator/shared/agents";
-import { handleImage, handleUpload, handleServerReady, handleApiNotFound, handleFavicon, createAppHandler, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
+import { handleImage, handleUpload, handleServerReady, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
 import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
@@ -353,7 +354,7 @@ export async function startAnnotateServer(
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
-  const serveApp = createAppHandler(htmlContent, compressAppHtml);
+  const app = openPackedApp(htmlContent);
   const wslFlag = await isWSL();
   const gitUser = detectGitUser();
 
@@ -1628,7 +1629,7 @@ export async function startAnnotateServer(
           if (framedMiss) return framedMiss;
 
           // Serve the app for all other routes (SPA): the page or a packed asset
-          return serveApp(req, url);
+          return packedAppResponse(app, req, url.pathname, compressAppHtml);
         },
         websocket: agentTerminal.websocket,
 
@@ -1705,7 +1706,7 @@ export async function startAnnotateServer(
   // Start the likely encoding now (gzip for plain-http remote mode, brotli
   // behind tailscale serve) so the first load does not wait for it.
   if (compressAppHtml) {
-    prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(options.tailnetPublished === true));
+    prewarmAppHtml(app.html, likelyAppHtmlEncoding(options.tailnetPublished === true));
   }
 
   // Notify caller that server is ready. An async ready handler that rejects

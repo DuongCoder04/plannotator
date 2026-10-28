@@ -2,6 +2,7 @@ import { piUpdateAdvert } from "./update-advert.ts";
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { randomUUID } from "node:crypto";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
+import { openPackedApp } from "../generated/packed-app.ts";
 import { createServer } from "node:http";
 
 import { contentHash, deleteDraft, loadDraft } from "../generated/draft.ts";
@@ -39,7 +40,7 @@ import {
 	handleSaveNotesRequest,
 	handleUploadRequest,
 } from "./handlers.ts";
-import { createAppHandler, handleApiNotFound, json, parseBody, requestUrl } from "./helpers.ts";
+import { handleApiNotFound, serveApp, json, parseBody, requestUrl } from "./helpers.ts";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import { openEditorDiff } from "./ide.ts";
 import {
@@ -349,7 +350,7 @@ export async function startPlanReviewServer(options: {
 	// Lazy cache for in-session archive tab
 	let cachedArchivePlans: ArchivedPlan[] | null = null;
 
-	const serveApp = createAppHandler(options.htmlContent);
+	const app = openPackedApp(options.htmlContent);
 	const requestHostGuard = createRequestHostGuard();
 	const server = createServer(async (req, res) => {
 		// Host allowlist first, before any route (request-host-guard.ts).
@@ -767,7 +768,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname.startsWith("/api/")) {
 			handleApiNotFound(res, url.pathname);
 		} else {
-			await serveApp(req, res, url, isRemoteSession());
+			await serveApp(app, req, res, url.pathname, isRemoteSession());
 		}
 	});
 
@@ -776,7 +777,7 @@ export async function startPlanReviewServer(options: {
 	boundPort = port;
 	// Remote sessions serve the app page compressed (#1617); start gzip (what
 	// browsers ask for over plain http) now so the first load does not wait.
-	if (isRemoteSession()) prewarmAppHtml(options.htmlContent, likelyAppHtmlEncoding(false));
+	if (isRemoteSession()) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
 
 	// Mirror the Bun server: bind first, then warm through the async shared walk.
 	void warmFileListCache(process.cwd(), "code");

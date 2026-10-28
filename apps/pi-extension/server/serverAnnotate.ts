@@ -2,6 +2,7 @@ import { piUpdateAdvert } from "./update-advert.ts";
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
+import { openPackedApp } from "../generated/packed-app.ts";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -63,7 +64,7 @@ import {
 	handleSaveNotesRequest,
 	handleUploadRequest,
 } from "./handlers.ts";
-import { createAppHandler, handleApiNotFound, json, parseBody, requestUrl } from "./helpers.ts";
+import { handleApiNotFound, serveApp, json, parseBody, requestUrl } from "./helpers.ts";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
 
@@ -870,7 +871,7 @@ export async function startAnnotateServer(options: {
 	let liveSessionToken = "";
 	let liveAppUrl = "";
 
-	const serveApp = createAppHandler(options.htmlContent);
+	const app = openPackedApp(options.htmlContent);
 	const requestHostGuard = createRequestHostGuard();
 	const server = createServer(async (req, res) => {
 		// Host allowlist first, before any route (request-host-guard.ts).
@@ -1454,7 +1455,7 @@ export async function startAnnotateServer(options: {
 			res.writeHead(404, htmlAssetDocumentHeaders(HTML_ASSET_ERROR_CSP));
 			res.end(buildHtmlAssetErrorDocument(404, "Not found", name));
 		} else {
-			await serveApp(req, res, url, isRemoteSession());
+			await serveApp(app, req, res, url.pathname, isRemoteSession());
 		}
 	});
 	// Startup failures must not leave anything behind in the long-lived Pi
@@ -1511,7 +1512,7 @@ export async function startAnnotateServer(options: {
 	agentTerminalCapability = agentTerminal.capability;
 	// Remote sessions serve the app page compressed (#1617); start gzip (what
 	// browsers ask for over plain http) now so the first load does not wait.
-	if (isRemoteSession()) prewarmAppHtml(options.htmlContent, likelyAppHtmlEncoding(false));
+	if (isRemoteSession()) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
 
 	if (options.liveApp) {
 		// Compose the proxy-served bridge body via the shared assembly (config

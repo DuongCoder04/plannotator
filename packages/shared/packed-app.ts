@@ -1,16 +1,18 @@
-import { gzipSync } from "node:zlib";
+import { compressAppText, negotiateAppHtmlEncoding, prepareAppHtml } from "./app-html";
 
 /**
  * The built apps ship as ONE file per app, which every host embeds or copies
  * as-is (the compiled CLI, the Pi and OpenCode packages). The browser, though,
  * should only download what it runs: the lazy chunks (Shiki grammars, Mermaid,
- * Graphviz, KaTeX) are most of the bytes, and a phone on a tailnet or an SSH
- * tunnel waits for every one of them before the first paint.
+ * Graphviz, KaTeX, fonts) are most of the bytes, and a phone on a tailnet or an
+ * SSH tunnel waits for every one of them before the first paint.
  *
  * So the build (`build/pack-app.ts`) keeps Vite's code-split output and packs
  * it behind a marker after the page: the page references its chunks by URL,
- * and the servers answer those URLs from the pack. Text assets are gzipped on
- * first request when the client accepts it; binary ones are already compressed.
+ * and the servers answer those URLs from the pack (`answer`), by exact name,
+ * from memory only. Remote and `--tailscale` sessions get text chunks
+ * compressed by the page's own rule (./app-html); binary ones are already
+ * compressed.
  *
  * Layout after the marker: one line of JSON indexing every asset by URL path
  * into the raw asset data that follows it, so neither building nor serving
@@ -18,7 +20,10 @@ import { gzipSync } from "node:zlib";
  */
 export const PACKED_ASSETS_MARKER = "<!--plannotator:packed-assets-->";
 
-/** A packed asset: text is served gzipped when accepted, binary rides as base64. */
+/** Every packed asset lives here (Vite's `assetsDir`); the build refuses any other path. */
+export const PACKED_ASSET_ROUTE_PREFIX = "/assets/";
+
+/** A packed asset: text is served as-is or compressed, binary rides as base64. */
 export type PackedAsset =
   | { type: string; text: string }
   | { type: string; base64: string };
@@ -30,19 +35,30 @@ interface PackedEntry {
   base64?: true;
 }
 
-export interface PackedAssetResponse {
-  body: Buffer;
+export interface PackedAppAnswer {
+  status: number;
   headers: Record<string, string>;
+  body: string | Buffer;
 }
 
 export interface PackedApp {
   /** The page to serve, without the pack. */
   html: string;
-  /** The packed asset at this URL path, or undefined when there is none. */
-  asset(pathname: string, acceptEncoding: string | null | undefined): PackedAssetResponse | undefined;
+  /**
+   * The answer to a request no other route claimed: under `/assets/` the
+   * packed file of exactly that name (404 when there is none, 405 for anything
+   * but GET and HEAD), else the page (SPA). `compress` is the page's own rule
+   * (remote and `--tailscale` sessions).
+   */
+  answer(
+    pathname: string,
+    method: string | undefined,
+    acceptEncoding: string | null | undefined,
+    compress: boolean,
+  ): Promise<PackedAppAnswer>;
 }
 
-/** Asset URLs carry a content hash, so a response never changes. */
+/** Asset URLs carry Vite's content hash, so a response never changes. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 export function packApp(html: string, assets: Record<string, PackedAsset>): string {
@@ -61,44 +77,77 @@ export function packApp(html: string, assets: Record<string, PackedAsset>): stri
 /** Split a built app into its page and assets. An unpacked page serves as-is. */
 export function openPackedApp(bundle: string): PackedApp {
   const markerAt = bundle.indexOf(PACKED_ASSETS_MARKER);
-  if (markerAt < 0) return { html: bundle, asset: () => undefined };
-
+  const html = markerAt < 0 ? bundle : bundle.slice(0, markerAt);
   const indexAt = markerAt + PACKED_ASSETS_MARKER.length;
-  const dataAt = bundle.indexOf("\n", indexAt) + 1;
+  const dataAt = markerAt < 0 ? -1 : bundle.indexOf("\n", indexAt) + 1;
   // Parsed on the first asset request, so a CLI run that never serves the
   // page (or a host that never opens it) pays nothing.
   let index: Map<string, PackedEntry> | undefined;
-  const responses = new Map<string, PackedAssetResponse>();
+  const lookup = (pathname: string): PackedEntry | undefined => {
+    if (markerAt < 0) return undefined;
+    index ??= new Map(Object.entries(JSON.parse(bundle.slice(indexAt, dataAt - 1)) as Record<string, PackedEntry>));
+    return index.get(pathname);
+  };
+  // One body per (encoding, asset), made on first request and kept for the
+  // session: a page load asks for the same few dozen files every time.
+  const bodies = new Map<string, Promise<Buffer>>();
+  const body = (pathname: string, entry: PackedEntry, encoding: "br" | "gzip" | "identity"): Promise<Buffer> => {
+    const key = `${encoding} ${pathname}`;
+    let pending = bodies.get(key);
+    if (!pending) {
+      const content = bundle.slice(dataAt + entry.start, dataAt + entry.end);
+      pending = entry.base64
+        ? Promise.resolve(Buffer.from(content, "base64"))
+        : encoding === "identity"
+          ? Promise.resolve(Buffer.from(content, "utf8"))
+          : compressAppText(content, encoding);
+      bodies.set(key, pending);
+      pending.catch(() => bodies.delete(key));
+    }
+    return pending;
+  };
+
   return {
-    html: bundle.slice(0, markerAt),
-    asset(pathname, acceptEncoding) {
-      index ??= new Map(Object.entries(JSON.parse(bundle.slice(indexAt, dataAt - 1))));
-      const entry = index.get(pathname);
-      if (!entry) return undefined;
-      const gzip = !entry.base64 && /\bgzip\b/.test(acceptEncoding ?? "");
-      const key = `${gzip ? "gzip" : "identity"} ${pathname}`;
-      if (!responses.has(key)) {
-        responses.set(key, toResponse(entry, bundle.slice(dataAt + entry.start, dataAt + entry.end), gzip));
+    html,
+    async answer(pathname, method, acceptEncoding, compress) {
+      if (!pathname.startsWith(PACKED_ASSET_ROUTE_PREFIX)) {
+        const page = await prepareAppHtml(html, acceptEncoding, compress);
+        return { status: 200, headers: page.headers, body: page.body };
       }
-      return responses.get(key);
+      const plain = { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" };
+      if (method !== "GET" && method !== "HEAD") {
+        return { status: 405, headers: { ...plain, Allow: "GET, HEAD" }, body: "Method not allowed" };
+      }
+      const entry = lookup(pathname);
+      if (!entry) return { status: 404, headers: plain, body: "Not found" };
+
+      const headers: Record<string, string> = {
+        "Content-Type": entry.type,
+        "Cache-Control": IMMUTABLE,
+        "X-Content-Type-Options": "nosniff",
+        "Cross-Origin-Resource-Policy": "same-origin",
+      };
+      const text = !entry.base64;
+      if (compress && text) headers.Vary = "Accept-Encoding";
+      let encoding = compress && text ? negotiateAppHtmlEncoding(acceptEncoding) : "identity";
+      let bytes: Buffer;
+      try {
+        bytes = await body(pathname, entry, encoding);
+      } catch (err) {
+        console.error("[plannotator] App chunk compression failed; serving uncompressed:", err);
+        encoding = "identity";
+        bytes = await body(pathname, entry, encoding);
+      }
+      if (encoding !== "identity") headers["Content-Encoding"] = encoding;
+      headers["Content-Length"] = String(bytes.length);
+      return { status: 200, headers, body: bytes };
     },
   };
 }
 
-function toResponse(entry: PackedEntry, content: string, gzip: boolean): PackedAssetResponse {
-  if (entry.base64) {
-    return {
-      body: Buffer.from(content, "base64"),
-      headers: { "Content-Type": entry.type, "Cache-Control": IMMUTABLE },
-    };
-  }
-  return {
-    body: gzip ? gzipSync(content) : Buffer.from(content),
-    headers: {
-      "Content-Type": entry.type,
-      "Cache-Control": IMMUTABLE,
-      Vary: "Accept-Encoding",
-      ...(gzip ? { "Content-Encoding": "gzip" } : {}),
-    },
-  };
+/** Fetch-API flavor for the Bun servers. */
+export async function packedAppResponse(app: PackedApp, req: Request, pathname: string, compress: boolean): Promise<Response> {
+  const answer = await app.answer(pathname, req.method, req.headers.get("accept-encoding"), compress);
+  // A Buffer is a valid fetch body in both runtimes; the lib types lag.
+  return new Response(answer.body as BodyInit, { status: answer.status, headers: answer.headers });
 }

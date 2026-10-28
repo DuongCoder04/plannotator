@@ -15,8 +15,6 @@ import { writeUrlQr } from "./qr";
 import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
 import { saveDraft, loadDraft, deleteDraft, getDraftGeneration } from "./draft";
 import { CLASSIC_FAVICON_SVG, FAVICON_PNG_BYTES } from "@plannotator/shared/favicon";
-import { openPackedApp } from "@plannotator/shared/packed-app";
-import { appHtmlResponse } from "@plannotator/shared/app-html";
 import { getServerConfig } from "./config";
 import { saveToObsidian, saveToBear, saveToOctarine } from "./integrations";
 import type { ObsidianConfig, BearConfig, OctarineConfig, IntegrationResult } from "./integrations";
@@ -235,20 +233,6 @@ export function handleFavicon(): Response {
   return new Response(FAVICON_PNG_BYTES, {
     headers: { "Content-Type": "image/png", "Cache-Control": "no-cache" },
   });
-}
-
-/**
- * Serve the built app to every route no handler claimed: one of the chunks and
- * assets packed into it, or else the page itself (SPA). Used by all 3 servers
- * (plus goal-setup); see @plannotator/shared/packed-app.
- */
-export function createAppHandler(htmlContent: string, compress: boolean): (req: Request, url: URL) => Response | Promise<Response> {
-  const app = openPackedApp(htmlContent);
-  return (req, url) => {
-    const asset = app.asset(url.pathname, req.headers.get("accept-encoding"));
-    if (asset) return new Response(asset.body as BodyInit, { headers: asset.headers });
-    return appHtmlResponse(req, app.html, compress);
-  };
 }
 
 interface ServerReadyOptions {
