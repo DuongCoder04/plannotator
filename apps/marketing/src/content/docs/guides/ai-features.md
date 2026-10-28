@@ -62,13 +62,17 @@ No API keys are managed by Plannotator — Pi uses its own local configuration.
 
 Requires the `opencode` CLI installed and authenticated. Plannotator spawns `opencode serve` and communicates via HTTP + SSE. Models are discovered dynamically from your connected providers.
 
-OpenCode supports session forking, resuming, and runtime permission approvals — the richest capability set of all four providers.
+OpenCode supports session forking, resuming, and runtime permission approvals — the richest capability set of these providers.
+
+### Qwen Code (via the qwen CLI)
+
+Requires the `qwen` CLI installed and signed in. Each question runs `qwen` once in read-only plan mode, and later questions continue the same Qwen Code session. The models come from your Qwen Code settings (`~/.qwen/settings.json`, or the folder `QWEN_HOME` names): the models configured for your current sign-in type, with your current model as the default. Ask AI conversations appear in your Qwen Code session list.
 
 ## Configuration
 
 Provider and model selection is available in **Settings > AI**. In a session where Ask AI is answered by the session itself, Settings > AI shows only that session. These persist via cookies across sessions.
 
-By default, Plannotator prefers the provider that matches the detected agent origin: Claude Code uses Claude, Codex uses Codex, OpenCode uses OpenCode, and Pi uses Pi when those providers are available. GitHub Copilot CLI and Gemini CLI do not have dedicated Ask AI providers yet, so they fall back to your saved provider or the server default.
+By default, Plannotator prefers the provider that matches the detected agent origin: Claude Code uses Claude, Codex uses Codex, OpenCode uses OpenCode, Pi uses Pi, and Qwen Code uses Qwen Code when those providers are available. GitHub Copilot CLI and Gemini CLI do not have dedicated Ask AI providers yet, so they fall back to your saved provider or the server default.
 
 You can also override the provider and model per-session using the config bar at the bottom of the AI sidebar. Changing the provider or model starts a new session — old messages stay visible but the conversation resets.
 
@@ -96,11 +100,13 @@ OpenCode supports the same permission approval flow as Claude — tool calls tha
 
 Pi does not expose a permission approval gate over RPC, so tool execution is handled entirely by Pi's own runtime.
 
+Qwen Code runs in its read-only plan mode, so it can read and search but not change files, and no approval cards appear. Each answer has a 10-minute limit.
+
 ## Reasoning effort
 
 Codex supports a reasoning effort setting with four levels: **Low**, **Medium**, **High**, and **Max**. This is available in the config bar at the bottom of the AI sidebar. Higher effort means slower but more thorough responses.
 
-This setting only applies to Codex — Claude, Pi, and OpenCode do not expose a reasoning effort control.
+This setting only applies to Codex — Claude, Pi, OpenCode, and Qwen Code do not expose a reasoning effort control.
 
 ## Available settings
 
