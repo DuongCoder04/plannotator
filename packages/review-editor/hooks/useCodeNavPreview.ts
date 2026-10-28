@@ -34,8 +34,6 @@ export function codeNavPreviewErrorMessage(body: CodeNavFileError | null): strin
         ? `This file is too large to preview (just over the ${limit} limit).`
         : `This file is too large to preview (${size}; the limit is ${limit}).`;
     }
-    case 'outside-root':
-      return 'This file is outside the repository, so it is not shown.';
     case 'not-a-file':
       return 'This path is not a regular file, so it cannot be previewed.';
     case 'not-found':

@@ -11,7 +11,7 @@ import { createGuideHtml, guideExportFilename, resolveGuideViewerAssets } from "
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/core/guide-viewer-manifest";
 import { findSavedGuideById } from "@plannotator/shared/guide-store";
 import { readGuideInstructions } from "@plannotator/shared/guide-instructions-store";
-import { AcpClient } from "../acp/client";
+import { AcpClient, killPendingProcessGroups } from "@plannotator/acp-client/client";
 import {
   CLAUDE_CODE,
   CUSTOM_AGENT_ID,
@@ -22,17 +22,18 @@ import {
   installCommandFor,
   KNOWN_AGENTS,
   readAgentOptions,
-  resolveAgentLaunch,
   type AdapterResolution,
   type AgentDescriptor,
   type AgentOptionsCache,
   type AgentStatus,
   type CommandOverride,
   type LoginCommand,
-} from "../acp/agents";
-import { planSpawn } from "../acp/spawn-plan";
+} from "@plannotator/acp-client/agents";
+import { isSameProgram } from "@plannotator/acp-client/same-program";
+import { agentLaunchFor, resolveGuidesLaunch } from "../acp/agent-cli";
+import { planSignIn } from "../acp/sign-in";
 import { adaptersRoot, hasManagedCopy, installAdapter, managedLaunch, type InstallResult } from "../acp/adapters";
-import { ensureAgentLaunch, type ReadyLaunch } from "../acp/ensure-launch";
+import { ensureAgentLaunch, type ReadyLaunch } from "@plannotator/acp-client/ensure-launch";
 import { parseGuideLink } from "../core/adapter";
 import { loadDashboard, type DashboardModel } from "../dashboard";
 import { GuideGeneration, type GenerationState, type PendingPermission, type PermissionAnswer } from "../generation";
@@ -641,7 +642,9 @@ export class GuidesController implements vscode.Disposable {
 
   /** Resolution order: the command in settings, the agent on PATH, the adapter Guided Reviews installed. */
   private launchFor(agent: AgentDescriptor): AdapterResolution {
-    return resolveAgentLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : this.agentOverride(agent.id), findExecutable, this.managedFor);
+    return resolveGuidesLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : this.agentOverride(agent.id), findExecutable, this.managedFor, process.platform, isSameProgram, {
+      useInstalled: vscode.workspace.getConfiguration("plannotator.guides").get<boolean>("useInstalledCli") ?? true,
+    });
   }
 
   private readonly managedFor = (agent: AgentDescriptor) => (agent.adapter ? managedLaunch(this.adaptersRoot(), agent.id, agent.adapter, agent.args) : null);
@@ -679,9 +682,17 @@ export class GuidesController implements vscode.Disposable {
    * The command to start the agent, installing its adapter first when it is
    * missing and the setting allows. When the agent cannot be started, says
    * why (with Retry for a failed install, or how to install the agent) and
-   * answers null.
+   * answers null. Which copy of Claude Code or Codex the adapter runs (the
+   * user's CLI, or the one that comes with the adapter) goes to the log on
+   * each launch, never to a notification.
    */
-  private ensureLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
+  private async ensureLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
+    const launch = await this.resolveReadyLaunch(agent);
+    if (launch?.cliLog) this.log.info(`[guides] ${launch.cliLog}`);
+    return launch;
+  }
+
+  private resolveReadyLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
     return ensureAgentLaunch(agent, {
       resolve: (a) => this.launchFor(a),
       installAdapters: this.installAdaptersSetting(),
@@ -733,7 +744,7 @@ export class GuidesController implements vscode.Disposable {
     mkdirSync(cwd, { recursive: true });
     let client: AcpClient | null = null;
     try {
-      client = await AcpClient.start({ command: launch.command, args: launch.args, cwd, ...(launch.env && { env: launch.env }) }, {
+      client = await AcpClient.start(agentLaunchFor(launch, cwd), {
         onUpdate: () => {},
         requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
         onStderr: (t) => this.log.info(`[agent] ${t.trimEnd()}`),
@@ -969,7 +980,7 @@ export class GuidesController implements vscode.Disposable {
       {
         relay,
         agent: descriptor,
-        agentLaunch: (cwd) => ({ command: launch.command, args: launch.args, cwd, ...(launch.env && { env: launch.env }) }),
+        agentLaunch: (cwd) => agentLaunchFor(launch, cwd),
         mcpServer: {
           command: process.execPath,
           args: [vscode.Uri.joinPath(this.context.extensionUri, "dist", "guide-mcp.cjs").fsPath],
@@ -1130,28 +1141,9 @@ export class GuidesController implements vscode.Disposable {
       if (!choice) return;
     }
     const login = logins.find((l) => l.label === choice) ?? (logins.length === 1 ? logins[0] : undefined);
-    let command: string;
-    let args: string[];
-    if (login && launch.ok) {
-      command = launch.command;
-      args = [...launch.args, ...login.args];
-    } else {
-      const fallback = agent.signIn;
-      // No command of its own: the agent's sign-in is a subcommand of the program that starts it (`cursor-agent login` or `agent login`).
-      const found = fallback ? (fallback.command ? findExecutable(fallback.command) : launch.ok ? launch.command : null) : null;
-      if (!fallback || !found) {
-        const shown = fallback ? [fallback.command ?? agent.command, ...fallback.args].join(" ") : "";
-        void vscode.window.showErrorMessage(fallback ? `Run \`${shown}\` in a terminal to sign in, then resume the guide.` : `Sign in to ${agent.label} in a terminal (see ${agent.docsUrl}), then resume the guide.`);
-        return;
-      }
-      command = found;
-      args = [...fallback.args];
-    }
-    let plan;
-    try {
-      plan = planSpawn(command, args);
-    } catch (err) {
-      void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+    const plan = planSignIn(agent, launch, login);
+    if (!plan.ok) {
+      void vscode.window.showErrorMessage(plan.message);
       return;
     }
     const terminal = vscode.window.createTerminal({
@@ -1159,7 +1151,7 @@ export class GuidesController implements vscode.Disposable {
       shellPath: plan.command,
       shellArgs: plan.args,
       cwd: explicit?.cwd ?? state?.source.repoRoot ?? this.cwd(),
-      env: { ...plan.env, ...(launch.ok && login ? launch.env : undefined), ...login?.env },
+      env: plan.env,
     });
     terminal.show();
   }
@@ -1735,6 +1727,8 @@ export class GuidesController implements vscode.Disposable {
     // VS Code is closing: no grace period for the agent or anything it started.
     this.run?.gen.kill();
     this.asks.kill();
+    // An agent stopped, exited or crashed earlier whose group still waits out its grace: killed now too.
+    killPendingProcessGroups();
     for (const d of this.disposables) d.dispose();
   }
 }

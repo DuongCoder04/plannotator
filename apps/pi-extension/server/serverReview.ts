@@ -20,6 +20,7 @@ import { contentHash } from "../generated/draft.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
+import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "../generated/review-draft.ts";
@@ -234,7 +235,7 @@ import {
 	validateCodeNavRequest,
 	extractChangedFiles,
 } from "../generated/code-nav.ts";
-import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "../generated/repo-file.ts";
+import { readFileCapped, readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "../generated/repo-file.ts";
 import { readRepoWorkingTreeFile } from "../generated/repo-files-node.ts";
 import {
 	createDefaultSemanticDiffRuntime,
@@ -308,9 +309,10 @@ export const piCodeNavRuntime: CodeNavRuntime = {
 	},
 
 	async readFile(path, options) {
-		// Same guard as /api/code-nav/file, capped at what rg searches (1 MB).
-		if (!options?.cwd) return null;
-		const read = await readRepoFile(options.cwd, path, { maxBytes: CODE_NAV_MAX_FILE_BYTES });
+		// Capped at what rg searches, non-blocking (repo-file.ts).
+		const read = await readFileCapped(options?.cwd ? resolvePath(options.cwd, path) : path, {
+			maxBytes: CODE_NAV_MAX_FILE_BYTES,
+		});
 		return read.ok ? read.content : null;
 	},
 };
@@ -372,6 +374,8 @@ export async function startReviewServer(options: {
 	repoFilesLazyThreshold?: number;
 	/** Tests only: how often a polled live listing looks (default `REPO_LIVE_POLL_MS`). */
 	repoLivePollMs?: number;
+	/** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+	refRunner?: RefRunner;
 	/** "Ask this session": the in-process bridge to the Pi session that opened this review. */
 	sessionBridge?: SessionBridge;
 	/** Turns on `/api/host/status` and `/api/host/close` for a caller in another process (never in remote mode). */
@@ -1925,6 +1929,8 @@ export async function startReviewServer(options: {
 	// decision; a different nonce is refused with 409 session_mismatch.
 	// Missing is accepted (older clients).
 	const serverSession = createServerSessionNonce();
+	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
+	const refCards = createPiRefCards(options.refRunner);
 	// Static patch mode (`--patch-file`): caller-supplied diff bytes, no repo,
 	// no working tree. Advertised as `sourceKind: "patch"` on every diff payload
 	// (absent reads as "vcs") and enforced by 400ing the endpoints that would
@@ -2305,6 +2311,7 @@ export async function startReviewServer(options: {
 		const url = requestUrl(req);
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
+		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
 
 		// API: Get tour result
 		if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
@@ -3892,8 +3899,8 @@ export async function startReviewServer(options: {
 				json(res, { error: "Code navigation requires local access" }, 400);
 				return;
 			}
-			// Realpath containment, regular files only, and the 5 MB cap
-			// (generated/repo-file.ts; the Bun server uses the same).
+			// Links followed like an editor; 5 MB cap and no FIFO hang
+			// (repo-file.ts, the Bun server uses the same).
 			const read = await readRepoFile(resolveAgentCwd(), url.searchParams.get("path"));
 			if (!read.ok) {
 				json(res, repoFileErrorBody(read), REPO_FILE_ERROR_STATUS[read.reason]);

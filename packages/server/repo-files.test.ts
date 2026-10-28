@@ -8,9 +8,9 @@
  *    tree for a committed diff, ignored files, files deleted on disk);
  *  - `/api/repo-file` reading a path outside the listing (an ignored `.env`,
  *    `..`), or the working tree when the diff reads a commit;
- *  - a working-tree read escaping the repo-file guard (repo-file.ts): a
- *    listed symlink pointing out of the repository, a FIFO that would block
- *    the server, a file over the 5 MB cap read into memory;
+ *  - a working-tree read skipping the repo-file guard (repo-file.ts): a FIFO
+ *    that would block the server, a file over the 5 MB cap read into memory
+ *    (links are followed like VS Code, the owner's ruling on #2261);
  *  - the `repoFilesSupported` advert missing, or present on a static patch;
  *  - big listings sent whole instead of one folder at a time;
  *  - files changed on disk after the diff was taken not reported, and the
@@ -200,7 +200,7 @@ for (const [runtime, startServer] of [
       }
     }, 30_000);
 
-    test.skipIf(process.platform === "win32")("working-tree reads go through the repo-file guard: no symlink out, no FIFO, the cap", async () => {
+    test.skipIf(process.platform === "win32")("working-tree reads go through the repo-file guard: links followed, no FIFO hang, the cap", async () => {
       const repo = buildRepo();
       const outside = makeTempDir("plannotator-repo-files-outside-");
       writeFileSync(join(outside, "secret.txt"), "outside secret\n");
@@ -217,10 +217,10 @@ for (const [runtime, startServer] of [
         const fifo = spawnSync("mkfifo", [join(repo, "src/util.ts")]);
         expect(fifo.status).toBe(0);
 
-        const leak = await file("src/leak.txt");
-        expect(leak.status).toBe(200);
-        expect(leak.body.content).toBeNull();
-        expect(JSON.stringify(leak.body)).not.toContain("outside secret");
+        // Links are followed wherever they point, like VS Code (#2272).
+        const followed = await file("src/leak.txt");
+        expect(followed.status).toBe(200);
+        expect(followed.body.content).toBe("outside secret\n");
         expect((await file("src/readme-link.md")).body.content).toBe("# Repo\n");
         expect((await file("src/util.ts")).body).toMatchObject({ content: null, reason: "unavailable" });
         expect((await file("big.txt")).body).toMatchObject({ content: null, reason: "too-large", size: MAX_REPO_FILE_BYTES + 1 });

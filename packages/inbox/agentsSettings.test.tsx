@@ -58,7 +58,7 @@ function model(over: Partial<InboxAgentsModel> = {}): InboxAgentsModel {
       }),
       mcp('cursor', 'Cursor', '~/.cursor/mcp.json', {
         reach: { kind: 'mcp', on: false, state: 'removed', path: '~/.cursor/mcp.json', locked: false, reason: null },
-        note: note('cursor', { state: 'manual', reason: 'Cursor User Rules are managed in Settings → Rules; Plannotator cannot install, update or remove a copied rule.' }),
+        note: note('cursor', { state: 'manual', reason: "Cursor keeps its rules in the app: copy the note into Customize → Rules yourself. Plannotator can't see, update or remove that copy." }),
       }),
       { ...mcp('amp', 'Amp', '~/.config/amp/settings.json'), detected: false },
     ],
@@ -129,7 +129,7 @@ test.skipIf(!hasDom)('one group per agent found, with its switches and the state
   expect(group(el, 'cursor').querySelector('.ib-agstate')?.textContent).toBe('Removed outside Plannotator');
   expect(rows(group(el, 'cursor'))).toEqual([
     { k: 'Reaches the Inbox', v: "plannotator-inbox is no longer in ~/.cursor/mcp.json. Plannotator won't add it back on its own; turn this on to add it.", sw: 'false', sub: null },
-    { k: 'Note in its instructions', v: 'Cursor User Rules · copy into Settings → RulesShow note', sw: null, sub: 'Cursor User Rules are managed in Settings → Rules; Plannotator cannot install, update or remove a copied rule.' }
+    { k: 'Note in its instructions', v: 'Customize → Rules in Cursor · copy by handShow note', sw: null, sub: "Cursor keeps its rules in the app: copy the note into Customize → Rules yourself. Plannotator can't see, update or remove that copy." },
   ]);
 });
 
@@ -154,6 +154,34 @@ test.skipIf(!hasDom)('a switch saves that one change and says it applies to the 
   const show = [...group(el, 'codex').querySelectorAll('button')].find((b) => b.textContent === 'Show')!;
   act(() => show.click());
   expect(group(el, 'codex').querySelector('pre')?.textContent).toBe('<!-- plannotator-inbox:start v1 -->\nnote\n<!-- plannotator-inbox:end -->');
+
+  // Cursor's note is copied by hand: shown without the marker lines, which promise a removal that never happens there.
+  const showCursor = [...group(el, 'cursor').querySelectorAll('button')].find((b) => b.textContent === 'Show note')!;
+  act(() => showCursor.click());
+  expect(group(el, 'cursor').querySelector('pre')?.textContent).toBe('note');
+  expect(group(el, 'cursor').querySelector('.ib-cbox p')?.textContent).toBe("Copy this text into Customize → Rules in Cursor. Plannotator can't see, update or remove that copy.");
+});
+
+test.skipIf(!hasDom)('connected under another QWEN_HOME: shown off, where it is, and turning it on asks to move it here', async () => {
+  const qwen = mcp('qwen', 'Qwen Code', '~/.qwen/settings.json', {
+    reach: { kind: 'mcp', on: false, state: 'elsewhere', path: '~/.qwen/settings.json', locked: false, reason: null },
+  });
+  const el = mount(model({ agents: [qwen] }));
+  const reach = rows(group(el, 'qwen'))[0]!;
+  expect(reach.sw).toBe('false');
+  expect(reach.v).toBe('Connected in ~/.qwen/settings.json. Turn on to move it here.');
+  expect(group(el, 'qwen').textContent).toContain('Connected in another folder');
+  const sent: unknown[] = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ...model({ agents: [qwen] }), error: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  const button = group(el, 'qwen').querySelector('[role="switch"]') as HTMLButtonElement;
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(sent).toEqual([{ agent: 'qwen', reach: true }]);
 });
 
 test.skipIf(!hasDom)('PLANNOTATOR_INBOX_TOOL locks the tool and reminder switches and says why', () => {
