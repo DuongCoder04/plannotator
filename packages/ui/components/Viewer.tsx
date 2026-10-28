@@ -39,6 +39,9 @@ import { FloatingQuickLabelPicker } from './FloatingQuickLabelPicker';
  */
 const MermaidBlock = lazy(async () => ({ default: (await import('./MermaidBlock')).MermaidBlock }));
 const GraphvizBlock = lazy(async () => ({ default: (await import('./GraphvizBlock')).GraphvizBlock }));
+/** ```html and ```svg fences drawn, for a host that opts in (`htmlEmbeds`); loaded only then. */
+const HtmlEmbedBlock = lazy(async () => ({ default: (await import('./html-embed/HtmlEmbedBlock')).HtmlEmbedBlock }));
+const SvgFenceBlock = lazy(async () => ({ default: (await import('./html-embed/SvgFenceBlock')).SvgFenceBlock }));
 
 // Debug error boundary to catch silent toolbar crashes
 class ToolbarErrorBoundary extends React.Component<
@@ -65,6 +68,8 @@ import { MessagesIcon } from './icons/MessagesIcon';
 import { DiagramAnchorClaims, DiagramAnchorClaimsContext } from './diagram/anchorClaims';
 import { DiagramBlockPending } from './diagram/DiagramPending';
 import { isGraphvizLanguage, isMermaidLanguage } from './diagramLanguages';
+import { isHtmlEmbedLanguage, isSvgFenceLanguage } from './html-embed/languages';
+import type { HtmlEmbedHost } from './html-embed/HtmlEmbedBlock';
 import { getIdentity } from '../utils/identity';
 import { type QuickLabel } from '../utils/quickLabels';
 import type { SelectionAction } from '../utils/selectionActions';
@@ -371,6 +376,14 @@ export interface ViewerProps {
    * blocks and no comments on its text. Absent → unchanged.
    */
   answerOnly?: boolean;
+  /**
+   * Opt-in host capability (approval "inbox-inline-html"): a host that serves
+   * embed documents (see `HtmlEmbedHost`, @plannotator/core/html-embed) draws
+   * a ```html fence as a live, sandboxed page and a ```svg fence as an
+   * image, each with a Code button for the source. Absent → both stay code,
+   * unchanged (plan review, annotate and code review pass nothing).
+   */
+  htmlEmbeds?: HtmlEmbedHost;
   /**
    * Opt-in host capability, with `answerOnly`: the reader may comment on the
    * text. A text selection opens the selection toolbar, comment-only
@@ -819,6 +832,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   allowImages = true,
   readOnly = false,
   answerOnly = false,
+  htmlEmbeds,
   textComments = false,
   suggestComment,
   vimModeEnabled = false,
@@ -1786,6 +1800,14 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                 </div>
               );
             })()
+          ) : htmlEmbeds && group.block.type === 'code' && isHtmlEmbedLanguage(group.block.language) ? (
+            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
+              <HtmlEmbedBlock block={group.block} host={htmlEmbeds} />
+            </Suspense>
+          ) : htmlEmbeds && group.block.type === 'code' && isSvgFenceLanguage(group.block.language) ? (
+            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
+              <SvgFenceBlock block={group.block} />
+            </Suspense>
           ) : group.block.type === 'code' && isMermaidLanguage(group.block.language) ? (
             <Suspense key={group.block.id} fallback={<DiagramBlockPending block={group.block} kind="mermaid" />}>
               <MermaidBlock

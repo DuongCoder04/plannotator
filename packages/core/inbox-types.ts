@@ -1927,10 +1927,21 @@ export type InboxToolCostHost = "pi" | "opencode";
  * never posts twice." moved from the server instructions into that field's
  * description. Measured on Pi over the ref-link figure: 9,733 bytes (+142,
  * 1.5%; about +35 tokens). The stated cost stands.
+ * Then the fences that draw in `body` (approval "inbox-inline-html",
+ * 2026-10-28: Mermaid and Graphviz diagrams, live HTML pages): one sentence,
+ * measured on Pi with the ref rule in, 9,848 bytes (+257, about +65 tokens).
+ * With the Board on 11,267 (11,009 + 258, estimated).
+ * Then T3 Code's height rule in that sentence ("Let content set its
+ * height: no vh units or height:100% on html or body"): measured on Pi, 9,920
+ * bytes (+72, about +18 tokens, so the rounded token figure stands). With the
+ * Board on 11,339 (11,267 + 72, estimated).
+ * With the follow-through rule merged in as well: measured on Pi, 10,062
+ * bytes (+142, about +35 tokens; the rounded token figure stands). With the
+ * Board on 11,481 (11,339 + 142, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9591, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 10062, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11009, tokens: 3000 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11481, tokens: 3100 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

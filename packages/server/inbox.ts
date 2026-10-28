@@ -164,6 +164,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
+import { createInboxEmbeds } from "./inbox-embeds";
 import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
@@ -2270,6 +2271,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   });
   // Pins: threads pinned to the window's sidebar (packages/server/inbox-pins.ts). A deletion's prune tells the windows too.
   const pins = createInboxPins({ store, serverSession, readBody: (req) => readBody(req), json });
+  // Live HTML embeds (approval "inbox-inline-html"): the documents the window frames for a message's ```html fences (inbox-embeds.ts).
+  const embeds = createInboxEmbeds({ readBody: (req) => readBody(req), json });
   // The sidebar's Feedback dialog: forwards what the person typed to the feedback Worker (inbox-feedback.ts).
   const feedback = createInboxFeedback({ version, json, ...(options.feedbackUrl ? { url: () => options.feedbackUrl! } : {}) });
   const stopPinEvents = store.onPinsChange(() => {
@@ -2719,6 +2722,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Pins (approval "inbox-pinned-threads"): pin, unpin and the order of the sidebar's pinned threads.
       const pinned = await pins.route(req, url);
       if (pinned) return pinned;
+      // Live HTML embeds: keep a fence's page, and serve it under its own sandboxing policy.
+      const embedded = await embeds.route(req, url);
+      if (embedded) return embedded;
       // Feedback (the sidebar's Feedback dialog): sent on, never stored here. The owner's only: a
       // tailnet guest's words would go out as this computer's (its version, OS, IP and rate limit).
       if (path === INBOX_FEEDBACK_PATH && via === "tailnet" && !tailscale.isOwnerRequest(req.headers)) {
