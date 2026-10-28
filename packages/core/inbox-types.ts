@@ -1064,7 +1064,8 @@ export interface InboxDecision {
     /** `paths` (additive): the file's real path, and the path it was named by when that was a link; a `Shows:` file is matched by them. */
     attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null; paths?: string[] }[];
   };
-  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string }; section: InboxSectionId };
+  /** `project.repo` (additive, the window's read): its git origin, as on a thread; refs in the card link into it. */
+  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string; repo?: InboxProjectRepo | null }; section: InboxSectionId };
   /**
    * The agent session that asked: one reply per session per thread
    * (`key`: `s:<host>\u0000<session>`, or `m:<message id>` for a message with
@@ -1883,10 +1884,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
+ * Then where refs link (INBOX_REF_LINK_RULE, 171 characters, on `body`):
+ * 9,591 bytes (+175, about +40 tokens, estimated). With the Board on, the
+ * card's `say` and `you` add a 36-character pointer each: 11,009 (+249,
+ * estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9416, tokens: 2600 };
+const INBOX_TOOL_COST_NOW = { bytes: 9591, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 10760, tokens: 3000 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11009, tokens: 3000 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
