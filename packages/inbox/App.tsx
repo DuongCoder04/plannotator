@@ -670,6 +670,8 @@ function Inbox() {
   const [replyDrafts, setReplyDrafts] = useState<InboxReplyDraftRow[]>([]);
   /** Raised when the open thread's reply draft changed (`event: drafts`): the thread reads it again. */
   const [draftChanged, setDraftChanged] = useState(0);
+  // Raised when the Inbox says a session it runs in the open thread changed (`event: runs`).
+  const [runsTick, setRunsTick] = useState(0);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState<string | null>(() => storage.getItem(COMPOSE_LAST_COOKIE));
   /** The one toast (Mark read, Archive) with its Undo, and what the live region last said. */
@@ -1129,6 +1131,7 @@ function Inbox() {
     let deliveriesTimer: ReturnType<typeof setTimeout> | null = null;
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
+    let runsTimer: ReturnType<typeof setTimeout> | null = null;
     let cardsTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
@@ -1182,6 +1185,13 @@ function Inbox() {
             void refreshDrafts();
           }, 80);
         },
+        // A session the Inbox runs changed (the ACP runner): its row ("Grok Build is working", a permission in
+        // Stopped on you, with its notice) and the open thread's run line.
+        onRuns: (change) => {
+          if (routeRef.current.thread && change.thread_ids.includes(routeRef.current.thread)) setRunsTick((n) => n + 1);
+          if (runsTimer) clearTimeout(runsTimer);
+          runsTimer = setTimeout(() => void refreshList(false).then((next) => next && flushNotifications(next)), 120);
+        },
         // The sidebar's pins changed (here, in another window, or a deleted thread left them): read `pins` again.
         onPins: () => {
           if (pinsTimer) clearTimeout(pinsTimer);
@@ -1215,6 +1225,7 @@ function Inbox() {
       if (draftsTimer) clearTimeout(draftsTimer);
       if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
+      if (runsTimer) clearTimeout(runsTimer);
     };
   }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
@@ -3606,6 +3617,7 @@ function Inbox() {
             onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
             replyRequest={replyFor}
             draftChanged={draftChanged}
+            runsVersion={runsTick}
             onReplyOpened={() => setReplyFor(null)}
             onQuestions={patchQuestions}
             onChanged={afterWrite}

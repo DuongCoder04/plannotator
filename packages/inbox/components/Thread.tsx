@@ -23,6 +23,8 @@ import type { OpenInSurface } from './OpenIn';
 import { stepsOf } from '../stepping';
 import { artifactKey, artifactOfFile, newestViewableFile, threadArtifacts } from '../artifacts';
 import { ArtifactsView } from './ArtifactsView';
+import { RunFoot, RunLine, runKeyOf, useRunStatus } from './RunLine';
+import { isInboxRunHost } from '@plannotator/core/inbox-acp';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
 import { fullScreenExit, type FrameMove } from '../fullScreenOrigin';
 import { takeArrivalFocus } from '../threadStep';
@@ -758,6 +760,8 @@ export interface ThreadPaneProps {
   onChanged: () => Promise<void>;
   /** Raised each time the Inbox says this thread's reply draft changed (`event: drafts`): the draft is read again. */
   draftChanged?: number;
+  /** Raised each time the Inbox says a session it runs in this thread changed (`event: runs`): its run line is read again. */
+  runsVersion?: number;
   onClose: () => void;
   /** The attachment open beside the thread (`#…&file=att_…`), its version, and an annotation to show. */
   file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null;
@@ -972,7 +976,12 @@ export function ackPillLine(
   time: (iso: string) => string = whenTime,
   connection?: RecipientConnection | null,
   now: number = Date.now(),
+  /** A session the Inbox runs: a 👍 starts no turn there, so it is never "delivered"; the session sees it when it reads the thread. */
+  runner = false,
 ): { state: AckPillState; text: string } {
+  if (runner && ack.settled_seq != null && !ack.not_sent) {
+    return { state: 'saved', text: `You, ${time(ack.at)} · Saved for ${agent}. It sees it when it next reads this thread.` };
+  }
   if (ack.delivered_at) {
     // Marked by the Inbox to go in by itself: say how it went in (into the running turn, or when it ended).
     const marked = ack.deliver_now_by === 'auto' && ack.deliver_now_at && ack.wait_started_at;
@@ -1013,16 +1022,19 @@ export function AckPill({
   agent,
   wakes = false,
   connection,
+  runner = false,
 }: {
   ack: NonNullable<InboxMessageWire['ack']>;
   agent: string;
   wakes?: boolean;
+  /** The message's session is one the Inbox runs (ackPillLine's `runner`). */
+  runner?: boolean;
   /** How the agent's session is connected now (the sessions route's `asker.connection`); undefined while unknown. */
   connection?: RecipientConnection | null;
 }) {
   // The wait on a busy session is written in whole minutes: its own clock, while the 👍 waits.
   const now = useMinuteClock(!ack.delivered_at && !!ack.note_id);
-  const line = ackPillLine(ack, agent, wakes, whenTime, connection, now);
+  const line = ackPillLine(ack, agent, wakes, whenTime, connection, now, runner);
   return (
     <p className="ib-ackpill" data-ack-pill={line.state}>
       <span className="ib-ackchip">
@@ -1071,7 +1083,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, runsVersion = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -3026,6 +3038,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // How that session is connected now ("Queued", "Sending", Send now), and, for compose, whether it
   // stopped before it took it (after the asker grace). Read every few seconds while the reply waits.
   const { model: pendingLive, load: loadPendingLive } = useLiveSessions(thread.thread_id, recipientSession, waitingOnWake, 3_000);
+  // A session the Inbox runs itself (the ACP runner): every person message gets its run line in place of the delivery line.
+  const runKey = runKeyOf(thread);
+  const { run: agentRun, reload: reloadRun } = useRunStatus(runKey, runsVersion);
+  const runChanged = () => {
+    void reloadRun();
+    void onChanged();
+  };
   const undelivered = !!lastTo && !last.delivery && pendingLive?.asker?.session === lastTo.session && pendingLive.asker.live === false;
   const recipientConnection = pendingLive?.asker?.session === recipientSession ? pendingLive?.asker?.connection : undefined;
   const ackConnection = ackWaiting && !replySession && pendingLive?.asker?.session === ackSession ? pendingLive.asker.connection : undefined;
@@ -3951,7 +3970,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 )}
                 {message.guide && <GuideCard guide={message.guide} onOpen={() => onOpenGuide(message.id)} />}
                 {isAgent && message.ack && (
-                  <AckPill ack={message.ack} agent={name} wakes={message.wakes === true} connection={message.id === ackWaiting?.id ? ackConnection : undefined} />
+                  <AckPill ack={message.ack} agent={name} wakes={message.wakes === true} connection={message.id === ackWaiting?.id ? ackConnection : undefined} runner={message.author.kind === 'agent' && isInboxRunHost(message.author.host)} />
                 )}
                 {message === lastAgent && liveMessage(lastAgent) && waitingHoldsUp.length > 0 && (
                   <div className="ib-waitfoot">
@@ -4007,7 +4026,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     {tagSendNow.error}
                   </p>
                 )}
-                {message === last && delivered?.wait && tagLines.length === 0 && (
+                {!isAgent && agentRun && <RunLine run={agentRun} messageId={message.id} onChanged={runChanged} />}
+                {message === last && !runKey && delivered?.wait && tagLines.length === 0 && (
                   // Waiting on a busy agent (approval "inbox-busy-agent-reply"): the band, with its own minute clock.
                   <UndeliveredBand
                     wait={delivered.wait}
@@ -4018,7 +4038,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     restartName={restartName}
                   />
                 )}
-                {message === last && delivered && !delivered.wait && tagLines.length === 0 && (
+                {message === last && !runKey && delivered && !delivered.wait && tagLines.length === 0 && (
                   // tabIndex -1: Send to another session puts focus here once it moved the message.
                   <div className="ib-delivered" data-delivery={delivered.state} data-auto={delivered.autoAfterMin !== undefined ? '' : undefined} tabIndex={-1}>
                     <span className="ib-dl-main">
@@ -4090,6 +4110,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         </div>
       )}
       <div className="ib-pfoot" hidden={artifactsOn}>
+        {agentRun && <RunFoot run={agentRun} phone={phone} />}
         {/* One status region, always mounted, so a screen reader announces the note when it appears. */}
         <div role="status" id={noteId} data-asker-note="">
           {showAskerNote && asking && <AskerEndedNote asking={asking} project={thread.project.name} anyLive={anyOtherLive} />}
