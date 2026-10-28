@@ -4312,6 +4312,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         })()}
         onSaved={saveRecord}
         onRemoved={dropRecord}
+        onToast={onToast}
         onOpenAt={(attachmentId, version, focus) => onOpenFile({ id: attachmentId, version, focus, view: currentView }, { replace: true })}
         onClose={() => {
           onOpenFile(null);
