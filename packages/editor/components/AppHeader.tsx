@@ -161,6 +161,7 @@ interface AppHeaderProps {
   onSaveToObsidian: () => void;
   onSaveToBear: () => void;
   onSaveToOctarine: () => void;
+  onSaveToNotion?: () => void;
 
   // PlanHeaderMenu config
   appVersion: string;
@@ -170,6 +171,7 @@ interface AppHeaderProps {
   obsidianConfigured: boolean;
   bearConfigured: boolean;
   octarineConfigured: boolean;
+  notionConfigured?: boolean;
 }
 
 export const AppHeader = React.memo<AppHeaderProps>(({
@@ -251,6 +253,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onSaveToObsidian,
   onSaveToBear,
   onSaveToOctarine,
+  onSaveToNotion,
   appVersion,
   updateInfo,
   isWSL,
@@ -258,6 +261,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   obsidianConfigured,
   bearConfigured,
   octarineConfigured,
+  notionConfigured = false,
 }) => {
   return (
     <header
@@ -519,12 +523,14 @@ export const AppHeader = React.memo<AppHeaderProps>(({
           onSaveToObsidian={onSaveToObsidian}
           onSaveToBear={onSaveToBear}
           onSaveToOctarine={onSaveToOctarine}
+          onSaveToNotion={onSaveToNotion}
           sharingEnabled={canShareCurrentSession}
           isApiMode={isApiMode}
           agentInstructionsEnabled={agentInstructionsEnabled}
           obsidianConfigured={!archiveMode && !goalSetupMode && obsidianConfigured}
           bearConfigured={!archiveMode && !goalSetupMode && bearConfigured}
           octarineConfigured={!archiveMode && !goalSetupMode && octarineConfigured}
+          notionConfigured={!archiveMode && !goalSetupMode && notionConfigured}
           compactTouchLayout={compactTouchLayout}
           compactSessionActions={compactSessionActions}
           compactDocumentActions={compactDocumentActions}
