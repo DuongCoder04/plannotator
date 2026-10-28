@@ -755,6 +755,27 @@ export interface InboxReplyCommand {
    */
   also_tagged?: string[]
   /**
+   * With `tagged`, on a reply that tags a session the person ADDED to the
+   * thread ("Add instead", approval "inbox-tag-handoff"): it works alongside
+   * the owner and gets the person's later replies there too. The wake takes
+   * INBOX_ADDED_INSTRUCTION and `inboxAddedLine`. An older connection words
+   * it as a tag, which stays true for this one reply. Absent otherwise.
+   */
+  added?: boolean
+  /**
+   * On a reply that hands the thread to this session ("Hand off instead"):
+   * the former owner's agent, named from its host. The wake takes
+   * INBOX_HANDOFF_INSTRUCTION and `inboxHandoffLine`. An older connection
+   * words it as a reply to it, which is true. Absent otherwise.
+   */
+  handoff?: { from: string }
+  /**
+   * The former owner's notice on a hand-off: the new owner's agent, named
+   * from its host. The body is `inboxHandedAwayLine` (so an older connection
+   * still says it), and the wake is that line alone. Absent otherwise.
+   */
+  handed_away?: { to: string }
+  /**
    * On the person's Re-ask note (approval "inbox-reask"): they asked the
    * session to ask its open questions in the thread again, together in one
    * message. The wake takes INBOX_REASK_INSTRUCTION instead of the reply's
@@ -812,13 +833,42 @@ export function inboxAlsoTaggedLine(names: readonly string[]): string {
 }
 
 /**
+ * The fixed second line of the wake of a session the person added to a
+ * thread another session owns ("Add instead", approval "inbox-tag-handoff").
+ */
+export const INBOX_ADDED_INSTRUCTION =
+  "The person added you to a Plannotator Inbox thread that another session owns: you work on it alongside that session, and their later replies in it come to you too. Their reply follows as they wrote it; parts of it may be meant for the other session."
+
+/** The line under INBOX_ADDED_INSTRUCTION: whose thread it is, read it first, answer in it. */
+export function inboxAddedLine(owner: string, id: string): string {
+  return `The thread's owner is ${owner}. If you have not read the thread yet, read it first with read_thread (message_id ${id}). Answer your part in the same thread: plannotator_inbox send_message with reply_to ${id}.`
+}
+
+/**
+ * The fixed second line of the wake of a session the person handed a thread
+ * to ("Hand off instead", approval "inbox-tag-handoff").
+ */
+export const INBOX_HANDOFF_INSTRUCTION =
+  "The person handed you this Plannotator Inbox thread: it is yours now, and their later replies in it come to you. Their reply follows as they wrote it."
+
+/** The line under INBOX_HANDOFF_INSTRUCTION: who had it, read it first, answer in it. */
+export function inboxHandoffLine(from: string, id: string): string {
+  return `Another session (${from}) had this thread before; you have not seen it. Read it first with read_thread (message_id ${id}), then answer in it: plannotator_inbox send_message with reply_to ${id}.`
+}
+
+/** The whole notice the former owner of a handed-off thread gets (and the body of its command). */
+export function inboxHandedAwayLine(to: string): string {
+  return `The person handed this thread to another session (${to}); their later replies in it go there. Stop work on it, and write in it only if they ask you to.`
+}
+
+/**
  * The only agent names a wake line may carry about ANOTHER agent (the owner
  * a tagged session is told about, the sessions also tagged, the session that
  * asked a redirected reply): the hosts' own names. An agent chooses its own
  * host string, and these lines go into another session's prompt, so any
  * other value reads as "another agent" (`agent` in the redirected line).
  */
-export const INBOX_WAKE_AGENT_NAMES: readonly string[] = ['Claude Code', 'Pi', 'OpenCode', 'Codex', 'Cursor', 'Grok Build']
+export const INBOX_WAKE_AGENT_NAMES: readonly string[] = ['Claude Code', 'Pi', 'OpenCode', 'Codex', 'Cursor', 'Grok Build', 'Qwen Code']
 
 /** An agent name a wake line carries: one of INBOX_WAKE_AGENT_NAMES (spacing folded), else '' (the caller says "another agent"). */
 function wakeName(value: unknown): string {
@@ -1013,6 +1063,9 @@ export function inboxWakeText(
     ack_of?: string
     tagged?: { owner?: unknown } | null
     also_tagged?: unknown
+    added?: unknown
+    handoff?: { from?: unknown } | null
+    handed_away?: { to?: unknown } | null
     reask?: boolean
     reask_items?: unknown
     reask_one?: unknown
@@ -1026,9 +1079,22 @@ export function inboxWakeText(
   }
   const closing = `\n\n${inboxWakeClosingLine(command.thread_id, toolName)}`
   const subject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || (command.type === 'message' ? 'a message' : 'a reply')
+  // The thread was handed to another session: the notice alone.
+  if (command.handed_away && typeof command.handed_away === 'object') {
+    const to = wakeName(command.handed_away.to) || 'another agent'
+    return `Plannotator Inbox: ${subject} (${command.id})\n${inboxHandedAwayLine(to)}${closing}`
+  }
+  // Handed this thread: it is this session's now; read it first.
+  if (command.handoff && typeof command.handoff === 'object') {
+    const from = wakeName(command.handoff.from) || 'another agent'
+    return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_HANDOFF_INSTRUCTION}\n${inboxHandoffLine(from, command.id)}\n\n${command.body}${closing}`
+  }
   // Tagged into a thread another session owns: what it is, then read the thread first.
   if (command.tagged && typeof command.tagged === 'object') {
     const owner = wakeName(command.tagged.owner) || 'another agent'
+    if (command.added === true) {
+      return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_ADDED_INSTRUCTION}\n${inboxAddedLine(owner, command.id)}\n\n${command.body}${closing}`
+    }
     return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}\n\n${command.body}${closing}`
   }
   const others = Array.isArray(command.also_tagged)
