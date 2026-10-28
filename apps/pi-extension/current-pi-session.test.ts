@@ -5,9 +5,9 @@ import {
 	notifyCurrentPiSession,
 	registerCurrentPiSession,
 	sendUserMessageToCurrentPiSession,
-	resolveIdleDeliveryOptions,
 	type CurrentPiSessionRegistration,
 } from "./current-pi-session.ts";
+import { setPiHost } from "./pi-host.ts";
 
 const registrations: CurrentPiSessionRegistration[] = [];
 
@@ -71,142 +71,34 @@ describe("current Pi session feedback routing", () => {
 	});
 });
 
-describe("resolveIdleDeliveryOptions", () => {
-	test("idle host drops deliverAs so the host starts a turn", () => {
-		expect(
-			resolveIdleDeliveryOptions({ isIdle: () => true }, { deliverAs: "followUp" }),
-		).toBeUndefined();
-	});
+describe("a message sent after a reload, while the agent is idle", () => {
+	// Oh My Pi only queues a message that names `deliverAs`, even when idle, so
+	// there the message must go without it to start a turn. Pi starts a turn
+	// either way and keeps its options exactly as before.
+	const cases = [
+		{ host: "oh-my-pi", idle: true, expected: undefined },
+		{ host: "oh-my-pi", idle: false, expected: { deliverAs: "followUp" } },
+		{ host: "pi", idle: true, expected: { deliverAs: "followUp" } },
+	] as const;
+	for (const { host, idle, expected } of cases) {
+		test(`${host}, ${idle ? "idle" : "busy"}: ${expected ? "keeps followUp" : "starts a turn"}`, () => {
+			setPiHost(host);
+			try {
+				const oldRuntime = registerSessionRuntime("same-session", [], []);
+				const origin = getPiSessionIdentity(oldRuntime.ctx);
+				const sent: unknown[] = [];
+				const replacement = registerCurrentPiSession({
+					sendUserMessage: (_content: unknown, options?: unknown) => sent.push(options),
+				} as unknown as ExtensionAPI);
+				registrations.push(replacement);
+				replacement.update(createContext("same-session", [], idle));
+				oldRuntime.registration.clear();
 
-	test("streaming host keeps deliverAs", () => {
-		expect(
-			resolveIdleDeliveryOptions({ isIdle: () => false }, { deliverAs: "followUp" }),
-		).toEqual({ deliverAs: "followUp" });
-	});
-
-	test("idle host keeps sibling options and drops only deliverAs", () => {
-		expect(
-			resolveIdleDeliveryOptions(
-				{ isIdle: () => true },
-				{ deliverAs: "followUp", expandPromptTemplates: true },
-			),
-		).toEqual({ expandPromptTemplates: true });
-	});
-
-	test("host without isIdle passes options through unchanged", () => {
-		expect(resolveIdleDeliveryOptions({}, { deliverAs: "followUp" })).toEqual({
-			deliverAs: "followUp",
+				expect(sendUserMessageToCurrentPiSession("feedback", { deliverAs: "followUp" }, origin)).toEqual({ ok: true });
+				expect(sent).toEqual([expected]);
+			} finally {
+				setPiHost("pi");
+			}
 		});
-	});
-
-	test("probe that throws passes options through unchanged", () => {
-		expect(
-			resolveIdleDeliveryOptions(
-				{
-					isIdle: () => {
-						throw new Error("probe exploded");
-					},
-				},
-				{ deliverAs: "followUp" },
-			),
-		).toEqual({ deliverAs: "followUp" });
-	});
-
-	test("undefined options stay undefined", () => {
-		expect(resolveIdleDeliveryOptions({ isIdle: () => true })).toBeUndefined();
-	});
-
-	test("options without deliverAs are untouched even when idle", () => {
-		expect(
-			resolveIdleDeliveryOptions({ isIdle: () => true }, { expandPromptTemplates: true }),
-		).toEqual({ expandPromptTemplates: true });
-	});
-
-	test("steer is also dropped when idle", () => {
-		expect(
-			resolveIdleDeliveryOptions({ isIdle: () => true }, { deliverAs: "steer" }),
-		).toBeUndefined();
-	});
-});
-
-describe("idle delivery through the current-session send path", () => {
-	test("idle replacement runtime drops deliverAs so the host starts a turn", () => {
-		const oldRuntime = registerSessionRuntime("same-session", [], []);
-		const origin = getPiSessionIdentity(oldRuntime.ctx);
-
-		const captured: Array<{ content: unknown; options: unknown }> = [];
-		const replacementPi = {
-			sendUserMessage: (content: unknown, options?: unknown) => {
-				captured.push({ content, options });
-			},
-		} as unknown as ExtensionAPI;
-		const replacement = registerCurrentPiSession(replacementPi);
-		registrations.push(replacement);
-		replacement.update(createContext("same-session", [], true));
-		oldRuntime.registration.clear();
-
-		const result = sendUserMessageToCurrentPiSession(
-			"annotation feedback",
-			{ deliverAs: "followUp" },
-			origin,
-		);
-
-		expect(result).toEqual({ ok: true });
-		expect(captured).toEqual([{ content: "annotation feedback", options: undefined }]);
-	});
-
-	test("streaming replacement runtime keeps deliverAs", () => {
-		const oldRuntime = registerSessionRuntime("same-session", [], []);
-		const origin = getPiSessionIdentity(oldRuntime.ctx);
-
-		const captured: Array<{ content: unknown; options: unknown }> = [];
-		const replacementPi = {
-			sendUserMessage: (content: unknown, options?: unknown) => {
-				captured.push({ content, options });
-			},
-		} as unknown as ExtensionAPI;
-		const replacement = registerCurrentPiSession(replacementPi);
-		registrations.push(replacement);
-		replacement.update(createContext("same-session", [], false));
-		oldRuntime.registration.clear();
-
-		const result = sendUserMessageToCurrentPiSession(
-			"annotation feedback",
-			{ deliverAs: "followUp" },
-			origin,
-		);
-
-		expect(result).toEqual({ ok: true });
-		expect(captured).toEqual([
-			{ content: "annotation feedback", options: { deliverAs: "followUp" } },
-		]);
-	});
-
-	test("isIdle on ExtensionAPI is ignored; the context is the probe", () => {
-		const oldRuntime = registerSessionRuntime("same-session", [], []);
-		const origin = getPiSessionIdentity(oldRuntime.ctx);
-
-		const captured: Array<{ content: unknown; options: unknown }> = [];
-		const lyingPi = {
-			isIdle: () => true,
-			sendUserMessage: (content: unknown, options?: unknown) => {
-				captured.push({ content, options });
-			},
-		} as unknown as ExtensionAPI;
-		const replacement = registerCurrentPiSession(lyingPi);
-		registrations.push(replacement);
-		replacement.update(createContext("same-session", [], false));
-		oldRuntime.registration.clear();
-
-		const result = sendUserMessageToCurrentPiSession(
-			"annotation feedback",
-			{ deliverAs: "followUp" },
-			origin,
-		);
-
-		expect(result).toEqual({ ok: true });
-		expect(captured).toEqual([
-			{ content: "annotation feedback", options: { deliverAs: "followUp" } },
-		]);
-	});
+	}
 });
