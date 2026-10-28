@@ -52,6 +52,9 @@ test('no keycap or aria-keyshortcuts is written by hand anywhere in the Inbox', 
     const text = readFileSync(file, 'utf8');
     text.split('\n').forEach((line, i) => {
       if (/^\s*(\*|\/\/)/.test(line)) return;
+      // The drawing screen's line names the image annotator's own keys (packages/ui ImageAnnotator: Enter adds,
+      // Escape cancels), which no Inbox scope binds; it is the one hand-written keycap.
+      if (name === join('components', 'Markup.tsx') && line.includes('className="ib-markkey"')) return;
       if (/<kbd[\s>]/.test(line) || /aria-keyshortcuts=["'`]/.test(line) || /aria-keyshortcuts=\{\s*["'`]/.test(line) || /aria-keyshortcuts=\{[^}]*\?\s*["'`]/.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
