@@ -203,6 +203,7 @@ export function registerInProcessSession(host: InProcessHost, info: Omit<Session
     const dir = inProcessDir(host);
     path = join(dir, `${process.pid}-${info.port}.json`);
     mkdirSync(dir, { recursive: true });
+    sweepDeadEntries(dir);
     writeAtomic(path, JSON.stringify({ ...info, pid: process.pid, host }, null, 2));
     ownInProcessFiles.add(path);
   } catch {
@@ -217,6 +218,24 @@ export function registerInProcessSession(host: InProcessHost, info: Omit<Session
   return () => {
     if (ownInProcessFiles.delete(path)) removeFile(path);
   };
+}
+
+/** Delete entries whose process is gone (a host killed by a signal), so none waits for a `plannotator sessions` run. */
+function sweepDeadEntries(dir: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const filePath = join(dir, entry);
+    try {
+      const { pid } = JSON.parse(readFileSync(filePath, "utf-8")) as { pid?: unknown };
+      if (typeof pid === "number" && !isAlive(pid)) removeFile(filePath);
+    } catch {}
+  }
 }
 
 function removeFile(path: string): void {

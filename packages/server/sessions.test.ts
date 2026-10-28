@@ -131,6 +131,15 @@ describe("in-process sessions (OpenCode)", () => {
     }
   });
 
+  test("registering removes entries whose process is gone, without waiting for a list", () => {
+    mkdirSync(opencodeDir(), { recursive: true });
+    const dead = deadPid();
+    writeFileSync(join(opencodeDir(), `${dead}-1.json`), JSON.stringify({ ...entry(1), pid: dead, host: "opencode" }));
+    const unlist = registerInProcessSession("opencode", entry(2));
+    expect(readdirSync(opencodeDir())).toEqual([`${process.pid}-2.json`]);
+    unlist();
+  });
+
   test("the process's exit removes its entries; a killed process's entry is dropped by the next list", async () => {
     const script = [
       `import { registerInProcessSession } from ${JSON.stringify(join(import.meta.dir, "sessions.ts"))};`,
