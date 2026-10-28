@@ -11,6 +11,7 @@
  */
 
 import type { ActionMark } from './components/ActionChecklist';
+import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
@@ -1922,32 +1923,26 @@ function Inbox() {
   };
 
   /**
-   * An action item's Done or Can't do it (approval "inbox-next-actions"): written at
-   * once, sent to the agent once the 10 s Undo window passes, as 👍 Looks
-   * good. `null` is the Undo. Resolves false when it was refused.
+   * An action item's Done or Can't do it (approval "inbox-action-items-in-reply"):
+   * into the reply draft, like a pick, sent only with the person's Send. No
+   * toast and no timer; `null` takes it back out of the draft. A note typed
+   * under the marked row saves quietly. Resolves the message's action items as
+   * saved, or null when it was refused.
    */
-  const markAction = async (threadId: string, messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }): Promise<boolean> => {
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<InboxQuestion[] | null> => {
+    let actions: InboxQuestion[];
     try {
-      await inboxApi.markAction(messageId, key, mark);
+      ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
     } catch (cause) {
-      showError(cause);
+      // A note typed while the item was sent elsewhere or replaced: the thread redraws it as it is now.
+      if (!isMootNoteRefusal(mark, cause)) showError(cause);
       await afterWrite();
-      return false;
+      return null;
     }
     await afterWrite();
-    if (!mark) {
-      dismissToast();
-      say('Action item moved back. Nothing was sent.');
-      return true;
-    }
-    showToast({
-      icon: mark.outcome === 'done' ? 'check' : 'warn',
-      lead: mark.outcome === 'done' ? 'Done' : "Can't do it",
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${info.agent} in 10 s`,
-      onUndo: () => void markAction(threadId, messageId, key, null, info),
-    });
-    return true;
+    if (!mark) say('Taken out of your draft.');
+    else if (!mark.quiet) say(mark.outcome === 'done' ? 'Done. It goes with your reply.' : "Can't do it. It goes with your reply.");
+    return actions;
   };
 
   /** Archive (the MCP's resolve) or Unarchive, with Undo. */
@@ -3447,7 +3442,7 @@ function Inbox() {
             row={openThreadRow}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
-            onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
+            onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
             onPin={pinsOn ? (next) => setPin(thread, next) : undefined}

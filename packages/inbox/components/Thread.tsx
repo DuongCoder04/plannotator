@@ -9,7 +9,8 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
-import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
+import { inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
+import { withoutInboxActionsSection } from '@plannotator/core/inbox-actions';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
@@ -63,7 +64,8 @@ import { ReaskNote } from './ReaskNote';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
-import { ReplyAnswers, SentAnswers, draftAnswerWords, type DraftAnswer } from './ReplyAnswers';
+import { ReplyAnswers, SentAnswers, draftAnswerWords, ReplyActions, type ActionRow, type DraftAnswer } from './ReplyAnswers';
+import { actionSavesSettled } from '../actionSaves';
 import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentReply';
 import { SkillsLine } from './SkillsLine';
 import { paintSkillReferences } from '../skillHighlight';
@@ -262,12 +264,20 @@ export function MessageBody({
   renderActions,
   comments,
   sentAnswers,
+  sentActions,
   onJumpQuestion,
   imageBase,
   onImage,
   pictureBadge,
   inlineRefOf,
 }: {
+  /**
+   * The action items this person's message carried (approval
+   * "inbox-action-items-in-reply"): listed as "You did 1 action item", and the
+   * agent-facing action sentence and "Action items you asked for" section are
+   * left out of the text. Display only.
+   */
+  sentActions?: readonly ActionRow[];
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
   projectRoot: string;
@@ -345,7 +355,11 @@ export function MessageBody({
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
   // is shown whole, whatever it says.
   const skills = useMemo(() => (message.author.kind === 'person' ? splitInboxSkillsBlock(message.body) : null), [message.author.kind, message.body]);
-  const sent = skills ? skills.before : message.body;
+  const actionsSent = (sentActions?.length ?? 0) > 0;
+  const sent = useMemo(() => {
+    const raw = skills ? skills.before : message.body;
+    return actionsSent ? withoutInboxActionsSection(raw) : raw;
+  }, [skills, message.body, actionsSent]);
   const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
   const shown = replyParts ? replyParts.words : sent;
   const restShown = replyParts ? replyParts.rest : '';
@@ -638,7 +652,7 @@ export function MessageBody({
     <ImageResolverContext.Provider value={resolveImage}>
     <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef}>
       {refCard}
-      {(!replyParts || shown !== '') && (
+      {(!(replyParts || actionsSent) || shown !== '') && (
       <Viewer
         ref={viewerRef}
         blocks={blocks}
@@ -679,6 +693,7 @@ export function MessageBody({
       />
       )}
       {replyParts && sentAnswers && sentAnswers.length > 0 && <SentAnswers groups={sentAnswers} onJump={onJumpQuestion} />}
+      {actionsSent && <ReplyActions actions={sentActions!} sent onJump={onJumpQuestion} />}
       {replyParts && restShown && (
         <div data-sent-rest="">
         <Viewer
@@ -791,12 +806,13 @@ export interface ThreadPaneProps {
    */
   onAck?: (messageId: string, on: boolean, agent: string) => void;
   /**
-   * An action item's Done or Can't do it (`mark`), or its Undo (`null`), approval
-   * "inbox-next-actions": the window writes it and shows the toast with
-   * Undo. Resolves false when it was refused. Absent: the pane writes it
-   * itself and reads the thread again.
+   * An action item's Done or Can't do it (`mark`) into the reply draft, or
+   * taking it back (`null`), approval "inbox-action-items-in-reply": the window
+   * writes it and reads the thread again. Resolves the message's action items
+   * as saved, or null when it was refused. Absent: the pane writes it itself
+   * and reads the thread again.
    */
-  onAction?: (messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }) => Promise<boolean>;
+  onAction?: (messageId: string, key: string, mark: ActionMark | null) => Promise<InboxQuestion[] | null>;
   /** Archive (`true`) or Unarchive. Absent: the pane calls the resolve route itself. */
   onArchive?: (archived: boolean) => void;
   /**
@@ -1079,17 +1095,24 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const ackOffered = onAck !== undefined && ackTarget !== null && !archived && !questionWaits && !personWroteLast;
   const ackOn = ackTarget?.ack != null;
 
-  // Action items: Done / Can't do it / Undo, through the window (its toast and Undo) or, without it, straight to the server.
-  const markAction = async (messageId: string, key: string, mark: ActionMark | null, agent: string, prompt: string): Promise<boolean> => {
-    if (onAction) return onAction(messageId, key, mark, { agent, prompt });
-    try {
-      await inboxApi.markAction(messageId, key, mark);
+  // Action items: Done / Can't do it into the reply draft, or taken back, through the window or, without it, straight to the server.
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<boolean> => {
+    let actions: InboxQuestion[] | null = null;
+    if (onAction) actions = await onAction(messageId, key, mark);
+    else {
+      try {
+        ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
+      } catch {
+        // Refused: reading the thread again shows it as it is.
+      }
       await onChanged();
-      return true;
-    } catch {
-      await onChanged();
-      return false;
     }
+    if (!actions) return false;
+    // A Send waiting on this save reads the thread right after it, before React draws it: give it the saved items now.
+    const saved = actions;
+    const latest = threadRef.current;
+    threadRef.current = { ...latest, messages: latest.messages.map((m) => (m.id === messageId ? { ...m, actions: saved } : m)) };
+    return true;
   };
 
   // Picks saved at once; shown before the server answers, then from the server.
@@ -2347,8 +2370,20 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     setStale([]);
     setGuard(false);
   };
-  /** Picks or annotations wait for a Send. */
-  const waiting = picksCount > 0 || records.length > 0;
+  // The action items whose Done or Can't do it waits in the draft (approval "inbox-action-items-in-reply"):
+  // listed in the reply box, counted beside Send ("Draft · 1 done"), carried by the Send.
+  const draftActions: ActionRow[] = thread.messages.flatMap((m) =>
+    m.author.kind !== 'agent'
+      ? []
+      : (m.actions ?? []).flatMap((a) => {
+          const mine = inboxActionInDraft(a) ? inboxActionPersonMark(a.action_result) : null;
+          if (!mine) return [];
+          return [{ id: `${m.id}/${a.key}`, messageId: m.id, number: a.position + 1, prompt: a.prompt, outcome: mine.outcome, note: mine.note, seen: a.action_result?.by === 'agent' }];
+        }),
+  );
+  const draftCant = draftActions.filter((a) => a.outcome === 'cant' && !a.seen).length;
+  /** Picks, annotations or action items wait for a Send. */
+  const waiting = picksCount > 0 || records.length > 0 || draftActions.length > 0;
   /** The box is closed and its words are kept as a draft (Cancel or Escape kept them): Edit draft brings them back. */
   const draftKept = !box.open && (replyDraft.draft !== null || replyDraft.conflict !== null);
 
@@ -2367,6 +2402,24 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           return [{ id, messageId: m.id, key: q.key, number: q.position + 1, prompt: q.prompt, answer: draftAnswerWords(answer), messageName: `${agentName(m.author)}'s message, ${whenTime(m.created_at)}` }];
         }),
   );
+
+  // The action items each of the person's messages carried (its reply, or the report the timed path sent):
+  // listed under its words as "You did 1 action item" (approval "inbox-action-items-in-reply").
+  const sentActionsByReply = useMemo(() => {
+    const out = new Map<string, ActionRow[]>();
+    for (const m of thread.messages) {
+      for (const a of m.actions ?? []) {
+        const result = a.action_result;
+        const mine = inboxActionPersonMark(result);
+        if (!result || !mine || !a.sent_reply_id || a.revision === 0 || a.sent_revision !== a.revision) continue;
+        out.set(a.sent_reply_id, [
+          ...(out.get(a.sent_reply_id) ?? []),
+          { id: `${m.id}/${a.key}`, messageId: m.id, number: a.position + 1, prompt: a.prompt, outcome: mine.outcome, note: mine.note, seen: result.by === 'agent' },
+        ]);
+      }
+    }
+    return out;
+  }, [thread.messages]);
 
   // The person's own sent replies are drawn in their words, with the answers they carried as a
   // short list read from the questions (sentReply.ts): never the agent-facing answers section.
@@ -2556,6 +2609,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const requests: { messageId: string; input: Parameters<typeof inboxApi.reply>[1] }[] = [];
     let sentUploads: string[] = [];
     try {
+      // A Done or a note under an action item still on its way (a note saves on leaving its field): answered first.
+      await actionSavesSettled();
       await pickChain.current;
       const current = threadRef.current;
       // The box's words, or (the box closed) the words kept as its draft: the foot's Send carries them too.
@@ -2610,9 +2665,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       const pendingAnnotations = records;
       const uploads = box.open ? replyUploads : [];
       const carries = words !== '' || pendingAnnotations.length > 0 || uploads.length > 0;
-      // One reply per session. The latest agent message rides last only to carry the words, the
-      // annotations and the pasted files; with none, a target with nothing to send is left out.
-      const plain = sendTargetsOf(current, skip).filter((t, index, all) => t.questions.length > 0 || t.skip.length > 0 || (carries && index === all.length - 1));
+      // One reply per session, its picks, skips and action items in the draft. The latest agent message rides
+      // last only to carry the words, the annotations and the pasted files; with none, a target with nothing to
+      // send is left out.
+      const plain = sendTargetsOf(current, skip).filter(
+        (t, index, all) => t.questions.length > 0 || t.skip.length > 0 || t.actions.length > 0 || (carries && index === all.length - 1),
+      );
       // A comment on another session's message rides a reply to that message (routeSendAnnotations).
       const { targets, carried } = routeSendAnnotations(current, plain, pendingAnnotations);
       if (targets.length === 0) {
@@ -2665,6 +2723,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           words: last ? words : '',
           questions: target.questions,
           ...(target.skip.length > 0 ? { skip: target.skip } : {}),
+          ...(target.actions.length > 0 ? { actions: target.actions } : {}),
           ...(feedback ? { feedback } : {}),
           ...(own.length > 0 ? { annotation_ids: own.map((r) => r.id) } : {}),
           // The pasted files ride the reply that carries the words, as attachments.
@@ -3671,6 +3730,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 <MessageBody
                   message={message}
                   sentAnswers={message.author.kind === 'person' ? (sentAnswersByReply.get(message.id) ?? NO_SENT_ANSWERS) : undefined}
+                  sentActions={message.author.kind === 'person' ? sentActionsByReply.get(message.id) : undefined}
                   onJumpQuestion={jumpTo}
                   projectRoot={thread.project.root}
                   repo={thread.project.repo ?? null}
@@ -3691,7 +3751,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                               actions={records}
                               agent={name}
                               readOnly={!liveMessage(message)}
-                              onMark={(action, mark) => markAction(message.id, action.key, mark, name, action.prompt)}
+                              onMark={(action, mark) => markAction(message.id, action.key, mark)}
                             />
                           ),
                         }
@@ -3998,6 +4058,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 </div>
               )}
               {draftAnswers.length > 0 && <ReplyAnswers answers={draftAnswers} onJump={jumpTo} />}
+              {draftActions.length > 0 && <ReplyActions actions={draftActions} onJump={jumpTo} />}
               {(draftAnswers.length > 0 || dropped.length > 0 || takesAnnotations || unanswered.length > 0) && (
                 <div className={`ib-rfoot${keepOpen ? ' ib-keep' : ''}`}>
                   {/* The answers the list above shows, a pick still being saved included, so the two numbers agree. */}
@@ -4152,7 +4213,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             </div>
             {(waiting || draftKept) && (
               <div className="ib-footstatus" data-foot-status="">
-                <DraftFootNote id={draftNoteId} unsent={{ reply: draftKept, picks: picksCount, comments: records.length }} />
+                <DraftFootNote id={draftNoteId} unsent={{ reply: draftKept, picks: picksCount, comments: records.length, done: draftActions.length - draftCant, cant: draftCant }} />
                 {waiting && unanswered.length > 0 && (
                   <span className={keepOpen ? 'ib-keep' : undefined}>
                     <SkipChip id={skipNoteId} count={keepOpen ? unanswered.length : skipIds.size} keepOpen={keepOpen} onToggle={toggleKeepOpen} />
