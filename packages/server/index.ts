@@ -27,9 +27,12 @@ import {
   saveToObsidian,
   saveToBear,
   saveToOctarine,
+  saveToNotion,
+  isNotionAvailable,
   type ObsidianConfig,
   type BearConfig,
   type OctarineConfig,
+  type NotionConfig,
   type IntegrationResult,
 } from "./integrations";
 import {
@@ -269,6 +272,8 @@ export async function startPlannotatorServer(
   };
 
   const isRemote = isRemoteSession();
+  // Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
+  const notionAvailable = isNotionAvailable(isRemote);
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for,
   // and never in remote mode, where anyone who reaches the URL could drive the user's gh / glab.
   const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
@@ -527,7 +532,7 @@ export async function startPlannotatorServer(
                 ...getUpdateAdvert(origin, { exposed: isRemote }),
               });
             }
-            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(planDocumentDrafts ? { documentDrafts: true } : {}),...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
+            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(planDocumentDrafts ? { documentDrafts: true } : {}),...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, ...(notionAvailable ? { notion: true } : {}), serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
           }
 
           // API: The live plan revision (open reviews that receive revised plans)
@@ -765,7 +770,7 @@ export async function startPlannotatorServer(
 
           // API: Save to notes (decoupled from approve/deny)
           if (url.pathname === "/api/save-notes" && req.method === "POST") {
-            return handleSaveNotes(req, { serverSession });
+            return handleSaveNotes(req, { serverSession, notion: notionAvailable });
           }
 
           // API: Approve plan
@@ -786,6 +791,7 @@ export async function startPlannotatorServer(
                 obsidian?: ObsidianConfig;
                 bear?: BearConfig;
                 octarine?: OctarineConfig;
+                notion?: NotionConfig;
                 feedback?: string;
                 agentSwitch?: string;
                 planSave?: { enabled: boolean; customPath?: string };
@@ -826,6 +832,9 @@ export async function startPlannotatorServer(
               }
               if (body.octarine?.plan && body.octarine?.workspace) {
                 integrationPromises.push(saveToOctarine(body.octarine).then(r => { integrationResults.octarine = r; }));
+              }
+              if (notionAvailable && body.notion?.plan && body.notion?.parentPageId) {
+                integrationPromises.push(saveToNotion(body.notion).then(r => { integrationResults.notion = r; }));
               }
               await Promise.allSettled(integrationPromises);
 
