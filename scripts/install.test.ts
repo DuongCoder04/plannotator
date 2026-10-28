@@ -4915,7 +4915,7 @@ describe.skipIf(process.platform === "win32")("Qwen Code integration (install.sh
     if (opts.qwenCli ?? true) writeFakeQwen(sandbox.stub);
     const log = join(sandbox.home, "qwen-calls.log");
     const run = (args: string[] = [], env: Record<string, string> = {}) =>
-      runInstallSh(sandbox, [...QWEN_ARGS, ...args], { FAKE_QWEN_LOG: log, PLANNOTATOR_DATA_DIR: data, ...env });
+      runInstallSh(sandbox, [...QWEN_ARGS, ...args], { FAKE_QWEN_LOG: log, FAKE_QWEN_HOME: sandbox.home, PLANNOTATOR_DATA_DIR: data, ...env });
     const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
     const calls = () => lines().map((line) => line.slice(line.indexOf("|") + 1));
     const extensionCalls = () => calls().filter((call) => call.startsWith("extensions "));
@@ -5328,7 +5328,7 @@ function qwenPsEnv(s: QwenPsSandbox, env: Record<string, string>): Record<string
           TMP: join(s.root, "tmp"),
         }
       : { PATH: `${s.stub}:/usr/bin:/bin`, HOME: s.root, TMPDIR: join(s.root, "tmp") };
-  return { ...base, QWEN_HOME: s.qwenDir, FAKE_QWEN_LOG: s.log, ...env };
+  return { ...base, QWEN_HOME: s.qwenDir, FAKE_QWEN_HOME: s.root, FAKE_QWEN_LOG: s.log, ...env };
 }
 
 function spawnPs(shell: string, s: QwenPsSandbox, body: string, env: Record<string, string>) {

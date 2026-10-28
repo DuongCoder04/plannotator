@@ -16,22 +16,30 @@
  *   when its version differs. It keeps the policy, refuses a linked extension,
  *   and exits 0 even when it fails (Qwen writes the error to stderr).
  *
- * Failure knobs: FAKE_QWEN_HANG (any command waits 30 s), FAKE_QWEN_INSTALL_FAIL,
+ * FAKE_QWEN_HOME names the sandbox home (required). Failure knobs: FAKE_QWEN_HANG (any command waits 30 s), FAKE_QWEN_INSTALL_FAIL,
  * FAKE_QWEN_UNINSTALL_FAIL, FAKE_QWEN_UPDATE_FAIL.
  */
 import { createHash } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
 if (process.env.FAKE_QWEN_LOG) appendFileSync(process.env.FAKE_QWEN_LOG, `${process.cwd()}|${args.join(" ")}\n`);
 
+// The home folder Qwen would use. The tests name their sandbox home in
+// FAKE_QWEN_HOME; without it the fake refuses to run, so it can never act on
+// a real home folder.
+function sandboxHome(): string {
+  const value = process.env.FAKE_QWEN_HOME;
+  if (!value) fail("fake qwen: FAKE_QWEN_HOME is not set", 3);
+  return value;
+}
+
 function qwenHome(): string {
   const value = process.env.QWEN_HOME;
-  if (!value) return join(homedir(), ".qwen");
-  if (value === "~") return homedir();
-  if (value.startsWith("~/") || value.startsWith("~\\")) return join(homedir(), value.slice(2));
+  if (!value) return join(sandboxHome(), ".qwen");
+  if (value === "~") return sandboxHome();
+  if (value.startsWith("~/") || value.startsWith("~\\")) return join(sandboxHome(), value.slice(2));
   return value;
 }
 
