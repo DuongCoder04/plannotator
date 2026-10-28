@@ -53,6 +53,8 @@ import { ImportModal } from '@plannotator/ui/components/ImportModal';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Annotation, AnnotationType, Block, EditorMode, type CodeAnnotation, type DocumentRenderAs, type InputMethod, type ImageAttachment, type ActionsLabelMode } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
+import { RefHoverCards } from '@plannotator/ui/components/RefHoverCard';
+import { refCardRouteTransport, setRefCardTransport } from '@plannotator/ui/utils/refCard';
 import { Tooltip, TooltipProvider } from '@plannotator/ui/components/Tooltip';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { StickyHeaderLane } from '@plannotator/ui/components/StickyHeaderLane';
@@ -99,6 +101,13 @@ import {
   needsTerminalToolsAnnouncement,
   terminalToolsAnnouncementCanShow,
 } from '@plannotator/ui/utils/terminalToolsAnnouncement';
+import { InboxAnnouncementDialog } from '@plannotator/ui/components/InboxAnnouncementDialog';
+import {
+  inboxAnnouncementEligible,
+  isVSCodeWebview,
+  markInboxAnnouncementSeen,
+  needsInboxAnnouncement,
+} from '@plannotator/ui/utils/inboxAnnouncement';
 import { AskSessionAnnouncementDialog } from '@plannotator/ui/components/AskSessionAnnouncementDialog';
 import {
   askSessionAnnouncementEligible,
@@ -629,6 +638,11 @@ const App: React.FC = () => {
   useEffect(() => {
     if (isApiMode) primeSkillCatalog();
   }, [isApiMode]);
+  // Hover cards for issue, PR and MR links (ui RefHoverCard): the server reads them with this
+  // computer's gh / glab (GET /api/ref, ref-cards.ts). Only when a Plannotator server serves
+  // the page, never on a share link. A card shows only when the forge answered (`onlyWithData`).
+  // (The transport is installed further down, once `isSharedSession` exists.)
+  const refCardRootRef = useRef<HTMLDivElement>(null);
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [gitUser, setGitUser] = useState<string | undefined>();
   const [isWSL, setIsWSL] = useState(false);
@@ -867,6 +881,9 @@ const App: React.FC = () => {
   const [terminalToolsIntroPending, setTerminalToolsIntroPending] = useState(
     needsTerminalToolsAnnouncement,
   );
+  // One-time Plannotator Inbox announcement, after the terminal-tools one
+  // (never on the same load). Latched at mount for the same reason.
+  const [inboxIntroPending, setInboxIntroPending] = useState(needsInboxAnnouncement);
   // One-time "Ask this session" announcement, after the terminal-tools one
   // (never on the same load). Latched at mount for the same reason.
   const [askSessionIntroPending, setAskSessionIntroPending] = useState(
@@ -1242,6 +1259,11 @@ const App: React.FC = () => {
   const dismissTerminalToolsAnnouncement = useCallback(() => {
     markTerminalToolsAnnouncementSeen();
     setTerminalToolsIntroPending(false);
+  }, []);
+
+  const dismissInboxAnnouncement = useCallback(() => {
+    markInboxAnnouncementSeen();
+    setInboxIntroPending(false);
   }, []);
 
   const dismissAskSessionAnnouncement = useCallback(() => {
@@ -2754,6 +2776,14 @@ const App: React.FC = () => {
       setActionsLabelMode((prev) => (prev === next ? prev : next));
     });
   }, [isLoading, isSharedSession]);
+
+  // Hover cards (see refCardRootRef above): the transport over GET /api/ref, only while a
+  // Plannotator server serves the page, never for a share link.
+  useEffect(() => {
+    if (!isApiMode || isSharedSession) return;
+    setRefCardTransport(refCardRouteTransport('/api/ref'));
+    return () => setRefCardTransport(null);
+  }, [isApiMode, isSharedSession]);
 
   // The user's current direct-edit text: the open editor buffer, else the
   // last commit; null when there is none or it matches the baseline. Never
@@ -6974,6 +7004,32 @@ const App: React.FC = () => {
     otherFirstRunDialogVisible:
       shouldShowLookAndFeelAnnouncement || goalSetupMode || showPermissionModeSetup,
   });
+  const terminalToolsShownThisLoad = useLatchedTrue(shouldShowTerminalToolsAnnouncement);
+  // The Plannotator Inbox announcement: after the terminal-tools one (never on
+  // the same load: that one takes the load while it is pending and can show
+  // here, i.e. not on the compact shell), before "Ask this session" and the
+  // agent-tool offer, which wait while this one takes the load. Shown on the
+  // compact shell too; never in the VS Code webview. Same first-run window.
+  const inboxEligibleNow = inboxAnnouncementEligible({
+    announcementPending: inboxIntroPending,
+    isLoading,
+    readOnlySession: isSharedSession || archive.archiveMode || !isApiMode,
+    vscodeWebview: isVSCodeWebview(),
+    otherFirstRunDialogVisible:
+      shouldShowLookAndFeelAnnouncement
+      || goalSetupMode
+      || showPermissionModeSetup
+      || shouldShowTerminalToolsAnnouncement,
+    earlierAnnouncementTakesThisLoad:
+      terminalToolsShownThisLoad || (terminalToolsIntroPending && !isCompactTouchLayout),
+  });
+  const showInboxAnnouncement = useFirstRunAnnouncementWindow({
+    pending: inboxIntroPending,
+    armed: !isLoading,
+    eligible: inboxEligibleNow,
+  });
+  const inboxShownThisLoad = useLatchedTrue(showInboxAnnouncement);
+  const inboxTakesThisLoad = inboxShownThisLoad || inboxEligibleNow;
   // After the terminal-tools announcement, and only while this session is
   // actually connected to its agent (Claude Code, Pi, OpenCode) and Ask AI is
   // reachable here (not taken over by the annotate agent terminal). It may
@@ -6991,7 +7047,8 @@ const App: React.FC = () => {
       shouldShowLookAndFeelAnnouncement
       || goalSetupMode
       || showPermissionModeSetup
-      || shouldShowTerminalToolsAnnouncement,
+      || shouldShowTerminalToolsAnnouncement
+      || inboxTakesThisLoad,
   });
   const showAskSessionAnnouncement = useFirstRunAnnouncementWindow({
     pending: askSessionIntroPending,
@@ -7019,9 +7076,11 @@ const App: React.FC = () => {
         || goalSetupMode
         || showPermissionModeSetup
         || shouldShowTerminalToolsAnnouncement
+        || showInboxAnnouncement
         || showAskSessionAnnouncement,
       earlierAnnouncementMayShow:
-        askSessionShownThisLoad
+        inboxTakesThisLoad
+        || askSessionShownThisLoad
         || (askSessionIntroPending && (!aiCapabilitiesSettled || askSessionEligibleNow)),
     }),
   });
@@ -7035,6 +7094,7 @@ const App: React.FC = () => {
       || goalSetupMode
       || showPermissionModeSetup
       || shouldShowTerminalToolsAnnouncement
+      || showInboxAnnouncement
       || showAskSessionAnnouncement
       || showAgentToolAnnouncement,
     autoUpdateActive,
@@ -7291,12 +7351,14 @@ const App: React.FC = () => {
     <ThemeProvider defaultTheme="dark" manageFavicon>
       <TooltipProvider disableHoverableContent>
       <div
+        ref={refCardRootRef}
         data-print-region="root"
         data-pn-browser-canvas={browserCanvas}
         data-pn-compact-touch-layout={usesDocumentScroll ? 'true' : undefined}
         data-pn-document-scroll={usesDocumentScroll ? 'true' : undefined}
         className={`pn-app-viewport flex flex-col ${usesDocumentScroll ? 'overflow-visible' : 'overflow-hidden'} ${browserCanvas === 'card' ? 'bg-card' : 'bg-background'}`}
       >
+        <RefHoverCards rootRef={refCardRootRef} onlyWithData />
         <AppHeader
           sticky={!usesDocumentScroll}
           htmlSurface={isHtmlSurface}
@@ -8265,6 +8327,12 @@ const App: React.FC = () => {
             isOpen
             onDismiss={dismissTerminalToolsAnnouncement}
           />
+        )}
+
+        {/* One-time Plannotator Inbox announcement, shared with the code
+            review editor; after terminal tools, before "Ask this session". */}
+        {showInboxAnnouncement && (
+          <InboxAnnouncementDialog isOpen onDismiss={dismissInboxAnnouncement} />
         )}
 
         {/* One-time "Ask this session" announcement, last in the chain. */}
