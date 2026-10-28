@@ -31,7 +31,7 @@
  * CLIs; the real agent CLIs are never run by a test.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { spawn as spawnChild } from "node:child_process";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
@@ -53,6 +53,7 @@ import {
   type InboxToolHost,
 } from "@plannotator/shared/config";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
+import { qwenHome } from "@plannotator/shared/inbox/qwen-sessions";
 import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
@@ -288,6 +289,10 @@ export function openCodeConfigDir(e: AgentEnvironment): string {
 export function geminiDir(e: AgentEnvironment): string {
   return join(envDir(e, "GEMINI_CLI_HOME") ?? e.homeDir, ".gemini");
 }
+/** Qwen Code's folder: `$QWEN_HOME` itself when set (a relative one against the working folder, as Qwen does), else `~/.qwen`. */
+export function qwenDir(e: AgentEnvironment): string {
+  return qwenHome(e.env, e.homeDir, process.cwd());
+}
 /** The Claude desktop app's settings folder on this platform. */
 export function claudeAppDir(e: AgentEnvironment): string {
   if (e.platform === "darwin") return join(e.homeDir, "Library", "Application Support", "Claude");
@@ -464,6 +469,14 @@ interface AgentSpec {
   raw(e: AgentEnvironment): RawEntry | null;
   /** How uninstall removes it, when not a JSON key. */
   remove?: { bin: string; args: string[] };
+  /**
+   * The settings file's MCP servers key, for an agent whose own CLI edits a
+   * JSON settings file Plannotator must never leave broken (Qwen Code): the
+   * CLI is not run on a read-only file, and after an add or a remove the file
+   * must still parse and hold every other server it held, or its bytes are put
+   * back (`guardedSettingsRun`).
+   */
+  guard?: readonly string[];
 }
 
 const NAME = INBOX_MCP_SERVER_NAME;
@@ -672,7 +685,9 @@ export function claudeCodeInboxToolOn(e: AgentEnvironment): boolean {
  * build older than its `mcp add` is left to the person: Pi before 0.99 (no
  * `pi mcp`: it would read the words as a chat prompt and run a model turn),
  * Codex CLI before 0.35.0 (`codex mcp add` landed in rust-v0.35.0, Sep 2025)
- * and Gemini CLI before 0.1.19 (`gemini mcp add`, Aug 2025). Read with no
+ * Gemini CLI before 0.1.19 (`gemini mcp add`, Aug 2025) and Qwen Code before
+ * 0.0.8 (its first `qwen mcp add`; an older `qwen` might read the words as a
+ * prompt). Read with no
  * stdin, under the limit.
  */
 const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, number]; older?: string; manual: string }> = {
@@ -688,6 +703,12 @@ const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, numb
     older: "Gemini CLI before 0.1.19 has no `gemini mcp add`; update Gemini CLI, or add plannotator-inbox to its settings.json by hand",
     manual: "this gemini did not answer like Gemini CLI",
   },
+  qwen: {
+    line: /^(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/,
+    min: [0, 0, 8],
+    older: "Qwen Code before 0.0.8 has no `qwen mcp add`; update Qwen Code, or add plannotator-inbox to its settings.json by hand",
+    manual: "this qwen did not answer like Qwen Code",
+  },
   devin: { line: /^devin (\d+)\.(\d+)\.(\d+)\b/, manual: "this devin did not answer like Devin" },
   amp: { line: /^(\d+)\.(\d+)\.(\d+)-g[0-9a-f]+\b/, manual: "this amp did not answer like Sourcegraph Amp" },
   pi: {
@@ -696,6 +717,79 @@ const VERSION_SHAPES: Record<string, { line: RegExp; min?: [number, number, numb
     manual: "Pi before 0.99 has no `pi mcp`; update Pi, or add plannotator-inbox to ~/.pi/agent/mcp.json by hand",
   },
 };
+
+/** A guarded settings file as it was before its agent's CLI ran (see `AgentSpec.guard`). */
+interface SettingsSnapshot {
+  path: string;
+  target: string;
+  /** The file's text and how to write it back; null: there was no file. */
+  before: { text: string; bom: boolean; mode: number } | null;
+  /** The MCP servers it held. */
+  servers: string[];
+}
+
+/** The server names under `keys` in a JSON(C) text, or null when the text does not parse. */
+function settingsServers(text: string, keys: readonly string[]): string[] | null {
+  if (!text.trim()) return [];
+  try {
+    const value = at(JSON.parse(stripJsonComments(text)), keys);
+    return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value) : [];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Before an agent's CLI edits its settings file: refuse a file that cannot be
+ * read, does not parse, or is read-only (the CLI is then never run, so the
+ * file stays exactly as it was), else keep its bytes to put back.
+ */
+function snapshotSettings(path: string, keys: readonly string[], e: AgentEnvironment): { ok: true; snapshot: SettingsSnapshot } | { ok: false; reason: string } {
+  const read = readAgentFile(path);
+  const shown = displayPath(path, e);
+  if (read.kind === "refused") return { ok: false, reason: `${shown} can't be read (${read.reason}), so Plannotator left it as it was` };
+  if (read.kind === "missing") return { ok: true, snapshot: { path, target: read.target, before: null, servers: [] } };
+  const servers = settingsServers(read.text, keys);
+  if (servers === null) return { ok: false, reason: `${shown} is not valid JSON, so Plannotator left it as it was` };
+  let writable = (read.mode & 0o200) !== 0;
+  try {
+    accessSync(read.target, fsConstants.W_OK);
+  } catch {
+    writable = false;
+  }
+  if (!writable) return { ok: false, reason: `${shown} is read-only, so Plannotator left it as it was` };
+  return { ok: true, snapshot: { path, target: read.target, before: { text: read.text, bom: read.bom, mode: read.mode }, servers } };
+}
+
+/**
+ * After the CLI ran (whatever its exit): the file must still parse and hold
+ * every server it held (`keep`: the ones it may have dropped, i.e. ours on a
+ * remove). Otherwise its bytes are put back (a file that was not there is
+ * removed) and the reason is returned; null when the file is intact.
+ */
+function settingsIntact(snapshot: SettingsSnapshot, keys: readonly string[], drop: string | null, e: AgentEnvironment): string | null {
+  const read = readAgentFile(snapshot.path);
+  let problem: string | null = null;
+  if (read.kind === "refused") problem = `it can't be read (${read.reason})`;
+  else if (read.kind === "missing") problem = snapshot.before ? "it is gone" : null;
+  else {
+    const servers = settingsServers(read.text, keys);
+    if (servers === null) problem = "it is not valid JSON";
+    else {
+      const lost = snapshot.servers.filter((name) => name !== drop && !servers.includes(name));
+      if (lost.length > 0) problem = `it lost ${lost.length === 1 ? "the server" : "the servers"} ${lost.map((name) => JSON.stringify(name)).join(", ")}`;
+    }
+  }
+  if (!problem) return null;
+  const shown = displayPath(snapshot.path, e);
+  try {
+    if (snapshot.before) writeAgentFileAtomic(snapshot.target, withBom(snapshot.before.text, snapshot.before.bom), snapshot.before.mode);
+    else rmSync(snapshot.target, { force: true });
+  } catch (error) {
+    return `${shown} was left changed (${problem}) and could not be put back (${describeFsError(error)})`;
+  }
+  return `${shown} was changed in a way Plannotator did not expect (${problem}), so Plannotator put it back as it was`;
+}
 
 async function cliWay(
   e: AgentEnvironment,
@@ -747,6 +841,15 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     file: (e) => join(geminiDir(e), "settings.json"),
     raw: (e) => rawJsonEntry(join(geminiDir(e), "settings.json"), ["mcpServers"], true),
     remove: { bin: "gemini", args: ["mcp", "remove", "-s", "user", NAME] },
+  },
+  {
+    id: "qwen",
+    detect: (e) => !!e.which("qwen") || isDir(qwenDir(e)),
+    way: (e, probe) => cliWay(e, "qwen", (cmd) => ["mcp", "add", "-s", "user", NAME, ...cmd], ["mcp", "remove", "-s", "user", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
+    file: (e) => join(qwenDir(e), "settings.json"),
+    raw: (e) => rawJsonEntry(join(qwenDir(e), "settings.json"), ["mcpServers"], true),
+    remove: { bin: "qwen", args: ["mcp", "remove", "-s", "user", NAME] },
+    guard: ["mcpServers"],
   },
   {
     id: "cursor",
@@ -1087,7 +1190,12 @@ async function connectOne(spec: AgentSpec, options: ConnectOptions, at: string):
   }
   const bin = e.which(way.bin);
   if (!bin) return { kind: "manual", why: `${way.bin} is not on PATH` };
+  const guard = spec.guard && file ? snapshotSettings(file, spec.guard, e) : null;
+  if (guard && !guard.ok) return { kind: "failed", reason: guard.reason, path: file };
   const ran = await e.run([bin, ...way.add(command)], { timeoutMs });
+  // Whatever the CLI did (it may have been stopped mid-write), the file must still parse and keep the person's servers.
+  const broken = guard?.ok ? settingsIntact(guard.snapshot, spec.guard!, null, e) : null;
+  if (broken) return { kind: "failed", reason: broken, path: file };
   if (ran.timedOut) return { kind: "failed", reason: `${way.bin} mcp add did not finish within ${formatSeconds(timeoutMs)}`, path: file };
   if (ran.exitCode !== 0) {
     const why = firstLine(ran.stderr) || firstLine(ran.stdout);
@@ -1350,7 +1458,11 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       agent: spec.id,
       describe: `MCP server ${NAME} from ${label} (${remove.bin} ${remove.args.join(" ")})`,
       apply: async () => {
+        const settings = spec.guard && path ? snapshotSettings(path, spec.guard, e) : null;
+        if (settings && !settings.ok) return settings.reason;
         const ran = await e.run([bin, ...remove.args], { timeoutMs: INBOX_CONNECT_AGENT_TIMEOUT_MS });
+        const broken = settings?.ok ? settingsIntact(settings.snapshot, spec.guard!, NAME, e) : null;
+        if (broken) return broken;
         if (ran.timedOut) return `${remove.bin} mcp remove did not finish`;
         if (ran.exitCode !== 0) return `${remove.bin} mcp remove exited with code ${ran.exitCode}`;
         return null;

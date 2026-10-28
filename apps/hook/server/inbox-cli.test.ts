@@ -24,7 +24,7 @@ import { INBOX_MAX_REQUEST_BYTES } from "@plannotator/shared/inbox/connection";
 import { INBOX_BRIDGE_POLL_PATH, parseInboxBridgeCommands } from "@plannotator/shared/inbox/connection";
 import { INBOX_AGENT_NAME, INBOX_HOST } from "../hooks/mod/inbox";
 import { OPENCODE_INBOX_AGENT_NAME, OPENCODE_INBOX_HOST } from "../../opencode-plugin/inbox";
-import { fillInboxToolArguments, inboxHostSessionFromEnv, INBOX_SESSION_HOST_NAMES, runInboxMcpShim } from "./inbox-mcp-shim";
+import { fillInboxToolArguments, inboxCallHostSession, inboxHostSessionFromEnv, inboxQwenShimContext, INBOX_SESSION_HOST_NAMES, runInboxMcpShim } from "./inbox-mcp-shim";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
 import { type InboxEntry, inboxEntryOf, mustSignalInbox, signalProvenInbox, stopProvenInboxes } from "../../../tests/helpers/inbox-process";
 
@@ -575,6 +575,110 @@ describe("plannotator inbox mcp inside an agent session", () => {
       await codex.callTool({ name: "send_message", arguments: { body: "From a Codex thread.", idempotency_key: "codex-1" }, _meta: { threadId: CODEX_THREAD } })
     ).structuredContent as { thread_id: string };
     expect(await author(registry.port, fromCodex.thread_id, 0)).toEqual({ kind: "agent", host: "codex", session: CODEX_THREAD, name: "Codex" });
+  }, 90_000);
+});
+
+describe("plannotator inbox mcp inside a Qwen Code session", () => {
+  const CLAUDE_SESSION = "0f3c2a51-7d4e-4b8a-9e21-5c6d7e8f9a0b";
+  const QWEN_A = "8e016be8-5b48-4c13-ad22-1f5326ae64ac";
+  const QWEN_B = "3c9d1f20-7a4b-4e6c-9d8e-0a1b2c3d4e5f";
+  const QWEN_STALE = "11111111-2222-4333-8444-555555555555";
+  const claude = { host: "claude-code", session: CLAUDE_SESSION, name: "Claude Code" };
+  const qwen = (session: string) => ({ host: "qwen", session, name: "Qwen Code" });
+
+  /** A Qwen home with the registry record Qwen writes for a session (cross-session protocol, schema 1). */
+  function qwenHomeWith(pid: number, sessionId: string, extra: Record<string, unknown> = {}): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-qwen-home-")));
+    roots.push(root);
+    writeRecord(root, pid, sessionId, extra);
+    return root;
+  }
+  function writeRecord(home: string, pid: number, sessionId: string, extra: Record<string, unknown> = {}, name = `${pid}.json`): void {
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    writeFileSync(join(home, "sessions", name), JSON.stringify({ schemaVersion: 1, pid, sessionId, cwd: "/work", kind: "tui", startedAt: 1, ...extra }));
+  }
+
+  test("Qwen's session variable is the session for a command Qwen's shell runs; another host's variable comes first; a malformed one is ignored", () => {
+    expect(inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: QWEN_A })).toEqual(qwen(QWEN_A));
+    expect(inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: QWEN_A, PLANNOTATOR_SESSION_TAG: `claude-code:${CLAUDE_SESSION}` })).toEqual(claude);
+    for (const bad of ["", "abc", "../../etc", `${QWEN_A} `, "--yolo"]) expect(inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: bad })).toBeNull();
+  });
+
+  test("a call from Qwen is the session Qwen's registry has for the shim's parent now: /clear and /resume move it; without a record, the variable", () => {
+    const pid = 41337;
+    const home = qwenHomeWith(pid, QWEN_A);
+    const context = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid);
+    expect(context).toEqual({ home, parentPid: pid, envSession: QWEN_STALE });
+    const env = inboxHostSessionFromEnv({ QWEN_CODE_SESSION_ID: QWEN_STALE });
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    // /clear: Qwen patches the record under the same pid; the next call reads the new id.
+    writeRecord(home, pid, QWEN_B);
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_B));
+    // A record that is not usable is never guessed from: the variable Qwen started the shim with.
+    for (const bad of [{ pid: pid + 1 }, { sessionId: "../x" }, { schemaVersion: 2 }, { kind: "NOT A KIND" }]) {
+      writeRecord(home, pid, QWEN_B, bad);
+      expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+    }
+    rmSync(join(home, "sessions"), { recursive: true });
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+    // A process hosting several sessions (`<pid>-<8 hex>.json`): one record is that session; two, only the call can say.
+    writeRecord(home, pid, QWEN_A, {}, `${pid}-0a1b2c3d.json`);
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    writeRecord(home, pid, QWEN_B, {}, `${pid}-ffffffff.json`);
+    expect(inboxCallHostSession(env, context, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_STALE));
+    // A daemon-run session names itself on the call: that wins.
+    const meta = { "qwen-code/invocation": { version: 1, sessionId: QWEN_B, promptId: "p1" } };
+    expect(inboxCallHostSession(env, context, meta, "qwen-code-mcp-client")).toEqual(qwen(QWEN_B));
+  });
+
+  test("Qwen's client wins over another host's variable; the variable alone does not, nor when another client named itself", () => {
+    const pid = 51234;
+    const home = qwenHomeWith(pid, QWEN_A);
+    const withRecord = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid);
+    const noRecord = inboxQwenShimContext({ QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE }, "/nowhere", "/work", pid + 7);
+    expect(inboxCallHostSession(claude, withRecord, undefined, "qwen-code-mcp-client")).toEqual(qwen(QWEN_A));
+    // The parent is a Qwen process (its record is there), whatever the client called itself.
+    expect(inboxCallHostSession(claude, withRecord, undefined, "some-client")).toEqual(qwen(QWEN_A));
+    // A variable inherited by another client's process (no record for the parent): not Qwen's.
+    expect(inboxCallHostSession(qwen(QWEN_STALE), noRecord, undefined, "cursor-vscode")).toBeNull();
+    expect(inboxCallHostSession(claude, noRecord, undefined, "cursor-vscode")).toEqual(claude);
+    // No client name yet and no record: the environment's own order (another host first).
+    expect(inboxCallHostSession(claude, noRecord, undefined, null)).toEqual(claude);
+    expect(inboxCallHostSession(qwen(QWEN_STALE), noRecord, undefined, null)).toEqual(qwen(QWEN_STALE));
+    // Not in Qwen at all: unchanged.
+    const none = inboxQwenShimContext({}, "/nowhere", "/work", pid + 7);
+    expect(inboxCallHostSession(claude, none, undefined, "codex-mcp-client")).toEqual(claude);
+    expect(inboxCallHostSession(null, none, undefined, null)).toBeNull();
+  });
+
+  test("the shim Qwen starts sends as Qwen's current session: the author follows a /clear between two calls", async () => {
+    const box = sandbox();
+    const project = gitProject(box);
+    const registry = (await background(box)).registry!;
+    // The shim's parent is this test process (the transport spawns it directly), so Qwen's record is keyed by our pid.
+    const home = qwenHomeWith(process.pid, QWEN_A);
+    const client = new Client({ name: "qwen-code-mcp-client", version: "0.26.2" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["run", entry, "inbox", "mcp"],
+        cwd: project,
+        env: { ...box.env, QWEN_HOME: home, QWEN_CODE_SESSION_ID: QWEN_STALE },
+        stderr: "pipe",
+      }),
+    );
+    cleanups.push(() => client.close());
+    const author = async (threadId: string, index: number) => {
+      const { thread } = await (await fetch(`http://127.0.0.1:${registry.port}/api/inbox/threads/${threadId}`)).json();
+      return thread.messages[index].author as { kind: string; host: string | null; session: string | null; name: string | null };
+    };
+    const first = (await client.callTool({ name: "send_message", arguments: { body: "Before /clear.", idempotency_key: "qwen-1" } })).structuredContent as { thread_id: string };
+    expect(await author(first.thread_id, 0)).toEqual({ kind: "agent", host: "qwen", session: QWEN_A, name: "Qwen Code" });
+    writeRecord(home, process.pid, QWEN_B);
+    const second = (await client.callTool({ name: "send_message", arguments: { body: "After /clear.", idempotency_key: "qwen-2" } })).structuredContent as { thread_id: string };
+    expect(await author(second.thread_id, 0)).toEqual({ kind: "agent", host: "qwen", session: QWEN_B, name: "Qwen Code" });
+    // A new session starts its own thread.
+    expect(second.thread_id).not.toBe(first.thread_id);
   }, 90_000);
 });
 

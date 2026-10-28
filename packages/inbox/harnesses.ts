@@ -15,6 +15,7 @@ export type HarnessId =
   | 'vscode'
   | 'windsurf'
   | 'gemini'
+  | 'qwen'
   | 'goose'
   | 'amp'
   | 'cline'
@@ -39,6 +40,7 @@ export const HARNESSES: readonly Harness[] = [
   { id: 'vscode', label: 'VS Code' },
   { id: 'windsurf', label: 'Windsurf / Devin' },
   { id: 'gemini', label: 'Gemini CLI' },
+  { id: 'qwen', label: 'Qwen Code' },
   { id: 'goose', label: 'Goose' },
   { id: 'amp', label: 'Amp' },
   { id: 'cline', label: 'Cline' },
@@ -193,6 +195,16 @@ export function harnessPanel(id: HarnessId, ctx: ConnectContext): HarnessPanel {
       return {
         artefacts: [{ kind: 'code', text: `gemini mcp add -s user ${SERVER} ${cmd}` }],
         note: 'Adds it to Gemini CLI in every project.',
+      };
+    case 'qwen':
+      // After NonoElRobot's fork (c6a02a0): the command, and the settings.json entry by hand.
+      return {
+        artefacts: [{ kind: 'code', text: `qwen mcp add -s user ${SERVER} ${cmd}` }],
+        note: 'Adds it to Qwen Code in every project.',
+        another: {
+          summary: 'add it to ~/.qwen/settings.json by hand',
+          body: { kind: 'code', label: '~/.qwen/settings.json', text: mcpServersSnippet(ctx) },
+        },
       };
     case 'goose':
       return {

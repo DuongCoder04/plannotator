@@ -26,7 +26,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const FAKE_AGENT_BINS = ["codex", "gemini", "devin", "amp", "cline", "pi", "opencode", "cursor-agent", "kiro-cli"] as const;
+export const FAKE_AGENT_BINS = ["codex", "gemini", "qwen", "devin", "amp", "cline", "pi", "opencode", "cursor-agent", "kiro-cli"] as const;
 export type FakeAgentBin = (typeof FAKE_AGENT_BINS)[number];
 
 export interface FakeAgents {
@@ -73,7 +73,7 @@ function start() {
       setInterval(() => {}, 1000);
       return;
     }
-    const versions = { codex: "codex-cli 0.160.0", gemini: "0.43.0", devin: "devin 2026.7.16 (4723f912)", amp: "0.0.1781669741-g230fdd (released 2026-06-17)", pi: "0.99.1" };
+    const versions = { codex: "codex-cli 0.160.0", gemini: "0.43.0", qwen: "0.26.2", devin: "devin 2026.7.16 (4723f912)", amp: "0.0.1781669741-g230fdd (released 2026-06-17)", pi: "0.99.1" };
     const override = process.env["FAKE_" + name.toUpperCase().replace(/-/g, "_") + "_VERSION"];
     process.stdout.write((override !== undefined ? override : versions[name] || "1.0.0") + "\n");
     process.exit(0);
@@ -157,6 +157,27 @@ function main() {
     case "gemini":
       jsonAgent(path.join(fakeHome, ".gemini", "settings.json"), "mcpServers", 4, 5);
       break;
+    case "qwen": {
+      // Qwen Code keeps the rest of settings.json, and logs a failed write and exits 0 (its settings writer does).
+      // FAKE_QWEN_BREAK=1 leaves the file half written; FAKE_QWEN_DROP=1 writes only the Inbox's server.
+      const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
+      const file = path.join(home, "settings.json");
+      const config = readJson(file);
+      const servers = process.env.FAKE_QWEN_DROP === "1" ? {} : config.mcpServers || {};
+      if (args[1] === "add") {
+        const words = args.slice(5);
+        servers[args[4]] = { command: words[0], args: words.slice(1) };
+      } else if (args[1] === "remove") delete servers[args[args.length - 1]];
+      config.mcpServers = servers;
+      try {
+        fs.mkdirSync(home, { recursive: true });
+        const text = JSON.stringify(config, null, 2) + "\n";
+        fs.writeFileSync(file, process.env.FAKE_QWEN_BREAK === "1" ? text.slice(0, Math.floor(text.length / 2)) : text);
+      } catch (error) {
+        process.stderr.write("Error saving user settings file: " + error.message + "\n");
+      }
+      break;
+    }
     case "devin":
       jsonAgent(path.join(xdg, "devin", "config.json"), "mcpServers", 4, 5);
       break;
