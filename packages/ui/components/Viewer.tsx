@@ -448,8 +448,9 @@ export interface ViewerHandle {
   removeHighlight: (id: string) => void;
   clearAllHighlights: () => void;
   applySharedAnnotations: (annotations: Annotation[]) => void;
-  /** Scroll a heading anchor into view. Returns false when it is not in this document. */
-  scrollToAnchor: (hash: string) => boolean;
+  /** Markdown `Viewer` only: scroll a heading anchor (`#id`) into view.
+   *  Returns false when it is not in this document. */
+  scrollToAnchor?: (hash: string) => boolean;
   /** `HtmlViewer` only: move a pinned draft to the element around it
    *  (`'parent'`) or back in (`'child'`), for a host that composes
    *  (`onHostDraft`). The markdown `Viewer` does not implement it. */

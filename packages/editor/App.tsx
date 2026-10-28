@@ -7305,12 +7305,17 @@ const App: React.FC = () => {
   const regionImageBaseDir = linkedDocHook.isActive ? activeDocBaseDir : imageBaseDir;
   const imageRegionThumbSrc = useCallback((src: string) => loadableImageSrc(src, regionImageBaseDir), [regionImageBaseDir]);
 
+  // `#Heading` links in comment text scroll the document to that heading.
+  const navigateToAnchor = useCallback((hash: string) => {
+    viewerRef.current?.scrollToAnchor?.(hash);
+  }, []);
+
   const renderAnnotationPanel = (presentation: 'panel' | 'embedded', isOpen = true) => (
     <AnnotationPanel
       isOpen={isOpen}
       presentation={presentation}
       blocks={blocks}
-      onNavigateAnchor={(hash) => viewerRef.current?.scrollToAnchor(hash)}
+      onNavigateAnchor={navigateToAnchor}
       annotations={allAnnotations}
       selectedId={selectedAnnotationId ?? selectedCodeAnnotationId}
       onSelect={handleSelectAnnotation}

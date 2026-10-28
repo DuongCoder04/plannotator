@@ -289,7 +289,11 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   imageRegionSrc,
   onNavigateAnchor,
 }) => {
-  const sectionRefs = useMemo(() => buildSectionRefIndex(blocks), [blocks]);
+  // `#Heading` links in comment text; nothing is parsed unless the host can navigate.
+  const sectionRefs = useMemo(
+    () => (onNavigateAnchor ? buildSectionRefIndex(blocks) : undefined),
+    [blocks, onNavigateAnchor],
+  );
   const regionCards = useMemo(
     () => ({ numbers: imageRegionNumbers(annotations), thumbSrc: imageRegionSrc }),
     [annotations, imageRegionSrc],
@@ -557,6 +561,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                             body={group.isCurrent ? renderCardBody?.(annotation) : undefined}
                             mentionSource={mentionSource}
                             unanchored={group.isCurrent ? (unanchoredIds?.has(annotation.id) ?? false) : false}
+                            sectionRefs={group.isCurrent ? sectionRefs : undefined}
+                            onNavigateAnchor={onNavigateAnchor}
                           />
                         );
                         return isReply ? (
@@ -943,11 +949,7 @@ const DirectEditsCard: React.FC<{
   );
 };
 
-/**
- * Annotation body text, with `#Heading text` turned into a link to that heading.
- * Falls back to the raw string whenever nothing resolves, so the common comment
- * renders exactly as it did before this existed.
- */
+/** Comment text, with each `#Heading text` as a link that scrolls to that heading. */
 const AnnotationText: React.FC<{
   text: string;
   className: string;
@@ -969,7 +971,7 @@ const AnnotationText: React.FC<{
             key={i}
             type="button"
             title={`Go to "${part.label}"`}
-            className="text-primary font-medium hover:underline"
+            className="cursor-pointer font-medium text-primary hover:underline"
             onClick={(e) => {
               // The card's own onSelect would scroll to the annotation instead.
               e.stopPropagation();
