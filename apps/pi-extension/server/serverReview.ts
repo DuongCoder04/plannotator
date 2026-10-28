@@ -279,8 +279,7 @@ import {
 	vcsSupportsSnapshot,
 } from "./vcs.ts";
 
-/** Exported for tests: `readFile` is the hover's definition read. */
-export const piCodeNavRuntime: CodeNavRuntime = {
+const piCodeNavRuntime: CodeNavRuntime = {
 	runCommand(command, args, options) {
 		return new Promise((resolve) => {
 			const proc = spawn(command, args, {
