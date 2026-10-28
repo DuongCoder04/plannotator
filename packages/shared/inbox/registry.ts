@@ -26,6 +26,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, write
 import { join } from "node:path";
 import { isInboxHealth, type InboxHealth } from "@plannotator/core/inbox-types";
 import { inboxDir } from "./schema";
+import { proveInboxProcess } from "./process-proof";
 
 export const INBOX_REGISTRY_FILE = "inbox.json";
 export const INBOX_START_LOCK = "start.lock";
@@ -306,17 +307,88 @@ export async function waitForInbox<T>(check: () => Promise<T | null>, timeoutMs:
   }
 }
 
+/** Why a record names no running Inbox (`plannotator inbox stop` reports it; nothing is signalled). */
+export type InboxStaleReason =
+  /** The process it names has exited. */
+  | "dead_pid"
+  /** Another Inbox answers on its port. */
+  | "other_session"
+  /** The pid is alive but is not this Inbox: another program has it now. */
+  | "not_ours";
+
+export type InboxStopResult =
+  | { state: "not_running"; stale?: { pid: number; reason: InboxStaleReason } }
+  | {
+      state: "stopped";
+      pid: number;
+      /** What ended it: its own stop route (the clean stop), or the signal it took after ignoring that. */
+      by: "stop_route" | "SIGTERM" | "SIGKILL";
+      /** It was published over the tailnet by `--tailscale` for that run only (its stop route says; an older Inbox does not). */
+      tailscaleRunOnly: boolean;
+    }
+  | {
+      state: "still_running";
+      pid: number;
+      /**
+       * `busy`: it never answered and could not be proven. `unproven`: the
+       * pid could not be proven to be it, so nothing was sent. `survived`: it
+       * outlived every signal.
+       */
+      reason: "busy" | "unproven" | "survived";
+    };
+
+export interface StopInboxOptions {
+  /** How long each step waits for the process to exit. Default 5 s. */
+  timeoutMs?: number;
+  /**
+   * `plannotator inbox stop`: also prove the pid by its process (`ps`; see
+   * process-proof.ts), so an Inbox that stopped answering can still be
+   * stopped, and end with SIGKILL when it outlives SIGTERM. Off
+   * (uninstall --purge): only a pid the port's health answer names is
+   * signalled, and only with SIGTERM.
+   */
+  escalate?: boolean;
+}
+
+async function waitPidGone(pid: number, timeoutMs: number): Promise<boolean> {
+  return (await waitForInbox(async () => (isPidAlive(pid) ? null : true), timeoutMs)) === true;
+}
+
 /**
- * Stop a running Inbox (uninstall --purge): ask it over its token-guarded
- * stop route, then wait for the pid to exit. A pid is signalled only while the
- * port still answers with this entry's `serverSession`, so a reused pid is
- * never touched. Answers what happened.
+ * Stop the Inbox the record names. Asks first, over its token-guarded stop
+ * route (the clean stop: its tailnet mappings come down), and waits for the
+ * pid to exit; then SIGTERM, and with `escalate` SIGKILL. Before EVERY signal
+ * the pid is proven again (`proveInboxProcess`): the port's health answers
+ * with this record's pid and serverSession, or (with `escalate`, POSIX) `ps`
+ * shows an Inbox command line that started no later than the record. A pid
+ * that cannot be proven is never signalled: the record outlives its Inbox and
+ * pids are reused. Answers what happened.
  */
-export async function stopInbox(
-  dataDir: string,
-  options: { timeoutMs?: number } = {},
-): Promise<{ state: "not_running" } | { state: "stopped"; pid: number } | { state: "still_running"; pid: number }> {
+export async function stopInbox(dataDir: string, options: StopInboxOptions = {}): Promise<InboxStopResult> {
   const timeoutMs = options.timeoutMs ?? 5000;
+  const escalate = options.escalate === true;
+  const prove = (entry: InboxRegistryEntry) =>
+    proveInboxProcess(entry, { processProof: escalate, health: (port) => fetchInboxHealth(port, 1000) });
+
+  /** SIGTERM, then (escalate) SIGKILL, each only after the pid is proven again. */
+  const signalUntilGone = async (entry: InboxRegistryEntry, tailscaleRunOnly: boolean): Promise<InboxStopResult> => {
+    let last: "stop_route" | "SIGTERM" = "stop_route";
+    for (const signal of escalate ? (["SIGTERM", "SIGKILL"] as const) : (["SIGTERM"] as const)) {
+      if (!isPidAlive(entry.pid)) return { state: "stopped", pid: entry.pid, by: last, tailscaleRunOnly };
+      if (!(await prove(entry))) return { state: "still_running", pid: entry.pid, reason: "unproven" };
+      try {
+        process.kill(entry.pid, signal);
+      } catch {
+        // Gone in between.
+      }
+      if (await waitPidGone(entry.pid, signal === "SIGKILL" ? Math.min(timeoutMs, 2000) : timeoutMs)) {
+        return { state: "stopped", pid: entry.pid, by: signal, tailscaleRunOnly };
+      }
+      if (signal === "SIGTERM") last = "SIGTERM";
+    }
+    return { state: "still_running", pid: entry.pid, reason: "survived" };
+  };
+
   let status = await inboxStatus(dataDir);
   if (status.state === "busy") {
     // Give a busy Inbox the stop window to answer; never purge under a live writer.
@@ -325,31 +397,41 @@ export async function stopInbox(
       const next = await inboxStatus(dataDir, 1000);
       return next.state === "busy" ? null : next;
     }, timeoutMs);
-    if (!answered) return { state: "still_running", pid: busy.entry.pid };
+    if (!answered) {
+      if (!escalate) return { state: "still_running", pid: busy.entry.pid, reason: "busy" };
+      const result = await signalUntilGone(busy.entry, false);
+      return result.state === "still_running" && result.reason === "unproven" ? { ...result, reason: "busy" } : result;
+    }
     status = answered;
   }
-  if (status.state !== "running") return { state: "not_running" };
+  if (status.state === "missing") return { state: "not_running" };
+  if (status.state === "stopped") {
+    const { entry } = status;
+    // A live pid that IS this Inbox but no longer answers on its port: on its way out, or hung after
+    // closing its listener. Only `escalate` can prove it (by its process): wait for it, then signal.
+    if (escalate && isPidAlive(entry.pid) && (await prove(entry))) {
+      if (await waitPidGone(entry.pid, timeoutMs)) return { state: "stopped", pid: entry.pid, by: "stop_route", tailscaleRunOnly: false };
+      return signalUntilGone(entry, false);
+    }
+    const reason: InboxStaleReason = status.reason === "dead_pid" ? "dead_pid" : status.reason === "other_session" ? "other_session" : "not_ours";
+    return { state: "not_running", stale: { pid: entry.pid, reason } };
+  }
   const { entry } = status;
+  let tailscaleRunOnly = false;
   try {
-    await fetch(`http://127.0.0.1:${entry.port}/api/inbox/control/stop`, {
+    const response = await fetch(`http://127.0.0.1:${entry.port}/api/inbox/control/stop`, {
       method: "POST",
       headers: { Authorization: `Bearer ${entry.token}` },
       signal: AbortSignal.timeout(2000),
     });
-  } catch {
-    // Fall through to the signal below.
-  }
-  const exited = await waitForInbox(async () => (isPidAlive(entry.pid) ? null : true), timeoutMs);
-  if (exited) return { state: "stopped", pid: entry.pid };
-  const health = await fetchInboxHealth(entry.port);
-  if (health && health.serverSession === entry.serverSession && health.pid === entry.pid) {
-    try {
-      process.kill(entry.pid, "SIGTERM");
-    } catch {
-      // Already gone.
+    if (response.ok) {
+      const body = (await response.json().catch(() => null)) as { tailscale_run_only?: unknown } | null;
+      tailscaleRunOnly = body?.tailscale_run_only === true;
     }
-    const killed = await waitForInbox(async () => (isPidAlive(entry.pid) ? null : true), timeoutMs);
-    if (killed) return { state: "stopped", pid: entry.pid };
+  } catch {
+    // Fall through to the signals below.
   }
-  return { state: "still_running", pid: entry.pid };
+  if (await waitPidGone(entry.pid, timeoutMs)) return { state: "stopped", pid: entry.pid, by: "stop_route", tailscaleRunOnly };
+  return signalUntilGone(entry, tailscaleRunOnly);
 }
+
