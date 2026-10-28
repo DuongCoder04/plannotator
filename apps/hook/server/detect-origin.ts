@@ -11,6 +11,14 @@ import { inboxHostSessionFromEnv } from "./inbox-mcp-shim";
  *   > Copilot CLI (COPILOT_CLI)
  *   > OpenCode (OPENCODE)
  *   > Gemini CLI (GEMINI_CLI)
+ *   > Qwen Code (QWEN_CODE_SESSION_ID, which Qwen sets for its hooks and its
+ *     shell tool; QWEN_CODE=1 is set for the shell tool only). The plan hook
+ *     also knows Qwen from its payload (PermissionRequest + exit_plan_mode),
+ *     and the extension's hook entry sets PLANNOTATOR_ORIGIN=qwen-code.
+ *     Known limit: Qwen exports QWEN_CODE_SESSION_ID to every child, so a
+ *     Claude Code started from a Qwen shell reads as Qwen here (and Qwen
+ *     started from a Claude shell carries CLAUDECODE, so env alone cannot
+ *     tell the nearer host).
  *   > oh-my-pi harness (OMPCODE) — checked after the runtimes above because
  *     OMP exports OMPCODE into every shell it spawns; runtimes launched from
  *     an OMP session must still be detected as themselves.
@@ -42,6 +50,7 @@ export function detectOrigin(env: Record<string, string | undefined>): Origin {
     env.COPILOT_CLI ? "copilot-cli" :
     env.OPENCODE ? "opencode" :
     env.GEMINI_CLI ? "gemini-cli" :
+    (env.QWEN_CODE_SESSION_ID || env.QWEN_CODE === "1") ? "qwen-code" :
     env.OMPCODE ? "oh-my-pi" :
     env.DSH_SHELL && !hasNonDshAgentMarker(env) ? "dsh" :
     "claude-code";

@@ -1,6 +1,6 @@
 /**
  * Decision mode (approval "inbox-decision-mode", direction A "Queue";
- * experimental, off unless Settings → General → Experimental turns it on).
+ * experimental, off unless Settings → Capabilities → Experimental turns it on).
  *
  * One decision at a time in a large dialog, the next peeking behind it, a
  * progress strip of one chip per agent session. Picks save at once through
@@ -76,6 +76,12 @@ export interface DecisionModeProps {
   open: boolean;
   /** The latest projection (`GET /api/inbox/decisions`), null until read. */
   decisions: readonly InboxDecision[] | null;
+  /**
+   * The thread the sitting is scoped to, by its subject (thread only, owner
+   * 2026-10-27: the window passes one thread's decisions in `decisions`).
+   * Drawn in the head; null or absent: nothing drawn.
+   */
+  scope?: string | null;
   /** The list rows, by thread id: where a sent reply is (Delivered, Replied). */
   rows: ReadonlyMap<string, InboxListRow>;
   /** Start on this decision (a Stopped notification). */
@@ -87,8 +93,13 @@ export interface DecisionModeProps {
   refresh: () => void;
   /** The event stream's question lines (a replaced question swaps on screen). */
   subscribeQuestions: (listener: (question: InboxQuestion) => void) => () => void;
-  /** Open the thread behind the dialog: decision mode tucks into a pill. */
-  onTuck: (threadId: string, fileId?: string) => void;
+  /**
+   * Open the thread behind the dialog: decision mode tucks into a pill. A
+   * card's "Open the thread" names its question (`<message id>`, `key`): the
+   * thread scrolls to that question's card and puts focus on its prompt
+   * (thread only, approval "inbox-decide-thread-only").
+   */
+  onTuck: (threadId: string, fileId?: string, question?: { messageId: string; key: string }) => void;
   /** The sitting ends. */
   onClose: () => void;
   /** Tells the pill how many are left. */
@@ -115,12 +126,14 @@ type SendResult = 'sent' | 'draft' | 'failed';
 
 /**
  * What a reply carries, for its key (`replyKeysToRenew`): each pick with its revision, so a changed answer
- * (a new pick is a new revision) takes a new key, and an unchanged retry replays the old one.
+ * (a new pick is a new revision) takes a new key, and an unchanged retry replays the old one; and each
+ * action item whose Done or Can't do it waits in the thread's draft, so one marked since takes a new key.
  */
 function answersOf(target: SendTarget): string[] {
   return [
     ...target.questions.map((q) => `a:${q.message_id ?? target.message.id}/${q.key}@${q.revision}`),
     ...target.skip.map((q) => `s:${q.message_id ?? target.message.id}/${q.key}`),
+    ...target.actions.map((a) => `x:${a.message_id ?? target.message.id}/${a.key}`),
   ];
 }
 
@@ -508,6 +521,9 @@ export function DecisionMode(props: DecisionModeProps) {
           words: '',
           questions: target.questions,
           ...(target.skip.length > 0 ? { skip: target.skip } : {}),
+          // The session's Done and Can't do it waiting in the thread's draft go with its answers, as picks do:
+          // one reply, never the answers here and the action items in a second Send.
+          ...(target.actions.length > 0 ? { actions: target.actions } : {}),
         });
         const created = (result.reply as { created_at?: unknown } | null)?.created_at;
         if (typeof created === 'string') sentAt = created;
@@ -840,6 +856,13 @@ export function DecisionMode(props: DecisionModeProps) {
     >
       <div className="ib-dm-head">
         <h1 id="ib-dm-title">Decide</h1>
+        {props.scope && (
+          <Tip content={props.scope} cut>
+            <span className="ib-dm-scope" dir="auto" data-decision-scope="">
+              {props.scope}
+            </span>
+          </Tip>
+        )}
         <span className="ib-dm-count" data-decision-head="">
           {loaded ? headLine(queue) : 'Reading what waits on you…'}
         </span>
@@ -876,6 +899,7 @@ export function DecisionMode(props: DecisionModeProps) {
           if (first) props.onTuck(first.thread.id);
         }}
         ended={ended}
+        byAgent={!!props.scope}
       />
       {error && (
         <div className="ib-error ib-dm-error" role="alert">
@@ -942,7 +966,7 @@ export function DecisionMode(props: DecisionModeProps) {
               onAnswer={(value) => answer(current.id, value)}
               onAction={(mark) => act(current.id, mark)}
               onLater={() => later(current.id)}
-              onOpenThread={(fileId) => props.onTuck(current.thread.id, fileId)}
+              onOpenThread={(fileId) => props.onTuck(current.thread.id, fileId, fileId ? undefined : { messageId: current.message.id, key: current.question.key })}
               onImage={(pictures, index) => setLightbox({ pictures, index })}
             />
             <div className="ib-dm-nav">
@@ -1102,6 +1126,8 @@ function Strip(props: {
   onOpenThread: (key: string) => void;
   /** Groups whose asking session ended while their reply waited. */
   ended: ReadonlySet<string>;
+  /** Chips named by agent (a sitting scoped to one thread), else by project. */
+  byAgent?: boolean;
 }) {
   return (
     <ol className="ib-dm-strip" aria-label="Agents waiting" data-decision-strip="">
@@ -1112,7 +1138,8 @@ function Strip(props: {
         return (
           <li key={chip.key} className="ib-dm-chip" data-on={on ? '' : undefined} data-decision-chip={chipDomKey(chip.key)} data-send={send.kind === 'words' ? send.text.toLowerCase() : send.kind}>
             <HostMark host={chip.host} />
-            <span className="ib-dm-chipname">{chip.label}</span>
+            {/* Scoped to one thread, the project is the same for every chip: the agent names it. */}
+            <span className="ib-dm-chipname">{props.byAgent ? chip.name : chip.label}</span>
             <span className="ib-dm-dots" role="img" aria-label={`${chip.name}: ${formatCount(handled)} of ${formatCount(chip.dots.length)} answered`}>
               {chip.dots.map((dot) => (
                 <i key={dot.id} data-state={dot.state} />

@@ -41,6 +41,8 @@ describe("detectOrigin", () => {
     ["Copilot CLI", { COPILOT_CLI: "1" }, "copilot-cli"],
     ["OpenCode", { OPENCODE: "1" }, "opencode"],
     ["Gemini CLI", { GEMINI_CLI: "1" }, "gemini-cli"],
+    ["Qwen Code", { QWEN_CODE_SESSION_ID: "q1" }, "qwen-code"],
+    ["Qwen Code's shell tool", { QWEN_CODE: "1" }, "qwen-code"],
     ["oh-my-pi", { OMPCODE: "1" }, "oh-my-pi"],
     ["Amp (wrapper override)", { PLANNOTATOR_ORIGIN: "amp" }, "amp"],
     ["Droid (wrapper override)", { PLANNOTATOR_ORIGIN: "droid" }, "droid"],

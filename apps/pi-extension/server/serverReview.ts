@@ -1,4 +1,6 @@
 import { piUpdateAdvert } from "./update-advert.ts";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, PACKAGE_CHECKOUT_WAIT_MS, prSettingsSource, REMOTE_PACKAGE_READS, waitAtMost } from "../generated/package-changes-service.ts";
+import { parseDiffToFiles } from "../generated/diff-files.ts";
 import { isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
 import { spawn } from "node:child_process";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
@@ -8,20 +10,21 @@ import {
 	isDiagramEngineRequest,
 	type DiagramEngineSource,
 } from "../generated/diagram-engine-assets.ts";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
-import { basename, resolve as resolvePath } from "node:path";
+import { basename, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
 
 import { SingleFlight } from "../generated/single-flight.ts";
 import { contentHash } from "../generated/draft.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
+import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "../generated/review-draft.ts";
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, countChangedFiles, deriveFeedbackProject, type FeedbackDecision, type FeedbackReviewTarget } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -201,6 +204,7 @@ import {
 	WorkspaceReviewSession,
 	type WorkspaceDiffType,
 } from "../generated/review-workspace.ts";
+import { resolveWorkspaceFilePath } from "../generated/review-workspace-node.ts";
 import {
 	type CodeNavRequest,
 	type CodeNavRuntime,
@@ -210,6 +214,7 @@ import {
 	validateCodeNavRequest,
 	extractChangedFiles,
 } from "../generated/code-nav.ts";
+import { readFileCapped, readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "../generated/repo-file.ts";
 import {
 	createDefaultSemanticDiffRuntime,
 	getSemanticDiffAvailability,
@@ -280,15 +285,11 @@ const piCodeNavRuntime: CodeNavRuntime = {
 	},
 
 	async readFile(path, options) {
-		try {
-			const full = options?.cwd ? `${options.cwd}/${path}` : path;
-			// Check the size before pulling bytes: rg would not have searched a
-			// file this large either.
-			if (statSync(full).size > CODE_NAV_MAX_FILE_BYTES) return null;
-			return readFileSync(full, "utf-8");
-		} catch {
-			return null;
-		}
+		// Capped at what rg searches, non-blocking (repo-file.ts).
+		const read = await readFileCapped(options?.cwd ? resolvePath(options.cwd, path) : path, {
+			maxBytes: CODE_NAV_MAX_FILE_BYTES,
+		});
+		return read.ok ? read.content : null;
 	},
 };
 
@@ -345,6 +346,8 @@ export interface ReviewServerResult {
 }
 
 export async function startReviewServer(options: {
+	/** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+	refRunner?: RefRunner;
 	/** "Ask this session": the in-process bridge to the Pi session that opened this review. */
 	sessionBridge?: SessionBridge;
 	/** Turns on `/api/host/status` and `/api/host/close` for a caller in another process (never in remote mode). */
@@ -1890,6 +1893,8 @@ export async function startReviewServer(options: {
 	// decision; a different nonce is refused with 409 session_mismatch.
 	// Missing is accepted (older clients).
 	const serverSession = createServerSessionNonce();
+	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
+	const refCards = createPiRefCards(options.refRunner);
 	// Static patch mode (`--patch-file`): caller-supplied diff bytes, no repo,
 	// no working tree. Advertised as `sourceKind: "patch"` on every diff payload
 	// (absent reads as "vcs") and enforced by 400ing the endpoints that would
@@ -1917,6 +1922,7 @@ export async function startReviewServer(options: {
 		oldPath: string | undefined,
 		maxBytes: number,
 		signal?: AbortSignal,
+		requestedBase?: string,
 	): Promise<FileBytesRead> => {
 		if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
 		const prCwd = (options.worktreePool && prMeta) ? options.worktreePool.resolve(prMeta.url) : options.agentCwd;
@@ -1928,7 +1934,7 @@ export async function startReviewServer(options: {
 		if (hasLocalAccess && !isPRMode) {
 			return getVcsFileBytesForDiff(
 				currentDiffType as DiffType,
-				currentBase,
+				requestedBase !== undefined ? resolveReviewBase(requestedBase) : currentBase,
 				filePath,
 				oldPath,
 				side,
@@ -2009,7 +2015,7 @@ export async function startReviewServer(options: {
 	});
 
 	const reviewAlreadyDecided = (res: import("node:http").ServerResponse) =>
-		json(res, { error: "This review session has already been decided." }, 409);
+		json(res, { error: "This review session has already been decided.", code: "already_decided" }, 409);
 
 	// Host-only session control: mirrors packages/server/review.ts. Closing is
 	// the reviewer's Close, marked closedBy "agent", WITHOUT settling the draft
@@ -2039,6 +2045,172 @@ export async function startReviewServer(options: {
 	let boundPort: number | undefined;
 	const aiRuntime = aiEnabled ? await createPiAIRuntime({ getCwd: resolveAgentCwd, sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
 
+	/**
+	 * Both sides of one path for the current diff, mirroring
+	 * packages/server/review.ts: shared by /api/file-content and the package
+	 * changes route. An error carries the status /api/file-content answers.
+	 */
+	const readDiffFileContents = async (
+		filePath: string,
+		oldPath: string | undefined,
+		requestedBase: string | undefined,
+	): Promise<{ oldContent: string | null; newContent: string | null } | { error: string; status: number }> => {
+		if (isBinaryPatchFile(currentPatch, filePath)) {
+			return { oldContent: null, newContent: null };
+		}
+
+		if (workspace) {
+			try {
+				return await workspace.getFileContents(filePath, oldPath);
+			} catch (error) {
+				return { error: error instanceof Error ? error.message : "No file access available", status: 400 };
+			}
+		}
+
+		const fileContentCwd = (options.worktreePool && prMeta) ? options.worktreePool.resolve(prMeta.url) : options.agentCwd;
+		if (
+			isPRMode &&
+			currentPRDiffScope === "full-stack" &&
+			fileContentCwd &&
+			prMeta?.defaultBranch
+		) {
+			const baseRef = await resolvePRFullStackBaseRef(
+				reviewRuntime,
+				prMeta.defaultBranch,
+				fileContentCwd,
+			);
+			if (!baseRef) return { oldContent: null, newContent: null };
+			return getFileContentsForDiffCore(
+				reviewRuntime,
+				"merge-base",
+				baseRef,
+				filePath,
+				oldPath,
+				fileContentCwd,
+			);
+		}
+
+		// Local mode first (matches Bun server priority)
+		if (hasLocalAccess && !isPRMode) {
+			const base = resolveReviewBase(requestedBase);
+			const defaultCwd = options.gitContext?.cwd;
+			return getVcsFileContentsForDiff(
+				currentDiffType as DiffType,
+				base,
+				filePath,
+				oldPath,
+				defaultCwd,
+			);
+		}
+
+		// PR mode: fetch from platform API using merge-base/head SHAs
+		if (isPRMode && prRef && prMeta) {
+			try {
+				const oldSha = prMeta.mergeBaseSha ?? prMeta.baseSha;
+				const [oldContent, newContent] = await Promise.all([
+					fetchPRFileContent(prRef, oldSha, oldPath || filePath),
+					fetchPRFileContent(prRef, prMeta.headSha, filePath),
+				]);
+				return { oldContent, newContent };
+			} catch (err) {
+				return { error: err instanceof Error ? err.message : "Failed to fetch file content", status: 500 };
+			}
+		}
+
+		return { error: "No file access available", status: 400 };
+	};
+
+	// Package changes under package.json and lockfile diffs (mirrors packages/server/review.ts).
+	let packageRepoRoot: { cwd: string | undefined; root: Promise<string | null> } | null = null;
+	const packageChanges = createPackageChangesService({
+		snapshotId: () => currentSnapshotId(),
+		diffFiles: () => parseDiffToFiles(currentPatch),
+		readSide: async (side, path, oldPath, base) => {
+			try {
+				validateFilePath(path);
+				if (oldPath) validateFilePath(oldPath);
+			} catch {
+				return { kind: "unreadable", reason: "invalid path" };
+			}
+			const read = await readReviewSide(side, path, oldPath, MAX_PACKAGE_FILE_BYTES, undefined, base);
+			if (read.kind === "ok") return { kind: "ok", text: new TextDecoder().decode(read.bytes) };
+			if (read.kind === "missing") return { kind: "missing" };
+			if (read.kind === "too-large") return { kind: "unreadable", reason: "too large" };
+			const text = await readDiffFileContents(path, oldPath, base);
+			const value = "error" in text ? null : side === "old" ? text.oldContent : text.newContent;
+			return value == null ? { kind: "unreadable", reason: "could not be read" } : { kind: "ok", text: value };
+		},
+		settings: () => {
+			if (workspace) {
+				const session = workspace;
+				return {
+					kind: "local",
+					dirOf: async (path) => {
+						const target = resolveWorkspaceFilePath(session.repos, path);
+						return target ? dirnamePath(joinPath(target.repo.cwd, target.repoRelativePath)) : null;
+					},
+				};
+			}
+			if (isPRMode) {
+				if (!prMeta || !prRef) return { kind: "none" };
+				const ref = prRef;
+				return prSettingsSource({
+					git: reviewRuntime,
+					checkout: options.worktreePool ? options.worktreePool.resolve(prMeta.url) : options.agentCwd,
+					headSha: prMeta.headSha,
+					fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+				});
+			}
+			if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
+			return {
+				kind: "local",
+				dirOf: async (path) => {
+					const cwd = resolveVcsCwd(currentDiffType as DiffType, options.gitContext?.cwd) ?? options.gitContext?.cwd;
+					if (!packageRepoRoot || packageRepoRoot.cwd !== cwd) {
+						const known = cwd === options.gitContext?.cwd ? options.gitContext?.root : undefined;
+						packageRepoRoot = {
+							cwd,
+							root: known
+								? Promise.resolve(known)
+								: reviewRuntime.runGit(["rev-parse", "--show-toplevel"], { cwd })
+									.then((r) => (r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : null))
+									.catch(() => null),
+						};
+					}
+					const root = await packageRepoRoot.root;
+					return root ? dirnamePath(joinPath(root, path)) : null;
+				},
+			};
+		},
+		homeDir: () => {
+			try {
+				return os.homedir();
+			} catch {
+				return null;
+			}
+		},
+		// Mirrors packages/server/review.ts: wait for the PR checkout before reading.
+		prepare: async () => {
+			if (!isPRMode || !prMeta) return { final: true };
+			const meta = prMeta;
+			const pool = options.worktreePool;
+			let checkout = pool ? pool.resolve(meta.url) : options.agentCwd;
+			let final = true;
+			if (!checkout && pool) {
+				const waited = await waitAtMost(
+					pool.ensure(reviewRuntime, meta).then((entry) => entry.path, () => undefined),
+					PACKAGE_CHECKOUT_WAIT_MS,
+				);
+				if (waited.timedOut) final = false;
+				else checkout = waited.value;
+			}
+			if (checkout) return { final };
+			return { final, remote: { key: `${meta.mergeBaseSha ?? meta.baseSha}:${meta.headSha}`, budget: REMOTE_PACKAGE_READS } };
+		},
+		lookupEnabled: () => resolvePackageLookup(loadConfig()),
+		env: process.env,
+	});
+
 	const requestHostGuard = createRequestHostGuard();
 	const server = createServer(async (req, res) => {
 		// Host allowlist first, before any route (request-host-guard.ts).
@@ -2048,6 +2220,7 @@ export async function startReviewServer(options: {
 		const url = requestUrl(req);
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
+		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
 
 		// API: Get tour result
 		if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
@@ -3487,95 +3660,33 @@ export async function startReviewServer(options: {
 				}
 			}
 
-			if (isBinaryPatchFile(currentPatch, filePath)) {
-				json(res, { oldContent: null, newContent: null });
+			const result = await readDiffFileContents(filePath, oldPath, url.searchParams.get("base") ?? undefined);
+			if ("error" in result) {
+				json(res, { error: result.error }, result.status);
 				return;
 			}
-
-			if (workspace) {
-				try {
-					const result = await workspace.getFileContents(filePath, oldPath);
-					json(res, result);
-				} catch (error) {
-					json(
-						res,
-						{ error: error instanceof Error ? error.message : "No file access available" },
-						400,
-					);
-				}
+			json(res, result);
+		} else if (url.pathname === "/api/package-changes" && req.method === "GET") {
+			// Package changes under package.json and lockfile diffs (read only).
+			if (isStaticPatchMode) {
+				json(res, { error: "Package changes need the files behind the diff" }, 400);
 				return;
 			}
-
-			const fileContentCwd = (options.worktreePool && prMeta) ? options.worktreePool.resolve(prMeta.url) : options.agentCwd;
-			if (
-				isPRMode &&
-				currentPRDiffScope === "full-stack" &&
-				fileContentCwd &&
-				prMeta?.defaultBranch
-			) {
-				const baseRef = await resolvePRFullStackBaseRef(
-					reviewRuntime,
-					prMeta.defaultBranch,
-					fileContentCwd,
-				);
-				if (!baseRef) {
-					json(res, { oldContent: null, newContent: null });
-					return;
-				}
-				const result = await getFileContentsForDiffCore(
-					reviewRuntime,
-					"merge-base",
-					baseRef,
-					filePath,
-					oldPath,
-					fileContentCwd,
-				);
-				json(res, result);
+			const out = await packageChanges.get({
+				snapshot: url.searchParams.get("snapshot"),
+				base: url.searchParams.get("base") ?? undefined,
+			});
+			res.setHeader("Cache-Control", "no-store");
+			json(res, out.body, out.status);
+		} else if (url.pathname === "/api/package-changes/lookup" && req.method === "POST") {
+			// npm details for one card: 403 until the reviewer turned the lookup on.
+			if (isStaticPatchMode) {
+				json(res, { error: "Package changes need the files behind the diff" }, 400);
 				return;
 			}
-
-			// Local mode first (matches Bun server priority)
-			if (hasLocalAccess && !isPRMode) {
-				const base = resolveReviewBase(
-					url.searchParams.get("base") ?? undefined,
-				);
-				const defaultCwd = options.gitContext?.cwd;
-				const result = await getVcsFileContentsForDiff(
-					currentDiffType as DiffType,
-					base,
-					filePath,
-					oldPath,
-					defaultCwd,
-				);
-				json(res, result);
-				return;
-			}
-
-			// PR mode: fetch from platform API using merge-base/head SHAs
-			if (isPRMode && prRef && prMeta) {
-				try {
-					const oldSha = prMeta.mergeBaseSha ?? prMeta.baseSha;
-					const [oldContent, newContent] = await Promise.all([
-						fetchPRFileContent(prRef, oldSha, oldPath || filePath),
-						fetchPRFileContent(prRef, prMeta.headSha, filePath),
-					]);
-					json(res, { oldContent, newContent });
-				} catch (err) {
-					json(
-						res,
-						{
-							error:
-								err instanceof Error
-									? err.message
-									: "Failed to fetch file content",
-						},
-						500,
-					);
-				}
-				return;
-			}
-
-			json(res, { error: "No file access available" }, 400);
+			const out = await packageChanges.lookup(await parseBody(req));
+			res.setHeader("Cache-Control", "no-store");
+			json(res, out.body, out.status);
 		} else if (url.pathname === "/api/code-nav/resolve" && req.method === "POST") {
 			if (isGitButlerCommittedView()) {
 				json(res, { error: "Code navigation is unavailable for committed GitButler views" }, 400);
@@ -3636,29 +3747,21 @@ export async function startReviewServer(options: {
 				json(res, { error: "Code navigation requires local access" }, 400);
 				return;
 			}
-			const filePath = url.searchParams.get("path");
-			if (!filePath) {
-				json(res, { error: "Missing path" }, 400);
+			// Links followed like an editor; 5 MB cap and no FIFO hang
+			// (repo-file.ts, the Bun server uses the same).
+			const read = await readRepoFile(resolveAgentCwd(), url.searchParams.get("path"));
+			if (!read.ok) {
+				json(res, repoFileErrorBody(read), REPO_FILE_ERROR_STATUS[read.reason]);
 				return;
 			}
-			try { validateFilePath(filePath); } catch {
-				json(res, { error: "Invalid path" }, 400);
-				return;
-			}
-			try {
-				const navCwd = resolveAgentCwd();
-				const content = readFileSync(`${navCwd}/${filePath}`, "utf-8");
-				json(res, { content });
-			} catch {
-				json(res, { error: "File not found" }, 404);
-			}
+			json(res, { content: read.content });
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
 				json(res, { error: "Cross-origin config writes are not allowed" }, 403);
 				return;
 			}
 			try {
-				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean };
 				const toSave: Record<string, unknown> = {};
 				// OpenCode's agent switch (#1390): a known shape or nothing is saved.
 				const agentSwitch = agentSwitchConfigToSave(body);
@@ -3677,6 +3780,12 @@ export async function startReviewServer(options: {
 					if (!reviewAnalysis) return json(res, { error: "Invalid analysis settings" }, 400);
 					toSave.reviewAnalysis = reviewAnalysis;
 					if (reviewAnalysis.callFlow === false) callFlowService.cancelAll();
+				}
+				// Package changes: the card switch and the npm lookup consent, booleans only.
+				if (body.packageChanges !== undefined) {
+					const packageChangesConfig = parsePackageChangesConfig(body.packageChanges);
+					if (!packageChangesConfig) return json(res, { error: "Invalid packageChanges" }, 400);
+					toSave.packageChanges = packageChangesConfig;
 				}
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
@@ -4060,6 +4169,8 @@ export async function startReviewServer(options: {
 				callFlowService.cancelAll();
 				aiRuntime?.dispose();
 			} finally {
+				// Before closeAllConnections, or a session-closed just sent is lost.
+				externalAnnotations.endStreams();
 				server.close();
 				// close() only stops the listener; drain browser keep-alive sockets so a
 				// stopped session's connections die immediately instead of at the

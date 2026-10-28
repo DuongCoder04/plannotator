@@ -96,6 +96,7 @@ import {
 } from "@plannotator/server/review";
 import { runGuideCli } from "@plannotator/server/guide-cli";
 import { runUpdateCommand } from "./update-command";
+import { runUpdatePrepareCommand } from "@plannotator/server/update-prepare";
 import { takeUpdateHint } from "@plannotator/shared/update-check";
 import {
   startAnnotateServer as startAnnotateServerUnguarded,
@@ -160,7 +161,7 @@ import {
   BRIDGE_SCRIPT,
   LIVE_BRIDGE_BOOTSTRAP,
 } from "@plannotator/ui/components/html-viewer/bridge-script";
-import { rmSync, realpathSync, existsSync } from "fs";
+import { rmSync, realpathSync, existsSync, readFileSync } from "fs";
 import { parseRemoteUrl } from "@plannotator/shared/repo";
 import {
   composePlanDeniedMessage,
@@ -169,7 +170,7 @@ import {
 } from "@plannotator/shared/prompts";
 import { buildReviewOutput, supportsReviewApprovalNotes } from "./review-output";
 import { registerSession, unregisterSession, listSessions, type SessionInfo } from "@plannotator/server/sessions";
-import { enableAutoUpdateNotice, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
+import { enableAutoUpdateNotice, isManagedBinary, scheduleAutoUpdateCheck } from "@plannotator/server/auto-update";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
 import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
@@ -214,6 +215,8 @@ import { findCopilotPlanContent, findCopilotSessionByAncestorPids, findCopilotSe
 import { findDshSessionLog, getRecentDshMessages, resolveDshHome } from "./dsh-session";
 import { composeDshPlanOutput, dshPlanTimeoutFeedback, parseDshPlanInput } from "./dsh-plan";
 import { resolveLatestVibePlan } from "./vibe-plan";
+import { findQwenSessionLog, getRecentQwenMessages } from "./qwen-session";
+import { isQwenPlanPermissionRequest, qwenPlanFromEvent, qwenPlanHookOutput } from "./qwen-plan";
 import { resolveClaudePlan } from "./claude-plan";
 import { takeModPlanApproval } from "./mod-plan-approval";
 import {
@@ -234,8 +237,9 @@ import { exitOnUnknownSubcommand } from "./unknown-subcommand";
 import { completeAnnotateCommand } from "./annotate-command";
 import { ensureInboxRunning, runInboxCommand, selfCommand as inboxSelfCommand } from "./inbox-command";
 import { runCardCommand } from "./card-command";
-import { runTelemetryCommand } from "./telemetry-command";
+import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
+import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { isAgentSdkEntrypoint } from "@plannotator/shared/t3-hook-command";
 import {
@@ -255,18 +259,28 @@ import {
   supportsAnnotateClientLease,
 } from "./annotate-output";
 
-// Embed the built HTML at compile time
-// @ts-ignore - Bun import attribute for text
-import planHtml from "../dist/index.html" with { type: "text" };
-const planHtmlContent = planHtml as unknown as string;
+// The built pages, embedded at compile time as files and read into a string
+// when a server first needs one (then kept). Not `type: "text"`: from Bun 1.4
+// that stores each page as its own embedded file, in UTF-16 when it holds any
+// character past Latin-1 (these do), so the three ~20 MB pages cost twice
+// their size in the binary (+64 MB, #2215). As files they are stored as built.
+// The read is from the binary's embedded files, which Bun holds from startup:
+// replacing the binary (the installer renames a new one over it) does not
+// change what a running process reads (smoke-binaries checks this).
+// @ts-ignore - Bun import attribute for file
+import planHtmlPath from "../dist/index.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import reviewHtmlPath from "../dist/review.html" with { type: "file" };
+// @ts-ignore - Bun import attribute for file
+import inboxHtmlPath from "../dist/inbox.html" with { type: "file" };
 
-// @ts-ignore - Bun import attribute for text
-import reviewHtml from "../dist/review.html" with { type: "text" };
-const reviewHtmlContent = reviewHtml as unknown as string;
-
-// @ts-ignore - Bun import attribute for text
-import inboxHtml from "../dist/inbox.html" with { type: "text" };
-const inboxHtmlContent = inboxHtml as unknown as string;
+function embeddedPage(path: unknown): () => string {
+  let html: string | undefined;
+  return () => (html ??= readFileSync(path as string, "utf8"));
+}
+const planHtmlContent = embeddedPage(planHtmlPath);
+const reviewHtmlContent = embeddedPage(reviewHtmlPath);
+const inboxHtmlContent = embeddedPage(inboxHtmlPath);
 
 // Code review's diagram engine: embedded too, read on first need.
 import { loadEmbeddedDiagramEngine } from "./diagram-engine";
@@ -314,10 +328,14 @@ const rawArgs = process.argv.slice(2);
       }),
     );
   }
-  // Usage counts for experimental features (unreleased, HIDDEN_SUBCOMMANDS):
-  // telemetry-command.ts. Before the strict-annotate parse, which takes `--json`.
-  if (args[0] === "telemetry" && !args.slice(1).some((a) => a === "--help" || a === "-h")) {
-    process.exit(await runTelemetryCommand(args.slice(1), { version: getCliVersion() }));
+}
+// `plannotator feedback --stdin`: the person's feedback about Plannotator,
+// sent to the feedback Worker (feedback-command.ts). Before the strict-annotate
+// parse: it takes its own flags, and its own --help.
+{
+  const args = rawArgs;
+  if (args[0] === "feedback") {
+    process.exit(await runFeedbackCommand(args.slice(1), { env: process.env, version: getCliVersion() ?? "dev" }));
   }
 }
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's
@@ -615,8 +633,11 @@ if (isVersionInvocation(args)) {
   process.exit(0);
 }
 
+/** The person turned the Inbox's Board on (config.json `inboxBoard`): only then does either help mention cards. */
+const boardOnForHelp = () => INBOX_CARD_ACTION_ON && loadConfig().inboxBoard === true;
+
 if (isTopLevelHelpInvocation(args)) {
-  console.log(formatTopLevelHelp());
+  console.log(formatTopLevelHelp({ board: boardOnForHelp() }));
   process.exit(0);
 }
 
@@ -629,7 +650,7 @@ if (helpSubcommand) {
   // `inbox --help` is the Plannotator Inbox guide for agents (inbox-help.ts).
   console.log(
     helpSubcommand === "inbox"
-      ? formatInboxHelp({ command: inboxSelfCommand(), dataDir: getPlannotatorDataDir() })
+      ? formatInboxHelp({ command: inboxSelfCommand(), dataDir: getPlannotatorDataDir(), board: boardOnForHelp() })
       : formatSubcommandHelp(helpSubcommand),
   );
   process.exit(0);
@@ -748,6 +769,13 @@ if (args[0] === "update") {
   process.exit(await runUpdateCommand(rawArgs.slice(rawArgs.indexOf("update") + 1), { currentVersion: getCliVersion() }));
 }
 
+// Internal: the POSIX update wrapper's download step (safe updates, step 1).
+// This binary's own fetch downloads the install script and the expected
+// checksums into a private temp dir and prints the dir (update-prepare.ts).
+if (args[0] === "update-prepare") {
+  process.exit(await runUpdatePrepareCommand(args.slice(1), { platform: process.platform }));
+}
+
 if (args[0] === "install-runtime") {
   const runtime = args[1];
   if (runtime !== "agent-terminal" && runtime !== "call-flow") {
@@ -765,7 +793,7 @@ if (args[0] === "install-runtime") {
 // (inbox/inbox.json). Dispatched before the session registry and the
 // auto-update trigger below, which belong to review sessions.
 if (args[0] === "inbox") {
-  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent });
+  await runInboxCommand(args.slice(1), { htmlContent: inboxHtmlContent(), json: jsonFlag });
 }
 
 if (isInteractiveNoArgInvocation(args, process.stdin.isTTY)) {
@@ -795,6 +823,7 @@ process.on("exit", () => {
       current: getCliVersion(),
       enabled: resolveUpdateCheck(loadConfig()),
       now: Date.now(),
+      managed: isManagedBinary(process.execPath),
     });
     if (line) process.stderr.write(`${line}\n`);
   } catch {}
@@ -1030,7 +1059,7 @@ if (args[0] === "sessions") {
   const server = await startGoalSetupServer({
     bundle,
     origin: detectedOrigin,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleGoalSetupServerReady(url, isRemote, port);
     },
@@ -1460,7 +1489,7 @@ if (args[0] === "sessions") {
     // The approved branch below prints result.feedback after the prompt, so
     // this CLI's origins may see approve-carrying menu items (spec §6.4).
     approvalNotesSupported: supportsReviewApprovalNotes(detectedOrigin),
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     tailnetPublished: tailscaleFlag,
     onCleanup: worktreeCleanup,
@@ -1755,7 +1784,7 @@ if (args[0] === "sessions") {
     convertHtml: renderMarkdownFlag,
     agentCwd: projectRoot,
     project: annotateProject,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
       if (tailscaleFlag) {
@@ -1833,6 +1862,7 @@ if (args[0] === "sessions") {
   // DSH_SHELL is inherited by anything started from a DSH terminal, so only an
   // explicit PLANNOTATOR_ORIGIN=dsh skips the Copilot ancestor check below.
   const isExplicitDsh = isDsh && process.env.PLANNOTATOR_ORIGIN === "dsh";
+  const isQwen = detectedOrigin === "qwen-code";
 
   // Collect up to N recent assistant messages so the user can pick the right
   // one — defaults to the same selection as the legacy "last message"
@@ -1849,7 +1879,7 @@ if (args[0] === "sessions") {
   // earlier branch claims the invocation.
   let copilotLockSessionDir: string | null = null;
   let copilotSessionDir: string | null = null;
-  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isExplicitDsh) {
+  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isExplicitDsh && !isQwen) {
     copilotLockSessionDir = findCopilotSessionByAncestorPids();
     copilotSessionDir = copilotLockSessionDir ??
       (isCopilot ? findCopilotSessionForCwd(projectRoot) : null);
@@ -1973,6 +2003,21 @@ if (args[0] === "sessions") {
         .map((m) => ({ messageId: m.messageId, text: m.text, lineNumbers: [], timestamp: m.timestamp }));
       lastMessage = recentMessages[0] ?? null;
     }
+  } else if (isQwen) {
+    // Qwen Code path: QWEN_CODE_PROJECT_DIR + QWEN_CODE_SESSION_ID (set for
+    // the shell tool that runs this) name the session's log directly; the
+    // fallback is the newest chat of the cwd's project (qwen-session.ts).
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Qwen Code detected, project root: ${projectRoot}`);
+    }
+    const qwenLog = findQwenSessionLog({ cwd: projectRoot });
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Qwen selected log: ${qwenLog ?? "(none)"}`);
+    }
+    if (qwenLog) {
+      recentMessages = getRecentQwenMessages(qwenLog, RECENT_MESSAGES_LIMIT);
+      lastMessage = recentMessages[0] ?? null;
+    }
   } else {
     // Claude Code path: resolve session log
     //
@@ -2061,7 +2106,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     recentMessages: pickerMessages,
     tailnetPublished: tailscaleFlag,
     onReady: async (url, isRemote, port) => {
@@ -2122,7 +2167,7 @@ if (args[0] === "sessions") {
     mode: "archive",
     sharingEnabled,
     shareBaseUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
     },
@@ -2183,7 +2228,7 @@ if (args[0] === "sessions") {
     sharingEnabled: bridgeSharingEnabled,
     shareBaseUrl: bridgeShareBaseUrl,
     pasteApiUrl: bridgePasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: async (url, isRemote, port) => {
       await handleServerReady(url, isRemote, port);
@@ -2262,7 +2307,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       await handleServerReady(url, isRemote, port);
 
@@ -2493,7 +2538,7 @@ if (args[0] === "sessions") {
     // never trick an old bridge into dropping a reviewer's note.
     approvalNotesSupported:
       supportsReviewApprovalNotes("opencode") && input.supportsApprovalNotes === true,
-    htmlContent: reviewHtmlContent,
+    htmlContent: reviewHtmlContent(),
     diagramEngine: loadEmbeddedDiagramEngine,
     opencodeClient: makeOpenCodeBridgeClient(input.agents),
     onReady: (url, isRemote, port) => {
@@ -2607,7 +2652,7 @@ if (args[0] === "sessions") {
       hook: false,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
     },
@@ -2670,7 +2715,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 
@@ -2775,7 +2820,7 @@ if (args[0] === "sessions") {
       hook: hookFlag,
       isRemote: isRemoteSession(),
     }),
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);
 
@@ -2858,6 +2903,8 @@ if (args[0] === "sessions") {
     origin: "claude-code",
     planFilePath: input.planFilePath,
     permissionMode: input.permissionMode,
+    // A chain under the session root's project is continued after a shell cd (#2197).
+    historyRoot: input.projectRoot,
     planRevisions: true,
     // The mod delivers an approval's notes (planHostResult composes the
     // approved-with-notes prompt). The classic PermissionRequest hook below
@@ -2866,7 +2913,7 @@ if (args[0] === "sessions") {
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
       if (isRemote && sharingEnabled) {
@@ -2984,7 +3031,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
 
@@ -3054,7 +3101,7 @@ if (args[0] === "sessions") {
       sharingEnabled,
       shareBaseUrl,
       pasteApiUrl,
-      htmlContent: planHtmlContent,
+      htmlContent: planHtmlContent(),
       onReady: async (url, isRemote, port) => {
         handleServerReady(url, isRemote, port);
         if (isRemote && sharingEnabled) {
@@ -3111,11 +3158,16 @@ if (args[0] === "sessions") {
   let isGemini = false;
   let planFilename = "";
 
+  // Qwen Code: PermissionRequest on exit_plan_mode, the plan inline (qwen-plan.ts).
+  const isQwen = isQwenPlanPermissionRequest(event);
+
   // Detect harness: Gemini sends plan_filename (file on disk), Claude Code sends plan (inline)
-  planFilename = event.tool_input?.plan_filename || event.tool_input?.plan_path || "";
+  planFilename = isQwen ? "" : event.tool_input?.plan_filename || event.tool_input?.plan_path || "";
   isGemini = !!planFilename;
 
-  if (isGemini) {
+  if (isQwen) {
+    planContent = qwenPlanFromEvent(event);
+  } else if (isGemini) {
     // Reconstruct full plan path from transcript_path and session_id:
     // transcript_path = <projectTempDir>/chats/session-...json
     // plan lives at   = <projectTempDir>/<session_id>/plans/<plan_filename>
@@ -3138,17 +3190,26 @@ if (args[0] === "sessions") {
   // Start the plan review server
   const server = await startPlannotatorServer({
     plan: planContent,
-    origin: isGemini ? "gemini-cli" : detectedOrigin,
+    origin: isQwen ? "qwen-code" : isGemini ? "gemini-cli" : detectedOrigin,
     // No approvalNotesSupported: Claude Code's PermissionRequest allow carries
-    // no message, and Gemini CLI shows a systemMessage to the person, not the
-    // model, so notes sent with an approval would be lost.
+    // no message, Gemini CLI shows a systemMessage to the person, not the
+    // model, and Qwen Code ignores a hook's allow on exit_plan_mode, so notes
+    // sent with an approval would be lost.
     // Claude Code writes the plan to disk before the hook fires.
-    planFilePath: isGemini ? undefined : event.tool_input?.planFilePath,
+    planFilePath: isGemini || isQwen ? undefined : event.tool_input?.planFilePath,
+    // Claude Code sets CLAUDE_PROJECT_DIR (the session's project root) for
+    // hooks; a shell cd does not move it, so a chain under its project is
+    // continued (#2197). Gemini CLI and Qwen Code set the same variable as an
+    // alias: left out of the Claude Code check. Qwen's own QWEN_PROJECT_DIR
+    // (the session's working directory) plays the same part for Qwen.
+    historyRoot: isQwen
+      ? process.env.QWEN_PROJECT_DIR || undefined
+      : !isGemini && detectedOrigin === "claude-code" ? process.env.CLAUDE_PROJECT_DIR : undefined,
     permissionMode,
     sharingEnabled,
     shareBaseUrl,
     pasteApiUrl,
-    htmlContent: planHtmlContent,
+    htmlContent: planHtmlContent(),
     onReady: async (url, isRemote, port) => {
       handleServerReady(url, isRemote, port);
 
@@ -3178,7 +3239,9 @@ if (args[0] === "sessions") {
   server.stop();
 
   // Output decision in the appropriate format for the harness
-  if (isGemini) {
+  if (isQwen) {
+    console.log(qwenPlanHookOutput(result));
+  } else if (isGemini) {
     if (result.approved) {
       console.log(result.feedback ? JSON.stringify({ systemMessage: result.feedback }) : "{}");
     } else {
