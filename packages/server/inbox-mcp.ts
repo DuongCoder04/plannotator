@@ -69,7 +69,7 @@ export const INBOX_MCP_INSTRUCTIONS = [
   "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Question syntax: send_message's description.",
   "- attachments: files to show the person (a plan, a screenshot, an HTML mock); link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
   "- wait_for_reply (thread_id) returns the reply when it lands, or { status: \"waiting\", cursor } after about 50 s: call it again with that cursor. Call it only after the work that does not need the answer.",
-  "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. To replace a question of yours that no longer fits: reply_to into its thread with `supersedes`. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
+  "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
   "- A guided review of a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
   "",
   "A reply is the person's own: their words, then \"Answers to your questions\"; no tool answers or approves for them.",

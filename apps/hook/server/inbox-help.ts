@@ -294,7 +294,6 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "Do not use it for:",
     "",
     "- Something new the person raised in this chat that needs no pictures or files, or a question they asked you to ask there: ask in the chat (see \"Chat or Inbox\" below).",
-    "- Routine progress or each small step: send one message per real need.",
     "- A checklist, a status update or a decision written as `:::action` blocks: an action item is only for something the person must go and do before you can go on.",
     "- A sign-off on this plan, document or diff before you go on: use a Plannotator review (plan review, `plannotator annotate`, `plannotator review`).",
     "",

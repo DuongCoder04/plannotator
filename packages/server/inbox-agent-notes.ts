@@ -110,8 +110,8 @@ const INBOX_NOTE_BODY_V3 = [
  * session without it is not misled. Loaded in every session of the agent, so
  * every line earns its place. v3 (the owner, 2026-10-27): chat or Inbox is
  * never a guess at whether the person is here; a decision in the Inbox stays
- * there, the chat only says what waits. v4 (the owner, 2026-10-27): follow
- * through without pinging, the one wording of INBOX_FOLLOW_THROUGH_RULE
+ * there, the chat only says what waits. v4 (the owner, 2026-10-27): be
+ * proactive in the Inbox, the one wording of INBOX_FOLLOW_THROUGH_RULE
  * (kept a literal here; tests/inbox-guidance-parity.test.ts holds it equal).
  */
 export const INBOX_NOTE_BODY = [
@@ -120,7 +120,7 @@ export const INBOX_NOTE_BODY = [
   "The person keeps a Plannotator Inbox on this computer: a window where they read what agents send and answer when they can.",
   "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` to ask a decision only they can make (as a `:::question` block) or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`.",
-  "No routine progress, but send what you said is coming, or a question you mean to ask, once it is ready, not held for a later batch; answer what the person writes, in its thread.",
+  "Be proactive about Inbox updates and about replying to the person through the Inbox when you think they would want you to. Don't withhold important updates or decisions, and don't batch updates to send later: proactivity is better than procrastination.",
   "A decision you sent to the Inbox stays there. When the person writes in this chat, say what is waiting there (a short summary and the thread's link), but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar): that blocks the chat and splits the answer. Ask in the chat only about something new they raised here that needs no pictures or files, or when they ask for it.",
   "Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
   'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',

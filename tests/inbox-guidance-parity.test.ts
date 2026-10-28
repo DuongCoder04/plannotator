@@ -148,12 +148,16 @@ describe("Inbox guidance parity across harnesses", () => {
     for (const surface of reminders) expect(SURFACES[surface]).toContain(first.replace("writes in the chat", "writes here"));
   });
 
-  test("in the reminder, the follow-through rule is about the Inbox's threads: under 'In the Inbox:', before anything about the chat", () => {
+  test("in the reminder, the follow-through rule follows the send, before anything about the chat", () => {
     for (const surface of reminders) {
       const text = SURFACES[surface]!;
-      expect(text).toContain(`In the Inbox: ${INBOX_FOLLOW_THROUGH_RULE}`);
+      expect(text).toContain(`send_message and keep going. ${INBOX_FOLLOW_THROUGH_RULE}`);
       expect(text.indexOf(INBOX_FOLLOW_THROUGH_RULE)).toBeLessThan(text.indexOf("when the person writes here"));
     }
+  });
+
+  test("no surface bans progress: the follow-through rule asks for updates the person would want", () => {
+    for (const [surface, text] of Object.entries(SURFACES)) expect([surface, /routine progress/i.test(text)]).toEqual([surface, false]);
   });
 
   test("the docs that quote the reminder quote it as agents get it", () => {

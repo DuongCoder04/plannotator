@@ -1883,12 +1883,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * card's `say` and `you` add a 36-character pointer each: 11,009 (+249,
  * estimated).
  * Then the follow-through rule in the lead (INBOX_FOLLOW_THROUGH_RULE, the
- * owner, 2026-10-27: +162 bytes over "No routine progress."), paid for by
- * shorter action leads (send_message, wait_for_reply, resolve_message,
- * get_guide_brief), the wake note's "A reply arrives" and the lead's last
- * sentence: measured on Pi, 9,421 bytes (+5); then "Pass an idempotency_key
- * so a retry never posts twice." moved from the server instructions into
- * that field's description: 9,450 bytes (+29). The stated cost stands.
+ * owner's sentence, 2026-10-27: 252 bytes in place of "No routine
+ * progress.", 20), paid for in the description by shorter action leads
+ * (send_message, wait_for_reply, resolve_message, read_thread, whose detail
+ * moved to its `thread_id` field, get_guide_brief), the wake note's "A reply
+ * arrives" and the lead's last sentence; "Pass an idempotency_key so a retry
+ * never posts twice." moved from the server instructions into that field's
+ * description. Measured on Pi over the ref-link figure: 9,733 bytes (+142,
+ * 1.5%; about +35 tokens). The stated cost stands.
  */
 const INBOX_TOOL_COST_NOW = { bytes: 9591, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
