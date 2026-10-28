@@ -169,7 +169,12 @@ const DECISION_OFF_STYLE: React.CSSProperties = {
  * - On a touch screen each button's hit area is at least 44 x 44 px: an
  *   invisible `before:` box centred on it, as the header's decision tag
  *   does, so the drawn button does not change. (An ellipsised button clips
- *   that box to itself.)
+ *   that box to itself.) A box reaches up to 11 px past its button, so a
+ *   wrapped footer's rows sit 20 px apart on a touch screen
+ *   (`pointer-coarse:gap-y-5`, the footer row): with the 4 px of `gap-1`,
+ *   Accept recommended's box, later in the page, covered the bottom of Skip
+ *   and Add note above it, and a tap on Skip answered the question. One row
+ *   has no row gap, so a footer that fits is unchanged.
  * A footer that fits on one row draws exactly as before, on any pointer.
  */
 const FOOT_BUTTON = "whitespace-nowrap pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:left-1/2 pointer-coarse:before:top-1/2 pointer-coarse:before:h-11 pointer-coarse:before:w-full pointer-coarse:before:min-w-11 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']";
@@ -1012,7 +1017,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
 
       {(!readOnly || hasHostFooter) && (
         <div
-          className="annotation-exclude select-none mt-2 flex flex-wrap items-center gap-1 border-t border-border/55 pt-1.5"
+          className="annotation-exclude select-none mt-2 flex flex-wrap items-center gap-1 pointer-coarse:gap-y-5 border-t border-border/55 pt-1.5"
           data-pinpoint-ignore=""
         >
           {!readOnly && (

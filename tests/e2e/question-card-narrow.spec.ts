@@ -184,6 +184,64 @@ async function tagProblems(page: Page): Promise<string[]> {
   }, CARD);
 }
 
+/**
+ * Where taps land on the question cards' footers under `scope`: every point of a grid (every 2 px) inside each
+ * drawn (rounded) footer button must reach that button (`elementFromPoint`, then `closest('button')`), and no point of the
+ * card's content (the parts above its footer) may reach a footer button. A button's invisible touch box (its ::before) that reaches
+ * over a neighbour, or over the card's content, takes taps meant for it. Each footer is scrolled to the middle first.
+ */
+async function tapProblems(page: Page, scope = 'body'): Promise<string[]> {
+  const out: string[] = [];
+  const count = await page.locator(`${scope} ${CARD}`).count();
+  for (let n = 0; n < count; n++) {
+    // Centred, clear of a pane's sticky bars (the Inbox thread's foot).
+    await page.locator(`${scope} ${CARD}`).nth(n).locator(':scope > div.border-t').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(50);
+    out.push(...(await page.evaluate(({ scope, card, n }) => {
+      const problems: string[] = [];
+      const fieldset = document.querySelectorAll<HTMLElement>(`${scope} ${card}`)[n]!;
+      const foot = fieldset.querySelector<HTMLElement>(':scope > div.border-t');
+      if (!foot) return problems;
+      const buttons = [...foot.querySelectorAll<HTMLButtonElement>('button')].filter((b) => b.getClientRects().length > 0);
+      const name = (b: Element | null) => (b ? `"${b.textContent?.trim()}"` : 'nothing');
+      for (const button of buttons) {
+        const r = button.getBoundingClientRect();
+        // The drawn shape is the rounded box (hit testing follows border-radius; a pill's corners are not the button).
+        const radius = Math.min(parseFloat(getComputedStyle(button).borderTopLeftRadius) || 0, r.width / 2, r.height / 2);
+        const drawn = (x: number, y: number) => {
+          const cx = Math.min(Math.max(x, r.left + radius), r.right - radius);
+          const cy = Math.min(Math.max(y, r.top + radius), r.bottom - radius);
+          return Math.hypot(x - cx, y - cy) <= radius - 1;
+        };
+        const wrong = new Map<string, number>();
+        for (let y = r.top + 1; y < r.bottom - 1; y += 2) {
+          for (let x = r.left + 1; x < r.right - 1; x += 2) {
+            if (!drawn(x, y)) continue;
+            const hit = document.elementFromPoint(x, y)?.closest('button') ?? null;
+            if (hit !== button) wrong.set(name(hit), (wrong.get(name(hit)) ?? 0) + 1);
+          }
+        }
+        for (const [other, points] of wrong) problems.push(`card ${n + 1}: ${points} points inside ${name(button)} reach ${other}`);
+      }
+      // The card's content (every part but the footer: the prompt, the choices, the Other row, the note).
+      let stolen = 0;
+      for (const part of fieldset.children) {
+        if (part === foot) continue;
+        const r = part.getBoundingClientRect();
+        for (let y = Math.max(r.top, 0) + 1; y < r.bottom - 1; y += 2) {
+          for (let x = r.left + 1; x < r.right - 1; x += 2) {
+            const hit = document.elementFromPoint(x, y)?.closest('button');
+            if (hit && buttons.includes(hit as HTMLButtonElement)) stolen += 1;
+          }
+        }
+      }
+      if (stolen) problems.push(`card ${n + 1}: ${stolen} points on the card's content reach a footer button`);
+      return problems;
+    }, { scope, card: CARD, n })));
+  }
+  return out;
+}
+
 /** Pin every card under `scope` to `width` px (a column that wide), or back to its column (null). */
 async function cardWidth(page: Page, width: number | null, scope = 'body'): Promise<void> {
   await page.evaluate(({ width, scope, card }) => {
@@ -345,6 +403,28 @@ test('annotate: at every column width the footer buttons keep their words on one
       await reload(page);
       await cardWidth(page, width);
     }
+    // A touch screen, where each footer button has an invisible 44 px touch box: at widths where the footer
+    // wraps, with the note closed and open, a tap inside a drawn button reaches that button, never its
+    // neighbour on the next row (a tap on Skip must not accept the recommendation), and a tap on the card's
+    // content never reaches the footer.
+    {
+      const touch = await openReview(browser, session, { hasTouch: true });
+      expect(await touch.page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+      await touch.page.getByRole('dialog').getByRole('button', { name: 'Dismiss' }).click({ timeout: 2_000 }).catch(() => {});
+      for (const note of ['closed', 'open'] as const) {
+        if (note === 'open') {
+          for (let n = 0; n < 4; n++) await touch.page.locator(CARD).nth(n).getByRole('button', { name: 'Add note' }).click();
+        }
+        for (const width of [200, 262, 280, 320]) {
+          await cardWidth(touch.page, width);
+          check(await tapProblems(touch.page), `touch, cards ${width} px wide, the note ${note}`).toEqual([]);
+          await touch.page.locator(CARD).first().scrollIntoViewIfNeeded();
+          await shot(touch.page, `annotate-touch-${width}-note-${note}-light`, `${CARD} >> nth=0`);
+        }
+      }
+      await touch.context.close();
+    }
+
     // Narrower than Accept recommended itself: its words end in an ellipsis, its name stays whole.
     await cardWidth(page, 160);
     check(await footerProblems(page), 'cards 160 px wide').toEqual([]);
@@ -481,6 +561,21 @@ test('the Inbox: a thread full width, beside a file, on a phone, and the Decide 
         await shot(page, `inbox-card-${width}-${value}`, `${pane} ${CARD} >> nth=0`);
       }
       await cardWidth(page, null, pane);
+      // A touch screen outside the Inbox's phone layout (a tablet), cards narrow enough to wrap: a tap inside a
+      // drawn footer button reaches that button.
+      {
+        const tablet = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, colorScheme: value });
+        const t = await tablet.newPage();
+        await t.emulateMedia({ colorScheme: value, reducedMotion: 'reduce' });
+        await t.goto(`${url}#thread=${threadId}`);
+        await expect(t.locator(`${pane} ${CARD}`)).toHaveCount(4);
+        expect(await t.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+        for (const width of [200, 262, 280]) {
+          await cardWidth(t, width, pane);
+          check(await tapProblems(t, pane), `Inbox on a tablet, cards ${width} px wide`).toEqual([]);
+        }
+        await tablet.close();
+      }
       if (fileId) {
         for (const width of [1440, 1100]) {
           await page.setViewportSize({ width, height: 900 });
