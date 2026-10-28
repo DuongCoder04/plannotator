@@ -12,6 +12,7 @@
 import '@plannotator/ui/utils/math-eager';
 import '@plannotator/ui/utils/identity-tater';
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { shouldPrintOnKey } from './printShortcut';
 import { toast, Toaster } from 'sonner';
 import {
   compactDocumentTitle as resolveCompactDocumentTitle,
@@ -6238,16 +6239,10 @@ const App: React.FC = () => {
   // Cmd/Ctrl+P keyboard shortcut — print plan
   useEffect(() => {
     const handlePrintShortcut = (e: KeyboardEvent) => {
-      if (e.key !== 'p' || !(e.metaKey || e.ctrlKey)) return;
-
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
-      if (showExport ||
+      const blocked = showExport ||
           showSourceFileEditWarning ||
-          showExitWarning || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
-
-      if (submitted) return;
+          showExitWarning || showAgentWarning || showPermissionModeSetup || !!pendingPasteImage || submitted;
+      if (!shouldPrintOnKey(e, blocked)) return;
 
       e.preventDefault();
       window.print();
