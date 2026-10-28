@@ -192,29 +192,6 @@ export const SETTINGS = {
     toServer: (v: FaviconStyle) => ({ favicon: v }),
   },
 
-  documentFontFamily: {
-    defaultValue: '',
-    fromCookie: () => storage.getItem('plannotator-document-font-family')?.trim() || undefined,
-    toCookie: (value: string) => {
-      if (value) storage.setItem('plannotator-document-font-family', value);
-      else storage.removeItem('plannotator-document-font-family');
-    },
-    serverKey: undefined, fromServer: undefined, toServer: undefined,
-  },
-  documentFontSize: {
-    defaultValue: null as number | null,
-    fromCookie: () => {
-      const raw = storage.getItem('plannotator-document-font-size');
-      const value = raw ? Number(raw) : NaN;
-      return Number.isInteger(value) && value >= 12 && value <= 24 ? value : undefined;
-    },
-    toCookie: (value: number | null) => {
-      if (value !== null) storage.setItem('plannotator-document-font-size', String(value));
-      else storage.removeItem('plannotator-document-font-size');
-    },
-    serverKey: undefined, fromServer: undefined, toServer: undefined,
-  },
-
   gridEnabled: {
     // Default OFF: plans open in the Clean look (the document edge to edge).
     // Grid (the classic floating card on grid paper) is a choice, made in the

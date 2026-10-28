@@ -41,7 +41,7 @@ export const Callout: React.FC<CalloutProps> = ({
       data-block-type={blockType}
       {...kindAttr}
     >
-      <div className={`document-prose document-scaled ${blockType}-title text-xs font-semibold uppercase tracking-wide mb-1`}>
+      <div className={`${blockType}-title text-xs font-semibold uppercase tracking-wide mb-1`}>
         {kind}
       </div>
       {renderProseBody({
