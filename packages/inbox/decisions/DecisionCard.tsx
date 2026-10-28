@@ -15,19 +15,19 @@
  * thread card's own tiles (ui's `QuestionPictureTiles`): the picture picks and
  * the zoom button opens the viewer, never both.
  */
-import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Viewer } from '@plannotator/ui/components/Viewer';
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { InlineMarkdown } from '@plannotator/ui/components/InlineMarkdown';
 import { QuestionPictureTiles } from '@plannotator/ui/components/blocks/QuestionBlock';
-import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import type { InboxDecision, InboxQuestion } from '@plannotator/core/inbox-types';
 import { readInboxQuestionKind } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { agentName, formatCount, shortTime } from '../format';
 import { HostMark, Icon } from '../icons';
-import { inboxMessageImageBase, inboxMessageImageUrl } from '../images';
+import { inboxMessageImageUrl } from '../images';
 import { Tip } from '../components/Tip';
-import { answerNeedsConfirm, answerWords, choiceAnswer, confirmLabel, otherAnswer, skipAnswer, swipeChoices, textAnswer } from './model';
+import { ContextMarkdown } from '../components/ContextMarkdown';
+import { useRefRepo } from '../links';
+import { answerNeedsConfirm, answerWords, choiceAnswer, confirmLabel, otherAnswer, skipAnswer, swipeChoices, swipeHint, textAnswer } from './model';
 
 /**
  * The contract lines a card shows (the question's additive `stakes`, `why`,
@@ -143,36 +143,6 @@ function contextWithout(context: string, refs: readonly string[]): string {
   return out.trim();
 }
 
-const noop = () => {};
-const NO_ANNOTATIONS: never[] = [];
-
-/** The context drawn as markdown, read only, with the message's images. */
-function Context({ markdown, messageId, onImage }: { markdown: string; messageId: string; onImage: (src: string, alt: string) => void }) {
-  const blocks = useMemo(() => parseMarkdownToBlocks(markdown, { frontmatter: false }), [markdown]);
-  if (!markdown) return null;
-  return (
-    <div className="ib-body ib-dm-ctx" data-decision-context="">
-      <Viewer
-        blocks={blocks}
-        markdown={markdown}
-        annotations={NO_ANNOTATIONS}
-        onAddAnnotation={noop}
-        onSelectAnnotation={noop}
-        selectedAnnotationId={null}
-        mode="selection"
-        taterMode={false}
-        maxWidth={null}
-        stickyActions={false}
-        disableCodePathValidation
-        imageBaseDir={inboxMessageImageBase(messageId)}
-        onImageClick={onImage}
-        questionDecisionLines={false}
-        answerOnly
-        readOnly
-      />
-    </div>
-  );
-}
 
 export interface DecisionCardProps {
   decision: InboxDecision;
@@ -223,6 +193,9 @@ function flingDistance(direction: number): number {
 export function DecisionCard(props: DecisionCardProps) {
   const { decision } = props;
   const q = decision.question;
+  // The thread's repo, so `#123` and `owner/repo#123` link as in the thread (none: they stay plain).
+  const refRepo = useRefRepo(decision.thread.project.repo ?? null);
+  const refProps = { githubRepo: refRepo?.display, repoHost: refRepo?.host };
   const kind = readInboxQuestionKind(q.kind);
   const facts = cardFacts(decision);
   const pictures = cardPictures(decision);
@@ -473,14 +446,14 @@ export function DecisionCard(props: DecisionCardProps) {
           )}
         </div>
         <h2 id={promptId} ref={promptRef} tabIndex={-1} className="ib-dm-prompt" data-decision-prompt="">
-          <InlineMarkdown text={q.prompt} />
+          <InlineMarkdown {...refProps} text={q.prompt} />
         </h2>
         {/* The stakes line (`Stakes:`): what the choice affects, in one sentence. */}
         {facts.stakes && (
           <p id={stakesId} className="ib-dm-stakes" data-decision-stakes="">
             <Icon name="warn" size={16} />
             <span>
-              <InlineMarkdown text={facts.stakes} />
+              <InlineMarkdown {...refProps} text={facts.stakes} />
             </span>
           </p>
         )}
@@ -497,7 +470,14 @@ export function DecisionCard(props: DecisionCardProps) {
           </p>
         )}
         {decision.message.excerpt && <p className="ib-dm-excerpt">{decision.message.excerpt}</p>}
-        <Context markdown={context} messageId={decision.message.id} onImage={(src, alt) => props.onImage([{ attachmentId: '', name: alt || 'image', ref: null, src }], 0)} />
+        <ContextMarkdown
+          className="ib-body ib-dm-ctx"
+          data-decision-context=""
+          markdown={context}
+          messageId={decision.message.id}
+          refRepo={refRepo}
+          onImage={(src, alt) => props.onImage([{ attachmentId: '', name: alt || 'image', ref: null, src }], 0)}
+        />
         <div className="ib-dm-refs">
           {facts.shows?.kind === 'link' &&
             (shownFile ? (
@@ -555,7 +535,7 @@ export function DecisionCard(props: DecisionCardProps) {
                 // The picture picks (it is in the tile's label); the zoom button opens the viewer and never picks.
                 onZoom={(url) => props.onImage(tilePictures, Math.max(0, tilePictures.findIndex((p) => p.src === url)))}
                 onPictureError={(url) => setFailedPictures((prev) => (prev.has(url) ? prev : new Set([...prev, url])))}
-                renderText={(text) => <InlineMarkdown text={text} />}
+                renderText={(text) => <InlineMarkdown {...refProps} text={text} />}
                 inputProps={(label) => ({
                   value: label,
                   onClick:
@@ -610,11 +590,11 @@ export function DecisionCard(props: DecisionCardProps) {
                     <span className="ib-dm-dot" aria-hidden="true" />
                     <span className="ib-dm-ch">
                       <span className="ib-dm-chl">
-                        <InlineMarkdown text={choice.label} />
+                        <InlineMarkdown {...refProps} text={choice.label} />
                       </span>
                       {choice.description && (
                         <span className="ib-dm-chd">
-                          <InlineMarkdown text={choice.description} />
+                          <InlineMarkdown {...refProps} text={choice.description} />
                         </span>
                       )}
                       </span>
@@ -638,11 +618,11 @@ export function DecisionCard(props: DecisionCardProps) {
                     <span className="ib-dm-box" aria-hidden="true" />
                     <span className="ib-dm-ch">
                       <span className="ib-dm-chl">
-                        <InlineMarkdown text={choice.label} />
+                        <InlineMarkdown {...refProps} text={choice.label} />
                       </span>
                       {choice.description && (
                         <span className="ib-dm-chd">
-                          <InlineMarkdown text={choice.description} />
+                          <InlineMarkdown {...refProps} text={choice.description} />
                         </span>
                       )}
                       </span>
@@ -743,13 +723,13 @@ export function DecisionCard(props: DecisionCardProps) {
           )}
           {facts.why && (
             <p className="ib-dm-why" data-decision-why="">
-              <b>{recommendedLabels.length > 0 || q.suggested_text ? `Why ${name} recommends it:` : 'Why:'}</b> <InlineMarkdown text={facts.why} />
+              <b>{recommendedLabels.length > 0 || q.suggested_text ? `Why ${name} recommends it:` : 'Why:'}</b> <InlineMarkdown {...refProps} text={facts.why} />
             </p>
           )}
           {/* Swipe is touch only, for a two-way choice, and always has its buttons (the choices above). */}
           {choices2 && props.touch && (
             <p className="ib-dm-swipehint" aria-hidden="true">
-              Swipe right for {choices2[0]}, left for {choices2[1]}.
+              {swipeHint(choices2)}
             </p>
           )}
         </div>

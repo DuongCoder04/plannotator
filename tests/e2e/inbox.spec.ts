@@ -238,7 +238,7 @@ test('first run, nothing found: the first step offers Claude Code, Pi or OpenCod
   const command = `codex mcp add plannotator-inbox -- ${binary} inbox mcp`;
   const panel = page.getByRole('tabpanel', { name: 'Codex' });
   await expect(panel.locator('pre')).toHaveText(command);
-  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after.']);
+  await expect(panel.locator('p')).toHaveText(['Also adds it to the Codex app and the IDE extension. Restart them after. With Codex 0.149 or later, your replies come back into the Codex thread by themselves.']);
   await expect(panel.getByText('Another way', { exact: false })).toBeVisible();
   await expect(panel.getByText('Codex', { exact: true })).toHaveCount(0);
   await shot('1.3-first-run-codex');
@@ -345,13 +345,16 @@ test('a project folder filters the list and the sections still apply', async () 
   await expect(page.getByRole('heading', { level: 1, name: 'billing-svc' })).toBeVisible();
   await expect(page.locator('.ib-band')).toHaveText([/^Stopped on you\s*1$/, /^Waiting on you\s*1$/]);
   // One project: no project column at all, and no empty block where it was. The
-  // agent mark starts where the project label did; a badge, when a row has one,
-  // starts there instead and the mark follows it.
+  // subject cell starts where the project label did; a badge, when a row has one,
+  // leads it. The agent's mark has its own column just before the time
+  // (approval "inbox-row-badges"), on one right edge for every row.
   await expect(page.locator('.ib-row .ib-p')).toHaveCount(0);
-  expect(await leftOf(page, `${named} .ib-mk`)).toBe(labelLeft);
+  expect(await leftOf(page, `${named} .ib-subj`)).toBe(labelLeft);
   expect(await leftOf(page, `${stoppedRow} .ib-badge`)).toBe(labelLeft);
-  const badgeBox = (await page.locator(`${stoppedRow} .ib-badge`).boundingBox())!;
-  expect(await leftOf(page, `${stoppedRow} .ib-mk`)).toBeLessThan(Math.round(badgeBox.x + badgeBox.width) + 16);
+  await expect(page.locator('.ib-row .ib-subj .ib-mk')).toHaveCount(0);
+  const markRight = async (row: string) => Math.round((await page.locator(`${row} .ib-mcol`).boundingBox())!.x + (await page.locator(`${row} .ib-mcol`).boundingBox())!.width);
+  expect(await markRight(named)).toBe(await markRight(stoppedRow));
+  expect(await markRight(named)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
   await shot('1.2-project-filter');
   await side(page).getByRole('button', { name: /^Inbox/ }).click();
   await expect(page.locator('.ib-lbody [data-thread-id]')).toHaveCount(3);
@@ -394,7 +397,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await pane.getByText('Yes', { exact: true }).click();
   await expect(pane.getByText(/^Picked .* · in your draft$/)).toHaveCount(2);
   // "Draft" replaces "Not sent" (approval "inbox-reply-drafts").
-  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft 2 picks');
+  await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
   // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
@@ -547,7 +550,7 @@ test('Settings: in sections; Settings → Agents switches apply to the next sess
   // A focused page (design of record inbox-settings-tabs): General first, the section nav beside it.
   await expect(page.getByRole('heading', { name: 'General', level: 1 })).toBeVisible();
   const nav = page.getByRole('navigation', { name: 'Settings sections' });
-  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Devices', 'Archived', 'Storage', 'About']);
+  await expect(nav.getByRole('link')).toHaveText(['General', 'Agents', 'Prompts', 'Devices', 'Capabilities', 'Archived', 'Storage', 'About']);
   await nav.getByRole('link', { name: 'Agents' }).click();
   await expect(page).toHaveURL(/#settings\/agents$/);
   await expect(nav.getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page');
