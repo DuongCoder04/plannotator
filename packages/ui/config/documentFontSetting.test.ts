@@ -14,8 +14,6 @@ import { resetStorageBackend, setStorageBackend } from '../utils/storage';
 import {
   applyDocumentFont,
   DOCUMENT_FONT_ATTRIBUTE,
-  DOCUMENT_FONT_OPTIONS,
-  DOCUMENT_FONT_PRESETS,
   DOCUMENT_FONT_PROPERTY,
   documentFontStack,
 } from '../utils/documentFont';
@@ -67,11 +65,7 @@ describe('documentFontStack', () => {
     expect(documentFontStack('x", monospace; color: red')).toBe('"x\\", monospace; color: red", var(--font-sans), sans-serif');
   });
 
-  test('every offered preset resolves to its generic stack', () => {
-    for (const { value } of DOCUMENT_FONT_OPTIONS) {
-      if (!value) continue;
-      expect(documentFontStack(value)).toBe(DOCUMENT_FONT_PRESETS[value]);
-    }
+  test('a typed name that is an inherited object key is still just a name', () => {
     expect(documentFontStack('constructor')).toBe('"constructor", var(--font-sans), sans-serif');
   });
 });

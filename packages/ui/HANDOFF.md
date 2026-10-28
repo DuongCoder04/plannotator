@@ -2543,7 +2543,7 @@ Settings → Display can show a **Document font** row beside Text size. Inert un
 - **`utils/documentFont`** (new): `DOCUMENT_FONT_OPTIONS` (Theme Default, Serif, Sans Serif, Monospace), `documentFontStack(value)`, and **`applyDocumentFont(root, value)`**, which sets `data-doc-font` and `--doc-font-family` on `root`, and removes both at the default.
 - **`hooks/useDocumentFont()`** (new): applies the setting to the document element while mounted.
 - **Setting `documentFontFamily`** (`config/settings.ts`, cookie-only `plannotator-document-font-family`, default `''` = the theme's font).
-- **`theme.css`**: one base-layer rule gated on `[data-doc-font]` sets the font on the blocks Text size scales; code keeps its monospace font.
+- **`theme.css`**: one base-layer rule gated on `[data-doc-font]` sets the font on the blocks Text size scales; code keeps its monospace font, and figure captions keep the sans font. `PlanCleanDiffView`'s unchanged chunks now carry `data-doc-text`, so both Text size and the font reach them.
 - **`Settings`** gains **`showDocumentFont?: boolean`** (default false). The Code Font row and the new row share one `FontFamilyField`; Code Font behaves as before (its select now has an `aria-label`).
 
 ## The law (guardrails for anyone editing `@plannotator/ui`)

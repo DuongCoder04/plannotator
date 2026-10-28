@@ -1879,6 +1879,10 @@ body:has([data-popout="true"]) [data-sidebar-tabs="true"] {
   [data-doc-font] [data-doc-text-root] :is([data-block-id], [data-diff-block-index], [data-doc-text]):not([data-diagram-block], [data-diagram-block] *, [data-popout], [data-popout] *):not(:is([data-block-id], [data-diff-block-index], [data-doc-text]) *) {
     font-family: var(--doc-font-family);
   }
+  /* The HTML embed's and SVG fence's captions and Show more are controls. */
+  [data-doc-font] [data-doc-text-root] :is(figcaption, [data-html-embed-more]) {
+    font-family: var(--font-sans);
+  }
 }
 
 /* Reduced motion: Base UI popups (dialogs, menus, popovers, tooltips) animate
