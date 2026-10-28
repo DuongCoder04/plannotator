@@ -1428,12 +1428,21 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
     // whatever the record says of the agent's own entry now (turned off since, say).
     const strayJson = jsonFileFor(spec.id);
     for (const stray of strayJson ? (record?.strays ?? []) : []) {
+      // Checked as the agent's own entry is: one gone is nothing to do, one the person replaced is theirs (named
+      // once, then no longer recorded); one that can't be read is tried, so the reason is said.
+      const strayOurs = stray.command ? [stray.command] : record?.command ? [record.command] : [];
+      const strayRead = classify(rawJsonEntry(stray.path, strayJson!.keys, strayJson!.rules.comments === true), strayOurs, false);
+      if (strayRead.kind === "absent") continue;
+      if (strayRead.kind === "other") {
+        skipped.push(`${label}'s "${NAME}" in ${displayPath(stray.path, e)} now runs something else (changed by hand), so it is yours`);
+        continue;
+      }
       strays.push({
         agent: spec.id,
         stray: stray.path,
         describe: `MCP server ${NAME} from ${label} (${displayPath(stray.path, e)}, that entry only)`,
         apply: async () => {
-          const result = writeJsonEntry(stray.path, strayJson!.keys, undefined, stray.command ? [stray.command] : record?.command ? [record.command] : [], stray.undo, strayJson!.rules);
+          const result = writeJsonEntry(stray.path, strayJson!.keys, undefined, strayOurs, stray.undo, strayJson!.rules);
           if (result.ok && stray.created) deleteIfOnlyOurs(stray.path, strayJson!.keys);
           return result.ok ? null : result.reason;
         },

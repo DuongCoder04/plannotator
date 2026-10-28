@@ -404,6 +404,40 @@ describe("QWEN_HOME is not the same as when the entry was added (set in one shel
     expect(existsSync(otherSettings())).toBe(false);
   });
 
+  test.skipIf(IS_ROOT)("a stray entry the person replaced with their own is theirs: never touched, named once by uninstall, and no longer recorded", async () => {
+    await leaveStray();
+    const theirs = '{\n  "mcpServers": {\n    "plannotator-inbox": { "command": "/my/own" }\n  }\n}\n';
+    writeFileSync(otherSettings(), theirs);
+    const plan = planInboxAgentRemoval(dataDir, environment(), OURS);
+    expect(plan.items.map((item) => item.describe)).toEqual(["MCP server plannotator-inbox from Qwen Code (~/.qwen/settings.json, that entry only)"]);
+    expect(plan.skipped).toEqual([`Qwen Code's "plannotator-inbox" in ${otherSettings()} now runs something else (changed by hand), so it is yours`]);
+    expect(await setInboxAgentReach("qwen", false, options())).toBeNull();
+    expect(readInboxAgents(dataDir).agents.qwen?.strays).toBeUndefined();
+    expect(readFileSync(otherSettings(), "utf8")).toBe(theirs);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+  });
+
+  test.skipIf(IS_ROOT)("a stray entry the person removed by hand is nothing to do: no item, no longer recorded", async () => {
+    await leaveStray();
+    writeFileSync(otherSettings(), '{\n  "mcpServers": {}\n}\n');
+    expect(planInboxAgentRemoval(dataDir, environment(), OURS).items.map((item) => item.describe)).toEqual(["MCP server plannotator-inbox from Qwen Code (~/.qwen/settings.json, that entry only)"]);
+    expect(await setInboxAgentReach("qwen", false, options())).toBeNull();
+    expect(readInboxAgents(dataDir).agents.qwen?.strays).toBeUndefined();
+  });
+
+  test.skipIf(IS_ROOT)("a move out of a file whose entry the person changed never takes the stray entry instead: it stays, and stays recorded", async () => {
+    await leaveStray();
+    const theirs = `${MINE.replace('"mcpServers": {', '"mcpServers": {\n    "plannotator-inbox": { "command": "/my/own" },')}`;
+    writeFileSync(settingsPath(), theirs);
+    const third = join(fake.root, "third-qwen");
+    expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: third }))).toBeNull();
+    expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(theirs);
+    const record = readInboxAgents(dataDir).agents.qwen!;
+    expect(record).toMatchObject({ state: "added", path: join(third, "settings.json") });
+    expect(record.strays).toEqual([expect.objectContaining({ path: otherSettings() })]);
+  });
+
   test.skipIf(IS_ROOT)("Settings off with both entries removable: both go, nothing left to uninstall", async () => {
     await leaveStray();
     expect(await setInboxAgentReach("qwen", false, options())).toBeNull();
