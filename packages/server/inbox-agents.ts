@@ -1043,7 +1043,7 @@ export interface InboxAgentRecord {
   /** A JSON add's exact change, so removal gives the file back byte for byte (writeJsonEntry). */
   undo?: JsonEntryUndo;
   /** Entries Plannotator added in other files that a move could not take back out: uninstall removes them too. */
-  strays?: { path: string; command?: string[]; undo?: JsonEntryUndo }[];
+  strays?: { path: string; command?: string[]; undo?: JsonEntryUndo; created?: boolean }[];
   /** Plannotator created the JSON file: removal deletes it when nothing but the empty containers is left. */
   created?: boolean;
   at: string;
@@ -1394,6 +1394,8 @@ export interface RemovalPlanItem {
   describe: string;
   /** Perform it; returns an error reason, or null. */
   apply: () => Promise<string | null>;
+  /** An entry a move left in another file (the record's `strays`): its path. Not the agent's own entry. */
+  stray?: string;
 }
 
 export interface RemovalPlan {
@@ -1421,10 +1423,25 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
   if (!agentHomeAllowed(e)) return { items, skipped };
   for (const spec of AGENT_SPECS) {
     const record = file.agents[spec.id];
+    const label = INBOX_AGENT_LABELS[spec.id];
+    // Entries a move left in another file (its new one could not be taken back out): removed too, that entry only,
+    // whatever the record says of the agent's own entry now (turned off since, say).
+    const strayJson = jsonFileFor(spec.id);
+    for (const stray of strayJson ? (record?.strays ?? []) : []) {
+      strays.push({
+        agent: spec.id,
+        stray: stray.path,
+        describe: `MCP server ${NAME} from ${label} (${displayPath(stray.path, e)}, that entry only)`,
+        apply: async () => {
+          const result = writeJsonEntry(stray.path, strayJson!.keys, undefined, stray.command ? [stray.command] : record?.command ? [record.command] : [], stray.undo, strayJson!.rules);
+          if (result.ok && stray.created) deleteIfOnlyOurs(stray.path, strayJson!.keys);
+          return result.ok ? null : result.reason;
+        },
+      });
+    }
     if (record && (record.reach !== "mcp" || record.state !== "added")) continue;
     // A recorded entry is removed where it was written, whatever the environment names now.
     const raw = record ? recordedRaw(spec, e, record) : spec.raw(e);
-    const label = INBOX_AGENT_LABELS[spec.id];
     if (!record) {
       // No record says Plannotator added it: never removed, only named when it runs this binary.
       const unrecorded = raw === null ? null : classify(raw, [[...ourCommand]], false);
@@ -1436,18 +1453,6 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       continue;
     }
     const ours = record.command ? [record.command] : [];
-    // Entries a move left in another file (its new one could not be taken back out): removed too, that entry only.
-    const strayJson = jsonFileFor(spec.id);
-    for (const stray of strayJson ? (record.strays ?? []) : []) {
-      strays.push({
-        agent: spec.id,
-        describe: `MCP server ${NAME} from ${label} (${displayPath(stray.path, e)}, that entry only)`,
-        apply: async () => {
-          const result = writeJsonEntry(stray.path, strayJson!.keys, undefined, stray.command ? [stray.command] : ours, stray.undo, strayJson!.rules);
-          return result.ok ? null : result.reason;
-        },
-      });
-    }
     const read = raw === null ? null : classify(raw, ours, false);
     if (read?.kind === "other") {
       skipped.push(`${label}'s "${NAME}" now runs something else (changed by hand), so it is yours`);
@@ -1519,7 +1524,7 @@ function recordedRaw(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRec
 function recordedElsewhere(spec: AgentSpec, e: AgentEnvironment, record: InboxAgentRecord | undefined): boolean {
   const recorded = recordedFile(spec, e, record);
   const now = spec.file(e);
-  return recorded !== null && now !== null && !samePlace(recorded, now, e.platform);
+  return recorded !== null && now !== null && !samePlace(recorded, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,7 +1665,7 @@ export const CLAUDE_CODE_MOD_OFF_REASON = "Plannotator's Claude Code mod is off 
  */
 async function removeOurMcpEntry(id: InboxAgentId, options: ConnectOptions, record: InboxAgentRecord | undefined): Promise<string | null> {
   if (record?.reach !== "mcp" || record.state !== "added") return null;
-  const item = planInboxAgentRemoval(options.dataDir, options.environment, ourCommands(options, record)[0]!).items.find((candidate) => candidate.agent === id);
+  const item = planInboxAgentRemoval(options.dataDir, options.environment, ourCommands(options, record)[0]!).items.find((candidate) => candidate.agent === id && !candidate.stray);
   return item ? item.apply() : null;
 }
 
@@ -1678,6 +1683,27 @@ async function moveRecordedEntry(spec: AgentSpec, options: ConnectOptions, recor
   return removeOurMcpEntry(spec.id, options, record);
 }
 
+/**
+ * The record once Settings turned an agent on: entries a move left elsewhere
+ * (`strays`) stay recorded, so uninstall still removes them. A stray where it
+ * connects now is the entry it found there: Plannotator's, recorded as added.
+ */
+function keepStrays(previous: InboxAgentRecord | undefined, next: InboxAgentRecord): InboxAgentRecord {
+  const strays = previous?.strays ?? [];
+  const here = next.reach === "mcp" && next.state === "found" && next.path ? strays.find((stray) => samePlace(stray.path, next.path!)) : undefined;
+  const record: InboxAgentRecord = here
+    ? { ...next, state: "added", ...(here.command ? { command: here.command } : {}), ...(here.undo ? { undo: here.undo } : {}), ...(here.created ? { created: true } : {}) }
+    : next;
+  const rest = strays.filter((stray) => stray !== here);
+  return rest.length > 0 ? { ...record, strays: rest } : record;
+}
+
+let beforeMoveRollback: (() => void) | null = null;
+/** Tests only: runs just before a move takes its new entry back out, so a test can make that fail. */
+export function setMoveRollbackHookForTests(hook: (() => void) | null): void {
+  beforeMoveRollback = hook;
+}
+
 export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options: ConnectOptions): Promise<string | null> {
   const e = options.environment;
   if (!agentHomeAllowed(e)) return "not in a test's scratch home";
@@ -1685,6 +1711,7 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
   const spec = agentSpec(id);
   const way: ConnectWay = id === "claude-code" ? claudeCodeWay(e) : await spec.way(e, true);
   const file = readInboxAgents(options.dataDir);
+  let strayProblem: string | null = null;
   // The person acted: the "connected elsewhere" line is said again only for a new pair of places.
   if (file.elsewhere_said?.[id]) delete file.elsewhere_said[id];
   const there = file.agents[id] && recordedElsewhere(spec, e, file.agents[id]) ? displayPath(file.agents[id]!.path, e) : null;
@@ -1720,11 +1747,12 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
         const json = jsonFileFor(id);
         const added = outcome.kind === "added" ? outcome.record : null;
         if (json && added?.path) {
+          beforeMoveRollback?.();
           const undone = writeJsonEntry(added.path, json.keys, undefined, added.command ? [added.command] : [], added.undo, json.rules);
           if (undone.ok && added.created) deleteIfOnlyOurs(added.path, json.keys);
           if (!undone.ok) {
             // Both stay: the new one is recorded too, so uninstall removes it.
-            file.agents[id] = { ...previous!, strays: [...(previous!.strays ?? []), { path: added.path, ...(added.command ? { command: added.command } : {}), ...(added.undo ? { undo: added.undo } : {}) }] };
+            file.agents[id] = { ...previous!, strays: [...(previous!.strays ?? []), { path: added.path, ...(added.command ? { command: added.command } : {}), ...(added.undo ? { undo: added.undo } : {}), ...(added.created ? { created: true } : {}) }] };
             writeInboxAgents(options.dataDir, file);
             return `Plannotator's entry in ${old} could not be removed (${moved}), and the one it had just added in ${displayPath(added.path, e)} could not be taken back out (${undone.reason}). ${INBOX_AGENT_LABELS[id]} has both now; plannotator uninstall removes both`;
           }
@@ -1732,22 +1760,38 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
         return `Plannotator's entry in ${old} could not be removed (${moved})${stays}`;
       }
     }
-    if ("record" in outcome && outcome.record) file.agents[id] = outcome.record;
+    if ("record" in outcome && outcome.record) file.agents[id] = keepStrays(previous, outcome.record);
     else if (previous) delete file.agents[id];
   } else {
     const record = file.agents[id];
     const ours = ourCommands(options, record);
-    const item = planInboxAgentRemoval(options.dataDir, e, ours[0]!).items.find((candidate) => candidate.agent === id);
+    const items = planInboxAgentRemoval(options.dataDir, e, ours[0]!).items.filter((candidate) => candidate.agent === id);
+    const item = items.find((candidate) => !candidate.stray);
     if (item) {
       const problem = await item.apply();
       if (problem) return problem;
     }
-    file.agents[id] = { state: "off", reach: "mcp", path: spec.file(e), at };
+    // Entries a move left elsewhere go too; one that cannot stays recorded, so uninstall tries it again.
+    const left: NonNullable<InboxAgentRecord["strays"]> = [];
+    for (const stray of items.filter((candidate) => candidate.stray)) {
+      const problem = await stray.apply();
+      if (!problem) continue;
+      strayProblem ??= `Plannotator's entry in ${displayPath(stray.stray!, e)} could not be removed (${problem}); plannotator uninstall tries it again`;
+      left.push(...(record?.strays ?? []).filter((kept) => kept.path === stray.stray));
+    }
+    file.agents[id] = { state: "off", reach: "mcp", path: spec.file(e), at, ...(left.length > 0 ? { strays: left } : {}) };
   }
   if (file.failures) delete file.failures[id];
-  if (file.last_report) file.last_report = { ...file.last_report, failed: file.last_report.failed.filter((failure) => failure.agent !== id) };
+  // The band stops naming it: neither a failure nor "connected in another folder" holds once the person acted.
+  if (file.last_report) {
+    file.last_report = {
+      ...file.last_report,
+      failed: file.last_report.failed.filter((failure) => failure.agent !== id),
+      ...(file.last_report.elsewhere ? { elsewhere: file.last_report.elsewhere.filter((moved) => moved.agent !== id) } : {}),
+    };
+  }
   writeInboxAgents(options.dataDir, file);
-  return null;
+  return strayProblem;
 }
 
 /** After a plain uninstall removed entries: forget their records, so a reinstall connects them again. */

@@ -9,8 +9,10 @@
  * parse or is read-only is left as it is.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { samePlace } from "./agent-files";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
 import {
   agentSpec,
@@ -23,10 +25,23 @@ import {
   readAgentEntry,
   readInboxAgents,
   setInboxAgentReach,
+  setMoveRollbackHookForTests,
   type AgentEnvironment,
 } from "./inbox-agents";
 
 const SELF = ["/opt/plannotator/bin/plannotator"];
+
+/** Whether the scratch volume ignores case (macOS and Windows by default; Linux never), looked at, never assumed. */
+const IGNORES_CASE = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "plannotator-case-"));
+  try {
+    mkdirSync(join(probe, "q"));
+    return existsSync(join(probe, "Q"));
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+const IS_ROOT = process.getuid?.() === 0;
 const OURS = [...SELF, "inbox", "mcp"];
 
 let fake: FakeAgents;
@@ -247,7 +262,7 @@ describe("QWEN_HOME is not the same as when the entry was added (set in one shel
     expect((await connect({ QWEN_HOME: other() })).elsewhere).toHaveLength(1);
   });
 
-  test("one folder spelled two ways is one place: a symlink, a trailing slash, another case on macOS; no move is offered, and turning it on there keeps the entry", async () => {
+  test("one folder spelled two ways is one place: a symlink, a trailing slash; no move is offered, and turning it on there keeps the entry", async () => {
     fake.install("qwen");
     const real = join(fake.root, "real-qwen");
     mkdirSync(real, { recursive: true });
@@ -260,13 +275,45 @@ describe("QWEN_HOME is not the same as when the entry was added (set in one shel
       expect((await connect(env)).elsewhere ?? []).toEqual([]);
       expect(await inboxAgentReach("qwen", options(env))).toMatchObject({ on: true, state: "connected" });
     }
-    const mac = createAgentEnvironmentFor({ platform: "darwin", homeDir: fake.home, env: { ...fake.env, QWEN_HOME: join(fake.home, ".QWEN") } });
-    expect((await connectInboxAgents({ dataDir, selfCommand: SELF, environment: mac })).elsewhere ?? []).toEqual([]);
     // Removed by hand, then turned on through the other spelling: an entry is left.
     writeFileSync(join(real, "settings.json"), MINE);
     await connect();
     expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: real }))).toBeNull();
     expect(readAgentEntry("qwen", environment(), [OURS])).toEqual({ kind: "ours", argv: OURS });
+  });
+
+  test.if(IGNORES_CASE)("on a volume that ignores case (macOS, Windows), another case is the same folder: the case on disk is what counts", async () => {
+    fake.install("qwen");
+    await connect();
+    for (const platform of ["darwin", "linux"] as const) {
+      const env = createAgentEnvironmentFor({ platform, homeDir: fake.home, env: { ...fake.env, QWEN_HOME: join(fake.home, ".QWEN") } });
+      expect((await connectInboxAgents({ dataDir, selfCommand: SELF, environment: env })).elsewhere ?? []).toEqual([]);
+    }
+  });
+
+  test.if(!IGNORES_CASE)("on a case-sensitive volume (Linux), two homes that differ only by case are two homes: a run in the other says where it is, Settings shows it off there", async () => {
+    fake.install("qwen");
+    const lower = join(fake.root, "qwen");
+    const upper = join(fake.root, "Qwen");
+    mkdirSync(lower);
+    mkdirSync(upper);
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(samePlace(lower, upper)).toBe(false);
+      const at = (home: string) => ({ dataDir, selfCommand: SELF, environment: createAgentEnvironmentFor({ platform, homeDir: fake.home, env: { ...fake.env, QWEN_HOME: home } }) });
+      rmSync(join(dataDir, "inbox"), { recursive: true, force: true });
+      rmSync(join(lower, "settings.json"), { force: true });
+      expect((await connectInboxAgents(at(lower))).added).toEqual(["qwen"]);
+      const run = await connectInboxAgents(at(upper));
+      expect(run.elsewhere).toEqual([{ agent: "qwen", path: join(lower, "settings.json"), now: join(upper, "settings.json") }]);
+      expect(existsSync(join(upper, "settings.json"))).toBe(false);
+      expect(await inboxAgentReach("qwen", at(upper))).toMatchObject({ on: false, state: "elsewhere" });
+    }
+  });
+
+  test("Plannotator never folds case itself: paths that differ only by case and are not made yet compare as written (on a case-sensitive volume they are two folders)", () => {
+    const parent = join(fake.root, "not-made");
+    expect(samePlace(join(parent, "qwen"), join(parent, "Qwen"))).toBe(false);
+    expect(samePlace(join(parent, "qwen"), join(parent, "qwen", "."))).toBe(true);
   });
 
   test("an entry the person removed by hand: a run under another QWEN_HOME never says it is connected, and never adds it again", async () => {
@@ -299,10 +346,80 @@ describe("QWEN_HOME is not the same as when the entry was added (set in one shel
     expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers).toEqual({});
   });
 
+  /**
+   * A move whose rollback failed, made for real: the old file is read-only (its entry cannot go), and the new one
+   * turns read-only just before the move takes its entry back out. Both entries are left, the new one recorded.
+   */
+  const leaveStray = async () => {
+    const a = await connectedInA();
+    chmodSync(settingsPath(), 0o444);
+    setMoveRollbackHookForTests(() => chmodSync(otherSettings(), 0o444));
+    try {
+      const problem = await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }));
+      return { ...a, problem };
+    } finally {
+      setMoveRollbackHookForTests(null);
+      chmodSync(settingsPath(), 0o644);
+      if (existsSync(otherSettings())) chmodSync(otherSettings(), 0o644);
+    }
+  };
+
+  test.skipIf(IS_ROOT)("a move that could not take its new entry back out: said plainly, both entries kept and recorded", async () => {
+    const a = await leaveStray();
+    expect(a.problem).toContain("could not be taken back out");
+    expect(a.problem).toContain("plannotator uninstall removes both");
+    expect(readAgentEntry("qwen", environment(), [OURS])).toEqual({ kind: "ours", argv: OURS });
+    expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
+    const record = readInboxAgents(dataDir).agents.qwen!;
+    expect(record).toMatchObject({ state: "added", path: settingsPath() });
+    expect(record.strays).toEqual([expect.objectContaining({ path: otherSettings(), command: OURS, created: true })]);
+  });
+
+  test.skipIf(IS_ROOT)("the stray entry stays recorded when Settings turns it on where it is: recorded as added there, the old one moved out, uninstall removes it", async () => {
+    await leaveStray();
+    expect(await inboxAgentReach("qwen", options({ QWEN_HOME: other() }))).toMatchObject({ on: false, state: "elsewhere" });
+    expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }))).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    const record = readInboxAgents(dataDir).agents.qwen!;
+    expect(record).toMatchObject({ state: "added", path: otherSettings() });
+    expect(record.strays).toBeUndefined();
+    const plan = planInboxAgentRemoval(dataDir, environment(), OURS);
+    expect(plan.items.map((item) => item.describe)).toEqual([`MCP server plannotator-inbox from Qwen Code (${otherSettings()}, that entry only)`]);
+    expect(await plan.items[0]!.apply()).toBeNull();
+    // Plannotator created that file: it goes with its entry.
+    expect(existsSync(otherSettings())).toBe(false);
+  });
+
+  test.skipIf(IS_ROOT)("Settings off removes the stray entry too; one that cannot go stays recorded, said, and uninstall removes it later", async () => {
+    await leaveStray();
+    writeFileSync(otherSettings(), "{ not json");
+    const problem = await setInboxAgentReach("qwen", false, options());
+    expect(problem).toContain(`Plannotator's entry in ${otherSettings()} could not be removed`);
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "off", strays: [expect.objectContaining({ path: otherSettings() })] });
+    writeSettings('{\n  "mcpServers": {\n    "plannotator-inbox": { "command": "/opt/plannotator/bin/plannotator", "args": ["inbox", "mcp"] }\n  }\n}\n', otherSettings());
+    const plan = planInboxAgentRemoval(dataDir, environment(), OURS);
+    expect(plan.items.map((item) => item.describe)).toEqual([`MCP server plannotator-inbox from Qwen Code (${otherSettings()}, that entry only)`]);
+    expect(await plan.items[0]!.apply()).toBeNull();
+    expect(existsSync(otherSettings())).toBe(false);
+  });
+
+  test.skipIf(IS_ROOT)("Settings off with both entries removable: both go, nothing left to uninstall", async () => {
+    await leaveStray();
+    expect(await setInboxAgentReach("qwen", false, options())).toBeNull();
+    expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
+    expect(existsSync(otherSettings())).toBe(false);
+    expect(readInboxAgents(dataDir).agents.qwen?.strays).toBeUndefined();
+    expect(planInboxAgentRemoval(dataDir, environment(), OURS).items).toEqual([]);
+  });
+
   test("turning Qwen Code on in Settings under the new QWEN_HOME moves it: added there, then out of the old file (back byte for byte)", async () => {
     await connectedInA();
     await connect({ QWEN_HOME: other() });
+    expect(readInboxAgents(dataDir).last_report?.elsewhere).toHaveLength(1);
     expect(await setInboxAgentReach("qwen", true, options({ QWEN_HOME: other() }))).toBeNull();
+    // The band no longer says to move it.
+    expect(readInboxAgents(dataDir).last_report?.elsewhere ?? []).toEqual([]);
     expect(readFileSync(settingsPath(), "utf8")).toBe(MINE);
     expect(JSON.parse(readFileSync(otherSettings(), "utf8")).mcpServers["plannotator-inbox"]).toEqual(ENTRY);
     expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", path: otherSettings() });

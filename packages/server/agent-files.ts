@@ -127,10 +127,12 @@ export function writeAgentFileAtomic(target: string, text: string, mode: number,
 /**
  * A path as the file system names it, so one place spelled two ways is one
  * place: the real path of its deepest existing folder (a symlinked folder,
- * `/tmp` and `/private/tmp`), the rest as written, normalized; case-folded on
- * macOS and Windows, whose file systems ignore case by default.
+ * `/tmp` and `/private/tmp`, another case on a volume that ignores case: the
+ * real path has the case on disk), the rest as written, normalized. Never
+ * case-folded: on a case-sensitive volume (Linux, or one formatted so on
+ * macOS) `qwen` and `Qwen` are two folders.
  */
-export function placeKey(path: string, platform: NodeJS.Platform): string {
+export function placeKey(path: string): string {
   let head = resolve(path);
   const rest: string[] = [];
   for (;;) {
@@ -144,13 +146,12 @@ export function placeKey(path: string, platform: NodeJS.Platform): string {
       head = parent;
     }
   }
-  const key = join(head, ...rest);
-  return platform === "darwin" || platform === "win32" ? key.toLowerCase() : key;
+  return join(head, ...rest);
 }
 
 /** Whether two paths name one place (`placeKey`). */
-export function samePlace(a: string, b: string, platform: NodeJS.Platform): boolean {
-  return a === b || placeKey(a, platform) === placeKey(b, platform);
+export function samePlace(a: string, b: string): boolean {
+  return a === b || placeKey(a) === placeKey(b);
 }
 
 /** A short, plain reason for a file-system error. */
