@@ -97,7 +97,6 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   mkdirSync(shots, { recursive: true });
   const root = inboxScratch('plannotator-inbox-board-filter-e2e-');
   const forge = fakeForge(join(root, 'bin'));
-  // Agent CLIs: the e2e global setup's stand-ins are on PATH (tests/helpers/agent-cli-guard.ts); a call fails the run.
   const data = join(root, 'data');
   mkdirSync(data, { recursive: true });
   // The Board on, its first-visit dialog already seen (inbox-board.spec.ts proves both).
