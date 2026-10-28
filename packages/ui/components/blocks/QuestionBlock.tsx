@@ -151,6 +151,36 @@ const DECISION_OFF_STYLE: React.CSSProperties = {
   outlineOffset: '-1px',
 };
 
+/**
+ * The footer in a narrow column. The card is a size container
+ * (`@container/qcard`: the card's own width, never the viewport's, because
+ * the card sits in columns of every width), and the footer row wraps whole
+ * buttons:
+ * - No button's words ever wrap inside it (`whitespace-nowrap`): the row
+ *   wraps between buttons instead, and only when they do not fit on one
+ *   row, so Add note and Skip stay together and Accept recommended moves
+ *   down whole, still at the row's end (`ml-auto`).
+ * - Under 10rem inside the card (a card under about 190 px), where a button
+ *   may be wider than the card, Accept recommended and the save bar take a
+ *   row of their own and their words end in an ellipsis rather than leave
+ *   the card (`FOOT_FIT`; the name stays whole). The words stay one text
+ *   node: a split one moved the glyphs of a wide card by a fraction of a
+ *   pixel.
+ * - On a touch screen each button's hit area is at least 44 x 44 px: an
+ *   invisible `before:` box centred on it, as the header's decision tag
+ *   does, so the drawn button does not change. (An ellipsised button clips
+ *   that box to itself.) A box reaches up to 11 px past its button, so a
+ *   wrapped footer's rows sit 20 px apart on a touch screen
+ *   (`pointer-coarse:gap-y-5`, the footer row): with the 4 px of `gap-1`,
+ *   Accept recommended's box, later in the page, covered the bottom of Skip
+ *   and Add note above it, and a tap on Skip answered the question. One row
+ *   has no row gap, so a footer that fits is unchanged.
+ * A footer that fits on one row draws exactly as before, on any pointer.
+ */
+const FOOT_BUTTON = "whitespace-nowrap pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:left-1/2 pointer-coarse:before:top-1/2 pointer-coarse:before:h-11 pointer-coarse:before:w-full pointer-coarse:before:min-w-11 pointer-coarse:before:-translate-x-1/2 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']";
+const FOOT_FIT = '@max-[10rem]/qcard:max-w-full @max-[10rem]/qcard:overflow-hidden @max-[10rem]/qcard:text-ellipsis';
+const FOOT_OWN_ROW = '@max-[10rem]/qcard:basis-full';
+
 /** Two answers say the same thing (identity and line ignored). */
 const sameAnswer = (a: QuestionAnswer | null | undefined, b: QuestionAnswer | null | undefined): boolean => {
   const norm = (x: QuestionAnswer | null | undefined) =>
@@ -640,6 +670,8 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
       ref={cardRef}
       className={cx(
         'question-block my-5 min-w-0 rounded-[10px] border px-3.5 pb-2.5 pt-3',
+        // A size container: the card's own width lays out its footer (FOOT_BUTTON).
+        '@container/qcard',
         // Native radios/checkboxes follow the theme's mode. ThemeProvider marks
         // light mode with `.light` on the root; a host without theme classes
         // keeps the page's own color-scheme.
@@ -985,7 +1017,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
 
       {(!readOnly || hasHostFooter) && (
         <div
-          className="annotation-exclude select-none mt-2 flex items-center gap-1 border-t border-border/55 pt-1.5"
+          className="annotation-exclude select-none mt-2 flex flex-wrap items-center gap-1 pointer-coarse:gap-y-5 border-t border-border/55 pt-1.5"
           data-pinpoint-ignore=""
         >
           {!readOnly && (
@@ -994,6 +1026,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               onClick={toggleNote}
               aria-expanded={noteOpen}
               className={cx(
+                FOOT_BUTTON,
                 'rounded-[5px] px-[7px] py-[3px] text-xs hover:bg-muted hover:text-foreground',
                 noteOpen ? 'text-foreground' : 'text-muted-foreground',
               )}
@@ -1008,6 +1041,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               onClick={toggleSkip}
               aria-pressed={skipped}
               className={cx(
+                FOOT_BUTTON,
                 'rounded-[5px] px-[7px] py-[3px] text-xs hover:bg-muted hover:text-foreground',
                 skipped ? 'text-foreground' : 'text-muted-foreground',
               )}
@@ -1022,18 +1056,18 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
               <button
                 type="button"
                 onClick={acceptRecommended}
-                className="ml-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                className={cx(FOOT_BUTTON, FOOT_FIT, FOOT_OWN_ROW, 'ml-auto rtl:ml-0 rtl:mr-auto rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
               >
                 Accept recommended
               </button>
             )
           ) : (
-            <div className="ml-auto flex items-center gap-1">
+            <div className={cx(FOOT_OWN_ROW, 'ml-auto rtl:ml-0 rtl:mr-auto flex min-w-0 flex-wrap items-center justify-end gap-1')}>
               {offerAccept && (
                 <button
                   type="button"
                   onClick={acceptRecommended}
-                  className="rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-md border border-primary/45 bg-primary/10 px-2.5 py-[3px] text-[12.5px] font-medium text-primary hover:bg-primary/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary')}
                 >
                   Accept recommended
                 </button>
@@ -1045,7 +1079,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     type="button"
                     onClick={cancel}
                     disabled={saving}
-                    className="rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60"
+                    className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-[5px] px-[7px] py-[3px] text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-60')}
                   >
                     Cancel
                   </button>
@@ -1054,7 +1088,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                     onClick={save}
                     disabled={saving}
                     aria-busy={saving || undefined}
-                    className="rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60"
+                    className={cx(FOOT_BUTTON, FOOT_FIT, 'rounded-md bg-primary px-2.5 py-[3px] text-[12.5px] font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60')}
                   >
                     {(typeof saveLabel === 'function' ? saveLabel(question) : saveLabel) || 'Save answer'}
                   </button>
