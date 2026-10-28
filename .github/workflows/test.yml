@@ -447,6 +447,7 @@ jobs:
           packages/ui/aiProviderConfigPersistence.test.tsx
           packages/ui/components/sidebar/SidebarContainer.mobile.test.tsx
           packages/ui/components/sidebar/FileBrowser.fileLimit.test.tsx
+          packages/ui/components/sidebar/FileBrowser.hover.test.tsx
           packages/ui/components/ui/mobile-foundation.test.tsx
           packages/ui/components/Settings.vim.test.tsx
           packages/ui/components/Settings.annotateParity.test.tsx
