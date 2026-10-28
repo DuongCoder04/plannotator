@@ -68,6 +68,7 @@ import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
 
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
+import { isNotionAvailable } from "./integrations.ts";
 import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
@@ -381,6 +382,8 @@ export async function startAnnotateServer(options: {
 	// /api/plan and echoed by every decision; a different nonce is refused
 	// with 409 session_mismatch before anything settles. Missing is accepted.
 	const serverSession = createServerSessionNonce();
+	// Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
+	const notionAvailable = isNotionAvailable(isRemoteSession());
 	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
 	const refCards = createPiRefCards(options.refRunner);
 	const sendAlreadyDecided = (res: import("node:http").ServerResponse): void => {
@@ -1017,6 +1020,7 @@ export async function startAnnotateServer(options: {
 				projectRoot: options.folderPath || bundleRoot || process.cwd(),
 				// The bundle's files in review order (annotate-bundle only).
 				...(bundleFiles ? { bundle: bundleFiles } : {}),
+				...(notionAvailable ? { notion: true } : {}),
 				// Extra extensions the user registered as markdown (#1307).
 				// The renderer needs them to linkify relative/wiki links to
 				// sibling docs the same way it linkifies .md ones.
@@ -1442,7 +1446,7 @@ export async function startAnnotateServer(options: {
 				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
-			await handleSaveNotesRequest(req, res, { serverSession });
+			await handleSaveNotesRequest(req, res, { serverSession, notion: notionAvailable });
 		} else if (url.pathname.startsWith("/api/")) {
 			handleApiNotFound(res, url.pathname);
 		} else if (isFramedEmbeddedDocumentRequest(firstHeader(req.headers["sec-fetch-dest"]), url.pathname)) {

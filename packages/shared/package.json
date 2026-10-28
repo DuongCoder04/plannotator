@@ -47,6 +47,7 @@
     "./feedback-archive": "./feedback-archive.ts",
     "./html-diff": "./html-diff.ts",
     "./integrations-common": "./integrations-common.ts",
+    "./notion": "./notion.ts",
     "./repo": "./repo.ts",
     "./repo-file": "./repo-file.ts",
     "./reference-common": "./reference-common.ts",

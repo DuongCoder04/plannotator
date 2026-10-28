@@ -12,6 +12,7 @@
 import '@plannotator/ui/utils/math-eager';
 import '@plannotator/ui/utils/identity-tater';
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { shouldPrintOnKey } from './printShortcut';
 import { toast, Toaster } from 'sonner';
 import {
   compactDocumentTitle as resolveCompactDocumentTitle,
@@ -80,6 +81,7 @@ import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAn
 import { getObsidianSettings, getEffectiveVaultPath, isObsidianConfigured, CUSTOM_PATH_SENTINEL } from '@plannotator/ui/utils/obsidian';
 import { getBearSettings } from '@plannotator/ui/utils/bear';
 import { getOctarineSettings, isOctarineConfigured } from '@plannotator/ui/utils/octarine';
+import { getNotionSettings, getNotionParentPageId, isNotionConfigured, setNotionAvailable } from '@plannotator/ui/utils/notion';
 import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { agentSwitchTargetLabel, getAgentSwitchDefaults, getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { adoptServerSession, noteServerSessionMismatch, withServerSession, withServerSessionQuery } from '@plannotator/ui/utils/serverSession';
@@ -378,6 +380,7 @@ type NoteAutoSaveResults = {
   obsidian?: boolean;
   bear?: boolean;
   octarine?: boolean;
+  notion?: boolean;
 };
 
 type MessageAnnotationState = {
@@ -3932,9 +3935,11 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; planPath?: string; planFilePath?: string; isWSL?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; updateCheckFailing?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; planPath?: string; planFilePath?: string; isWSL?: boolean; notion?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; updateCheckFailing?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
+        // Save to Notion: offered only when the server has NOTION_TOKEN and the session is local.
+        setNotionAvailable(data.notion === true);
         // Stale-tab guard: every decision echoes this server's nonce.
         adoptServerSession(data.serverSession);
         // Extra extensions the user registered as markdown (#1307) — the
@@ -4193,7 +4198,7 @@ const App: React.FC = () => {
     if (!isApiMode || !markdown || isSharedSession || annotateMode || archive.archiveMode) return;
     if (autoSaveAttempted.current) return;
 
-    const body: { obsidian?: object; bear?: object; octarine?: object } = {};
+    const body: { obsidian?: object; bear?: object; octarine?: object; notion?: object } = {};
     const targets: string[] = [];
 
     const obsSettings = getObsidianSettings();
@@ -4231,6 +4236,13 @@ const App: React.FC = () => {
       targets.push('Octarine');
     }
 
+    const notionSettings = getNotionSettings();
+    const notionParentPageId = getNotionParentPageId(notionSettings);
+    if (notionSettings.autoSave && notionParentPageId) {
+      body.notion = { plan: markdown, parentPageId: notionParentPageId };
+      targets.push('Notion');
+    }
+
     if (targets.length === 0) return;
     autoSaveAttempted.current = true;
 
@@ -4245,6 +4257,7 @@ const App: React.FC = () => {
           ...(body.obsidian ? { obsidian: Boolean(data.results?.obsidian?.success) } : {}),
           ...(body.bear ? { bear: Boolean(data.results?.bear?.success) } : {}),
           ...(body.octarine ? { octarine: Boolean(data.results?.octarine?.success) } : {}),
+          ...(body.notion ? { notion: Boolean(data.results?.notion?.success) } : {}),
         };
         autoSaveResultsRef.current = results;
 
@@ -4502,13 +4515,14 @@ const App: React.FC = () => {
       const obsidianSettings = getObsidianSettings();
       const bearSettings = getBearSettings();
       const octarineSettings = getOctarineSettings();
+      const notionSettings = getNotionSettings();
       const planSaveSettings = getPlanSaveSettings();
-      const autoSaveResults = bearSettings.autoSave && autoSavePromiseRef.current
+      const autoSaveResults = (bearSettings.autoSave || notionSettings.autoSave) && autoSavePromiseRef.current
         ? await autoSavePromiseRef.current
         : autoSaveResultsRef.current;
 
       // Build request body - include integrations if enabled
-      const body: { draftGeneration: number; planRevision?: number; obsidian?: object; bear?: object; octarine?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {
+      const body: { draftGeneration: number; planRevision?: number; obsidian?: object; bear?: object; octarine?: object; notion?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {
         draftGeneration: getDraftGeneration(),
         ...planRevisionBodyField(),
       };
@@ -4556,6 +4570,11 @@ const App: React.FC = () => {
           workspace: octarineSettings.workspace,
           folder: octarineSettings.folder || 'plannotator',
         };
+      }
+
+      const notionParentPageId = getNotionParentPageId(notionSettings);
+      if (notionParentPageId && !(notionSettings.autoSave && autoSaveResults.notion)) {
+        body.notion = { plan: currentMarkdown, parentPageId: notionParentPageId };
       }
 
       // Include annotations as feedback if any exist (for OpenCode "approve with notes").
@@ -5872,7 +5891,7 @@ const App: React.FC = () => {
     toast.success('Downloaded annotations');
   };
 
-  const handleQuickSaveToNotes = async (target: 'obsidian' | 'bear' | 'octarine') => {
+  const handleQuickSaveToNotes = async (target: 'obsidian' | 'bear' | 'octarine' | 'notion') => {
     if (documentReadOnly) return;
     // A live-app session (or a folder session with no file open) has no
     // document text; saving would write an empty note. Plan review always
@@ -5882,7 +5901,7 @@ const App: React.FC = () => {
       return;
     }
 
-    const body: { obsidian?: object; bear?: object; octarine?: object } = {};
+    const body: { obsidian?: object; bear?: object; octarine?: object; notion?: object } = {};
     // Mid-edit saves describe the live buffer, matching handleApprove.
     const quickSaveMarkdown = isEditingMarkdown
       ? markdownEditorHandleRef.current?.getMarkdown() ?? displayedMarkdown
@@ -5918,7 +5937,12 @@ const App: React.FC = () => {
       };
     }
 
-    const targetName = target === 'obsidian' ? 'Obsidian' : target === 'bear' ? 'Bear' : 'Octarine';
+    if (target === 'notion') {
+      const parentPageId = getNotionParentPageId();
+      if (parentPageId) body.notion = { plan: quickSaveMarkdown, parentPageId };
+    }
+
+    const targetName = target === 'obsidian' ? 'Obsidian' : target === 'bear' ? 'Bear' : target === 'octarine' ? 'Octarine' : 'Notion';
     try {
       const res = await fetch('/api/save-notes', {
         method: 'POST',
@@ -6189,6 +6213,7 @@ const App: React.FC = () => {
       const obsOk = isObsidianConfigured();
       const bearOk = getBearSettings().enabled;
       const octOk = isOctarineConfigured();
+      const notionOk = isNotionConfigured();
 
       if (defaultApp === 'download') {
         handleDownloadAnnotations();
@@ -6198,6 +6223,8 @@ const App: React.FC = () => {
         handleQuickSaveToNotes('bear');
       } else if (defaultApp === 'octarine' && octOk) {
         handleQuickSaveToNotes('octarine');
+      } else if (defaultApp === 'notion' && notionOk) {
+        handleQuickSaveToNotes('notion');
       } else {
         setInitialExportTab('notes');
         setShowExport(true);
@@ -6215,16 +6242,10 @@ const App: React.FC = () => {
   // Cmd/Ctrl+P keyboard shortcut — print plan
   useEffect(() => {
     const handlePrintShortcut = (e: KeyboardEvent) => {
-      if (e.key !== 'p' || !(e.metaKey || e.ctrlKey)) return;
-
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
-      if (showExport ||
+      const blocked = showExport ||
           showSourceFileEditWarning ||
-          showExitWarning || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
-
-      if (submitted) return;
+          showExitWarning || showAgentWarning || showPermissionModeSetup || !!pendingPasteImage || submitted;
+      if (!shouldPrintOnKey(e, blocked)) return;
 
       e.preventDefault();
       window.print();
@@ -6674,6 +6695,7 @@ const App: React.FC = () => {
   const handleOpenImport = useCallback(() => setShowImport(true), []);
   const handleSaveToObsidian = useCallback(() => headerHandlersRef.current.handleQuickSaveToNotes('obsidian'), []);
   const handleSaveToOctarine = useCallback(() => headerHandlersRef.current.handleQuickSaveToNotes('octarine'), []);
+  const handleSaveToNotion = useCallback(() => headerHandlersRef.current.handleQuickSaveToNotes('notion'), []);
   const handleSaveToBear = useCallback(() => headerHandlersRef.current.handleQuickSaveToNotes('bear'), []);
 
   // The open document's name for the tab, the desktop header and the compact
@@ -7501,6 +7523,7 @@ const App: React.FC = () => {
           onSaveToObsidian={handleSaveToObsidian}
           onSaveToBear={handleSaveToBear}
           onSaveToOctarine={handleSaveToOctarine}
+          onSaveToNotion={handleSaveToNotion}
           appVersion={typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}
           updateInfo={updateInfo}
           isWSL={isWSL}
@@ -7508,6 +7531,7 @@ const App: React.FC = () => {
           obsidianConfigured={notesSaveAvailable && isObsidianConfigured()}
           bearConfigured={notesSaveAvailable && getBearSettings().enabled}
           octarineConfigured={notesSaveAvailable && isOctarineConfigured()}
+          notionConfigured={notesSaveAvailable && isNotionConfigured()}
         />
 
         {/* The provider is render-transparent (context only, no DOM), so it can

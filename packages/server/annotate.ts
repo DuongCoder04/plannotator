@@ -67,6 +67,7 @@ import { existsSync } from "fs";
 import { dirname, resolve as resolvePath } from "path";
 import { isWithinDirectory } from "@plannotator/shared/html-assets-node";
 import { isWSL } from "./browser";
+import { isNotionAvailable } from "./integrations";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
@@ -357,6 +358,8 @@ export async function startAnnotateServer(
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
+  // Save to Notion uses the server's NOTION_TOKEN: never for a session another device can open.
+  const notionAvailable = isNotionAvailable(isRemote || options.tailnetPublished === true);
   const wslFlag = await isWSL();
   const gitUser = detectGitUser();
 
@@ -1020,6 +1023,7 @@ export async function startAnnotateServer(
               // The bundle's files in review order (annotate-bundle only).
               ...(bundleFiles ? { bundle: bundleFiles } : {}),
               isWSL: wslFlag,
+              ...(notionAvailable ? { notion: true } : {}),
               // Extra extensions the user registered as markdown (#1307).
               // The renderer needs them to linkify relative/wiki links to
               // sibling docs the same way it linkifies .md ones.
@@ -1616,7 +1620,7 @@ export async function startAnnotateServer(
 
           // API: Save notes to external integrations (Obsidian, Bear, Octarine)
           if (url.pathname === "/api/save-notes" && req.method === "POST") {
-            return handleSaveNotes(req, { serverSession });
+            return handleSaveNotes(req, { serverSession, notion: notionAvailable });
           }
 
           // Favicon
