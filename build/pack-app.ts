@@ -17,13 +17,14 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 /**
- * Said when the page cannot load its own chunks. That happens when a server
- * from before the pack serves this file whole (a Pi or Oh My Pi session that
- * reads it after an in-place update): its fallback answers `/assets/*` with
- * the page, so the entry script never runs. A lazy chunk that fails while the
- * entry is no longer served as JavaScript means the same thing (a server of
- * another version); while the entry still loads, the failure is the app's to
- * handle, and a network error (the session ended) says nothing.
+ * Said when a server from before the pack serves this file whole (a Pi or Oh
+ * My Pi session that reads it after an in-place update). That server's
+ * signature, the only one that shows the message: it answers the entry
+ * script's URL with 200 and the page (text/html). So when the entry script or
+ * a lazy chunk fails, the page asks for the entry again and looks. Anything
+ * else says nothing: a network error, or a proxy's 502 once the session ended
+ * (Tailscale serve, the VS Code cookie proxy), a 404, a healthy entry (the
+ * app's own retry handles a lazy failure).
  * Inline and plain, because the app's own code and CSS are what failed; when
  * the entry failed the message is the whole page, so the page follows the
  * system's light or dark scheme.
@@ -35,8 +36,9 @@ const UPDATED_WHILE_OPEN_SCRIPT = `<script>(function(){
 var shown=false;
 function show(page){if(page)document.documentElement.style.colorScheme="light dark";if(shown)return;shown=true;var p=document.createElement("p");p.setAttribute("role","alert");p.id="plannotator-updated";p.textContent=${JSON.stringify(UPDATED_WHILE_OPEN_MESSAGE)};p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;color-scheme:light dark;background:Canvas;color:CanvasText;z-index:2147483647";(document.body||document.documentElement).prepend(p)}
 function entry(){return document.querySelector('script[type="module"][src^="/assets/"]')}
-addEventListener("error",function(e){if(e.target===entry())show(true)},true);
-addEventListener("vite:preloadError",function(){var s=entry();if(s)fetch(s.src,{method:"HEAD",cache:"no-store"}).then(function(r){if(!r.ok||!/javascript/.test(r.headers.get("content-type")||""))show()},function(){})});
+function check(page){var s=entry();if(s)fetch(s.src,{method:"HEAD",cache:"no-store"}).then(function(r){if(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||""))show(page)},function(){})}
+addEventListener("error",function(e){if(e.target===entry())check(true)},true);
+addEventListener("vite:preloadError",function(){check(false)});
 })()</script>`;
 
 /**

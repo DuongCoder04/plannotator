@@ -11,8 +11,11 @@
  * Chromium:
  *  - served the old way, the message shows, and none of the pack renders;
  *  - served by a current server, the app loads and no message shows;
- *  - a failed lazy chunk shows the message only when the server no longer
- *    serves the page's entry as JavaScript (a server of another version).
+ *  - a failed lazy chunk shows the message only when the entry's URL answers
+ *    200 with the page (an old server), never while the entry still loads;
+ *  - behind a proxy that answers 502 once the session ended (Tailscale serve,
+ *    the VS Code cookie proxy), neither a failed entry nor a failed lazy chunk
+ *    shows it.
  */
 
 import { expect, test } from '@playwright/test';
@@ -74,7 +77,7 @@ for (const file of builds) {
     }
   });
 
-  test(`${name} served by a current server loads without the message; a lazy chunk failure shows it only once the entry is gone`, async ({ page }) => {
+  test(`${name} served by a current server loads without the message; a lazy chunk failure shows it only once an old server answers`, async ({ page }) => {
     test.skip(!existsSync(file), 'build the apps first');
     const bundle = readFileSync(file, 'utf8');
     const handle = { current: currentServer(bundle) };
@@ -83,15 +86,43 @@ for (const file of builds) {
       await page.goto(url);
       await expect(page.locator('#root > *').first()).toBeAttached();
       // The app's own handling owns a lazy failure while the entry still loads.
-      await page.evaluate(() => dispatchEvent(new Event('vite:preloadError')));
-      await page.waitForTimeout(500);
+      await preloadErrorChecked(page);
       await expect(page.locator('#plannotator-updated')).toHaveCount(0);
-      // A server of another version: this page's chunks are gone.
-      handle.current = () => ({ status: 404, headers: { 'Content-Type': 'text/plain' }, body: 'Not found' });
+      // An old server took the port: it answers the entry with the page.
+      handle.current = oldServer(bundle);
       await page.evaluate(() => dispatchEvent(new Event('vite:preloadError')));
       await expect(page.locator('#plannotator-updated')).toHaveText(UPDATED_WHILE_OPEN_MESSAGE);
     } finally {
       server.close();
     }
   });
+
+  test(`${name} behind a proxy that answers 502 (the session ended) says nothing`, async ({ page }) => {
+    test.skip(!existsSync(file), 'build the apps first');
+    const app = openPackedApp(readFileSync(file, 'utf8'));
+    const badGateway: Handler = () => ({ status: 502, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: '<h1>502 Bad Gateway</h1>' });
+    // The page loads, then every request after it gets the proxy's 502: the entry script, and its check.
+    const handle = { current: ((path) => (path === '/' ? { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: app.html } : badGateway(path, 'GET'))) as Handler };
+    const { server, url } = await serve(handle);
+    try {
+      const checked = page.waitForResponse((r) => r.request().method() === 'HEAD');
+      await page.goto(url);
+      await checked;
+      await page.waitForTimeout(300);
+      await expect(page.locator('#plannotator-updated')).toHaveCount(0);
+      handle.current = badGateway;
+      await preloadErrorChecked(page);
+      await expect(page.locator('#plannotator-updated')).toHaveCount(0);
+    } finally {
+      server.close();
+    }
+  });
+}
+
+/** Fire a lazy chunk failure and wait for the page's HEAD check of its entry to finish. */
+async function preloadErrorChecked(page: import('@playwright/test').Page) {
+  const checked = page.waitForResponse((r) => r.request().method() === 'HEAD');
+  await page.evaluate(() => dispatchEvent(new Event('vite:preloadError')));
+  await checked;
+  await page.waitForTimeout(300);
 }
