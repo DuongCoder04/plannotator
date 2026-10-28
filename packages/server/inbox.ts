@@ -123,6 +123,7 @@ import {
 import {
   createInboxToken,
   inboxRegistryPath,
+  isOwnDataDir,
   probeInboxData,
   readInboxRegistry,
   writeInboxRegistry,
@@ -162,6 +163,7 @@ import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
 import { createInboxEmbeds, crossSiteFrameAllowed } from "./inbox-embeds";
 import { embedLoopbackOrigins } from "@plannotator/core/html-embed";
+import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
@@ -294,6 +296,11 @@ export interface InboxServerOptions {
    * tests): `/` answers a one-line page saying so.
    */
   htmlContent?: string;
+  /**
+   * Tests: where the Feedback dialog's send goes (inbox-feedback.ts). Default:
+   * `PLANNOTATOR_FEEDBACK_URL`, else the feedback Worker's constant URL.
+   */
+  feedbackUrl?: string;
   /** Tests: how long a window's record outlives its last event stream (default `WINDOW_GRACE_MS`). */
   windowGraceMs?: number;
   /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
@@ -2247,6 +2254,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const pins = createInboxPins({ store, serverSession, readBody: (req) => readBody(req), json });
   // Live HTML embeds (approval "inbox-inline-html"): the documents the window frames for a message's ```html fences (inbox-embeds.ts).
   const embeds = createInboxEmbeds({ readBody: (req) => readBody(req), json });
+  // The sidebar's Feedback dialog: forwards what the person typed to the feedback Worker (inbox-feedback.ts).
+  const feedback = createInboxFeedback({ version, json, ...(options.feedbackUrl ? { url: () => options.feedbackUrl! } : {}) });
   const stopPinEvents = store.onPinsChange(() => {
     for (const listener of pinListeners) listener();
   });
@@ -2358,6 +2367,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       }
       if (path === "/api/inbox/control/stop") {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        // `plannotator inbox stop` names its data dir: a copied data dir's record names this
+        // Inbox too, and its stop must not end this one. No body (an older CLI) stops, as before.
+        const request = (await req.json().catch(() => null)) as { data_dir?: unknown } | null;
+        if (typeof request?.data_dir === "string" && !isOwnDataDir(dataDir, request.data_dir)) {
+          return json({ error: "This Inbox runs on another data dir.", code: "not_ours" }, 409);
+        }
+        // Read before the stop: `plannotator inbox restart` passes a run published only by
+        // `--tailscale` on to the next start, as the window's Restart does (additive).
+        const tailscaleRunOnly = tailscale.runOnly();
         if (!stopRequested) {
           stopRequested = true;
           setTimeout(() => {
@@ -2365,7 +2383,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             options.onStopRequested?.();
           }, 50);
         }
-        return json({ ok: true, stopping: true });
+        return json({ ok: true, stopping: true, tailscale_run_only: tailscaleRunOnly });
       }
       // `plannotator inbox --tailscale` while this Inbox runs: publish for this run.
       if (path === "/api/inbox/control/tailscale") {
@@ -2688,6 +2706,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Live HTML embeds: keep a fence's page, and serve it under its own sandboxing policy.
       const embedded = await embeds.route(req, url);
       if (embedded) return embedded;
+      // Feedback (the sidebar's Feedback dialog): sent on, never stored here. The owner's only: a
+      // tailnet guest's words would go out as this computer's (its version, OS, IP and rate limit).
+      if (path === INBOX_FEEDBACK_PATH && via === "tailnet" && !tailscale.isOwnerRequest(req.headers)) {
+        throw new InboxError("owner_only", "Only this computer's owner can send feedback from this Inbox.");
+      }
+      const fed = await feedback.route(req, path);
+      if (fed) return fed;
 
       // The Board's cards (approval "inbox-board", step 1): the person's read and moves.
       if (path === "/api/inbox/cards") {
