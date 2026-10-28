@@ -377,10 +377,22 @@ jobs:
     # qwen.cmd, as npm installs it, and every folder name has a space. The
     # tests use temporary homes and a PATH of system folders, so no real qwen
     # runs and the runner's own user folders are never touched.
-    name: Qwen Code installer steps (Windows)
+    # Split in two by test name: the cmd.exe runner (about 9 min) and every
+    # other Qwen Code test (about 8 min). The second pattern is the first one
+    # negated, so together they are every "Qwen Code" test, each once; a part
+    # that matches nothing fails (bun test exits 1 when a filter finds none).
+    name: Qwen Code installer steps (Windows, ${{ matrix.part }})
     runs-on: windows-latest
-    # Windows PowerShell 5.1 starts slowly on the runner: about 20 minutes.
+    # Windows PowerShell 5.1 starts slowly on the runner: about 20 minutes in one job.
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: cmd.exe
+            pattern: 'Qwen Code.*install\.cmd \(cmd\.exe\)'
+          - part: PowerShell
+            pattern: '^(?!.*install\.cmd \(cmd\.exe\)).*Qwen Code'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -394,7 +406,9 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run the Qwen Code installer tests
-        run: bun test scripts/install.test.ts --test-name-pattern "Qwen Code"
+        env:
+          PATTERN: ${{ matrix.pattern }}
+        run: bun test scripts/install.test.ts --test-name-pattern $env:PATTERN
 
   pi-extension-ai-runtime-windows:
     # Exercises the Pi extension's Node/jiti server mirror on Windows with an
@@ -881,6 +895,7 @@ jobs:
       - opencode-v2
       - guides-show
       - uninstall-windows
+      - qwen-installers-windows
       - pi-extension-ai-runtime-windows
       - install-cmd-windows
       - install-ps1-windows

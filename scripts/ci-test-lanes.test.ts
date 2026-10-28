@@ -100,6 +100,14 @@ describe('Test workflow lanes', () => {
     }
   });
 
+  test('Test (all green) waits for every other job', () => {
+    // A job left out of its needs can fail while the run's one summary check
+    // still says green.
+    const jobs = (Bun.YAML.parse(workflow) as { jobs: Record<string, { needs?: string[] }> }).jobs;
+    const others = Object.keys(jobs).filter((name) => name !== 'all-green');
+    expect([...(jobs['all-green']?.needs ?? [])].sort()).toEqual(others.sort());
+  });
+
   test('an unknown lane is refused', () => {
     expect(() => laneRuns('unit-0')).toThrow(/unknown lane/);
     expect(() => laneRuns(`dom-${DOM_SHARDS + 1}`)).toThrow(/unknown lane/);
