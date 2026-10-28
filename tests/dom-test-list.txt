@@ -404,3 +404,7 @@ packages/review-editor/utils/localReviewDraft.test.tsx
 packages/ui/components/Settings.documentFont.test.tsx
 packages/ui/components/sidebar/FileBrowser.hover.test.tsx
 packages/ui/config/documentFontSetting.test.ts
+apps/vscode-extension/src/guides/reader/lines.test.ts
+apps/vscode-extension/src/guides/webview/diagram-loader.test.ts
+packages/review-editor/components/AnnotationToolbar.askOnly.test.tsx
+packages/ui/components/Settings.notion.test.tsx
