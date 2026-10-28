@@ -17,11 +17,17 @@
  * person clicks, taps or presses it (the shield passes the click, pointer
  * moves and sideways scrolling on to the page, and vertical scrolling falls
  * through to the thread). Focus the person did not give is taken back; a page
- * that takes it while the person types, holds it up, or keeps taking it is
- * stopped. In desktop Chrome that is the whole story. Where the page shares
- * the window's thread (Safari/WebKit, Chromium without site isolation) a page
- * that grabs and then blocks the thread can still catch the keys typed during
- * that block, once, before it is stopped and the person is told. A link the
+ * that takes it while the person types, holds the thread after taking it,
+ * gets a key while the person is not using it, takes it from another page, or
+ * keeps taking it is stopped. In desktop Chrome no key meant for the window
+ * reaches a page. Where the page shares the window's thread (Safari/WebKit,
+ * Chromium without site isolation) a page that grabs while the person is not
+ * typing and then blocks the thread gets the keys typed during that block,
+ * however long it is (the window cannot run until it ends); then it is
+ * stopped and the notice counts them. Not counted, and not stopped when the
+ * block is under 250 ms: keys a page sends into a web frame it framed itself;
+ * such a page can repeat that up to 5 times in 10 minutes per opening of the
+ * thread before the grab count stops it. A link the
  * page hands over is never opened by the page: the window shows its real
  * address and the person opens it (`embedLinkOffer` refuses the Inbox's own
  * host, this computer and the private network), and only from a page the
@@ -47,7 +53,7 @@ import { CodeBlock } from '../blocks/CodeBlock';
 import { HostTitle } from '../HostTitle';
 import { PopoutDialog } from '../PopoutDialog';
 import { useTheme } from '../ThemeProvider';
-import { chooseEmbedFrame, guardEmbedFocus, isEmbedFrameChosen, subscribeEmbedFocus, type EmbedGrab } from './focusGuard';
+import { chooseEmbedFrame, guardEmbedFocus, isEmbedFrameChosen, reportEmbedFocus, reportEmbedKeys, subscribeEmbedFocus, type EmbedGrab } from './focusGuard';
 import { acquireEmbedLoad, claimEmbedLive, onEmbedLiveFreed, releaseEmbedLive, useNearViewport } from './loadGate';
 
 /** A host that can serve embed documents (the Inbox: POST /api/inbox/embeds). */
@@ -206,7 +212,11 @@ function EmbedFrame({
         const url = offeredLink(message.url, usingPage);
         if (url) handlers.current.onLink(url);
       }
-      else handlers.current.onEscape(ref.current);
+      else if (message.kind === 'focus') {
+        if (reportEmbedFocus(ref.current)) handlers.current.onGrab('unseen');
+      } else if (message.kind === 'keys') {
+        if (reportEmbedKeys(ref.current)) handlers.current.onGrab('keys');
+      } else handlers.current.onEscape(ref.current);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -252,6 +262,8 @@ function EmbedFrame({
         <button
           ref={shieldRef}
           type="button"
+          // Explicit: Safari's Tab skips buttons without it (its default "Tab to highlight" setting).
+          tabIndex={0}
           aria-label="Use this page"
           data-html-embed-shield=""
           className="absolute inset-0 z-10 m-0 block h-full w-full cursor-default appearance-none rounded-md border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
@@ -316,16 +328,32 @@ function LinkOffer({ url, onDone }: { url: string; onDone: () => void }) {
 
 type Phase = 'far' | 'waiting' | 'loading' | 'ready' | 'failed' | 'left' | 'grabbed';
 /** Why a page was stopped for the keyboard. */
-type Stopped = { why: 'kept' } | { why: 'typing' } | { why: 'late'; heldMs: number };
+type Stopped =
+  | { why: 'kept'; keys: number }
+  | { why: 'typing'; keys: number }
+  | { why: 'late'; heldMs: number; keys: number }
+  | { why: 'keys'; keys: number }
+  | { why: 'unseen'; keys: number };
 
-/** The notice for a page stopped for the keyboard. */
+/** How long after a late restore or a stray key the block waits for the page's key reports before it stops it. */
+const STOP_SETTLE_MS = 300;
+
+/**
+ * The notice for a page stopped for the keyboard. The count is the keys the
+ * page's bootstrap reported while the person was not using it.
+ */
 function stoppedNotice(stopped: Stopped): string {
+  const got = stopped.keys > 0 ? ` It got ${stopped.keys === 1 ? '1 key' : `${stopped.keys} keys`} you typed.` : '';
   if (stopped.why === 'typing') return 'This page took the keyboard while you were typing, so it was stopped.';
+  if (stopped.why === 'unseen') return `This page took the keyboard from another page, so it was stopped.${got}`;
+  if (stopped.why === 'keys') return `This page took the keyboard, so it was stopped.${got}`;
   if (stopped.why === 'late') {
-    const seconds = Math.max(0.1, Math.round(stopped.heldMs / 100) / 10);
-    return `This page held the keyboard for ${seconds.toFixed(1)} s, so it was stopped. What you typed then may have gone to it.`;
+    const seconds = Math.max(0.1, Math.round(stopped.heldMs / 100) / 10).toFixed(1);
+    return stopped.keys > 0
+      ? `This page took the keyboard and kept the window busy for ${seconds} s, so it was stopped.${got}`
+      : `This page took the keyboard and kept the window busy for ${seconds} s, so it was stopped.`;
   }
-  return 'This page kept taking the keyboard, so it was stopped.';
+  return `This page kept taking the keyboard, so it was stopped.${got}`;
 }
 
 export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedHost }) {
@@ -334,7 +362,12 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
   const theme = useEmbedTheme();
   const [showCode, setShowCode] = useState(false);
   const [phase, setPhase] = useState<Phase>('far');
-  const [stopped, setStopped] = useState<Stopped>({ why: 'kept' });
+  const [stopped, setStopped] = useState<Stopped>({ why: 'kept', keys: 0 });
+  // Stopped for the keyboard: stays stopped (Code and back, a re-render) until Load again.
+  const [halted, setHalted] = useState(false);
+  /** Keys the page reported while the person was not using it, and a stop waiting for more reports. */
+  const strayKeys = useRef(0);
+  const pendingStop = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [height, setHeight] = useState<number | undefined>(undefined);
   const [expanded, setExpanded] = useState(false);
@@ -350,7 +383,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
 
   // Near the screen: take a live slot (or wait for one), a load permit, then the page's URL.
   useEffect(() => {
-    if (!near || showCode) return;
+    if (!near || showCode || halted) return;
     let cancelled = false;
     let holdsLive = false;
     let stopWaiting: (() => void) | null = null;
@@ -394,7 +427,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
       if (holdsLive) releaseEmbedLive();
       setUrl(null);
     };
-  }, [near, showCode, forced, generation, block.content]);
+  }, [near, showCode, forced, generation, block.content, halted]);
 
   // Loaded: the load permit goes back. Ready only once the page speaks (a frame the browser
   // refused loads too, blank, and never speaks).
@@ -417,29 +450,54 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
 
   // Focus is already back in the window; a page that keeps taking it is stopped.
   const stop = useCallback((why: Stopped) => {
-    grabs.current = [];
+    if (pendingStop.current) clearTimeout(pendingStop.current);
+    pendingStop.current = null;
     setFull(false);
     setLink(null);
     setStopped(why);
+    setHalted(true);
     setPhase('grabbed');
+  }, []);
+  /** Stop after the page's key reports for this grab have come in (focus is already back). */
+  const stopSoon = useCallback(
+    (make: (keys: number) => Stopped) => {
+      if (pendingStop.current) clearTimeout(pendingStop.current);
+      pendingStop.current = setTimeout(() => stop(make(strayKeys.current)), STOP_SETTLE_MS);
+    },
+    [stop],
+  );
+  useEffect(() => () => {
+    if (pendingStop.current) clearTimeout(pendingStop.current);
   }, []);
   const grabbed = useCallback(
     (why: EmbedGrab, heldMs?: number) => {
       // While the person types: gone in this task, before the page can block the thread and take
       // the keys that follow (the guard needs the frame out of the document when this returns).
-      if (why === 'typing') return flushSync(() => stop({ why: 'typing' }));
-      // The page held the thread while it had the keyboard: what was typed then may have reached it.
-      if (why === 'late') return stop({ why: 'late', heldMs: heldMs ?? 0 });
+      if (why === 'typing') return flushSync(() => stop({ why: 'typing', keys: strayKeys.current }));
+      // Straight from the page the person chose: gone now (the keyboard is back on their page).
+      if (why === 'unseen') return stop({ why: 'unseen', keys: strayKeys.current });
+      // A key reached it while the person was not using it; or it held the thread while it had the
+      // keyboard. Either way it goes, once its key reports are in.
+      if (why === 'keys') {
+        strayKeys.current += 1;
+        if (!pendingStop.current) stopSoon((keys) => ({ why: 'keys', keys }));
+        return;
+      }
+      if (why === 'late') return stopSoon((keys) => ({ why: 'late', heldMs: heldMs ?? 0, keys }));
       const t = Date.now();
       const longest = GRAB_LIMITS[GRAB_LIMITS.length - 1]!.withinMs;
       grabs.current = [...grabs.current.filter((at) => t - at < longest), t];
-      if (GRAB_LIMITS.some(({ count, withinMs }) => grabs.current.filter((at) => t - at < withinMs).length >= count)) stop({ why: 'kept' });
+      if (GRAB_LIMITS.some(({ count, withinMs }) => grabs.current.filter((at) => t - at < withinMs).length >= count)) {
+        stop({ why: 'kept', keys: strayKeys.current });
+      }
     },
-    [stop],
+    [stop, stopSoon],
   );
 
   const reload = useCallback(() => {
     grabs.current = [];
+    strayKeys.current = 0;
+    setHalted(false);
     setPhase('far');
     setGeneration((g) => g + 1);
   }, []);
@@ -562,7 +620,7 @@ export function HtmlEmbedBlock({ block, host }: { block: Block; host: HtmlEmbedH
         <button
           type="button"
           data-html-embed-full=""
-          disabled={url === null || showCode}
+          disabled={url === null || showCode || halted}
           className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
           onClick={() => setFull(true)}
         >

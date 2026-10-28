@@ -176,8 +176,13 @@ const BASE_CSS = [
  * The embed's first script. It applies the theme from the URL fragment
  * before the page paints (so a dark message never flashes white), takes
  * theme changes from the parent window only, reports the page's height,
- * hands a click on a web link to the host (the sandbox opens no popups), and
- * passes Escape out.
+ * hands a click on a web link to the host (the sandbox opens no popups),
+ * passes Escape out, and tells the host when the page's document gains focus
+ * and when a key reaches it (never which key). Those two listeners are the
+ * first on the window, in the capture phase, so the page's own code cannot
+ * stop them: the host learns of a page that took focus where the window saw
+ * nothing (from another page), and of keys that reached a page the person
+ * was not using.
  */
 export const EMBED_BOOTSTRAP = `(function () {
   var P = window.parent, root = document.documentElement, mode = "inline";
@@ -193,6 +198,9 @@ export const EMBED_BOOTSTRAP = `(function () {
     if (m) { var t = JSON.parse(decodeURIComponent(m[1])); if (t && t.mode === "full") mode = "full"; apply(t); }
   } catch (e) {}
   root.setAttribute("data-pn-embed", mode);
+  addEventListener("focus", function (e) { if (e.target === window) post({ kind: "focus" }); }, true);
+  // Keys that type something: Tab, Escape and a modifier alone move focus or type nothing.
+  addEventListener("keydown", function (e) { if (!/^(Tab|Escape|Shift|Control|Alt|AltGraph|Meta|CapsLock|Fn|FnLock|Hyper|Super|OS)$/.test(e.key)) post({ kind: "keys" }); }, true);
   // Until the person clicks the page, the window's shield lies over it and passes on what the page
   // still needs: pointer moves (hover), the first click, sideways scrolling.
   var hovered = null;
@@ -291,7 +299,14 @@ export type EmbedShieldMessage =
   | { pnEmbed: 1; kind: "click"; x: number; y: number }
   | { pnEmbed: 1; kind: "scroll"; dx: number };
 
-export type EmbedMessage = { kind: "height"; height: number } | { kind: "link"; url: string } | { kind: "escape" };
+export type EmbedMessage =
+  | { kind: "height"; height: number }
+  | { kind: "link"; url: string }
+  | { kind: "escape" }
+  /** The page's document gained focus. */
+  | { kind: "focus" }
+  /** A key reached the page (which key is never sent). */
+  | { kind: "keys" };
 
 /**
  * A message from an embed, checked; null for anything else. The caller has
@@ -307,6 +322,8 @@ export function readEmbedMessage(data: unknown): EmbedMessage | null {
     return { kind: "link", url: m.url };
   }
   if (m.kind === "escape") return { kind: "escape" };
+  if (m.kind === "focus") return { kind: "focus" };
+  if (m.kind === "keys") return { kind: "keys" };
   return null;
 }
 

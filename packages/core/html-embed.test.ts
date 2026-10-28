@@ -73,7 +73,8 @@ describe("the embed's sandbox and policy", () => {
 
 /** Run the bootstrap against a stand-in page; returns what reached its element and the message handler. */
 function runBootstrap() {
-  const parent = { postMessage() {} };
+  const posted: unknown[] = [];
+  const parent = { postMessage: (message: unknown) => posted.push(message) };
   const seen: string[] = [];
   const el = {
     dispatchEvent(event: { type: string }) {
@@ -95,14 +96,17 @@ function runBootstrap() {
   };
   const doc = { documentElement: root, body: null, elementFromPoint: () => el, addEventListener() {} };
   let onMessage: ((event: { source: unknown; data: unknown }) => void) | null = null;
-  const listen = (type: string, handler: (event: { source: unknown; data: unknown }) => void) => {
-    if (type === "message") onMessage = handler;
+  const windowListeners: { type: string; capture: boolean; handler: (event: { target?: unknown; key?: string }) => void }[] = [];
+  const self = { parent };
+  const listen = (type: string, handler: (event: never) => void, capture?: boolean) => {
+    windowListeners.push({ type, capture: capture === true, handler: handler as (event: { target?: unknown; key?: string }) => void });
+    if (type === "message") onMessage = handler as (event: { source: unknown; data: unknown }) => void;
   };
   class FakeEvent {
     constructor(public type: string) {}
   }
   new Function("window", "document", "location", "addEventListener", "setTimeout", "ResizeObserver", "PointerEvent", "MouseEvent", EMBED_BOOTSTRAP)(
-    { parent },
+    self,
     doc,
     { hash: "" },
     listen,
@@ -111,7 +115,7 @@ function runBootstrap() {
     FakeEvent,
     FakeEvent,
   );
-  return { parent, seen, themed, send: (source: unknown, data: unknown) => onMessage!({ source, data }) };
+  return { parent, self, seen, themed, posted, windowListeners, send: (source: unknown, data: unknown) => onMessage!({ source, data }) };
 }
 
 describe("the bootstrap takes the shield's forwarding from the Inbox's window only", () => {
@@ -130,6 +134,26 @@ describe("the bootstrap takes the shield's forwarding from the Inbox's window on
     page.send(page.parent, { pnEmbed: 1, kind: "click", x: 5, y: 5 });
     expect(page.seen).toContain("click()");
     expect(page.seen).toContain("focus()");
+  });
+});
+
+describe("the bootstrap reports focus and keys, first, where the page cannot stop it", () => {
+  test("its document gaining focus and every key are reported (never which key), by the first window listeners, in the capture phase", () => {
+    const page = runBootstrap();
+    const first = page.windowListeners.slice(0, 2);
+    expect(first.map(({ type, capture }) => [type, capture])).toEqual([
+      ["focus", true],
+      ["keydown", true],
+    ]);
+    first[0]!.handler({ target: {} }); // an element's focus passing through: not the document's
+    first[0]!.handler({ target: page.self });
+    first[1]!.handler({ target: {}, key: "a" } as never);
+    // Tab, Escape and a modifier alone type nothing: not reported (a Tab out of a page arrives after it left).
+    for (const key of ["Tab", "Escape", "Shift", "Meta"]) first[1]!.handler({ target: {}, key } as never);
+    expect(page.posted).toEqual([
+      { kind: "focus", pnEmbed: 1 },
+      { kind: "keys", pnEmbed: 1 },
+    ]);
   });
 });
 
@@ -186,6 +210,9 @@ describe("readEmbedMessage", () => {
 
   test("anything else is ignored", () => {
     expect(readEmbedMessage({ pnEmbed: 1, kind: "escape" })).toEqual({ kind: "escape" });
+    expect(readEmbedMessage({ pnEmbed: 1, kind: "focus" })).toEqual({ kind: "focus" });
+    // A key report never carries which key, whatever the page sends.
+    expect(readEmbedMessage({ pnEmbed: 1, kind: "keys", key: "a" })).toEqual({ kind: "keys" });
     for (const data of [null, "height", { kind: "height", height: 10 }, { pnEmbed: 2, kind: "escape" }, { pnEmbed: 1, kind: "navigate", url: "https://x" }]) {
       expect(readEmbedMessage(data)).toBeNull();
     }

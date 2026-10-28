@@ -44,7 +44,7 @@
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  */
 
-import { chromium, expect, test, type Browser, type BrowserContext, type Frame, type Page } from '@playwright/test';
+import { chromium, expect, test, type Browser, type BrowserContext, type Frame, type Locator, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { connect, createServer, type AddressInfo } from 'node:net';
@@ -599,6 +599,13 @@ test('a window reached on another port, or at 127.0.0.1, runs its pages', async 
   }
 });
 
+/** The stop notice says how many keys reached the page, and nothing about keys when none did. */
+async function expectHonestNotice(scope: Locator, reached: number): Promise<void> {
+  const notice = scope.locator('[data-html-embed-grabbed]');
+  if (reached === 0) await expect(notice).not.toContainText('you typed');
+  else await expect(notice).toContainText(reached === 1 ? 'It got 1 key you typed.' : `It got ${reached} keys you typed.`);
+}
+
 /**
  * Keys sent the way an OS queues them while the window is blocked: none awaited on its own
  * (CDP in Chromium; parallel presses in WebKit).
@@ -631,9 +638,10 @@ test('a page that takes the keyboard and then blocks the thread is stopped and t
       await replyBox(idle.page).click();
       await idle.page.waitForTimeout(grabAt - (await frame.evaluate(() => Date.now())) + 300);
       await queueKeys(idle.page, browserName, 'password');
-      await expect(idle.message.locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', 'late');
-      await expect(idle.message.locator('[data-html-embed-grabbed]')).toContainText(/held the keyboard for \d+\.\d s, so it was stopped\. What you typed then may have gone to it\./);
+      await expect(idle.message.locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', /^(late|keys)$/);
       await idle.page.waitForTimeout(500);
+      // The notice counts what reached the page (its bootstrap reports each key, never which).
+      await expectHonestNotice(idle.message, stolenKeys(idle).length);
       console.log(`[${browserName}] grab, then a 2 s block, keys queued during it: reply "${await replyBox(idle.page).inputValue()}", page got "${stolenKeys(idle)}"`);
     } finally {
       await idle.context.close().catch(() => {});
@@ -657,6 +665,161 @@ test('a page that takes the keyboard and then blocks the thread is stopped and t
       console.log(`[${browserName}] grab mid-reply, then a 2 s block: reply "${await replyBox(typing.page).inputValue()}", page got "${stolenKeys(typing)}"`);
     } finally {
       await typing.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
+/** Grabs at `times` (ms after load), blocking its thread `block` ms each time. */
+const blockingGrabber = (name: string, times: number[], block: number) =>
+  [
+    '<input id="grab" aria-label="grab"><p id="at">at</p>',
+    '<script>',
+    keyLogger(name),
+    `window.t0 = Date.now(); document.getElementById('at').textContent = 'ready';`,
+    ...times.map((t) => `setTimeout(() => { document.getElementById('grab').focus(); const end = Date.now() + ${block}; while (Date.now() < end) {} }, ${t});`),
+    '</script>',
+  ].join('\n');
+
+const keysOf = (t: { keysAt: (name: string) => string[] }, name: string) => t.keysAt(name).map((asked) => decodeURIComponent(asked.split('k=')[1] ?? '')).join('');
+
+test('a page that grabs and blocks for less than 250 ms is stopped as soon as a key reaches it, and the notice counts them', async ({ browser, browserName }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-short-e2e-');
+  try {
+    const t = await openThread(browser, world, 'A page that blocks briefly', blockingGrabber('short', [5000, 12000], 200));
+    try {
+      const frame = await embedFrame(t.page, t.message, '#at', 'at');
+      const t0 = await frame.evaluate(() => (window as unknown as { t0: number }).t0);
+      await openReply(t.page);
+      await replyBox(t.page).click();
+      await t.page.keyboard.type('w0 ', { delay: 50 });
+      // A pause longer than "typing", then the person starts again during the page's brief block.
+      await t.page.waitForTimeout(Math.max(0, t0 + 5000 - (await frame.evaluate(() => Date.now())) + 40));
+      await queueKeys(t.page, browserName, 'pw');
+      await t.page.waitForTimeout(800);
+      const reached = keysOf(t, 'short');
+      console.log(`[${browserName}] grab, then a 200 ms block, keys queued: reply "${await replyBox(t.page).inputValue()}", page got "${reached}"`);
+      if (reached.length > 0) {
+        // Not silent: stopped at once, so the second grab never comes.
+        await expect(t.message.locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', /^(keys|late)$/);
+        await expectHonestNotice(t.message, reached.length);
+      }
+      await t.page.waitForTimeout(Math.max(0, t0 + 12_500 - Date.now()));
+      expect(keysOf(t, 'short')).toBe(reached);
+    } finally {
+      await t.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
+test('a page that takes the keyboard from the page the person is typing in is stopped, and the keyboard goes back', async ({ browser, browserName }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-p2p-e2e-');
+  try {
+    const A = ['<input id="a" aria-label="a"><p id="at">ready</p>', '<script>', keyLogger('A'), '</script>'].join('\n');
+    const t = await openThread(browser, world, 'Two pages', A, world.url, ['', 'Second:', '', fence(blockingGrabber('B', [6000], 1500))]);
+    try {
+      const pageA = await embedFrame(t.page, t.message, '#at', 'never');
+      const pageB = (await (await t.message.locator('iframe[data-html-embed-frame="inline"]').nth(1).elementHandle())!.contentFrame())!;
+      await expect(pageB.locator('#at')).toHaveText('ready');
+      const t0 = await pageB.evaluate(() => (window as unknown as { t0: number }).t0);
+      await clickInPage(t.page, pageA, '#a');
+      await expect.poll(() => pageA.evaluate(() => document.activeElement?.id)).toBe('a');
+      await t.page.keyboard.type('hello', { delay: 80 });
+      await t.page.waitForTimeout(Math.max(0, t0 + 6000 - (await pageB.evaluate(() => Date.now())) + 200));
+      await queueKeys(t.page, browserName, 'secret');
+      const embeds = t.message.locator('[data-html-embed]');
+      await expect(embeds.nth(1).locator('[data-html-embed-stopped]')).toHaveAttribute('data-html-embed-stopped', /^(unseen|keys)$/);
+      await expect(embeds.nth(1).locator('[data-html-embed-grabbed]')).toContainText('so it was stopped');
+      // The keyboard is back in page A: what the person types next lands there.
+      await t.page.waitForTimeout(500);
+      const reachedB = keysOf(t, 'B');
+      // (Page A's own input may have lost its focus to the grab; its document has the keyboard.)
+      const reachedA = keysOf(t, 'A');
+      await t.page.keyboard.type('more', { delay: 60 });
+      await expect.poll(() => keysOf(t, 'A')).toBe(`${reachedA}more`);
+      expect(keysOf(t, 'B')).toBe(reachedB);
+      console.log(`[${browserName}] page B grabs from page A, then a 1.5 s block: A got "${keysOf(t, 'A')}", B got "${reachedB}"`);
+    } finally {
+      await t.context.close().catch(() => {});
+    }
+  } finally {
+    await world.close();
+  }
+});
+
+test('Tab walks from page to page through each "Use this page" button, and stops nothing', async ({ browser }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-tabwalk-e2e-');
+  try {
+    const context = await browser.newContext({ viewport: { width: 1200, height: 1000 } });
+    await stubWeb(context);
+    const PAGE = '<input id="t" aria-label="t"><p id="at">ready</p>';
+    const sent = await world.agent.send({
+      project_path: world.project,
+      thread: 'Tab walk',
+      subject: 'Tab walk',
+      body: ['[before](https://example.com/a)', '', fence(PAGE), '', '[between](https://example.com/b)', '', fence(PAGE), '', '[after](https://example.com/c)'].join('\n'),
+    });
+    const page = await context.newPage();
+    await page.goto(`${world.url}#thread=${sent.thread_id}`);
+    const message = page.locator(`[data-message-id="${sent.message_id as string}"]`);
+    await expect(message.locator('iframe[data-html-embed-frame="inline"]')).toHaveCount(2);
+    await embedFrame(page, message, '#at', 'never');
+    // Start on the link before the pages (Safari's Tab skips links; focus it directly).
+    await message.getByRole('link', { name: 'before' }).focus();
+    const walk: string[] = [];
+    for (let press = 0; press < 8; press += 1) {
+      await page.keyboard.press('Tab');
+      await page.waitForTimeout(150);
+      walk.push(
+        await page.evaluate(() => {
+          const active = document.activeElement as HTMLElement | null;
+          if (!active) return 'none';
+          const figures = [...document.querySelectorAll('[data-html-embed]')];
+          const at = figures.indexOf(active.closest('[data-html-embed]') as Element);
+          if (active.tagName === 'IFRAME' && at >= 0) return `page${at}`;
+          if (active.getAttribute('aria-label') === 'Use this page') return `door${at}`;
+          return active.tagName;
+        }),
+      );
+      walk[walk.length - 1] += (await message.locator('[data-html-embed-stopped]').count()) ? ' (stopped)' : '';
+    }
+    // Each page's door comes before the page itself, in both engines.
+    expect(walk.indexOf('door0')).toBeGreaterThanOrEqual(0);
+    expect(walk.indexOf('page0')).toBeGreaterThan(walk.indexOf('door0'));
+    expect(walk.indexOf('door1')).toBeGreaterThan(walk.indexOf('page0'));
+    expect(walk.indexOf('page1')).toBeGreaterThan(walk.indexOf('door1'));
+    await expect(message.locator('[data-html-embed-stopped]')).toHaveCount(0);
+    await context.close();
+  } finally {
+    await world.close();
+  }
+});
+
+/** An innocent page: focuses its canvas, then draws for 400 ms on the thread. */
+const CANVAS = [
+  '<canvas id="c" width="300" height="120" tabindex="0"></canvas><p id="at">ready</p>',
+  '<script>',
+  "setTimeout(() => { const c = document.getElementById('c'); c.focus(); const end = performance.now() + 400; let x = 0; while (performance.now() < end) { x += Math.sqrt(x + 1); } c.getContext('2d').fillRect(0, 0, 50, 50); }, 1500);",
+  '</script>',
+].join('\n');
+
+test('an innocent page that focuses itself and then works for a while, with nothing typed, gets a calm notice', async ({ browser, browserName }) => {
+  const world = await startWorld('plannotator-inbox-inline-html-canvas-e2e-');
+  try {
+    const t = await openThread(browser, world, 'A canvas page', CANVAS);
+    try {
+      await embedFrame(t.page, t.message, '#at', 'never');
+      await t.page.waitForTimeout(3000);
+      const stopped = await t.message.locator('[data-html-embed-stopped]').count();
+      // Where the page shares the window's thread the hold is seen and the page stopped; the notice
+      // says what happened and claims nothing about keys. Elsewhere it is a plain grab.
+      if (stopped) await expectHonestNotice(t.message, 0);
+      console.log(`[${browserName}] innocent canvas page: ${stopped ? await t.message.locator('[data-html-embed-grabbed]').innerText() : 'not stopped'}`);
+    } finally {
+      await t.context.close().catch(() => {});
     }
   } finally {
     await world.close();
