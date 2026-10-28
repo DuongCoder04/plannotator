@@ -17,7 +17,8 @@
  *  - An iPhone (WebKit): icons only, no card. Line 1 is the project and the
  *    time; the mark ends line 3, or the subject's last line when the row has
  *    no line 3; a long thread name gives way before the count moves to a line
- *    of its own.
+ *    of its own. On a 320 or 360 px phone the guided review mark drops to its
+ *    icon before the thread name shrinks, and the name keeps a readable width.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * PNGs (desktop light and dark, beside a thread, both cards open, keyboard,
@@ -28,6 +29,7 @@ import { devices, expect, test, webkit, type Browser, type BrowserContext, type 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { FIXTURE_V1_LOCAL } from '../../packages/core/guide-format-fixtures';
 import { DEMO_MESSAGES, SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, removeInboxScratch } from './inbox-scratch';
 import { NO_BROWSER } from '../helpers/no-browser';
@@ -50,6 +52,8 @@ interface World {
   news: string;
   /** Two agents in one thread. */
   pair: string;
+  /** Holds up 3, a thread name, 2 questions and a guided review: a full phone line 3. */
+  guided: string;
 }
 
 let world: World;
@@ -112,6 +116,13 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
     body: [':::question', 'Drop the question context from the push, or send ids only?', 'Stopped: the relay cannot deliver without this.', '', '- [ ] Drop the context', '- [ ] Ids only', ':::'].join('\n'),
   });
   const stopped = await claude.send({ project_path: billing, body: DEMO_MESSAGES.stopped, thread: 'retry-worker' });
+  const codex = await SimAgent.connect({ binary, env, name: 'Codex', host: 'codex' });
+  const guided = await codex.submitGuide({ project_path: billing, snapshot: FIXTURE_V1_LOCAL, thread: 'ledger-migration', subject: 'Approve the ledger plan', body: 'A guided review of the ledger change.' });
+  await codex.send({
+    project_path: billing,
+    thread: 'ledger-migration',
+    body: ['Two calls.', '', ':::question', 'Run the dry run on Friday?', 'Holds up: the dry run; the audit; the close.', '', '- [ ] Yes', '- [ ] No', ':::', '', ':::question', 'Keep the old ledger?', '', '- [ ] Yes', '- [ ] No', ':::'].join('\n'),
+  });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' });
   const page = await context.newPage();
   const errors: string[] = [];
@@ -119,7 +130,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
-  world = { url, agents: [claude, opencode, pi], context, page, errors, stopped: stopped.thread_id as string, holding: holding.thread_id as string, long: long.thread_id as string, news: news.thread_id as string, pair: named.thread_id as string };
+  world = { url, agents: [claude, opencode, pi, codex], context, page, errors, stopped: stopped.thread_id as string, holding: holding.thread_id as string, long: long.thread_id as string, news: news.thread_id as string, pair: named.thread_id as string, guided: guided.thread_id as string };
 });
 
 test.afterAll(async () => {
@@ -231,6 +242,15 @@ test('beside an open thread: line 1 keeps its words, the mark ends line 2 on one
   const order = await narrow.locator('.ib-l1 > *').evaluateAll((els) => els.map((e) => e.className.split(' ')[0]));
   expect(order.filter((c) => c !== 'ib-c')).toEqual(['ib-p', 'ib-t']);
   await expect(narrow.locator('.ib-l1 .ib-mk')).toHaveCount(0);
+  // The hover's Mark read sits on line 1 and stops above line 2 (and so above its mark).
+  await narrow.locator('.ib-l1 .ib-p').hover();
+  await expect(page.locator(`.ib-rw[data-row="${world.holding}"] [data-row-mark-read]`)).toBeVisible();
+  const clearance = await page.evaluate((id) => {
+    const rw = document.querySelector(`.ib-rw[data-row="${id}"]`)!;
+    return rw.querySelector('.ib-l2')!.getBoundingClientRect().top - rw.querySelector('[data-row-mark-read]')!.getBoundingClientRect().bottom;
+  }, world.holding);
+  expect(clearance).toBeGreaterThanOrEqual(0);
+  await page.mouse.move(5, 5);
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll<HTMLElement>('.ib-nrow')].map((r) => {
       const l1 = r.querySelector('.ib-l1')!;
@@ -328,5 +348,43 @@ test('an iPhone (WebKit): icons only, no card, the mark ends the last line', asy
     }
   } finally {
     await own?.close();
+  }
+});
+
+test('a small phone (320, 360): the guided review mark drops to its icon first; the thread name keeps a readable width', async () => {
+  const own = await webkit.launch({ args: [] });
+  try {
+    for (const width of [320, 360]) {
+      const context = await own.newContext({ ...devices['iPhone 15'], viewport: { width, height: 1600 }, colorScheme: 'light', reducedMotion: 'reduce' });
+      const page = await context.newPage();
+      await page.goto(world.url);
+      const line3 = page.locator(`.ib-mrow[data-thread-id="${world.guided}"] .ib-m3`);
+      await line3.scrollIntoViewIfNeeded();
+      await expect(line3.locator('[data-guide-mark]')).toBeVisible();
+      await expect(line3.locator('[data-row-badge]')).toHaveText('Holds up 3');
+      // The rows skip paint until laid out (content-visibility): give WebKit a frame or two.
+      await page.waitForTimeout(600);
+      const m = await line3.evaluate((m3) => {
+        const box = (sel: string) => m3.querySelector(sel)!.getBoundingClientRect();
+        const mid = (b: DOMRect) => b.top + b.height / 2;
+        const label = m3.querySelector<HTMLElement>('.ib-att-l')!;
+        return {
+          pill: box('.ib-key').width,
+          pillMid: mid(box('.ib-key')),
+          countMid: mid(box('.ib-c')),
+          labelShown: label.getClientRects().length > 0,
+          labelCut: label.scrollWidth > label.clientWidth + 0.5,
+        };
+      });
+      // At least 7em of the pill's 11.5 px text, never a sliver.
+      expect(m.pill).toBeGreaterThanOrEqual(48);
+      expect(Math.abs(m.countMid - m.pillMid)).toBeLessThanOrEqual(1);
+      // The label is either whole or gone (the icon stays), never cut mid-word.
+      expect(m.labelShown && m.labelCut).toBe(false);
+      await page.screenshot({ path: join(proofDir, `phone-${width}.png`) });
+      await context.close();
+    }
+  } finally {
+    await own.close();
   }
 });

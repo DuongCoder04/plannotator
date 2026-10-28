@@ -463,7 +463,7 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       {badge || chip || count || guide ? (
         <>
           <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-          {/* One line: the thread's name gives way (it wraps inside its pill) before anything moves to a line of its own. */}
+          {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
           <span className="ib-m3">
             {badge}
             {chip && (
