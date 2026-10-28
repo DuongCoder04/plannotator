@@ -535,7 +535,8 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
     const current = model ?? compute();
     let sessions: SessionInfo[] = [];
     try {
-      sessions = listSessions();
+      // An in-process server (OpenCode) keeps no binary open: not "running on" this version.
+      sessions = listSessions().filter((s) => !s.host);
     } catch {}
     const snooze = state.snooze;
     const failingNow = failing();
