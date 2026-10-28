@@ -12,6 +12,7 @@ import {
   type AIEndpoints,
   type PiSDKConfig,
   type PullSessionBridgeConfig,
+  type QwenSDKConfig,
   type SessionBridge,
   type SessionBridgeHost,
 } from "@plannotator/ai";
@@ -220,6 +221,24 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
       }
     } catch {
       // OpenCode not available.
+    }
+
+    try {
+      await import("@plannotator/ai/providers/qwen-sdk");
+      const rawQwenPath = Bun.which("qwen", { PATH: childPath() });
+      if (rawQwenPath) {
+        const provider = await createProvider({
+          type: "qwen-sdk",
+          cwd,
+          qwenExecutablePath: resolveWindowsCommandShim(rawQwenPath),
+        } as QwenSDKConfig);
+        const providerId = registry.register(provider);
+        // Discovery reads Qwen Code's settings.json (no process), and a
+        // session runs on qwen's own default model when none is picked.
+        deferModelDiscovery(providerId, provider, { blockSession: false });
+      }
+    } catch {
+      // Qwen Code not available.
     }
   };
 

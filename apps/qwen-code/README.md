@@ -32,6 +32,10 @@ mkdir -p ~/.qwen/skills && cp -R apps/qwen-code/skills/* ~/.qwen/skills/
 
 Restart Qwen Code. Remove the extension with `qwen extensions uninstall plannotator`.
 
+## Ask AI
+
+When `qwen` is on your PATH, Ask AI in plan review, code review and annotate can answer with Qwen Code. In a Qwen Code session it is the default. It runs `qwen` in plan mode with Qwen's file-editing, file-writing, memory and worktree tools turned off, and uses the models from your Qwen Code settings. Other tools your Qwen settings auto-approve (a trusted MCP server, or an allow rule) can still run. Each Ask AI conversation becomes the newest Qwen chat for the project, so `qwen --continue` resumes it; `/plannotator-last` skips it.
+
 ## Credit
 
 The first Qwen Code port of Plannotator was made by NonoElRobot in a fork (commit c6a02a0). Its session-log reader, the extension layout and its findings on Qwen's plan confirmation are the base of this integration.
