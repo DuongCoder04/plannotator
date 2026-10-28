@@ -2457,7 +2457,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
           return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
         }
-        return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
+        // Each decision's project carries its repo (as a thread does), so refs on its card link there.
+        const decisions = store.openDecisions({ projectId: projectFilterOf(url) }).map((decision) => {
+          const root = store.project(decision.thread.project.id)?.root;
+          return { ...decision, thread: { ...decision.thread, project: { ...decision.thread.project, repo: root ? repos.get(root) : null } } };
+        });
+        return json({ serverSession, cursor: store.cursor(), decisions });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
       // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
@@ -2823,10 +2828,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (cardMatch && req.method === "GET") {
         const refused = crossSiteCardRead(req);
         if (refused) return refused;
-        // The opened card: the card and its history, newest first.
+        // The opened card: the card and its history, newest first, and (additive) its own
+        // project's repo, so `#123` and `owner/repo#123` in its text link as in a thread.
         const card = store.card(cardMatch[1]!);
         if (!card) throw new InboxError("card_not_found", `No card ${cardMatch[1]}.`);
-        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id) });
+        const root = store.project(card.project_id)?.root;
+        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id), repo: root ? repos.get(root) : null });
       }
       if (cardMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);

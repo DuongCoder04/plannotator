@@ -83,6 +83,18 @@ export function inboxToolCallParams(call: { name: string; arguments: Record<stri
 export const INBOX_REPLY_TO_CHECK = 'Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.'
 
 /**
+ * How an issue or PR ref in a message links (a bare `#104` meant for another
+ * repo once linked into the thread's project). In send_message's `body`, the
+ * agent tool's `body`, and `plannotator inbox --help` / `card --help`.
+ * `owner/repo#123` links on the project's own forge, so a GitHub ref from a
+ * GitLab project needs its URL.
+ */
+export const INBOX_REF_LINK_RULE = "A bare #123 links to this project's repository. For an issue or PR in another repo, write owner/repo#123 or its full URL (in a GitLab project, a GitHub one needs its URL)."
+
+/** The card's `say` and `you`: a pointer to the rule on `body`, not the rule again (every request carries both). */
+export const INBOX_REF_LINK_POINTER = "Refs link as in send_message's body."
+
+/**
  * The `_meta` key a connection sets to `true` on the read_thread list it reads
  * for the session's thread list (`inboxSessionThreadsParams`), not a call the
  * agent made: the Inbox makes no project for a folder it does not know, and
@@ -317,6 +329,8 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
       'Only for a true blocker the person must go and do outside this chat, that you cannot do yourself (approve a deploy, sign in, touch a security key, merge a PR you cannot merge), write a `:::action` block: first line the order, then why; optional `Where: <url>`, `Run: <command>`, `Stopped:`, `Watching: <what you watch>`. Never for a decision or a question, for what you can do yourself, or as a checklist or status update; most messages need none. Done or Can\'t do it comes back under "Action items you asked for".',
       '',
       'Blocks fenced as `mermaid` or `dot` draw as diagrams; one fenced as `html` draws as a live, sandboxed page in the message (chart, SVG, mock; https libraries load). Leave its background transparent; use var(--foreground), var(--chart-1)…var(--chart-5).',
+      '',
+      INBOX_REF_LINK_RULE,
     ].join('\n'),
     reply_to: `A message id: post this as a reply in that message's thread. ${INBOX_REPLY_TO_CHECK}`,
     thread: "A short thread name, one line, to keep separate work apart: the same name in this project is the same open thread, across sessions. Without it, your messages join your session's open thread. Ignored with reply_to, except when you are asked to name a thread the person started: then it names that thread, once.",

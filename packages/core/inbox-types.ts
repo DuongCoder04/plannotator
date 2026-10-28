@@ -1053,7 +1053,8 @@ export interface InboxDecision {
     /** `paths` (additive): the file's real path, and the path it was named by when that was a link; a `Shows:` file is matched by them. */
     attachments: { attachment_id: string; name: string; kind: string; size: number; media_type: string | null; paths?: string[] }[];
   };
-  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string }; section: InboxSectionId };
+  /** `project.repo` (additive, the window's read): its git origin, as on a thread; refs in the card link into it. */
+  thread: { id: string; subject: string | null; thread_name: string | null; project: { id: string; name: string; repo?: InboxProjectRepo | null }; section: InboxSectionId };
   /**
    * The agent session that asked: one reply per session per thread
    * (`key`: `s:<host>\u0000<session>`, or `m:<message id>` for a message with
@@ -1285,7 +1286,37 @@ export interface InboxListRow extends InboxThreadSummary {
    * agent wrote last, a 👍 not sent). Absent from an older Inbox.
    */
   delivery?: InboxRowDelivery | null;
+  /**
+   * What the row's Stopped / Holds up badge holds (approval "inbox-row-badges",
+   * hover card A): each open question or action item that stops the agent or
+   * holds something up, in thread order, at most `INBOX_ROW_WAITS_MAX`, its
+   * words capped (`INBOX_ROW_WAIT_TEXT_MAX`, `INBOX_ROW_WAIT_HOLDS_MAX`). Absent
+   * when none does, and from an older Inbox (the card then lists
+   * `questions.holds_up`). The window's list only: agents' rows never carry it.
+   */
+  waits?: InboxRowWait[];
 }
+
+/** One question behind a row's badge (`InboxListRow.waits`). */
+export interface InboxRowWait {
+  message_id: string;
+  key: string;
+  /** Its place among its message's blocks of its kind: Q1 is 0 (A1 for an action item, `key` starts `a-`). */
+  position: number;
+  prompt: string;
+  /** Its `Stopped:` line, or null. */
+  stopped: string | null;
+  /** Its `Holds up:` entries. */
+  holds_up: string[];
+}
+
+/** At most this many questions on a row's `waits`. */
+export const INBOX_ROW_WAITS_MAX = 8;
+/** A wait's prompt and `Stopped:` line are cut to this many characters ("…"). */
+export const INBOX_ROW_WAIT_TEXT_MAX = 200;
+/** At most this many `Holds up:` entries per wait, each cut to `INBOX_ROW_WAIT_ENTRY_MAX`. */
+export const INBOX_ROW_WAIT_HOLDS_MAX = 8;
+export const INBOX_ROW_WAIT_ENTRY_MAX = 120;
 
 export interface InboxListSection {
   id: InboxSectionId;
@@ -1847,14 +1878,18 @@ export type InboxToolCostHost = "pi" | "opencode";
  * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
+ * Then where refs link (INBOX_REF_LINK_RULE, 171 characters, on `body`):
+ * 9,591 bytes (+175, about +40 tokens, estimated). With the Board on, the
+ * card's `say` and `you` add a 36-character pointer each: 11,009 (+249,
+ * estimated).
  * Then the fences that draw in `body` (approval "inbox-inline-html",
  * 2026-10-28: Mermaid and Graphviz diagrams, live HTML pages): one sentence,
- * measured on Pi, 9,673 bytes (+257, about +65 tokens). With the Board on
- * 11,017 (10,760 + 257, estimated).
+ * measured on Pi with the ref rule in, 9,848 bytes (+257, about +65 tokens).
+ * With the Board on 11,267 (11,009 + 258, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9673, tokens: 2700 };
+const INBOX_TOOL_COST_NOW = { bytes: 9848, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11017, tokens: 3100 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11267, tokens: 3100 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
