@@ -6,7 +6,7 @@
  */
 
 import { childEnv } from "@plannotator/shared/child-env";
-import { readRepoWorkingTreeEntry } from "@plannotator/shared/repo-file";
+import { readFileCapped } from "@plannotator/shared/repo-file";
 import { lstat, open, readlink, realpath } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
@@ -235,23 +235,17 @@ export async function readFileBytesCapped(path: string, maxBytes: number): Promi
 }
 
 /**
- * Decode file bytes exactly as `Bun.file(path).text()` does: a UTF-8 BOM is
- * stripped and a UTF-16LE BOM switches to UTF-16 (TextDecoder does not do
- * the latter). Bun's guarded reads (repo-file.ts) read from a descriptor, so
- * they decode with this to keep the output they had before the guard.
+ * Decode bytes exactly as `Bun.file(path).text()` does (a UTF-8 BOM is
+ * stripped, a UTF-16LE BOM switches to UTF-16), so reads through
+ * repo-file.ts keep Bun's old output.
  */
 export function decodeBunText(bytes: Uint8Array): Promise<string> {
-  // repo-file.ts reads into a Buffer.alloc, so the backing store is never a
-  // SharedArrayBuffer.
   return new Blob([bytes as Uint8Array<ArrayBuffer>]).text();
 }
 
 /** Bun-based git runtime. Exported for use with shared utilities (worktree, etc.) */
 export const runtime: ReviewGitRuntime = {
   runGit,
-  async readWorkingTreeEntry(root, path, options) {
-    return readRepoWorkingTreeEntry(root, path, { ...options, decode: decodeBunText });
-  },
   runGitBytes,
   readFileBytes: readFileBytesCapped,
   async realPath(path: string): Promise<string | null> {
@@ -262,11 +256,10 @@ export const runtime: ReviewGitRuntime = {
     }
   },
   async readTextFile(path: string): Promise<string | null> {
-    try {
-      return await Bun.file(path).text();
-    } catch {
-      return null;
-    }
+    // Capped and non-blocking (repo-file.ts): a FIFO swapped in after the
+    // caller's lstat cannot hang the request.
+    const read = await readFileCapped(path, { decode: decodeBunText });
+    return read.ok ? read.content : null;
   },
   async getFileInfo(basePath, path) {
     const fullPath = resolvePath(basePath ?? "", path);

@@ -10,6 +10,7 @@ import {
   type InboxToolHostId,
 } from '@plannotator/core/inbox-types';
 import { inboxApi } from '../api';
+import { CURSOR_RULES_PLACE, noteCopiedByHand, noteWithoutMarkers } from '../agents';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon } from '../icons';
 import { ConnectPicker } from './ConnectPicker';
@@ -250,6 +251,8 @@ function stateOf(row: InboxAgentRow): { text: string; tone: 'on' | 'off' | 'bad'
       return { text: 'Connected', tone: 'on' };
     case 'removed':
       return { text: 'Removed outside Plannotator', tone: 'bad' };
+    case 'elsewhere':
+      return { text: 'Connected in another folder', tone: 'off' };
     case 'foreign':
       return { text: 'Has its own entry', tone: 'bad' };
     case 'unreadable':
@@ -338,7 +341,11 @@ function AgentGroup({
         the <code>plannotator_inbox</code> tool
       </>
     ) : reach.kind === 'mcp' ? (
-      reach.state === 'removed' ? (
+      reach.state === 'elsewhere' ? (
+        <span data-reach-elsewhere="">
+          Connected in <code>{reach.path}</code>. Turn on to move it here.
+        </span>
+      ) : reach.state === 'removed' ? (
         <>
           <code>plannotator-inbox</code> is no longer in <code>{reach.path}</code>. Plannotator won't add it back on its own; turn this on to add it.
         </>
@@ -384,7 +391,7 @@ function AgentGroup({
           ? 'would create'
           : 'no note yet'
         : note.state === 'manual'
-          ? 'copy into Settings → Rules'
+          ? 'copy by hand'
           : note.state === 'unavailable'
           ? 'no file yet'
           : ''
@@ -469,10 +476,10 @@ function AgentGroup({
             k="Note in its instructions"
             v={
               <>
-                {note.path ? <code>{note.path}</code> : row.id === 'cursor' ? 'Cursor User Rules' : null}
+                {note.path ? <code>{note.path}</code> : noteCopiedByHand(row) ? `${CURSOR_RULES_PLACE} in ${row.label}` : null}
                 {noteState && <> · {noteState}</>}
                 <button type="button" className="ib-lnk" aria-expanded={show} aria-controls={`${id}-note`} onClick={() => setShow((open) => !open)}>
-                  {show ? 'Hide' : row.id === 'cursor' ? 'Show note' : 'Show'}
+                  {show ? 'Hide' : noteCopiedByHand(row) ? 'Show note' : 'Show'}
                 </button>
               </>
             }
@@ -485,14 +492,18 @@ function AgentGroup({
               ) : null
             }
             sub={noteSub}
-            warn={(note.state === 'manual' || note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
+            warn={(note.state === 'unavailable' || note.state === 'damaged' || note.state === 'refused') && noteSub !== null}
           />
           {show && (
             <div className="ib-agrow ib-agnote" id={`${id}-note`}>
               <span />
               <div className="ib-cbox">
-                {row.id === 'cursor' && <p>Copy this text into Cursor Settings → Rules. Plannotator cannot detect, update or remove a copied rule.</p>}
-                <pre>{row.id === 'cursor' ? noteText.split('\n').filter((line) => !line.startsWith('<!-- plannotator-inbox:')).join('\n') : noteText}</pre>
+                {noteCopiedByHand(row) && (
+                  <p>
+                    Copy this text into {CURSOR_RULES_PLACE} in {row.label}. Plannotator can't see, update or remove that copy.
+                  </p>
+                )}
+                <pre>{noteCopiedByHand(row) ? noteWithoutMarkers(noteText) : noteText}</pre>
               </div>
             </div>
           )}

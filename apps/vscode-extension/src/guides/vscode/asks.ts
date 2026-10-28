@@ -12,8 +12,9 @@ import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "../acp/agents";
-import type { ReadyLaunch } from "../acp/ensure-launch";
+import { KNOWN_AGENTS, type AgentDescriptor, type LoginCommand } from "@plannotator/acp-client/agents";
+import type { ReadyLaunch } from "@plannotator/acp-client/ensure-launch";
+import { agentLaunchFor } from "../acp/agent-cli";
 import { capCode, newAnswerId, staleNote, type AnswerRecord, type AskAbout } from "../ask/answers";
 import { AnswerShelf } from "../ask/shelf";
 import { buildAskPrompt, type AskGuideContext } from "../ask/prompt";
@@ -452,7 +453,7 @@ export class GuideAsks implements vscode.Disposable {
     const session = new GuideAskSession({ guideId: guide.id, cwd, saved }, {
       relay,
       agent,
-      agentLaunch: (dir) => ({ command: launch.command, args: launch.args, cwd: dir, ...(launch.env && { env: launch.env }) }),
+      agentLaunch: (dir) => agentLaunchFor(launch, dir),
       mcpServer: {
         command: process.execPath,
         args: [vscode.Uri.joinPath(this.host.context.extensionUri, "dist", "guide-mcp.cjs").fsPath],
