@@ -421,6 +421,9 @@ for (const layout of [
       await back(page);
       // Where its open questions put it: Holding up work, as the server says; not folded away in Quiet.
       expect(await sectionOf(page, first)).toBe('holding');
+      // The stacked window's mouse Back hands focus to the row (#1866), which keeps it as the row moves; a phone's tap hands none.
+      if (layout.key === 'stackedAsks') expect(await focused(page)).toBe(first);
+      else expect(await focused(page)).not.toBe(first);
       await shot(page, `08-${layout.key}-questions-read-after-back`);
     } finally {
       await context.close();
@@ -521,6 +524,8 @@ test('a thread opened wide, its window narrowed to stacked while it is open: Bac
     await expect(page.locator('section.ib-pane')).toHaveCount(0);
     await page.waitForTimeout(BEAT_MS + 300);
     expect(await sectionOf(page, first)).toBe('holding');
+    // A mouse Back in a stacked window hands focus to the row (#1866); redrawn in Holding up work, it keeps it.
+    expect(await focused(page)).toBe(first);
     await shot(page, '10-resized-after-back');
   } finally {
     await context.close();

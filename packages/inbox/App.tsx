@@ -1324,8 +1324,9 @@ function Inbox() {
       closing.current = null;
       const next = latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed);
       if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
-        // A keyboard Back just put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect).
-        if (lastInput === 'keyboard') refocusRow.current = closed;
+        // Back put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect):
+        // after a key, and after a stacked window's Back by mouse (#1866 hands that focus to the row too); never after a phone's tap.
+        if (lastInput === 'keyboard' || !isPhone()) refocusRow.current = closed;
         setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
       }
       return;
@@ -3034,7 +3035,7 @@ function Inbox() {
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
   const focusAfterShow = useRef(false);
-  /** The row a keyboard Back over a covered list focused, which its settle redraws in another group. */
+  /** The row Back over a covered list focused (a key, or a stacked window's mouse Back), which its settle redraws in another group. */
   const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
     const body = listBody(rootRef.current);
