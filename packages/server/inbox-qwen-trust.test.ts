@@ -7,7 +7,7 @@
  * ~/.qwen never read.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
 import { connectInboxAgents, createAgentEnvironmentFor, formatConnectReport, planInboxAgentRemoval, readInboxAgents, setInboxAgentReach, type AgentEnvironment } from "./inbox-agents";
@@ -380,8 +380,8 @@ describe("Qwen Code's trusted sender", () => {
     fake.install("qwen");
     await connectInboxAgents(options());
     const { id, token } = readQwenTrust(dataDir)!;
-    expect(await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_REMOVE_SEE: qwenTrustPath(dataDir) }))).toBeNull();
-    const seen = readFileSync(`${qwenTrustPath(dataDir)}.seen`, "utf8");
+    expect(await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_SEE: qwenTrustPath(dataDir) }))).toBeNull();
+    const seen = readFileSync(`${qwenTrustPath(dataDir)}.remove.seen`, "utf8");
     expect(seen).not.toContain(token!);
     expect(JSON.parse(seen)).toMatchObject({ id, revoke_pending: true });
     expect(existsSync(qwenTrustPath(dataDir))).toBe(false);
@@ -398,6 +398,32 @@ describe("Qwen Code's trusted sender", () => {
     } finally {
       chmodSync(folder, 0o700);
     }
+  });
+
+  test("Settings keeps the agent's record before it asks qwen anything: on (added) and off (off), as the qwen call sees agents.json", async () => {
+    fake.install("qwen");
+    const agentsJson = join(dataDir, "inbox", "agents.json");
+    await connectInboxAgents(options());
+    expect(await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_SEE: agentsJson }))).toBeNull();
+    expect(JSON.parse(readFileSync(`${agentsJson}.remove.seen`, "utf8")).agents.qwen.state).toBe("off");
+    expect(await setInboxAgentReach("qwen", true, options({ FAKE_QWEN_CONTROLLERS_SEE: agentsJson }))).toBeNull();
+    expect(JSON.parse(readFileSync(`${agentsJson}.add.seen`, "utf8")).agents.qwen.state).toBe("added");
+  });
+
+  test("one Qwen home spelled two ways (a symlink, a trailing slash) keeps its grant: never revoked and minted again, and its sessions are woken", async () => {
+    fake.install("qwen");
+    const real = join(fake.root, "real-qwen");
+    mkdirSync(real, { recursive: true });
+    symlinkSync(real, qwenHome());
+    await connectInboxAgents(options());
+    const { token } = readQwenTrust(dataDir)!;
+    for (const spelled of [`${qwenHome()}/`, real, `${real}/`]) {
+      const run = await connectInboxAgents(options({ QWEN_HOME: spelled }));
+      expect(run.trusted ?? []).toEqual([]);
+      expect(qwenWakeToken(dataDir, spelled)).toBe(token!);
+    }
+    expect(controllerCalls("add")).toHaveLength(1);
+    expect(controllerCalls("remove")).toEqual([]);
   });
 
   test("PLANNOTATOR_INBOX_CONNECT=0 mints nothing", async () => {

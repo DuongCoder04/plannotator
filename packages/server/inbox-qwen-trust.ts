@@ -35,7 +35,7 @@ import { join, resolve } from "node:path";
 import { INBOX_QWEN_WAKE_MIN_VERSION } from "@plannotator/core/inbox-types";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { qwenHome } from "@plannotator/shared/inbox/qwen-sessions";
-import { writeAgentFileAtomic } from "./agent-files";
+import { samePlace, writeAgentFileAtomic } from "./agent-files";
 import { agentVersionRun, type AgentEnvironment, type AgentRunResult } from "./inbox-agents";
 
 /** The owner's answer: Plannotator registers itself as Qwen's trusted sender when it connects Qwen Code. */
@@ -134,7 +134,7 @@ export function qwenTrustHome(e: Pick<AgentEnvironment, "env" | "homeDir">): str
 /** The token to present to a session of the Qwen home `home`, or null (none, or minted for another home). */
 export function qwenWakeToken(dataDir: string, home: string): string | null {
   const file = readQwenTrust(dataDir);
-  return file?.token && file.home === home ? file.token : null;
+  return file?.token && samePlace(file.home, home, process.platform) ? file.token : null;
 }
 
 /** `0.26.2` (also `0.27.0-nightly.20261020.abc`) as [major, minor, patch]; null for anything else. */
@@ -248,7 +248,9 @@ export async function ensureQwenTrust(dataDir: string, e: AgentEnvironment, opti
     return { kind: "failed", reason, ...(earlier === reason ? { repeated: true } : {}) };
   };
 
-  if (file?.revoked_outside_at && file.home === home && !options.force) {
+  // One Qwen home however it is spelled (a symlink, a trailing slash, another case on macOS): never moved to itself.
+  const here = (other: string) => samePlace(other, home, e.platform);
+  if (file?.revoked_outside_at && here(file.home) && !options.force) {
     if (file.revoked_said) return { kind: "revoked_outside" };
     try {
       writeQwenTrust(dataDir, { ...file, revoked_said: true });
@@ -272,13 +274,13 @@ export async function ensureQwenTrust(dataDir: string, e: AgentEnvironment, opti
     file = null;
   }
   // A grant in another Qwen home (QWEN_HOME changed): revoked there, so nothing is left behind, then minted here.
-  if (file?.id && file.token && file.home !== home) {
+  if (file?.id && file.token && !here(file.home)) {
     const moved = await revokeGrant(bin, e, file.home, file.id, signal);
     if (!moved.gone) return fail(`Plannotator's trusted-sender grant in ${file.home} could not be removed (${moved.reason})`);
     rmSync(qwenTrustPath(dataDir), { force: true });
     file = null;
   }
-  if (file && file.home !== home) file = null;
+  if (file && !here(file.home)) file = null;
 
   const grants = await listGrants(bin, e, home, signal);
   if (file?.id && file.token) {
@@ -378,7 +380,7 @@ const UNWRITABLE = "Plannotator's data folder can't be written, so the token cou
 /** The command that revokes the grant by hand (`QWEN_HOME` named when it is not this environment's). */
 function revokeCommand(file: QwenTrustFile, e: AgentEnvironment): string {
   const command = `qwen sessions controllers remove ${file.id}`;
-  return file.home === qwenTrustHome(e) ? command : `QWEN_HOME=${file.home} ${command}`;
+  return samePlace(file.home, qwenTrustHome(e), e.platform) ? command : `QWEN_HOME=${file.home} ${command}`;
 }
 
 /**
