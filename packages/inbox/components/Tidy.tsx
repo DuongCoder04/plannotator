@@ -82,8 +82,6 @@ export function useTidy(scope: string | null, surface: TidySurface, version: unk
   return { surface, scope, plan, run, start, refresh };
 }
 
-/** The run the menu and the popover show: only while nothing new is offered (new work shows the plan). */
-const shownRun = (tidy: TidyController): InboxTidyRun | null => (tidy.run && (tidy.plan?.count ?? 0) === 0 ? tidy.run : null);
 
 /** "Tidy · 3/4" while a run shows. */
 const runLabel = (run: InboxTidyRun) => `Tidy · ${run.done}/${run.agents.length}`;
@@ -98,9 +96,8 @@ export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyCont
   const [popOpen, setPopOpen] = useState(false);
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => setPortal(trigger.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
-  const { plan } = tidy;
+  const { plan, run } = tidy;
   const count = plan?.count ?? 0;
-  const run = shownRun(tidy);
   // Still reading (plan null): enabled, so the menu does not flash disabled on load.
   const canOpen = plan === null || run !== null || count > 0;
   return (
@@ -128,8 +125,9 @@ export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyCont
                 }}
               >
                 <Icon name="todo" size={15} />
-                {run ? runLabel(run) : 'Tidy'}
-                {!run && count > 0 && <span className="ib-pmi-n">{formatCount(count)}</span>}
+                {/* New work first: its count; else the last run's progress. */}
+                {count > 0 || !run ? 'Tidy' : runLabel(run)}
+                {count > 0 && <span className="ib-pmi-n">{formatCount(count)}</span>}
               </Menu.Item>
               <Menu.Item className="ib-pmi" label="Refresh" data-tidy-refresh="" onClick={onRefresh}>
                 <Icon name="refresh" size={15} />
@@ -155,15 +153,25 @@ export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyCont
 
 const plural = (n: number, one: string, many = `${one}s`) => `${formatCount(n)} ${n === 1 ? one : many}`;
 
+/** The last run (when there is one), then the picker when there is something to ask. */
 function TidyPanel({ tidy, onDone }: { tidy: TidyController; onDone: () => void }) {
+  const { plan, run } = tidy;
+  const offered = (plan?.agents.length ?? 0) > 0;
+  return (
+    <>
+      {run && <RunPanel run={run} />}
+      {(offered || !run) && <TidyPicker tidy={tidy} onDone={onDone} below={run !== null} />}
+    </>
+  );
+}
+
+function TidyPicker({ tidy, onDone, below }: { tidy: TidyController; onDone: () => void; below: boolean }) {
   const { plan } = tidy;
-  const run = shownRun(tidy);
   const [off, setOff] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   // One key per opening: a second press (or a retry) answers the same run.
   const [key] = useState(() => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `tidy-${Date.now()}-${Math.random()}`));
-  if (run) return <RunPanel run={run} />;
   if (!plan) return <div className="ib-tidy-top"><b>Tidy</b></div>;
   if (plan.agents.length === 0)
     return (
@@ -177,7 +185,7 @@ function TidyPanel({ tidy, onDone }: { tidy: TidyController; onDone: () => void 
   const allThreads = agents.every((a) => a.items.every((i) => i.thread_id !== null));
   return (
     <>
-      <div className="ib-tidy-top">
+      <div className="ib-tidy-top" data-below={below ? '' : undefined}>
         <b>Tidy</b>
         <span>{plural(plan.count, allThreads ? 'thread' : 'item')}</span>
       </div>
@@ -244,6 +252,8 @@ function runState(agent: InboxTidyRunAgent): string {
       return agent.updated > 0 ? `${plural(agent.updated, 'thread')} updated` : 'Updated';
     case 'nothing':
       return 'Nothing to change';
+    case 'ended':
+      return 'Session ended';
   }
 }
 

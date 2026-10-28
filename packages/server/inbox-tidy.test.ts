@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { InboxListRow, InboxQuestion, InboxThread, InboxTidyPlan, InboxTidyRun } from "@plannotator/core/inbox-types";
+import { InboxStore } from "@plannotator/shared/inbox/store";
+import { inboxTidyRun } from "@plannotator/shared/inbox/tidy";
 import { INBOX_TIDY_INSTRUCTION } from "@plannotator/core/inbox-types";
 import { INBOX_BRIDGE_EVENT_PATH, INBOX_BRIDGE_POLL_PATH, inboxWakeText, parseInboxBridgeCommands } from "@plannotator/shared/inbox/connection";
 import { startInboxServer, type InboxServer } from "./inbox";
@@ -35,12 +37,13 @@ async function setup() {
   mkdirSync(docs, { recursive: true });
   // What a test writes while `behind` is set reads as that much older.
   const clock = { behind: 0 };
-  const server = await startInboxServer({ dataDir: join(root, "data"), binaryPath: null, board: true, storeNow: () => new Date(Date.now() - clock.behind) });
+  const dataDir = join(root, "data");
+  const server = await startInboxServer({ dataDir, binaryPath: null, board: true, storeNow: () => new Date(Date.now() - clock.behind) });
   servers.push(server);
   const client = new Client({ name: "inbox-tidy-test", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
   clients.push(client);
-  return { server, client, billing, docs, clock };
+  return { server, client, billing, docs, clock, dataDir };
 }
 
 const base = (server: InboxServer) => `http://127.0.0.1:${server.port}`;
@@ -58,6 +61,14 @@ const post = (server: InboxServer, path: string, body: Record<string, unknown>, 
   fetch(`${base(server)}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ serverSession: server.serverSession, ...body }) });
 const bridge = (server: InboxServer, path: string, body: unknown) =>
   fetch(`${base(server)}${path}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${server.token}` }, body: JSON.stringify(body) });
+
+/** Hands `session` its pending commands and says each was delivered. */
+async function deliver(server: InboxServer, session: string, project: string) {
+  const commands = await poll(server, session, project);
+  for (const command of commands) await bridge(server, INBOX_BRIDGE_EVENT_PATH, { session, host: "claude-code", type: "delivered", id: command.id });
+  return commands;
+}
+const stateOf = async (server: InboxServer, session: string) => (await plan(server)).run!.agents.find((a) => a.session === session)!.state;
 
 /** One poll of a session's connection (live for the next 30 s); the commands it was handed. */
 async function poll(server: InboxServer, session: string, project: string, state: { busy?: boolean; idle_since?: number } = {}) {
@@ -167,7 +178,7 @@ describe("Tidy: asking", () => {
 
     // A note in each listed thread; only one wake, held while the session is busy, handed out once it is idle.
     for (const id of [one.thread_id, two.thread_id]) expect((await thread(server, id)).messages.filter((m) => m.tidy)).toHaveLength(1);
-    const commands = await poll(server, "ses-a", billing);
+    const commands = await deliver(server, "ses-a", billing);
     expect(commands).toHaveLength(1);
     const wake = inboxWakeText(commands[0]!).split("\n");
     expect(wake[0]).toBe(`Plannotator Inbox: Tidy (${commands[0]!.id})`);
@@ -211,6 +222,83 @@ describe("Tidy: asking", () => {
     expect(state).toEqual({ "ses-a": "tidied", "ses-b": "nothing" });
     expect(run.done).toBe(2);
     expect(run.updated).toBe(1);
+  });
+
+  test("Nothing to change is set by a turn ending after delivery, not by a poll, and holds through the next turn", async () => {
+    const { server, client, billing, clock } = await setup();
+    clock.behind = 3 * HOUR;
+    await poll(server, "ses-a", billing);
+    await send(client, billing, "ses-a", { subject: "Ledger", thread: "Ledger", body: block("Ledger first?") });
+    clock.behind = 0;
+    await poll(server, "ses-a", billing);
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
+    expect(await deliver(server, "ses-a", billing)).toHaveLength(1);
+    // Still in the idle spell it was in before delivery (a later poll, on a later clock tick): no turn has ended since.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await poll(server, "ses-a", billing);
+    expect(await stateOf(server, "ses-a")).toBe("delivered");
+    await poll(server, "ses-a", billing, { busy: true });
+    await poll(server, "ses-a", billing, { idle_since: Date.now() + 5 });
+    expect(await stateOf(server, "ses-a")).toBe("nothing");
+    // Its next turn (on other work) does not take that back.
+    await poll(server, "ses-a", billing, { busy: true });
+    expect(await stateOf(server, "ses-a")).toBe("nothing");
+    expect((await plan(server)).run!.done).toBe(1);
+  });
+
+  test("N threads updated counts only the threads the run asked about", async () => {
+    const { server, client, billing, clock } = await setup();
+    clock.behind = 3 * HOUR;
+    await poll(server, "ses-a", billing);
+    const a = await send(client, billing, "ses-a", { subject: "Ledger", thread: "Ledger", body: block("Ledger first?") });
+    clock.behind = 0;
+    await poll(server, "ses-a", billing);
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
+    await deliver(server, "ses-a", billing);
+    // Other work, in a thread the run never named: tidied, with no thread counted.
+    await send(client, billing, "ses-a", { subject: "Elsewhere", thread: "Elsewhere", body: "Started the cache work." });
+    let run = (await plan(server)).run!;
+    expect(run.agents[0]!.state).toBe("tidied");
+    expect([run.agents[0]!.updated, run.updated]).toEqual([0, 0]);
+    await send(client, billing, "ses-a", { reply_to: a.message_id, body: "Ledger is done; closing this." });
+    run = (await plan(server)).run!;
+    expect([run.agents[0]!.updated, run.updated]).toEqual([1, 1]);
+  });
+
+  test("an undelivered wake is not sent again, even after the person writes to that session", async () => {
+    const { server, client, billing, clock } = await setup();
+    clock.behind = 3 * HOUR;
+    await poll(server, "ses-a", billing);
+    const a = await send(client, billing, "ses-a", { subject: "Ledger", thread: "Ledger", body: block("Ledger first?") });
+    clock.behind = 0;
+    // Busy: the wake waits for its turn to end.
+    await poll(server, "ses-a", billing, { busy: true });
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
+    expect((await post(server, `/api/inbox/messages/${a.message_id}/reply`, { words: "Any news?", idempotency_key: "r1" })).status).toBe(200);
+    expect((await plan(server)).agents).toHaveLength(0);
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t2" })).status).toBe(409);
+    // Once it is delivered, the person's writing since lets it be asked again.
+    const handed = await deliver(server, "ses-a", billing);
+    expect(handed.filter((c) => inboxWakeText(c).startsWith("Plannotator Inbox: Tidy"))).toHaveLength(1);
+    expect((await plan(server)).agents.map((x) => x.session)).toEqual(["ses-a"]);
+  });
+
+  test("a session that ended before its wake was delivered reads Session ended, and counts as done", async () => {
+    const { server, client, billing, clock, dataDir } = await setup();
+    clock.behind = 3 * HOUR;
+    await poll(server, "ses-a", billing);
+    await send(client, billing, "ses-a", { subject: "Ledger", thread: "Ledger", body: block("Ledger first?") });
+    clock.behind = 0;
+    await poll(server, "ses-a", billing, { busy: true });
+    expect((await tidy(server, { sessions: ["ses-a"], idempotency_key: "t1" })).status).toBe(200);
+    expect((await plan(server)).run!.agents.map((x) => x.state)).toEqual(["waiting"]);
+    // The session ends (no connection, no Inbox call) before its turn did: read the same store as gone.
+    server.stop();
+    servers.splice(servers.indexOf(server), 1);
+    const store = InboxStore.open(dataDir);
+    const run = inboxTidyRun(store, { now: Date.now(), idleSince: () => null, reachOf: () => null })!;
+    expect(run.agents.map((x) => x.state)).toEqual(["ended"]);
+    expect(run.done).toBe(1);
   });
 
   test("an MCP-only agent gets the text once, at the end of its next Inbox tool result", async () => {

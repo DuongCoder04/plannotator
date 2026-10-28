@@ -5574,6 +5574,7 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 .ib-tidy-nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-tidy-ag em { font-style: normal; color: var(--muted-foreground); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ib-tidy-run[data-state="tidied"] em { color: var(--foreground); }
+.ib-tidy-top[data-below] { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--ib-hair, var(--border)); }
 .ib-tidy-err { margin: 6px 8px 0; font-size: var(--ib-fs-12, 12px); color: var(--destructive); }
 .ib-tidy-bot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px 8px; margin-top: 4px; border-top: 1px solid var(--ib-hair, var(--border)); }
 .pn-inbox .ib-tidy-bot .ib-btn { margin-left: auto; }

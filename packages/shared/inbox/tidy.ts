@@ -265,13 +265,19 @@ function cardLine(card: InboxCard, idle: number): string {
   return `Board card "${oneLine(card.title, 80)}" (${card.id}) is in ${INBOX_CARD_COLUMN_LABELS[card.column]} and hasn't moved in ${inboxTidyAge(idle)}.${said}`;
 }
 
-/** Whether `session` was asked within the cool-down and the person has not written to it since. */
+/**
+ * Whether `session` is not asked again now: its last wake is still
+ * undelivered (one prompt at a time, whatever happened since), or it was
+ * asked within the cool-down and the person has not written to it since.
+ */
 function cooling(store: InboxStore, session: string, now: number): boolean {
   const last = store
     .tidyNotes()
     .filter((m) => m.tidy?.wake && m.to?.session === session)
     .pop();
-  if (!last || now - Date.parse(last.created_at) >= INBOX_TIDY_COOLDOWN_MS) return false;
+  if (!last) return false;
+  if (!last.delivery) return true;
+  if (now - Date.parse(last.created_at) >= INBOX_TIDY_COOLDOWN_MS) return false;
   const after = store.messageCursor(last.id) ?? 0;
   for (const threadId of store.threadIds()) {
     for (const id of store.threadMessageIds(threadId)) {
@@ -315,7 +321,9 @@ export function inboxTidyWakeThread(store: InboxStore, agent: InboxTidyPlanAgent
  * Where the last run stands (within INBOX_TIDY_RUN_SHOWN_MS), or null. A
  * session "tidied" once it wrote (a message, or a card) after its wake was
  * delivered; "nothing" to change once it went idle after delivery without a
- * write (`idleSince`, from its connection; null when it does not say).
+ * write (`idleSince`: its last idle transition, kept through later turns and
+ * its end; null when it does not say); "ended" when it ended before delivery.
+ * `updated` counts only the threads this run sent it a note in.
  */
 export function inboxTidyRun(
   store: InboxStore,
@@ -327,6 +335,12 @@ export function inboxTidyRun(
   const runId = lastNote.tidy.id;
   const wakes = notes.filter((m) => m.tidy?.id === runId && m.tidy.wake && m.to);
   const sessions = new Map(wakes.map((m) => [m.to!.session, m]));
+  // The threads this run sent each session a note in.
+  const listed = new Map<string, Set<string>>();
+  for (const m of notes) {
+    if (m.tidy?.id !== runId || !m.to) continue;
+    (listed.get(m.to.session) ?? listed.set(m.to.session, new Set()).get(m.to.session)!).add(m.thread_id);
+  }
   // Every thread each session wrote in since its delivery.
   const wrote = new Map<string, Set<string>>();
   for (const threadId of store.threadIds()) {
@@ -341,18 +355,28 @@ export function inboxTidyRun(
   const agents: InboxTidyRunAgent[] = wakes.map((note) => {
     const session = note.to!.session;
     const at = note.delivery?.at ?? null;
-    const threads = wrote.get(session)?.size ?? 0;
+    const threads = [...(wrote.get(session) ?? [])].filter((id) => listed.get(session)?.has(id)).length;
+    const wroteAny = (wrote.get(session)?.size ?? 0) > 0;
     const cardWrite = at !== null && store.listCards({ agentSession: session }).some((c) => c.heard_by.kind === "agent" && c.heard_by.session === session && c.heard_at > at);
     const idle = options.idleSince(session);
+    const reach = options.reachOf(session);
     const state: InboxTidyRunAgent["state"] =
-      at === null ? "waiting" : threads > 0 || cardWrite ? "tidied" : idle !== null && idle > Date.parse(at) ? "nothing" : "delivered";
-    return { session, host: note.to!.host, name: hostName(note.to!.host), reach: options.reachOf(session) ?? "wakes", state, updated: threads };
+      at === null
+        ? reach === null
+          ? "ended"
+          : "waiting"
+        : wroteAny || cardWrite
+          ? "tidied"
+          : idle !== null && idle > Date.parse(at)
+            ? "nothing"
+            : "delivered";
+    return { session, host: note.to!.host, name: hostName(note.to!.host), reach: reach ?? "wakes", state, updated: threads };
   });
   return {
     id: runId,
     at: wakes[0]?.created_at ?? lastNote.created_at,
     agents,
-    done: agents.filter((a) => a.state === "tidied" || a.state === "nothing").length,
+    done: agents.filter((a) => a.state === "tidied" || a.state === "nothing" || a.state === "ended").length,
     updated: agents.reduce((n, a) => n + a.updated, 0),
   };
 }

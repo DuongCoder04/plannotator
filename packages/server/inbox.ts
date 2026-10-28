@@ -2295,10 +2295,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     store,
     serverSession,
     deliveryConnectionOf: (session) => live.deliveryConnectionOf(session),
-    idleSince: (session) => {
-      const idle = live.connectionOf(session)?.idle_since;
-      return idle ? Date.parse(idle) : null;
-    },
+    // The last idle transition, kept through a busy turn and the session's end (not the live idle_since).
+    idleSince: (session) => live.lastIdleOf(session),
     mcpAgents: () => live.mcpAgents(),
     boardOn,
     readBody,
