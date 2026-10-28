@@ -59,6 +59,8 @@ import {
   type InboxTourChange,
   type InboxTourState,
   INBOX_CODEX_HOST,
+  INBOX_QWEN_HOST,
+  isQwenSessionId,
   INBOX_MCP_WAKING_HOSTS,
   INBOX_WAKING_HOSTS,
   INBOX_HOST_NAMES,
@@ -147,6 +149,7 @@ import { recordInboxAttachments, sweepStaleInboxSendTemps } from "@plannotator/s
 import { inboxBodyForAgent, inboxUploadAttachments, removeInboxAttachmentFiles, removeInboxUploads } from "@plannotator/shared/inbox/uploads";
 import { createInboxLiveSessions } from "./inbox-sessions";
 import { createInboxCodexWake, type InboxCodexWake } from "./inbox-codex-wake";
+import { createInboxQwenWake, type InboxQwenWake } from "./inbox-qwen-wake";
 import {
   claudePluginBehindInbox,
   claudeRestartCommand,
@@ -162,6 +165,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
+import { createInboxEmbeds } from "./inbox-embeds";
 import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
@@ -380,6 +384,8 @@ export interface InboxServerOptions {
    * never under the test sandbox), and how often to look for replies to queue.
    */
   codexWake?: { extraClis?: readonly string[]; now?: () => number; queueTimeoutMs?: number };
+  /** The Qwen Code wake's clock and time limits (inbox-qwen-wake.ts): tests shorten them. */
+  qwenWake?: { now?: () => number; sendTimeoutMs?: number; receiptTimeoutMs?: number; comebackMs?: number; socketParent?: string };
 }
 
 /**
@@ -417,6 +423,8 @@ export interface InboxServer {
   runner: ReturnType<typeof createInboxAcpRunner>;
   /** The Codex wake (inbox-codex-wake.ts): tests run its sweep. */
   codexWake: InboxCodexWake;
+  /** The Qwen Code wake (inbox-qwen-wake.ts): tests run its sweep. */
+  qwenWake: InboxQwenWake;
   stop: () => void;
 }
 
@@ -852,6 +860,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               release();
               // A Codex thread's wait ended: what it left (a wait cut short) is queued as a turn now.
               if (codexWake.status(session) !== null) void codexWake.sweep();
+              if (qwenWake.status(session) !== null) void qwenWake.sweep();
             };
           },
         },
@@ -860,10 +869,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         findProjects,
         // A Claude Code, Pi or OpenCode session whose bridge polls now is woken by the reply, whoever sent for it
         // (the stdio shim run inside that session sends as it: PLANNOTATOR_SESSION_TAG, PI_SESSION_ID). A Codex
-        // thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts).
+        // thread's messages wake it when this Inbox can run `codex queue` (inbox-codex-wake.ts); a running Qwen
+        // Code session's, when this Inbox is its trusted sender (inbox-qwen-wake.ts).
         sessionWakes: async (host, session, meta) =>
           (typeof host === "string" && typeof session === "string" && BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session)) ||
-          codexWake.wakes(host, session, meta),
+          (await codexWake.wakes(host, session, meta)) ||
+          qwenWake.wakes(host, session, meta),
         // The Board: the card tool is listed and served only while the person has it on.
         boardOn,
         ...(options.mcpNow ? { now: options.mcpNow } : {}),
@@ -1160,9 +1171,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const status = (INBOX_NOTE_AGENT_IDS as readonly string[]).includes(id) ? noteStatus(id as InboxNoteAgentId, dataDir, agentEnvironment) : null;
         const note = status && (!notesOff || status.state === "added" || status.state === "edited") ? status : null;
         // Codex through MCP: whether this Inbox can wake it (a Codex CLI with `codex queue`; inbox-codex-wake.ts).
-        // Probed only for a connected one, so reading the agents runs no CLI otherwise.
+        // Probed only for a connected one, so reading the agents runs no CLI otherwise. Qwen Code: whether
+        // Plannotator holds its trusted-sender token (inbox-qwen-trust.ts), read from disk, no CLI.
         const wakes =
-          INBOX_MCP_WAKING_HOSTS.includes(id) && reach.kind === "mcp" && reach.on ? { wakes: (await codexWake.cli()) !== null } : {};
+          INBOX_MCP_WAKING_HOSTS.includes(id) && reach.kind === "mcp" && reach.on ? { wakes: id === INBOX_QWEN_HOST ? qwenWake.canWake() : (await codexWake.cli()) !== null } : {};
         return { id, label: INBOX_AGENT_LABELS[id], detected, reach, tool, reminder, note, plugin: inboxPluginStatus(id, agentEnvironment), ...wakes };
       }),
     );
@@ -2081,6 +2093,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           }
         } else if (session && args?.agent_host === INBOX_CODEX_HOST && isCodexThreadId(session)) {
           codexWake.noteToolCall(session, null);
+        } else if (session && args?.agent_host === INBOX_QWEN_HOST && isQwenSessionId(session)) {
+          // A Qwen Code session (inbox-qwen-wake.ts; the shim names it from Qwen's registry): it is there, and
+          // what Qwen queued for it before now has reached it. While this Inbox can wake it, it is live for New
+          // message, compose and tags, until its record goes.
+          qwenWake.noteToolCall(session);
+          if (await qwenWake.wakes(INBOX_QWEN_HOST, session, meta)) await live.seenWakeOnly(session, INBOX_QWEN_HOST, args?.project_path);
         }
       }
     } catch {
@@ -2117,8 +2135,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     restartCommandOf: (host, folder, session) => (host === "claude-code" ? claudeRestartCommand(folder, session) : null),
     autoSendAfterMs: options.autoSendAfterMs ?? INBOX_AUTO_SEND_AFTER_MS,
     // A Codex thread has no connection that polls: it is there until Codex says its thread is gone.
-    wakeOnlyStatus: (session) => codexWake.status(session),
-    uncertainItemsOf: (session) => codexWake.uncertainItems(session),
+    // A Qwen Code session too, until its registry record goes (inbox-qwen-wake.ts).
+    wakeOnlyStatus: (session) => codexWake.status(session) ?? qwenWake.status(session),
+    uncertainItemsOf: (session) => [...codexWake.uncertainItems(session), ...qwenWake.uncertainItems(session)],
   });
 
   // The Codex wake: the person's items for a Codex thread go in as a new turn through `codex queue`,
@@ -2132,6 +2151,17 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
     ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
     ...(options.codexWake?.queueTimeoutMs ? { queueTimeoutMs: options.codexWake.queueTimeoutMs } : {}),
+  });
+
+  // The Qwen Code wake: the person's items for a running Qwen session go in over Qwen's cross-session
+  // messaging, once each, as Plannotator's trusted sender (inbox-qwen-wake.ts, inbox-qwen-trust.ts).
+  const qwenWake = createInboxQwenWake({
+    store,
+    environment: agentEnvironment,
+    dataDir,
+    commandOf: (item, session) => replyCommand(item, false, session),
+    waitingOverMcp: (session, threadId) => live.waitingOverMcp(session, threadId),
+    ...options.qwenWake,
   });
 
   // A reply that waited 5 minutes on a busy session goes into its running turn by itself, as if the person
@@ -2178,7 +2208,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     connection: live.deliveryConnectionOf,
     askerLive: live.askerLive,
     // A Codex reply whose `codex queue` ran out of time may not have gone: its row says it is saved, not queued.
-    uncertain: (session, itemId) => codexWake.uncertain(session, itemId),
+    uncertain: (session, itemId) => codexWake.uncertain(session, itemId) || qwenWake.uncertain(session, itemId),
     autoSendAfterMs: live.autoSendAfterMs,
     waitOf: live.waitOf,
   });
@@ -2250,6 +2280,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   });
   // Pins: threads pinned to the window's sidebar (packages/server/inbox-pins.ts). A deletion's prune tells the windows too.
   const pins = createInboxPins({ store, serverSession, readBody: (req) => readBody(req), json });
+  // Live HTML embeds (approval "inbox-inline-html"): the documents the window frames for a message's ```html fences (inbox-embeds.ts).
+  const embeds = createInboxEmbeds({ readBody: (req) => readBody(req), json });
   // The sidebar's Feedback dialog: forwards what the person typed to the feedback Worker (inbox-feedback.ts).
   const feedback = createInboxFeedback({ version, json, ...(options.feedbackUrl ? { url: () => options.feedbackUrl! } : {}) });
   const stopPinEvents = store.onPinsChange(() => {
@@ -2715,6 +2747,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Pins (approval "inbox-pinned-threads"): pin, unpin and the order of the sidebar's pinned threads.
       const pinned = await pins.route(req, url);
       if (pinned) return pinned;
+      // Live HTML embeds: keep a fence's page, and serve it under its own sandboxing policy.
+      const embedded = await embeds.route(req, url);
+      if (embedded) return embedded;
       // Feedback (the sidebar's Feedback dialog): sent on, never stored here. The owner's only: a
       // tailnet guest's words would go out as this computer's (its version, OS, IP and rate limit).
       if (path === INBOX_FEEDBACK_PATH && via === "tailnet" && !tailscale.isOwnerRequest(req.headers)) {
@@ -3304,6 +3339,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     clearInterval(autoSendWatch);
     unsubscribeWaits();
     codexWake.stop();
+    qwenWake.stop();
     void mcp.close().catch(() => {});
     server.stop(true);
     // The tailnet mapping and the door listener, the Wi-Fi listener and its
@@ -3315,7 +3351,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     tailnetStopFailedPort = tailscale.stop().failedPort;
   };
 
-  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, runner, codexWake, stop };
+  return { port, url: baseUrl, token, serverSession, portChanged, store, registry, tailscale, connectAgents, search: search.index, imageCapture, runner, codexWake, qwenWake, stop };
 }
 
 /** Print where the Inbox is, and open it when a person asked for it. */

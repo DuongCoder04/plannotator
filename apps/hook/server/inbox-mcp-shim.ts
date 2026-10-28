@@ -58,10 +58,11 @@ const AUTHOR_TOOLS = new Set(["send_message", "submit_guide", "card"]);
 /**
  * The hosts whose sessions a reply wakes, with the name each one's
  * `plannotator_inbox` tool sends (`INBOX_AGENT_NAME` in the Claude Code mod,
- * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex, which the
- * Inbox wakes itself through `codex queue`; and Grok Build, a session the
- * Inbox runs itself over ACP (packages/server/inbox-acp-runner.ts), which is
- * not in INBOX_WAKING_HOSTS (no bridge or MCP wake: the runner's turns).
+ * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex and Qwen
+ * Code, which the Inbox wakes itself (`codex queue`, Qwen's cross-session
+ * messaging); and Grok Build, a session the Inbox runs itself over ACP
+ * (packages/server/inbox-acp-runner.ts), which is not in INBOX_WAKING_HOSTS
+ * (no bridge or MCP wake: the runner's turns).
  */
 export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(INBOX_WAKING_HOSTS.map((host) => [host, INBOX_HOST_NAMES[host]!])),
@@ -103,7 +104,7 @@ export function inboxHostSessionFromEnv(env: Record<string, string | undefined>)
     const colon = tag.indexOf(":");
     const host = colon > 0 ? tag.slice(0, colon) : "";
     const session = tag.slice(colon + 1);
-    if (Object.hasOwn(INBOX_SESSION_HOST_NAMES, host) && HOST_SESSION_ID.test(session) && (host !== INBOX_CODEX_HOST || isCodexThreadId(session))) {
+    if (Object.hasOwn(INBOX_SESSION_HOST_NAMES, host) && HOST_SESSION_ID.test(session) && (host !== INBOX_CODEX_HOST || isCodexThreadId(session)) && (host !== INBOX_QWEN_HOST || isQwenSessionId(session))) {
       return { host, session, name: INBOX_SESSION_HOST_NAMES[host]! };
     }
   }

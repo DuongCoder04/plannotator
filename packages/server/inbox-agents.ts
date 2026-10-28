@@ -55,6 +55,7 @@ import {
 } from "@plannotator/shared/config";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { qwenHome, qwenHomeIsRelative } from "@plannotator/shared/inbox/qwen-sessions";
+import { INBOX_QWEN_TRUST_ON_CONNECT, QWEN_TRUST_REVOKED_REASON, ensureQwenTrust, retryQwenRevoke, setQwenTrust, type QwenTrustOutcome } from "./inbox-qwen-trust";
 import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
@@ -96,9 +97,10 @@ export interface AgentEnvironment {
   /**
    * Run argv with no stdin, the environment's env, killed (with its process
    * group) after `timeoutMs`, when `signal` aborts, or when this process exits.
-   * `cwd`: the folder it runs in (default: this process's).
+   * `cwd`: the folder it runs in (default: this process's). `env`: variables
+   * set on top of the environment's for this run.
    */
-  run(argv: readonly string[], options: { timeoutMs: number; signal?: AbortSignal; cwd?: string }): Promise<AgentRunResult>;
+  run(argv: readonly string[], options: { timeoutMs: number; signal?: AbortSignal; cwd?: string; env?: Readonly<Record<string, string>> }): Promise<AgentRunResult>;
 }
 
 /** The real boundary: this process's home, environment and PATH. */
@@ -118,7 +120,7 @@ export function createAgentEnvironmentFor(input: {
     homeDir: input.homeDir,
     env,
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
-    run: (argv, options) => runWithTimeout(argv, env, options.timeoutMs, options.signal, options.cwd),
+    run: (argv, options) => runWithTimeout(argv, options.env ? { ...env, ...options.env } : env, options.timeoutMs, options.signal, options.cwd),
   };
 }
 
@@ -754,7 +756,7 @@ async function cliWay(
 async function versionRefusal(e: AgentEnvironment, bin: string, path: string, timeoutMs: number, cwd?: string): Promise<string | null> {
   const shape = VERSION_SHAPES[bin];
   if (!shape) return null;
-  const ran = await e.run([path, "--version"], { timeoutMs: Math.min(timeoutMs, 5_000), ...(cwd ? { cwd } : {}) });
+  const ran = await agentVersionRun(e, path, { timeoutMs: Math.min(timeoutMs, 5_000), ...(cwd ? { cwd } : {}) });
   const line = ran.stdout.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
   const match = ran.exitCode === 0 && !ran.timedOut ? shape.line.exec(line) : null;
   if (!match) return shape.manual;
@@ -765,6 +767,36 @@ async function versionRefusal(e: AgentEnvironment, bin: string, path: string, ti
     if (older) return shape.older ?? shape.manual;
   }
   return null;
+}
+
+/** How long a CLI's `--version` answer is reused (one connect run asks it once, however many steps need it). */
+const VERSION_ANSWER_TTL_MS = 60_000;
+const versionAnswers = new Map<string, { at: number; answer: Promise<AgentRunResult> }>();
+
+/**
+ * `<path> --version`, answered once per minute for the same program (its
+ * path, size and change time) and the same environment, so the connect step
+ * and Qwen's trusted-sender check ask once. A run that timed out is not kept.
+ */
+export function agentVersionRun(e: AgentEnvironment, path: string, options: { timeoutMs: number; signal?: AbortSignal; cwd?: string }): Promise<AgentRunResult> {
+  let stamp = "";
+  try {
+    const stat = statSync(path);
+    stamp = `${stat.size}:${stat.mtimeMs}:${stat.ino}`;
+  } catch {
+    // Not there: asked as it is (the run says why).
+  }
+  const key = JSON.stringify([path, stamp, options.cwd ?? null, e.platform, e.homeDir, e.env]);
+  const at = Date.now();
+  for (const [old, value] of versionAnswers) if (at - value.at > VERSION_ANSWER_TTL_MS) versionAnswers.delete(old);
+  const kept = versionAnswers.get(key);
+  if (kept) return kept.answer;
+  const answer = e.run([path, "--version"], options);
+  versionAnswers.set(key, { at, answer });
+  void answer.then((result) => {
+    if (result.timedOut || result.exitCode === 127) versionAnswers.delete(key);
+  });
+  return answer;
 }
 
 /** Qwen Code's settings.json: JSON with comments, edited by Plannotator itself; a read-only one is left alone. */
@@ -1342,8 +1374,36 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     const record = file.agents[spec.id];
     if (record && (record.state === "added" || record.state === "found") && !record.removed_outside_at) report.already.push(spec.id);
   }
+  // Qwen Code connected: Plannotator registers itself as its trusted sender, so the person's replies go into its
+  // running sessions (inbox-qwen-trust.ts; the owner's answer, 2026-10-27). A token already held is kept.
+  const qwen = file.agents.qwen;
+  const qwenConnected = qwen?.reach === "mcp" && (qwen.state === "added" || qwen.state === "found") && !qwen.removed_outside_at;
+  // Connected in another Qwen home than this run's (`QWEN_HOME` differs): the grant stays with the entry, in the
+  // home it was minted in; it moves only with the entry, when the person turns Qwen Code on in Settings.
+  const qwenElsewhere = qwenConnected && recordedElsewhere(agentSpec("qwen"), e, qwen);
+  if (INBOX_QWEN_TRUST_ON_CONNECT && qwenConnected && !qwenElsewhere) {
+    const trust = await ensureQwenTrust(options.dataDir, e, { ...(options.signal ? { signal: options.signal } : {}), now }).catch(
+      (error: unknown): QwenTrustOutcome => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error) }),
+    );
+    if (options.signal?.aborted) return report;
+    if (trust.kind === "added") (report.trusted ??= []).push("qwen");
+    if (trust.kind === "failed" && !trust.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: trust.reason });
+    // Revoked in Qwen (seen now, or by the wake when Qwen stopped confirming): said once.
+    if (trust.kind === "revoked_outside" && trust.first) (report.trust_failed ??= []).push({ agent: "qwen", reason: QWEN_TRUST_REVOKED_REASON });
+  } else if (!qwenConnected) {
+    // Not connected (turned off): a grant the switch could not revoke is tried again; its token is no longer used.
+    const retry = await retryQwenRevoke(options.dataDir, e, options.signal).catch(() => null);
+    if (options.signal?.aborted) return report;
+    if (retry?.kind === "failed" && !retry.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: retry.reason });
+  }
   if (report.added.length > 0 && !file.first_connected_at) file.first_connected_at = at;
-  const news = report.added.length > 0 || report.failed.length > 0 || report.foreign.length > 0 || (report.elsewhere?.length ?? 0) > 0;
+  const news =
+    report.added.length > 0 ||
+    report.failed.length > 0 ||
+    report.foreign.length > 0 ||
+    (report.elsewhere?.length ?? 0) > 0 ||
+    (report.trusted?.length ?? 0) > 0 ||
+    (report.trust_failed?.length ?? 0) > 0;
   file.last_report = news ? { ...report, seen: false } : file.last_report;
   try {
     writeInboxAgents(options.dataDir, file);
@@ -1368,6 +1428,14 @@ export function formatConnectReport(report: InboxConnectReport): string[] {
       lines.push(`Connected ${inboxAgentList(report.added)} to the Inbox (new on this computer).`);
     }
     if (report.added.includes("claude-app")) lines.push("Restart the Claude app to use it there.");
+  }
+  if (report.trusted?.length) {
+    lines.push(
+      `Plannotator can now send your replies straight into any running ${inboxAgentList(report.trusted)} session, without it asking you first (Plannotator is its trusted sender). Turning it off in Settings → Agents, or plannotator uninstall, removes that.`,
+    );
+  }
+  for (const failure of report.trust_failed ?? []) {
+    lines.push(`${INBOX_AGENT_LABELS[failure.agent]} won't get your replies by itself: ${failure.reason}. Plannotator tries again at the next plannotator inbox.`);
   }
   for (const failure of report.failed) {
     lines.push(`Couldn't connect ${INBOX_AGENT_LABELS[failure.agent]}: ${failure.reason}. Plannotator tries again at the next plannotator inbox.`);
@@ -1714,6 +1782,8 @@ export function setMoveRollbackHookForTests(hook: (() => void) | null): void {
 }
 
 export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options: ConnectOptions): Promise<string | null> {
+  /** Said once the switch is done: the switch held, and something beside it did not (Qwen Code's trusted sender). */
+  let notice: string | null = null;
   const e = options.environment;
   if (!agentHomeAllowed(e)) return "not in a test's scratch home";
   const at = (options.now ?? (() => new Date()))().toISOString();
@@ -1771,11 +1841,19 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     }
     if ("record" in outcome && outcome.record) file.agents[id] = keepStrays(previous, outcome.record);
     else if (previous) delete file.agents[id];
+    // Turned on by the person: also a trusted sender again, even after a revoke in Qwen (its grant moves with the
+    // entry, to this Qwen home). A failure leaves it reached through MCP, and is said.
+    if (id === "qwen" && INBOX_QWEN_TRUST_ON_CONNECT) {
+      // The record first: the Inbox stopping during the qwen call never leaves the entry unrecorded.
+      writeInboxAgents(options.dataDir, file);
+      notice = await setQwenTrust(true, options.dataDir, e).catch((error: unknown) => `Qwen Code won't get your replies by itself: ${error instanceof Error ? error.message : String(error)}`);
+    }
   } else {
     const record = file.agents[id];
     const ours = ourCommands(options, record);
     const items = planInboxAgentRemoval(options.dataDir, e, ours[0]!).items.filter((candidate) => candidate.agent === id);
     const item = items.find((candidate) => !candidate.stray);
+    // The entry goes first: one that cannot be removed keeps the agent on, its Qwen trusted sender too.
     if (item) {
       const problem = await item.apply();
       if (problem) return problem;
@@ -1789,6 +1867,13 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
       left.push(...(record?.strays ?? []).filter((kept) => kept.path === stray.stray));
     }
     file.agents[id] = { state: "off", reach: "mcp", path: spec.file(e), at, ...(left.length > 0 ? { strays: left } : {}) };
+    // Then Qwen Code's trusted-sender token: off is kept either way (no later run mints one for an agent turned off).
+    if (id === "qwen") {
+      // Off is recorded first: the Inbox stopping during the qwen call never reads as removed outside (the revoke
+      // itself is written ahead: inbox-qwen-trust.ts).
+      writeInboxAgents(options.dataDir, file);
+      notice = await setQwenTrust(false, options.dataDir, e).catch((error: unknown) => `Plannotator's trusted-sender token in Qwen Code could not be removed (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
   if (file.failures) delete file.failures[id];
   // The band stops naming it: neither a failure nor "connected in another folder" holds once the person acted.
@@ -1796,11 +1881,12 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     file.last_report = {
       ...file.last_report,
       failed: file.last_report.failed.filter((failure) => failure.agent !== id),
+      ...(file.last_report.trust_failed ? { trust_failed: file.last_report.trust_failed.filter((failure) => failure.agent !== id) } : {}),
       ...(file.last_report.elsewhere ? { elsewhere: file.last_report.elsewhere.filter((moved) => moved.agent !== id) } : {}),
     };
   }
   writeInboxAgents(options.dataDir, file);
-  return strayProblem;
+  return strayProblem && notice ? `${strayProblem}. ${notice}` : (strayProblem ?? notice);
 }
 
 /** After a plain uninstall removed entries: forget their records, so a reinstall connects them again. */

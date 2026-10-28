@@ -49,13 +49,24 @@ export function noteQuestionOpen(model: InboxAgentsModel): boolean {
 export function cardReport(model: InboxAgentsModel): InboxConnectReport | null {
   const report = model.last_report;
   if (!report || report.seen || report.skipped) return null;
-  const news = report.added.length + report.failed.length + report.foreign.length + (report.manual_why?.length ?? 0) + (report.elsewhere?.length ?? 0);
+  const news =
+    report.added.length +
+    report.failed.length +
+    report.foreign.length +
+    (report.manual_why?.length ?? 0) +
+    (report.trusted?.length ?? 0) +
+    (report.trust_failed?.length ?? 0) +
+    (report.elsewhere?.length ?? 0);
   return news > 0 ? report : null;
 }
 
 /** The band's lines (option A of the approved dialog): what was connected, who needs a person, what failed, whose entry is someone else's. */
 export interface BandLines {
   connected: string | null;
+  /** Agents this run registered Plannotator with as a trusted sender (Qwen Code): how far that reaches, and how to undo it. */
+  trusted: string | null;
+  /** Agents whose trusted sender failed, or was removed in the agent: replies wait until they read the Inbox. */
+  trustFailed: { agent: InboxAgentId; text: string }[];
   byHand: string | null;
   failed: { agent: InboxAgentId; text: string }[];
   foreign: { agent: InboxAgentId; text: string }[];
@@ -68,6 +79,10 @@ export function bandLines(report: InboxConnectReport): BandLines {
   const manual = [...new Set((report.manual_why ?? []).map((m) => m.agent))];
   return {
     connected: report.added.length > 0 ? `Connected ${joinNames(report.added.map(label))} to the Inbox${report.first ? '' : ' (new on this computer)'}.` : null,
+    trusted: report.trusted?.length
+      ? `Plannotator can now send your replies straight into any running ${joinNames(report.trusted.map(label))} session, without it asking you first. Turn this off in Settings → Agents.`
+      : null,
+    trustFailed: (report.trust_failed ?? []).map((f) => ({ agent: f.agent, text: `${label(f.agent)} won't get your replies by itself: ${sentence(tidyReason(f.reason))}` })),
     byHand: manual.length > 0 ? `${joinNames(manual.map(label))} ${manual.length === 1 ? 'needs' : 'need'} connecting by hand:` : null,
     failed: report.failed.map((f) => ({ agent: f.agent, text: `Couldn't connect ${label(f.agent)}: ${sentence(tidyReason(f.reason))}` })),
     foreign: report.foreign.map((f) => ({ agent: f.agent, text: `${label(f.agent)} has its own plannotator-inbox entry${f.path ? ` in ${f.path}` : ''}; Plannotator left it alone.` })),
