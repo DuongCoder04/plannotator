@@ -10,7 +10,8 @@
  * Plannotator wrote (refreshInboxNotes).
  *
  * Where (honouring CLAUDE_CONFIG_DIR, CODEX_HOME, OPENCODE_CONFIG_DIR /
- * XDG_CONFIG_HOME, PI_CODING_AGENT_DIR and Gemini's `context.fileName`):
+ * XDG_CONFIG_HOME, PI_CODING_AGENT_DIR, QWEN_HOME and Gemini's and Qwen's
+ * `context.fileName`):
  *  - Claude Code: `~/.claude/rules/plannotator-inbox.md`, a file Plannotator owns.
  *  - Codex: `AGENTS.override.md` when it exists, else `AGENTS.md` (created only without an override).
  *  - OpenCode: `~/.config/opencode/AGENTS.md`, ONLY when it exists: creating it
@@ -19,6 +20,7 @@
  *    `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (Pi reads only one); `AGENTS.md`
  *    created only when none does.
  *  - Gemini CLI: `~/.gemini/<context.fileName>`, default `GEMINI.md`.
+ *  - Qwen Code: `$QWEN_HOME/<context.fileName>` (default folder `~/.qwen`), default `QWEN.md`.
  *  - Cursor: copied by hand into Customize → Rules in the app; Cursor documents no global rules file, so nothing is written.
  *
  * The block sits between markers at the END of the file. Exactly one start
@@ -49,6 +51,7 @@ import {
   codexHome,
   displayPath,
   geminiDir,
+  qwenDir,
   openCodeConfigDir,
   inboxAgentReach,
   piAgentDir,
@@ -217,9 +220,13 @@ interface NoteTarget {
   reason: string | null;
 }
 
-/** Gemini's instruction file name (`context.fileName`, a string or a list; the first), default GEMINI.md. */
-function geminiContextFile(e: AgentEnvironment): string {
-  const read = readAgentFile(join(geminiDir(e), "settings.json"));
+/**
+ * The instruction file name an agent's settings.json names (`context.fileName`,
+ * a string or a list; the first), else `fallback`. Gemini CLI and Qwen Code
+ * (a Gemini CLI fork) read it the same way.
+ */
+function contextFileName(settingsPath: string, fallback: string): string {
+  const read = readAgentFile(settingsPath);
   if (read.kind === "file") {
     try {
       const context = (JSON.parse(stripJsonComments(read.text)) as { context?: { fileName?: unknown } }).context;
@@ -229,7 +236,7 @@ function geminiContextFile(e: AgentEnvironment): string {
       // The default.
     }
   }
-  return "GEMINI.md";
+  return fallback;
 }
 
 /** Claude Code's rules file: Plannotator's own (it holds only the note). */
@@ -263,7 +270,11 @@ export function noteTarget(agent: InboxNoteAgentId, e: AgentEnvironment): NoteTa
       return { path: join(dir, "AGENTS.md"), create: true, reason: null };
     }
     case "gemini": {
-      const file = join(geminiDir(e), geminiContextFile(e));
+      const file = join(geminiDir(e), contextFileName(join(geminiDir(e), "settings.json"), "GEMINI.md"));
+      return { path: file, create: !exists(file), reason: null };
+    }
+    case "qwen": {
+      const file = join(qwenDir(e), contextFileName(join(qwenDir(e), "settings.json"), "QWEN.md"));
       return { path: file, create: !exists(file), reason: null };
     }
   }
