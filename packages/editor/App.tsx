@@ -94,8 +94,7 @@ import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskN
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useDocumentTextSize } from '@plannotator/ui/hooks/useDocumentTextSize';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
-import { markLookAndFeelChoiceResolved, planLookAnsweredElsewhere, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
-import { usePlanLookAnsweredElsewhere } from '@plannotator/ui/hooks/usePlanLookAnsweredElsewhere';
+import { usePlanLookDialog } from '@plannotator/ui/hooks/usePlanLookDialog';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
 import {
   markTerminalToolsAnnouncementSeen,
@@ -872,9 +871,12 @@ const App: React.FC = () => {
     },
   });
   // The first-run chooser, or the one-time notice for someone moved from Grid
-  // to Clean when Clean became the default. Read once per page load.
-  const [lookAndFeelPrompt] = useState(planLookPrompt);
-  const [showLookAndFeelAnnouncement, setShowLookAndFeelAnnouncement] = useState(lookAndFeelPrompt !== null);
+  // to Clean when Clean became the default. Shared with the code review app.
+  const {
+    prompt: lookAndFeelPrompt,
+    open: showLookAndFeelAnnouncement,
+    dismiss: dismissLookAndFeelAnnouncement,
+  } = usePlanLookDialog(gridEnabled);
   // One-time terminal-tools announcement (Plannotator TUI + Herdr Annotate),
   // shared with the code review editor through one cookie. Latched at mount:
   // the dismiss writes the cookie, and re-reading it per render would unmount
@@ -1284,26 +1286,6 @@ const App: React.FC = () => {
     await saveAgentTool(true);
     markAgentToolAnnouncementSeen();
   }, [saveAgentTool]);
-
-  // Answered in another tab: adopt that look and write nothing, so this tab's
-  // preselected Clean can never overwrite a Grid picked there.
-  const adoptLookAnsweredElsewhere = useCallback((grid: boolean) => {
-    configStore.seed('gridEnabled', grid);
-    setShowLookAndFeelAnnouncement(false);
-  }, []);
-  usePlanLookAnsweredElsewhere(showLookAndFeelAnnouncement, adoptLookAnsweredElsewhere);
-  const dismissLookAndFeelAnnouncement = useCallback(() => {
-    const answered = planLookAnsweredElsewhere();
-    if (answered !== null) {
-      adoptLookAnsweredElsewhere(answered);
-      return;
-    }
-    // Persist even when the user accepts the displayed default without first
-    // clicking its already-selected card, then record the explicit decision.
-    configStore.set('gridEnabled', gridEnabled);
-    markLookAndFeelChoiceResolved();
-    setShowLookAndFeelAnnouncement(false);
-  }, [gridEnabled, adoptLookAnsweredElsewhere]);
 
   const handleAIChatToggle = useCallback(() => {
     if (isCompactTouchLayout) {
