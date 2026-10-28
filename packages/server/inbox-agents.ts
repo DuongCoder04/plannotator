@@ -54,7 +54,7 @@ import {
 } from "@plannotator/shared/config";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { qwenHome, qwenHomeIsRelative } from "@plannotator/shared/inbox/qwen-sessions";
-import { INBOX_QWEN_TRUST_ON_CONNECT, QWEN_TRUST_REVOKED_REASON, ensureQwenTrust, setQwenTrust, type QwenTrustOutcome } from "./inbox-qwen-trust";
+import { INBOX_QWEN_TRUST_ON_CONNECT, QWEN_TRUST_REVOKED_REASON, ensureQwenTrust, retryQwenRevoke, setQwenTrust, type QwenTrustOutcome } from "./inbox-qwen-trust";
 import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
@@ -1371,6 +1371,11 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     if (trust.kind === "failed" && !trust.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: trust.reason });
     // Revoked in Qwen (seen now, or by the wake when Qwen stopped confirming): said once.
     if (trust.kind === "revoked_outside" && trust.first) (report.trust_failed ??= []).push({ agent: "qwen", reason: QWEN_TRUST_REVOKED_REASON });
+  } else {
+    // Not connected (turned off): a grant the switch could not revoke is tried again; its token is no longer used.
+    const retry = await retryQwenRevoke(options.dataDir, e, options.signal).catch(() => null);
+    if (options.signal?.aborted) return report;
+    if (retry?.kind === "failed" && !retry.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: retry.reason });
   }
   if (report.added.length > 0 && !file.first_connected_at) file.first_connected_at = at;
   const news = report.added.length > 0 || report.failed.length > 0 || report.foreign.length > 0 || (report.trusted?.length ?? 0) > 0 || (report.trust_failed?.length ?? 0) > 0;

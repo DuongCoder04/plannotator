@@ -588,7 +588,7 @@ async function removeInboxAgentConnections(
     const result = await trust.apply();
     if (result.kind === "revoked") state.removed.push(trust.describe);
     else if (result.kind === "forgotten") state.warnings.push(`Plannotator forgot ${trust.describe}, but qwen is not on PATH, so the grant may still be in Qwen Code; run \`${result.manual}\`.`);
-    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}.`);
+    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}. Plannotator no longer uses it; run \`${result.manual}\` to remove it.`);
   }
   for (const note of notes.items) {
     const result = note.apply();

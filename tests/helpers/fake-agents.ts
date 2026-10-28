@@ -137,6 +137,7 @@ function main() {
   // qwen sessions controllers add|list|remove (Qwen's trusted senders): kept in $QWEN_HOME/peer-controllers.json as Qwen
   // does, with the token itself (Qwen keeps a hash) so a test can tell which token is still good.
   // FAKE_QWEN_CONTROLLERS_FAIL=1 makes every call fail as a write error does.
+  // FAKE_QWEN_LIST_OUTPUT: what "list --json" prints instead (a shape a future Qwen might print).
   if (name === "qwen" && args[0] === "sessions" && args[1] === "controllers") {
     const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
     const file = path.join(home, "peer-controllers.json");
@@ -159,7 +160,8 @@ function main() {
       save();
       process.stdout.write(JSON.stringify(grant) + "\n");
     } else if (args[2] === "list") {
-      for (const g of grants) process.stdout.write(JSON.stringify({ id: g.id, label: g.label, createdAt: g.createdAt }) + "\n");
+      if (process.env.FAKE_QWEN_LIST_OUTPUT !== undefined) process.stdout.write(process.env.FAKE_QWEN_LIST_OUTPUT);
+      else for (const g of grants) process.stdout.write(JSON.stringify({ id: g.id, label: g.label, createdAt: g.createdAt }) + "\n");
     } else if (args[2] === "remove") {
       const at = grants.findIndex((g) => g.id === args[3]);
       if (at < 0) {

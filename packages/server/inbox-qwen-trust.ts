@@ -87,6 +87,11 @@ export interface QwenTrustFile {
   revoked_said?: boolean;
   /** The last reason a mint failed, so the terminal says a lasting one once. */
   failed?: string;
+  /**
+   * Turning Qwen Code off could not revoke the grant: the token is gone (never
+   * presented again), the id kept so each connect run tries the revoke again.
+   */
+  revoke_pending?: true;
 }
 
 export function qwenTrustPath(dataDir: string): string {
@@ -97,11 +102,15 @@ export function readQwenTrust(dataDir: string): QwenTrustFile | null {
   try {
     const parsed = JSON.parse(readFileSync(qwenTrustPath(dataDir), "utf8")) as Partial<QwenTrustFile>;
     if (!parsed || parsed.v !== 1 || typeof parsed.home !== "string" || !parsed.home) return null;
-    const grant = typeof parsed.id === "string" && GRANT_ID.test(parsed.id) && typeof parsed.token === "string" && TOKEN.test(parsed.token);
+    const id = typeof parsed.id === "string" && GRANT_ID.test(parsed.id);
+    const pending = id && parsed.revoke_pending === true;
+    // A grant waiting to be revoked has its id only: its token is never read back, so never presented.
+    const grant = id && !pending && typeof parsed.token === "string" && TOKEN.test(parsed.token);
     return {
       v: 1,
       home: parsed.home,
       ...(grant ? { id: parsed.id, token: parsed.token } : {}),
+      ...(pending ? { id: parsed.id, revoke_pending: true as const } : {}),
       ...(typeof parsed.label === "string" ? { label: parsed.label } : {}),
       ...(typeof parsed.created_at === "string" ? { created_at: parsed.created_at } : {}),
       ...(typeof parsed.revoked_outside_at === "string" ? { revoked_outside_at: parsed.revoked_outside_at } : {}),
@@ -159,8 +168,8 @@ export type QwenRevokeResult =
   | { kind: "revoked" }
   /** `qwen` could not run: the token is forgotten here, and the grant may still be in Qwen (`manual` removes it). */
   | { kind: "forgotten"; manual: string }
-  /** Qwen would not revoke it: the token is kept, so a later try can. */
-  | { kind: "failed"; reason: string };
+  /** Qwen would not revoke it: the token is forgotten (never presented again), the id kept so the next connect run tries again; `manual` revokes it by hand. */
+  | { kind: "failed"; reason: string; manual: string };
 
 /** The reason a revoke outside is said with (the band, the terminal). */
 export const QWEN_TRUST_REVOKED_REASON =
@@ -183,8 +192,10 @@ async function listGrants(bin: string, e: AgentEnvironment, home: string, signal
   for (const line of run.stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
-      const value = JSON.parse(line) as { id?: unknown; label?: unknown };
-      if (typeof value.id === "string" && typeof value.label === "string") grants.push({ id: value.id, label: value.label });
+      const value = JSON.parse(line) as { id?: unknown; label?: unknown } | null;
+      // Any other shape (an array, a message line): this Qwen answers otherwise, so the list is unknown, never empty.
+      if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.id !== "string" || typeof value.label !== "string") return null;
+      grants.push({ id: value.id, label: value.label });
     } catch {
       return null;
     }
@@ -229,8 +240,8 @@ export async function ensureQwenTrust(dataDir: string, e: AgentEnvironment, opti
   const earlier = file?.failed;
   const fail = (reason: string): QwenTrustOutcome => {
     try {
-      // A grant still held is kept (for revoking), with the reason.
-      writeQwenTrust(dataDir, { ...(file?.id && file.token ? file : { v: 1 as const, home }), failed: reason });
+      // A grant still held (or waiting to be revoked) is kept, with the reason.
+      writeQwenTrust(dataDir, { ...(file?.id ? file : { v: 1 as const, home }), failed: reason });
     } catch {
       // Said again next time.
     }
@@ -253,6 +264,13 @@ export async function ensureQwenTrust(dataDir: string, e: AgentEnvironment, opti
     return { kind: "none", why: probe.version ? `Qwen Code ${probe.version.join(".")} has no trusted senders (0.24 or later has)` : "this qwen did not answer like Qwen Code" };
   }
 
+  // A grant turning Qwen Code off could not revoke: revoked first, where it is, before any new one.
+  if (file?.id && file.revoke_pending) {
+    const revoked = await revokeGrant(bin, e, file.home, file.id, signal);
+    if (!revoked.gone) return fail(`Plannotator's earlier trusted-sender grant could not be removed (${revoked.reason})`);
+    rmSync(qwenTrustPath(dataDir), { force: true });
+    file = null;
+  }
   // A grant in another Qwen home (QWEN_HOME changed): revoked there, so nothing is left behind, then minted here.
   if (file?.id && file.token && file.home !== home) {
     const moved = await revokeGrant(bin, e, file.home, file.id, signal);
@@ -329,6 +347,31 @@ export async function checkQwenTrust(dataDir: string, e: AgentEnvironment, now: 
   return "gone";
 }
 
+/**
+ * A grant turning Qwen Code off could not revoke (`revoke_pending`): tried
+ * again (each connect run while Qwen Code is not connected). `revoked`: gone
+ * now; `failed`, with `repeated` when it is the last run's reason; null:
+ * nothing waiting, or no `qwen` to run.
+ */
+export async function retryQwenRevoke(dataDir: string, e: AgentEnvironment, signal?: AbortSignal): Promise<{ kind: "revoked" } | { kind: "failed"; reason: string; repeated: boolean } | null> {
+  const file = readQwenTrust(dataDir);
+  if (!file?.id || !file.revoke_pending) return null;
+  const bin = e.which("qwen");
+  if (!bin) return null;
+  const revoked = await revokeGrant(bin, e, file.home, file.id, signal);
+  if (revoked.gone) {
+    rmSync(qwenTrustPath(dataDir), { force: true });
+    return { kind: "revoked" };
+  }
+  const reason = `Plannotator's trusted-sender grant in Qwen Code could not be removed (${revoked.reason}); it is no longer used, and Plannotator tries again at the next start, or run \`${revokeCommand(file, e)}\``;
+  try {
+    writeQwenTrust(dataDir, { ...file, failed: reason });
+  } catch {
+    // Said again next time.
+  }
+  return { kind: "failed", reason, repeated: file.failed === reason };
+}
+
 /** The command that revokes the grant by hand (`QWEN_HOME` named when it is not this environment's). */
 function revokeCommand(file: QwenTrustFile, e: AgentEnvironment): string {
   const command = `qwen sessions controllers remove ${file.id}`;
@@ -342,7 +385,7 @@ function revokeCommand(file: QwenTrustFile, e: AgentEnvironment): string {
  */
 export function qwenTrustRemoval(dataDir: string, e: AgentEnvironment): { describe: string; manual: string; runnable: boolean; apply: () => Promise<QwenRevokeResult> } | null {
   const file = readQwenTrust(dataDir);
-  if (!file?.id || !file.token) return null;
+  if (!file?.id) return null;
   const id = file.id;
   const manual = revokeCommand(file, e);
   const describe = `Plannotator's trusted-sender token in Qwen Code (${manual})`;
@@ -363,15 +406,18 @@ export function qwenTrustRemoval(dataDir: string, e: AgentEnvironment): { descri
         rmSync(qwenTrustPath(dataDir), { force: true });
         return { kind: "revoked" };
       }
-      return { kind: "failed", reason: revoked.reason };
+      // Qwen would not revoke it: the token goes (nothing here presents it again), the id stays for the next try.
+      writeQwenTrust(dataDir, { v: 1, home: file.home, id, ...(file.label ? { label: file.label } : {}), revoke_pending: true });
+      return { kind: "failed", reason: revoked.reason, manual };
     },
   };
 }
 
 /**
  * The one switch: `on` makes sure the token is there (see ensureQwenTrust,
- * forced: the person asked), off revokes it. Returns what to tell the
- * person, or null.
+ * forced: the person asked), off revokes it (one Qwen will not revoke stops
+ * being used at once, and is retried: `revoke_pending`). Returns what to tell
+ * the person, or null.
  */
 export async function setQwenTrust(on: boolean, dataDir: string, e: AgentEnvironment): Promise<string | null> {
   if (on) {
@@ -386,5 +432,5 @@ export async function setQwenTrust(on: boolean, dataDir: string, e: AgentEnviron
   const result = await removal.apply();
   if (result.kind === "revoked") return null;
   if (result.kind === "forgotten") return `qwen is not on PATH, so Plannotator's trusted-sender grant may still be in Qwen Code; run \`${result.manual}\` to remove it`;
-  return `Plannotator's trusted-sender token in Qwen Code could not be removed (${result.reason}); turning Qwen Code off again tries again`;
+  return `Plannotator's trusted-sender grant in Qwen Code could not be removed (${result.reason}). Plannotator no longer uses it and tries again at the next start, or run \`${result.manual}\``;
 }

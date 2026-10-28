@@ -177,18 +177,60 @@ describe("Qwen Code's trusted sender", () => {
     }
   });
 
-  test("a token Qwen will not revoke: Qwen Code is still turned off, that is said, no run mints again, and turning off again revokes it", async () => {
+  test("a grant Qwen will not revoke: Qwen Code is still off, the token is never presented again, and each later run tries the revoke until it works", async () => {
     fake.install("qwen");
     await connectInboxAgents(options());
+    const { id } = readQwenTrust(dataDir)!;
     const problem = await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
-    expect(problem).toContain("qwen sessions controllers remove");
+    expect(problem).toContain(`qwen sessions controllers remove ${id}`);
+    expect(problem).toContain("tries again at the next start");
     expect(readInboxAgents(dataDir).agents.qwen?.state).toBe("off");
     expect(grants()).toHaveLength(1);
+    // Off means off: the wake has no token now (its only source), and none is on disk.
+    expect(qwenWakeToken(dataDir, qwenHome())).toBeNull();
+    expect(readFileSync(qwenTrustPath(dataDir), "utf8")).not.toContain(grants()[0]!.token);
+    expect(readQwenTrust(dataDir)).toMatchObject({ id, revoke_pending: true });
+    // A run while Qwen still refuses: said once, nothing minted.
+    const refused = await connectInboxAgents(options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
+    expect(refused.trust_failed?.[0]?.reason).toContain(`qwen sessions controllers remove ${id}`);
+    expect((await connectInboxAgents(options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }))).trust_failed ?? []).toEqual([]);
+    // The next run Qwen allows it: revoked, forgotten, and still nothing minted.
     await connectInboxAgents(options());
-    expect(controllerCalls("add")).toHaveLength(1);
-    expect(await setInboxAgentReach("qwen", false, options())).toBeNull();
     expect(grants()).toEqual([]);
     expect(existsSync(qwenTrustPath(dataDir))).toBe(false);
+    expect(controllerCalls("add")).toHaveLength(1);
+  });
+
+  test("a grant waiting to be revoked is revoked before a new one is minted when Qwen Code is turned on again; uninstall revokes it too", async () => {
+    fake.install("qwen");
+    await connectInboxAgents(options());
+    const first = readQwenTrust(dataDir)!.id!;
+    await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
+    expect(await setInboxAgentReach("qwen", true, options())).toBeNull();
+    expect(controllerCalls("remove").map((call) => call.args[3])).toContain(first);
+    expect(grants()).toHaveLength(1);
+    expect(grants()[0]!.id).not.toBe(first);
+    expect(qwenWakeToken(dataDir, qwenHome())).toBe(grants()[0]!.token);
+
+    await setInboxAgentReach("qwen", false, options({ FAKE_QWEN_CONTROLLERS_FAIL: "1" }));
+    const removal = qwenTrustRemoval(dataDir, environment())!;
+    expect(removal.describe).toContain(grants()[0]!.id);
+    expect(await removal.apply()).toEqual({ kind: "revoked" });
+    expect(grants()).toEqual([]);
+  });
+
+  test("a grant list of another shape (a future Qwen's array, a message line) is unknown: the token is kept, never called revoked", async () => {
+    fake.install("qwen");
+    await connectInboxAgents(options());
+    const { token, id } = readQwenTrust(dataDir)!;
+    for (const output of [`${JSON.stringify([{ id, label: qwenTrustLabel(dataDir) }])}\n`, '{"message":"No controllers."}\n', "null\n"]) {
+      const env = { FAKE_QWEN_LIST_OUTPUT: output };
+      expect((await connectInboxAgents(options(env))).trust_failed ?? []).toEqual([]);
+      expect(await checkQwenTrust(dataDir, environment(env))).toBe("unknown");
+      expect(readQwenTrust(dataDir)).toMatchObject({ token });
+      expect(readQwenTrust(dataDir)!.revoked_outside_at).toBeUndefined();
+    }
+    expect(controllerCalls("add")).toHaveLength(1);
   });
 
   test("a mint that fails when the person turns Qwen Code on is said, Qwen Code still on", async () => {

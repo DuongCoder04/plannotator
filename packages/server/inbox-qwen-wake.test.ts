@@ -19,7 +19,7 @@ import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agen
 import { createAgentEnvironmentFor } from "./inbox-agents";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { INBOX_REPLY_ARRIVES_TEXT, INBOX_REPLY_WAITS_TEXT } from "./inbox-mcp";
-import { ensureQwenTrust, qwenWakeToken, readQwenTrust } from "./inbox-qwen-trust";
+import { ensureQwenTrust, qwenWakeToken, readQwenTrust, setQwenTrust } from "./inbox-qwen-trust";
 import { qwenRecordLive, qwenSettingsKeepOut, type QwenAgentsSettings } from "./inbox-qwen-wake";
 
 const SESSION = "8e016be8-5b48-4c13-ad22-1f5326ae64ac";
@@ -413,6 +413,15 @@ describe("a reply to a running Qwen Code session", () => {
     await until(() => w.session.received.length > 1);
     expect(w.session.received).toHaveLength(2);
     expect(w.session.received[1]!.frame.msgId).not.toBe(w.session.received[0]!.frame.msgId);
+  });
+
+  test("Qwen Code turned off while Qwen will not revoke the grant: the running Inbox stops waking at once, and agents are told to wait", async () => {
+    const w = await world();
+    expect((await qwenSends(w.client, w.project, "Ship it?")).text).toContain(INBOX_REPLY_ARRIVES_TEXT);
+    const refusing = createAgentEnvironmentFor({ platform: process.platform, homeDir: w.fake.home, env: { ...w.fake.env, FAKE_QWEN_CONTROLLERS_FAIL: "1" } });
+    expect(await setQwenTrust(false, w.dataDir, refusing)).toContain("tries again at the next start");
+    await until(() => !w.server.qwenWake.canWake());
+    expect((await qwenSends(w.client, w.project, "Again?")).text).toContain(INBOX_REPLY_WAITS_TEXT);
   });
 
   test("Qwen stops confirming because the grant was revoked in Qwen: the token is dropped, and later agents are told to wait", async () => {
