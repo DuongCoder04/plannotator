@@ -47,9 +47,12 @@ import {
 	type IntegrationResult,
 	type ObsidianConfig,
 	type OctarineConfig,
+	type NotionConfig,
 	saveToBear,
 	saveToObsidian,
 	saveToOctarine,
+	saveToNotion,
+	isNotionAvailable,
 } from "./integrations.ts";
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
 
@@ -265,6 +268,8 @@ export async function startPlanReviewServer(options: {
 	// on a port a new server now owns) is refused with 409 session_mismatch.
 	// A body without it (an older client) is accepted.
 	const serverSession = createServerSessionNonce();
+	// Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
+	const notionAvailable = isNotionAvailable(isRemoteSession());
 	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
 	const refCards = createPiRefCards(options.refRunner);
 	const decisionPromise = new Promise<PlanReviewDecision>((r) => {
@@ -438,6 +443,7 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
+					...(notionAvailable ? { notion: true } : {}),
 					serverConfig: getServerConfig(gitUser, currentPiHost()),
 					...piUpdateAdvert(options.origin),
 				});
@@ -599,7 +605,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/favicon.png") {
 			handleFavicon(res);
 		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
-			await handleSaveNotesRequest(req, res, { serverSession });
+			await handleSaveNotesRequest(req, res, { serverSession, notion: notionAvailable });
 		} else if (url.pathname === "/api/approve" && req.method === "POST") {
 			let body: Record<string, unknown> = {};
 			try {
@@ -647,6 +653,7 @@ export async function startPlanReviewServer(options: {
 				const obsConfig = body.obsidian as ObsidianConfig | undefined;
 				const bearConfig = body.bear as BearConfig | undefined;
 				const octConfig = body.octarine as OctarineConfig | undefined;
+				const notionConfig = body.notion as NotionConfig | undefined;
 				if (obsConfig?.vaultPath && obsConfig?.plan) {
 					integrationPromises.push(
 						saveToObsidian(obsConfig).then((r) => {
@@ -665,6 +672,13 @@ export async function startPlanReviewServer(options: {
 					integrationPromises.push(
 						saveToOctarine(octConfig).then((r) => {
 							integrationResults.octarine = r;
+						}),
+					);
+				}
+				if (notionAvailable && notionConfig?.plan && notionConfig?.parentPageId) {
+					integrationPromises.push(
+						saveToNotion(notionConfig).then((r) => {
+							integrationResults.notion = r;
 						}),
 					);
 				}
