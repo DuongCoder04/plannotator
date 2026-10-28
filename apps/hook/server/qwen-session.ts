@@ -40,21 +40,22 @@ export function sanitizeQwenCwd(
   return normalized.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
-function expandHome(p: string | undefined): string | undefined {
+function expandHome(p: string | undefined, home: string): string | undefined {
   const trimmed = p?.trim();
   if (!trimmed) return undefined;
-  if (trimmed === "~") return homedir();
+  if (trimmed === "~") return home;
   if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
-    return join(homedir(), trimmed.slice(2));
+    return join(home, trimmed.slice(2));
   }
   return trimmed;
 }
 
 /** The folder holding Qwen's per-project folders: $QWEN_RUNTIME_DIR > $QWEN_HOME > ~/.qwen, then `projects`. */
-export function getQwenProjectsDir(opts: { env?: NodeJS.ProcessEnv } = {}): string {
+export function getQwenProjectsDir(opts: { env?: NodeJS.ProcessEnv; home?: string } = {}): string {
   const env = opts.env ?? process.env;
-  const base = expandHome(env.QWEN_RUNTIME_DIR) ?? expandHome(env.QWEN_HOME);
-  return join(base ?? join(homedir(), ".qwen"), "projects");
+  const home = opts.home ?? homedir();
+  const base = expandHome(env.QWEN_RUNTIME_DIR, home) ?? expandHome(env.QWEN_HOME, home);
+  return join(base ?? join(home, ".qwen"), "projects");
 }
 
 function isSafePathSegment(value: string): boolean {
