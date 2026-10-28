@@ -35,6 +35,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { isNewerStableVersion } from "@plannotator/shared/update-check";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import {
   acquireInboxStartLock,
@@ -433,7 +434,12 @@ async function statusCommand(dataDir: string, asJson: boolean): Promise<number> 
   }
   out(`  data dir: ${dataDir}`);
   if (status.state === "running" && status.health.version !== cliVersion) {
-    out(`This plannotator is ${cliVersion}; plannotator inbox restart starts it in the Inbox's place.`);
+    // Restart runs this binary, so it is advised only when that is an update, never a downgrade.
+    out(
+      isNewerStableVersion(cliVersion, status.health.version)
+        ? `This plannotator is ${cliVersion}; plannotator inbox restart starts it in the Inbox's place.`
+        : `This plannotator is ${cliVersion}; the Inbox runs ${status.health.version}.`,
+    );
   }
   return code;
 }
@@ -490,7 +496,8 @@ function stopReport(result: InboxStopResult, hadRecord: boolean): { ok: boolean;
     const why = {
       dead_pid: `its record named pid ${pid}, which has already exited`,
       other_session: `its port answers for another Inbox now, which was left alone`,
-      not_ours: `its record names pid ${pid}, which is another program now (pids are reused); it was left alone`,
+      no_answer: `its record names pid ${pid}, which is another program now (pids are reused); it was left alone`,
+      not_ours: `its record names the Inbox of another data dir (pid ${pid}; this data dir looks copied from that one), which was left alone`,
     }[reason];
     return { ok: true, line: `No Plannotator Inbox is running: ${why}.` };
   }
@@ -537,6 +544,11 @@ async function restartCommand(dataDir: string, tailscale: boolean): Promise<numb
     const report = stopReport(stopped, hadRecord);
     process.stderr.write(`${report.line}\n`);
     if (!report.ok) return 1;
+    if (stopped.state === "not_running" && stopped.stale?.reason === "not_ours") {
+      // A start would find that Inbox through this record and start nothing: say so instead of naming it as restarted.
+      process.stderr.write("Nothing was restarted: while that Inbox runs, this data dir's record names it.\n");
+      return 1;
+    }
     // The stop can take a while; the lock's age starts again, so no starter takes it as stale meanwhile.
     try {
       const now = new Date();
@@ -566,7 +578,7 @@ function usageError(message: string): never {
 export interface InboxCommandAssets {
   /** The built window (`apps/hook/dist/inbox.html`), embedded by the binary. */
   htmlContent?: string;
-  /** The global `--json` flag (index.ts takes it out of the arguments first); only `status` reads it. */
+  /** The global `--json` flag (index.ts takes it out of the arguments first); `status` reads it, `stop` and `restart` refuse it. */
   json?: boolean;
 }
 
@@ -596,6 +608,11 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
   if (args[0] === "status") {
     if (args.length > 1) usageError(`Unknown inbox status option: ${args[1]} (status takes only --json)`);
     process.exit(await statusCommand(dataDir, assets.json === true));
+  }
+
+  // index.ts takes the global --json out of the arguments; only status prints JSON.
+  if ((args[0] === "stop" || args[0] === "restart") && assets.json === true) {
+    usageError(`inbox ${args[0]} has no --json output; plannotator inbox status --json reports the Inbox as JSON.`);
   }
 
   if (args[0] === "stop") {

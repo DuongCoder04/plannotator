@@ -22,8 +22,8 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { isInboxHealth, type InboxHealth } from "@plannotator/core/inbox-types";
 import { inboxDir } from "./schema";
 import { proveInboxProcess } from "./process-proof";
@@ -307,14 +307,45 @@ export async function waitForInbox<T>(check: () => Promise<T | null>, timeoutMs:
   }
 }
 
-/** Why a record names no running Inbox (`plannotator inbox stop` reports it; nothing is signalled). */
+/** Why a record names no running Inbox of its data dir (`plannotator inbox stop` reports it; nothing is signalled). */
 export type InboxStaleReason =
   /** The process it names has exited. */
   | "dead_pid"
   /** Another Inbox answers on its port. */
   | "other_session"
-  /** The pid is alive but is not this Inbox: another program has it now. */
+  /** Nothing answers on its port and the pid is not proven to be this Inbox: another program has it now (as `inboxStatus` says). */
+  | "no_answer"
+  /**
+   * The Inbox it names runs on another data dir and refused the stop: a
+   * copied data dir (a backup, a seeded sandbox) whose record names the
+   * original's Inbox.
+   */
   | "not_ours";
+
+/**
+ * The folder that makes an Inbox one data dir's (its `inbox/` folder: the
+ * record and the store), with symlinks resolved, so two spellings of one
+ * folder compare equal; null when it does not exist.
+ */
+function realInboxDir(dataDir: string): string | null {
+  try {
+    return realpathSync.native(inboxDir(resolve(dataDir)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a stop that names `requested` as its data dir is for the Inbox
+ * running on `own` (the stop route asks). Only a clear mismatch (both
+ * folders exist and differ) says no, so a stop is never refused on a folder
+ * that cannot be read.
+ */
+export function isOwnDataDir(own: string, requested: string): boolean {
+  const ownDir = realInboxDir(own);
+  const requestedDir = realInboxDir(requested);
+  return ownDir === null || requestedDir === null || ownDir === requestedDir;
+}
 
 export type InboxStopResult =
   | { state: "not_running"; stale?: { pid: number; reason: InboxStaleReason } }
@@ -362,7 +393,11 @@ async function waitPidGone(pid: number, timeoutMs: number): Promise<boolean> {
  * with this record's pid and serverSession, or (with `escalate`, POSIX) `ps`
  * shows an Inbox command line that started no later than the record. A pid
  * that cannot be proven is never signalled: the record outlives its Inbox and
- * pids are reused. Answers what happened.
+ * pids are reused. The stop route's request names this data dir, and an
+ * Inbox on another one (a copied record) refuses it; then nothing is
+ * signalled either. An Inbox older than that check stops, as before, and
+ * the signals cannot tell a copied record (both proofs pass for it).
+ * Answers what happened.
  */
 export async function stopInbox(dataDir: string, options: StopInboxOptions = {}): Promise<InboxStopResult> {
   const timeoutMs = options.timeoutMs ?? 5000;
@@ -413,17 +448,24 @@ export async function stopInbox(dataDir: string, options: StopInboxOptions = {})
       if (await waitPidGone(entry.pid, timeoutMs)) return { state: "stopped", pid: entry.pid, by: "stop_route", tailscaleRunOnly: false };
       return signalUntilGone(entry, false);
     }
-    const reason: InboxStaleReason = status.reason === "dead_pid" ? "dead_pid" : status.reason === "other_session" ? "other_session" : "not_ours";
-    return { state: "not_running", stale: { pid: entry.pid, reason } };
+    return { state: "not_running", stale: { pid: entry.pid, reason: status.reason } };
   }
   const { entry } = status;
   let tailscaleRunOnly = false;
   try {
+    // `data_dir`: an Inbox refuses (409 not_ours) a stop for another data dir, so a copied record
+    // never stops the original. An older Inbox ignores the body and stops, as before.
     const response = await fetch(`http://127.0.0.1:${entry.port}/api/inbox/control/stop`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${entry.token}` },
+      headers: { Authorization: `Bearer ${entry.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ data_dir: resolve(dataDir) }),
       signal: AbortSignal.timeout(2000),
     });
+    if (response.status === 409) {
+      const body = (await response.json().catch(() => null)) as { code?: unknown } | null;
+      // Its refusal is the proof it is not this data dir's: nothing is signalled.
+      if (body?.code === "not_ours") return { state: "not_running", stale: { pid: entry.pid, reason: "not_ours" } };
+    }
     if (response.ok) {
       const body = (await response.json().catch(() => null)) as { tailscale_run_only?: unknown } | null;
       tailscaleRunOnly = body?.tailscale_run_only === true;

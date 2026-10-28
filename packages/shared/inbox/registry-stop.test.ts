@@ -32,7 +32,8 @@ function scratch(): string {
 /**
  * A stand-in run as `bun <root>/fake/index.ts inbox --no-open` (an Inbox's
  * command line). With `serve`, it answers the health route with `session`
- * and its own pid, takes its stop route without stopping, and ignores SIGTERM.
+ * and its own pid, takes its stop route without stopping (or with `refuse`
+ * refuses it as another data dir's Inbox, 409 not_ours), and ignores SIGTERM.
  */
 const STAND_IN = `
 const session = process.env.FAKE_SESSION;
@@ -44,7 +45,9 @@ if (process.env.FAKE_SERVE === "1") {
     fetch(req) {
       const path = new URL(req.url).pathname;
       if (path === "/api/inbox/health") return Response.json({ ok: true, app: "plannotator-inbox", version: "fake", serverSession: session, pid: process.pid, update: null });
-      if (path === "/api/inbox/control/stop") return Response.json({ ok: true, stopping: true });
+      if (path === "/api/inbox/control/stop") {
+        return process.env.FAKE_REFUSE === "1" ? Response.json({ code: "not_ours" }, { status: 409 }) : Response.json({ ok: true, stopping: true });
+      }
       return new Response("", { status: 404 });
     },
   });
@@ -53,7 +56,7 @@ if (process.env.FAKE_SERVE === "1") {
 setInterval(() => {}, 1000);
 `;
 
-async function standIn(root: string, options: { serve?: boolean; ignoreTerm?: boolean; session?: string } = {}): Promise<{ pid: number; port: number | null }> {
+async function standIn(root: string, options: { serve?: boolean; ignoreTerm?: boolean; refuse?: boolean; session?: string } = {}): Promise<{ pid: number; port: number | null }> {
   const dir = join(root, "fake");
   mkdirSync(dir, { recursive: true });
   const script = join(dir, "index.ts");
@@ -69,6 +72,7 @@ async function standIn(root: string, options: { serve?: boolean; ignoreTerm?: bo
       FAKE_SESSION: options.session ?? "",
       FAKE_SERVE: options.serve ? "1" : "0",
       FAKE_IGNORE_TERM: options.ignoreTerm ? "1" : "0",
+      FAKE_REFUSE: options.refuse ? "1" : "0",
       FAKE_PORT_FILE: portFile,
     },
   });
@@ -121,6 +125,20 @@ describe("stopInbox escalates only on a proven Inbox", () => {
     expect(isPidAlive(fake.pid)).toBe(false);
   }, 30_000);
 
+  test("an Inbox that refuses the stop as another data dir's (a copied record) is never signalled", async () => {
+    const root = scratch();
+    const session = "c".repeat(32);
+    // It would die of SIGTERM: only the refusal keeps it running.
+    const original = await standIn(root, { serve: true, refuse: true, session });
+    const dataDir = join(root, "data");
+    record(dataDir, { pid: original.pid, port: original.port!, serverSession: session });
+    for (const escalate of [false, true]) {
+      expect(await stopInbox(dataDir, { timeoutMs: 300, escalate })).toEqual({ state: "not_running", stale: { pid: original.pid, reason: "not_ours" } });
+    }
+    await Bun.sleep(100);
+    expect(isPidAlive(original.pid)).toBe(true);
+  }, 30_000);
+
   test("a port answering with the record's serverSession under another pid: the record's pid is never signalled", async () => {
     const root = scratch();
     const session = "b".repeat(32);
@@ -142,7 +160,7 @@ describe("stopInbox escalates only on a proven Inbox", () => {
     const reused = await standIn(join(root, "reused"));
     const reusedDir = join(root, "reused-data");
     record(reusedDir, { pid: reused.pid, port: deadPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() });
-    expect(await stopInbox(reusedDir, { timeoutMs: 300, escalate: true })).toEqual({ state: "not_running", stale: { pid: reused.pid, reason: "not_ours" } });
+    expect(await stopInbox(reusedDir, { timeoutMs: 300, escalate: true })).toEqual({ state: "not_running", stale: { pid: reused.pid, reason: "no_answer" } });
     expect(isPidAlive(reused.pid)).toBe(true);
 
     // Started before the record, its listener gone (hung on the way out): this Inbox. SIGTERM ends it.

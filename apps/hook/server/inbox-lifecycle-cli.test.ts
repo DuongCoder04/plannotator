@@ -75,8 +75,10 @@ function track(box: Sandbox): void {
   if (named) started.push({ entry: named, root: box.root });
 }
 
-async function cli(box: Sandbox, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([process.execPath, "run", entry, ...args], { cwd: box.root, env: box.env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+async function cli(box: Sandbox, args: string[], options: { version?: string } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  // `version`: run as that release (a source run is "dev"), as the build's define does.
+  const define = options.version ? ["--define", `__CLI_VERSION__=${JSON.stringify(options.version)}`] : [];
+  const proc = Bun.spawn([process.execPath, "run", ...define, entry, ...args], { cwd: box.root, env: box.env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { code, stdout, stderr };
 }
@@ -153,9 +155,48 @@ describe("plannotator inbox status", () => {
     }
   }, 60_000);
 
-  test("status, stop and restart refuse an unknown option", async () => {
+  test("restart is suggested only to a newer plannotator than the Inbox, never as a downgrade", async () => {
     const box = sandbox();
-    for (const args of [["status", "--xml"], ["stop", "--now"], ["restart", "--no-open"]]) {
+    const session = "v".repeat(32);
+    let inboxVersion = "";
+    // The Inbox's health answer alone (status only reads it): a stand-in that reports `inboxVersion`.
+    const stub = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) =>
+        new URL(req.url).pathname === "/api/inbox/health"
+          ? Response.json({ ok: true, app: "plannotator-inbox", version: inboxVersion, serverSession: session, pid: process.pid, update: null })
+          : new Response("", { status: 404 }),
+    });
+    try {
+      writeInboxRegistry(box.dataDir, {
+        v: 1,
+        pid: process.pid,
+        port: stub.port as number,
+        url: `http://localhost:${stub.port}/`,
+        version: "0.0.0",
+        token: "t".repeat(64),
+        serverSession: session,
+        startedAt: new Date().toISOString(),
+      });
+      inboxVersion = "0.99.0";
+      const older = await cli(box, ["inbox", "status"], { version: "0.20.0" });
+      expect(older.code).toBe(0);
+      expect(older.stdout).toContain("0.99.0");
+      expect(older.stdout).not.toContain("restart");
+
+      inboxVersion = "0.10.0";
+      const newer = await cli(box, ["inbox", "status"], { version: "0.20.0" });
+      expect(newer.code).toBe(0);
+      expect(newer.stdout).toContain("plannotator inbox restart");
+    } finally {
+      stub.stop(true);
+    }
+  }, 30_000);
+
+  test("status, stop and restart refuse an unknown option, and stop and restart refuse --json", async () => {
+    const box = sandbox();
+    for (const args of [["status", "--xml"], ["stop", "--now"], ["restart", "--no-open"], ["stop", "--json"], ["restart", "--json"]]) {
       const result = await cli(box, ["inbox", ...args]);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(args[1]!);
@@ -227,6 +268,28 @@ describe("plannotator inbox stop", () => {
     await Bun.sleep(200);
     expect(isPidAlive(other)).toBe(true);
   }, 30_000);
+
+  test("a copied data dir's record names the original's Inbox: stop and restart on the copy leave the original running", async () => {
+    const original = sandbox();
+    const live = await background(original);
+    const copy = sandbox();
+    mkdirSync(join(copy.dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(copy.dataDir, "inbox", "inbox.json"), readFileSync(join(original.dataDir, "inbox", "inbox.json")));
+
+    const stop = await cli(copy, ["inbox", "stop"]);
+    expect(stop.code).toBe(0);
+    expect(stop.stdout).toContain("another data dir");
+    await Bun.sleep(300);
+    expect(isPidAlive(live.pid)).toBe(true);
+    expect(await inboxStatus(original.dataDir)).toMatchObject({ state: "running", entry: { pid: live.pid, serverSession: live.serverSession } });
+
+    // Restart stops nothing and says it restarted nothing (a start would only find the original through the copied record).
+    const restart = await cli(copy, ["inbox", "restart"]);
+    expect(restart.code).toBe(1);
+    expect(restart.stdout).toBe("");
+    expect(restart.stderr).toContain("Nothing was restarted");
+    expect(await inboxStatus(original.dataDir)).toMatchObject({ state: "running", entry: { pid: live.pid, serverSession: live.serverSession } });
+  }, 60_000);
 
   test.skipIf(process.platform === "win32")("a hung Inbox that cannot answer is proven by its process and ended with SIGKILL", async () => {
     const box = sandbox();

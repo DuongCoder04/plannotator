@@ -17,6 +17,11 @@
  *    Inbox that closed its listener and hangs on the way out, or one too busy
  *    to answer.
  *
+ * The time check reads the wall clock (`now - etime` against `startedAt`).
+ * A clock set forward only makes the proof fail, which is safe. A clock set
+ * back further than the time from the Inbox's start to the pid's reuse can
+ * let a reused pid pass; it must still run an Inbox server command line.
+ *
  * Windows has no `ps`: there only the health proof works, so an Inbox that
  * does not answer is never signalled there.
  *

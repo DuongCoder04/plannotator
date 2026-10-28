@@ -801,4 +801,31 @@ describe("uninstall --purge and the Inbox", () => {
     expect(isPidAlive(registry.pid)).toBe(false);
     expect(existsSync(join(box.dataDir, "inbox"))).toBe(false);
   }, 60_000);
+
+  test("purge of a copied data dir removes the copy and leaves the original's Inbox running", async () => {
+    const original = sandbox();
+    const registry = (await background(original)).registry!;
+    const copy = sandbox();
+    mkdirSync(join(copy.dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(copy.dataDir, "inbox", "inbox.json"), readFileSync(join(original.dataDir, "inbox", "inbox.json")));
+    const result = await runPlannotatorUninstall(
+      { purge: true, dryRun: false },
+      {
+        platform: process.platform,
+        homeDir: copy.home,
+        tempDir: tmpdir(),
+        dataDir: copy.dataDir,
+        execPath: join(copy.root, "not-the-real-plannotator"),
+        env: {},
+        which: () => null,
+        runCommand: async () => ({ exitCode: 0, timedOut: false }),
+        scheduleWindowsSelfDelete: async () => true,
+      },
+    );
+    expect(result.errors).toEqual([]);
+    expect(existsSync(join(copy.dataDir, "inbox"))).toBe(false);
+    await Bun.sleep(300);
+    expect(isPidAlive(registry.pid)).toBe(true);
+    expect((await inboxStatus(original.dataDir)).state).toBe("running");
+  }, 60_000);
 });
