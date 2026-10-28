@@ -19,6 +19,9 @@ export default defineConfig({
     'inbox-copy-file.spec.ts',
   ],
   outputDir: '../../.local/test-results',
+  // A stand-in first on PATH for every agent CLI the Inbox runs itself, and a tripwire that fails the run on a call past --version (tests/helpers/agent-cli-guard.ts).
+  globalSetup: './global-setup.ts',
+  globalTeardown: './global-teardown.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,
