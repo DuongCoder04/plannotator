@@ -82,8 +82,8 @@ jobs:
           CURRENT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           TEST_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          echo "sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
             for site in marketing portal paste waitlist; do
               if [[ "$TARGET" == "all" || "$TARGET" == "$site" ]]; then
                 echo "$site=true" >> "$GITHUB_OUTPUT"
@@ -97,15 +97,6 @@ jobs:
           # The passed Test runs of pushes to main, newest first (one call).
           RUNS="$(gh api "repos/${REPOSITORY}/actions/workflows/test.yml/runs?branch=main&event=push&status=success&per_page=50")"
 
-          # A newer main commit already passed Test: its deploy covers this
-          # one, and deploying this older tree now would overwrite it.
-          NEWEST="$(jq -r '.workflow_runs[0].id // 0' <<< "$RUNS")"
-          if (( NEWEST > TEST_RUN_ID )); then
-            echo "Test run ${NEWEST} on a newer main commit passed; it deploys instead."
-            for site in marketing portal paste waitlist; do echo "$site=false" >> "$GITHUB_OUTPUT"; done
-            exit 0
-          fi
-
           # What changed since the last push to main that passed Test. Every
           # push to main runs Test, so that is where the last deploy came
           # from; a push whose Test failed is deployed with the next one.
@@ -113,6 +104,18 @@ jobs:
           if [[ -z "$BEFORE_SHA" ]] || ! git fetch --no-tags --depth=1 origin "$BEFORE_SHA"; then
             BEFORE_SHA="${CURRENT_SHA}^1"
           fi
+
+          # A newer main commit already passed Test (runs finish out of order,
+          # or this one was rerun): deploy that newer tree instead of this
+          # older one, which would overwrite it. It contains this commit, and
+          # the diff from this run's base covers this commit's changes too.
+          NEWEST_ID="$(jq -r '.workflow_runs[0].id // 0' <<< "$RUNS")"
+          if (( NEWEST_ID > TEST_RUN_ID )); then
+            CURRENT_SHA="$(jq -r '.workflow_runs[0].head_sha' <<< "$RUNS")"
+            echo "Test run ${NEWEST_ID} passed on a newer main commit; deploying its tree ${CURRENT_SHA}."
+            git fetch --no-tags --depth=1 origin "$CURRENT_SHA"
+          fi
+          echo "sha=$CURRENT_SHA" >> "$GITHUB_OUTPUT"
           echo "Changes ${BEFORE_SHA}..${CURRENT_SHA}"
           CHANGED="$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA")"
 
