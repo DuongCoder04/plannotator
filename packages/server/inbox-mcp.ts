@@ -1209,6 +1209,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
               : [],
           );
           const forCaller = (message: InboxMessage) => {
+            // A hand-off inside its Undo window goes to nobody yet.
+            if (store.handoffHeld(message)) return false;
             if (caller && (taggedOnly.has(message.thread_id) || (message.tags?.length ?? 0) > 0)) return store.isFor(message, caller);
             return !message.to || message.to.session === caller;
           };

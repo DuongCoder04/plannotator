@@ -15,7 +15,7 @@ import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestion
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
-import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
+import { InboxApiError, inboxApi, type AttachmentsModel, type TagMode } from '../api';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
 import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTiles';
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
@@ -72,8 +72,22 @@ import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentRepl
 import { SkillsLine } from './SkillsLine';
 import { paintSkillReferences } from '../skillHighlight';
 import { paintTagReferences, type TagMarkPlace } from '../tagHighlight';
-import { TagNotes, TagStack, useTagConnections, useTaggable } from './TagPicker';
-import { messageTags, participantsWords, sendTagsByTarget, tagDeliveryLine, tagName, tagOptions, tagPeople, threadParticipants, type TagOption } from '../tags';
+import { TagModeNote, TagNotes, TagStack, useTagConnections, useTaggable } from './TagPicker';
+import {
+  activeHandoff,
+  effectiveTagMode,
+  handoffName,
+  messageTags,
+  namesList,
+  participantsWords,
+  sendTagsByTarget,
+  tagDeliveryLine,
+  tagName,
+  tagOptions,
+  tagPeople,
+  threadParticipants,
+  type TagOption,
+} from '../tags';
 import type { MentionSource } from '@plannotator/ui/utils/mentions';
 import { TAG_TOKEN_CLASS } from './ComposerField';
 import { HostMark } from '../icons';
@@ -1158,7 +1172,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const replyUploads = replyFiles.uploaded.map((upload) => upload.upload_id);
   // The sessions the reply box's text tags with `@` (approval "inbox-tag-agents"), as the field reports them.
   const [taggedIds, setTaggedIds] = useState<readonly string[]>([]);
-  const onTagsChange = useCallback((ids: readonly string[]) => setTaggedIds(ids), []);
+  // What Send does with the agents tagged in the words (approval "inbox-tag-handoff", A2): an Ask until a link says otherwise.
+  const [tagMode, setTagMode] = useState<TagMode>('ask');
+  const onTagsChange = useCallback((ids: readonly string[]) => {
+    setTaggedIds(ids);
+    if (ids.length === 0) setTagMode('ask');
+  }, []);
   const closeBox = () => {
     // A Send waiting to be confirmed: read back now, so a reply that went leaves no stale "Draft" foot.
     const earlier = unconfirmed.get(thread.thread_id);
@@ -1544,7 +1563,25 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const tagOwner = asking?.session ?? taggable?.owner?.session ?? null;
   const tagOpts: TagOption[] = useMemo(() => tagOptions(taggable, tagOwner, thread.project.id, whenTime), [taggable, tagOwner, thread.project.id]);
   // Until the list is read (or from an older Inbox) `@` is plain text.
-  const composerTags = useMemo(() => (taggable ? { options: tagOpts, onChange: onTagsChange } : undefined), [taggable, tagOpts, onTagsChange]);
+  const composerTags = useMemo(
+    () =>
+      taggable
+        ? {
+            options: tagOpts,
+            onChange: onTagsChange,
+            // One line under the box (approval "inbox-tag-handoff", A2): "Asks X · Add instead · Hand off instead".
+            note: ({ id, tagged }: { id: string; tagged: readonly TagOption[] }) => <TagModeNote id={id} tagged={tagged} mode={tagMode} onMode={setTagMode} />,
+          }
+        : undefined,
+    [taggable, tagOpts, onTagsChange, tagMode],
+  );
+  // The mode a Send of the words uses now, and who it hands the thread to.
+  const wordTagged = taggedIds.flatMap((id) => tagOpts.filter((o) => o.id === id));
+  const sendMode = effectiveTagMode(wordTagged, tagMode);
+  const handingTo = sendMode === 'handoff' ? (wordTagged.find((o) => !o.owner) ?? null) : null;
+  // A thread handed to another session: its replies go there.
+  const handedOff = activeHandoff(thread);
+  const replyName = handingTo ? handingTo.label : handedOff ? handoffName(handedOff) : null;
   // The same agents in a file comment's composer (markdown, text and HTML files): a tag there sends the
   // whole reply to that agent, and the composer says so under the field.
   const commentMentions = useMemo<MentionSource | undefined>(
@@ -2574,6 +2611,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (carriedWords) replyDraft.sent();
     else replyDraft.release();
     setTaggedIds([]);
+    setTagMode('ask');
   };
 
   const send = async (options: { despiteReplaced?: boolean; routed?: boolean } = {}) => {
@@ -2698,6 +2736,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         taggedIds,
         new Map(targets.map((t) => [t.message.id, (carried.get(t.message.id) ?? []).flatMap((r) => commentTags(r))])),
         tagOpts,
+        sendMode,
       );
       if (!sendKeys.current) sendKeys.current = new Map();
       // One key per session's reply, kept for a retry.
@@ -2753,13 +2792,29 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       // The tiles this Send carries, by the uploads its requests carry: a file pasted while it is in flight stays.
       sentUploads = requests.flatMap((r) => r.input.uploads ?? []);
       total = requests.length;
+      /** The reply that handed the thread over (approval "inbox-tag-handoff"), for the toast's Undo. */
+      let handedReply: InboxMessageWire | null = null;
       for (const request of requests) {
         if (request.input.words) wordsKey = request.input.idempotency_key;
-        await inboxApi.reply(request.messageId, request.input);
+        const answer = await inboxApi.reply(request.messageId, request.input);
+        const written = answer.reply as InboxMessageWire | null;
+        if (written?.handoff && !answer.replayed) handedReply = written;
         went += 1;
       }
       done = true;
       finishSent(sentUploads, words !== '');
+      if (handedReply) {
+        const reply = handedReply;
+        const name = handoffName(reply);
+        onToast?.({
+          icon: 'check',
+          lead: `Handed to ${name}`,
+          phoneLead: 'Handed off',
+          detail: 'Your later replies go there',
+          speech: `Handed this thread to ${name}. Your later replies go there. Undo takes it back for a few seconds.`,
+          onUndo: () => void undoHandoff(reply.id),
+        });
+      }
       setFull(false);
       await onChanged();
       await reloadFiles();
@@ -2892,9 +2947,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const { connections: tagConnections, load: loadTagConnections } = useTagConnections(thread.thread_id, waitingTags, waitingTags.length > 0);
   const tagLines = lastTags.map((tag) => {
     const name = tagName(tag, ownerHost, replySession);
-    return { tag, name, line: tagDeliveryLine(tag, name, tagConnections[tag.session], whenTime, last.id) };
+    const line = tagDeliveryLine(tag, name, tagConnections[tag.session], whenTime, last.id);
+    // The former owner of a handed-off thread was told to stop (approval "inbox-tag-handoff").
+    if (tag.handed_away && tag.delivery) return { tag, name, line: { ...line, text: `${name} was told to stop, ${whenTime(tag.delivery.at)}` } };
+    if (tag.handed_away && !last.handoff?.settled_at) return { tag, name, line: { state: 'queued' as const, text: `${name} is told to stop once the Undo window ends.` } };
+    return { tag, name, line };
   });
-  const delivered: DeliveryLine | null =
+  const deliveredNow: DeliveryLine | null =
     last.author.kind !== 'person'
       ? null
       : lastTo
@@ -2920,6 +2979,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             askerEnded: askerEnded && asking ? { name: asking.name } : null,
             ...waitInputs(recipientConnection, last.id, { ...last, into_turn: last.delivery?.into_turn ?? null }),
           });
+  // A hand-off inside its Undo window (approval "inbox-tag-handoff") goes to nobody yet: its line says when.
+  const heldHandoff = last.author.kind === 'person' && !!last.handoff && !last.handoff.settled_at && !last.handoff.undone_at;
+  const delivered: DeliveryLine | null =
+    heldHandoff && deliveredNow ? { state: 'queued', text: `Goes to ${handoffName(last)} once the Undo window ends.` } : deliveredNow;
   // No Send now because that session runs an older plugin than a restart loads (the "Steps" line,
   // owner approval "restart-warning"): only while the reply waits for a working session.
   const restart = delivered?.state === 'queued' && !last.deliver_now_at ? restartNote(recipientConnection) : null;
@@ -2966,6 +3029,36 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       void loadTagConnections();
     }
   };
+
+  // Take a hand-off back inside its Undo window (the toast's Undo, or the line's): the reply goes as an Ask.
+  const [handoffUndo, setHandoffUndo] = useState<{ id: string; busy: boolean; error: string | null } | null>(null);
+  const undoHandoff = async (id: string) => {
+    setHandoffUndo({ id, busy: true, error: null });
+    try {
+      await inboxApi.undoHandoff(id);
+      setHandoffUndo(null);
+      announce('Hand-off taken back: your reply goes as an Ask, and the thread stays where it was.');
+      await onChanged();
+    } catch (cause) {
+      setHandoffUndo({ id, busy: false, error: cause instanceof InboxApiError ? cause.message : 'The hand-off was not taken back. Try again.' });
+      await onChanged();
+    }
+  };
+  // The lines that say a thread moved (approval "inbox-tag-handoff"), above the reply that moved it:
+  // a hand-off not taken back, and the sessions a reply added for the first time.
+  const threadMoves = new Map<string, { kind: 'handoff' | 'added'; names: string; host: string | null }>();
+  {
+    const joined = new Set<string>();
+    for (const m of thread.messages) {
+      if (m.author.kind !== 'person') continue;
+      if (m.handoff && !m.handoff.undone_at && m.to) threadMoves.set(m.id, { kind: 'handoff', names: handoffName(m), host: m.to.host });
+      const added = messageTags(m).filter((t) => t.joined && !joined.has(t.session));
+      for (const t of added) joined.add(t.session);
+      if (added.length > 0 && !threadMoves.has(m.id)) {
+        threadMoves.set(m.id, { kind: 'added', names: namesList(added.map((t) => t.label || agentName({ kind: 'agent', host: t.host, name: t.name ?? null }))), host: added[0]!.host });
+      }
+    }
+  }
 
   const waitingHoldsUp = [...new Set(lastAgent.questions?.filter((q) => q.state === 'open').flatMap((q) => q.holds_up) ?? [])];
   const [holdsOpen, setHoldsOpen] = useState(false);
@@ -3458,6 +3551,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             </span>
           </div>
         )}
+        {handedOff && (
+          // The thread was handed to another session (approval "inbox-tag-handoff"): who has it now.
+          <div className="ib-tmeta" data-thread-owner="">
+            <HostMark host={handedOff.to!.host} />
+            <span>
+              Now with <b>{handoffName(handedOff)}</b>
+            </span>
+            <span className="ib-tdot" aria-hidden="true" />
+            <span>handed off {whenTime(handedOff.created_at)}</span>
+          </div>
+        )}
         {readAt !== null && !resolved && (
           <div className="ib-readline" data-read-line="">
             <Icon name="checkCircle" size={16} />
@@ -3528,6 +3632,43 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             before.push(
               <div className="ib-newdiv" key="new-divider" data-new-divider="" role="separator" aria-label={`New since you looked: ${plural(fresh.size, 'message')}`}>
                 New since you looked
+              </div>,
+            );
+          }
+          const move = threadMoves.get(message.id);
+          if (move) {
+            const held = move.kind === 'handoff' && !message.handoff?.settled_at;
+            before.push(
+              <div className="ib-tmove" key={`move-${message.id}`} data-thread-move={move.kind} data-held={held ? '' : undefined}>
+                <Icon name={move.kind === 'handoff' ? 'forward' : 'plus'} size={14} />
+                <span className="ib-tmove-t">
+                  {move.kind === 'handoff' ? 'You handed this thread to ' : 'You added '}
+                  <HostMark host={move.host} />
+                  <b>{move.names}</b>
+                  {move.kind === 'added' ? ' to this thread' : ''}
+                  <span className="ib-tmove-tm"> · {whenTime(message.created_at)}</span>
+                </span>
+                {held && (
+                  <>
+                    <span className="ib-tmove-sep" aria-hidden="true">
+                      ·
+                    </span>
+                    <button
+                      type="button"
+                      className="ib-tmove-undo"
+                      data-handoff-undo=""
+                      disabled={handoffUndo?.id === message.id && handoffUndo.busy}
+                      onClick={() => void undoHandoff(message.id)}
+                    >
+                      Undo
+                    </button>
+                  </>
+                )}
+                {handoffUndo?.id === message.id && handoffUndo.error && (
+                  <span className="ib-error" role="alert">
+                    {handoffUndo.error}
+                  </span>
+                )}
               </div>,
             );
           }
@@ -3634,7 +3775,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           // readers there, since the button's label says it.
           const hide = one ? undefined : true;
           // A reply that tags agents names them after its owner ("to Claude Code · tagged Pi, Codex").
-          const sentTags = messageTags(message);
+          // A hand-off's stop notice to the former owner is not a tag the person typed (approval "inbox-tag-handoff").
+          const sentTags = messageTags(message).filter((t) => !t.handed_away);
           const ownerOfSent = message.to ?? (askedBy(message)?.author.kind === 'agent' ? askedBy(message)!.author : null);
           const toWords = (
             <>
@@ -4000,7 +4142,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         ) : box.open ? (
           <>
             <DraftHead
-              label={`Reply to ${asker} in ${thread.project.name}`}
+              label={replyName ? `Reply to ${replyName}` : `Reply to ${asker} in ${thread.project.name}`}
               savedAt={box.text.trim() ? (replyDraft.draft?.updated_at ?? null) : null}
               conflict={
                 replyDraft.conflict !== null
@@ -4040,7 +4182,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             >
               <InboxComposerField
                 textareaRef={textRef}
-                ariaLabel={`Reply to ${asker}`}
+                ariaLabel={`Reply to ${replyName ?? asker}`}
                 ariaDescribedBy={[showAskerNote ? noteId : null, replyDraft.conflict !== null ? conflictId : null].filter(Boolean).join(' ') || undefined}
                 placeholder="Write a reply"
                 destination="your reply"

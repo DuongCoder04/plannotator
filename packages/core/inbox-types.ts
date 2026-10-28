@@ -536,6 +536,30 @@ export interface InboxMessage {
    * agent's read. Absent on every other message and on older records.
    */
   tags?: InboxTag[];
+  /**
+   * On a person's reply that handed the thread to another session (the reply
+   * box's "Hand off instead", approval "inbox-tag-handoff", option A2): the
+   * reply's `to` is the new owner, and every later reply in the thread goes
+   * to it. `from` is the session that owned the thread before (it gets a
+   * notice: a tag with `handed_away`). Held for the Undo window: nobody is
+   * handed the reply until `settled_at` is set. `undone_at`: the person took
+   * the hand-off back inside that window; the reply then went as an Ask (a
+   * tag) and no longer moves the thread. Absent on every other message.
+   */
+  handoff?: InboxHandoff | null;
+}
+
+/** A hand-off a person's reply carries (`InboxMessage.handoff`). */
+export interface InboxHandoff {
+  /** The session that owned the thread before; null when there was none. */
+  from: { host: string | null; session: string } | null;
+  /** The readable label the person picked for the new owner ("Claude Code (herdr)"). */
+  label?: string | null;
+  at: string;
+  /** The Undo window passed: the new owner and the former one are handed it. */
+  settled_at?: string | null;
+  /** Taken back inside the Undo window: the reply went as an Ask instead. */
+  undone_at?: string | null;
 }
 
 /**
@@ -572,6 +596,19 @@ export interface InboxTag {
   wait_started_at?: string | null;
   /** A session that is not woken read the thread with read_thread after the tag (its own read only). */
   read_at?: string | null;
+  /**
+   * "Add instead" (approval "inbox-tag-handoff", A2): the person added this
+   * session to the thread. It works alongside the owner, and every later
+   * reply of the person's in the thread goes to it too (the store tags it
+   * again). Absent: an Ask, today's tag (this one message only).
+   */
+  joined?: boolean;
+  /**
+   * The former owner's notice on a hand-off reply (`InboxMessage.handoff`):
+   * this session is told the thread moved and to stop work on it. Absent on
+   * every other tag.
+   */
+  handed_away?: boolean;
 }
 
 /** The most sessions one reply may tag. */

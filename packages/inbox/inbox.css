@@ -3971,6 +3971,27 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
 /* The popover is portaled out of .pn-inbox: its heads-up icons take the window's icon look here. */
 [data-comment-popover] .ib-tg-notes svg.ib-ic { width: 14px; height: 14px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
+/* The reply box's one line once it tags an agent (approval "inbox-tag-handoff", A2): what Send does, and the links that switch it. */
+.ib-tg-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin: 0; padding: 2px 12px 8px; font-size: var(--ib-fs-12-5, 12.5px); line-height: 1.45; color: var(--muted-foreground); min-width: 0; }
+.ib-tg-mode > svg { flex: none; }
+.ib-tg-mode > span { min-width: 0; overflow-wrap: anywhere; }
+.ib-tg-mode b { font-weight: 550; color: var(--foreground); }
+.ib-tg-mode-opt { display: inline-flex; align-items: center; gap: 6px; }
+.pn-inbox .ib-tg-mode-link { padding: 0; border: 0; background: none; font: inherit; font-weight: 550; color: var(--primary); cursor: pointer; border-radius: 4px; }
+.pn-inbox .ib-tg-mode-link:hover { text-decoration: underline; }
+.pn-inbox .ib-tg-mode-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* A thread that moved (approval "inbox-tag-handoff"): one centered line above the reply that handed it off or added a session. */
+.ib-tmove { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 6px; margin: 14px 0 4px; padding: 0 8px; font-size: var(--ib-fs-12-5, 12.5px); line-height: 1.45; color: var(--muted-foreground); text-align: center; }
+.ib-tmove > svg { flex: none; color: var(--primary); }
+.ib-tmove-t { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0 5px; min-width: 0; overflow-wrap: anywhere; }
+.ib-tmove-t b { font-weight: 600; color: var(--foreground); }
+.pn-inbox .ib-tmove-undo { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--primary); cursor: pointer; border-radius: 4px; }
+.pn-inbox .ib-tmove-undo:hover { text-decoration: underline; }
+.pn-inbox .ib-tmove-undo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.ib-tmove .ib-error { flex-basis: 100%; }
+[data-thread-owner] b { font-weight: 600; color: var(--foreground); }
+
 /* Per-agent delivery under a sent reply (Lines). */
 .ib-tg-dl { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .pn-inbox .ib-tg-dl > li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; column-gap: 7px; row-gap: 4px; margin: 0; padding: 0; text-align: left; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
@@ -3999,6 +4020,8 @@ svg.ib-ic.ib-glyph { stroke: currentColor; fill: none; stroke-width: 1.6; stroke
   .ib-tg-od { font-size: var(--ib-fs-12-5, 12.5px); }
   .ib-tg-goes { gap: 5px; }
   .pn-inbox .ib-tg-dl > li > .ib-sendnow { grid-column: 2; min-height: 44px; }
+  /* A finger's 44 px on the line's links and the hand-off's Undo, with the words as they are. */
+  .pn-inbox .ib-tg-mode-link, .pn-inbox .ib-tmove-undo { min-height: 44px; }
 }
 @media (max-width: 360px) {
   .ib-tg-opt { flex-wrap: wrap; row-gap: 2px; }
