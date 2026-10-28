@@ -303,7 +303,17 @@ export function engineLabel(engine: string | undefined): string {
 }
 
 export type AdapterResolution =
-  | { ok: true; command: string; args: string[]; env?: Record<string, string>; source: "setting" | "path" | "managed" }
+  | {
+      ok: true;
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+      source: "setting" | "path" | "managed";
+      /** Set by a caller that adds to the launch (Guides' user-CLI choice): a line for its log on each launch. */
+      cliLog?: string;
+      /** Set by such a caller: `AgentLaunch.startHint` (added to a failure before the first session is ready). */
+      startHint?: string;
+    }
   | {
       ok: false;
       message: string;
