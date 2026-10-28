@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   findQwenSessionLog,
@@ -70,7 +70,14 @@ describe("getQwenProjectsDir", () => {
   });
 
   test("defaults to ~/.qwen/projects", () => {
-    expect(getQwenProjectsDir({ env: {} })).toBe(join(homedir(), ".qwen", "projects"));
+    // A made-up home: the test never names the real one.
+    const home = join(tmpdir(), "qwen-session-home");
+    expect(getQwenProjectsDir({ env: {}, home })).toBe(join(home, ".qwen", "projects"));
+  });
+
+  test("a leading ~ in QWEN_HOME is the home folder", () => {
+    const home = join(tmpdir(), "qwen-session-home");
+    expect(getQwenProjectsDir({ env: { QWEN_HOME: "~/qwen" }, home })).toBe(join(home, "qwen", "projects"));
   });
 });
 
