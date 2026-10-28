@@ -196,6 +196,8 @@ jobs:
           packages/inbox/markRead.test.tsx
           packages/inbox/ack.test.tsx
           packages/inbox/actionChecklist.test.tsx
+          packages/inbox/actionDraftSend.test.tsx
+          packages/inbox/actionNoteRefusal.test.tsx
           packages/inbox/wordsOnlyTwoAsks.test.tsx
           packages/inbox/firstRunNotifications.test.tsx
           packages/inbox/tour.test.tsx
@@ -349,6 +351,7 @@ jobs:
           packages/ui/components/DocBadges.test.tsx
           packages/editor/planDiffAutoExit.test.tsx
           packages/editor/App.archiveReadOnly.test.tsx
+          packages/editor/App.refCards.test.tsx
           packages/editor/App.htmlChrome.test.tsx
           packages/editor/App.sidebarTabsAgentTerminal.test.tsx
           packages/editor/App.htmlLinkDraft.test.tsx
@@ -363,6 +366,8 @@ jobs:
           packages/editor/App.terminalToolsAnnouncement.test.tsx
           packages/ui/components/AskSessionAnnouncementDialog.test.tsx
           packages/editor/App.askSessionAnnouncement.test.tsx
+          packages/ui/components/InboxAnnouncementDialog.test.tsx
+          packages/editor/App.inboxAnnouncement.test.tsx
           packages/ui/components/AgentToolAnnouncementDialog.test.tsx
           packages/ui/components/ServerSessionReplacedBanner.test.tsx
           packages/editor/App.agentTool.test.tsx
