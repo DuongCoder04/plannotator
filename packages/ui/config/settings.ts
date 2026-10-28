@@ -34,6 +34,7 @@ import {
   isDocumentTextSize,
   type DocumentTextSize,
 } from '../utils/documentTextSize';
+import { normalizeFontFamilyName } from '../utils/cssFontFamily';
 import { storage } from '../utils/storage';
 import { isLookChoiceResolved } from '../utils/lookAndFeelAnnouncement';
 import { generateIdentity } from '../utils/generateIdentity';
@@ -248,6 +249,19 @@ export const SETTINGS = {
     },
     toCookie: (value: DocumentTextSize) =>
       storage.setItem('plannotator-document-text-size', String(value)),
+    serverKey: undefined, fromServer: undefined, toServer: undefined,
+  },
+
+  /**
+   * The document's font in plan review and annotate (#1657; see
+   * `utils/documentFont`): a generic preset or an installed family name.
+   * Empty = the theme's font. Cookie-only, like Text size.
+   */
+  documentFontFamily: {
+    defaultValue: '' as string,
+    fromCookie: () =>
+      normalizeFontFamilyName(storage.getItem('plannotator-document-font-family') ?? '') || undefined,
+    toCookie: (value: string) => storage.setItem('plannotator-document-font-family', value),
     serverKey: undefined, fromServer: undefined, toServer: undefined,
   },
 
