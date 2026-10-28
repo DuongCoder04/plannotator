@@ -59,7 +59,7 @@ export PLANNOTATOR_PORT=19432
 export PLANNOTATOR_PUBLIC_URL=https://plannotator.example.com
 ```
 
-Plannotator then prints and opens `https://plannotator.example.com` while continuing to listen on local port `19432`. `PLANNOTATOR_PUBLIC_URL` is display-only: the reverse proxy must route that origin to the configured local port.
+Plannotator then prints and opens `https://plannotator.example.com` while continuing to listen on local port `19432`. `PLANNOTATOR_PUBLIC_URL` changes only the address shown; the reverse proxy must route that origin to the configured local port. The server also answers on the public hostname, so a proxy that forwards the browser's `Host` header works without `PLANNOTATOR_ALLOWED_HOSTS`.
 
 A port range can keep additional sessions available through a directly reachable host while the reverse proxy continues to expose the first port:
 
@@ -139,7 +139,7 @@ docker run -e PLANNOTATOR_REMOTE=1 -e PLANNOTATOR_PORT=9999 -p 9999:9999 your-im
 
 ## Proxies and forwarded hostnames
 
-Plannotator answers only the hostnames it expects in the `Host` header: `localhost` and other loopback names everywhere, plus, in remote mode, IP addresses, this machine's hostname (and its `.local` name) and `PLANNOTATOR_URL_HOST`. Port forwarding (SSH, VS Code, `docker -p`) arrives as `localhost` or an IP address and needs nothing; so do GitHub Codespaces and VS Code dev tunnels, whose forwarders present `localhost` to the server. A code-server or Coder port proxy is recognized from the `VSCODE_PROXY_URI` it sets. If another proxy or tunnel forwards its own hostname (a reverse proxy, a Docker service name), Plannotator answers `403` and names the setting to change:
+Plannotator answers only the hostnames it expects in the `Host` header: `localhost` and other loopback names everywhere, plus, in remote mode, IP addresses, this machine's hostname (and its `.local` name), `PLANNOTATOR_URL_HOST` and the host of `PLANNOTATOR_PUBLIC_URL`. Port forwarding (SSH, VS Code, `docker -p`) arrives as `localhost` or an IP address and needs nothing; so do GitHub Codespaces and VS Code dev tunnels, whose forwarders present `localhost` to the server. A code-server or Coder port proxy is recognized from the `VSCODE_PROXY_URI` it sets. If another proxy or tunnel forwards its own hostname (a reverse proxy, a Docker service name), Plannotator answers `403` and names the setting to change:
 
 ```bash
 export PLANNOTATOR_ALLOWED_HOSTS=my-proxy.example.com
