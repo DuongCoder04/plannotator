@@ -288,13 +288,15 @@ export function BoardPage(props: BoardPageProps) {
     dialogKey.current = key;
     try {
       const card = await dialogCardFor(input);
+      // Made in another project than the Board shows: the card is not on screen, so the words say where it went.
+      const elsewhere = project && card.project_id !== project ? ` in ${names.get(card.project_id) ?? 'another project'}` : '';
       if (input.mode === 'send' && input.to) {
         const sent = card.sent ? card : await sendCardTo(card, input.to, key);
         props.onChanged(sent);
-        setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}.`);
+        setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}${elsewhere}.`);
       } else {
         props.onChanged(card);
-        setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}.`);
+        setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}${elsewhere}.`);
       }
       setCreating(null);
       resetDialog();

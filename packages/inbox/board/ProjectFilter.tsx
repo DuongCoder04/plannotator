@@ -31,7 +31,8 @@ export function ProjectFilter({ projects, names, value, phone, onChange }: Proje
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   useEffect(() => setPortal(trigger.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
   const name = value ? (names.get(value) ?? null) : null;
-  const label = value ? (name ?? 'Another project') : 'All projects';
+  // The name is unknown only while the projects load (App drops a filter on a project it does not know).
+  const label = value ? (name ?? 'Project') : 'All projects';
   const clear = value && (
     <button
       type="button"
@@ -67,7 +68,7 @@ export function ProjectFilter({ projects, names, value, phone, onChange }: Proje
               <div className="ib-pm-title" aria-hidden="true">
                 Project
               </div>
-              <Menu.RadioGroup value={value ?? ''} onValueChange={(next: string) => next !== (value ?? '') && onChange(next || null)} aria-label="Project">
+              <Menu.RadioGroup value={value ?? ''} onValueChange={(next: string) => next !== (value ?? '') && onChange(next || null)}>
                 <Menu.RadioItem value="" closeOnClick className="ib-pmi" label="All projects" data-board-project-option="">
                   <span className="ib-pmi-l">All projects</span>
                   {value === null && <Icon name="check" size={15} className="ib-pmi-check" />}

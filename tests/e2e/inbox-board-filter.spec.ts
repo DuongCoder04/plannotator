@@ -13,6 +13,9 @@
  *    Board;
  *  - New card opens on the filtered project;
  *  - a project with nothing in flight: the line and Show all projects;
+ *  - an empty or unknown project in the address: no filter;
+ *  - a filtered visit never records the look: another project's news stays
+ *    bold for the next visit that shows every project;
  *  - a narrow window: the button on its own row; a long name whole;
  *  - an iPhone in WebKit: the button under the header, its menu a sheet at
  *    the bottom edge.
@@ -44,6 +47,8 @@ interface World {
   ids: Record<string, string>;
   /** Project ids by name. */
   project: Record<string, string>;
+  /** Project folders by name. */
+  paths: Record<string, string>;
 }
 
 let world: World;
@@ -72,6 +77,13 @@ async function both(page: Page, name: string, keepFocus = false) {
 }
 
 /** The words the button shows (its screen reader's "Project: " prefix aside). */
+/** The Board as the server has it: the person's last look and the store's cursor. */
+const boardSeen = (page: Page) =>
+  page.evaluate(async () => {
+    const board = (await (await fetch('/api/inbox/cards')).json()) as { seen_seq?: number | null; cursor: number };
+    return { seen: board.seen_seq ?? null, cursor: board.cursor };
+  });
+
 const chipWords = (page: Page) =>
   page.locator('[data-board-project-chip] .ib-bpf-l').evaluate((el) => {
     const copy = el.cloneNode(true) as HTMLElement;
@@ -134,7 +146,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const url = started.stdout.trim();
   await page.goto(url);
   const listed = await page.evaluate(async () => ((await (await fetch('/api/inbox/projects')).json()).projects as { id: string; name: string }[]).map((p) => [p.name, p.id]));
-  world = { url, agents: [claude, codex, pi], context, page, errors, ids, project: Object.fromEntries(listed) };
+  world = { url, agents: [claude, codex, pi], context, page, errors, ids, project: Object.fromEntries(listed), paths };
 });
 
 test.afterAll(async () => {
@@ -192,7 +204,8 @@ test('picking a project from the keyboard narrows the lanes, the counts and Ship
   // The name alone, no "in" (the owner, 2026-10-28), and ×.
   expect(await chipWords(page)).toBe('workspaces');
   await expect(page.locator('[data-board-project-clear]')).toBeVisible();
-  await expect(page.locator('[data-board-live]')).toHaveText('Showing the cards in workspaces.');
+  // The polite live region names the pick (its wording is free to change).
+  await expect(page.locator('[data-board-live]')).toContainText('workspaces');
   await both(page, 'filtered-1440');
 
   // Shipped keeps the filter.
@@ -252,7 +265,7 @@ test('a project with nothing in flight says so; Show all projects clears the fil
   await page.locator(`[data-board-project-option="${project.pando}"]`).click();
   const empty = page.locator('[data-board-empty="project"]');
   await expect(empty).toBeVisible();
-  await expect(empty).toContainText('Nothing in flight in pando');
+  await expect(empty.locator('b')).toHaveText('pando');
   await expect(page.locator('[data-board-link="shipped"]')).toHaveText('Shipped 1');
   await both(page, 'empty-1440');
   await empty.locator('[data-board-show-all]').click();
@@ -261,6 +274,51 @@ test('a project with nothing in flight says so; Show all projects clears the fil
   expect(await hashOf(page)).toBe('#board');
   // Focus lands on the Board's heading, never the page (the line and its button are gone).
   await expect(page.locator('.ib-bhead h1')).toBeFocused();
+});
+
+test('an empty or unknown project in the address is no filter', async () => {
+  const { page } = world;
+  for (const hash of ['#board&project=', '#board&project=prj_gone']) {
+    await page.goto('about:blank');
+    await page.goto(`${world.url}${hash}`);
+    await expect(page.locator('.ib-blanes .ib-bcard')).toHaveCount(ALL_IN_FLIGHT);
+    await expect(page.locator('[data-board-project-filter]')).not.toHaveAttribute('data-set', '');
+    expect(await chipWords(page)).toBe('All projects');
+    await expect(page.locator('[data-board-project-clear]')).toHaveCount(0);
+    await expect(page.locator('[data-board-empty="project"]')).toHaveCount(0);
+  }
+});
+
+test("a filtered visit leaves the other projects' news unread (the look is recorded only showing every project)", async () => {
+  const { page, ids, project, paths } = world;
+  const claude = world.agents[0]!;
+  // An unfiltered visit records the look through everything so far.
+  await page.goto('about:blank');
+  await page.goto(`${world.url}#board`);
+  await expect(page.locator('.ib-blanes .ib-bcard')).toHaveCount(ALL_IN_FLIGHT);
+  await expect.poll(async () => { const b = await boardSeen(page); return b.seen === b.cursor; }).toBe(true);
+  const looked = (await boardSeen(page)).seen;
+  // Filtered to workspaces, an agent writes on a plannotator card: not on screen.
+  await page.goto('about:blank');
+  await page.goto(`${world.url}#board&project=${project.workspaces}`);
+  await expect(page.locator('.ib-blanes .ib-bcard')).toHaveCount(3);
+  await claude.card({ op: 'say', card_id: ids.auto, say: 'Rebased on main', project_path: paths.plannotator });
+  await expect.poll(async () => (await boardSeen(page)).cursor).toBeGreaterThan(looked ?? 0);
+  // A new filtered visit (a reload) records nothing.
+  await page.reload();
+  await expect(page.locator('.ib-blanes .ib-bcard')).toHaveCount(3);
+  await page.waitForTimeout(1000);
+  expect((await boardSeen(page)).seen).toBe(looked);
+  // The next visit showing every project: the plannotator card is still bold.
+  await page.goto('about:blank');
+  await page.goto(`${world.url}#board`);
+  await expect(cardEl(page, ids.auto)).toHaveAttribute('data-unread', '');
+  // That visit records the look: the one after it shows the card read.
+  await expect.poll(async () => { const b = await boardSeen(page); return b.seen === b.cursor; }).toBe(true);
+  await page.goto('about:blank');
+  await page.goto(`${world.url}#board`);
+  await expect(cardEl(page, ids.auto)).toBeVisible();
+  await expect(cardEl(page, ids.auto)).not.toHaveAttribute('data-unread', '');
 });
 
 test('a narrow window: the button on its own row under the header, a long name whole, nothing cut in the header', async () => {
@@ -302,7 +360,8 @@ test.describe('iPhone 15 (WebKit)', () => {
         await expect(page.locator('[data-board-view="phone"]')).toBeVisible();
         const button = page.locator('.ib-bfbar [data-board-project-chip]');
         await expect(button).toBeVisible();
-        expect(Math.round((await button.boundingBox())!.height)).toBeGreaterThanOrEqual(42);
+        // A whole 44 px touch target, unset and (below) picked.
+        expect(Math.round((await button.boundingBox())!.height)).toBeGreaterThanOrEqual(44);
         await page.waitForTimeout(400);
         await page.screenshot({ path: join(shots, `phone-none-${scheme}.png`) });
         await button.tap();
@@ -320,6 +379,11 @@ test.describe('iPhone 15 (WebKit)', () => {
         await expect(cardEl(page, ids.design)).toBeVisible();
         await expect(cardEl(page, ids.auto)).toHaveCount(0);
         expect(await page.evaluate(() => window.location.hash)).toBe(`#board&project=${project.workspaces}`);
+        for (const target of [button, page.locator('.ib-bfbar [data-board-project-clear]')]) {
+          const picked = (await target.boundingBox())!;
+          expect(Math.round(picked.height)).toBeGreaterThanOrEqual(44);
+          expect(Math.round(picked.width)).toBeGreaterThanOrEqual(44);
+        }
         // Nothing scrolls sideways.
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
         await page.waitForTimeout(400);

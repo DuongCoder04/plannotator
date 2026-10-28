@@ -5088,8 +5088,10 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   /* The sheet spans the phone's width, as every bottom sheet does. */
   .ib-pm-pos[data-phone] .ib-bpf-menu { max-width: none; max-height: 60vh; }
   .pn-inbox .ib-bpf-btn { height: 44px; padding: 0 12px; font-size: var(--ib-fs-15, 15px); }
-  .pn-inbox .ib-bpf[data-set] .ib-bpf-btn { height: 42px; }
-  .pn-inbox .ib-bpf-x { width: 44px; height: 42px; }
+  /* Picked: the ring is drawn inside (no border), so the button and × are each a whole 44 px target. */
+  .pn-inbox .ib-bpf[data-set] { border: 0; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 40%, transparent); }
+  .pn-inbox .ib-bpf[data-set] .ib-bpf-btn { height: 44px; }
+  .pn-inbox .ib-bpf-x { width: 44px; height: 44px; margin-right: 0; }
 }
 /* The Board off (a #board link): what it is, and Turn it on. */
 .ib-boff { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px 24px 15vh; text-align: center; }

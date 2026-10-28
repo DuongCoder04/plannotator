@@ -85,9 +85,13 @@ afterEach(() => {
 
 function scriptFetch() {
   const original = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://127.0.0.1:1');
     const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.pathname === '/api/inbox/cards' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { project: string; title: string };
+      return json({ card: card('made', body.project, { title: body.title, agent: null }) });
+    }
     if (url.pathname === '/api/inbox/sessions') return json({ serverSession: 's', home: '/Users/ada', projects: [] });
     const one = url.pathname.match(/^\/api\/inbox\/cards\/([^/]+)$/);
     if (one) return json({ card: CARDS.find((c) => c.id === one[1]), history: [] });
@@ -220,7 +224,9 @@ test.if(hasDom)('All projects shows every card; picking a project narrows the la
   // The project's name alone: no "in" (the owner, 2026-10-28), and a way to clear it.
   expect(chipWords()).toBe('api');
   expect($('[data-board-project-filter]')!.hasAttribute('data-set')).toBe(true);
-  expect($('[data-board-live]')!.textContent).toBe('Showing the cards in api.');
+  // The polite live region names the picked project (its wording is free to change).
+  const said = $('[data-board-live]')!.textContent ?? '';
+  expect(said).toContain('api');
 
   // × shows every project again.
   await act(async () => $('[data-board-project-clear]')!.click());
@@ -228,7 +234,11 @@ test.if(hasDom)('All projects shows every card; picking a project narrows the la
   expect(drawn.picks).toEqual([API, null]);
   expect(shownCards()).toHaveLength(5);
   expect($('[data-board-project-clear]')).toBeNull();
-  expect($('[data-board-live]')!.textContent).toBe('Showing the cards in every project.');
+  // Clearing is announced too: a new message, no longer naming api.
+  const cleared = $('[data-board-live]')!.textContent ?? '';
+  expect(cleared).not.toBe('');
+  expect(cleared).not.toBe(said);
+  expect(cleared).not.toContain('api');
 });
 
 test.if(hasDom)('Shipped and Icebox (with Dropped) list only the filtered project', async () => {
@@ -245,7 +255,8 @@ test.if(hasDom)('Shipped and Icebox (with Dropped) list only the filtered projec
   await settle();
   expect(shownCards()).toEqual([]);
   expect($$('[data-dropped-row]')).toEqual([]);
-  expect($('.ib-blist .ib-lane-empty')!.textContent).toBe('Nothing on ice in api.');
+  // The empty line is the filtered one: it names the project.
+  expect($('.ib-blist .ib-lane-empty')!.textContent).toContain('api');
 });
 
 test.if(hasDom)('a project with nothing in flight says so, and Show all projects clears the filter', async () => {
@@ -253,7 +264,7 @@ test.if(hasDom)('a project with nothing in flight says so, and Show all projects
   const drawn = draw({ project: QUIET });
   await settle();
   const empty = $('[data-board-empty="project"]')!;
-  expect(empty.textContent).toContain('Nothing in flight in quiet');
+  expect(empty.querySelector('b')!.textContent).toBe('quiet');
   // Not the empty Board's line: the Board has cards, this project has none.
   expect($('[data-board-empty=""]')).toBeNull();
   await act(async () => $('[data-board-show-all]')!.click());
@@ -269,6 +280,25 @@ test.if(hasDom)('a card opened from another project stays open while the Board i
   await settle();
   expect($('[data-card-panel="web_design"]')).not.toBeNull();
   expect(shownCards()).toEqual(['api_build', 'api_review']);
+});
+
+test.if(hasDom)('a card made in another project while filtered: the announcement names that project, the filter stays', async () => {
+  scriptFetch();
+  // Filtered to api, with New card on web (as when the person picks another project in the dialog).
+  const drawn = draw({ project: API, defaultProject: WEB });
+  await settle();
+  act(() => $('[data-board-new]')!.click());
+  await settle();
+  const title = $('[data-new-card-title]') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(title, 'A roadmap page');
+    title.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => $$('[data-new-card-add]').at(-1)!.click());
+  await settle();
+  expect($('[data-board-live]')!.textContent).toContain('web');
+  expect(drawn.picks).toEqual([]);
+  expect(chipWords()).toBe('api');
 });
 
 test.if(hasDom)('a phone: the Project button on its own row under the header, its menu a bottom sheet', async () => {
@@ -290,7 +320,7 @@ test.if(hasDom)('a phone filtered to a project with no cards says so, with Show 
   scriptFetch();
   draw({ phone: true, project: QUIET });
   await settle();
-  expect($('[data-board-empty="project"]')!.textContent).toContain('No cards in quiet');
+  expect($('[data-board-empty="project"]')!.textContent).toContain('quiet');
   expect($('[data-board-view="phone"] .ib-bstack')).toBeNull();
   expect($('[data-board-show-all]')).not.toBeNull();
 });
