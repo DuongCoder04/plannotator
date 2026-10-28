@@ -1385,7 +1385,7 @@ if (-not (Test-Path $extrasMigration)) {
 # redirected/CI runs never prompt. Flags win over everything.
 $prefsFile = Join-Path $configDir "install-prefs"
 $coreSkillNames = @("plannotator-review", "plannotator-annotate", "plannotator-last")
-$extraSkillNames = @("plannotator-compound", "plannotator-setup-goal", "plannotator-visual-explainer", "plannotator-markup")
+$extraSkillNames = @("plannotator-compound", "plannotator-setup-goal", "plannotator-visual-explainer")
 
 $savedExtras = ""
 $savedInvocable = ""
