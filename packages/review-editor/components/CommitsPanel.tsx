@@ -34,13 +34,16 @@ interface CommitsPanelProps {
   onSelectPanelView: (view: ReviewPanelView) => void;
   /** Whether the Git status segment is offered (since-base capable repos). */
   showSectionsOption: boolean;
+  /** Badge on the `isHead` row: `HEAD` for git, `@` (the working copy) for jj. */
+  headLabel?: string;
 }
 
 const CommitRow: React.FC<{
   commit: CommitListEntry;
   isActive: boolean;
+  headLabel: string;
   onSelect: () => void;
-}> = ({ commit, isActive, onSelect }) => (
+}> = ({ commit, isActive, headLabel, onSelect }) => (
   <button
     onClick={onSelect}
     className={`w-full text-left px-2 py-1.5 transition-colors ${
@@ -53,7 +56,7 @@ const CommitRow: React.FC<{
       <span className="text-xs truncate flex-1">{commit.subject}</span>
       {commit.isHead && (
         <span className="text-[9px] leading-none px-1 py-0.5 rounded bg-primary/15 text-primary font-medium flex-shrink-0">
-          HEAD
+          {headLabel}
         </span>
       )}
       <span className="text-[10px] text-muted-foreground/70 tabular-nums flex-shrink-0">
@@ -105,6 +108,7 @@ export const CommitsPanel: React.FC<CommitsPanelProps> = ({
   onRetry,
   onSelectPanelView,
   showSectionsOption,
+  headLabel = 'HEAD',
 }) => {
   // isPastBase is a suffix of the linear walk (reachability from the base is
   // monotone along first parents), so one boundary is exhaustive.
@@ -116,18 +120,24 @@ export const CommitsPanel: React.FC<CommitsPanelProps> = ({
       className="border-r border-border/50 bg-card/30 flex flex-col flex-shrink-0 overflow-hidden"
       style={{ width: width ?? 256 }}
     >
-      {/* Header — same slot/layout as the other panel views. */}
+      {/* Header — the view toggle owns the entire top row (full width), same
+          layout as the other panel views. The loaded-commit count moves to its
+          own sub-row since nothing else shares the toggle row. */}
       <div className="px-3 flex items-center border-b border-border/50 flex-shrink-0" style={{ height: 'var(--panel-header-h)' }}>
-        <div className="w-full flex items-center justify-between gap-2">
-          <PanelViewToggle
-            view="commits"
-            onSelect={onSelectPanelView}
-            showSections={showSectionsOption}
-            showCommits
-          />
-          <span className="text-xs text-muted-foreground tabular-nums">{commits.length}</span>
-        </div>
+        <PanelViewToggle
+          view="commits"
+          onSelect={onSelectPanelView}
+          showSections={showSectionsOption}
+          showCommits
+        />
       </div>
+      {commits.length > 0 && (
+        <div className="px-3 py-1 border-b border-border/30 flex items-center justify-end flex-shrink-0">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {commits.length} {commits.length === 1 ? 'commit' : 'commits'}
+          </span>
+        </div>
+      )}
 
       <OverlayScrollArea className="flex-1 min-h-0">
         <div className="py-1">
@@ -162,6 +172,7 @@ export const CommitsPanel: React.FC<CommitsPanelProps> = ({
                   <CommitRow
                     commit={commit}
                     isActive={commit.sha === activeCommitSha}
+                    headLabel={headLabel}
                     onSelect={() => onSelectCommit(commit.sha)}
                   />
                 </React.Fragment>

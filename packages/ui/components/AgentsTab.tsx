@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { AgentJobInfo, AgentCapabilities } from '../types';
 import { isTerminalStatus } from '@plannotator/core/agent-jobs';
+import { GUIDE_ENGINE_LABEL } from '@plannotator/core/guide';
 import { cn } from '../lib/utils';
 import { ReviewAgentsIcon } from './ReviewAgentsIcon';
 import { ClaudeIcon, CodexIcon, CopilotIcon, CursorIcon, OpenCodeIcon, PiIcon } from './icons/AgentIcons';
@@ -22,70 +23,29 @@ import { useAgentSettings } from '../hooks/useAgentSettings';
 import type { AgentEngine, AgentMode, ReviewEngine } from '../hooks/useAgentSettings';
 import type { AgentLaunchParams } from '../hooks/useAgentJobs';
 import { ConfigRow, SegmentedPicker, Toggle, SelectMenu } from './AgentControls';
+import { ModelSourceHint } from './ModelSourceHint';
+import {
+  CLAUDE_FALLBACK_MODELS,
+  CODEX_FALLBACK_MODELS,
+  EFFORT_LABELS,
+  effortSelectOptions,
+  modelLabel,
+  modelSelectOptions,
+  PI_THINKING_LEVELS,
+  type CatalogModel,
+} from '@plannotator/core/model-catalog';
+import { useModelCatalogs, type ModelCatalogs } from '../hooks/useModelCatalogs';
 
 export type { AgentLaunchParams } from '../hooks/useAgentJobs';
 
-// --- Agent option catalogs (shared across review + tour engine dropdowns) ---
+// --- Agent option catalogs ---
+// Claude and Codex models come from the installed CLIs (useModelCatalogs —
+// the same lists Ask AI shows); only the marker-engine fallbacks live here.
 
-export const CLAUDE_MODELS: Array<{ value: string; label: string }> = [
-  { value: 'claude-fable-5', label: 'Fable 5' },
-  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
-  { value: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M)' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5' },
-  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6 (1M)' },
-  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-  { value: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M)' },
-  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { value: 'claude-opus-4-6[1m]', label: 'Opus 4.6 (1M)' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-];
-
-export const CLAUDE_EFFORT: Array<{ value: string; label: string }> = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
-  { value: 'max', label: 'Max' },
-];
-
-export const CODEX_MODELS: Array<{ value: string; label: string }> = [
-  // GPT-5.6 naming scheme: the bare `gpt-5.6` alias routes to `gpt-5.6-sol`
-  // (flagship); `-terra` is the mid price/performance tier and `-luna` the
-  // efficient high-volume tier.
-  { value: 'gpt-5.6', label: 'GPT-5.6' },
-  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
-  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
-  { value: 'gpt-5.5', label: 'GPT-5.5' },
-  { value: 'gpt-5.4', label: 'GPT-5.4' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
-  { value: 'gpt-5.2', label: 'GPT-5.2' },
-  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
-  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-];
-
-export const CODEX_REASONING: Array<{ value: string; label: string }> = [
-  { value: 'minimal', label: 'Minimal' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
-];
-
-// Tour/guide Claude catalog: the CLI's latest-resolving aliases on top
-// (verified against `claude --help`: "Provide an alias for the latest model
-// (e.g. 'fable', 'opus', or 'sonnet') or a model's full name"), then every
-// pinned version from the review catalog.
-// Also reused by GuideEmptyState (packages/review-editor).
-export const TOUR_CLAUDE_MODELS: Array<{ value: string; label: string }> = [
-  { value: 'sonnet', label: 'Sonnet (latest)' },
-  { value: 'opus', label: 'Opus (latest)' },
-  { value: 'fable', label: 'Fable (latest)' },
-  ...CLAUDE_MODELS,
-];
+/** Whether a model offers a fast tier (Codex's fast mode toggle). */
+export function modelSupportsFast(models: readonly CatalogModel[], modelId: string): boolean {
+  return models.find((m) => m.id === modelId)?.fastMode === true;
+}
 
 // Fallback Cursor model catalog (just `auto`). The real, account-specific list
 // is discovered server-side via `agent models` and delivered on the cursor
@@ -116,15 +76,14 @@ const COPILOT_MODELS: Array<{ value: string; label: string }> = [
 ];
 
 // Pi's unified reasoning knob (`--thinking`), applied to whichever model is
-// selected. xhigh is accepted only by codex-max models.
-export const PI_THINKING: Array<{ value: string; label: string }> = [
-  { value: 'off', label: 'Off' },
-  { value: 'minimal', label: 'Min' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Med' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
-];
+// selected; pi clamps a level the model does not support. Pi's own level
+// vocabulary minus `max`, which pi only accepts on `--thinking` since 0.80.6
+// (an older pi would reject the whole job). Short labels fit the segmented
+// picker.
+const PI_THINKING_SHORT_LABELS: Record<string, string> = { minimal: 'Min', medium: 'Med' };
+export const PI_THINKING: Array<{ value: string; label: string }> = PI_THINKING_LEVELS
+  .filter((level) => level !== 'max')
+  .map((level) => ({ value: level, label: PI_THINKING_SHORT_LABELS[level] ?? EFFORT_LABELS[level] ?? level }));
 
 const MODE_LABEL: Record<AgentMode, string> = {
   review: 'Code Review',
@@ -146,14 +105,7 @@ const ENGINE_ICON: Record<AgentEngine, React.FC<{ className?: string }>> = {
 // review surface offers the wider set (Cursor/OpenCode). Exported so the guide
 // takeover surfaces (GuideScreen, GuideEmptyState in packages/review-editor)
 // share this one source of truth instead of keeping their own copies in sync.
-export const REVIEW_ENGINE_LABEL: Record<ReviewEngine, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  opencode: 'OpenCode',
-  pi: 'Pi',
-  copilot: 'Copilot',
-};
+export const REVIEW_ENGINE_LABEL: Record<ReviewEngine, string> = GUIDE_ENGINE_LABEL;
 
 // Review-only icon map — the wide set. Tour keeps the narrow ENGINE_ICON.
 const REVIEW_ENGINE_ICON: Record<ReviewEngine, React.FC<{ className?: string }>> = {
@@ -252,18 +204,24 @@ function catalogLabel(list: Array<{ value: string; label: string }>, value: stri
   return list.find((o) => o.value === value)?.label ?? value;
 }
 
-function formatModel(provider: string, engine: string | undefined, model: string): string {
+type ModelLabelCatalogs = Pick<ModelCatalogs, 'claude' | 'codex'>;
+
+function formatModel(provider: string, engine: string | undefined, model: string, catalogs: ModelLabelCatalogs): string {
+  // Claude/Codex: the discovered catalog's label (fallback list, then alias
+  // naming, then the raw id for anything neither knows).
+  const claudeLabel = () => modelLabel([...catalogs.claude.models, ...CLAUDE_FALLBACK_MODELS], model);
+  const codexLabel = () => modelLabel([...catalogs.codex.models, ...CODEX_FALLBACK_MODELS], model);
   if (provider === 'cursor') return catalogLabel(CURSOR_MODELS, model);
   if (provider === 'opencode') return model ? model : 'Default';
   if (provider === 'pi') return model || 'Default';
   if (provider === 'copilot') return model || 'Default';
-  if (provider === 'codex' || engine === 'codex') return catalogLabel(CODEX_MODELS, model);
-  if ((provider === 'tour' || provider === 'guide') && engine === 'claude') return catalogLabel(TOUR_CLAUDE_MODELS, model);
+  if (provider === 'codex' || engine === 'codex') return codexLabel();
+  if ((provider === 'tour' || provider === 'guide') && engine === 'claude') return claudeLabel();
   if (provider === 'tour' || provider === 'guide') {
     if (engine === 'cursor') return catalogLabel(CURSOR_MODELS, model);
     if (engine === 'opencode' || engine === 'pi' || engine === 'copilot') return model || 'Default';
   }
-  return catalogLabel(CLAUDE_MODELS, model);
+  return claudeLabel();
 }
 
 function formatThinking(value: string): string {
@@ -272,11 +230,7 @@ function formatThinking(value: string): string {
 
 
 function formatEffort(value: string): string {
-  return catalogLabel(CLAUDE_EFFORT, value);
-}
-
-function formatReasoning(value: string): string {
-  return catalogLabel(CODEX_REASONING, value);
+  return EFFORT_LABELS[value] ?? value;
 }
 
 // --- Add-a-review dialog: a type-ahead picker over every discovered skill ---
@@ -408,8 +362,10 @@ function JobCard({
   onToggle,
   onViewDetails,
   onOpenGuide,
+  catalogs,
 }: {
   job: AgentJobInfo;
+  catalogs: ModelLabelCatalogs;
   annotationCount: number;
   onKill: () => void;
   expanded: boolean;
@@ -437,10 +393,10 @@ function JobCard({
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[9px] text-muted-foreground/50">
             <span className="rounded bg-surface-1 px-1 py-px">{job.provider}</span>
             {job.model && (
-              <span className="rounded bg-surface-1 px-1 py-px font-mono">{formatModel(job.provider, job.engine, job.model)}</span>
+              <span className="rounded bg-surface-1 px-1 py-px font-mono">{formatModel(job.provider, job.engine, job.model, catalogs)}</span>
             )}
             {job.effort && <span className="rounded bg-surface-1 px-1 py-px">{formatEffort(job.effort)}</span>}
-            {job.reasoningEffort && <span className="rounded bg-surface-1 px-1 py-px">{formatReasoning(job.reasoningEffort)}</span>}
+            {job.reasoningEffort && <span className="rounded bg-surface-1 px-1 py-px">{formatEffort(job.reasoningEffort)}</span>}
             {job.thinking && <span className="rounded bg-surface-1 px-1 py-px">{formatThinking(job.thinking)}</span>}
             {job.fastMode && (
               <span className="rounded bg-amber-500/10 px-1 py-px text-amber-600 dark:text-amber-400">
@@ -467,11 +423,17 @@ function JobCard({
             e.stopPropagation();
             onKill();
           }}
-          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
           title="Kill agent"
         >
           <X size={12} />
         </button>
+      )}
+
+      {job.warning && (
+        <p role="status" data-agent-job-warning className="mt-1.5 ml-4 text-[10px] leading-snug text-warning">
+          {job.warning}
+        </p>
       )}
 
       {/* Error details — fallback for when the dockview detail panel is not available */}
@@ -546,7 +508,11 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   const [pendingLaunch, setPendingLaunch] = useState<{ label: string; provider?: string; startedAt: number } | null>(null);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const launchingRef = useRef(false);
-  const settings = useAgentSettings();
+  // Claude/Codex catalogs are shared with Ask AI; only the engine this panel
+  // is set to is fetched (never on page load), and saved picks resolve
+  // against it.
+  const catalogs = useModelCatalogs(capabilities);
+  const settings = useAgentSettings(catalogs);
   const {
     selectedMode,
     reviewEngine,
@@ -607,6 +573,9 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     setGuidePiThinking,
     setGuideCopilotModel,
   } = settings;
+  const activeEngine = selectedMode === 'review' ? reviewEngine : selectedMode === 'tour' ? tourEngine : guideEngine;
+  const loadCatalog = catalogs.load;
+  useEffect(() => loadCatalog(activeEngine), [loadCatalog, activeEngine]);
 
   // Review profiles (built-in default plus the user's enabled skills). Loaded
   // from the discovery endpoint and refreshed after a skill is added.
@@ -891,7 +860,12 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
       ? { effort: tourClaudeEffort }
       : { reasoningEffort: tourCodexReasoning, ...(tourCodexFast && { fastMode: true }) }),
   });
-  const buildGuideLaunch = (): LaunchParams => {
+  // Guide extra instructions (#1265) are server-stored: this surface has no
+  // editor, so it sends none and the server applies the stored standing
+  // instructions itself, keeping sidebar launches identical to launch-page
+  // ones without a second read path.
+  const buildGuideLaunch = (): LaunchParams => buildGuideEngineParams();
+  const buildGuideEngineParams = (): LaunchParams => {
     if (guideEngine === 'cursor') {
       // Same omission rules as buildReviewLaunch: auto/empty ⇒ engine default.
       // Guide-scoped model — deliberately NOT the shared cursorModel (see
@@ -943,12 +917,16 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   // the saved id can't be found yet and the launch would quietly run Default. A
   // Default pick has nothing to resolve, so it never waits.
   const reviewReady = profilesLoaded || reviewProfileId === 'builtin:default';
+  // Claude/Codex launches wait for the model catalog to settle (it always
+  // does — the fallback on failure), so a launch never uses an unresolved pick.
+  const modelsReady = (engine: ReviewEngine) =>
+    engine === 'claude' || engine === 'codex' ? catalogs[engine].settled : true;
   const canLaunch = selectedMode === 'review'
-    ? reviewEngineAvailable(reviewEngine) && reviewReady
+    ? reviewEngineAvailable(reviewEngine) && reviewReady && modelsReady(reviewEngine)
     : selectedMode === 'tour'
-      ? tourAvailable && engineAvailable(tourEngine)
+      ? tourAvailable && engineAvailable(tourEngine) && modelsReady(tourEngine)
       : selectedMode === 'guide'
-        ? guideAvailable && reviewEngineAvailable(guideEngine) && guideLaunchable
+        ? guideAvailable && reviewEngineAvailable(guideEngine) && guideLaunchable && modelsReady(guideEngine)
         : false;
 
   const handleLaunch = async () => {
@@ -1035,6 +1013,43 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     );
   }
 
+  // Model picker for Claude and Codex, or a quiet loading row while that
+  // engine's catalog is still settling (launch is held until it does).
+  const renderCatalogModelPicker = (
+    engine: 'claude' | 'codex',
+    value: string,
+    onChange: (value: string) => void,
+  ) => (
+    <ConfigRow label="Model" stacked>
+      {catalogs[engine].settled ? (
+        <>
+          <SelectMenu value={value} options={modelSelectOptions(catalogs[engine].models, value)} onChange={onChange} />
+          <ModelSourceHint tool={engine} info={catalogs[engine]} className="text-[10px] text-muted-foreground/50" />
+        </>
+      ) : (
+        renderStaticChoice('Loading models…', <Loader2 className="animate-spin text-muted-foreground" size={11} />)
+      )}
+    </ConfigRow>
+  );
+
+  // Effort / reasoning picker for Claude and Codex: only the levels the
+  // selected model accepts, and no picker at all for a model that takes none.
+  const renderEffortPicker = (
+    label: string,
+    models: readonly CatalogModel[],
+    model: string,
+    value: string,
+    onChange: (value: string) => void,
+  ) => {
+    const options = effortSelectOptions(models, model);
+    if (options.length === 0) return null;
+    return (
+      <ConfigRow label={label} stacked>
+        <SegmentedPicker options={options} value={value} onChange={onChange} />
+      </ConfigRow>
+    );
+  };
+
   // Cursor and OpenCode share the same review config: an "experimental" note and
   // a single model picker driven by their live (or fallback) catalog.
   const renderMarkerEngineConfig = (
@@ -1104,25 +1119,19 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                 </ConfigRow>
                 {reviewEngine === 'claude' && (
                   <>
-                    <ConfigRow label="Model" stacked>
-                      <SelectMenu value={claudeModel} options={CLAUDE_MODELS} onChange={setClaudeModel} />
-                    </ConfigRow>
-                    <ConfigRow label="Effort" stacked>
-                      <SegmentedPicker options={CLAUDE_EFFORT} value={claudeEffort} onChange={setClaudeEffort} />
-                    </ConfigRow>
+                    {renderCatalogModelPicker('claude', claudeModel, setClaudeModel)}
+                    {renderEffortPicker('Effort', catalogs.claude.models, claudeModel, claudeEffort, setClaudeEffort)}
                   </>
                 )}
                 {reviewEngine === 'codex' && (
                   <>
-                    <ConfigRow label="Model" stacked>
-                      <SelectMenu value={codexModel} options={CODEX_MODELS} onChange={setCodexModel} />
-                    </ConfigRow>
-                    <ConfigRow label="Reasoning" stacked>
-                      <SegmentedPicker options={CODEX_REASONING} value={codexReasoning} onChange={setCodexReasoning} />
-                    </ConfigRow>
-                    <ConfigRow label="Fast mode">
-                      <Toggle checked={codexFast} onChange={setCodexFast} />
-                    </ConfigRow>
+                    {renderCatalogModelPicker('codex', codexModel, setCodexModel)}
+                    {renderEffortPicker('Reasoning', catalogs.codex.models, codexModel, codexReasoning, setCodexReasoning)}
+                    {modelSupportsFast(catalogs.codex.models, codexModel) && (
+                      <ConfigRow label="Fast mode">
+                        <Toggle checked={codexFast} onChange={setCodexFast} />
+                      </ConfigRow>
+                    )}
                   </>
                 )}
                 {reviewEngine === 'cursor' && renderMarkerEngineConfig(cursorModel, cursorModels, setCursorModel)}
@@ -1142,30 +1151,23 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
             {selectedMode === 'tour' && (
               <>
                 {renderEngineSelect(tourEngine, setTourEngine, availableEngines, ENGINE_ICON, ENGINE_LABEL)}
-                <ConfigRow label="Model" stacked>
-                  <SelectMenu
-                    value={tourEngine === 'claude' ? tourClaudeModel : tourCodexModel}
-                    options={tourEngine === 'claude' ? TOUR_CLAUDE_MODELS : CODEX_MODELS}
-                    onChange={tourEngine === 'claude' ? setTourClaudeModel : setTourCodexModel}
-                  />
-                </ConfigRow>
+                {tourEngine === 'claude'
+                  ? renderCatalogModelPicker('claude', tourClaudeModel, setTourClaudeModel)
+                  : renderCatalogModelPicker('codex', tourCodexModel, setTourCodexModel)}
 
                 {/* Claude-only: effort level */}
-                {tourEngine === 'claude' && (
-                  <ConfigRow label="Effort" stacked>
-                    <SegmentedPicker options={CLAUDE_EFFORT} value={tourClaudeEffort} onChange={setTourClaudeEffort} />
-                  </ConfigRow>
-                )}
+                {tourEngine === 'claude' &&
+                  renderEffortPicker('Effort', catalogs.claude.models, tourClaudeModel, tourClaudeEffort, setTourClaudeEffort)}
 
                 {/* Codex-only: reasoning effort + fast mode */}
                 {tourEngine === 'codex' && (
                   <>
-                    <ConfigRow label="Reasoning" stacked>
-                      <SegmentedPicker options={CODEX_REASONING} value={tourCodexReasoning} onChange={setTourCodexReasoning} />
-                    </ConfigRow>
-                    <ConfigRow label="Fast mode">
-                      <Toggle checked={tourCodexFast} onChange={setTourCodexFast} />
-                    </ConfigRow>
+                    {renderEffortPicker('Reasoning', catalogs.codex.models, tourCodexModel, tourCodexReasoning, setTourCodexReasoning)}
+                    {modelSupportsFast(catalogs.codex.models, tourCodexModel) && (
+                      <ConfigRow label="Fast mode">
+                        <Toggle checked={tourCodexFast} onChange={setTourCodexFast} />
+                      </ConfigRow>
+                    )}
                   </>
                 )}
               </>
@@ -1174,31 +1176,18 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
             {selectedMode === 'guide' && (
               <>
                 {renderEngineSelect(guideEngine, setGuideEngine, availableReviewEngines, REVIEW_ENGINE_ICON, REVIEW_ENGINE_LABEL)}
-                {(guideEngine === 'claude' || guideEngine === 'codex') && (
-                  <ConfigRow label="Model" stacked>
-                    <SelectMenu
-                      value={guideEngine === 'claude' ? guideClaudeModel : guideCodexModel}
-                      options={guideEngine === 'claude' ? TOUR_CLAUDE_MODELS : CODEX_MODELS}
-                      onChange={guideEngine === 'claude' ? setGuideClaudeModel : setGuideCodexModel}
-                    />
-                  </ConfigRow>
-                )}
+                {guideEngine === 'claude' && renderCatalogModelPicker('claude', guideClaudeModel, setGuideClaudeModel)}
+                {guideEngine === 'codex' && renderCatalogModelPicker('codex', guideCodexModel, setGuideCodexModel)}
 
                 {/* Claude-only: effort level */}
-                {guideEngine === 'claude' && (
-                  <ConfigRow label="Effort" stacked>
-                    <SegmentedPicker options={CLAUDE_EFFORT} value={guideClaudeEffort} onChange={setGuideClaudeEffort} />
-                  </ConfigRow>
-                )}
+                {guideEngine === 'claude' &&
+                  renderEffortPicker('Effort', catalogs.claude.models, guideClaudeModel, guideClaudeEffort, setGuideClaudeEffort)}
 
                 {/* Codex-only: reasoning effort. No "Fast mode" toggle here
                     (unlike review/tour's codex blocks above) — fast mode is
                     deliberately not offered for guide. */}
-                {guideEngine === 'codex' && (
-                  <ConfigRow label="Reasoning" stacked>
-                    <SegmentedPicker options={CODEX_REASONING} value={guideCodexReasoning} onChange={setGuideCodexReasoning} />
-                  </ConfigRow>
-                )}
+                {guideEngine === 'codex' &&
+                  renderEffortPicker('Reasoning', catalogs.codex.models, guideCodexModel, guideCodexReasoning, setGuideCodexReasoning)}
 
                 {/* Marker engines: same live-catalog model picker as review mode,
                     but bound to the guide-scoped settings (see useAgentSettings) so
@@ -1257,6 +1246,7 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
             <JobCard
               key={job.id}
               job={job}
+              catalogs={catalogs}
               annotationCount={annotationCounts.get(job.source) ?? 0}
               onKill={() => onKillJob(job.id)}
               expanded={expandedJobId === job.id}

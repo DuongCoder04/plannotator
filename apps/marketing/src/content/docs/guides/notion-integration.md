@@ -22,11 +22,13 @@ Plannotator can save plans to Notion as child pages of a page you choose. The in
 
 The token persists through future sessions wherever you keep your environment secrets. It is read only by the local Plannotator server and is never sent from the browser.
 
+The Notion option appears only when `NOTION_TOKEN` is set. It is off in remote sessions (`PLANNOTATOR_REMOTE`, SSH) and `--tailscale` sessions, because anyone who can open the page would save with your token.
+
 ## Exporting
 
 Use **Export > Notes**, **Save to Notion** in the header menu, or set Notion as the default `Cmd/Ctrl+S` destination. You can also enable **Auto-save on Plan Arrival**.
 
-Each export creates a child page whose title is the plan's first H1. The plan body is sent as Notion-flavored Markdown.
+Each export creates a new child page. The plan's first H1 becomes the page title, and the rest of the plan becomes the page body (Notion Markdown).
 
 ## Troubleshooting
 

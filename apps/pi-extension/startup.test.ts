@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadPlannotatorBrowser } from "./plannotator-browser-runtime";
+import { loadPlannotatorBrowser } from "./plannotator-browser-runtime.ts";
 
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -19,14 +19,14 @@ describe("Pi extension startup boundary", () => {
 	test("keeps invocation-only modules out of the eager index graph", () => {
 		const imports = scanImports("index.ts");
 		const invocationOnlyModules = [
-			"./generated/annotate-args.js",
-			"./generated/at-reference.js",
-			"./generated/html-to-markdown.js",
-			"./generated/prompts.js",
-			"./generated/reference-common.js",
-			"./generated/resolve-file.js",
-			"./generated/review-args.js",
-			"./generated/url-to-markdown.js",
+			"./generated/annotate-args.ts",
+			"./generated/at-reference.ts",
+			"./generated/html-to-markdown.ts",
+			"./generated/prompts.ts",
+			"./generated/reference-common.ts",
+			"./generated/resolve-file.ts",
+			"./generated/review-args.ts",
+			"./generated/url-to-markdown.ts",
 		];
 
 		for (const modulePath of invocationOnlyModules) {
@@ -39,10 +39,10 @@ describe("Pi extension startup boundary", () => {
 		const eventImports = scanImports("plannotator-events.ts");
 		const runtimeImports = scanImports("plannotator-browser-runtime.ts");
 
-		expect(eventImports.eager).not.toContain("./plannotator-browser.js");
-		expect(eventImports.eager).toContain("./plannotator-browser-runtime.js");
-		expect(runtimeImports.eager).not.toContain("./plannotator-browser.js");
-		expect(runtimeImports.dynamic).toContain("./plannotator-browser.js");
+		expect(eventImports.eager).not.toContain("./plannotator-browser.ts");
+		expect(eventImports.eager).toContain("./plannotator-browser-runtime.ts");
+		expect(runtimeImports.eager).not.toContain("./plannotator-browser.ts");
+		expect(runtimeImports.dynamic).toContain("./plannotator-browser.ts");
 	});
 
 	test("coalesces concurrent first-use browser imports", async () => {
@@ -56,12 +56,60 @@ describe("Pi extension startup boundary", () => {
 		expect(browser.startMarkdownAnnotationSession).toBeFunction();
 	});
 
-	test("ships the lazy runtime in the npm package", () => {
+	test("ships the lazy runtime and todo providers in the npm package", () => {
 		const manifest = JSON.parse(
 			readFileSync(join(extensionDirectory, "package.json"), "utf-8"),
 		) as { files?: unknown };
 
 		expect(Array.isArray(manifest.files)).toBe(true);
 		expect(manifest.files).toContain("plannotator-browser-runtime.ts");
+		expect(manifest.files).toContain("todo-providers/");
+	});
+
+	test("ships the plannotator knowledge skill without a static manifest entry", () => {
+		// #1377 install reach: Pi users got the extension but none of the CLI
+		// reference every other host installs as a skill. vendor.sh must make
+		// the copy and `files` must ship it and the module that offers it.
+		// #1642: it must NOT be declared in `pi.skills` — a static entry always
+		// loads, so it collides with the CLI installer's ~/.agents/skills copy.
+		// bundled-skill.ts offers it from resources_discover instead.
+		const manifest = JSON.parse(
+			readFileSync(join(extensionDirectory, "package.json"), "utf-8"),
+		) as { files?: unknown; pi?: { skills?: unknown } };
+
+		expect(manifest.files).toContain("skills/");
+		expect(manifest.files).toContain("bundled-skill.ts");
+		expect(manifest.pi?.skills).toBeUndefined();
+
+		// Assert the vendor step rather than the vendored file: a fresh checkout
+		// has not run vendor.sh yet, and this must not depend on build order.
+		const vendorScript = readFileSync(
+			join(extensionDirectory, "vendor.sh"),
+			"utf-8",
+		);
+		expect(vendorScript).toContain(
+			"cp -R ../skills/core/plannotator skills/plannotator",
+		);
+	});
+
+	test("requires a Pi host that exposes the resolved project-trust decision", () => {
+		const manifest = JSON.parse(
+			readFileSync(join(extensionDirectory, "package.json"), "utf-8"),
+		) as {
+			peerDependencies?: Record<string, string>;
+			devDependencies?: Record<string, string>;
+		};
+
+		// Deliberate security/API floor: lowering it re-admits the four Pi
+		// advisories and removes the project-trust context API this extension uses.
+		expect(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"]).toBe(">=0.79.1");
+		for (const packageName of [
+			"@earendil-works/pi-coding-agent",
+			"@earendil-works/pi-agent-core",
+			"@earendil-works/pi-ai",
+			"@earendil-works/pi-tui",
+		]) {
+			expect(manifest.devDependencies?.[packageName]).toBe(">=0.79.1");
+		}
 	});
 });

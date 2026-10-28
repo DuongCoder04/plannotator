@@ -59,6 +59,12 @@ function provider(
 }
 
 const gitRuntime: ReviewGitRuntime = {
+  async getFileInfo() {
+    return null;
+  },
+  async readLink() {
+    return null;
+  },
   async runGit() {
     return { stdout: "", stderr: "", exitCode: 0 };
   },
@@ -279,6 +285,41 @@ describe("createVcsApi", () => {
       diffType: "jj-line",
       base: "feature@origin",
       rawPatch: "jj:jj-line:feature@origin",
+    });
+  });
+
+  test("falls back from an unavailable provider mode without changing the requested preference", async () => {
+    const jj = provider("jj", true, ["jj-current", "jj-line"], {
+      defaultBranch: "trunk()",
+      diffOptions: [
+        { id: "jj-current", label: "Current change" },
+        { id: "jj-line", label: "Line of work" },
+      ],
+      diffAvailability: {
+        "jj-line": {
+          fallbackDiffType: "jj-current",
+          message: "Choose a line-of-work base.",
+          candidates: [{ revision: "abc", labels: ["left"], subject: "Left base" }],
+        },
+      },
+      vcsType: "jj",
+    });
+    const api = createVcsApi([jj]);
+
+    await expect(api.prepareLocalReviewDiff({
+      cwd: "/repo",
+      requestedDiffType: "jj-line",
+      configuredDiffType: "jj-current",
+    })).resolves.toMatchObject({
+      diffType: "jj-current",
+      rawPatch: "jj:jj-current:trunk()",
+      gitContext: {
+        diffFallback: {
+          requestedDiffType: "jj-line",
+          effectiveDiffType: "jj-current",
+          message: "Choose a line-of-work base.",
+        },
+      },
     });
   });
 

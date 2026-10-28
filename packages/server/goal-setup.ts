@@ -6,6 +6,7 @@
  * launch a browser session, wait, and receive a structured JSON result.
  */
 
+import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
 import type { Origin } from "@plannotator/shared/agents";
 import {
   createFactsResult,
@@ -15,7 +16,10 @@ import {
   type GoalSetupQuestionAnswer,
   type GoalSetupResult,
 } from "@plannotator/shared/goal-setup";
-import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort } from "./remote";
+import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
+import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
+import { refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import {
   handleFavicon,
@@ -24,6 +28,8 @@ import {
   handleUpload,
 } from "./shared-handlers";
 import { detectGitUser, getServerConfig, saveConfig } from "./config";
+import { agentToolHostForServer } from "./ai-runtime";
+import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { isWSL } from "./browser";
 
 export { handleServerReady as handleGoalSetupServerReady } from "./shared-handlers";
@@ -99,14 +105,22 @@ export async function startGoalSetupServer(
     resolveDecision(result);
   };
 
+  const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills long-running requests.
         idleTimeout: 0,
 
         async fetch(req) {
+          // Host allowlist first, before any route (request-host-guard.ts).
+          const hostRefusal = requestHostGuard.check(req);
+          if (hostRefusal) return hostRefusal;
+          // Then no write from another site, before any route (request-origin-guard.ts).
+          const originRefusal = refuseCrossOriginWrite(req);
+          if (originRefusal) return originRefusal;
+
           const url = new URL(req.url);
 
           if (
@@ -122,7 +136,7 @@ export async function startGoalSetupServer(
               repoInfo,
               projectRoot: process.cwd(),
               isWSL: wslFlag,
-              serverConfig: getServerConfig(gitUser),
+              serverConfig: getServerConfig(gitUser, agentToolHostForServer()),
               sharingEnabled: false,
             });
           }
@@ -132,6 +146,8 @@ export async function startGoalSetupServer(
               const body = (await req.json()) as {
                 displayName?: string;
                 diffOptions?: Record<string, unknown>;
+                theme?: Record<string, unknown>;
+                favicon?: FaviconStyle;
                 conventionalComments?: boolean;
                 conventionalLabels?: unknown[] | null;
               };
@@ -142,14 +158,20 @@ export async function startGoalSetupServer(
               if (body.diffOptions !== undefined) {
                 toSave.diffOptions = body.diffOptions;
               }
+              if (body.theme !== undefined) {
+                toSave.theme = body.theme;
+              }
+              if (isFaviconStyle(body.favicon)) {
+                toSave.favicon = body.favicon;
+              }
               if (body.conventionalComments !== undefined) {
                 toSave.conventionalComments = body.conventionalComments;
               }
               if (body.conventionalLabels !== undefined) {
                 toSave.conventionalLabels = body.conventionalLabels;
               }
-              if (Object.keys(toSave).length > 0) {
-                saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) {
+                return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               }
               return Response.json({ ok: true });
             } catch {
@@ -188,9 +210,7 @@ export async function startGoalSetupServer(
 
           if (url.pathname === "/favicon.png") return handleFavicon();
 
-          return new Response(htmlContent, {
-            headers: { "Content-Type": "text/html" },
-          });
+          return appHtmlResponse(req, htmlContent, isRemote);
         },
 
         error(err) {
@@ -200,11 +220,14 @@ export async function startGoalSetupServer(
             { status: 500, headers: { "Content-Type": "text/plain" } }
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;
-  const serverUrl = `http://localhost:${port}`;
+  const serverUrl = buildAdvertisedUrl(port);
+  // Remote sessions serve the app page compressed (#1617); start the likely
+  // encoding (gzip over plain http) now so the first load does not wait.
+  if (isRemote) prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(false));
   onReady?.(serverUrl, isRemote, port);
 
   return {

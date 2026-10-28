@@ -13,8 +13,6 @@ import { sanitizeTag } from "./project";
 import { resolveUserPath } from "./resolve-file";
 import { getPlannotatorDataDir } from "./data-dir";
 
-const DATA_DIR = getPlannotatorDataDir();
-
 /**
  * Get the plan storage directory, creating it if needed.
  * Cross-platform: uses os.homedir() for Windows/macOS/Linux compatibility.
@@ -26,7 +24,7 @@ export function getPlanDir(customPath?: string | null): string {
   if (customPath?.trim()) {
     planDir = resolveUserPath(customPath);
   } else {
-    planDir = join(DATA_DIR, "plans");
+    planDir = join(getPlannotatorDataDir(), "plans");
   }
 
   mkdirSync(planDir, { recursive: true });
@@ -195,7 +193,7 @@ export function readArchivedPlan(filename: string, customPath?: string | null): 
  * Not affected by the customPath setting (that only affects decision saves).
  */
 export function getHistoryDir(project: string, slug: string): string {
-  const historyDir = join(DATA_DIR, "history", project, slug);
+  const historyDir = join(getPlannotatorDataDir(), "history", project, slug);
   mkdirSync(historyDir, { recursive: true });
   return historyDir;
 }
@@ -254,6 +252,38 @@ export function saveToHistory(
 }
 
 /**
+ * Save a durable record of submitted annotate feedback (#678).
+ *
+ * Annotate submissions settle a decision promise whose consumer (the invoking
+ * CLI/agent) may have timed out and stopped listening. The plan flow persists
+ * its decisions via saveFinalSnapshot; annotate had no equivalent, so a submit
+ * whose caller was gone deleted the draft and left the feedback nowhere. This
+ * writes the record next to the file's annotate version history:
+ *
+ *   {DATA_DIR}/history/{project}/{slug}/submissions/{timestamp}.md
+ *
+ * The `submissions/` subdirectory keeps these out of the numeric NNN.md
+ * version scans above (getNextVersionNumber / listVersions / listProjectPlans
+ * all match files directly in the slug directory only). Filenames are
+ * filesystem-safe ISO timestamps (colons/dots replaced) with a collision
+ * counter so rapid successive submits never overwrite each other.
+ *
+ * Returns the full path to the saved file. Throws on write failure — callers
+ * (persistAnnotateSubmission) catch and degrade.
+ */
+export function saveAnnotateSubmission(project: string, slug: string, content: string): string {
+  const submissionsDir = join(getHistoryDir(project, slug), "submissions");
+  mkdirSync(submissionsDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let filePath = join(submissionsDir, `${stamp}.md`);
+  for (let n = 2; existsSync(filePath); n++) {
+    filePath = join(submissionsDir, `${stamp}-${n}.md`);
+  }
+  writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
  * Read a specific version's content from history.
  * Returns null if the version doesn't exist or on read error.
  */
@@ -262,7 +292,7 @@ export function getPlanVersion(
   slug: string,
   version: number
 ): string | null {
-  const historyDir = join(DATA_DIR, "history", project, slug);
+  const historyDir = join(getPlannotatorDataDir(), "history", project, slug);
   const fileName = `${String(version).padStart(3, "0")}.md`;
   const filePath = join(historyDir, fileName);
 
@@ -282,7 +312,7 @@ export function getPlanVersionPath(
   slug: string,
   version: number
 ): string | null {
-  const historyDir = join(DATA_DIR, "history", project, slug);
+  const historyDir = join(getPlannotatorDataDir(), "history", project, slug);
   const fileName = `${String(version).padStart(3, "0")}.md`;
   const filePath = join(historyDir, fileName);
   return existsSync(filePath) ? filePath : null;
@@ -293,7 +323,7 @@ export function getPlanVersionPath(
  * Returns 0 if the directory doesn't exist.
  */
 export function getVersionCount(project: string, slug: string): number {
-  const historyDir = join(DATA_DIR, "history", project, slug);
+  const historyDir = join(getPlannotatorDataDir(), "history", project, slug);
   try {
     const entries = readdirSync(historyDir);
     return entries.filter((e) => /^\d+\.md$/.test(e)).length;
@@ -310,7 +340,7 @@ export function listVersions(
   project: string,
   slug: string
 ): Array<{ version: number; timestamp: string }> {
-  const historyDir = join(DATA_DIR, "history", project, slug);
+  const historyDir = join(getPlannotatorDataDir(), "history", project, slug);
   try {
     const entries = readdirSync(historyDir);
     const versions: Array<{ version: number; timestamp: string }> = [];
@@ -340,7 +370,7 @@ export function listVersions(
 export function listProjectPlans(
   project: string
 ): Array<{ slug: string; versions: number; lastModified: string }> {
-  const projectDir = join(DATA_DIR, "history", project);
+  const projectDir = join(getPlannotatorDataDir(), "history", project);
   try {
     const entries = readdirSync(projectDir, { withFileTypes: true });
     const plans: Array<{ slug: string; versions: number; lastModified: string }> = [];
@@ -369,4 +399,113 @@ export function listProjectPlans(
   } catch {
     return [];
   }
+}
+
+/**
+ * How recently a plan's history chain must have been written to for a plan
+ * with the same heading, arriving on a later date, to continue it (#1679).
+ *
+ * 48 hours covers a plan revised across midnight (UTC or local) and a review
+ * resumed the next day, including the reported case (v1 at 20:02Z, the
+ * revision about 39h later). A same-heading plan after two days of silence
+ * starts a fresh chain, so a generic heading such as "Implementation Plan" is
+ * not merged across unrelated work forever. Every saved version refreshes the
+ * window, so a plan that is actively revised keeps one chain however long it
+ * runs.
+ */
+export const PLAN_HISTORY_CONTINUE_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+const HISTORY_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolve which history directory a plan under review should append to.
+ *
+ * `generateSlug` stamps the current date into the slug, because the archive
+ * filenames under `~/.plannotator/plans/` are keyed by it: `parseArchiveFilename`
+ * reads the date back out and `listArchivedPlans` sorts on it. Version history
+ * wants a key that stays put, so a review spanning midnight keeps appending to
+ * the chain it started instead of opening a second one that looks like a plan
+ * with no history at all (empty Versions tab, no diff). The date in a history
+ * directory name therefore records when the chain STARTED.
+ *
+ * Given today's dated slug, the rule, in order:
+ *
+ * 1. `current` (the slug an open review server already writes to) is kept while
+ *    the plan's heading still names it, so revisions in one session never
+ *    change chains.
+ * 2. Today's directory, when it already holds versions: same-day behavior is
+ *    unchanged.
+ * 3. The most recently written `{base}-YYYY-MM-DD` chain of this project that
+ *    is not dated after today, when its newest version is within
+ *    PLAN_HISTORY_CONTINUE_WINDOW_MS of `now`. Recency is the saved file's
+ *    mtime, so the UTC date in the directory name plays no part.
+ * 4. Otherwise today's slug: a new chain.
+ *
+ * Directories with no `NNN.md` are skipped by `listProjectPlans`, so an empty
+ * one left by an interrupted run cannot take over. A candidate must match the
+ * date shape exactly, which keeps two plans apart when one slug is a prefix of
+ * another (`wave-s2` vs `wave-s2-inference-capacity`) and leaves annotate
+ * mode's content-hashed slugs alone. Nothing on disk is renamed or migrated.
+ */
+export function resolveHistorySlug(
+  project: string,
+  datedSlug: string,
+  options: { now?: Date; current?: string } = {},
+): string {
+  const dateSuffix = datedSlug.match(/-(\d{4}-\d{2}-\d{2})$/);
+  if (!dateSuffix) return datedSlug;
+
+  const startedOn = dateSuffix[1];
+  const base = datedSlug.slice(0, -dateSuffix[0].length);
+  const chainDate = (slug: string): string | null => {
+    if (!slug.startsWith(`${base}-`)) return null;
+    const date = slug.slice(base.length + 1);
+    return HISTORY_DATE.test(date) ? date : null;
+  };
+
+  if (options.current && chainDate(options.current) !== null) return options.current;
+
+  const now = (options.now ?? new Date()).getTime();
+  let best: { slug: string; date: string; mtime: number } | null = null;
+  for (const plan of listProjectPlans(project)) {
+    if (plan.slug === datedSlug) return datedSlug;
+    const date = chainDate(plan.slug);
+    if (date === null || date > startedOn) continue;
+    const mtime = plan.lastModified ? Date.parse(plan.lastModified) : 0;
+    if (!best || mtime > best.mtime || (mtime === best.mtime && date > best.date)) {
+      best = { slug: plan.slug, date, mtime };
+    }
+  }
+
+  if (best && best.mtime > 0 && now - best.mtime <= PLAN_HISTORY_CONTINUE_WINDOW_MS) return best.slug;
+  return datedSlug;
+}
+
+/**
+ * Pick the history project AND slug a plan appends to (#2197). `projects` is
+ * the order to look for an EXISTING chain in; the first one is also where a
+ * new chain starts. The Claude Code hosts pass the CLI's current folder's
+ * project first and the session root's second: a session that `cd`s into
+ * another repository between two submits keeps one chain (the second submit
+ * finds the first's chain under the root's project), while a plan whose chain
+ * the current folder's project holds, and every new plan, land exactly where
+ * they did before this rule. So a nested clone keeps its own new plans, and
+ * two clones' same-heading plans never merge.
+ *
+ * Each candidate runs `resolveHistorySlug` unchanged (its 48 h rule applies
+ * per project). One candidate (every other host) is exactly
+ * `resolveHistorySlug`.
+ */
+export function resolveHistoryChain(
+  projects: readonly string[],
+  datedSlug: string,
+  options: { now?: Date; current?: string } = {},
+): { project: string; slug: string } {
+  const candidates = [...new Set(projects.filter((project) => project))];
+  const home = candidates[0] ?? "_unknown";
+  for (const project of candidates) {
+    const slug = resolveHistorySlug(project, datedSlug, options);
+    if (getVersionCount(project, slug) > 0) return { project, slug };
+  }
+  return { project: home, slug: resolveHistorySlug(home, datedSlug, options) };
 }

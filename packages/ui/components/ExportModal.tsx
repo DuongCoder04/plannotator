@@ -10,8 +10,10 @@ import React, { useState, useEffect } from 'react';
 import { getObsidianSettings, getEffectiveVaultPath } from '../utils/obsidian';
 import { getBearSettings } from '../utils/bear';
 import { getOctarineSettings } from '../utils/octarine';
-import { getNotionSettings, normalizeNotionPageId } from '../utils/notion';
+import { getNotionParentPageId, isNotionAvailable } from '../utils/notion';
 import { wrapFeedbackForAgent } from '../utils/parser';
+import { copyTextToClipboard } from '../utils/clipboard';
+import { noteServerSessionMismatch, withServerSession } from '../utils/serverSession';
 import { OverlayScrollArea } from './OverlayScrollArea';
 
 /** POST body shape sent to the notes endpoint (mirrors what the Notes tab builds today). */
@@ -32,8 +34,12 @@ async function defaultSaveToNotes(body: SaveToNotesPayload): Promise<SaveToNotes
   const res = await fetch('/api/save-notes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    // The stale-tab guard (a no-op for a host that never adopted a session).
+    body: JSON.stringify(withServerSession(body)),
   });
+  if (await noteServerSessionMismatch(res)) {
+    return { results: Object.fromEntries(Object.keys(body).map((k) => [k, { success: false, error: 'This review was replaced. Reload the page.' }])) };
+  }
   return res.json();
 }
 
@@ -59,6 +65,13 @@ interface ExportModalProps {
   initialTab?: Tab;
   /** Override the save-to-notes wire. Default: POST /api/save-notes (today's behavior). */
   onSaveToNotes?: (payload: SaveToNotesPayload) => Promise<SaveToNotesResult>;
+  /**
+   * Wrap the annotations output for the clipboard Copy button. Annotate
+   * sessions pass a mode-aware wrapper so Copy matches Send Feedback instead
+   * of the plan-deny framing (#1107). Default: plan-deny wrap (today's
+   * plan-review behavior).
+   */
+  wrapCopiedAnnotations?: (feedback: string) => string;
 }
 
 type Tab = 'share' | 'annotations' | 'notes';
@@ -83,6 +96,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   isApiMode = false,
   initialTab,
   onSaveToNotes = defaultSaveToNotes,
+  wrapCopiedAnnotations = wrapFeedbackForAgent,
 }) => {
   const defaultTab = initialTab || (sharingEnabled ? 'share' : 'annotations');
   const [activeTab, setActiveTab] = useState<Tab>(defaultTab);
@@ -113,29 +127,29 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const obsidianSettings = getObsidianSettings();
   const bearSettings = getBearSettings();
   const octarineSettings = getOctarineSettings();
-  const notionSettings = getNotionSettings();
   const effectiveVaultPath = getEffectiveVaultPath(obsidianSettings);
   const isObsidianReady = obsidianSettings.enabled && effectiveVaultPath.trim().length > 0;
   const isBearReady = bearSettings.enabled;
   const isOctarineReady = octarineSettings.enabled && octarineSettings.workspace.trim().length > 0;
-  const notionParentPageId = normalizeNotionPageId(notionSettings.parentPageId);
-  const isNotionReady = notionSettings.enabled && notionParentPageId !== null;
+  // Notion shows only when this server offers it (NOTION_TOKEN set, local session).
+  const notionAvailable = isNotionAvailable();
+  const notionParentPageId = getNotionParentPageId();
+  const isNotionReady = notionParentPageId !== null;
 
   const handleCopy = async (text: string, which: 'short' | 'full' | 'annotations') => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyTextToClipboard(text)) {
       setCopied(which);
       setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error('Failed to copy:', e);
+    } else {
+      console.error('Failed to copy');
     }
   };
 
   const handleCopyAnnotations = async () => {
-    await handleCopy(wrapFeedbackForAgent(annotationsOutput), 'annotations');
+    await handleCopy(wrapCopiedAnnotations(annotationsOutput), 'annotations');
   };
 
-  // Whether the hash URL is large enough to warrant a short URL option
+  // Warn when the hash URL may be too long for messaging apps
   const urlIsLarge = shareUrl.length > 2048;
   // Hash-based sharing unavailable (e.g. HTML render mode) — show only short link
   const hashUnavailable = !shareUrl && !!onGenerateShortUrl;
@@ -321,7 +335,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </button>
                   </div>
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Encrypted short link. Your plan is end-to-end encrypted before it leaves your browser — not even the server can read it.
+                    Encrypted short link. The browser uploads AES-256-GCM ciphertext; the decryption key stays in the URL fragment.
                   </p>
                 </div>
               ) : isGeneratingShortUrl ? (
@@ -331,9 +345,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   </svg>
                   Generating short link...
                 </div>
-              ) : (urlIsLarge || hashUnavailable) && onGenerateShortUrl ? (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                  {!hashUnavailable && (
+              ) : onGenerateShortUrl ? (
+                <div className={`p-3 rounded-lg border ${
+                  urlIsLarge
+                    ? 'bg-amber-500/10 border-amber-500/20'
+                    : 'bg-muted/50 border-border'
+                }`}>
+                  {urlIsLarge && (
                     <p className="text-xs text-amber-600 dark:text-amber-400 mb-2">
                       This URL may be too long for some messaging apps.
                     </p>
@@ -388,13 +406,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
                 {!shortShareUrl && !isGeneratingShortUrl && !urlIsLarge && (
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Your plan is encoded entirely in the URL — it never touches a server.
+                    Shared content is compressed, not encrypted, in the URL fragment. The portal request does not include that fragment.
                   </p>
                 )}
               </div>}
 
               <p className="text-xs text-muted-foreground">
-                Only someone with this exact link can view your plan. Short links are end-to-end encrypted — the decryption key is in the URL and never sent to the server.
+                Anyone with the full link can view the shared content, including services used to send the link. Hosted short-link ciphertext expires after 7 days.
               </p>
             </div>
           ) : activeTab === 'notes' && showNotesTab ? (
@@ -534,59 +552,61 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </div>
 
               {/* Notion */}
-              <div className="border border-border rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${isNotionReady ? 'bg-success' : 'bg-muted-foreground/30'}`} />
-                    <span className="text-sm font-medium">Notion</span>
+              {notionAvailable && (
+                <div className="border border-border rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${isNotionReady ? 'bg-success' : 'bg-muted-foreground/30'}`} />
+                      <span className="text-sm font-medium">Notion</span>
+                    </div>
+                    {isNotionReady ? (
+                      <button
+                        onClick={() => handleSaveToNotes('notion')}
+                        disabled={saveStatus.notion === 'saving'}
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                          saveStatus.notion === 'success'
+                            ? 'bg-success/15 text-success'
+                            : saveStatus.notion === 'error'
+                              ? 'bg-destructive/15 text-destructive'
+                              : saveStatus.notion === 'saving'
+                                ? 'bg-muted text-muted-foreground opacity-50'
+                                : 'bg-primary text-primary-foreground hover:opacity-90'
+                        }`}
+                      >
+                        {saveStatus.notion === 'saving' ? 'Saving...'
+                          : saveStatus.notion === 'success' ? 'Saved'
+                          : saveStatus.notion === 'error' ? 'Failed'
+                          : 'Save'}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Not configured</span>
+                    )}
                   </div>
-                  {isNotionReady ? (
-                    <button
-                      onClick={() => handleSaveToNotes('notion')}
-                      disabled={saveStatus.notion === 'saving'}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                        saveStatus.notion === 'success'
-                          ? 'bg-success/15 text-success'
-                          : saveStatus.notion === 'error'
-                            ? 'bg-destructive/15 text-destructive'
-                            : saveStatus.notion === 'saving'
-                              ? 'bg-muted text-muted-foreground opacity-50'
-                              : 'bg-primary text-primary-foreground hover:opacity-90'
-                      }`}
+                  {isNotionReady && (
+                    <div className="text-[10px] text-muted-foreground/70">
+                      Parent page: {notionParentPageId}
+                    </div>
+                  )}
+                  {savedUrls.notion?.startsWith('https://') && (
+                    <a
+                      href={savedUrls.notion}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block text-[10px] text-primary hover:underline truncate"
                     >
-                      {saveStatus.notion === 'saving' ? 'Saving...'
-                        : saveStatus.notion === 'success' ? 'Saved'
-                        : saveStatus.notion === 'error' ? 'Failed'
-                        : 'Save'}
-                    </button>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">Not configured</span>
+                      Open saved page
+                    </a>
+                  )}
+                  {!isNotionReady && (
+                    <div className="text-[10px] text-muted-foreground/70">
+                      Enable in Settings &gt; Saving &gt; Notion
+                    </div>
+                  )}
+                  {saveErrors.notion && (
+                    <div className="text-[10px] text-destructive">{saveErrors.notion}</div>
                   )}
                 </div>
-                {isNotionReady && (
-                  <div className="text-[10px] text-muted-foreground/70">
-                    Parent page: {notionParentPageId}
-                  </div>
-                )}
-                {savedUrls.notion && (
-                  <a
-                    href={savedUrls.notion}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block text-[10px] text-primary hover:underline truncate"
-                  >
-                    Open saved page
-                  </a>
-                )}
-                {!isNotionReady && (
-                  <div className="text-[10px] text-muted-foreground/70">
-                    Enable in Settings &gt; Saving &gt; Notion
-                  </div>
-                )}
-                {saveErrors.notion && (
-                  <div className="text-[10px] text-destructive">{saveErrors.notion}</div>
-                )}
-              </div>
+              )}
 
               {/* Save All button */}
               {readyCount >= 2 && (

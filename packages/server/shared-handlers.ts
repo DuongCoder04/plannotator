@@ -9,11 +9,20 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openBrowser as openBrowserImpl } from "./browser";
+import { browserNoneReason, resolveBrowserIntent } from "@plannotator/shared/browser-intent";
+import { isUrlHostOverridden } from "./remote";
+import { writeUrlQr } from "./qr";
 import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
 import { saveDraft, loadDraft, deleteDraft, getDraftGeneration } from "./draft";
-import { FAVICON_PNG_BYTES } from "@plannotator/shared/favicon";
+import { CLASSIC_FAVICON_SVG, FAVICON_PNG_BYTES } from "@plannotator/shared/favicon";
+import { getServerConfig } from "./config";
 import { saveToObsidian, saveToBear, saveToOctarine, saveToNotion } from "./integrations";
 import type { ObsidianConfig, BearConfig, OctarineConfig, NotionConfig, IntegrationResult } from "./integrations";
+import { listReferenceSkills, readReferenceSkillContent } from "./review-skill-loader";
+import { crossOriginRefusalBody } from "@plannotator/shared/request-origin";
+import { isSameOriginRequest } from "./request-origin-guard";
+import { checkServerSession, serverSessionMismatchBody } from "@plannotator/shared/server-session";
+import { localImageContentType, localImageResponseHeaders } from "@plannotator/shared/local-image";
 
 function normalizeDraftGeneration(value: unknown): number | undefined {
   if (typeof value !== "number") return undefined;
@@ -35,19 +44,27 @@ export function readDraftGenerationFromBody(body: unknown): number | undefined {
 
 /** Serve images from local paths or temp uploads. Used by all 3 servers. */
 export async function handleImage(req: Request): Promise<Response> {
+  // Every answer carries the sandbox CSP, nosniff and CORP (see
+  // @plannotator/shared/local-image): an SVG opened directly must not run
+  // script on the session origin.
+  const text = (body: string, status: number) =>
+    new Response(body, { status, headers: localImageResponseHeaders("text/plain; charset=utf-8") });
+  const image = (file: ReturnType<typeof Bun.file>, path: string) =>
+    new Response(file, { headers: localImageResponseHeaders(localImageContentType(path)) });
+
   const url = new URL(req.url);
   const imagePath = url.searchParams.get("path");
   if (!imagePath) {
-    return new Response("Missing path parameter", { status: 400 });
+    return text("Missing path parameter", 400);
   }
   const validation = validateImagePath(imagePath);
   if (!validation.valid) {
-    return new Response(validation.error!, { status: 403 });
+    return text(validation.error!, 403);
   }
   try {
     const file = Bun.file(validation.resolved);
     if (await file.exists()) {
-      return new Response(file);
+      return image(file, validation.resolved);
     }
     // If not found and a base directory is provided, try resolving relative to it
     const base = url.searchParams.get("base");
@@ -58,13 +75,13 @@ export async function handleImage(req: Request): Promise<Response> {
       if (baseValidation.valid) {
         const baseFile = Bun.file(baseValidation.resolved);
         if (await baseFile.exists()) {
-          return new Response(baseFile);
+          return image(baseFile, baseValidation.resolved);
         }
       }
     }
-    return new Response("File not found", { status: 404 });
+    return text("File not found", 404);
   } catch {
-    return new Response("Failed to read file", { status: 500 });
+    return text("Failed to read file", 500);
   }
 }
 
@@ -151,15 +168,70 @@ export function handleDraftDelete(contentKey: string, req?: Request): Response {
   return Response.json({ ok: true });
 }
 
+/**
+ * List global agent skills for comment skill references. Used by plan +
+ * annotate servers. Takes no client input (fixed roots only) and degrades to an
+ * empty catalog on any failure so the composer never breaks.
+ */
+export function handleReferenceSkills(): Response {
+  try {
+    return Response.json({ skills: listReferenceSkills() });
+  } catch (err) {
+    console.error(
+      `[plannotator] Skill catalog failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return Response.json({ skills: [] });
+  }
+}
+
+/**
+ * Serve a referenced skill's SKILL.md contents for feedback injection
+ * (`?name=<skill>`). Used by plan + annotate servers. The name is matched
+ * against discovered skills only — it is never used as a path — so traversal
+ * and absolute-path inputs answer 404, never a file outside the skill roots.
+ */
+export function handleReferenceSkillContent(req: Request): Response {
+  try {
+    const name = new URL(req.url).searchParams.get("name") ?? "";
+    const skill = readReferenceSkillContent(name);
+    if (!skill) {
+      return Response.json({ error: "Skill not found" }, { status: 404 });
+    }
+    return Response.json({ skill });
+  } catch (err) {
+    console.error(
+      `[plannotator] Skill content failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return Response.json({ error: "Skill content failed" }, { status: 500 });
+  }
+}
+
 /** Return the shared JSON response for an unmatched API route. */
 export function handleApiNotFound(path: string): Response {
   return Response.json({ error: "Not found", path }, { status: 404 });
 }
 
-/** Serve the app favicon. Used by all 3 servers. */
+/**
+ * Serve the app favicon. Used by all 3 servers (plus goal-setup).
+ *
+ * Reads the persisted style so a classic user's first painted frame is already
+ * classic. Without this the static route always answered Totman and the
+ * preference only landed once React mounted, i.e. a visible flash on every load.
+ *
+ * The route is one URL with two possible payloads, so the response declares its
+ * real type and is not cached: the entry HTML's <link rel="icon"> deliberately
+ * carries no `type`/`sizes` (see apps/hook/index.html), leaving Content-Type the
+ * single source of truth, and a day-long cache would re-paint the old icon after
+ * a switch. loadConfig() is a small unmemoized JSON read, once per page load.
+ */
 export function handleFavicon(): Response {
+  if (getServerConfig(null).favicon === "classic") {
+    return new Response(CLASSIC_FAVICON_SVG, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-cache" },
+    });
+  }
   return new Response(FAVICON_PNG_BYTES, {
-    headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" },
+    headers: { "Content-Type": "image/png", "Cache-Control": "no-cache" },
   });
 }
 
@@ -167,12 +239,55 @@ interface ServerReadyOptions {
   readyFile?: string;
   skipBrowserOpen?: boolean;
   openBrowser?: typeof openBrowserImpl;
+  /**
+   * Set false to suppress the stderr line(s) this function writes, while
+   * still writing the ready file and opening the browser. For hosts that run
+   * the server in their own process and share stderr with a TUI renderer
+   * (OpenCode's embedded runtime) and already show the URL through their own
+   * surface (a toast or a transcript notice). Default true: every CLI start
+   * prints the line.
+   */
+  announce?: boolean;
 }
 
 export interface ServerReadyMetadata {
   url: string;
   isRemote: boolean;
   port: number;
+  /**
+   * What this server shows, in full (absolute path, URL, bundle files,
+   * reviewed directory or PR URL), so a host names the right file before any
+   * decision. Additive; absent when the CLI did not set it.
+   */
+  target?: string | string[];
+  /**
+   * Present only for a session published with `--tailscale` (#2166): `ask`
+   * true when "Ask this session" answers the machine owner's tab over the
+   * tailnet. A host that asked for a tailnet session reads its absence as a
+   * CLI from before the bridge was kept there.
+   */
+  tailnet?: { ask: boolean };
+}
+
+let serverReadyTarget: string | string[] | undefined;
+let serverReadyTailnet: { ask: boolean } | undefined;
+
+/** The `tailnet` field the next ready line carries (`--tailscale` sessions only). */
+export function setServerReadyTailnet(tailnet: { ask: boolean } | undefined): void {
+  serverReadyTailnet = tailnet ? { ask: tailnet.ask } : undefined;
+}
+
+/**
+ * The full target the next ready line names (`ServerReadyMetadata.target`).
+ * The CLI serves one session per process and sets it once it has resolved
+ * what it opens, before the server starts.
+ */
+export function setServerReadyTarget(target: string | readonly string[] | undefined): void {
+  if (target === undefined || (typeof target === "string" ? !target.trim() : target.length === 0)) {
+    serverReadyTarget = undefined;
+    return;
+  }
+  serverReadyTarget = typeof target === "string" ? target : [...target];
 }
 
 export function writeServerReadyMetadata(readyFile: string, metadata: ServerReadyMetadata): void {
@@ -180,11 +295,18 @@ export function writeServerReadyMetadata(readyFile: string, metadata: ServerRead
   appendFileSync(readyFile, `${JSON.stringify(metadata)}\n`, "utf8");
 }
 
-export function isCodexDesktopHost(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.__CFBundleIdentifier === "com.openai.codex";
-}
+/**
+ * Stable prefix of the session URL line written to stderr on every start:
+ * `  Plannotator session ready: <url>`.
+ *
+ * The format is a contract: one line, two leading spaces, this prefix, then
+ * the URL last. Agents and host plugins grep it (the OpenCode CLI bridge's
+ * stderr filter matches it), so anything else worth saying (port forwarding,
+ * a failed browser launch) goes on its own line under it.
+ */
+export const SESSION_READY_LINE_PREFIX = "Plannotator session ready: ";
 
-/** Attempt to open the browser for the session URL. */
+/** Announce the session URL, then attempt to open the browser for it. */
 export async function handleServerReady(
   url: string,
   isRemote: boolean,
@@ -194,42 +316,88 @@ export async function handleServerReady(
   const readyFile = options.readyFile ?? process.env.PLANNOTATOR_READY_FILE;
   if (readyFile) {
     try {
-      writeServerReadyMetadata(readyFile, { url, isRemote, port });
+      writeServerReadyMetadata(readyFile, {
+        url,
+        isRemote,
+        port,
+        ...(serverReadyTarget !== undefined && { target: serverReadyTarget }),
+        ...(serverReadyTailnet !== undefined && { tailnet: serverReadyTailnet }),
+      });
     } catch (error) {
       if (options.readyFile) throw error;
       // Best effort: host plugins use this side channel to open the browser.
     }
   }
 
-  // A remote/SSH session can't pop a browser on the user's machine, so the
-  // session URL must be visible in the terminal — independently of whether URL
-  // sharing is enabled. The share link (gated on sharing) is an extra; this
-  // reachable URL is the lifeline. Without it, a sharing-disabled remote user
-  // saw no URL at all and the agent hung waiting on the review.
-  if (isRemote) {
-    process.stderr.write(
-      `\n  Plannotator session ready — open on your local machine (forward port ${port} if needed):\n  ${url}\n\n`,
-    );
-  } else if (isCodexDesktopHost()) {
-    process.stderr.write(`\n  Plannotator session ready:\n  ${url}\n\n`);
+  const announce = options.announce ?? true;
+
+  // One line, every session, URL last, printed BEFORE the launch: a launcher
+  // that never exits (a blocking BROWSER) must not hide it, and a local
+  // session whose browser opened fine still needs a way back to a closed tab.
+  // The URL appears exactly once; the lines below only add context.
+  if (announce) process.stderr.write(`\n  ${SESSION_READY_LINE_PREFIX}${url}\n`);
+
+  // A remote/SSH session can't pop a browser on the user's machine, so say
+  // what to do with the URL, independently of whether URL sharing is enabled.
+  if (isRemote && announce) {
+    // With an advertised-URL host override the link is directly reachable
+    // (e.g. over a tailnet), so the port-forwarding advice would be wrong.
+    if (isUrlHostOverridden()) {
+      process.stderr.write(`  Open it on your device (the URL above).\n`);
+      // The URL makes a device hop; a QR skips the retyping (TTY only). Only
+      // for overridden hosts: a QR of a localhost URL scans to nowhere.
+      writeUrlQr(url);
+    } else {
+      process.stderr.write(`  Open it on your local machine (forward port ${port} if needed).\n`);
+    }
   }
 
   const skipBrowserOpen = options.skipBrowserOpen ?? process.env.PLANNOTATOR_SKIP_BROWSER_OPEN === "1";
+  // PLANNOTATOR_BROWSER=none (or --browser none): open nothing, anywhere, and
+  // say so under the URL instead of reporting a failed launch. A host that
+  // opens the browser itself (skipBrowserOpen) has nothing to explain.
+  const intent = resolveBrowserIntent(process.env);
+  if (!skipBrowserOpen && intent.kind === "none") {
+    if (announce) process.stderr.write(`  ${browserNoneReason(intent)}\n\n`);
+    return;
+  }
+  if (announce) process.stderr.write("\n");
   if (skipBrowserOpen) return;
 
   const opened = await (options.openBrowser ?? openBrowserImpl)(url, { isRemote, useGlimpse: true });
 
-  // Local fallback lifeline: if the browser couldn't be opened (headless box,
-  // devcontainer with no display, broken open/xdg-open), the user otherwise has
-  // no URL and the agent hangs at waitForDecision. Remote already printed the
-  // URL above; only cover the local case here to avoid a double print.
-  if (!opened && !isRemote) {
-    process.stderr.write(`\n  Plannotator session ready — open in your browser:\n  ${url}\n\n`);
+  // The URL is already out; say the automatic launch failed (headless box,
+  // devcontainer with no display, broken open/xdg-open) so nobody waits on a
+  // tab that never appears. Remote sessions were told what to do above.
+  if (!opened && !isRemote && announce) {
+    process.stderr.write("  Could not open a browser automatically — open the URL above.\n\n");
   }
 }
 
-/** Save to external note apps. Used by plan + annotate servers. */
-export async function handleSaveNotes(req: Request): Promise<Response> {
+export interface HandleSaveNotesOptions {
+  /**
+   * This server's stale-tab nonce (packages/core/server-session.ts). A body
+   * carrying a different `serverSession` is refused with 409 before anything
+   * is written or opened; a body without one is accepted.
+   */
+  serverSession?: string;
+  /** Notion saves run only when this session offers Notion (packages/shared/notion.ts isNotionAvailable). */
+  notion?: boolean;
+}
+
+/**
+ * Save to external note apps (Obsidian, Bear, Octarine, Notion). Used by plan + annotate servers.
+ *
+ * Writes a file into the vault the body names and opens `bear://` /
+ * `octarine://` URLs, so it refuses another site's page (the servers also do
+ * this before routing; repeated here so the handler is safe wherever it is
+ * mounted) and a stale tab.
+ */
+export async function handleSaveNotes(req: Request, options: HandleSaveNotesOptions = {}): Promise<Response> {
+  if (!isSameOriginRequest(req)) {
+    return Response.json(crossOriginRefusalBody(), { status: 403 });
+  }
+
   const results: { obsidian?: IntegrationResult; bear?: IntegrationResult; octarine?: IntegrationResult; notion?: IntegrationResult } = {};
 
   try {
@@ -239,6 +407,10 @@ export async function handleSaveNotes(req: Request): Promise<Response> {
       octarine?: OctarineConfig;
       notion?: NotionConfig;
     };
+
+    if (options.serverSession !== undefined && checkServerSession(body, options.serverSession) === "mismatch") {
+      return Response.json(serverSessionMismatchBody(), { status: 409 });
+    }
 
     const promises: Promise<void>[] = [];
     if (body.obsidian?.vaultPath && body.obsidian?.plan) {
@@ -250,7 +422,7 @@ export async function handleSaveNotes(req: Request): Promise<Response> {
     if (body.octarine?.plan && body.octarine?.workspace) {
       promises.push(saveToOctarine(body.octarine).then(r => { results.octarine = r; }));
     }
-    if (body.notion?.plan && body.notion?.parentPageId) {
+    if (options.notion && body.notion?.plan && body.notion?.parentPageId) {
       promises.push(saveToNotion(body.notion).then(r => { results.notion = r; }));
     }
     await Promise.allSettled(promises);

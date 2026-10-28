@@ -1,45 +1,44 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeCodexPerModel, parseReviewProfileByEngine, DEFAULT_CODEX_REASONING } from "./useAgentSettings";
+import { effectiveEffort, effectiveFast, effectiveModel, parseReviewProfileByEngine } from "./useAgentSettings";
 
-describe("sanitizeCodexPerModel", () => {
-  test("returns empty object for undefined/empty input", () => {
-    expect(sanitizeCodexPerModel(undefined)).toEqual({});
-    expect(sanitizeCodexPerModel({})).toEqual({});
+describe("effective launch model", () => {
+  const models = [
+    { id: "opus", label: "Opus", reasoningEfforts: [{ id: "high", label: "High" }], defaultReasoningEffort: "high" },
+    { id: "sonnet", label: "Sonnet", default: true },
+  ];
+
+  test("while the catalog is still loading, the saved pick is used untouched", () => {
+    expect(effectiveModel({ models, settled: false }, "claude-opus-4-8", "opus")).toBe("claude-opus-4-8");
+    expect(effectiveEffort({ models, settled: false }, "opus", "ultra")).toBe("ultra");
   });
 
-  test("drops stale reasoning: 'none' entry when fast is false", () => {
-    const result = sanitizeCodexPerModel({
-      "gpt-5.3-codex": { reasoning: "none", fast: false },
-    });
-    expect(result).toEqual({});
+  test("once settled, a stale pick resolves to the surface default and its effort is clamped", () => {
+    expect(effectiveModel({ models, settled: true }, "claude-opus-4-8", "opus")).toBe("opus");
+    expect(effectiveEffort({ models, settled: true }, "opus", "ultra")).toBe("high");
+  });
+});
+
+describe("effective Codex fast mode", () => {
+  const codex = {
+    settled: true,
+    models: [
+      { id: "gpt-6-sol", label: "GPT-6-Sol", default: true, fastMode: true },
+      { id: "gpt-slow", label: "GPT Slow" },
+    ],
+  };
+
+  test("fast is dropped when a retired pick is replaced by a different model", () => {
+    // A retired model saved with fast on must not launch the replacement with
+    // -c service_tier=fast: the choice was made for the old model.
+    const model = effectiveModel(codex, "gpt-5.3-codex", "");
+    expect(model).toBe("gpt-6-sol");
+    expect(effectiveFast(codex, "gpt-5.3-codex", model, true)).toBe(false);
   });
 
-  test("retains entry with reasoning: 'none' but fast: true, replacing reasoning with default", () => {
-    const result = sanitizeCodexPerModel({
-      "gpt-5.3-codex": { reasoning: "none", fast: true },
-    });
-    expect(result).toEqual({
-      "gpt-5.3-codex": { reasoning: DEFAULT_CODEX_REASONING, fast: true },
-    });
-  });
-
-  test("passes through valid entries unchanged", () => {
-    const input = {
-      "gpt-5.3-codex": { reasoning: "high", fast: false },
-      "gpt-5.3-pro": { reasoning: "medium", fast: true },
-    };
-    expect(sanitizeCodexPerModel(input)).toEqual(input);
-  });
-
-  test("skips non-object entries", () => {
-    const input = {
-      valid: { reasoning: "high", fast: false },
-      nullish: null as unknown as { reasoning: string; fast: boolean },
-      stringy: "bad" as unknown as { reasoning: string; fast: boolean },
-    };
-    expect(sanitizeCodexPerModel(input)).toEqual({
-      valid: { reasoning: "high", fast: false },
-    });
+  test("fast is kept for the saved model itself and for the tool default", () => {
+    expect(effectiveFast(codex, "gpt-6-sol", "gpt-6-sol", true)).toBe(true);
+    expect(effectiveFast(codex, "", "gpt-6-sol", true)).toBe(true);
+    expect(effectiveFast(codex, "gpt-slow", "gpt-slow", true)).toBe(false);
   });
 });
 

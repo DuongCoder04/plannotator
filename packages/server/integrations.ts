@@ -21,10 +21,12 @@ import {
 	buildHashtags,
 	buildBearContent,
 	detectObsidianVaults,
+	obsidianFolderEscapesVault,
 } from "@plannotator/shared/integrations-common";
 import { resolveUserPath } from "@plannotator/shared/resolve-file";
 
 export type { ObsidianConfig, BearConfig, OctarineConfig, NotionConfig, IntegrationResult };
+export { isNotionAvailable, saveToNotion, NOTION_API_VERSION } from "@plannotator/shared/notion";
 export { detectObsidianVaults, extractTitle, generateFrontmatter, generateFilename, generateOctarineFrontmatter, stripH1, buildHashtags, buildBearContent };
 
 /**
@@ -122,8 +124,11 @@ export async function saveToObsidian(
 			};
 		}
 
-		// Build target folder path
+		// Build target folder path (always inside the vault)
 		const folderName = folder.trim() || "plannotator";
+		if (obsidianFolderEscapesVault(folderName)) {
+			return { success: false, error: `Folder must be inside the vault: ${folderName}` };
+		}
 		const targetFolder = join(normalizedVault, folderName);
 
 		// Create folder if it doesn't exist (guard for Bun mkdirSync regression)
@@ -211,56 +216,5 @@ export async function saveToOctarine(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : "Unknown error";
 		return { success: false, error: message };
-	}
-}
-
-export const NOTION_API_VERSION = "2026-03-11";
-
-/** Save a plan as a child page of a Notion page using the user's local token. */
-export async function saveToNotion(
-	config: NotionConfig,
-): Promise<IntegrationResult> {
-	const token = process.env.NOTION_TOKEN?.trim();
-	if (!token) {
-		return { success: false, error: "Notion is not configured. Set NOTION_TOKEN." };
-	}
-
-	const parentPageId = config.parentPageId.trim();
-	if (!parentPageId) {
-		return { success: false, error: "Notion parent page is required." };
-	}
-
-	try {
-		const response = await fetch("https://api.notion.com/v1/pages", {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${token}`,
-				"Content-Type": "application/json",
-				"Notion-Version": NOTION_API_VERSION,
-			},
-			body: JSON.stringify({
-				parent: { page_id: parentPageId },
-				properties: {
-					title: { title: [{ text: { content: extractTitle(config.plan) } }] },
-				},
-				markdown: config.plan,
-			}),
-		});
-
-		const data = await response.json().catch(() => null) as { message?: unknown; url?: unknown } | null;
-		if (!response.ok) {
-			const detail = typeof data?.message === "string" ? ` ${data.message}` : "";
-			if (response.status === 401) return { success: false, error: `Notion token is invalid or revoked.${detail}` };
-			if (response.status === 403) return { success: false, error: `Notion cannot access this page. Share the parent page with your Notion integration.${detail}` };
-			if (response.status === 429) return { success: false, error: `Notion rate limit exceeded.${detail}` };
-			return { success: false, error: `Notion export failed (${response.status}).${detail}` };
-		}
-
-		return { success: true, ...(typeof data?.url === "string" ? { url: data.url } : {}) };
-	} catch (err) {
-		return {
-			success: false,
-			error: err instanceof Error ? `Notion export failed: ${err.message}` : "Notion export failed.",
-		};
 	}
 }

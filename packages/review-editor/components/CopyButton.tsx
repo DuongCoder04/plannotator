@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useState } from 'react';
+import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 
 interface CopyButtonProps {
   text: string;
@@ -29,12 +30,9 @@ export const CopyButton: React.FC<CopyButtonProps> = ({ text, className = '', va
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyTextToClipboard(text)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard API may not be available
     }
   };
 
@@ -60,7 +58,7 @@ export const CopyButton: React.FC<CopyButtonProps> = ({ text, className = '', va
     <button
       type="button"
       onClick={handleCopy}
-      className={`absolute top-1.5 right-1.5 p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted ${className}`}
+      className={`absolute top-1.5 right-1.5 p-1 rounded-md opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted ${className}`}
       title={copied ? 'Copied!' : 'Copy'}
     >
       {copied ? <CheckIcon /> : <CopyIcon />}

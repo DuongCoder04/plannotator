@@ -1,9 +1,25 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import type { UpdateCheckSetting } from '../hooks/useUpdateCheckSetting';
+import type { PackageChangesSetting } from '../hooks/usePackageChangesSetting';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import type { AnnotateAgentTerminalSide } from '@plannotator/core/agent-terminal';
 import type { Origin } from '@plannotator/core/agents';
 import type { DiffLineBgIntensity } from '@plannotator/core/config-types';
-import { configStore, useConfigValue, setReviewPanelView, setReviewDefaultDiffType } from '../config';
+import type { TokenHoverDelay } from '@plannotator/core/token-hover';
+import { configStore, useConfigValue, setReviewPanelView, setReviewDefaultDiffType, setReviewAutoViewed } from '../config';
+import { setWebMcpToolsEnabled, useWebMcpToolsEnabled } from '../webmcp/preference';
+import { DIAGRAM_SHADOW_OPTIONS } from '../utils/diagramShadow';
+import { markLookAndFeelChoiceResolved } from '../utils/lookAndFeelAnnouncement';
+import { DEFAULT_DOCUMENT_TEXT_SIZE, DOCUMENT_TEXT_SIZE_OPTIONS } from '../utils/documentTextSize';
+import {
+  agentToolAppliesWhen,
+  agentToolCostNote,
+  agentToolHostName,
+  type AgentToolSetting,
+} from '../utils/agentToolSetting';
 import { loadDiffFont } from '../utils/diffFonts';
+import { isFontInstalled } from '../utils/fontDetect';
+import { MAX_FONT_FAMILY_LENGTH, monoFontStack, normalizeCssFontSize, normalizeFontFamilyName } from '../utils/cssFontFamily';
 import { TaterSpritePullup } from './TaterSpritePullup';
 import { getIdentity, regenerateIdentity, setCustomIdentity, isIdentityEditable } from '../utils/identity';
 import { GitUser } from '../icons/GitUser';
@@ -29,14 +45,17 @@ import {
 import {
   getNotionSettings,
   saveNotionSettings,
-  normalizeNotionPageId,
+  getNotionParentPageId,
+  isNotionAvailable,
   type NotionSettings,
 } from '../utils/notion';
 import {
   getAgentSwitchSettings,
+  getAgentSwitchDefaults,
   saveAgentSwitchSettings,
   AGENT_OPTIONS,
   type AgentSwitchSettings,
+  type AgentSwitchSurface,
 } from '../utils/agentSwitch';
 import {
   getPlanSaveSettings,
@@ -64,20 +83,22 @@ import {
 } from '../utils/defaultNotesApp';
 import { useAgents } from '../hooks/useAgents';
 import { KeyboardShortcuts } from './KeyboardShortcuts';
-import { type QuickLabel, getQuickLabels, saveQuickLabels, resetQuickLabels, DEFAULT_QUICK_LABELS, getLabelColors, LABEL_COLOR_MAP } from '../utils/quickLabels';
 import { ThemeTab } from './ThemeTab';
-import { isMac, modKey, altKey } from '../utils/platform';
+import { modKey, modKeyWord } from '../utils/platform';
 import { getAIProviderSettings, resolveAIProviderSelection } from '../utils/aiProvider';
 import { AISettingsTab } from './AISettingsTab';
 import { HooksTab } from './settings/HooksTab';
+import { QuickLabelsTab } from './settings/QuickLabelsTab';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import {
   getFileBrowserSettings,
   saveFileBrowserSettings,
   type FileBrowserSettings,
 } from '../utils/fileBrowser';
+import { requestVimDocumentFocus } from '../hooks/useVimDocumentFocus';
+import { AnalysisLayerToggle } from './AnalysisLayerToggle';
 
-type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'saving' | 'labels' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks';
+type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks' | 'experimental';
 
 interface SettingsProps {
   taterMode: boolean;
@@ -85,7 +106,31 @@ interface SettingsProps {
   onIdentityChange?: (oldIdentity: string, newIdentity: string) => void;
   origin?: Origin | null;
   mode?: 'plan' | 'annotate' | 'review';
+  /**
+   * `mode="annotate"` only: offer the document tabs plan review has (Display,
+   * Saving, Labels, and the Obsidian / Bear / Octarine integrations) and hide
+   * the plan-only OpenCode agent-switch row. Plannotator's annotate app passes
+   * true; a host that omits it keeps the pre-parity annotate tab set.
+   */
+  annotateParity?: boolean;
+  /**
+   * Hide General's "Enter saves a comment" row (#1934). Default false: the
+   * row shows. A host that drives the `enterSavesComment` setting itself, or
+   * never wants it offered, passes true.
+   */
+  hideEnterSavesComment?: boolean;
+  /**
+   * Show Display's Text size row (#2066). Default false: the row does
+   * something only where the page applies the `documentTextSize` setting
+   * (`hooks/useDocumentTextSize`), so a host opts in. Plannotator passes true
+   * in plan review and annotate on a markdown or text document.
+   */
+  showDocumentTextSize?: boolean;
   onUIPreferencesChange?: (prefs: UIPreferences) => void;
+  /** Claude Code's permission mode was changed here (plan review). The host
+   *  keeps its own copy in step, since its Approve sends the mode and its
+   *  decision menu shows it. Optional: hosts that omit it are unchanged. */
+  onPermissionModeChange?: (mode: PermissionMode) => void;
   /** Externally controlled open state (for mobile menu integration) */
   externalOpen?: boolean;
   onExternalClose?: () => void;
@@ -93,12 +138,43 @@ interface SettingsProps {
   aiProviders?: Array<{ id: string; name: string; capabilities: Record<string, boolean>; models?: Array<{ id: string; label: string; default?: boolean }> }>;
   /** Git user name from `git config user.name`, for quick identity set */
   gitUser?: string;
+  /** Present when the server advertises the auto-update setting (#1634);
+   *  `env` is PLANNOTATOR_AUTO_UPDATE when it overrides the config file.
+   *  Hosts that omit it get no toggle. */
+  autoUpdateSetting?: { env?: boolean };
+  /** Present when the server reports the update-notice switch (serverConfig.updateCheck,
+   *  useUpdateCheckSetting); `env` is PLANNOTATOR_UPDATE_CHECK when it overrides the
+   *  config file. Hosts that omit it get no row. */
+  updateCheckSetting?: UpdateCheckSetting;
+  /** Code review's package changes switches (usePackageChangesSetting). Hosts that omit it get no rows. */
+  packageChangesSetting?: PackageChangesSetting;
+  /** The `plannotator` agent tool switch, as the server reports it
+   *  (parseAgentToolSetting of serverConfig: present only when the session's
+   *  host registers the tool). Shown only together with onAgentToolChange;
+   *  hosts that omit them get no row. */
+  agentToolSetting?: AgentToolSetting;
+  /** Saves the agent tool switch (saveAgentToolSetting); rejects with a
+   *  readable Error, which the row shows. */
+  onAgentToolChange?: (enabled: boolean) => Promise<void>;
   /** Current session is a local git review where since-base ISN'T offered
    *  (base ref unresolvable) — the Git tab shows a note that the Git-status
    *  preference can't take effect in THIS repo. */
   sinceBaseUnavailable?: boolean;
+  /** The host is rendering its compact touch shell (review only). Display
+   *  settings that the compact shell overrides for the session are hidden
+   *  there instead of silently editing the desktop preference. */
+  isCompactTouchLayout?: boolean;
   /** Override Obsidian vault detection (default = GET /api/obsidian/vaults). */
   onDetectObsidianVaults?: () => Promise<string[]>;
+  /** This annotate session actually offers the Agent TUI, so its Position
+   *  setting is worth showing. Default false: the setting is the only way back
+   *  from a Hidden position, but offering it where no terminal can ever run
+   *  would just be a dead control. */
+  agentTerminalAvailable?: boolean;
+  /** The browser exposes WebMCP (`document.modelContext`), so the "Agent
+   *  tools" opt-out is worth showing. Default false: a browser without the
+   *  API gets no row at all (the provider registers nothing there). */
+  webmcpAvailable?: boolean;
 }
 
 // --- Review-mode Display tab (diff display options) ---
@@ -119,6 +195,23 @@ const DIFF_FONT_OPTIONS = [
 export const DIFF_STYLE_OPTIONS = [
   { value: 'split' as const, label: 'Split' },
   { value: 'unified' as const, label: 'Unified' },
+];
+/**
+ * The modifier gate is the platform's primary modifier: Cmd on macOS, Ctrl on
+ * Windows and Linux. Labeled through modKeyWord so the control names the key
+ * the reader actually has.
+ */
+export const TOKEN_HOVER_TRIGGER_OPTIONS = [
+  { value: 'hover' as const, label: 'On hover' },
+  { value: 'modifier' as const, label: `Hold ${modKeyWord}` },
+  { value: 'off' as const, label: 'Off' },
+];
+/** SegmentedControl keys on strings, so the ms values ride as their digits. */
+export type TokenHoverDelayOption = '150' | '300' | '700';
+export const TOKEN_HOVER_DELAY_OPTIONS = [
+  { value: '150' as const, label: 'Fast' },
+  { value: '300' as const, label: 'Default' },
+  { value: '700' as const, label: 'Relaxed' },
 ];
 export const OVERFLOW_OPTIONS = [
   { value: 'scroll' as const, label: 'Scroll' },
@@ -144,6 +237,7 @@ const DEFAULT_DIFF_TYPE_OPTIONS = [
   // "All Changes" belongs to since-base (the flagship composite); uncommitted
   // reverts to its plain name so the two stay distinguishable side by side.
   { value: 'since-base' as const, label: 'All Changes (Recommended)', description: "Everything since your branch split from main — committed, uncommitted, and untracked" },
+  { value: 'local-vs-remote' as const, label: 'Local vs Remote Branch', description: "Your local branch and working tree compared with its last-fetched remote-tracking branch" },
   { value: 'uncommitted' as const, label: 'Uncommitted', description: "Everything you've changed since your last commit" },
   { value: 'unstaged' as const, label: 'Unstaged', description: "Only changes you haven't staged yet" },
   { value: 'staged' as const, label: 'Staged', description: "Only changes you've staged for commit" },
@@ -151,22 +245,33 @@ const DEFAULT_DIFF_TYPE_OPTIONS = [
   { value: 'all' as const, label: 'All Files (HEAD)', description: "Every tracked file at HEAD, shown as additions" },
 ];
 
-function SegmentedControl<T extends string>({ options, value, onChange }: {
+const AGENT_TERMINAL_SIDE_OPTIONS: { value: AnnotateAgentTerminalSide; label: string }[] = [
+  { value: 'left', label: 'Left' },
+  { value: 'right', label: 'Right' },
+  { value: 'hidden', label: 'Hidden' },
+];
+
+function SegmentedControl<T extends string>({ options, value, onChange, disabled = false }: {
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
+  /** Visible but inert, for a control whose axis does not apply right now. */
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
+    <div className={['flex items-center gap-1 bg-muted/50 rounded-lg p-0.5', disabled && 'opacity-50'].filter(Boolean).join(' ')}>
       {options.map((opt) => (
         <button
           key={opt.value}
+          {...(disabled ? { disabled: true } : {})}
           onClick={() => onChange(opt.value)}
-          className={`flex-1 px-3 py-1.5 text-xs rounded-md transition-colors ${
+          className={[
+            'flex-1 px-3 py-1.5 text-xs rounded-md transition-colors',
+            disabled && 'cursor-not-allowed',
             value === opt.value
               ? 'bg-background text-foreground shadow-sm font-medium'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
+              : 'text-muted-foreground hover:text-foreground',
+          ].filter(Boolean).join(' ')}
         >
           {opt.label}
         </button>
@@ -175,28 +280,37 @@ function SegmentedControl<T extends string>({ options, value, onChange }: {
   );
 }
 
-function ToggleSwitch({ checked, onChange, label, description }: {
+function ToggleSwitch({ checked, onChange, label, description, disabled = false }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   description?: string;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className={`flex items-center justify-between gap-4 ${disabled ? 'opacity-50' : ''}`}>
       <div>
         <div className="text-sm font-medium">{label}</div>
         {description && <div className="text-xs text-muted-foreground">{description}</div>}
       </div>
       <button
+        type="button"
         role="switch"
+        aria-label={label}
         aria-checked={checked}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-          checked ? 'bg-primary' : 'bg-muted'
-        }`}
+        className="relative inline-flex h-11 w-11 shrink-0 items-center disabled:cursor-not-allowed"
       >
         <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+          aria-hidden="true"
+          className={`absolute inset-x-0 top-2.5 h-6 rounded-full transition-colors ${
+            checked ? 'bg-primary' : 'bg-muted'
+          }`}
+        />
+        <span
+          aria-hidden="true"
+          className={`absolute top-3.5 inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
             checked ? 'translate-x-6' : 'translate-x-1'
           }`}
         />
@@ -205,11 +319,233 @@ function ToggleSwitch({ checked, onChange, label, description }: {
   );
 }
 
+/**
+ * The `plannotator` agent tool switch. The value is the one the NEXT session
+ * uses (the tool list is part of the model's prompt, so a running session
+ * never changes it). Writes go straight to POST /api/config and wait for the
+ * answer, so a failed save is reported and the switch stays where it was.
+ */
+function AgentToolSettingRow({ setting, onChange }: {
+  readonly setting: AgentToolSetting;
+  readonly onChange: (enabled: boolean) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const locked = setting.env !== undefined;
+  const change = async (next: boolean) => {
+    if (saving || locked) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onChange(next);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : 'Could not save the setting.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div data-agent-tool-setting={setting.host} aria-busy={saving}>
+      <ToggleSwitch
+        checked={setting.enabled}
+        onChange={(next) => void change(next)}
+        disabled={locked}
+        label="Let the agent open reviews (plannotator tool)"
+        description={
+          locked
+            ? `Set by PLANNOTATOR_AGENT_TOOL in your environment, so it is ${setting.enabled ? 'on' : 'off'} here.`
+            : `${agentToolHostName(setting.host)} can open reviews itself and keep working. ${agentToolCostNote(setting.host)} Applies from ${agentToolAppliesWhen(setting.host)}.`
+        }
+      />
+      {error && (
+        <p role="alert" data-agent-tool-setting-error className="mt-1 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+interface VimSettingsTabProps {
+  readonly vimModeEnabled: boolean;
+  readonly vimHudEnabled: boolean;
+  readonly vimHudKeyPanelEnabled: boolean;
+  readonly onVimModeChange: (enabled: boolean) => void;
+  readonly onVimHudChange: (enabled: boolean) => void;
+  readonly onVimHudKeyPanelChange: (enabled: boolean) => void;
+}
+
+/** First-class Vim configuration, separate from the shortcut reference. */
+function VimSettingsTab({
+  vimModeEnabled,
+  vimHudEnabled,
+  vimHudKeyPanelEnabled,
+  onVimModeChange,
+  onVimHudChange,
+  onVimHudKeyPanelChange,
+}: VimSettingsTabProps) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="text-sm font-semibold">Vim mode</div>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Navigate, select, and annotate the rendered document without reaching for the mouse.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-xl border border-border bg-muted/20 p-4">
+        <ToggleSwitch
+          checked={vimModeEnabled}
+          onChange={onVimModeChange}
+          label="Vim controls"
+          description="Use Vim-style keys for document navigation and annotation. Off by default."
+        />
+        <div className="border-t border-border" />
+        <ToggleSwitch
+          checked={vimModeEnabled && vimHudEnabled}
+          onChange={onVimHudChange}
+          label="Vim HUD"
+          description={
+            vimModeEnabled
+              ? 'Show the four-corner target reticle and navigation context.'
+              : 'Enable Vim controls first to use the target reticle.'
+          }
+          disabled={!vimModeEnabled}
+        />
+        <div className="border-t border-border" />
+        <ToggleSwitch
+          checked={vimModeEnabled && vimHudEnabled && vimHudKeyPanelEnabled}
+          onChange={onVimHudKeyPanelChange}
+          label="Key panel"
+          description={
+            vimModeEnabled && vimHudEnabled
+              ? 'Show the bottom-right live keypress legend and command panel.'
+              : 'Enable the Vim HUD first to use the live keypress legend.'
+          }
+          disabled={!vimModeEnabled || !vimHudEnabled}
+        />
+      </div>
+
+      <div className="rounded-xl border border-primary/20 bg-primary/[0.05] p-4">
+        <div className="flex items-start gap-3">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-primary/15 font-mono text-xs font-bold text-primary">
+            ?
+          </span>
+          <div>
+            <div className="text-xs font-semibold">Learn while you navigate</div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Vim takes focus automatically when the page is ready. From other app controls, press{' '}
+              <span className="font-mono text-foreground">Esc</span> to return to the document, then
+              use <span className="font-mono text-foreground">j</span> and{' '}
+              <span className="font-mono text-foreground">k</span> to move by block. Press{' '}
+              <span className="font-mono text-foreground">?</span> for the complete key map,
+              even when the Key panel is hidden.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewAnalysisTab({ packageChangesSetting }: { packageChangesSetting?: PackageChangesSetting }) {
+  const semanticDiffEnabled = useConfigValue('semanticDiffEnabled');
+  const callFlowEnabled = useConfigValue('callFlowEnabled');
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="text-sm font-semibold">Analysis layers</div>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Add structural context to the ordinary code diff. Each layer is independent and does no work while disabled.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-xl border border-border bg-muted/20 p-4">
+        <AnalysisLayerToggle
+          checked={semanticDiffEnabled}
+          onChange={(enabled) => configStore.set('semanticDiffEnabled', enabled)}
+          label="Semantic changes"
+          description="Organize added, changed, moved, and removed functions, classes, and other named code. Enabled by default."
+        />
+        <div className="border-t border-border" />
+        <AnalysisLayerToggle
+          checked={callFlowEnabled}
+          onChange={(enabled) => configStore.set('callFlowEnabled', enabled)}
+          label="Call flow"
+          description="Diffs for function call stacks across git commits. 22 languages supported (AST-based, built using Tree-sitter)."
+        />
+        {packageChangesSetting && (
+          <>
+            <div className="border-t border-border" />
+            <AnalysisLayerToggle
+              checked={packageChangesSetting.card}
+              onChange={(on) => packageChangesSetting.setCard(on)}
+              label="Package changes"
+              description="Added, removed and changed dependencies above package.json and lockfile diffs."
+            />
+            <div className="border-t border-border" />
+            <AnalysisLayerToggle
+              checked={packageChangesSetting.lookup}
+              onChange={(on) => void packageChangesSetting.setLookup(on)}
+              disabled={packageChangesSetting.lookupEnv === false}
+              label="Look up packages on npm"
+              description={packageChangesSetting.lookupEnv === false
+                ? 'Off: PLANNOTATOR_PACKAGE_LOOKUP=0.'
+                : 'License, release date and weekly downloads. Sends the names of changed public packages to registry.npmjs.org and api.npmjs.org.'}
+            />
+          </>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl border border-border p-3.5">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="grid h-6 w-6 place-items-center rounded-md bg-primary/10 font-mono text-primary">▣</span>
+            Dock
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Open the complete analysis from the file panel. Rows jump to the relevant code location.
+          </p>
+        </div>
+        <div className="rounded-xl border border-border p-3.5">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <span className="grid h-6 w-6 place-items-center rounded-md bg-primary/10 font-mono text-primary">⌁</span>
+            File lens
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            File headers show compact counts and a focused popover for that file.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-warning/25 bg-warning/[0.05] p-4 text-xs leading-relaxed text-muted-foreground">
+        <span className="font-semibold text-foreground">Call flow is syntactic.</span>{' '}
+        It does not use type resolution or runtime traces, so treat it as navigation context—not proof that a path executes.
+      </div>
+    </div>
+  );
+}
+
 const GitTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavailable }) => {
   const defaultDiffType = useConfigValue('defaultDiffType');
   const reviewPanelView = useConfigValue('reviewPanelView');
+  const reviewAutoViewed = useConfigValue('reviewAutoViewed');
   return (
     <div className="space-y-5">
+      <div className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Viewed files
+        </div>
+        {/* Never write `reviewAutoViewed` directly — setReviewAutoViewed also
+            consumes the first-time notice, since an explicit toggle is proof
+            the reviewer already found the switch. */}
+        <ToggleSwitch
+          checked={reviewAutoViewed}
+          onChange={(v) => setReviewAutoViewed(v)}
+          label="Auto-mark viewed"
+          description="Mark a file viewed when you scroll past it or move on to another file. Files you un-view stay un-viewed, and files that change on refresh become un-viewed."
+        />
+      </div>
       <div className="space-y-2">
         <div>
           <div className="text-sm font-medium">Default review view</div>
@@ -275,7 +611,43 @@ const GitTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavail
   );
 };
 
-const ReviewDisplayTab: React.FC = () => {
+/** Sentinel for the "Custom…" select option — never persisted as a font name. */
+const CUSTOM_FONT_SENTINEL = '__custom__';
+
+function isBuiltInFont(value: string): boolean {
+  return DIFF_FONT_OPTIONS.some((opt) => opt.value === value);
+}
+
+/** Inline style rendering UI chrome in the chosen font (quoted and escaped: free text). */
+function fontPreviewStyle(family: string): React.CSSProperties | undefined {
+  const stack = monoFontStack(family);
+  return stack ? { fontFamily: stack } : undefined;
+}
+
+/**
+ * Experimental (the owner, 2026-10-27: "its own page on settings", the last
+ * tab): each experimental setting, off by default. Today one, code review's
+ * Edit Code to Suggest (`editSuggestions`, the
+ * `plannotator-experimental-edit-suggestions` cookie, unchanged).
+ */
+const ExperimentalTab: React.FC = () => {
+  const editSuggestions = useConfigValue('editSuggestions');
+  return (
+    <div className="space-y-3" data-settings-experimental="">
+      <div className="text-xs text-muted-foreground">
+        Features still being tried. Each stays off until you turn it on.
+      </div>
+      <ToggleSwitch
+        checked={editSuggestions}
+        onChange={(v) => configStore.set('editSuggestions', v)}
+        label="Edit Code to Suggest"
+        description="Edit a file in place in the all-files view; your net change becomes a suggestion comment. Files are never written from the browser. Uses an experimental upstream editor."
+      />
+    </div>
+  );
+};
+
+const ReviewDisplayTab: React.FC<{ isCompactTouchLayout?: boolean }> = ({ isCompactTouchLayout = false }) => {
   const diffStyle = useConfigValue('diffStyle');
   const diffOverflow = useConfigValue('diffOverflow');
   const diffIndicators = useConfigValue('diffIndicators');
@@ -287,14 +659,109 @@ const ReviewDisplayTab: React.FC = () => {
   const diffExpandUnchanged = useConfigValue('diffExpandUnchanged');
   const diffFontFamily = useConfigValue('diffFontFamily');
   const diffFontSize = useConfigValue('diffFontSize');
+  const tokenHoverTrigger = useConfigValue('tokenHoverTrigger');
+  const tokenHoverDelay = useConfigValue('tokenHoverDelay');
+
+  // Custom font: progressive disclosure. customFontMode keeps the input open
+  // while the user picks "Custom…" or has a non-built-in font saved.
+  const [customFontMode, setCustomFontMode] = useState(
+    () => !!diffFontFamily && !isBuiltInFont(diffFontFamily),
+  );
+  const [customFontDraft, setCustomFontDraft] = useState(
+    () => (diffFontFamily && !isBuiltInFont(diffFontFamily) ? diffFontFamily : ''),
+  );
+  const customFontSaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Pending debounced value. Non-null means "typed but not yet saved" — it is
+  // flushed (not discarded) on unmount, and cancelled when a built-in is
+  // picked so a stale timer can't overwrite the new selection.
+  const pendingFontSave = useRef<string | null>(null);
+  const customActive = customFontMode || (!!diffFontFamily && !isBuiltInFont(diffFontFamily));
+  // Width-measurement check — deterministic per machine, no permissions.
+  const customFontInstalled = useMemo(
+    () => (normalizeFontFamilyName(customFontDraft) ? isFontInstalled(customFontDraft) : null),
+    [customFontDraft],
+  );
 
   // Load font for the preview swatch
   useEffect(() => {
     if (diffFontFamily) loadDiffFont(diffFontFamily);
   }, [diffFontFamily]);
 
+  // Adopt external changes (late server hydration, edits from elsewhere) into
+  // the draft — but never clobber typing that hasn't been saved yet.
+  useEffect(() => {
+    if (pendingFontSave.current !== null) return;
+    if (diffFontFamily && !isBuiltInFont(diffFontFamily) && diffFontFamily !== normalizeFontFamilyName(customFontDraft)) {
+      setCustomFontDraft(diffFontFamily);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diffFontFamily]);
+
+  const cancelPendingFontSave = () => {
+    clearTimeout(customFontSaveTimer.current);
+    pendingFontSave.current = null;
+  };
+
+  // Flush a pending save on unmount so closing the panel mid-debounce
+  // doesn't lose the typed font.
+  useEffect(() => () => {
+    clearTimeout(customFontSaveTimer.current);
+    if (pendingFontSave.current !== null) {
+      configStore.set('diffFontFamily', pendingFontSave.current);
+    }
+  }, []);
+
+  const handleCustomFontInput = (value: string) => {
+    setCustomFontDraft(value);
+    // Debounce the save — configStore.set writes the cookie and POSTs
+    // /api/config; per-keystroke writes would spam both.
+    clearTimeout(customFontSaveTimer.current);
+    pendingFontSave.current = normalizeFontFamilyName(value);
+    customFontSaveTimer.current = setTimeout(() => {
+      if (pendingFontSave.current !== null) {
+        configStore.set('diffFontFamily', pendingFontSave.current);
+        pendingFontSave.current = null;
+      }
+    }, 400);
+  };
+
   return (
     <>
+      {/* Hover cards (internally tokenHover*; the label is what changed, not
+          the ids). One trigger select rather than a toggle plus a mode: `Off`
+          is a value of the same question, so there is no unreachable
+          enabled-but-off state to reason about. The delay stays a separate
+          axis because "too eager" is a complaint neither the hold-modifier option
+          nor Off answers. */}
+      <div className="space-y-3">
+        <div>
+          <div className="text-sm font-medium">Hover cards</div>
+          <div className="text-xs text-muted-foreground">
+            Rest the pointer on a symbol in a diff to see where it is defined and who
+            references it. Needs ripgrep and a local checkout; nothing appears when the
+            search comes back empty. {modKeyWord}+click still opens the References panel either way.
+          </div>
+        </div>
+        <SegmentedControl
+          options={TOKEN_HOVER_TRIGGER_OPTIONS}
+          value={tokenHoverTrigger}
+          onChange={(v) => configStore.set('tokenHoverTrigger', v)}
+        />
+        <div className="space-y-2">
+          <div className="text-xs text-muted-foreground">
+            How long the pointer rests before a card is requested
+          </div>
+          <SegmentedControl
+            options={TOKEN_HOVER_DELAY_OPTIONS}
+            value={String(tokenHoverDelay) as TokenHoverDelayOption}
+            onChange={(v) => configStore.set('tokenHoverDelay', Number(v) as TokenHoverDelay)}
+            disabled={tokenHoverTrigger === 'off'}
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-border" />
+
       {/* Font Family */}
       <div className="space-y-2">
         <div>
@@ -302,19 +769,56 @@ const ReviewDisplayTab: React.FC = () => {
           <div className="text-xs text-muted-foreground">Font family for diff code lines</div>
         </div>
         <select
-          value={diffFontFamily}
-          onChange={(e) => configStore.set('diffFontFamily', e.target.value)}
+          value={customActive ? CUSTOM_FONT_SENTINEL : diffFontFamily}
+          onChange={(e) => {
+            if (e.target.value === CUSTOM_FONT_SENTINEL) {
+              setCustomFontMode(true);
+            } else {
+              // Cancel any in-flight debounced custom save so a stale timer
+              // can't overwrite this selection.
+              cancelPendingFontSave();
+              setCustomFontMode(false);
+              setCustomFontDraft('');
+              configStore.set('diffFontFamily', e.target.value);
+            }
+          }}
           className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground"
-          style={diffFontFamily ? { fontFamily: `'${diffFontFamily}', monospace` } : undefined}
+          style={diffFontFamily && !customActive ? fontPreviewStyle(diffFontFamily) : undefined}
         >
           {DIFF_FONT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
+          <option value={CUSTOM_FONT_SENTINEL}>Custom…</option>
         </select>
+        {customActive && (
+          <div className="space-y-1">
+            <input
+              type="text"
+              value={customFontDraft}
+              onChange={(e) => handleCustomFontInput(e.target.value)}
+              placeholder="Font name as installed, e.g. Iosevka"
+              aria-label="Custom code font name"
+              maxLength={MAX_FONT_FAMILY_LENGTH}
+              autoFocus={!customFontDraft}
+              spellCheck={false}
+              className="w-full px-3 py-1.5 text-sm rounded-md bg-muted/50 border border-border text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+              style={fontPreviewStyle(customFontDraft)}
+            />
+            <div className="text-[11px]" aria-live="polite">
+              {!normalizeFontFamilyName(customFontDraft) ? (
+                <span className="text-muted-foreground">Any font installed on this machine works — type its family name.</span>
+              ) : customFontInstalled === true ? (
+                <span className="text-success">✓ Found on this machine</span>
+              ) : customFontInstalled === false ? (
+                <span className="text-warning">Not found — diffs will fall back to monospace</span>
+              ) : null}
+            </div>
+          </div>
+        )}
         {diffFontFamily && (
           <div
             className="text-xs text-muted-foreground px-1 py-1 rounded bg-muted/30 font-mono"
-            style={{ fontFamily: `'${diffFontFamily}', monospace` }}
+            style={fontPreviewStyle(diffFontFamily)}
           >
             Preview: const x = fn(42);
           </div>
@@ -331,7 +835,7 @@ const ReviewDisplayTab: React.FC = () => {
             <div className="text-xs text-muted-foreground">Font size for diff code lines</div>
           </div>
           <div className="text-xs tabular-nums text-muted-foreground min-w-[4ch] text-right">
-            {diffFontSize || 'Auto'}
+            {normalizeCssFontSize(diffFontSize) || 'Auto'}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -357,13 +861,23 @@ const ReviewDisplayTab: React.FC = () => {
 
       <div className="border-t border-border" />
 
-      {/* Diff Style */}
+      {/* Diff Style. The compact touch shell renders a session-only unified
+          diff, so the control there would look dead while quietly rewriting
+          the DESKTOP preference. Say what the phone is doing instead. */}
       <div className="space-y-2">
         <div>
           <div className="text-sm font-medium">Diff Style</div>
           <div className="text-xs text-muted-foreground">Side-by-side or inline diff view</div>
+          {isCompactTouchLayout && (
+            <div className="text-xs text-muted-foreground mt-1">
+              This layout shows unified diffs for the session; your desktop
+              preference is unchanged.
+            </div>
+          )}
         </div>
-        <SegmentedControl options={DIFF_STYLE_OPTIONS} value={diffStyle} onChange={(v) => configStore.set('diffStyle', v)} />
+        {!isCompactTouchLayout && (
+          <SegmentedControl options={DIFF_STYLE_OPTIONS} value={diffStyle} onChange={(v) => configStore.set('diffStyle', v)} />
+        )}
       </div>
 
       <div className="border-t border-border" />
@@ -448,6 +962,9 @@ const ReviewDisplayTab: React.FC = () => {
         label="Hide Whitespace"
         description="Ignore whitespace-only changes in diffs"
       />
+
+      <div className="border-t border-border" />
+
 
     </>
   );
@@ -657,9 +1174,27 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', onUIPreferencesChange, externalOpen, onExternalClose, aiProviders = [], gitUser, sinceBaseUnavailable, onDetectObsidianVaults }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false }) => {
+  const webmcpTools = useWebMcpToolsEnabled();
+  const autoUpdate = useConfigValue('autoUpdate');
+  const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
   const [showDialog, setShowDialog] = useState(false);
+  const settingsWasOpenRef = useRef(false);
   const [themePreview, setThemePreview] = useState(false);
+
+  useEffect(() => {
+    const wasOpen = settingsWasOpenRef.current;
+    settingsWasOpenRef.current = showDialog;
+    if (
+      wasOpen
+      && !showDialog
+      && !themePreview
+      && mode !== 'review'
+      && configStore.get('vimModeEnabled')
+    ) {
+      requestVimDocumentFocus();
+    }
+  }, [mode, showDialog, themePreview]);
 
   useEffect(() => {
     if (!themePreview) return;
@@ -671,6 +1206,13 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   }, [themePreview]);
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const gridEnabled = useConfigValue('gridEnabled');
+  const diagramShadow = useConfigValue('diagramShadow');
+  const documentTextSize = useConfigValue('documentTextSize');
+  const vimModeEnabled = useConfigValue('vimModeEnabled');
+  const enterSavesComment = useConfigValue('enterSavesComment');
+  const vimHudEnabled = useConfigValue('vimHudEnabled');
+  const vimHudKeyPanelEnabled = useConfigValue('vimHudKeyPanelEnabled');
+  const agentTerminalSide = useConfigValue('agentTerminalSide');
   const [identity, setIdentity] = useState('');
   const [obsidian, setObsidian] = useState<ObsidianSettings>({
     enabled: false,
@@ -685,56 +1227,69 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const [bear, setBear] = useState<BearSettings>({ enabled: false, customTags: '', tagPosition: 'append', autoSave: false });
   const [octarine, setOctarine] = useState<OctarineSettings>({ enabled: false, workspace: '', folder: 'plannotator', autoSave: false });
   const [notion, setNotion] = useState<NotionSettings>({ enabled: false, parentPageId: '', autoSave: false });
-  const [agent, setAgent] = useState<AgentSwitchSettings>({ switchTo: 'build' });
+  // The agent switch default depends on the surface: plan approval hands off to
+  // the build agent, review feedback stays on the current agent.
+  const agentSurface: AgentSwitchSurface = mode === 'review' ? 'review' : 'plan';
+  // Annotate with parity on gets the same document tabs as plan review.
+  const annotateDocumentTabs = mode === 'annotate' && annotateParity;
+  const [agent, setAgent] = useState<AgentSwitchSettings>(() => getAgentSwitchDefaults(agentSurface));
   const [planSave, setPlanSave] = useState<PlanSaveSettings>({ enabled: true, customPath: null });
   const [uiPrefs, setUiPrefs] = useState<UIPreferences>({ tocEnabled: true, stickyActionsEnabled: true, planWidth: 'compact' });
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [agentWarning, setAgentWarning] = useState<string | null>(null);
   const [autoCloseDelay, setAutoCloseDelayState] = useState<AutoCloseDelay>('off');
   const [defaultNotesApp, setDefaultNotesApp] = useState<DefaultNotesApp>('ask');
-  const [quickLabelsState, setQuickLabelsState] = useState<QuickLabel[]>([]);
-  const [editingTipIndex, setEditingTipIndex] = useState<number | null>(null);
-  const [editingTipValue, setEditingTipValue] = useState('');
   const [aiProvider, setAiProvider] = useState<string | null>(null);
   const [fileBrowserSettings, setFileBrowserSettings] = useState<FileBrowserSettings>({ enabled: false, directories: [] });
   const [newDirPath, setNewDirPath] = useState('');
 
   // Fetch available agents for OpenCode
-  const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin ?? null);
+  const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin ?? null, agentSurface);
 
   const mainTabs = useMemo(() => {
     const t: { id: SettingsTab; label: string }[] = [{ id: 'general', label: 'General' }];
     t.push({ id: 'theme', label: 'Theme' });
-    if (mode === 'plan') {
+    // Annotate renders the same document viewer as plan review, so the
+    // document-level tabs apply there too. Only rows that describe a plan
+    // decision (plan snapshots, plan-arrival auto-save, plan-time hooks,
+    // post-approval permission mode / agent switch) stay plan-only.
+    if (mode === 'plan' || annotateDocumentTabs) {
       t.push({ id: 'display', label: 'Display' });
       t.push({ id: 'saving', label: 'Saving' });
       t.push({ id: 'labels', label: 'Labels' });
     }
     if (mode === 'review') {
       t.push({ id: 'git', label: 'Git' });
-      t.push({ id: 'display', label: 'Display' });
+      t.push({ id: 'display', label: 'Editor' });
+      t.push({ id: 'analysis', label: 'Analysis' });
       t.push({ id: 'comments', label: 'Comments' });
       if (aiProviders.length > 0) {
         t.push({ id: 'ai', label: 'AI' });
       }
+    }
+    if (mode !== 'review') {
+      t.push({ id: 'vim', label: 'Vim' });
     }
     t.push({ id: 'shortcuts', label: 'Shortcuts' });
     if (mode === 'plan') {
       t.push({ id: 'hooks', label: 'Hooks' });
     }
     return t;
-  }, [mode, aiProviders.length]);
+  }, [mode, annotateDocumentTabs, aiProviders.length]);
 
   const integrationTabs: { id: SettingsTab; label: string }[] = [
     { id: 'files', label: 'Files' },
-    ...(mode === 'plan'
-      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }, { id: 'notion' as SettingsTab, label: 'Notion' }]
+    ...(mode === 'plan' || annotateDocumentTabs
+      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }, ...(isNotionAvailable() ? [{ id: 'notion' as SettingsTab, label: 'Notion' }] : [])]
       : []),
   ];
+  // Experimental is the last tab, on its own below the integrations (the owner,
+  // 2026-10-27). Only where it has a setting: code review's Edit Code to Suggest.
+  const experimentalTabs: { id: SettingsTab; label: string }[] = mode === 'review' ? [{ id: 'experimental', label: 'Experimental' }] : [];
   const obsidianDefaultSaveAvailable = obsidian.enabled && getEffectiveVaultPath(obsidian).trim().length > 0;
   const bearDefaultSaveAvailable = bear.enabled;
   const octarineDefaultSaveAvailable = octarine.enabled && octarine.workspace.trim().length > 0;
-  const notionDefaultSaveAvailable = notion.enabled && normalizeNotionPageId(notion.parentPageId) !== null;
+  const notionDefaultSaveAvailable = getNotionParentPageId(notion) !== null;
 
   // Sync external open state
   useEffect(() => {
@@ -751,13 +1306,12 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       setBear(getBearSettings());
       setOctarine(getOctarineSettings());
       setNotion(getNotionSettings());
-      setAgent(getAgentSwitchSettings());
+      setAgent(getAgentSwitchSettings(agentSurface));
       setPlanSave(getPlanSaveSettings());
       setUiPrefs(getUIPreferences());
       setPermissionMode(getPermissionModeSettings().mode);
       setAutoCloseDelayState(getAutoCloseDelay());
       setDefaultNotesApp(getDefaultNotesApp());
-      setQuickLabelsState(getQuickLabels());
       const aiSettings = getAIProviderSettings();
       setAiProvider(resolveAIProviderSelection({ providers: aiProviders, origin, settings: aiSettings }).providerId);
       setFileBrowserSettings(getFileBrowserSettings());
@@ -778,7 +1332,8 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       (defaultNotesApp === 'obsidian' && obsidianDefaultSaveAvailable) ||
       (defaultNotesApp === 'bear' && bearDefaultSaveAvailable) ||
       (defaultNotesApp === 'octarine' && octarineDefaultSaveAvailable) ||
-      (defaultNotesApp === 'notion' && notionDefaultSaveAvailable);
+      // A session without Notion (remote, or no NOTION_TOKEN) keeps the choice for the next one.
+      (defaultNotesApp === 'notion' && (notionDefaultSaveAvailable || !isNotionAvailable()));
 
     if (!defaultSaveAvailable) {
       setDefaultNotesApp('ask');
@@ -875,6 +1430,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const handlePermissionModeChange = (mode: PermissionMode) => {
     setPermissionMode(mode);
     savePermissionModeSettings(mode);
+    onPermissionModeChange?.(mode);
   };
 
   const handleDefaultNotesAppChange = (app: DefaultNotesApp) => {
@@ -931,12 +1487,23 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
         >
           <div
             className="bg-card border border-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl relative overflow-hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plannotator-settings-title"
             onClick={e => e.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape' || event.defaultPrevented) return;
+              event.preventDefault();
+              event.stopPropagation();
+              setShowDialog(false);
+            }}
           >
             {taterMode && <TaterSpritePullup />}
             <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="font-semibold text-sm">Settings</h3>
+              <h3 id="plannotator-settings-title" className="font-semibold text-sm">Settings</h3>
               <button
+                type="button"
+                aria-label="Close settings"
                 onClick={() => setShowDialog(false)}
                 className="p-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground transition-colors"
               >
@@ -949,7 +1516,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
             <div className="flex flex-col md:flex-row md:min-h-[420px] flex-1 min-h-0 overflow-hidden">
               {/* Mobile: horizontal tab bar */}
               <nav className="md:hidden flex overflow-x-auto border-b border-border px-2 py-1.5 gap-1 flex-shrink-0">
-                {[...mainTabs, ...integrationTabs].map(tab => (
+                {[...mainTabs, ...integrationTabs, ...experimentalTabs].map(tab => (
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
@@ -989,6 +1556,26 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                     </div>
                     <div className="space-y-0.5">
                       {integrationTabs.map(tab => (
+                        <button
+                          key={tab.id}
+                          onClick={() => setActiveTab(tab.id)}
+                          className={`w-full text-left px-3 py-1.5 rounded text-sm transition-colors ${
+                            activeTab === tab.id
+                              ? 'bg-primary/10 text-primary font-medium'
+                              : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {experimentalTabs.length > 0 && (
+                  <>
+                    <div className="mx-2 my-2 border-t border-border/50" />
+                    <div className="space-y-0.5">
+                      {experimentalTabs.map(tab => (
                         <button
                           key={tab.id}
                           onClick={() => setActiveTab(tab.id)}
@@ -1065,6 +1652,107 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </div>
                     </div>
 
+                    {/* Enter saves a comment (#1934): opt-in, cookie-only.
+                        Governs every comment composer; never the decision keys. */}
+                    {!hideEnterSavesComment && (
+                      <>
+                        <div className="border-t border-border" />
+                        <div data-enter-saves-comment-setting="true">
+                          <ToggleSwitch
+                            checked={enterSavesComment}
+                            onChange={(v) => configStore.set('enterSavesComment', v)}
+                            label="Enter saves a comment"
+                            description={`Shift+Enter adds a new line. ${modKeyWord}+Enter still saves.`}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Update notices: on by default. Writes updateCheck to
+                        ~/.plannotator/config.json; off makes no request to GitHub. */}
+                    {updateCheckSetting && (
+                      <>
+                        <div className="border-t border-border" />
+                        <ToggleSwitch
+                          checked={updateChecksOn}
+                          onChange={(v) => updateCheckSetting.onChange(v)}
+                          disabled={updateCheckSetting.env !== undefined}
+                          label="Tell me when a new version is out"
+                          description={
+                            updateCheckSetting.env !== undefined
+                              ? 'Set by PLANNOTATOR_UPDATE_CHECK in your environment.'
+                              : 'This computer asks GitHub every few minutes, never your browser. Off makes no request at all.'
+                          }
+                        />
+                      </>
+                    )}
+
+                    {/* Auto-update (#1634): opt-in, default off. Writes
+                        autoUpdate to ~/.plannotator/config.json. It needs
+                        update checks, so it is locked while they are off. */}
+                    {autoUpdateSetting && (
+                      <>
+                        <div className="border-t border-border" />
+                        <ToggleSwitch
+                          checked={(autoUpdateSetting.env ?? autoUpdate) && updateChecksOn}
+                          onChange={(v) => configStore.set('autoUpdate', v)}
+                          disabled={autoUpdateSetting.env !== undefined || !updateChecksOn}
+                          label="Keep Plannotator up to date"
+                          description={
+                            autoUpdateSetting.env !== undefined
+                              ? 'Set by PLANNOTATOR_AUTO_UPDATE in your environment.'
+                              : !updateChecksOn
+                                ? 'Needs update checks (above).'
+                                : 'Installs new releases in the background, at most once a day, never while another review is open.'
+                          }
+                        />
+                      </>
+                    )}
+
+                    {/* The `plannotator` agent tool switch: only where the
+                        server reports a tool host (Claude Code mod, Pi,
+                        OpenCode 2). Writes agentTool to config.json; applies
+                        to the next session. */}
+                    {agentToolSetting && onAgentToolChange && (
+                      <>
+                        <div className="border-t border-border" />
+                        <AgentToolSettingRow setting={agentToolSetting} onChange={onAgentToolChange} />
+                      </>
+                    )}
+
+                    {/* Agent tools (WebMCP). Shown only when the browser
+                        exposes document.modelContext; off unregisters the
+                        tools for this browser. Cookie-only and idle at its
+                        default: no cookie exists until the user opts out. */}
+                    {webmcpAvailable && (
+                      <>
+                        <div className="border-t border-border" />
+                        <div className="flex items-center justify-between" data-webmcp-setting="true">
+                          <div>
+                            <div className="text-sm font-medium">Agent tools</div>
+                            <div className="text-xs text-muted-foreground">
+                              Let your browser's agent read this document and leave comments. Approving and sending feedback stay yours.
+                            </div>
+                          </div>
+                          <button
+                            role="switch"
+                            aria-checked={webmcpTools}
+                            aria-label="Agent tools"
+                            onClick={() => setWebMcpToolsEnabled(!webmcpTools)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              webmcpTools ? 'bg-primary' : 'bg-muted'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                                webmcpTools ? 'translate-x-6' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </>
+                    )}
+
                     {/* Permission Mode (Claude Code only) */}
                     {origin === 'claude-code' && mode === 'plan' && (
                       <>
@@ -1094,8 +1782,9 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </>
                     )}
 
-                    {/* Agent Switching (OpenCode only) */}
-                    {origin === 'opencode' && (
+                    {/* Agent Switching (OpenCode only). Applied on plan
+                        approval only; annotate decisions never switch agents. */}
+                    {origin === 'opencode' && !annotateDocumentTabs && (
                       <>
                         <div className="border-t border-border" />
                         <div className="space-y-2">
@@ -1180,6 +1869,37 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       </>
                     )}
 
+                    {/* Agent TUI position. The same control lives in the
+                        terminal's own Display popover, but that one is
+                        unreachable once the position is Hidden — this is the
+                        way back. Both write the same config value. Gated on the
+                        terminal actually being available in this session, so a
+                        remote or runtime-less annotate never offers a dead
+                        control. */}
+                    {mode === 'annotate' && agentTerminalAvailable && (
+                      <>
+                        <div className="border-t border-border" />
+                        <div className="space-y-2">
+                          <div>
+                            <div className="text-sm font-medium">Agent TUI Position</div>
+                            <div className="text-xs text-muted-foreground">
+                              Which side the agent terminal docks on, or Hidden to keep it out of the layout
+                            </div>
+                          </div>
+                          <SegmentedControl
+                            options={AGENT_TERMINAL_SIDE_OPTIONS}
+                            value={agentTerminalSide}
+                            onChange={(v) => configStore.set('agentTerminalSide', v)}
+                          />
+                          {agentTerminalSide === 'hidden' && (
+                            <div className="text-[10px] text-muted-foreground/70">
+                              You can still open it for this session from the sidebar rail.
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+
                     <div className="border-t border-border" />
 
                     {/* Auto-close Tab */}
@@ -1217,11 +1937,47 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                 {/* === DISPLAY TAB === */}
                 {activeTab === 'display' && mode === 'review' && (
-                  <ReviewDisplayTab />
+                  <ReviewDisplayTab isCompactTouchLayout={isCompactTouchLayout} />
+                )}
+
+                {activeTab === 'experimental' && mode === 'review' && <ExperimentalTab />}
+
+                {activeTab === 'analysis' && mode === 'review' && (
+                  <ReviewAnalysisTab packageChangesSetting={packageChangesSetting} />
                 )}
 
                 {activeTab === 'display' && mode !== 'review' && (
                   <>
+                    {/* Text size (#2066): the document only, not the app around it */}
+                    {showDocumentTextSize && (<>
+                    <div className="space-y-3" data-document-text-size-setting>
+                      <div>
+                        <div className="text-sm font-medium" id="document-text-size-label">Text size</div>
+                        <div className="text-xs text-muted-foreground">
+                          {mode === 'annotate' ? 'Body text of the document' : 'Body text of the plan'}, in px ({DEFAULT_DOCUMENT_TEXT_SIZE} is the default)
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5" role="group" aria-labelledby="document-text-size-label">
+                        {DOCUMENT_TEXT_SIZE_OPTIONS.map((value) => (
+                          <button
+                            key={value}
+                            onClick={() => configStore.set('documentTextSize', value)}
+                            aria-pressed={documentTextSize === value}
+                            className={`flex-1 px-3 py-1.5 text-xs rounded-md transition-colors tabular-nums ${
+                              documentTextSize === value
+                                ? 'bg-background text-foreground shadow-sm font-medium'
+                                : 'text-muted-foreground hover:text-foreground'
+                            }`}
+                          >
+                            {value}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-border" />
+                    </>)}
+
                     {/* Auto-open Sidebar */}
                     <div className="flex items-center justify-between">
                       <div>
@@ -1280,8 +2036,12 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         <div className="text-sm font-medium">Grid Background</div>
                         <div className="text-xs text-muted-foreground">Show the plan as a floating card on a grid</div>
                       </div>
-                      <button role="switch" aria-checked={gridEnabled}
-                        onClick={() => configStore.set('gridEnabled', !gridEnabled)}
+                      <button role="switch" aria-checked={gridEnabled} aria-label="Grid Background"
+                        onClick={() => {
+                          configStore.set('gridEnabled', !gridEnabled);
+                          // A Settings flip is a real choice: keep it across reloads.
+                          markLookAndFeelChoiceResolved();
+                        }}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${gridEnabled ? 'bg-primary' : 'bg-muted'}`}>
                         <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${gridEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                       </button>
@@ -1289,12 +2049,40 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 
                     <div className="border-t border-border" />
 
+                    {/* Diagram Shadow */}
+                    <div className="space-y-3" data-diagram-shadow-setting>
+                      <div>
+                        <div className="text-sm font-medium">Diagram Shadow</div>
+                        <div className="text-xs text-muted-foreground">
+                          Drop shadow under diagram nodes (100 = Mermaid's own)
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
+                        {DIAGRAM_SHADOW_OPTIONS.map((value) => (
+                          <button
+                            key={value}
+                            onClick={() => configStore.set('diagramShadow', value)}
+                            aria-pressed={diagramShadow === value}
+                            className={`flex-1 px-3 py-1.5 text-xs rounded-md transition-colors ${
+                              diagramShadow === value
+                                ? 'bg-background text-foreground shadow-sm font-medium'
+                                : 'text-muted-foreground hover:text-foreground'
+                            }`}
+                          >
+                            {value === 0 ? 'None' : String(value)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-border" />
+
                     {/* Plan Width */}
                     <div className="space-y-3">
                       <div>
-                        <div className="text-sm font-medium flex items-center gap-2">Plan Width</div>
+                        <div className="text-sm font-medium flex items-center gap-2">{mode === 'annotate' ? 'Document Width' : 'Plan Width'}</div>
                         <div className="text-xs text-muted-foreground">
-                          Maximum width of the plan card
+                          {mode === 'annotate' ? 'Maximum width of the document card' : 'Maximum width of the plan card'}
                         </div>
                       </div>
                       <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
@@ -1418,7 +2206,9 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 {/* === SAVING TAB === */}
                 {activeTab === 'saving' && (
                   <>
-                    {/* Plan Saving */}
+                    {/* Plan Saving — decision snapshots in plans/ are written
+                        on plan approve/deny only. */}
+                    {mode === 'plan' && (<>
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div>
@@ -1461,6 +2251,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                     </div>
 
                     <div className="border-t border-border" />
+                    </>)}
 
                     {/* Default Notes App */}
                     <div className="space-y-2">
@@ -1480,7 +2271,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         {obsidianDefaultSaveAvailable && <option value="obsidian">Obsidian</option>}
                         {bearDefaultSaveAvailable && <option value="bear">Bear</option>}
                         {octarineDefaultSaveAvailable && <option value="octarine">Octarine</option>}
-                        {notionDefaultSaveAvailable && <option value="notion">Notion</option>}
+                        {(notionDefaultSaveAvailable || defaultNotesApp === 'notion') && <option value="notion">Notion</option>}
                       </select>
                       <div className="text-[10px] text-muted-foreground/70">
                         {defaultNotesApp === 'ask'
@@ -1545,191 +2336,24 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 )}
 
                 {/* === LABELS TAB === */}
-                {activeTab === 'labels' && (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm font-medium flex items-center gap-2">Quick Labels</div>
-                        <div className="text-xs text-muted-foreground">
-                          Preset annotations for one-click feedback
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => {
-                          resetQuickLabels();
-                          setQuickLabelsState(DEFAULT_QUICK_LABELS);
-                        }}
-                        className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        Reset to defaults
-                      </button>
-                    </div>
+                {activeTab === 'labels' && <QuickLabelsTab />}
 
-                    <style>{`
-                      @keyframes tip-slide-open {
-                        from { opacity: 0; transform: translateY(-4px); }
-                        to   { opacity: 1; transform: translateY(0); }
-                      }
-                    `}</style>
-                    <div className="space-y-1.5">
-                      {quickLabelsState.map((label, index) => {
-                        const colors = getLabelColors(label.color);
-                        const hasTip = !!label.tip;
-                        const isEditingTip = editingTipIndex === index;
-                        return (
-                          <div key={index} className="rounded-lg overflow-hidden" style={{ backgroundColor: colors.bg }}>
-                            {/* Main row */}
-                            <div className="flex items-center gap-2 p-2">
-                              <span className="text-sm flex-shrink-0">{label.emoji}</span>
-                              <input
-                                type="text"
-                                value={label.text}
-                                onChange={(e) => {
-                                  const updated = [...quickLabelsState];
-                                  updated[index] = {
-                                    ...label,
-                                    text: e.target.value,
-                                    id: e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
-                                  };
-                                  setQuickLabelsState(updated);
-                                  saveQuickLabels(updated);
-                                }}
-                                className="flex-1 px-2 py-1 bg-background/80 rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-                              />
-                              {/* Tip indicator button */}
-                              <button
-                                onClick={() => {
-                                  if (isEditingTip) {
-                                    setEditingTipIndex(null);
-                                  } else {
-                                    setEditingTipIndex(index);
-                                    setEditingTipValue(label.tip || '');
-                                  }
-                                }}
-                                className={`relative p-1 rounded transition-all flex-shrink-0 ${
-                                  hasTip
-                                    ? 'bg-foreground/10 text-foreground/70 hover:text-foreground border border-foreground/15'
-                                    : 'text-muted-foreground/30 hover:text-muted-foreground/60 border border-dashed border-muted-foreground/20 hover:border-muted-foreground/40'
-                                }`}
-                                title={hasTip ? `Tip: ${label.tip}` : 'Add AI instruction tip'}
-                              >
-                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                </svg>
-                                {hasTip && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-foreground/50" />
-                                )}
-                              </button>
-                              <select
-                                value={label.color}
-                                onChange={(e) => {
-                                  const updated = [...quickLabelsState];
-                                  updated[index] = { ...label, color: e.target.value };
-                                  setQuickLabelsState(updated);
-                                  saveQuickLabels(updated);
-                                }}
-                                className="px-1.5 py-1 bg-background/80 rounded text-[10px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-                              >
-                                {Object.keys(LABEL_COLOR_MAP).map(c => (
-                                  <option key={c} value={c}>{c}</option>
-                                ))}
-                              </select>
-                              <span className="text-[10px] text-muted-foreground/50 font-mono w-8 text-center flex-shrink-0">
-                                {index < 10 ? `${altKey}${isMac ? '' : '+'}${index === 9 ? '0' : index + 1}` : ''}
-                              </span>
-                              <button
-                                onClick={() => {
-                                  const updated = quickLabelsState.filter((_, i) => i !== index);
-                                  setQuickLabelsState(updated);
-                                  saveQuickLabels(updated);
-                                  if (editingTipIndex === index) setEditingTipIndex(null);
-                                }}
-                                className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors flex-shrink-0"
-                                title="Remove label"
-                              >
-                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                              </button>
-                            </div>
-                            {/* Tip editor — slides open below the row */}
-                            {isEditingTip && (
-                              <div
-                                className="flex items-center gap-1.5 px-2 pb-2 pt-0"
-                                style={{ animation: 'tip-slide-open 0.15s ease-out' }}
-                              >
-                                <svg className="w-3 h-3 text-muted-foreground/40 flex-shrink-0 ml-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                                </svg>
-                                <input
-                                  type="text"
-                                  value={editingTipValue}
-                                  onChange={(e) => setEditingTipValue(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const updated = [...quickLabelsState];
-                                      updated[index] = { ...label, tip: editingTipValue || undefined };
-                                      setQuickLabelsState(updated);
-                                      saveQuickLabels(updated);
-                                      setEditingTipIndex(null);
-                                    }
-                                    if (e.key === 'Escape') setEditingTipIndex(null);
-                                  }}
-                                  placeholder="AI instruction tip..."
-                                  className="flex-1 px-2 py-1 bg-background/60 rounded text-[10px] text-muted-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                  autoFocus
-                                  onFocus={(e) => { e.target.setSelectionRange(0, 0); e.target.scrollLeft = 0; }}
-                                />
-                                <button
-                                  onClick={() => {
-                                    const updated = [...quickLabelsState];
-                                    updated[index] = { ...label, tip: editingTipValue || undefined };
-                                    setQuickLabelsState(updated);
-                                    saveQuickLabels(updated);
-                                    setEditingTipIndex(null);
-                                  }}
-                                  className="p-1 rounded text-muted-foreground/50 hover:text-green-500 hover:bg-green-500/10 transition-colors flex-shrink-0"
-                                  title="Save tip"
-                                >
-                                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {quickLabelsState.length < 12 && (
-                      <button
-                        onClick={() => {
-                          const newLabel: QuickLabel = {
-                            id: `custom-${Date.now()}`,
-                            emoji: '📌',
-                            text: 'New label',
-                            color: 'blue',
-                          };
-                          const updated = [...quickLabelsState, newLabel];
-                          setQuickLabelsState(updated);
-                          saveQuickLabels(updated);
-                        }}
-                        className="w-full py-1.5 text-xs text-muted-foreground hover:text-foreground border border-dashed border-border rounded-lg hover:border-foreground/30 transition-colors"
-                      >
-                        + Add label
-                      </button>
-                    )}
-
-                    <div className="text-[10px] text-muted-foreground/70">
-                      Use {altKey}{isMac ? '' : '+'}1 through {altKey}{isMac ? '' : '+'}0 when the annotation toolbar is visible to apply a label instantly.
-                    </div>
-                  </>
+                {/* === VIM TAB === */}
+                {activeTab === 'vim' && mode !== 'review' && (
+                  <VimSettingsTab
+                    vimModeEnabled={vimModeEnabled}
+                    vimHudEnabled={vimHudEnabled}
+                    vimHudKeyPanelEnabled={vimHudKeyPanelEnabled}
+                    onVimModeChange={(enabled) => configStore.set('vimModeEnabled', enabled)}
+                    onVimHudChange={(enabled) => configStore.set('vimHudEnabled', enabled)}
+                    onVimHudKeyPanelChange={(enabled) =>
+                      configStore.set('vimHudKeyPanelEnabled', enabled)}
+                  />
                 )}
 
                 {/* === SHORTCUTS TAB === */}
                 {activeTab === 'shortcuts' && (
-                  <KeyboardShortcuts mode={mode} />
+                  <KeyboardShortcuts mode={mode} vimModeEnabled={vimModeEnabled} />
                 )}
 
                 {/* === COMMENTS TAB === */}
@@ -1790,7 +2414,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                   onClick={() => handleFileBrowserChange({
                                     directories: fileBrowserSettings.directories.filter((d) => d !== dir),
                                   })}
-                                  className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100"
+                                  className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
                                   title="Remove directory"
                                 >
                                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1843,7 +2467,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                       <div>
                         <div className="text-sm font-medium">Obsidian Integration</div>
                         <div className="text-xs text-muted-foreground">
-                          Auto-save approved plans to your vault
+                          {mode === 'annotate' ? 'Save documents to your vault from the Options menu. When on, plan review also saves each approved plan here.' : 'Auto-save approved plans to your vault'}
                         </div>
                       </div>
                       <button
@@ -1972,7 +2596,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                           </div>
 
                           <div className="text-[10px] text-muted-foreground/70">
-                            Plans saved to: {obsidian.vaultPath === CUSTOM_PATH_SENTINEL
+                            {mode === 'annotate' ? 'Saved to' : 'Plans saved to'}: {obsidian.vaultPath === CUSTOM_PATH_SENTINEL
                               ? (obsidian.customPath || '...')
                               : (obsidian.vaultPath || '...')}/{obsidian.folder || 'plannotator'}/
                           </div>
@@ -1983,13 +2607,14 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
 {`---
 created: ${new Date().toISOString().slice(0, 19)}Z
 source: plannotator
-tags: [plan, ...]
+tags: [${mode === 'annotate' ? 'plannotator' : 'plan'}, ...]
 ---`}
                             </pre>
                           </div>
 
                           <div className="border-t border-border/30" />
 
+                          {mode === 'plan' && (<>
                           <div className="flex items-center justify-between">
                             <div>
                               <div className="text-xs font-medium">Auto-save on Plan Arrival</div>
@@ -2010,6 +2635,7 @@ tags: [plan, ...]
                               }`} />
                             </button>
                           </div>
+                          </>)}
 
                           <div className="flex items-center justify-between">
                             <div>
@@ -2044,7 +2670,7 @@ tags: [plan, ...]
                       <div>
                         <div className="text-sm font-medium">Bear Notes</div>
                         <div className="text-xs text-muted-foreground">
-                          Auto-save approved plans to Bear
+                          {mode === 'annotate' ? 'Save documents to Bear from the Options menu. When on, plan review also saves each approved plan here.' : 'Auto-save approved plans to Bear'}
                         </div>
                       </div>
                       <button
@@ -2090,6 +2716,7 @@ tags: [plan, ...]
                           </select>
                         </div>
 
+                        {mode === 'plan' && (<>
                         <div className="border-t border-border/30" />
 
                         <div className="flex items-center justify-between">
@@ -2112,6 +2739,7 @@ tags: [plan, ...]
                             }`} />
                           </button>
                         </div>
+                        </>)}
                       </div>
                     )}
                   </>
@@ -2124,7 +2752,7 @@ tags: [plan, ...]
                       <div>
                         <div className="text-sm font-medium">Octarine</div>
                         <div className="text-xs text-muted-foreground">
-                          Auto-save approved plans to Octarine
+                          {mode === 'annotate' ? 'Save documents to Octarine from the Options menu. When on, plan review also saves each approved plan here.' : 'Auto-save approved plans to Octarine'}
                         </div>
                       </div>
                       <button
@@ -2172,9 +2800,10 @@ tags: [plan, ...]
                         </div>
 
                         <div className="text-[10px] text-muted-foreground/70">
-                          Plans saved to: {octarine.workspace || '...'} / {octarine.folder || 'plannotator'}/
+                          {mode === 'annotate' ? 'Saved to' : 'Plans saved to'}: {octarine.workspace || '...'} / {octarine.folder || 'plannotator'}/
                         </div>
 
+                        {mode === 'plan' && (<>
                         <div className="border-t border-border/30" />
 
                         <div className="flex items-center justify-between">
@@ -2197,6 +2826,7 @@ tags: [plan, ...]
                             }`} />
                           </button>
                         </div>
+                        </>)}
                       </div>
                     )}
                   </>
@@ -2208,55 +2838,65 @@ tags: [plan, ...]
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium">Notion</div>
-                        <div className="text-xs text-muted-foreground">Save plans as child pages in Notion</div>
+                        <div className="text-xs text-muted-foreground">
+                          {mode === 'annotate' ? 'Save documents to Notion from the Options menu. When on, plan review also saves each approved plan here.' : 'Save approved plans as Notion pages'}
+                        </div>
                       </div>
                       <button
                         role="switch"
                         aria-checked={notion.enabled}
                         onClick={() => handleNotionChange({ enabled: !notion.enabled })}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${notion.enabled ? 'bg-primary' : 'bg-muted'}`}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          notion.enabled ? 'bg-primary' : 'bg-muted'
+                        }`}
                       >
-                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${notion.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                            notion.enabled ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
                       </button>
                     </div>
                     {notion.enabled && (
                       <div className="mt-3 space-y-3">
-                        <div className="space-y-1.5">
-                          <label className="text-xs text-muted-foreground">Parent Page URL or ID</label>
+                        <div className="space-y-1.5 pl-0.5">
+                          <label className="text-xs text-muted-foreground">Parent Page</label>
                           <input
                             type="text"
                             value={notion.parentPageId}
                             onChange={(e) => handleNotionChange({ parentPageId: e.target.value })}
-                            onBlur={(e) => {
-                              const parentPageId = normalizeNotionPageId(e.target.value);
-                              if (parentPageId) handleNotionChange({ parentPageId });
-                            }}
                             placeholder="https://www.notion.so/..."
                             className="w-full px-3 py-2 bg-muted rounded-lg text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
                           />
                           <div className="text-[10px] text-muted-foreground">
-                            Share this parent page with your Notion integration before exporting.
+                            A page link or ID. Each save adds a page under it. Share it with your Notion integration first.
                           </div>
                         </div>
-                        <div className="rounded-lg bg-muted/50 p-3 text-[10px] text-muted-foreground space-y-1">
-                          <div>Set <code>NOTION_TOKEN</code> in the environment that starts Plannotator.</div>
-                          <div>The token is never stored in Plannotator settings or sent by your browser.</div>
-                        </div>
+
+                        {mode === 'plan' && (<>
                         <div className="border-t border-border/30" />
+
                         <div className="flex items-center justify-between">
                           <div>
                             <div className="text-xs font-medium">Auto-save on Plan Arrival</div>
-                            <div className="text-[10px] text-muted-foreground">Automatically create a Notion page when a plan loads, before you approve or deny.</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              Automatically save to Notion when a plan loads, before you approve or deny
+                            </div>
                           </div>
                           <button
                             role="switch"
                             aria-checked={notion.autoSave}
                             onClick={() => handleNotionChange({ autoSave: !notion.autoSave })}
-                            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${notion.autoSave ? 'bg-primary' : 'bg-muted'}`}
+                            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                              notion.autoSave ? 'bg-primary' : 'bg-muted'
+                            }`}
                           >
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${notion.autoSave ? 'translate-x-6' : 'translate-x-1'}`} />
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              notion.autoSave ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
                           </button>
                         </div>
+                        </>)}
                       </div>
                     )}
                   </>

@@ -4,6 +4,7 @@ import {
   getVcsContext,
   getVcsDiffFingerprint,
   getVcsFileContentsForDiff,
+  getVcsFileBytesForDiff,
   runVcsDiff,
   stageFile,
   unstageFile,
@@ -15,6 +16,7 @@ import {
 
 export {
   WorkspaceReviewSession,
+  isRepoRelative,
   mapRepoDiffTypeToWorkspaceMode,
   mapWorkspaceModeToRepoDiffType,
   resolveWorkspaceInitialDiffType,
@@ -40,6 +42,7 @@ const workspaceRuntime = {
   getVcsContext,
   runVcsDiff,
   getVcsFileContentsForDiff,
+  getVcsFileBytesForDiff,
   getVcsDiffFingerprint,
   canStageFiles,
   stageFile,

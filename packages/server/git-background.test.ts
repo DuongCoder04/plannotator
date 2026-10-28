@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -97,6 +105,36 @@ process.exit(1);
     command: `${shellQuote(process.execPath)} ${shellQuote(fakeSsh)}`,
   };
 }
+
+describe.skipIf(process.platform === "win32")("review runtime filesystem seam", () => {
+  for (const fixture of fixtures) {
+    test(`${fixture.name} resolves file metadata and symlink payloads`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "plannotator-runtime-file-"));
+      tempDirs.push(root);
+      const file = join(root, "file.txt");
+      const link = join(root, "file-link");
+      writeFileSync(file, "content\n", "utf-8");
+      symlinkSync("file.txt", link);
+
+      const runtimeModule = await import(pathToFileURL(fixture.modulePath).href);
+      const runtime = runtimeModule[fixture.exportName] as {
+        getFileInfo(basePath: string, path: string): Promise<{
+          path: string;
+          size: number;
+          isFile: boolean;
+          isSymbolicLink: boolean;
+        } | null>;
+        readLink(path: string): Promise<string | null>;
+      };
+      const fileInfo = await runtime.getFileInfo(root, "file.txt");
+      const linkInfo = await runtime.getFileInfo(root, "file-link");
+
+      expect(fileInfo).toMatchObject({ path: file, size: 8, isFile: true, isSymbolicLink: false });
+      expect(linkInfo).toMatchObject({ path: link, isFile: false, isSymbolicLink: true });
+      await expect(runtime.readLink(link)).resolves.toBe("file.txt");
+    });
+  }
+});
 
 function createHttpCredentialFixture(remoteUrl: string): {
   repo: string;
@@ -259,6 +297,59 @@ describe.skipIf(process.platform === "win32")("background remote discovery", () 
         terminateTransports(invocations);
       }
     }, 5_000);
+
+    test(`${fixture.name} process exit kills a still-hanging Git transport`, async () => {
+      // Failure caught (#1553): the parent-side timeout timer is the ONLY
+      // thing that ever reaps an isolated transport, and it dies with the
+      // parent. A review server stopped while an ls-remote was still waiting
+      // on authentication therefore orphaned the git/ssh pair — on a
+      // smartcard-backed setup, one that keeps the agent busy long after the
+      // review window is gone. The timeout here is far longer than the child's
+      // lifetime, so only the exit hook can account for the kill.
+      const { repo, marker, command } = createSshFixture();
+      const runtimeUrl = pathToFileURL(fixture.modulePath).href;
+      const source = `
+        const { existsSync, readFileSync } = await import("node:fs");
+        const runtimeModule = await import(${JSON.stringify(runtimeUrl)});
+        void runtimeModule[${JSON.stringify(fixture.exportName)}].runGit(
+          ["ls-remote", "--symref", "origin", "HEAD"],
+          { cwd: ${JSON.stringify(repo)}, timeoutMs: 120_000, interaction: "forbid" },
+        );
+        const marker = ${JSON.stringify(marker)};
+        for (let i = 0; i < 100; i++) {
+          if (existsSync(marker) && readFileSync(marker, "utf-8").trim()) break;
+          await Bun.sleep(50);
+        }
+        await Bun.sleep(100);
+        process.exit(0);
+      `;
+
+      const result = spawnSync(process.execPath, ["--eval", source], {
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_SSH_COMMAND: command,
+          SSH_BEHAVIOR: "hang",
+          SSH_MARKER: marker,
+        },
+        timeout: 10_000,
+      });
+      const invocations = readInvocations(marker);
+      // The group signal and the child's own teardown race by microseconds;
+      // give the kernel a moment before reading process state.
+      await Bun.sleep(100);
+
+      try {
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(invocations.length).toBeGreaterThan(0);
+        for (const invocation of invocations) {
+          expect(() => process.kill(invocation.pid, 0)).toThrow();
+        }
+      } finally {
+        terminateTransports(invocations);
+      }
+    }, 15_000);
 
     test(`${fixture.name} interactive fetch keeps the inherited authentication policy`, () => {
       const { repo, marker, command } = createSshFixture();

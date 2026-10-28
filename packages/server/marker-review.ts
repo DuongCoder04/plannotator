@@ -3,6 +3,14 @@ import {
   type ResolvedReviewProfile,
 } from "@plannotator/shared/review-profiles";
 import {
+  CURSOR_CLI_SIGNATURE,
+  isSameProgram,
+  resolveProgram,
+  type ProgramSignature,
+  type ResolvedProgram,
+  type SameProgramCheck,
+} from "@plannotator/shared/agent-program";
+import {
   transformSeverityFindings,
   type ReviewSeverity,
   type ReviewFinding,
@@ -12,7 +20,7 @@ import {
 /**
  * Marker Review Engines — the shared machinery for review CLIs that expose NO
  * schema-validation flag, so their final review output is prose. Cursor (the
- * `agent` binary), OpenCode (`opencode run`), and Pi (`pi --mode json`) are the
+ * `cursor-agent` binary, or `agent` when that is Cursor's), OpenCode (`opencode run`), and Pi (`pi --mode json`) are the
  * three. Because they can't be told to emit validated structured output, they
  * are instead told to emit a marker-delimited JSON block, and we extract the
  * LAST complete block from the reconstructed canonical text.
@@ -193,12 +201,19 @@ export interface MarkerModel {
 export type MarkerStreamEvent = Record<string, unknown>;
 
 /** Optional per-engine run knobs. Engines ignore fields they have no flag
- *  for — today only Pi consumes `thinking` (its unified reasoning level). */
+ *  for — today Pi consumes `thinking` (its unified reasoning level) and
+ *  Cursor consumes `cursorSandbox`. */
 export interface MarkerBuildOptions {
   /** Pi: `--thinking off|minimal|low|medium|high|xhigh` (Pi's default is
    *  medium; xhigh is accepted only by codex-max models — Pi errors clearly
    *  otherwise, surfaced as a failed job). */
   thinking?: string;
+  /** Cursor: pass `--sandbox enabled` (default true). Callers resolve this via
+   *  resolveCursorSandbox() (PLANNOTATOR_CURSOR_SANDBOX env var / config.json
+   *  `cursorSandbox`) — this module stays env-free. When false the pair is
+   *  OMITTED entirely (never `--sandbox disabled`), deferring to the user's
+   *  own Cursor Agent sandbox configuration. */
+  cursorSandbox?: boolean;
 }
 
 /** Stable ids of the marker engines — the single union every cast/lookup
@@ -210,8 +225,15 @@ export interface MarkerEngine {
   id: MarkerEngineId;
   /** Display name for the capabilities/provider listing (e.g. "Cursor CLI"). */
   name: string;
-  /** The CLI binary to spawn (NOTE: cursor's binary is `agent`). */
+  /** The CLI binary to spawn, by its own name (Cursor's: `cursor-agent`). */
   binary: string;
+  /**
+   * Other names the same CLI is installed under, tried after `binary` (Cursor's
+   * installer also links `agent`). A program found under one is used only when
+   * it has `binarySignature`: other tools install a generic `agent` too.
+   */
+  altBinaries?: readonly string[];
+  binarySignature?: ProgramSignature;
   /** Author string stamped on every annotation this engine produces. */
   author: string;
   /** Build the full argv (binary + flags + trailing prompt) for a review run. */
@@ -362,7 +384,9 @@ function cursorFormatLogEvent(event: MarkerStreamEvent): string | null {
 }
 
 /**
- * Build the `agent -p` command. NOTE the binary is `agent`, NOT `cursor`.
+ * Build the `cursor-agent -p` command. NOTE the binary is `cursor-agent` (or
+ * Cursor's own `agent`, swapped in at spawn by resolveMarkerBinary), NOT
+ * `cursor`, and never another program named `agent`.
  *
  * Read-only posture comes entirely from `--mode ask` + `--sandbox enabled` and
  * the absence of `--force`/`--yolo`. `--trust` is required in headless print
@@ -371,12 +395,27 @@ function cursorFormatLogEvent(event: MarkerStreamEvent): string | null {
  * `agent` reads task text from argv, not stdin. `--model` is omitted when the
  * model is `Auto`/empty so Cursor uses its default model selection. `--workspace`
  * is set to the launch cwd when provided.
+ *
+ * Escape hatch: on systems where Cursor's sandbox cannot start (NixOS,
+ * AppArmor-restricted Linux) the hardcoded `--sandbox enabled` hard-fails the
+ * job ("Sandbox mode is enabled but not available on this system") and
+ * overrides the user's own `agent sandbox` configuration. `opts.cursorSandbox:
+ * false` (resolved from PLANNOTATOR_CURSOR_SANDBOX / config.json
+ * `cursorSandbox`) OMITS the pair entirely — never `--sandbox disabled` — so
+ * the user's Cursor Agent configuration governs. Tradeoff stated plainly:
+ * opting out means the review job's write protection rests on `--mode ask`
+ * plus whatever sandboxing the user's own Cursor config provides.
  */
-function cursorBuildArgv(prompt: string, model?: string, cwd?: string): string[] {
+function cursorBuildArgv(
+  prompt: string,
+  model?: string,
+  cwd?: string,
+  opts?: MarkerBuildOptions,
+): string[] {
   // `auto` is Cursor's default model id — omit --model so the CLI chooses.
   const useModel = !!model && model.toLowerCase() !== "auto";
   return [
-    "agent",
+    "cursor-agent",
     "-p",
     "--mode",
     "ask",
@@ -385,8 +424,7 @@ function cursorBuildArgv(prompt: string, model?: string, cwd?: string): string[]
     "--stream-partial-output",
     "--trust",
     ...(cwd ? ["--workspace", cwd] : []),
-    "--sandbox",
-    "enabled",
+    ...(opts?.cursorSandbox === false ? [] : ["--sandbox", "enabled"]),
     ...(useModel ? ["--model", model] : []),
     // Prompt is the trailing positional arg — agent reads it from argv, not stdin.
     prompt,
@@ -465,11 +503,18 @@ function opencodeFormatLogEvent(event: MarkerStreamEvent): string | null {
  *
  * `--format json` emits NDJSON events we capture on stdout. `--agent plan` is
  * OpenCode's read-oriented agent — a sensible default for review (it does not
- * edit). `--dir <cwd>` matches the spawn cwd. The message (prompt) is the
- * trailing positional arg. `--model` is `provider/model` and is omitted when
- * empty so OpenCode uses the configured default.
+ * edit). The message (prompt) is the trailing positional arg. `--model` is
+ * `provider/model` and is omitted when empty so OpenCode uses the configured
+ * default.
+ *
+ * NO `--dir` (#1609): OpenCode 1.x's `run --dir` means "directory to run in,
+ * path on remote server if attaching", and OpenCode v2's `run` rejects the flag
+ * outright ("Unrecognized flag: --dir"). We never attach to a remote server, so
+ * the working directory is expressed the same way as Pi's: the job's spawn cwd
+ * (spawnJob already spawns with the build result's `cwd`). `cwd` is accepted
+ * only to match the shared `MarkerEngine["buildArgv"]` signature.
  */
-function opencodeBuildArgv(prompt: string, model?: string, cwd?: string): string[] {
+function opencodeBuildArgv(prompt: string, model?: string, _cwd?: string): string[] {
   const useModel = !!model && model.trim().length > 0;
   return [
     "opencode",
@@ -479,7 +524,6 @@ function opencodeBuildArgv(prompt: string, model?: string, cwd?: string): string
     "--agent",
     "plan",
     ...(useModel ? ["--model", model] : []),
-    ...(cwd ? ["--dir", cwd] : []),
     // Message (prompt) is the trailing positional arg.
     prompt,
   ];
@@ -683,7 +727,7 @@ function piFormatLogEvent(event: MarkerStreamEvent): string | null {
  * NEVER be allowed to load for an arbitrary review job. `--no-session` keeps
  * the run ephemeral so background jobs don't accumulate in the user's
  * `~/.pi/agent/sessions`. Pi has NO `--cwd`/`--workspace`/`--dir` flag (unlike
- * Cursor's `--workspace` or OpenCode's `--dir`) — it always operates on the
+ * Cursor's `--workspace`; OpenCode's run also relies on the spawn cwd) — it always operates on the
  * process's actual working directory, which is exactly the job's spawn cwd
  * (spawnJob already spawns with the build result's `cwd`), so `cwd` is
  * accepted only to match the shared `MarkerEngine["buildArgv"]` signature and
@@ -903,7 +947,9 @@ function copilotBuildArgv(prompt: string, model?: string, cwd?: string): string[
 const CURSOR_ENGINE: MarkerEngine = {
   id: "cursor",
   name: "Cursor CLI",
-  binary: "agent",
+  binary: "cursor-agent",
+  altBinaries: ["agent"],
+  binarySignature: CURSOR_CLI_SIGNATURE,
   author: "Cursor",
   buildArgv: cursorBuildArgv,
   extractText: cursorExtractText,
@@ -1249,6 +1295,34 @@ export function composeMarkerReviewPrompt(
 
 export interface MarkerCommandResult {
   command: string[];
+}
+
+/**
+ * The engine's CLI on PATH: `binary`, else an `altBinaries` name that is the
+ * same CLI (Cursor's `agent`, never Grok Build's or another tool's). Null when
+ * none is installed. `which` is the runtime's PATH lookup.
+ */
+export function resolveMarkerBinary(
+  engine: MarkerEngine,
+  which: (name: string) => string | null,
+  sameProgram: SameProgramCheck = isSameProgram,
+): Promise<ResolvedProgram | null> {
+  return resolveProgram({ command: engine.binary, alt: engine.altBinaries, signature: engine.binarySignature }, which, sameProgram);
+}
+
+/**
+ * The argv to spawn: when it starts with one of the engine's names, that name
+ * is replaced by the one resolveMarkerBinary found. When none was found the
+ * argv keeps the engine's own name, so the spawn fails as "not found" rather
+ * than starting another program.
+ */
+export function withMarkerBinary(command: string[], engine: MarkerEngine, resolved: ResolvedProgram | null): string[] {
+  if (!engine.altBinaries?.length) return command;
+  const names = [engine.binary, ...engine.altBinaries];
+  if (command.length === 0 || !names.includes(command[0]!)) return command;
+  // By name: the spawn looks it up on the same PATH and finds the file that
+  // was checked (on Windows with the same .exe/.cmd extension).
+  return [resolved?.name ?? engine.binary, ...command.slice(1)];
 }
 
 /** Build the full argv for a review run with the given engine. */

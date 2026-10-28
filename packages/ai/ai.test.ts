@@ -6,12 +6,17 @@ import {
   registerProviderFactory,
   createProvider,
 } from "./provider.ts";
-import { AI_ENDPOINT_PATHS, createAIEndpoints } from "./endpoints.ts";
+import {
+  AI_ENDPOINT_PATHS,
+  createAIEndpoints,
+  createBestEffortOnce,
+} from "./endpoints.ts";
 import type {
   AIProvider,
   AISession,
   AIMessage,
   AIContext,
+  CreateSessionOptions,
 } from "./types.ts";
 import {
   buildWindowsCommandScriptSpawnCommand,
@@ -77,6 +82,49 @@ function mockProvider(name = "mock"): AIProvider {
     dispose() {},
   };
 }
+
+describe("createBestEffortOnce", () => {
+  test("coalesces concurrent calls and caches completion", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const initialize = createBestEffortOnce(async () => {
+      calls++;
+      await gate;
+    });
+
+    const first = initialize();
+    const second = initialize();
+    expect(calls).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    await initialize();
+    expect(calls).toBe(1);
+  });
+
+  test("swallows a failure and retries only once the cooldown has passed", async () => {
+    let calls = 0;
+    const failing = async () => {
+      calls++;
+      throw new Error("discovery failed");
+    };
+
+    // Within the cooldown a broken tool is not re-spawned on every call…
+    const cooled = createBestEffortOnce(failing, 60_000);
+    await expect(cooled()).resolves.toBeUndefined();
+    await expect(cooled()).resolves.toBeUndefined();
+    expect(calls).toBe(1);
+
+    // …but a failure never pins the fallback for the life of the process.
+    calls = 0;
+    const retrying = createBestEffortOnce(failing, 0);
+    await retrying();
+    await retrying();
+    expect(calls).toBe(2);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Command path helpers
@@ -577,6 +625,80 @@ describe("AI endpoints", () => {
     expect(data.providers[0].capabilities.fork).toBe(true);
   });
 
+  test("capabilities does not activate providers", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    let activated = false;
+    reg.register(mockProvider("codex-sdk"), "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async () => {
+        activated = true;
+      },
+    });
+
+    const res = await endpoints["/api/ai/capabilities"](
+      new Request("http://localhost/api/ai/capabilities"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(activated).toBe(false);
+  });
+
+  test("capabilities?activate= runs the provider initializer and reports refreshed models", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    const activations: string[] = [];
+    const provider = {
+      ...mockProvider("codex-sdk"),
+      models: [{ id: "static-model", label: "Static", default: true }],
+    };
+    reg.register(provider, "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async (providerId) => {
+        activations.push(providerId);
+        provider.models = [
+          { id: "discovered-model", label: "Discovered", default: true },
+        ];
+      },
+    });
+
+    const res = await endpoints["/api/ai/capabilities"](
+      new Request("http://localhost/api/ai/capabilities?activate=codex"),
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(activations).toEqual(["codex"]);
+    expect(data.providers[0].models).toEqual([
+      { id: "discovered-model", label: "Discovered", default: true },
+    ]);
+  });
+
+  test("capabilities?activate= ignores unknown provider ids", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    let activated = false;
+    reg.register(mockProvider("codex-sdk"), "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async () => {
+        activated = true;
+      },
+    });
+
+    const res = await endpoints["/api/ai/capabilities"](
+      new Request("http://localhost/api/ai/capabilities?activate=missing"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(activated).toBe(false);
+  });
+
   test("capabilities waits for pending provider discovery", async () => {
     const reg = new ProviderRegistry();
     const sm = new SessionManager();
@@ -682,6 +804,230 @@ describe("AI endpoints", () => {
     expect(createRes.status).toBe(200);
   });
 
+  test("session creation activates only the resolved provider before createSession", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    const events: string[] = [];
+    reg.register(mockProvider("claude-agent-sdk"), "claude");
+    reg.register({
+      ...mockProvider("codex-sdk"),
+      async createSession() {
+        events.push("create");
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    }, "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async (providerId) => {
+        events.push(`activate:${providerId}`);
+      },
+    });
+
+    const res = await endpoints["/api/ai/session"](
+      new Request("http://localhost/api/ai/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: { mode: "plan-review", plan: { plan: "# Test" } },
+          providerId: "codex",
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(["activate:codex", "create"]);
+  });
+
+  test("session creation replaces the static default with the discovered default", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    let createdModel: string | undefined;
+    const provider = {
+      ...mockProvider("codex-sdk"),
+      models: [{ id: "static-model", label: "Static", default: true }],
+      async createSession(options: CreateSessionOptions) {
+        createdModel = options.model;
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    };
+    reg.register(provider, "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async () => {
+        provider.models = [
+          { id: "discovered-model", label: "Discovered", default: true },
+        ];
+      },
+    });
+
+    const res = await endpoints["/api/ai/session"](
+      new Request("http://localhost/api/ai/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: { mode: "plan-review", plan: { plan: "# Test" } },
+          providerId: "codex",
+          model: "static-model",
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(createdModel).toBe("discovered-model");
+  });
+
+  test("session creation honors a requested model the provider still offers", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    let createdModel: string | undefined;
+    const provider = {
+      ...mockProvider("codex-sdk"),
+      models: [{ id: "static-model", label: "Static", default: true }],
+      async createSession(options: CreateSessionOptions) {
+        createdModel = options.model;
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    };
+    reg.register(provider, "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async () => {
+        provider.models = [
+          { id: "discovered-default", label: "Default", default: true },
+          { id: "discovered-alt", label: "Alt" },
+        ];
+      },
+    });
+
+    const res = await endpoints["/api/ai/session"](
+      new Request("http://localhost/api/ai/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: { mode: "plan-review", plan: { plan: "# Test" } },
+          providerId: "codex",
+          model: "discovered-alt",
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(createdModel).toBe("discovered-alt");
+  });
+
+  test("session creation snaps an unlisted model to the discovered default on every session", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    const createdModels: Array<string | undefined> = [];
+    const provider = {
+      ...mockProvider("codex-sdk"),
+      models: [{ id: "static-model", label: "Static", default: true }],
+      async createSession(options: CreateSessionOptions) {
+        createdModels.push(options.model);
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    };
+    reg.register(provider, "codex");
+    const endpoints = createAIEndpoints({
+      registry: reg,
+      sessionManager: sm,
+      beforeProviderSession: async () => {
+        provider.models = [
+          { id: "discovered-model", label: "Discovered", default: true },
+        ];
+      },
+    });
+
+    // Two sessions with the stale pre-discovery fallback id: the second one
+    // runs after activation already happened, and must not pin the stale id
+    // just because it no longer matches the pre-activation default.
+    for (let i = 0; i < 2; i++) {
+      const res = await endpoints["/api/ai/session"](
+        new Request("http://localhost/api/ai/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: { mode: "plan-review", plan: { plan: "# Test" } },
+            providerId: "codex",
+            model: "static-model",
+          }),
+        }),
+      );
+      expect(res.status).toBe(200);
+    }
+
+    expect(createdModels).toEqual(["discovered-model", "discovered-model"]);
+  });
+
+  test("session creation passes the requested model through when the provider reports no models", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    let createdModel: string | undefined;
+    reg.register({
+      ...mockProvider("mock"),
+      async createSession(options: CreateSessionOptions) {
+        createdModel = options.model;
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    });
+
+    const endpoints = createAIEndpoints({ registry: reg, sessionManager: sm });
+    const res = await endpoints["/api/ai/session"](
+      new Request("http://localhost/api/ai/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: { mode: "plan-review", plan: { plan: "# Test" } },
+          model: "anything-goes",
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(createdModel).toBe("anything-goes");
+  });
+
+  test("session creation forwards only an effort the resolved model accepts", async () => {
+    const reg = new ProviderRegistry();
+    const sm = new SessionManager();
+    const efforts: Array<string | undefined> = [];
+    reg.register({
+      ...mockProvider("claude-agent-sdk"),
+      models: [
+        { id: "sonnet", label: "Sonnet", default: true, reasoningEfforts: [{ id: "high", label: "High" }] },
+        { id: "haiku", label: "Haiku" },
+      ],
+      async createSession(options: CreateSessionOptions) {
+        efforts.push(options.reasoningEffort);
+        return mockSession(`session-${++sessionCounter}`, null);
+      },
+    }, "claude");
+    const endpoints = createAIEndpoints({ registry: reg, sessionManager: sm });
+
+    for (const [model, reasoningEffort] of [["sonnet", "high"], ["sonnet", "ultra"], ["haiku", "high"]]) {
+      const res = await endpoints["/api/ai/session"](
+        new Request("http://localhost/api/ai/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: { mode: "plan-review", plan: { plan: "# Test" } },
+            providerId: "claude",
+            model,
+            reasoningEffort,
+          }),
+        }),
+      );
+      expect(res.status).toBe(200);
+    }
+
+    // A level the model lists passes; one it does not list, or any level on a
+    // model that takes none, is dropped rather than sent to the CLI.
+    expect(efforts).toEqual(["high", undefined, undefined]);
+  });
+
   test("session creation clamps client-supplied cost controls", async () => {
     const { reg, endpoints } = setup();
     let seenOptions: { maxTurns?: number; maxBudgetUsd?: number } | null = null;
@@ -752,12 +1098,15 @@ describe("AI endpoints", () => {
           sessionId,
           prompt: "What changed?",
           contextUpdate: "New annotation: section 3 flagged",
+          // "Ask this session" only; a separate AI never sees it (#1748).
+          draftAnnotations: "Draft 1: DRAFT-SENTINEL",
         }),
       })
     );
     const text = await queryRes.text();
     expect(text).toContain("Context update");
     expect(text).toContain("section 3 flagged");
+    expect(text).not.toContain("DRAFT-SENTINEL");
     expect(text).toContain("What changed?");
   });
 
@@ -792,8 +1141,8 @@ describe("AI endpoints", () => {
     expect(entry?.label).toBe("Why did we choose this approach?");
   });
 
-  test("abort endpoint", async () => {
-    const { reg, endpoints } = setup();
+  test.each([undefined, "supersede"])("abort endpoint stops a separate provider, reason=%s", async (reason) => {
+    const { reg, sm, endpoints } = setup();
     reg.register(mockProvider("mock"));
 
     const createRes = await endpoints["/api/ai/session"](
@@ -807,15 +1156,22 @@ describe("AI endpoints", () => {
     );
     const { sessionId } = (await createRes.json()) as { sessionId: string };
 
+    const session = sm.get(sessionId)!.session;
+    const query = session.query("Still working")[Symbol.asyncIterator]();
+    await query.next();
+    expect(session.isActive).toBe(true);
+
     const abortRes = await endpoints["/api/ai/abort"](
       new Request("http://localhost/api/ai/abort", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId, reason }),
       })
     );
     const abortData = (await abortRes.json()) as { ok: boolean };
     expect(abortData.ok).toBe(true);
+    expect(session.isActive).toBe(false);
+    await query.return?.();
   });
 
   test("sessions list endpoint", async () => {
@@ -886,6 +1242,32 @@ describe("resolveSDKModel", () => {
 
   test("maps the [1m] context variant by family", () => {
     expect(resolveSDKModel("claude-sonnet-4-6[1m]", bedrockEnv)).toBe(SONNET_ARN);
+  });
+
+  // Opus 5 is a bare alias like every other picker entry: it must NOT be
+  // mistaken for a cloud identifier (no `arn:` / `anthropic.` prefix), and the
+  // family matcher must still route it to the configured Opus ARN on
+  // Bedrock/Vertex. A matcher that keyed on "opus-4" would silently drop it.
+  test("maps the bare Opus 5 alias to the configured Opus ARN", () => {
+    expect(resolveSDKModel("claude-opus-5", bedrockEnv)).toBe(OPUS_ARN);
+    expect(
+      resolveSDKModel("claude-opus-5", {
+        CLAUDE_CODE_USE_VERTEX: "true",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: OPUS_ARN,
+      }),
+    ).toBe(OPUS_ARN);
+  });
+
+  test("off Bedrock/Vertex: returns the Opus 5 alias unchanged", () => {
+    expect(resolveSDKModel("claude-opus-5", {})).toBe("claude-opus-5");
+  });
+
+  // Fable has no ANTHROPIC_DEFAULT_*_MODEL env var of its own (Claude Code
+  // only defines OPUS/SONNET/HAIKU), so on Bedrock it falls through to
+  // ANTHROPIC_MODEL rather than matching a family. Pinned so the fallthrough
+  // stays deliberate rather than looking like a missed family branch.
+  test("falls back to ANTHROPIC_MODEL for the Fable alias on Bedrock", () => {
+    expect(resolveSDKModel("claude-fable-5", bedrockEnv)).toBe(OPUS_ARN);
   });
 
   test("passes through an identifier that is already an ARN", () => {
@@ -1242,6 +1624,47 @@ describe("mapPiEvent", () => {
     }]);
   });
 
+  test("completed assistant message maps to text", () => {
+    const result = mapPiEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Hidden reasoning" },
+          { type: "text", text: "Final answer" },
+          { type: "toolCall", id: "tc_1", name: "read", arguments: {} },
+          { type: "text", text: " continued" },
+        ],
+      },
+    }, SESSION_ID);
+    expect(result).toEqual([{ type: "text", text: "Final answer continued" }]);
+  });
+
+  test("completed non-assistant message is ignored", () => {
+    const result = mapPiEvent({
+      type: "message_end",
+      message: { role: "user", content: [{ type: "text", text: "Ignore" }] },
+    }, SESSION_ID);
+    expect(result).toEqual([]);
+  });
+
+  test("completed assistant error maps to an error", () => {
+    const result = mapPiEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "OpenAI API error (429): quota exceeded",
+      },
+    }, SESSION_ID);
+    expect(result).toEqual([{
+      type: "error",
+      error: "OpenAI API error (429): quota exceeded",
+      code: "pi_request_error",
+    }]);
+  });
+
   test("tool_execution_end maps to tool_result", () => {
     const result = mapPiEvent({
       type: "tool_execution_end",
@@ -1338,7 +1761,13 @@ describe("mapPiEvent", () => {
 // OpenCode event mapping
 // ---------------------------------------------------------------------------
 
-import { mapOpenCodeEvent } from "./providers/opencode-sdk.ts";
+import {
+  assistantTextFromPartUpdate,
+  consumeOpenCodeEvent,
+  createOpenCodeQueryState,
+  fallbackAssistantText,
+  mapOpenCodeEvent,
+} from "./providers/opencode-sdk.ts";
 
 describe("mapOpenCodeEvent", () => {
   const SESSION_ID = "oc_session_1";
@@ -1501,5 +1930,125 @@ describe("mapOpenCodeEvent", () => {
     expect(mapOpenCodeEvent("session.updated", { sessionID: SESSION_ID }, SESSION_ID)).toEqual([]);
     expect(mapOpenCodeEvent("server.connected", {}, SESSION_ID)).toEqual([]);
     expect(mapOpenCodeEvent("file.edited", { file: "foo.ts" }, SESSION_ID)).toEqual([]);
+  });
+
+  // OpenCode 1.18 lands the answer as a text snapshot. Mapping that as a
+  // delta would duplicate streamed tokens; Ask AI would show "pongpong".
+  test("message.part.updated text snapshots are not streamed as deltas", () => {
+    expect(
+      mapOpenCodeEvent("message.part.updated", {
+        sessionID: SESSION_ID,
+        part: { type: "text", text: "pong", sessionID: SESSION_ID, time: { start: 1 } },
+      }, SESSION_ID),
+    ).toEqual([]);
+  });
+
+  // User prompt snapshots have no `time`. Using them as the answer would echo
+  // the question into the Ask AI bubble (#514 empty-bubble / #907).
+  test("assistantTextFromPartUpdate ignores user prompts and reasoning", () => {
+    expect(
+      assistantTextFromPartUpdate({ type: "text", text: "pong", time: { start: 1 } }),
+    ).toBe("pong");
+    expect(
+      assistantTextFromPartUpdate({ type: "text", text: "Reply with pong" }),
+    ).toBeUndefined();
+    expect(
+      assistantTextFromPartUpdate({ type: "reasoning", text: "thinking", time: { start: 1 } }),
+    ).toBeUndefined();
+  });
+
+  test("fallbackAssistantText emits the snapshot only when deltas were missed", () => {
+    expect(
+      fallbackAssistantText({
+        sawTextDelta: false,
+        lastAssistantText: "pong",
+      }),
+    ).toEqual([{ type: "text_delta", delta: "pong" }]);
+    expect(
+      fallbackAssistantText({
+        sawTextDelta: true,
+        lastAssistantText: "pong",
+      }),
+    ).toEqual([]);
+  });
+
+  // Failure this guards: Ask AI hangs with Failed to fetch (#514 / #907)
+  // when the turn only lands a snapshot, never message.part.delta.
+  test("consumeOpenCodeEvent falls back to the assistant snapshot on idle", () => {
+    const state = createOpenCodeQueryState();
+    consumeOpenCodeEvent(
+      {
+        type: "message.part.updated",
+        properties: {
+          sessionID: SESSION_ID,
+          part: { type: "text", text: "Reply with pong", sessionID: SESSION_ID },
+        },
+      },
+      SESSION_ID,
+      state,
+    );
+    consumeOpenCodeEvent(
+      {
+        type: "message.part.updated",
+        properties: {
+          sessionID: SESSION_ID,
+          part: {
+            type: "text",
+            text: "pong",
+            sessionID: SESSION_ID,
+            time: { start: 1, end: 2 },
+          },
+        },
+      },
+      SESSION_ID,
+      state,
+    );
+    const idle = consumeOpenCodeEvent(
+      {
+        type: "session.status",
+        properties: { sessionID: SESSION_ID, status: { type: "idle" } },
+      },
+      SESSION_ID,
+      state,
+    );
+    expect(idle.done).toBe(true);
+    expect(idle.messages).toEqual([
+      { type: "text_delta", delta: "pong" },
+      { type: "result", sessionId: SESSION_ID, success: true },
+    ]);
+  });
+
+  test("consumeOpenCodeEvent does not duplicate streamed deltas", () => {
+    const state = createOpenCodeQueryState();
+    consumeOpenCodeEvent(
+      {
+        type: "message.part.delta",
+        properties: { sessionID: SESSION_ID, field: "text", delta: "pong" },
+      },
+      SESSION_ID,
+      state,
+    );
+    consumeOpenCodeEvent(
+      {
+        type: "message.part.updated",
+        properties: {
+          sessionID: SESSION_ID,
+          part: { type: "text", text: "pong", sessionID: SESSION_ID, time: { start: 1 } },
+        },
+      },
+      SESSION_ID,
+      state,
+    );
+    const idle = consumeOpenCodeEvent(
+      {
+        type: "session.status",
+        properties: { sessionID: SESSION_ID, status: { type: "idle" } },
+      },
+      SESSION_ID,
+      state,
+    );
+    expect(idle.messages).toEqual([
+      { type: "result", sessionId: SESSION_ID, success: true },
+    ]);
   });
 });

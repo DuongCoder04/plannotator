@@ -37,7 +37,9 @@ function writeIfPresent(stream, text) {
   stream.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-function runPlannotator(args) {
+// `options.timeout` (ms) bounds a command that must return quickly; reviews
+// wait for the reviewer and pass none.
+function runPlannotator(args, options = {}) {
   const repoBin = findRepoBin(process.cwd());
   const env = {
     ...process.env,
@@ -45,15 +47,18 @@ function runPlannotator(args) {
     PLANNOTATOR_ORIGIN: "droid",
   };
 
+  const timeout = options.timeout;
   let result = childProcess.spawnSync("plannotator", args, {
     encoding: "utf8",
     env,
+    ...(timeout ? { timeout } : {}),
   });
 
   if (result.error && result.error.code === "ENOENT" && repoBin) {
     result = childProcess.spawnSync(process.execPath, [repoBin, ...args], {
       encoding: "utf8",
       env,
+      ...(timeout ? { timeout } : {}),
     });
   }
 
@@ -90,7 +95,18 @@ function emitAnnotateDecision(rawOutput, heading) {
     const parsed = JSON.parse(output);
     if (parsed && typeof parsed === "object") {
       if (parsed.decision === "approved") {
-        process.stdout.write("Approved.\n");
+        // Approve-with-Notes (#1092): `approved` may carry reviewer notes in
+        // `feedback`. Only a note-less approval is a plain "Approved."
+        const feedback = typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
+        if (!feedback) {
+          process.stdout.write("Approved.\n");
+          return;
+        }
+        // Mirrors DEFAULT_ANNOTATE_APPROVED_WITH_NOTES_PROMPT in
+        // packages/shared/prompts.ts. Keep the two in sync.
+        process.stdout.write(
+          `# Approved with Notes\n\nThe artifact is approved. The notes below are non-blocking guidance, not a request for another revision.\n\n${feedback}\n\nDo not revise or reopen the artifact solely because of these notes unless the user explicitly requests it. Carry the notes into subsequent work where applicable.\n`,
+        );
         return;
       }
 
@@ -101,7 +117,9 @@ function emitAnnotateDecision(rawOutput, heading) {
 
       if (parsed.decision === "annotated") {
         const feedback = typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
-        if (!feedback) {
+        // A Done with nothing to send (#1701): the zero-state sentence rides
+        // `feedback`, and nothing should reach the agent.
+        if (!feedback || parsed.nothingToSend === true) {
           process.stdout.write("Annotation session closed.\n");
           return;
         }
