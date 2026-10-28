@@ -65,7 +65,9 @@ import { SearchHost, type SearchLanding } from './components/SearchHost';
 import { onOpenSearchKey } from './search/searchShortcut';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { inboxThreadShortcuts } from './shortcuts/thread.shortcuts';
-import { isComposingKey, isEditableTarget, isRepeatKey } from './shortcuts/guards';
+import { bareKeyAllowed, inOverlay, isComposingKey, isEditableTarget, isRepeatKey, keyTarget, modalOpen, singleKeysLive } from './shortcuts/guards';
+import { inboxAppShortcuts } from './shortcuts/app.shortcuts';
+import { ShortcutMap } from './components/ShortcutMap';
 import { EmptyState } from './components/EmptyState';
 import { Icon } from './icons';
 import { TourBar, TourCoach, TourLoading, TourMain, TourNavigation, loadTour, tourComposeBody, tourComposeTransport, tourView, useReducedMotion, useTourFixture, useTourReplay } from './tour/Tour';
@@ -96,7 +98,7 @@ import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
-import { isPhone, trackKeyboard, usePhone } from './phone';
+import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
 import { installPasteFollowsField } from './pasteTarget';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { LIST_MIN_WIDTH, THREAD_BESIDE_FILE_WIDTH, paneGutters, useStack } from './stack';
@@ -120,6 +122,10 @@ import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
 import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
 import { pageOffersUpdates, sidebarUpdateNotice, updateForPage } from './updateNotice';
+import { actedSince, inputMark, lastInput } from './lastInput';
+import { backFocusTargets, focusKept, focusLost } from './backFocus';
+import { askArrivalFocus, listOrder as drawnOrder, threadStep } from './threadStep';
+import { LIST_STOPS, listMoveIndex, listStops } from './listKeys';
 
 // The Inbox has no /api/config and no browser-agent tools: settings stay in
 // the page's own cookies, except the theme, which goes to config.json `theme`
@@ -432,25 +438,8 @@ function listCovered(): boolean {
 
 /** A row of the list on screen, by its thread (one element per row: the wide, two-line or phone row). */
 function rowElement(body: ParentNode, threadId: string): HTMLElement | null {
-  return body.querySelector<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`);
-}
-
-/**
- * The person's last way of acting: a key, or a pointer (a mouse, a finger,
- * a pen). The window moves focus for the person (to a closed thread's row, to
- * the row now in a gone row's slot, to the first row Show brought in) only
- * after a key: after a mouse or a tap it would put a row under the keyboard
- * that the person never chose, and `E` would mark it read.
- */
-let lastInput: 'keyboard' | 'pointer' | null = null;
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', () => (lastInput = 'keyboard'), true);
-  window.addEventListener('pointerdown', () => (lastInput = 'pointer'), true);
-  // A screen reader (or switch access) presses a control with a click that no key or pointer came
-  // before, and that counts no clicks (`detail` 0): the person is not using a mouse.
-  window.addEventListener('click', (event) => {
-    if (event.detail === 0) lastInput = 'keyboard';
-  }, true);
+  // The one on screen: a list draws some rows twice (one hidden), and a row in folded Quiet is not drawn at all.
+  return [...body.querySelectorAll<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`)].find((el) => el.getClientRects().length > 0) ?? null;
 }
 
 /**
@@ -473,16 +462,17 @@ function tourPageInFront(): boolean {
 }
 
 /** Focus the first element on screen that matches one of `selectors`, in order (a list draws some rows twice, one hidden). */
-function focusFirst(selectors: readonly string[]): void {
+function focusFirst(selectors: readonly string[]): boolean {
   for (const selector of selectors) {
     const el = [...document.querySelectorAll<HTMLElement>(selector)].find((candidate) => candidate.getClientRects().length > 0);
     if (el) {
       // Inside a thread's messages (its subject heading): focus never moves the thread's scroll, the place the
       // person was in (closing a file with `‹ Inbox` put the thread back at its top).
       el.focus(el.closest('.ib-pbody') ? { preventScroll: true } : undefined);
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 /** A tour setting that did not save is tried again after these waits (ms), then said. */
@@ -752,13 +742,42 @@ function Inbox() {
       const oldExperimental = settleOldExperimental();
       setRoute(oldExperimental ? { ...readRoute(), experimental: true } : readRoute());
     };
+    // Back and Forward (finding F1): once the page they landed on has drawn, focus goes where its key would put
+    // it, if the traversal took focus away. Not after a pointer (a mouse's Back button, a swipe): a row given
+    // focus the person never chose is a row `E` would mark read.
+    const onTraverse = () => {
+      const from = routeRef.current;
+      onHash();
+      if (lastInput() === 'pointer') return;
+      const mark = inputMark();
+      // Focus left in what the traversal replaced moves too (focusKept says what stays). Checked again a beat later: a thread drawn again may drop it then.
+      // On a slow machine the page may not have drawn its targets by the first check: until one has taken focus,
+      // each later check places it as the first would have.
+      let placed = false;
+      const place = (always: boolean) => {
+        // A click or a key since this traversal (a timer left from an earlier Back can fire after one): focus stays
+        // where that put it (a key's own move, an Escape's close, may not have landed yet).
+        if (lastInput() === 'pointer' || actedSince(mark)) return;
+        const active = document.activeElement;
+        const to = readRoute();
+        if (modalOpen()) return;
+        if (!focusLost(active) && (!(always || !placed) || focusKept(active, to, from))) {
+          placed = true;
+          return;
+        }
+        if (focusFirst(backFocusTargets(to, from))) placed = true;
+      };
+      requestAnimationFrame(() => requestAnimationFrame(() => place(true)));
+      setTimeout(() => place(false), 300);
+      setTimeout(() => place(false), 1000);
+    };
     stripStrayMsg();
     settleOldExperimental();
     window.addEventListener('hashchange', onHash);
-    window.addEventListener('popstate', onHash);
+    window.addEventListener('popstate', onTraverse);
     return () => {
       window.removeEventListener('hashchange', onHash);
-      window.removeEventListener('popstate', onHash);
+      window.removeEventListener('popstate', onTraverse);
     };
   }, []);
 
@@ -1388,8 +1407,20 @@ function Inbox() {
       return;
     }
     closing.current = { threadId: closed, asOf: latestRef.current?.sections.flatMap((section) => section.threads).find((row) => row.thread_id === closed) ?? null };
-    const active = document.activeElement;
-    if (body && lastInput === 'keyboard' && (!active || active === document.body)) rowElement(body, closed)?.focus({ preventScroll: true });
+    // A thread opened from search or a link may have no row on screen (Quiet folded, another project): the
+    // Quiet band, else the first row, so focus is never left on the page. Checked now and once the thread's pane
+    // has gone (what had focus in it may outlive this commit by a frame).
+    const keepFocus = () => {
+      const active = document.activeElement;
+      if (!body || lastInput() !== 'keyboard' || (active && active !== document.body && active.isConnected && active.getClientRects().length > 0)) return;
+      if (routeRef.current.thread || routeRef.current.page !== 'inbox') return;
+      // The list draws some rows twice (the wide and the two-line row), one hidden: the one on screen.
+      const shown = (selector: string) => [...body.querySelectorAll<HTMLElement>(selector)].find((el) => el.getClientRects().length > 0);
+      const target = shown(`[data-thread-id="${CSS.escape(closed)}"]`) ?? shown('[data-section-id="quiet"] button.ib-band') ?? shown('[data-thread-id]');
+      target?.focus({ preventScroll: true });
+    };
+    keepFocus();
+    requestAnimationFrame(() => requestAnimationFrame(keepFocus));
     if (listCovered() && COVERED_LIST_SETTLES === 'while-covered') {
       // The list as the person left it, except the thread they just closed
       // when a message arrived there that they did not see, or when it now
@@ -1401,7 +1432,7 @@ function Inbox() {
       if (next && shownRef.current && settlesOnBack(shownRef.current, next)) {
         // Back put focus on the row; the settle redraws it in another group, so focus goes with it ([shown] layout effect):
         // after a key, and after a stacked window's Back by mouse (#1866 hands that focus to the row too); never after a phone's tap.
-        if (lastInput === 'keyboard' || !isPhone()) refocusRow.current = closed;
+        if (lastInput() === 'keyboard' || !isPhone()) refocusRow.current = closed;
         setShown((current) => (current ? settleThread(current, latestRef.current!.sections, closed) : current));
       }
       return;
@@ -1452,6 +1483,35 @@ function Inbox() {
   // the browser's Back when the page was opened from there (history.ts), a new entry otherwise.
   const whatsNewReturn = useRef('');
   if (route.page !== 'settings' && route.page !== 'whats-new' && route.page !== 'tour') whatsNewReturn.current = hashOf(route);
+  /**
+   * Back from Settings or What's new to where the person was (‹ Inbox, Escape), focus on what is there: an open
+   * file's pane, else the open thread's row, else its subject, else the first row (never left on the page as the
+   * sidebar slides back).
+   */
+  const pageBackRef = useRef(() => {});
+  pageBackRef.current = () => {
+    const hash = route.page === 'whats-new' ? whatsNewReturn.current : settingsReturn.current;
+    const to = routeOf(hash);
+    if (route.page === 'whats-new') {
+      if (!backTo(hash)) go(to);
+    } else go(to);
+    focusSoon([
+      // A file was open (beside the thread or full screen): its pane, which may cover the row.
+      ...(to.file ? ['[data-attachment-pane]'] : []),
+      ...(to.thread ? [`.ib-main .ib-lbody [data-thread-id="${CSS.escape(to.thread)}"]`, 'section.ib-pane h2.ib-subject'] : []),
+      '.ib-main .ib-lbody [data-thread-id]',
+      '.ib-bpage h1',
+      '.ib-main h1',
+    ]);
+    // The thread draws again under Settings' way back and puts focus on its subject as it opens; a file that was
+    // open is where the person was, so it has focus once the thread has drawn.
+    if (to.file) {
+      const mark = inputMark();
+      setTimeout(() => {
+        if (!actedSince(mark) && !document.activeElement?.closest('[data-attachment-pane], .ib-side')) focusFirst(['[data-attachment-pane]']);
+      }, 300);
+    }
+  };
 
   // Settings is a focused page (design of record inbox-settings-tabs): the sidebar slides away while it
   // is open and comes back on leaving, without writing the person's stored choice. ⌘B there opens it
@@ -1463,6 +1523,16 @@ function Inbox() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Settings and What's new are focused pages: Escape goes back to where the person was ("‹ Inbox"), unless
+      // something on the page used it (a dialog, a menu, a field).
+      if (event.key === 'Escape' && (routeRef.current.page === 'settings' || routeRef.current.page === 'whats-new')) {
+        const from = keyTarget(event);
+        if (event.defaultPrevented || isComposingKey(event) || modalOpen() || (from && (isEditableTarget(from) || inOverlay(from) || from.closest('[role="menu"], [role="listbox"], [aria-expanded="true"]')))) return;
+        // A touch phone has its own way back (‹ Inbox); a narrow desktop window keeps Escape, as it keeps its keys.
+        if (isTouchPhone()) return;
+        pageBackRef.current();
+        return;
+      }
       // An open file owns Escape (the HTML viewer's ladder, the composers).
       if (event.key !== 'Escape' || !routeRef.current.thread || routeRef.current.file) return;
       // Something inside the thread already used this Escape (the reply's choice at Send goes back to the reply).
@@ -1600,6 +1670,13 @@ function Inbox() {
     const sameThread = now.page === 'inbox' && !!now.thread && now.thread === next.thread && !now.file && !now.guide;
     // Otherwise a new history entry: Back returns to where the search started (on a phone, the list).
     writeRoute(next, sameThread ? { replace: true } : {});
+    // The landing puts focus on the result in the thread; a thread with nothing to land on (its reply box already
+    // open with a draft, no Reply to focus) leaves it nowhere: the thread's subject then, never the page. Not once
+    // the person has acted since (a Send closing the box leaves focus nowhere for a moment too).
+    const mark = inputMark();
+    setTimeout(() => {
+      if (!actedSince(mark) && focusLost(document.activeElement) && !modalOpen()) focusFirst(['section.ib-pane [data-reply-button]', 'section.ib-pane h2.ib-subject', '.ib-main h1']);
+    }, 400);
   };
   // ── Compose: a new message to a connected agent (compose/ComposeDialog.tsx) ──
   const openCompose = (request: ComposeRequest, opener?: HTMLElement | null) => {
@@ -2306,14 +2383,16 @@ function Inbox() {
    * for typing, composition and repeat; the rest is the thread's own).
    */
   const threadKeyAction = (event: KeyboardEvent, key: 'e' | 'z'): (() => void) | null => {
-    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event)) return null;
+    if (event.defaultPrevented || isRepeatKey(event) || isComposingKey(event) || !singleKeysLive()) return null;
     if (keysRef.current.soundDialog === 'open' || keysRef.current.agentNoteOpen || keysRef.current.feedbackOpen || routeRef.current.guide) return null;
+    // Under a dialog (Decide opens over the thread it came from) the letters are the dialog's.
+    if (modalOpen()) return null;
     // Words selected in a message: its toolbar takes the letters (a comment starting with them).
     if (selectionToolbarShowing()) return null;
     const target = event.target instanceof HTMLElement ? event.target : null;
     if (target) {
       if (isEditableTarget(target)) return null;
-      if (target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], iframe, .ib-view, [data-step-guard]')) return null;
+      if (target.closest('dialog, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], iframe, .ib-view, [data-step-guard]')) return null;
     }
     // With a file open beside the thread, only a key aimed at the thread or the list counts.
     if (routeRef.current.file && !target?.closest('section.ib-pane, .ib-listcol')) return null;
@@ -2332,6 +2411,55 @@ function Inbox() {
     return () => void toggle(threadId, !(row.read_at ?? null));
   };
   const threadKey = useRef<(() => void) | null>(null);
+  /**
+   * J / K (approval "inbox-keyboard-shortcuts", J/K swap addendum 2026-10-27): the next or previous thread in the
+   * list as it shows (threadStep.ts), opened as Enter opens a row, replacing the open one in history so Back still
+   * goes to the list. From the thread focus lands where N puts it (Thread.tsx takes it); from the list it stays on
+   * the rows, on the new one. Not from a file, a guided review or the Artifacts view. With no thread open, on the
+   * list's rows, they move along them as ↓ ↑ do: the next thread there, nothing opened (`listMoveIndex`, no wrap).
+   */
+  const threadStepKey = (dir: 1 | -1) => ({
+    when: (event: KeyboardEvent) => {
+      if (!bareKeyAllowed(event)) return false;
+      const now = routeRef.current;
+      if (now.page !== 'inbox' || now.file || now.guide || now.artifacts) return false;
+      const target = keyTarget(event);
+      if (!now.thread) return !!target?.closest('.ib-main .ib-lbody') && target.matches(LIST_STOPS);
+      return !target || target === document.body || !!target.closest('section.ib-pane, .ib-main .ib-lbody');
+    },
+    handle: (event: KeyboardEvent) => {
+      const now = routeRef.current;
+      const body = listBody(rootRef.current);
+      if (!body) return;
+      if (!now.thread) {
+        const stops = listStops(body);
+        const at = listMoveIndex(stops.length, stops.indexOf(keyTarget(event) as HTMLElement), dir > 0 ? 'next' : 'previous');
+        const next = at === null ? null : stops[at];
+        next?.focus({ preventScroll: true });
+        next?.scrollIntoView?.({ block: 'nearest' });
+        return;
+      }
+      // The open thread's row may have left the list (E moved it to folded Quiet): step from the slot it had.
+      const slot = openSlot.current?.thread === now.thread ? openSlot.current.order : [];
+      const step = threadStep(drawnOrder(body), now.thread, dir, slot);
+      if (!step) return say('This thread is not in the list on screen.');
+      if ('end' in step) return say(step.end === 'last' ? 'Last thread' : 'First thread');
+      const fromList = !!keyTarget(event)?.closest('.ib-main .ib-lbody');
+      // Into another section: its name, as the eye sees the band.
+      const section = (id: string) => rowElement(body, id)?.closest('[role="group"]')?.getAttribute('aria-label') ?? null;
+      const into = section(step.to);
+      const from = section(now.thread);
+      if (into && from && into !== from) say(into);
+      askArrivalFocus(fromList ? null : step.to);
+      writeRoute({ page: 'inbox', project: now.project, thread: step.to }, { replace: true });
+      if (fromList) {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const list = listBody(rootRef.current);
+          if (list) rowElement(list, step.to)?.focus({ preventScroll: true });
+        }));
+      }
+    },
+  });
   useShortcutScope({
     scope: inboxThreadShortcuts,
     handlers: {
@@ -2342,6 +2470,46 @@ function Inbox() {
       undo: {
         when: (event) => (threadKey.current = threadKeyAction(event, 'z')) !== null,
         handle: () => threadKey.current?.(),
+      },
+      nextThread: threadStepKey(1),
+      previousThread: threadStepKey(-1),
+    },
+  });
+
+  // The window's keys (shortcuts/app.shortcuts.ts; approval "inbox-keyboard-shortcuts"): `?` opens the shortcut
+  // map; G then I, B or S go to the Inbox, the Board, Settings, focus landing on what is there (never on the page).
+  // Single keys, so none while typing or under a dialog (guards.ts), nor over the tour's replay, nor on a touch
+  // phone, except `?`: a phone with a hardware keyboard still opens the map (design §5.4).
+  const [mapOpen, setMapOpen] = useState(false);
+  const appKeyAllowed = (event: KeyboardEvent, onTouchPhone = false) => bareKeyAllowed(event, undefined, { onTouchPhone }) && routeRef.current.page !== 'tour';
+  /** Focus the first of `selectors` on screen once the page it is on has drawn (two frames: the route, then its layout). */
+  const focusSoon = (selectors: readonly string[]) => requestAnimationFrame(() => requestAnimationFrame(() => focusFirst(selectors)));
+  useShortcutScope({
+    scope: inboxAppShortcuts,
+    handlers: {
+      openMap: { when: (event) => appKeyAllowed(event, true), handle: () => setMapOpen(true) },
+      goInbox: {
+        when: (event) => appKeyAllowed(event),
+        handle: () => {
+          const now = routeRef.current;
+          if (now.page !== 'inbox') leave({ page: 'inbox', project: null, thread: null });
+          const open = now.page === 'inbox' ? now.thread : null;
+          focusSoon([...(open ? [`.ib-main .ib-lbody [data-thread-id="${CSS.escape(open)}"]`] : []), '.ib-main .ib-lbody [data-thread-id]', '.ib-main .ib-lbody button.ib-band', '.ib-main .ib-empty h2', '.ib-main h1']);
+        },
+      },
+      goBoard: {
+        when: (event) => appKeyAllowed(event) && boardOnRef.current,
+        handle: () => {
+          if (routeRef.current.page !== 'board') leave({ page: 'board', project: null, thread: null });
+          focusSoon(['.ib-bpage h1']);
+        },
+      },
+      goSettings: {
+        when: (event) => appKeyAllowed(event),
+        handle: () => {
+          if (routeRef.current.page !== 'settings') leave({ page: 'settings', project: null, thread: null });
+          else focusSoon(['.ib-spage h1']);
+        },
       },
     },
   });
@@ -3154,6 +3322,8 @@ function Inbox() {
   // left the rows on screen (for folded Quiet) hands it to the row now in its
   // slot; Show (whose line goes away) hands it to the first row it brought in.
   const listOrder = useRef<string[]>([]);
+  // The last order that drew the open thread's row, kept when that row leaves the rows on screen: J / K step from its slot.
+  const openSlot = useRef<{ thread: string; order: string[] } | null>(null);
   const focusAfterShow = useRef(false);
   /** The row Back over a covered list focused (a key, or a stacked window's mouse Back), which its settle redraws in another group. */
   const refocusRow = useRef<string | null>(null);
@@ -3191,12 +3361,17 @@ function Inbox() {
     } else if (body && lost && shownAll) {
       const rows = [...body.querySelectorAll<HTMLElement>('[data-thread-id]')];
       (rows.find((row) => !order.includes(row.getAttribute('data-thread-id')!)) ?? rows[0])?.focus({ preventScroll: true });
-    } else if (body && lastInput === 'keyboard' && gone && lost && !rowElement(body, gone)) {
+    } else if (body && lastInput() === 'keyboard' && gone && lost && rowElement(body, gone)) {
+      // The row is still on screen but was drawn again (its section changed under a held list): focus follows it.
+      rowElement(body, gone)?.focus({ preventScroll: true });
+    } else if (body && lastInput() === 'keyboard' && gone && lost && !rowElement(body, gone)) {
       const next = rowInSlot(order, gone, (id) => rowElement(body, id) !== null);
-      const target = next ? rowElement(body, next) : body.querySelector<HTMLElement>('button.ib-band');
+      const target = next ? rowElement(body, next) : ([...body.querySelectorAll<HTMLElement>('button.ib-band')].find((el) => el.getClientRects().length > 0) ?? null);
       target?.focus({ preventScroll: true });
     }
     listOrder.current = body ? [...body.querySelectorAll('[data-thread-id]')].map((el) => el.getAttribute('data-thread-id')!) : [];
+    const open = routeRef.current.thread;
+    if (open && order.includes(open) && !listOrder.current.includes(open)) openSlot.current = { thread: open, order };
   }, [shown]);
   const stackedBefore = useRef({ thread: stack.thread });
   useEffect(() => {
@@ -3377,7 +3552,7 @@ function Inbox() {
             ? go({ page: 'settings', project: null, thread: null, section: 'devices', pair: true })
             : close({ page: 'settings', project: null, thread: null, section: 'devices' })
         }
-        onBack={() => go(routeOf(settingsReturn.current))}
+        onBack={() => pageBackRef.current()}
         onRetry={() => {
           setSettingsError(null);
           void refreshSettings();
@@ -3390,10 +3565,7 @@ function Inbox() {
         model={whatsNew}
         error={whatsNewError}
         update={update}
-        onBack={() => {
-          const hash = whatsNewReturn.current;
-          if (!backTo(hash)) go(routeOf(hash));
-        }}
+        onBack={() => pageBackRef.current()}
         onUpdate={pressUpdate}
         onTakeTour={
           settings?.tour && !tourUnavailable && settings.tour.seen_at === null && settings.tour.skipped_at === null && settings.tour.finished_at === null ? startTour : undefined
@@ -3529,7 +3701,7 @@ function Inbox() {
           refreshSpin={refreshSpin && refreshSpin.scope === route.project ? refreshSpin.key : null}
           onShowNew={() => {
             // Show's line goes away with the press: after a key, focus goes to the first row it brought in.
-            focusAfterShow.current = lastInput === 'keyboard';
+            focusAfterShow.current = lastInput() === 'keyboard';
             listOrder.current = [...(listBody(rootRef.current)?.querySelectorAll('[data-thread-id]') ?? [])].map((el) => el.getAttribute('data-thread-id')!);
             if (latestRef.current) showFrom.current = shown;
             settleList('all', true);
@@ -3787,6 +3959,7 @@ function Inbox() {
             onCheckFailing={() => leave({ page: 'settings', project: null, thread: null, section: 'about' })}
             onRestartSessions={() => leave({ page: 'settings', project: null, thread: null, section: 'agents' })}
             mcpCommand={settings?.mcp_command ?? null}
+            onShortcuts={() => setMapOpen(true)}
             onFeedback={() => setFeedbackOpen(true)}
           />
           )
@@ -3794,6 +3967,15 @@ function Inbox() {
       >
         <main className="ib-main">{main}</main>
       </SidebarShell>
+      {mapOpen && (
+        <ShortcutMap
+          onClose={() => setMapOpen(false)}
+          onSettings={() => {
+            setMapOpen(false);
+            leave({ page: 'settings', project: null, thread: null, section: 'general' });
+          }}
+        />
+      )}
       {updateDialog === 'update' && update && (
         <UpdateDialog
           details={updateDetails}

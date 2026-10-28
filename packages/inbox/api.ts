@@ -515,6 +515,13 @@ export function pageServerSession(): string | null {
   return pageSession;
 }
 
+/**
+ * What a tag in the reply box does (approval "inbox-tag-handoff", A2): `ask`,
+ * today's tag (this one reply); `add`, the session joins the thread; `handoff`,
+ * it takes the thread over.
+ */
+export type TagMode = 'ask' | 'add' | 'handoff';
+
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
   return readJson<T>(
     await fetch(path, {
@@ -785,7 +792,7 @@ export const inboxApi = {
       /** Files pasted into the reply box (upload ids): attachments on this reply. */
       uploads?: string[];
       /** The sessions the person tagged with `@` (approval "inbox-tag-agents"): each one gets this reply too. */
-      tags?: { host?: string | null; session: string; label?: string }[];
+      tags?: { host?: string | null; session: string; label?: string; mode?: TagMode }[];
       /**
        * This reply carries the reply box's words: their draft goes (approval "inbox-reply-drafts"),
        * named by the `updated_at` they were saved as, so a newer draft from another window stays.
@@ -807,6 +814,8 @@ export const inboxApi = {
       ...result,
       questions: questionsOnly(result.questions),
     })),
+  /** Take a hand-off back inside its Undo window (approval "inbox-tag-handoff"): the reply goes as an Ask instead. */
+  undoHandoff: (messageId: string) => post<{ message: InboxMessageWire }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/handoff/undo`, {}),
   resolve: (messageId: string, resolved: boolean) =>
     post<unknown>(`/api/inbox/messages/${encodeURIComponent(messageId)}/resolve`, { resolved }),
   health: () => get<InboxHealth>('/api/inbox/health'),
