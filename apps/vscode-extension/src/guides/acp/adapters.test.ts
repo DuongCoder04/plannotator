@@ -66,7 +66,7 @@ describe("resolution order: setting, PATH, the installed copy, then install now"
     expect(resolveAgentLaunch(CLAUDE_CODE, { command: "mine" }, FOUND(["mine", "claude-agent-acp"]), managed)).toMatchObject({ ok: true, command: "/bin/mine", source: "setting" });
     expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND(["claude-agent-acp"]), managed)).toMatchObject({ ok: true, command: "/bin/claude-agent-acp", source: "path" });
     const entry = join(managedDir(root, "claude-code"), "c1", "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
-    expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND([]), managed)).toEqual({ ok: true, command: "/bin/node", args: [entry], source: "managed" });
+    expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND(["claude"]), managed, undefined, undefined, {})).toEqual({ ok: true, command: "/bin/node", args: [entry], env: { CLAUDE_CODE_EXECUTABLE: "/bin/claude" }, source: "managed" });
   });
 
   it("says the adapter can be installed now when none is there, and a missing agent CLI needs the user", () => {

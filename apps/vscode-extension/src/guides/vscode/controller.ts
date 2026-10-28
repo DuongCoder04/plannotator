@@ -679,9 +679,22 @@ export class GuidesController implements vscode.Disposable {
    * The command to start the agent, installing its adapter first when it is
    * missing and the setting allows. When the agent cannot be started, says
    * why (with Retry for a failed install, or how to install the agent) and
-   * answers null.
+   * answers null. A launch that runs the adapter's own copy of the agent
+   * (its CLI is not installed) says so once per window.
    */
-  private ensureLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
+  private async ensureLaunch(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
+    const launch = await this.ensureLaunchQuietly(agent);
+    if (launch?.notice && !this.cliNoticeShown.has(agent.id)) {
+      this.cliNoticeShown.add(agent.id);
+      this.log.info(`[guides] ${launch.notice}`);
+      void vscode.window.showInformationMessage(launch.notice);
+    }
+    return launch;
+  }
+
+  private readonly cliNoticeShown = new Set<string>();
+
+  private ensureLaunchQuietly(agent: AgentDescriptor): Promise<ReadyLaunch | null> {
     return ensureAgentLaunch(agent, {
       resolve: (a) => this.launchFor(a),
       installAdapters: this.installAdaptersSetting(),

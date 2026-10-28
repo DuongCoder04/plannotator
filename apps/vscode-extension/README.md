@@ -42,6 +42,8 @@ The agent runs over the [Agent Client Protocol](https://agentclientprotocol.com)
 
 **Claude Code, Codex and Pi** speak ACP through a separate npm adapter. When the adapter is not in your settings or on your PATH, Guided Reviews installs it for you the first time you pick the agent ("Installing Claude Code's ACP adapter…"): the exact version below, into the extension's own storage, with `npm install --ignore-scripts --before=<pin date>`, so its dependencies are also ones published at least 7 days before it was pinned. Nothing is installed globally and nothing needs `sudo`; the copy is reused next time, and **Guided Reviews: Update Agent Adapters** installs it again. This needs npm. When npm is missing or the install fails, you see why, the command to run yourself, and **Retry**. Turn it off with `plannotator.guides.installAdapters`.
 
+**The Claude Code and Codex adapters run your own `claude` and `codex`.** Each adapter brings its own copy of the agent, and runs it unless told otherwise. Guided Reviews sets `CLAUDE_CODE_EXECUTABLE` (Claude Code) or `CODEX_PATH` (Codex) to the CLI on your PATH, so a guide runs the version you installed and signed in to. A value you set yourself is kept. When the CLI is not on your PATH, the adapter runs its own copy as before, and Guided Reviews tells you once: install Claude Code (or Codex) and sign in to use your own.
+
 **The other agents are their own program**, and Guided Reviews never installs them: **Install &lt;agent&gt;** opens a terminal with the official install command typed in, for you to run.
 
 | Agent | Started as | Installed by |

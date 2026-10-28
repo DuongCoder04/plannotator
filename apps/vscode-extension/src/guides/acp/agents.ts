@@ -14,7 +14,9 @@
  * no setting source is narrowed. What the agent may do is governed by its own
  * settings; every permission request it sends is shown to the user with all
  * of its options. Guides adds only what a guide needs: its own MCP server (the
- * builder tools), the model and effort the user picked, and the prompt.
+ * builder tools), the model and effort the user picked, and the prompt. An
+ * adapter that would run its own bundled copy of the agent (Claude Code,
+ * Codex) is pointed at the user's installed CLI instead (`cli`).
  */
 
 import { findExecutable } from "../sources/runner";
@@ -54,6 +56,14 @@ export interface AgentDescriptor {
    * this exact version into its own storage when the adapter is missing.
    */
   adapter?: ManagedAdapterSpec;
+  /**
+   * The agent's own CLI, which its adapter runs only when the environment
+   * variable `env` names it; otherwise the adapter runs the copy it brings
+   * with it (claude-agent-acp: the Agent SDK's bundled Claude; codex-acp: its
+   * `@openai/codex` dependency). Guides sets `env` to the user's installed
+   * CLI, so a guide runs the same Claude or Codex the user set up.
+   */
+  cli?: { command: string; env: string; label: string };
   /** A program the adapter runs, which must be installed for it to work (Pi's `pi`). */
   requires?: { command: string; label: string; installCommand: string; docsUrl: string };
   docsUrl: string;
@@ -97,6 +107,8 @@ export const CLAUDE_CODE: AgentDescriptor = {
   installCommand: "npm install -g @agentclientprotocol/claude-agent-acp@0.91.0",
   // 0.91.0 was published 2026-10-15 (the repo installs nothing published in the last 7 days).
   adapter: { package: "@agentclientprotocol/claude-agent-acp", version: "0.91.0", bin: "claude-agent-acp", before: ADAPTER_PIN_BEFORE },
+  // claude-agent-acp 0.91.0 runs `CLAUDE_CODE_EXECUTABLE` when set (dist/acp-agent.js: `claudeCliPath`, and `pathToClaudeCodeExecutable` for each session).
+  cli: { command: "claude", env: "CLAUDE_CODE_EXECUTABLE", label: "Claude Code" },
   docsUrl: "https://github.com/agentclientprotocol/claude-agent-acp",
   defaultModel: /sonnet/i,
   defaultEffort: /^low$/i,
@@ -115,6 +127,8 @@ export const CODEX: AgentDescriptor = {
   installCommand: "npm install -g @agentclientprotocol/codex-acp@2.2.2",
   // 2.2.2 was published 2026-10-10; it brings the Codex CLI with it (@openai/codex).
   adapter: { package: "@agentclientprotocol/codex-acp", version: "2.2.2", bin: "codex-acp", before: ADAPTER_PIN_BEFORE },
+  // codex-acp 2.2.2 runs `CODEX_PATH` when set (dist/index.js: `startAcpServer`, and the `cli` subcommand).
+  cli: { command: "codex", env: "CODEX_PATH", label: "Codex" },
   docsUrl: "https://github.com/agentclientprotocol/codex-acp",
   defaultEffort: /^low$/i,
   // codex-acp's `agent` mode ("Auto review") writes in the workspace without asking; `agent-full-access` asks even less; `read-only` asks first.
@@ -254,7 +268,15 @@ export function engineLabel(engine: string | undefined): string {
 }
 
 export type AdapterResolution =
-  | { ok: true; command: string; args: string[]; env?: Record<string, string>; source: "setting" | "path" | "managed" }
+  | {
+      ok: true;
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+      source: "setting" | "path" | "managed";
+      /** The agent's own CLI was not found, so its adapter runs the copy it brings (shown once). */
+      notice?: string;
+    }
   | {
       ok: false;
       message: string;
@@ -280,7 +302,8 @@ export interface CommandOverride {
  * the adapter copy Guided Reviews installed (`managed`).
  * When none is there, the answer says whether Guided Reviews can install the
  * adapter now (`reason: "adapter"`) or the user must install the agent. The
- * same for a local run and a pull request run.
+ * same for a local run and a pull request run. An adapter that runs the
+ * agent's own CLI is pointed at the user's (`withAgentCli`).
  */
 export function resolveAgentLaunch(
   agent: AgentDescriptor,
@@ -289,6 +312,44 @@ export function resolveAgentLaunch(
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   platform: NodeJS.Platform = process.platform,
   sameProgram: SameProgramCheck = isSameProgram,
+  env: Record<string, string | undefined> = process.env,
+): AdapterResolution {
+  const launch = resolveAdapter(agent, override, find, managed, platform, sameProgram);
+  return launch.ok ? withAgentCli(agent, launch, find, env) : launch;
+}
+
+/**
+ * Point the adapter at the user's own CLI (`claude`, `codex`), found the same
+ * way as the adapter (PATH plus the usual install folders), so a guide runs
+ * the Claude or Codex the user installed, configured and signed in to. A
+ * variable the user already set is left alone. When the CLI is not found the
+ * adapter runs the copy it brings, as it did before: someone who uses only
+ * the Claude Code VS Code extension has no `claude` on PATH, and their guides
+ * keep working. The answer then carries a notice that says so.
+ */
+export function withAgentCli(
+  agent: AgentDescriptor,
+  launch: Extract<AdapterResolution, { ok: true }>,
+  find: (name: string) => string | null,
+  env: Record<string, string | undefined> = process.env,
+): Extract<AdapterResolution, { ok: true }> {
+  const cli = agent.cli;
+  if (!cli || env[cli.env]?.trim()) return launch;
+  const found = find(cli.command);
+  if (found) return { ...launch, env: { ...launch.env, [cli.env]: found } };
+  return {
+    ...launch,
+    notice: `${cli.label} (\`${cli.command}\`) is not on PATH, so Guided Reviews runs the copy of ${cli.label} that comes with its ACP adapter. Install ${cli.label} and sign in to use your own, or set ${cli.env} to its path.`,
+  };
+}
+
+function resolveAdapter(
+  agent: AgentDescriptor,
+  override: CommandOverride,
+  find: (name: string) => string | null,
+  managed: (agent: AgentDescriptor) => ManagedLaunch | null,
+  platform: NodeJS.Platform,
+  sameProgram: SameProgramCheck,
 ): AdapterResolution {
   const configured = override.command?.trim();
   if (configured) {
