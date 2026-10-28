@@ -219,6 +219,23 @@ describe("Hand off", () => {
     expect(JSON.stringify(result)).not.toContain("SECRET-WORDS");
   });
 
+  test("read_thread as the former owner: the hand-off reply is not one that tagged it, and its list does not say it was tagged", async () => {
+    const { server, client, project, asked } = await world(100);
+    const sent = await reply(server, asked.message_id, { idempotency_key: "k1", words: "@Claude Code (herdr) yours now.", tags: [{ ...HERDR_TAG, mode: "handoff" }] });
+    const id = (sent.json.reply as InboxMessageWire).id;
+    await until(async () => !!(await thread(server, asked.thread_id)).messages.find((m) => m.id === id)?.handoff?.settled_at, "the hand-off to settle");
+    // The stop notice is not delivered yet (the former owner did not poll): read mid-turn.
+    const text = async (args: Record<string, unknown>) =>
+      JSON.stringify(await client.callTool({ name: "read_thread", arguments: { project_path: project, agent_session: OWNER, ...args } }));
+    const read = await text({ thread_id: asked.thread_id, format: "full" });
+    expect(read).toContain("yours now.");
+    expect(read).not.toContain("tagged you");
+    expect(read).not.toContain("tagged_you");
+    const list = await text({});
+    expect(list).toContain(asked.thread_id);
+    expect(list).not.toContain("the person tagged you here");
+  });
+
   test("a reply sent inside the window settles the hand-off first: the new owner gets the hand-off, then the reply; Undo is gone", async () => {
     const { server, project, herdr, asked } = await world(60_000);
     const sent = await reply(server, asked.message_id, { idempotency_key: "k1", words: "@Claude Code (herdr) yours.", tags: [{ ...HERDR_TAG, mode: "handoff" }] });

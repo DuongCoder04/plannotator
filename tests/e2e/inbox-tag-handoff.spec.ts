@@ -344,7 +344,7 @@ test('on a phone: the same line, links at 44 px inside 390 px, and a hand-off wi
     await page.locator('[data-tag-mode-to="handoff"]').click();
     await expect(words(page)).toHaveText('Hands this thread to OpenCode');
     await shot(page, '3-switched-handoff-phone');
-      await send(page);
+    await send(page);
     const undo = page.locator('[data-thread-move="handoff"] [data-handoff-undo]');
     await expect(undo).toBeVisible();
     expect((await undo.boundingBox())!.height).toBeGreaterThanOrEqual(44);

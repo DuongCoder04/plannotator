@@ -2443,11 +2443,15 @@ export class InboxStore {
         // Who a reply tagged (approval "inbox-tag-agents"), as an agent reads it: the agents and, for
         // the reader, that it was tagged. Delivery state is the person's view, not the agent's.
         if (message.tags && message.tags.length > 0) {
-          const { tags, ...rest } = out;
-          const taggedYou = caller !== null && !this.isOwner(message, caller) && tags!.some((t) => t.session === caller);
+          // A hand-off's stop notice to the former owner is not a tag (approval "inbox-tag-handoff").
+          const { tags: all, ...rest } = out;
+          const tags = all!.filter((t) => !t.handed_away);
+          const taggedYou = caller !== null && !this.isOwner(message, caller) && tags.some((t) => t.session === caller);
           out = {
             ...rest,
-            tagged: tags!.map((t) => ({ agent: t.name || (t.host ? inboxAgentName({ kind: "agent", host: t.host, name: null }) : "An agent"), session: t.session })),
+            ...(tags.length > 0
+              ? { tagged: tags.map((t) => ({ agent: t.name || (t.host ? inboxAgentName({ kind: "agent", host: t.host, name: null }) : "An agent"), session: t.session })) }
+              : {}),
             ...(taggedYou ? { tagged_you: true } : {}),
           } as unknown as InboxMessageWire;
         }
@@ -4587,7 +4591,8 @@ export class InboxStore {
     for (const message of this.messages.values()) {
       if (message.author.kind !== "person" || this.isOwner(message, session)) continue;
       const tag = tagOf(message, session);
-      if (tag && !tag.delivery) out.add(message.thread_id);
+      // A hand-off's stop notice is not a tag: the former owner was not tagged here.
+      if (tag && !tag.delivery && !tag.handed_away) out.add(message.thread_id);
     }
     return [...out];
   }
