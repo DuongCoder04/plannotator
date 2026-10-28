@@ -103,6 +103,15 @@ const VIBE_SKILLS = [
   "plannotator",
 ] as const;
 
+// Installed by the install scripts to $QWEN_HOME/skills (default ~/.qwen/skills)
+// from apps/qwen-code/skills. Removed by name, like the Vibe skills: only the
+// installer creates these folders there.
+const QWEN_SKILLS = [
+  "plannotator-review",
+  "plannotator-annotate",
+  "plannotator-last",
+] as const;
+
 const STALE_CODEX_SKILLS = [
   ...CORE_SKILLS,
   "plannotator-compound",
@@ -632,6 +641,7 @@ function resolveOwnedPaths(environment: UninstallEnvironment) {
   const factoryDir = env.FACTORY_CONFIG_DIR || join(homeDir, ".factory");
   const copilotDir = env.COPILOT_HOME || join(homeDir, ".copilot");
   const vibeDir = env.VIBE_HOME || join(homeDir, ".vibe");
+  const qwenDir = resolveQwenDir(env.QWEN_HOME, homeDir);
   const xdgConfigDir = env.XDG_CONFIG_HOME || join(homeDir, ".config");
   const xdgCacheDir = env.XDG_CACHE_HOME || join(homeDir, ".cache");
   const configDirs = uniquePaths([
@@ -655,6 +665,7 @@ function resolveOwnedPaths(environment: UninstallEnvironment) {
     factoryDir,
     copilotDir,
     vibeDir,
+    qwenDir,
     configDirs,
     xdgCacheDir,
     windowsInstallDir,
@@ -735,6 +746,14 @@ async function removeHostPlugins(
           "settings.json",
         ),
       ),
+    },
+    {
+      // The installers add it with `qwen extensions install`; Qwen's own
+      // command removes it from its extension store.
+      label: "Qwen Code extension plannotator",
+      command: "qwen",
+      args: ["extensions", "uninstall", "plannotator"],
+      installed: existsSync(join(paths.qwenDir, "extensions", "plannotator", "qwen-extension.json")),
     },
     {
       label: "VS Code extension backnotprop.plannotator-webview",
@@ -904,6 +923,10 @@ function removeInstalledFiles(
     );
   }
 
+  for (const skill of QWEN_SKILLS) {
+    removePath(join(paths.qwenDir, "skills", skill), request, state);
+  }
+
   for (const command of LEGACY_COMMAND_NAMES) {
     removePath(
       join(paths.claudeDir, "commands", `${command}.md`),
@@ -1058,6 +1081,10 @@ function removeInstallerData(
   // still make it. Every uninstall removes it, purge or not. config.json keys
   // that command wrote (`usageCounts`) stay with the config and are ignored.
   removePath(join(state.dataDir, "usage-counts"), request, state);
+  // The installers keep the Qwen Code extension's source here (Qwen reads it
+  // only to install or update); the extension itself goes with `qwen
+  // extensions uninstall` above.
+  removePath(join(state.dataDir, "qwen-code"), request, state);
 }
 
 function purgeLocalData(
@@ -2199,6 +2226,19 @@ function hasInstalledPlugin(filePath: string, pluginId: string): boolean {
   const plugins = parsed ? asRecord(parsed.plugins) : null;
   const installs = plugins?.[pluginId];
   return Array.isArray(installs) && installs.length > 0;
+}
+
+/**
+ * Qwen Code's user folder: $QWEN_HOME (the folder itself, a leading ~
+ * expanded, a relative path taken from the current folder) or ~/.qwen, as in
+ * Qwen's Storage.getGlobalQwenDir.
+ */
+function resolveQwenDir(qwenHome: string | undefined, homeDir: string): string {
+  const value = qwenHome?.trim();
+  if (!value) return join(homeDir, ".qwen");
+  if (value === "~") return homeDir;
+  if (value.startsWith("~/") || value.startsWith("~\\")) return join(homeDir, value.slice(2));
+  return resolve(value);
 }
 
 function hasPiPackage(filePath: string): boolean {
