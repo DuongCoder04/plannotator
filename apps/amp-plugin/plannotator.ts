@@ -39,6 +39,9 @@ interface ReviewDecision {
 interface AnnotateDecision {
   decision: "approved" | "dismissed" | "annotated";
   feedback?: string;
+  /** A Done with nothing to send (#1701): `feedback` is the zero-state
+   *  sentence and nothing is delivered. Absent from an older CLI. */
+  nothingToSend?: boolean;
 }
 
 interface ExitState {
@@ -168,6 +171,35 @@ export default function plannotatorAmpPlugin(amp: PluginAPI) {
       await handleAnnotateResult(ctx, result, { kind: "message" });
     },
   );
+
+  amp.registerCommand(
+    "plannotator-inbox",
+    {
+      title: "Open Inbox",
+      category: CATEGORY,
+      description: "Open the Plannotator Inbox in the browser and show its address.",
+    },
+    async (ctx) => {
+      // Starts a stopped Inbox in the background, opens it and prints its URL; returns at once.
+      const result = await runPlannotator(amp, ctx, ["inbox", "--open"]);
+      await ctx.ui.notify(inboxOpenedMessage(result));
+    },
+  );
+}
+
+/** What /plannotator-inbox shows for the CLI's answer. */
+export function inboxOpenedMessage(result: RunResult): string {
+  const url = /https?:\/\/\S+/.exec(result.stdout)?.[0];
+  if (!result.error && result.status === 0 && url) {
+    // The CLI's stderr says why no browser opened (a remote session, a "none" browser).
+    return `Plannotator Inbox: ${url}${result.stderr.trim() ? `\n${result.stderr.trim()}` : ""}`;
+  }
+  const details = [result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n").trim();
+  if (/unknown inbox option: --open|unknown command/i.test(details)) {
+    return "The plannotator CLI is older than /plannotator-inbox. Update it with `plannotator update`, or run `plannotator inbox` in a terminal.";
+  }
+  const missing = /\bENOENT\b|executable not found|command not found/i.test(details);
+  return `Could not open the Plannotator Inbox.${details ? `\n\n${details}` : ""}${missing ? `\n\nInstall the CLI first: ${INSTALL_URL}` : ""}`;
 }
 
 export function extractTextFromThreadMessage(message: ThreadMessage): string {
@@ -210,7 +242,11 @@ function parseAnnotateDecision(raw: string): AnnotateDecision | null {
         parsed.decision === "annotated") &&
       (parsed.feedback === undefined || typeof parsed.feedback === "string")
     ) {
-      return { decision: parsed.decision, feedback: parsed.feedback };
+      return {
+        decision: parsed.decision,
+        feedback: parsed.feedback,
+        ...(parsed.nothingToSend === true && { nothingToSend: true }),
+      };
     }
   } catch {
     return null;
@@ -226,6 +262,9 @@ export function formatAnnotationFeedback(
   // Approved-with-notes carries reviewer guidance in `feedback` (#1092); only
   // dismissed decisions and note-less approvals have nothing to surface.
   if (decision.decision !== "annotated" && decision.decision !== "approved") return null;
+  // A Done with nothing to send carries the zero-state sentence as feedback;
+  // there is nothing for the agent (#1701).
+  if (decision.decision === "annotated" && decision.nothingToSend === true) return null;
 
   const feedback = decision.feedback?.trim();
   if (!feedback) return null;
@@ -912,6 +951,7 @@ function sleep(ms: number): Promise<void> {
 function detectPlannotatorVersion(command: string[]): string | null {
   try {
     const result = Bun.spawnSync([...command, "--version"], {
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });

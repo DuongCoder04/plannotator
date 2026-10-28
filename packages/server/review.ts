@@ -9,12 +9,26 @@
  *   PLANNOTATOR_PORT   - Fixed port or inclusive range (default: random locally, 19432 for remote)
  */
 
+import { childPath } from "@plannotator/shared/child-env";
+import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, PACKAGE_CHECKOUT_WAIT_MS, prSettingsSource, REMOTE_PACKAGE_READS, waitAtMost } from "@plannotator/shared/package-changes-service";
+import { parseDiffToFiles } from "@plannotator/core/diff-files";
+import { homedir } from "node:os";
+import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import {
+  answerDiagramEngineRequest,
+  createDiagramEngineAssets,
+  isDiagramEngineRequest,
+  type DiagramEngineSource,
+} from "@plannotator/shared/diagram-engine-assets";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
+import { createRequestHostGuard } from "./request-host-guard";
+import { withPlannotatorServerHeader } from "./plannotator-server-marker";
+import { refuseCrossOriginWrite } from "./request-origin-guard";
 import type { Origin } from "@plannotator/shared/agents";
 import { type DiffType, type GitContext, runVcsDiff, getVcsFileContentsForDiff, getVcsFileBytesForDiff, getVcsDiffFingerprint, canStageFiles, stageFile, unstageFile, resolveVcsCwd, validateFilePath, getVcsContext, detectRemoteDefaultCompareTarget, resolveAvailableDiffType, vcsOwnsDiffType, vcsSupportsSnapshot, materializeVcsSnapshot, gitRuntime } from "./vcs";
-import { basename } from "node:path";
-import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { SingleFlight } from "@plannotator/shared/single-flight";
 import {
   commitFamilyId,
@@ -56,6 +70,10 @@ import {
   handleReviewImageRequest,
   readPRImageSide,
 } from "@plannotator/shared/review-image";
+import {
+  REVIEW_MARKDOWN_IMAGE_ENDPOINT,
+  handleReviewMarkdownImageRequest,
+} from "@plannotator/shared/review-markdown-image";
 import type { DiffSide, FileBytesRead } from "@plannotator/shared/review-core";
 import {
   createDefaultSemanticDiffRuntime,
@@ -86,6 +104,7 @@ import { type AgentJobInfo, REVIEW_OUTPUT_FAILED, getAgentJobAnnotationContext, 
 import { createCommitAvatarResolver } from "@plannotator/shared/commit-avatars";
 import { detectGeneratedFiles, detectGeneratedFilesByName } from "@plannotator/shared/generated-files";
 import { getRepoInfo } from "./repo";
+import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleApiNotFound, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash } from "./draft";
 import { createReviewDraftSession, prDraftTargetKey, type ReviewDraftKeys } from "@plannotator/shared/review-draft";
@@ -125,6 +144,7 @@ import {
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/shared/guide-viewer-manifest";
 import {
   MARKER_ENGINES,
+  resolveMarkerBinary,
   composeMarkerReviewPrompt,
   buildMarkerCommand,
   parseMarkerStreamOutput,
@@ -134,8 +154,8 @@ import {
   extractMarkerNonce,
   type MarkerEngineId,
 } from "./marker-review";
-import { loadConfig, saveConfig, detectGitUser, getServerConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGitRemoteCheck, resolveReviewProgress } from "./config";
-import { getAutoUpdateAdvert } from "./auto-update";
+import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGitRemoteCheck, resolveReviewProgress } from "./config";
+import { getAutoUpdateAdvert, getUpdateAdvert, handleUpdateRoute } from "./auto-update";
 import { appendFeedbackRecord, countChangedFiles, deriveFeedbackProject, type FeedbackDecision, type FeedbackReviewTarget } from "@plannotator/shared/feedback-archive";
 import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { type PRMetadata, type PRRef, type PRReviewFileComment, type PRStackTree, type PRListItem, fetchPR, fetchPRFileContent, fetchPRFileBytes, fetchPRContext, submitPRReview, parseFileLevelComments, parsePRReviewAction, fetchPRViewedFiles, markPRFilesViewed, fetchPRStack, fetchPRList, getPRUser, parsePRUrl, prRefFromMetadata, isSameProject, getDisplayRepo, getMRLabel, getMRNumberLabel, getPRNumber, prCommandRuntime } from "./pr";
@@ -150,12 +170,19 @@ import {
   fetchPRArtifactDocument,
   PRArtifactDocumentError,
 } from "@plannotator/shared/pr-artifact-document";
-import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
-import { isAIEndpointPath, type AIEndpoints } from "@plannotator/ai";
+import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
+import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
+import { sessionTailnetAudience, sessionTailnetGate } from "./session-tailnet";
+import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
+import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
+import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isWSL } from "./browser";
+import { getExtraMarkdownExtensions } from "@plannotator/shared/resolve-file";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
-import type { LocalWorkspaceReview, WorkspaceDiffType } from "./review-workspace";
+import { resolveWorkspaceFilePath, type LocalWorkspaceReview, type WorkspaceDiffType } from "./review-workspace";
 import { handleCodeNavResolve, handleCodeNavHover, extractChangedFiles } from "./code-nav";
+import { readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "@plannotator/shared/repo-file";
+import { decodeBunText } from "./git";
 import { discoverCuratedSkills, resolveRequestedReviewProfile, listAllSkills, enableReviewSkill } from "./review-skill-loader";
 import { readGuideInstructions, writeGuideInstructions } from "@plannotator/shared/guide-instructions-store";
 import {
@@ -176,12 +203,22 @@ export { handleServerReady as handleReviewServerReady } from "./shared-handlers"
 // --- Types ---
 
 export interface ReviewServerOptions {
+  /** "Ask this session": the host bridge to the agent session that opened this review (see packages/ai/session-bridge.ts). */
+  sessionBridge?: SessionBridge;
+  /**
+   * The token `/api/host/status` and `/api/host/close` accept (see
+   * packages/shared/host-control.ts). Default: the pull-bridge token the host
+   * launched the CLI with; off in remote mode either way.
+   */
+  hostControlToken?: string;
   /**
    * The session is loopback-bound but published across the user's tailnet
    * (--tailscale), so its browser may be on another device: the app page is
    * served compressed, as in remote mode (#1617).
    */
   tailnetPublished?: boolean;
+  /** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
+  refRunner?: RefRunner;
   /** Raw git diff patch string */
   rawPatch: string;
   /** Git ref used for the diff (e.g., "HEAD", "main..HEAD", "--staged") */
@@ -190,6 +227,15 @@ export interface ReviewServerOptions {
   error?: string;
   /** HTML content to serve for the UI */
   htmlContent: string;
+  /**
+   * Code review's diagram engine files (apps/review/diagram-engine), or a
+   * function that reads them on first need. With them the server advertises
+   * `diagramEngine` on `/api/diff` and serves the files under
+   * `/assets/diagram-engine/`, and Markdown previews and guide overviews draw
+   * Mermaid and Graphviz fences; without them (absent, or the read answers
+   * null) the fences show as code. See @plannotator/shared/diagram-engine-assets.
+   */
+  diagramEngine?: DiagramEngineSource;
   /** Origin identifier for UI customization */
   origin?: Origin;
   /** Current diff type being displayed */
@@ -297,9 +343,24 @@ export interface ReviewServerResult {
     annotations: unknown[];
     agentSwitch?: string;
     exit?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
+    /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
+    platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }>;
   /** Stop the server */
   stop: () => void;
+  /** Host-only status and close, called in-process by a host that runs this server itself. */
+  hostControl: HostControl;
 }
 
 // --- Server Implementation ---
@@ -319,6 +380,11 @@ export async function startReviewServer(
   // Session-constant capability advert; rides every diff payload (see the
   // option's doc). Absent option = false, so old callers advertise honestly.
   const approvalNotesSupported = options.approvalNotesSupported === true;
+  // Stale-tab guard (packages/core/server-session.ts): advertised beside
+  // approvalNotesSupported on every diff payload and echoed by every
+  // decision; a different nonce is refused with 409 session_mismatch before
+  // anything settles. Missing is accepted (older clients).
+  const serverSession = createServerSessionNonce();
   // Static patch mode (`plannotator review --patch-file`): the diff is
   // caller-supplied bytes, so there is no repo, no working tree and no VCS
   // behind it. Advertised to the client as `sourceKind: "patch"` on every diff
@@ -330,6 +396,10 @@ export async function startReviewServer(
   // every diff payload. Off where nothing can be read: a static patch has
   // no repository, and P4 drops binary files from its patch entirely.
   const imagePreviewSupported = !isStaticPatchMode && gitContext?.vcsType !== "p4";
+  // Markdown preview capability advert: the preview renders the full file, so
+  // it is offered wherever /api/file-content can read one (never a static
+  // patch). Its images (/api/review-markdown-image) follow imagePreviewSupported.
+  const markdownPreviewSupported = !isStaticPatchMode;
   const runImageRead = createConcurrencyLimiter(REVIEW_IMAGE_READ_CONCURRENCY);
   const sourceKindAdvert = isStaticPatchMode
     ? ({ sourceKind: "patch" } as const)
@@ -936,6 +1006,17 @@ export async function startReviewServer(
   // hostname must not break local agent jobs).
   let serverUrl = "";
   let agentApiUrl = "";
+  /**
+   * The review's target as it stands at decision time (named in every
+   * decision a host delivers): the active PR's URL, the workspace root, or
+   * the working tree the active diff reads. A static patch has none here.
+   */
+  const activeReviewTarget = (): string | undefined => {
+    if (isPRMode) return prMetadata?.url;
+    if (isStaticPatchMode) return undefined;
+    if (workspace) return workspace.root;
+    return resolveVcsCwd(currentDiffType as DiffType, gitContext?.cwd) ?? gitContext?.cwd ?? undefined;
+  };
   const resolveAgentCwd = (): string => {
     if (workspace) return workspace.root;
     if (options.worktreePool && prMetadata) {
@@ -1279,6 +1360,7 @@ export async function startReviewServer(
     mode: "review",
     getServerUrl: () => agentApiUrl,
     getCwd: resolveAgentCwd,
+    serverSession,
 
     async buildCommand(provider, config) {
       // Snapshot ALL launch-relevant state before any await: waiting out the
@@ -1452,19 +1534,20 @@ export async function startReviewServer(
           // authenticated/usable — a broken claude repair would itself become
           // the newest failed job and hijack the recovery panel next render,
           // a doom loop. Marker engines' binary name can differ from the
-          // engine id (Cursor's CLI binary is `agent`, not `cursor`), so
-          // resolve via MARKER_ENGINES[...].binary before falling back to the
-          // engine id itself for claude/codex.
+          // engine id (Cursor's CLI is `cursor-agent`, or Cursor's own
+          // `agent`), so resolve via resolveMarkerBinary before falling back to
+          // the engine id itself for claude/codex.
           const failedEngine = typeof config?.engine === "string" && config.engine ? config.engine : undefined;
-          const failedEngineBinary = failedEngine
-            ? MARKER_ENGINES[failedEngine as MarkerEngineId]?.binary ?? failedEngine
-            : undefined;
+          const failedMarker = failedEngine ? MARKER_ENGINES[failedEngine as MarkerEngineId] : undefined;
+          const failedEngineInstalled = failedMarker
+            ? !!(await resolveMarkerBinary(failedMarker, (name) => Bun.which(name, { PATH: childPath() }) ?? null))
+            : !!failedEngine && !!Bun.which(failedEngine, { PATH: childPath() });
           const repairEngine =
-            failedEngine && Bun.which(failedEngineBinary!)
+            failedEngine && failedEngineInstalled
               ? failedEngine
-              : Bun.which("claude")
+              : Bun.which("claude", { PATH: childPath() })
                 ? "claude"
-                : Bun.which("codex")
+                : Bun.which("codex", { PATH: childPath() })
                   ? "codex"
                   : (failedEngine ?? "claude");
           repair = { payload };
@@ -1816,12 +1899,21 @@ export async function startReviewServer(
   });
 
   // AI provider setup (graceful — capabilities report unavailable if no provider is registered)
-  const aiRuntime = aiEnabled ? await createAIRuntime({ getCwd: resolveAgentCwd }) : null;
+  // Set once bound: "Ask this session" answers only a loopback Host with this port.
+  let boundPort: number | undefined;
+  const aiRuntime = aiEnabled ? await createAIRuntime({ getCwd: resolveAgentCwd, sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.tailnetPublished === true ? { tailnet: sessionTailnetGate } : {}) }) : null;
 
   const isRemote = isRemoteSession();
+  // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for, and
+  // never in remote mode. In a `--tailscale` session only this machine's tabs and the tailnet owner's get
+  // them (`refCardsTailnetAllowed`): other devices must not drive the user's gh / glab.
+  const refCards = createRefCards(options.refRunner ? { run: options.refRunner } : {});
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
+  // Hashed off the request path, so `/api/diff` finds it ready.
+  const diagramEngineAssets = createDiagramEngineAssets(options.diagramEngine);
+  diagramEngineAssets.warm();
   const wslFlag = await isWSL();
   const gitUser = detectGitUser(workspace?.root ?? gitContext?.cwd);
 
@@ -1886,6 +1978,7 @@ export async function startReviewServer(
   }
 
   // Decision promise
+  let reviewDecided = false;
   let resolveDecision: (result: {
     approved: boolean;
     feedback: string;
@@ -1893,6 +1986,19 @@ export async function startReviewServer(
     annotations: unknown[];
     agentSwitch?: string;
     exit?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
+    /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
+    platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }) => void;
   const decisionPromise = new Promise<{
     approved: boolean;
@@ -1901,12 +2007,265 @@ export async function startReviewServer(
     annotations: unknown[];
     agentSwitch?: string;
     exit?: boolean;
+    /** The host closed the session (`POST /api/host/close`): an `exit` that keeps the draft. */
+    closedBy?: "agent";
+    /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
+    unsentAnnotations?: number;
+    /** The review was posted to the PR platform (`POST /api/pr-action`); `feedback` is only its status line. */
+    platform?: true;
+    /**
+     * What the decision is about, as the server shows it NOW: the active PR's
+     * URL (after any in-place `/api/pr-switch`), the workspace root, or the
+     * working tree the active diff reads (a worktree diff type moves it).
+     * Absent for a static patch (the caller knows the file).
+     */
+    target?: string;
   }>((resolve) => {
-    resolveDecision = resolve;
+    resolveDecision = (result) => {
+      reviewDecided = true;
+      const target = result.target ?? activeReviewTarget();
+      resolve(target ? { ...result, target } : result);
+    };
   });
 
+  const reviewAlreadyDecided = () =>
+    Response.json({ error: "This review session has already been decided.", code: "already_decided" }, { status: 409 });
+
+  // Host-only session control (packages/shared/host-control.ts). Closing is
+  // the reviewer's Close, marked closedBy "agent", WITHOUT settling the draft
+  // or archiving a decision the reviewer never made.
+  const hostControlToken = resolveHostControlToken(options.hostControlToken);
+  const unsentReviewComments = (): number => {
+    const loaded = reviewDrafts.load(currentDraftKeys());
+    return loaded.found ? countUnsentDraftComments(loaded.draft) : 0;
+  };
+  const hostControl: HostControl = {
+    status: () => ({
+      kind: "review",
+      documents: isPRMode && prMetadata ? [prMetadata.url] : [],
+      unsentAnnotations: unsentReviewComments(),
+      decided: reviewDecided,
+    }),
+    close: () => {
+      if (reviewDecided) return { closed: false, reason: "decided" };
+      const unsentAnnotations = unsentReviewComments();
+      resolveDecision({ approved: false, feedback: "", annotations: [], exit: true, closedBy: "agent", unsentAnnotations });
+      externalAnnotations.broadcast(hostSessionClosedEvent(unsentAnnotations));
+      return { closed: true, unsentAnnotations };
+    },
+  };
+
+  /**
+   * Both sides of one path for the current diff, read the way the diff was
+   * made (workspace, full-stack PR checkout, local VCS, or the PR platform).
+   * Shared by /api/file-content and the package changes route.
+   */
+  const readDiffFileContents = async (
+    filePath: string,
+    oldPath: string | undefined,
+    requestedBase: string | undefined,
+  ): Promise<{ oldContent: string | null; newContent: string | null } | { error: string }> => {
+    if (isBinaryPatchFile(currentPatch, filePath)) {
+      return { oldContent: null, newContent: null };
+    }
+
+    if (workspace) {
+      try {
+        return await workspace.getFileContents(filePath, oldPath);
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : "No file access available" };
+      }
+    }
+
+    // Full-stack PR mode uses local git for file expansion because
+    // the patch is no longer the platform's layer diff.
+    const fileContentCwd = resolvePRLocalCwd();
+    if (
+      isPRMode &&
+      currentPRDiffScope === "full-stack" &&
+      fileContentCwd &&
+      prMetadata?.defaultBranch
+    ) {
+      const baseRef = await resolvePRFullStackBaseRef(
+        gitRuntime,
+        prMetadata!.defaultBranch,
+        fileContentCwd,
+      );
+      if (!baseRef) return { oldContent: null, newContent: null };
+      return getVcsFileContentsForDiff(
+        "merge-base",
+        baseRef,
+        filePath,
+        oldPath,
+        fileContentCwd,
+      );
+    }
+
+    // Local review: read file contents from local git
+    if (hasLocalAccess) {
+      const base = resolveReviewBase(requestedBase);
+      const defaultCwd = gitContext?.cwd;
+      return getVcsFileContentsForDiff(
+        currentDiffType as DiffType,
+        base,
+        filePath,
+        oldPath,
+        defaultCwd,
+      );
+    }
+
+    // PR mode: fetch from platform API using merge-base/head SHAs.
+    // The diff is computed against the merge-base (common ancestor), not the
+    // base branch tip. File contents must match the diff for hunk expansion.
+    if (isPRMode && prMetadata) {
+      const oldSha = prMetadata.mergeBaseSha ?? prMetadata.baseSha;
+      const [oldContent, newContent] = await Promise.all([
+        fetchPRFileContent(prRef!, oldSha, oldPath || filePath),
+        fetchPRFileContent(prRef!, prMetadata.headSha, filePath),
+      ]);
+      return { oldContent, newContent };
+    }
+
+    return { error: "No file access available" };
+  };
+
+  // Where the current mode reads one side of a repository path, as
+  // bytes: shared by /api/review-image (#1598) and the Markdown
+  // preview's /api/review-markdown-image, in the same priority order
+  // as /api/file-content below.
+  const readReviewSide = async (
+    side: DiffSide,
+    filePath: string,
+    oldPath: string | undefined,
+    maxBytes: number,
+    signal?: AbortSignal,
+    requestedBase?: string,
+  ): Promise<FileBytesRead> => {
+    if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
+    const prCwd = resolvePRLocalCwd();
+    if (isPRMode && currentPRDiffScope === "full-stack" && prCwd && prMetadata?.defaultBranch) {
+      const baseRef = await resolvePRFullStackBaseRef(gitRuntime, prMetadata.defaultBranch, prCwd);
+      if (!baseRef) return { kind: "missing" };
+      return getFileBytesForDiff(gitRuntime, "merge-base", baseRef, filePath, oldPath, side, maxBytes, prCwd);
+    }
+    if (hasLocalAccess) {
+      return getVcsFileBytesForDiff(
+        currentDiffType as DiffType,
+        requestedBase !== undefined ? resolveReviewBase(requestedBase) : currentBase,
+        filePath,
+        oldPath,
+        side,
+        maxBytes,
+        gitContext?.cwd,
+      );
+    }
+    if (isPRMode && prMetadata && prRef) {
+      const ref = prRef;
+      return readPRImageSide({
+        gitRuntime,
+        poolCwd: prCwd,
+        oldSha: prMetadata.mergeBaseSha ?? prMetadata.baseSha,
+        headSha: prMetadata.headSha,
+        side,
+        filePath,
+        oldPath,
+        maxBytes,
+        fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+        signal,
+      });
+    }
+    return { kind: "unavailable" };
+  };
+
+  // Package changes under package.json and lockfile diffs. The server reads
+  // the files and works out every name a lookup would send; the lookup itself
+  // runs only when config.json allows it (see package-changes-service.ts).
+  let packageRepoRoot: { cwd: string | undefined; root: Promise<string | null> } | null = null;
+  const packageChanges = createPackageChangesService({
+    snapshotId: () => currentSnapshotId(),
+    diffFiles: () => parseDiffToFiles(currentPatch),
+    readSide: async (side, path, oldPath, base) => {
+      try { validateFilePath(path); if (oldPath) validateFilePath(oldPath); } catch { return { kind: "unreadable", reason: "invalid path" }; }
+      const read = await readReviewSide(side, path, oldPath, MAX_PACKAGE_FILE_BYTES, undefined, base);
+      if (read.kind === "ok") return { kind: "ok", text: new TextDecoder().decode(read.bytes) };
+      if (read.kind === "missing") return { kind: "missing" };
+      if (read.kind === "too-large") return { kind: "unreadable", reason: "too large" };
+      // No byte reader for this mode: the text reader, whose null cannot tell
+      // absent from unreadable, so it counts as unreadable.
+      const text = await readDiffFileContents(path, oldPath, base);
+      const value = "error" in text ? null : side === "old" ? text.oldContent : text.newContent;
+      return value == null ? { kind: "unreadable", reason: "could not be read" } : { kind: "ok", text: value };
+    },
+    settings: () => {
+      if (workspace) {
+        const session = workspace;
+        return {
+          kind: "local",
+          dirOf: async (path) => {
+            const target = resolveWorkspaceFilePath(session.repos, path);
+            return target ? dirname(join(target.repo.cwd, target.repoRelativePath)) : null;
+          },
+        };
+      }
+      if (isPRMode) {
+        if (!prMetadata || !prRef) return { kind: "none" };
+        const ref = prRef;
+        return prSettingsSource({
+          git: gitRuntime,
+          checkout: resolvePRLocalCwd(),
+          headSha: prMetadata.headSha,
+          fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
+        });
+      }
+      if (!hasLocalAccess || isStaticPatchMode) return { kind: "none" };
+      return {
+        kind: "local",
+        dirOf: async (path) => {
+          // Patch paths are relative to the repository top level of the
+          // directory the diff ran in (a worktree mode runs elsewhere).
+          const cwd = resolveVcsCwd(currentDiffType as DiffType, gitContext?.cwd) ?? gitContext?.cwd;
+          if (!packageRepoRoot || packageRepoRoot.cwd !== cwd) {
+            const known = cwd === gitContext?.cwd ? gitContext?.root : undefined;
+            packageRepoRoot = {
+              cwd,
+              root: known
+                ? Promise.resolve(known)
+                : gitRuntime.runGit(["rev-parse", "--show-toplevel"], { cwd })
+                  .then((r) => (r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim() : null))
+                  .catch(() => null),
+            };
+          }
+          const root = await packageRepoRoot.root;
+          return root ? dirname(join(root, path)) : null;
+        },
+      };
+    },
+    homeDir: () => {
+      try { return homedir(); } catch { return null; }
+    },
+    // A PR review reads from its checkout: wait for it (it is usually still
+    // being prepared on first load), and use the platform API only when no
+    // checkout can exist, or for now after a timeout (that result is not kept).
+    prepare: async () => {
+      if (!isPRMode || !prMetadata) return { final: true };
+      const meta = prMetadata;
+      let checkout = resolvePRLocalCwd(meta);
+      let final = true;
+      if (!checkout && options.worktreePool) {
+        const waited = await waitAtMost(ensurePRLocalCwd(meta), PACKAGE_CHECKOUT_WAIT_MS);
+        if (waited.timedOut) final = false;
+        else checkout = waited.value;
+      }
+      if (checkout) return { final };
+      return { final, remote: { key: `${meta.mergeBaseSha ?? meta.baseSha}:${meta.headSha}`, budget: REMOTE_PACKAGE_READS } };
+    },
+    lookupEnabled: () => resolvePackageLookup(loadConfig()),
+    env: process.env,
+  });
+
+  const requestHostGuard = createRequestHostGuard();
   const server = await startBunServerOnAvailablePort((port) =>
-    Bun.serve({
+    Bun.serve(withPlannotatorServerHeader({
         hostname: getServerHostname(),
         port,
         // Bun's default 10s idleTimeout kills requests that legitimately park:
@@ -1915,7 +2274,22 @@ export async function startReviewServer(
         idleTimeout: 0,
 
         async fetch(req, server) {
+          // Host allowlist first, before any route (request-host-guard.ts).
+          const hostRefusal = requestHostGuard.check(req);
+          if (hostRefusal) return hostRefusal;
+          // Then no write from another site, before any route (request-origin-guard.ts).
+          const originRefusal = refuseCrossOriginWrite(req);
+          if (originRefusal) return originRefusal;
+
           const url = new URL(req.url);
+
+          const hostControlResponse = handleHostControl(req, url, {
+            token: hostControlToken,
+            getServerPort: () => boundPort,
+            control: hostControl,
+            ...(options.tailnetPublished === true ? { fromThisMachine: (r: Request) => sessionTailnetAudience(r) === "local" } : {}),
+          });
+          if (hostControlResponse) return hostControlResponse;
 
           // API: Get tour result
           if (url.pathname.match(/^\/api\/tour\/[^/]+$/) && req.method === "GET") {
@@ -2024,7 +2398,7 @@ export async function startReviewServer(
             });
           }
           if (guideShareMatch && guideShareMatch[2] === "share" && (req.method === "POST" || req.method === "DELETE")) {
-            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin share requests are not allowed" }, { status: 403 });
             }
             const jobId = decodeURIComponent(guideShareMatch[1]);
@@ -2206,7 +2580,12 @@ export async function startReviewServer(
               gitContext: hasLocalAccess ? servedGitContext : undefined,
               sharingEnabled,
               approvalNotesSupported,
+
+              serverSession,
               imagePreviewSupported,
+              markdownPreviewSupported,
+              // Session-constant, read once by the page at mount.
+              diagramEngine: await diagramEngineAssets.advert(),
               ...sourceKindAdvert,
               // Mount is the only place the pin matters, so it rides /api/diff
               // alone (not the switch endpoints).
@@ -2214,6 +2593,9 @@ export async function startReviewServer(
               shareBaseUrl,
               repoInfo,
               isWSL: wslFlag,
+              // config.json `markdownExtensions`: extra extensions the review
+              // UI's Markdown preview treats as Markdown.
+              markdownExtensions: getExtraMarkdownExtensions(),
               // PR mode advertises the ready PR checkout (null while warming), so
               // the Open-in button gates correctly from the initial load — not
               // the launch repo. Non-PR keeps the workspace/local cwd.
@@ -2241,8 +2623,9 @@ export async function startReviewServer(
               ...(servedError && { error: servedError }),
               semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
               callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
-              serverConfig: getServerConfig(gitUser),
+              serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge)),
               ...getAutoUpdateAdvert(),
+              ...getUpdateAdvert(origin, { exposed: isRemote || options.tailnetPublished === true }),
             });
           }
 
@@ -2252,7 +2635,7 @@ export async function startReviewServer(
             // advertise no apps: the client hides the control rather than
             // offering to open a same-named file from an unrelated checkout.
             if (isStaticPatchMode) return Response.json({ available: false, apps: [] });
-            return handleOpenInApps();
+            return handleOpenInApps({ exposed: options.tailnetPublished === true });
           }
 
           // API: Open a file in an app. Resolves the repo-relative `git diff`
@@ -2277,7 +2660,7 @@ export async function startReviewServer(
                 { status: 400 },
               );
             }
-            return handleOpenIn(req, { resolveRoot: resolveOpenInRoot });
+            return handleOpenIn(req, { resolveRoot: resolveOpenInRoot, serverSession, exposed: options.tailnetPublished === true });
           }
 
           // API: cheap staleness probe — has the underlying VCS state changed
@@ -2405,7 +2788,7 @@ export async function startReviewServer(
           // download, and a cross-origin POST is rejected because this
           // endpoint starts a native runtime download and build.
           if (url.pathname === "/api/call-flow/install" && req.method === "POST") {
-            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (!callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin install requests are not allowed" }, { status: 403 });
             }
             let request: ReturnType<typeof parseCallFlowInstallRequest>;
@@ -2489,7 +2872,7 @@ export async function startReviewServer(
               ) {
                 return Response.json({ superseded: true });
               }
-              saveConfig({ reviewAnalysis });
+              if (!saveConfig({ reviewAnalysis })) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               if (!nextCallFlowEnabled) callFlowService.cancelAll();
               return Response.json({ semanticDiff, callFlow });
             } catch {
@@ -2623,7 +3006,10 @@ export async function startReviewServer(
                   gitRef: currentGitRef,
                   snapshotId: currentSnapshotId(),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
+                  markdownPreviewSupported,
                   ...sourceKindAdvert,
                   diffType: currentDiffType,
                   diffOptions: workspace.diffOptions,
@@ -2793,7 +3179,10 @@ export async function startReviewServer(
                 gitRef: currentGitRef,
                 snapshotId: currentSnapshotId(),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
+                markdownPreviewSupported,
                 ...sourceKindAdvert,
                 diffType: currentDiffType,
                 // Echo the base the server actually used. resolveBaseBranch
@@ -2861,7 +3250,10 @@ export async function startReviewServer(
                   snapshotId: currentSnapshotId(),
                   draftState: reviewDrafts.state(currentDraftKeys()),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
+                  markdownPreviewSupported,
                   ...sourceKindAdvert,
                   prDiffScope: currentPRDiffScope,
                   ...(layerPatchIncomplete && { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable }),
@@ -2922,7 +3314,10 @@ export async function startReviewServer(
                   snapshotId: currentSnapshotId(),
                   draftState: reviewDrafts.state(currentDraftKeys()),
                   approvalNotesSupported,
+
+                  serverSession,
                   imagePreviewSupported,
+                  markdownPreviewSupported,
                   ...sourceKindAdvert,
                   prDiffScope: currentPRDiffScope,
                   ...(layerPatchIncomplete && { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable }),
@@ -2974,7 +3369,10 @@ export async function startReviewServer(
                 snapshotId: currentSnapshotId(),
                 draftState: reviewDrafts.state(currentDraftKeys()),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
+                markdownPreviewSupported,
                 ...sourceKindAdvert,
                 prDiffScope: currentPRDiffScope,
                 semanticDiff: await getSemanticDiffAdvert(),
@@ -3107,7 +3505,10 @@ export async function startReviewServer(
                 snapshotId: currentSnapshotId(),
                 draftState: reviewDrafts.state(currentDraftKeys()),
                 approvalNotesSupported,
+
+                serverSession,
                 imagePreviewSupported,
+                markdownPreviewSupported,
                 ...sourceKindAdvert,
                 prMetadata: pr.metadata,
                 // The new PR's checkout (null while warming) so Open-in re-roots
@@ -3224,53 +3625,31 @@ export async function startReviewServer(
             }
           }
 
+
+          // API: An image a reviewed Markdown file shows, read at that side's
+          // revision. Every decision is in the shared handler.
+          if (url.pathname === REVIEW_MARKDOWN_IMAGE_ENDPOINT && req.method === "GET") {
+            const result = await handleReviewMarkdownImageRequest({
+              params: url.searchParams,
+              ifNoneMatch: req.headers.get("if-none-match"),
+              available: imagePreviewSupported,
+              patch: currentPatch,
+              markdownExtensions: getExtraMarkdownExtensions(),
+              isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+              signal: req.signal,
+              readSide: (side, filePath, oldPath, maxBytes, signal) =>
+                runImageRead(() => readReviewSide(side, filePath, oldPath, maxBytes, signal), signal),
+            });
+            return new Response(result.body as BodyInit | null, {
+              status: result.status,
+              headers: result.headers,
+            });
+          }
+
           // API: One side of a changed image, as bytes (#1598). Every decision
           // (eligibility, caps, sniffing, headers) is in the shared handler;
-          // this closure only says where the current mode reads a side from,
-          // in the same priority order as /api/file-content below.
+          // readReviewSide only says where the current mode reads a side from.
           if (url.pathname === REVIEW_IMAGE_ENDPOINT && req.method === "GET") {
-            const readSide = async (
-              side: DiffSide,
-              filePath: string,
-              oldPath: string | undefined,
-              maxBytes: number,
-              signal?: AbortSignal,
-            ): Promise<FileBytesRead> => {
-              if (workspace) return workspace.getFileBytes(filePath, oldPath, side, maxBytes);
-              const prCwd = resolvePRLocalCwd();
-              if (isPRMode && currentPRDiffScope === "full-stack" && prCwd && prMetadata?.defaultBranch) {
-                const baseRef = await resolvePRFullStackBaseRef(gitRuntime, prMetadata.defaultBranch, prCwd);
-                if (!baseRef) return { kind: "missing" };
-                return getFileBytesForDiff(gitRuntime, "merge-base", baseRef, filePath, oldPath, side, maxBytes, prCwd);
-              }
-              if (hasLocalAccess) {
-                return getVcsFileBytesForDiff(
-                  currentDiffType as DiffType,
-                  currentBase,
-                  filePath,
-                  oldPath,
-                  side,
-                  maxBytes,
-                  gitContext?.cwd,
-                );
-              }
-              if (isPRMode && prMetadata && prRef) {
-                const ref = prRef;
-                return readPRImageSide({
-                  gitRuntime,
-                  poolCwd: prCwd,
-                  oldSha: prMetadata.mergeBaseSha ?? prMetadata.baseSha,
-                  headSha: prMetadata.headSha,
-                  side,
-                  filePath,
-                  oldPath,
-                  maxBytes,
-                  fetchBytes: (sha, path, max) => fetchPRFileBytes(ref, sha, path, max),
-                  signal,
-                });
-              }
-              return { kind: "unavailable" };
-            };
             const result = await handleReviewImageRequest({
               params: url.searchParams,
               ifNoneMatch: req.headers.get("if-none-match"),
@@ -3279,7 +3658,7 @@ export async function startReviewServer(
               isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
               signal: req.signal,
               readSide: (side, filePath, oldPath, maxBytes, signal) =>
-                runImageRead(() => readSide(side, filePath, oldPath, maxBytes, signal), signal),
+                runImageRead(() => readReviewSide(side, filePath, oldPath, maxBytes, signal), signal),
             });
             return new Response(result.body as BodyInit | null, {
               status: result.status,
@@ -3346,79 +3725,35 @@ export async function startReviewServer(
               }
             }
 
-            if (isBinaryPatchFile(currentPatch, filePath)) {
-              return Response.json({ oldContent: null, newContent: null });
-            }
+            const result = await readDiffFileContents(filePath, oldPath, url.searchParams.get("base") ?? undefined);
+            if ("error" in result) return Response.json(result, { status: 400 });
+            return Response.json(result);
+          }
 
-            if (workspace) {
-              try {
-                const result = await workspace.getFileContents(filePath, oldPath);
-                return Response.json(result);
-              } catch (error) {
-                return Response.json(
-                  { error: error instanceof Error ? error.message : "No file access available" },
-                  { status: 400 },
-                );
-              }
+          // API: Package changes under package.json and lockfile diffs. Read
+          // only: the lookup below is the one route that reaches npm.
+          if (url.pathname === "/api/package-changes" && req.method === "GET") {
+            if (isStaticPatchMode) {
+              return Response.json({ error: "Package changes need the files behind the diff" }, { status: 400 });
             }
+            const out = await packageChanges.get({
+              snapshot: url.searchParams.get("snapshot"),
+              base: url.searchParams.get("base") ?? undefined,
+            });
+            return Response.json(out.body, { status: out.status, headers: { "Cache-Control": "no-store" } });
+          }
 
-            // Full-stack PR mode uses local git for file expansion because
-            // the patch is no longer the platform's layer diff.
-            const fileContentCwd = resolvePRLocalCwd();
-            if (
-              isPRMode &&
-              currentPRDiffScope === "full-stack" &&
-              fileContentCwd &&
-              prMetadata?.defaultBranch
-            ) {
-              const baseRef = await resolvePRFullStackBaseRef(
-                gitRuntime,
-                prMetadata!.defaultBranch,
-                fileContentCwd,
-              );
-              if (!baseRef) {
-                return Response.json(
-                  { oldContent: null, newContent: null },
-                );
-              }
-              const result = await getVcsFileContentsForDiff(
-                "merge-base",
-                baseRef,
-                filePath,
-                oldPath,
-                fileContentCwd,
-              );
-              return Response.json(result);
+          // API: npm details for one package card. POST, so the cross-origin
+          // write guard refuses another site's request; 403 until the
+          // reviewer turned the lookup on.
+          if (url.pathname === "/api/package-changes/lookup" && req.method === "POST") {
+            if (isStaticPatchMode) {
+              return Response.json({ error: "Package changes need the files behind the diff" }, { status: 400 });
             }
-
-            // Local review: read file contents from local git
-            if (hasLocalAccess) {
-              const requestedBase = url.searchParams.get("base") ?? undefined;
-              const base = resolveReviewBase(requestedBase);
-              const defaultCwd = gitContext?.cwd;
-              const result = await getVcsFileContentsForDiff(
-                currentDiffType as DiffType,
-                base,
-                filePath,
-                oldPath,
-                defaultCwd,
-              );
-              return Response.json(result);
-            }
-
-            // PR mode: fetch from platform API using merge-base/head SHAs.
-            // The diff is computed against the merge-base (common ancestor), not the
-            // base branch tip. File contents must match the diff for hunk expansion.
-            if (isPRMode && prMetadata) {
-              const oldSha = prMetadata.mergeBaseSha ?? prMetadata.baseSha;
-              const [oldContent, newContent] = await Promise.all([
-                fetchPRFileContent(prRef!, oldSha, oldPath || filePath),
-                fetchPRFileContent(prRef!, prMetadata.headSha, filePath),
-              ]);
-              return Response.json({ oldContent, newContent });
-            }
-
-            return Response.json({ error: "No file access available" }, { status: 400 });
+            let body: unknown;
+            try { body = await req.json(); } catch { return Response.json({ error: "Invalid JSON" }, { status: 400 }); }
+            const out = await packageChanges.lookup(body);
+            return Response.json(out.body, { status: out.status, headers: { "Cache-Control": "no-store" } });
           }
 
           // API: Code navigation (search-based symbol resolution)
@@ -3488,25 +3823,19 @@ export async function startReviewServer(
             if (!hasCodeNavAccess) {
               return Response.json({ error: "Code navigation requires local access" }, { status: 400 });
             }
-            const filePath = url.searchParams.get("path");
-            if (!filePath) {
-              return Response.json({ error: "Missing path" }, { status: 400 });
+            const navCwd = options.worktreePool && prMetadata
+              ? await ensurePRLocalCwd()
+              : await resolveAgentCwdReady();
+            if (!navCwd) {
+              return Response.json({ error: "Local checkout unavailable" }, { status: 400 });
             }
-            try { validateFilePath(filePath); } catch {
-              return Response.json({ error: "Invalid path" }, { status: 400 });
+            // Links followed like an editor; 5 MB cap and no FIFO hang
+            // (packages/shared/repo-file.ts, the Pi server uses the same).
+            const read = await readRepoFile(navCwd, url.searchParams.get("path"), { decode: decodeBunText });
+            if (!read.ok) {
+              return Response.json(repoFileErrorBody(read), { status: REPO_FILE_ERROR_STATUS[read.reason] });
             }
-            try {
-              const navCwd = options.worktreePool && prMetadata
-                ? await ensurePRLocalCwd()
-                : await resolveAgentCwdReady();
-              if (!navCwd) {
-                return Response.json({ error: "Local checkout unavailable" }, { status: 400 });
-              }
-              const content = await Bun.file(`${navCwd}/${filePath}`).text();
-              return Response.json({ content });
-            } catch {
-              return Response.json({ error: "File not found" }, { status: 404 });
-            }
+            return Response.json({ content: read.content });
           }
 
           // API: Stage / unstage a file (disabled when VCS doesn't support it)
@@ -3563,16 +3892,40 @@ export async function startReviewServer(
             }
           }
 
+          // API: Update now (the update toast and the Options menu): the install script, once.
+
+          const updateRoute = handleUpdateRoute(req, url, { port: boundPort, exposed: isRemote || options.tailnetPublished === true, serverSession });
+
+          if (updateRoute) return updateRoute;
+
+          // API: a hover card's data for an issue, PR or MR link (GET /api/ref, ref-cards.ts).
+          const refRoute = await refCardRouteResponse(req, url, refCards, {
+            enabled: isRemote ? false : options.tailnetPublished === true ? refCardsTailnetAllowed : true,
+            serverSession,
+          });
+          if (refRoute) return refRoute;
+
+
           // API: Update user config (write-back to ~/.plannotator/config.json)
           if (url.pathname === "/api/config" && req.method === "POST") {
+            if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
+              return Response.json({ error: "Cross-origin config writes are not allowed" }, { status: 403 });
+            }
             try {
-              const body = (await req.json()) as { displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; reviewAnalysis?: Record<string, unknown>; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
+              // OpenCode's agent switch (#1390): a known shape or nothing is saved.
+              const agentSwitch = agentSwitchConfigToSave(body);
+              if (agentSwitch === null) return Response.json({ error: "Invalid agentSwitch" }, { status: 400 });
+              if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
               if (body.theme !== undefined) toSave.theme = body.theme;
               if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
               if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;
+              if (typeof body.updateCheck === "boolean") toSave.updateCheck = body.updateCheck;
+              // The agent tool switch: boolean only; it applies to the next session.
+              if (typeof body.agentTool === "boolean") toSave.agentTool = body.agentTool;
               if (body.reviewAnalysis !== undefined) {
                 const reviewAnalysis = parseReviewAnalysisConfig(body.reviewAnalysis);
                 if (!reviewAnalysis) {
@@ -3581,9 +3934,16 @@ export async function startReviewServer(
                 toSave.reviewAnalysis = reviewAnalysis;
                 if (reviewAnalysis.callFlow === false) callFlowService.cancelAll();
               }
+              // Package changes: the card switch and the npm lookup consent, booleans only.
+              if (body.packageChanges !== undefined) {
+                const packageChangesConfig = parsePackageChangesConfig(body.packageChanges);
+                if (!packageChangesConfig) return Response.json({ error: "Invalid packageChanges" }, { status: 400 });
+                toSave.packageChanges = packageChangesConfig;
+              }
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
-              if (Object.keys(toSave).length > 0) saveConfig(toSave as Parameters<typeof saveConfig>[0]);
+              if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
+              if (agentToolSaveFailed(toSave)) return Response.json({ error: "Could not save the setting to config.json." }, { status: 500 });
               return Response.json({ ok: true });
             } catch {
               return Response.json({ error: "Invalid request" }, { status: 400 });
@@ -3692,7 +4052,7 @@ export async function startReviewServer(
 
           // API: Durable viewed-file progress
           if (url.pathname === "/api/review-progress") {
-            if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.get("origin"), url.host)) {
+            if (req.method === "POST" && !callFlowInstallOriginAllowed(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
               return Response.json({ error: "Cross-origin progress updates are not allowed" }, { status: 403 });
             }
             let body: unknown;
@@ -3822,6 +4182,13 @@ export async function startReviewServer(
 
           // API: Exit review session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
+            // Already decided (the host closed it, or another tab decided):
+            // archiving or settling now would delete a draft the close kept.
+            // Exit posts carry no body: the nonce rides the query string.
+            if (checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, serverSession) === "mismatch") {
+              return Response.json(serverSessionMismatchBody(), { status: 409 });
+            }
+            if (reviewDecided) return reviewAlreadyDecided();
             // Decision-only line: a dismissal carries no content, and how
             // often reviews are closed without feedback is exactly the
             // behavior data the archive exists to answer.
@@ -3840,7 +4207,16 @@ export async function startReviewServer(
                 annotations: unknown[];
                 agentSwitch?: string;
                 draftGeneration?: number;
+                platform?: unknown;
               };
+              if (checkServerSession(body, serverSession) === "mismatch") {
+                return Response.json(serverSessionMismatchBody(), { status: 409 });
+              }
+
+              // Checked after the body is read: a host close can land while
+              // it streams. A decided session must not archive, delete the
+              // draft, or answer ok for feedback nobody will receive.
+              if (reviewDecided) return reviewAlreadyDecided();
 
               // Archive BEFORE the draft delete: a failed write keeps the
               // draft as the reviewer's recovery copy (#678 ordering).
@@ -3865,6 +4241,11 @@ export async function startReviewServer(
                   ? { reviewDirectory: resolveAgentCwd() } : {}),
                 annotations: annotationsValue,
                 agentSwitch: body.agentSwitch,
+                // The platform path's status post marks itself; only a real
+                // boolean true counts, so consumers never infer it from an
+                // empty annotation list (PR description, PR comment and
+                // editor comments ride only in `feedback`).
+                ...(body.platform === true && { platform: true as const }),
               });
 
               return Response.json({ ok: true });
@@ -3888,6 +4269,11 @@ export async function startReviewServer(
                 fileLevelComments?: unknown;
                 targetPrUrl?: string;
               };
+              // Stale-tab guard: a tab of an earlier session on this port must
+              // not post a review to the platform as if it were this one's.
+              if (checkServerSession(body, serverSession) === "mismatch") {
+                return Response.json(serverSessionMismatchBody(), { status: 409 });
+              }
               const action = parsePRReviewAction(body.action);
               if (!action) {
                 return Response.json(
@@ -3995,7 +4381,7 @@ export async function startReviewServer(
                   );
                 }
               }
-              if (url.pathname === AI_QUERY_ENDPOINT) {
+              if (isLongLivedAIEndpointPath(url.pathname)) {
                 server.timeout(req, 0);
               }
               return handler(req);
@@ -4005,6 +4391,19 @@ export async function startReviewServer(
 
           // Favicon
           if (url.pathname === "/favicon.png") return handleFavicon();
+
+          // Code review's diagram engine, fetched by the page only for a
+          // preview or guide overview that holds a diagram fence.
+          if (isDiagramEngineRequest(url.pathname)) {
+            const answer = await answerDiagramEngineRequest(
+              diagramEngineAssets,
+              url.pathname,
+              req.method,
+              req.headers.get("accept-encoding"),
+              compressAppHtml,
+            );
+            return new Response(answer.body as BodyInit, { status: answer.status, headers: answer.headers });
+          }
 
           // API 404 guard: unknown /api/* routes should return JSON, not HTML
           if (url.pathname.startsWith("/api/")) {
@@ -4022,10 +4421,11 @@ export async function startReviewServer(
             { status: 500, headers: { "Content-Type": "text/plain" } },
           );
         },
-    }),
+    })),
   );
 
   const port = server.port!;
+  boundPort = port;
   serverUrl = buildAdvertisedUrl(port);
   agentApiUrl = `http://127.0.0.1:${port}`;
   const exitHandler = () => agentJobs.killAll();
@@ -4071,5 +4471,6 @@ export async function startReviewServer(
     isRemote,
     waitForDecision: () => decisionPromise,
     stop,
+    hostControl,
   };
 }

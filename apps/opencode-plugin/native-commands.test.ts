@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   NATIVE_COMMANDS,
@@ -10,6 +11,7 @@ import {
 } from "./native-commands";
 import {
   createV2BridgeClient,
+  formatInboxNotice,
   formatSessionUrlNotice,
   normalizeAgentList,
   readListPayload,
@@ -120,7 +122,7 @@ describe("OpenCode 2 native command registration", () => {
     expect(applied).toBe(true);
   });
 
-  test("registers exactly the three Plannotator commands when the draft supports add", async () => {
+  test("registers exactly the Plannotator commands when the draft supports add", async () => {
     const { deps, added } = makeDeps();
     expect(await registerNativeCommands(deps)).toBe(true);
     // Command names are the user-visible slash commands and are deliberately
@@ -129,6 +131,7 @@ describe("OpenCode 2 native command registration", () => {
       "plannotator-review",
       "plannotator-annotate",
       "plannotator-last",
+      "plannotator-inbox",
     ]);
     for (const command of added) expect(command.execute).toBeInstanceOf(Function);
   });
@@ -561,6 +564,64 @@ describe("V2 feedback delivery", () => {
     expect(prompt.mock.calls[0]![0]).toMatchObject({ delivery: "steer" });
   });
 
+  // The `plannotator` tool's launches: the session is mid-turn when their
+  // notice is posted (only while their own tool call is open), so a
+  // still-pending notice must not turn a late decision into a steer that lands
+  // inside a running turn.
+  test("a tool launch's decision is queued even while its notice is pending", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt } } as never,
+      getAgents: async () => [],
+      sessionID: "session-1",
+      alwaysQueue: true,
+    });
+
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    await client.session.prompt({
+      path: { id: "session-1" },
+      body: { parts: [{ type: "text", text: "fix the null check" }] },
+    });
+
+    expect(prompt.mock.calls[0]![0]).toMatchObject({ delivery: "queue" });
+  });
+
+  // A notice posted into ANOTHER session (a subagent tool call's own session)
+  // is not in the decision session's inbox, so it can never be co-promoted
+  // there: steering the decision would only push it into a running turn.
+  test("a notice in another session never steers the decision", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt } } as never,
+      getAgents: async () => [],
+      sessionID: "root",
+      notice: { sessionID: "child", open: () => true },
+    });
+
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    await client.session.prompt({ path: { id: "root" }, body: { parts: [{ type: "text", text: "fix it" }] } });
+
+    expect(synthetic.mock.calls[0]![0]).toMatchObject({ sessionID: "child" });
+    expect(prompt.mock.calls[0]![0]).toMatchObject({ sessionID: "root", delivery: "queue" });
+  });
+
+  test("a closed notice window posts nothing", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    let open = true;
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt: async () => ({}) } } as never,
+      getAgents: async () => [],
+      sessionID: "root",
+      notice: { sessionID: "child", open: () => open },
+    });
+
+    open = false;
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    expect(synthetic).not.toHaveBeenCalled();
+  });
+
   /**
    * A controllable stand-in for `ctx.event.subscribe()`: an async iterable of
    * host events that honours the abort signal the client passes it, so a test
@@ -875,8 +936,9 @@ describe("shared command stubs", () => {
     test(`${command.name}.md carries no shell interpolation`, () => {
       const { body } = readStub(command.name);
       expect(body).not.toContain("!`");
-      // The model-mediated fallback needs the argument tail to reach the CLI.
-      expect(body).toContain("$ARGUMENTS");
+      // The model-mediated fallback needs the argument tail to reach the CLI
+      // (/plannotator-inbox takes none).
+      if (command.name !== "plannotator-inbox") expect(body).toContain("$ARGUMENTS");
     });
 
     // The reclaim tells our definition from the config-loaded stub by reading
@@ -888,6 +950,60 @@ describe("shared command stubs", () => {
       expect(frontmatter).not.toContain(command.description);
     });
   }
+});
+
+// The person closed the Inbox tab: /plannotator-inbox on OpenCode 2 opens it
+// (`plannotator inbox --open`, a stand-in here) and shows the address as a
+// transcript notice, without a model turn.
+describe.skipIf(process.platform === "win32")("V2 /plannotator-inbox", () => {
+  const savedBin = process.env.PLANNOTATOR_BIN;
+  const dirs: string[] = [];
+  afterEach(() => {
+    if (savedBin === undefined) delete process.env.PLANNOTATOR_BIN;
+    else process.env.PLANNOTATOR_BIN = savedBin;
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stubCli(body: string): string {
+    const dir = mkdtempSync(path.join(tmpdir(), "plannotator-oc2-inbox-"));
+    dirs.push(dir);
+    const bin = path.join(dir, "plannotator");
+    const calls = path.join(dir, "calls");
+    writeFileSync(bin, `#!/bin/sh\necho "$*" >> '${calls}'\n${body}\n`, { mode: 0o755 });
+    process.env.PLANNOTATOR_BIN = bin;
+    return calls;
+  }
+
+  async function runInbox() {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const ctx = { session: { synthetic, prompt } } as any;
+    await runNativeCommand("plannotator-inbox", { sessionID: "session-1" } as never, {
+      ctx,
+      getAgents: async () => [],
+      getBridgeContext: async () => ({}),
+    });
+    return { synthetic, prompt };
+  }
+
+  test("opens the Inbox and posts its address as a notice, with no model turn", async () => {
+    const calls = stubCli("echo 'http://localhost:61234/'");
+    const { synthetic, prompt } = await runInbox();
+    expect(readFileSync(calls, "utf8").trim()).toBe("inbox --open");
+    expect(synthetic).toHaveBeenCalledTimes(1);
+    const notice = synthetic.mock.calls[0]![0] as { description: string; resume: boolean };
+    // Says it is the Inbox, never the review's "session ready" line.
+    expect(notice.description).toBe(formatInboxNotice("http://localhost:61234/"));
+    expect(notice.resume).toBe(false);
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test("an older plannotator without --open shows that it needs updating", async () => {
+    stubCli("echo 'Unknown inbox option: --open' >&2; exit 1");
+    const { synthetic, prompt } = await runInbox();
+    expect(JSON.stringify(synthetic.mock.calls)).toContain("plannotator update");
+    expect(prompt).not.toHaveBeenCalled();
+  });
 });
 
 describe("V2 session URL delivery", () => {

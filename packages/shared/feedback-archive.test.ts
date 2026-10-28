@@ -111,6 +111,22 @@ describe("feedback archive: record shape", () => {
     expect(record.annotations?.find((a) => a.id === "l1")?.scope).toBeUndefined();
   });
 
+  test("a comment made in a Markdown preview records the text it quotes", () => {
+    const dataDir = useTempDataDir();
+    appendFeedbackRecord({
+      project: PROJECT,
+      surface: "review",
+      decision: "feedback",
+      feedback: "preview comment",
+      annotations: [
+        { id: "m1", type: "comment", scope: "file", filePath: "docs/a.md", lineStart: 1, lineEnd: 1, text: "Link it", markdownPreview: { originalText: "new installer", view: "diff" } },
+      ],
+    });
+    const record = readIndex(dataDir)[0];
+    expect(record.annotations?.[0]?.originalText).toBe("new installer");
+    expect(record.annotations?.[0]?.scope).toBe("file");
+  });
+
   test("provenance is preserved so `source == null` filters the reviewer's own comments", () => {
     // Regression: external/WebMCP/agent findings are archived (the submitted
     // text already embeds them) but must stay distinguishable, or "analyze my
@@ -337,6 +353,30 @@ describe("feedback archive: diagram anchors", () => {
     expect(record.annotations?.[0]?.diagramAnchor).toEqual(anchor);
     expect(record.annotations?.[1]).not.toHaveProperty("diagramAnchor");
     expect(record.annotations?.[2]).not.toHaveProperty("diagramAnchor");
+  });
+});
+
+describe("feedback archive: image regions (#2100)", () => {
+  test("a region comment records its validated region; a malformed one is left out", () => {
+    // Regression: without the field a comment on part of a screenshot
+    // archives as the image's src and the index cannot say WHERE on it.
+    const dataDir = useTempDataDir();
+    const region = { v: 1, src: "figures/status-colors.png", sourceLine: 6, box: { x: 1820, y: 380, w: 420, h: 160 }, naturalWidth: 3664, naturalHeight: 1453 };
+    appendFeedbackRecord({
+      project: PROJECT,
+      origin: "claude-code",
+      surface: "plan",
+      decision: "deny",
+      target: { slug: "plan-2026-10-23" },
+      feedback: "grey",
+      annotations: [
+        { id: "r1", type: "COMMENT", text: "grey", originalText: region.src, blockId: "block-2", imageRegion: { ...region, extra: 1 } },
+        { id: "r2", type: "COMMENT", text: "junk", originalText: "x", imageRegion: { ...region, box: { x: 9999, y: 0, w: 1, h: 1 } } },
+      ],
+    });
+    const record = readIndex(dataDir)[0]!;
+    expect(record.annotations?.[0]?.imageRegion).toEqual(region);
+    expect(record.annotations?.[1]).not.toHaveProperty("imageRegion");
   });
 });
 

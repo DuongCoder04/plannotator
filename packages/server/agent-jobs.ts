@@ -8,11 +8,14 @@
  * Server-agnostic: takes a mode, server URL getter, and cwd getter.
  */
 
+import { childEnv } from "@plannotator/shared/child-env";
 import { resolve as resolvePath } from "node:path";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "./claude-review";
 import {
   MARKER_ENGINES,
   formatMarkerLogEvent,
+  resolveMarkerBinary,
+  withMarkerBinary,
   type MarkerEngine,
   type MarkerEngineId,
   type MarkerModel,
@@ -29,7 +32,12 @@ import {
   AGENT_HEARTBEAT_INTERVAL_MS,
 } from "@plannotator/shared/agent-jobs";
 import { resolveGuideLaunchInstructions } from "@plannotator/shared/guide-instructions-store";
+import { gitColorFreeEnvironment } from "@plannotator/shared/review-core";
+import { ghAccountEnvForPRUrl } from "@plannotator/shared/pr-github-account";
 import type { GuideLaunchReview } from "@plannotator/shared/guide-format";
+import { crossOriginRefusalBody } from "@plannotator/shared/request-origin";
+import { isSameOriginRequest } from "./request-origin-guard";
+import { checkServerSession, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 
 export type { AgentJobInfo, AgentJobEvent, AgentCapabilities } from "@plannotator/shared/agent-jobs";
 
@@ -95,6 +103,12 @@ export interface AgentJobHandlerOptions {
   getServerUrl: () => string;
   /** Returns the working directory for spawned processes. */
   getCwd: () => string;
+  /**
+   * This server's stale-tab nonce (packages/core/server-session.ts). A launch
+   * whose body, or a kill whose `?serverSession=` query, names a different
+   * one is refused with 409 before anything starts or stops; absent passes.
+   */
+  serverSession?: string;
   /**
    * Build the command server-side for a given provider.
    * Return an object with the command to spawn (and optional output path for result ingestion).
@@ -163,9 +177,10 @@ export interface AgentJobHandlerOptions {
  * the CLI is unauthenticated / has no providers configured — the UI falls back to
  * the engine's default picker. Account/config-specific, so never hardcoded.
  */
-async function discoverMarkerModels(engine: MarkerEngine): Promise<MarkerModel[]> {
+async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
   try {
-    const proc = Bun.spawn([engine.binary, ...engine.modelsArgv], {
+    const proc = Bun.spawn([program, ...engine.modelsArgv], {
+      env: childEnv(),
       stdout: "pipe",
       stderr: "ignore",
       timeout: 5000,
@@ -199,6 +214,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   // spawn inherits, so detection and execution agree. (`Bun.which` without the
   // option consults the PATH captured at process start.)
   const onPath = (binary: string): boolean => !!Bun.which(binary, { PATH: process.env.PATH });
+  // A marker engine's CLI by its own name, or another name it is installed
+  // under only when that is the same CLI (Cursor's `agent`, never another
+  // program named `agent`, such as Grok Build's).
+  // The check of a second name may run its `--version` (asynchronously, 2 s at
+  // most, once per file), so marker availability settles a moment after
+  // construction: every reader awaits `capabilitiesReady`.
+  const markerBinary = (engine: MarkerEngine) => resolveMarkerBinary(engine, (name) => Bun.which(name, { PATH: process.env.PATH }) ?? null);
   const capabilities: AgentCapability[] = [
     { id: "claude", name: "Claude Code", available: onPath("claude") },
     { id: "codex", name: "Codex CLI", available: onPath("codex") },
@@ -208,31 +230,34 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       name: "Guided Review",
       // Guided Review also runs on the marker engines (Cursor, OpenCode, Pi) —
       // same review-mode + binary-on-PATH gating as their own capability
-      // entries below (NOTE: cursor's binary is `agent`).
-      available:
-        onPath("claude") ||
-        onPath("codex") ||
-        (mode === "review" && Object.values(MARKER_ENGINES).some((engine) => onPath(engine.binary))),
+      // entries below (Cursor: `cursor-agent`, or Cursor's own `agent`).
+      available: onPath("claude") || onPath("codex"),
     },
   ];
   // Marker engines (Cursor, OpenCode, Pi) — same shape, one loop. Available only
-  // in review mode when the binary is on PATH (NOTE: cursor's binary is `agent`).
+  // in review mode when the binary is on PATH (Cursor: `cursor-agent`, or
+  // Cursor's own `agent`).
   for (const engine of Object.values(MARKER_ENGINES)) {
-    capabilities.push({
-      id: engine.id,
-      name: engine.name,
-      available: mode === "review" && onPath(engine.binary),
-    });
+    capabilities.push({ id: engine.id, name: engine.name, available: false });
   }
+  const capabilitiesReady: Promise<void> = mode !== "review"
+    ? Promise.resolve()
+    : Promise.all(Object.values(MARKER_ENGINES).map(async (engine) => {
+        const found = await markerBinary(engine).catch(() => null);
+        if (!found) return;
+        for (const c of capabilities) if (c.id === engine.id || c.id === "guide") c.available = true;
+      })).then(() => undefined);
 
   const markerModelsCache = new Map<string, MarkerModel[]>();
   async function buildCapabilitiesResponse(): Promise<AgentCapabilities> {
+    await capabilitiesReady;
     const providers = await Promise.all(capabilities.map(async (c) => {
       const engine = MARKER_ENGINES[c.id as MarkerEngineId];
       if (!engine || !c.available) return c;
       let models = markerModelsCache.get(engine.id);
       if (!models) {
-        models = await discoverMarkerModels(engine);
+        const program = await markerBinary(engine);
+        models = program ? await discoverMarkerModels(engine, program.name) : [];
         markerModelsCache.set(engine.id, models);
       }
       return { ...c, models };
@@ -302,6 +327,10 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
         stderr: "pipe",
         env: {
           ...process.env,
+          // The agent runs `git diff` / `git log` itself through a pipe; keep a
+          // user's `color.diff = always` from filling its context with ANSI
+          // escapes (#1661).
+          ...gitColorFreeEnvironment(process.env),
           // PWD must name the spawn cwd, not the server's own directory (#1609):
           // OpenCode 1.x resolves its session directory as `process.env.PWD ??
           // process.cwd()`, so an inherited PWD would silently run the agent in
@@ -310,6 +339,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           PWD: resolvePath(spawnCwd),
           PLANNOTATOR_AGENT_SOURCE: source,
           PLANNOTATOR_API_URL: getServerUrl(),
+          // A GitHub PR the active gh account can't see runs as the signed-in
+          // account chosen for its repo (#2157); a job for any other PR gets nothing.
+          ...ghAccountEnvForPRUrl(spawnOptions?.prUrl),
         },
       });
 
@@ -577,6 +609,23 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
         return Response.json(await buildCapabilitiesResponse());
       }
 
+      // Launching and killing jobs start and stop processes on this machine:
+      // another site's page is refused (the servers also do this before any
+      // route; repeated so the handler is safe wherever it is mounted), and a
+      // kill from a stale tab too. A launch's session is checked on its body.
+      if ((url.pathname === JOBS || url.pathname.startsWith(JOBS + "/")) && (req.method === "POST" || req.method === "DELETE")) {
+        if (!isSameOriginRequest(req)) {
+          return Response.json(crossOriginRefusalBody(), { status: 403 });
+        }
+        if (
+          req.method === "DELETE" &&
+          options.serverSession !== undefined &&
+          checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, options.serverSession) === "mismatch"
+        ) {
+          return Response.json(serverSessionMismatchBody(), { status: 409 });
+        }
+      }
+
       // --- SSE stream ---
       if (url.pathname === JOBS_STREAM && req.method === "GET") {
         handlerOptions?.disableIdleTimeout?.();
@@ -645,7 +694,11 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
             "provider", "command", "label",
             "engine", "model", "reasoningEffort", "effort", "thinking", "fastMode",
             "reviewProfileId", "repairOf", "instructions",
+            "serverSession",
           ]);
+          if (options.serverSession !== undefined && checkServerSession(body, options.serverSession) === "mismatch") {
+            return Response.json(serverSessionMismatchBody(), { status: 409 });
+          }
           if (body && typeof body === "object") {
             const unknown = Object.keys(body).filter((k) => !KNOWN_JOB_FIELDS.has(k));
             if (unknown.length > 0) {
@@ -663,6 +716,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
           let outputPath: string | undefined;
 
           // Validate provider is a known, available capability
+          await capabilitiesReady;
           const cap = capabilities.find((c) => c.id === provider);
           if (!cap || !cap.available) {
             return Response.json(
@@ -757,6 +811,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
               { status: 400 },
             );
           }
+
+          // A marker engine starts by the name its CLI was found under
+          // (Cursor's `agent` only when it is Cursor's), never another
+          // program of that name. Guide jobs carry the engine on jobEngine.
+          const spawnEngine = MARKER_ENGINES[provider as MarkerEngineId]
+            ?? (jobEngine ? MARKER_ENGINES[jobEngine as MarkerEngineId] : undefined);
+          if (spawnEngine) command = withMarkerBinary(command, spawnEngine, await markerBinary(spawnEngine));
 
           const job = spawnJob(jobId, provider, command, label, outputPath, {
             captureStdout,

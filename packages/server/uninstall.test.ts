@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { t3HookCommand } from "@plannotator/shared/t3-hook-command";
 import {
   formatPurgeWarning,
   runPlannotatorUninstall,
@@ -249,7 +250,118 @@ function snapshotTree(root: string): string[] {
   return snapshot;
 }
 
+/**
+ * A stand-in for a T3 Code per-thread worker: registers itself the way the
+ * real one does (`t3-code/<endpoint>/threads/<thread>/daemon.json`), answers
+ * `/health` and exits on `/stop`.
+ */
+async function startFakeT3Worker(dataDir: string) {
+  const directory = join(dataDir, "t3-code", "e".repeat(64), "threads", "t".repeat(64));
+  mkdirSync(directory, { recursive: true });
+  const script = `
+    const token = "x".repeat(40);
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+      if (req.headers.get("authorization") !== "Bearer " + token) return new Response("no", { status: 403 });
+      const path = new URL(req.url).pathname;
+      if (path === "/health") return Response.json({ running: true, endpoint: "http://127.0.0.1:3773/mcp", thread: "thread-a", pid: process.pid });
+      if (path === "/stop") { setTimeout(() => process.exit(0), 20); return Response.json({ stopped: true }); }
+      return new Response("no", { status: 404 });
+    } });
+    await Bun.write(${JSON.stringify(join(directory, "daemon.json"))}, JSON.stringify({ endpoint: "http://127.0.0.1:3773/mcp", thread: "thread-a", pid: process.pid, port: server.port, token }));
+  `;
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "ignore" });
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(join(directory, "daemon.json")) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  return child;
+}
+
+describe("a leftover usage-counts/ folder (the removed usage counts)", () => {
+  function seed(dataDir: string): string {
+    const dir = join(dataDir, "usage-counts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "counts.json"), JSON.stringify({ v: 1, days: { "2026-10-23": { decisionMode: { rev: 1, events: { opened: 2 } } } } }));
+    writeFileSync(join(dir, "facts.json"), JSON.stringify({ v: 1, features: { decisionMode: { used: true } } }));
+    return dir;
+  }
+
+  test("a plain uninstall removes it and leaves config.json as it was", async () => {
+    const fixture = createFixture();
+    const dir = seed(fixture.dataDir);
+    writeFileSync(join(fixture.dataDir, "config.json"), JSON.stringify({ usageCounts: false }));
+    const planned = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(planned.planned.filter((line) => line === dir)).toHaveLength(1);
+    expect(existsSync(dir)).toBe(true);
+    await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(false);
+    expect(JSON.parse(readFileSync(join(fixture.dataDir, "config.json"), "utf-8")).usageCounts).toBe(false);
+  });
+
+  test("purge removes it, listed once in a dry run", async () => {
+    const fixture = createFixture();
+    const dir = seed(fixture.dataDir);
+    const planned = await runPlannotatorUninstall({ purge: true, dryRun: true }, fixture.environment);
+    expect(planned.planned.filter((line) => line === dir)).toHaveLength(1);
+    await runPlannotatorUninstall({ purge: true, dryRun: false }, fixture.environment);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe("the optional T3 Code connection", () => {
+  test("uninstall stops its running workers, and purge removes t3-code/", async () => {
+    const fixture = createFixture();
+    const child = await startFakeT3Worker(fixture.dataDir);
+    try {
+      const planned = await runPlannotatorUninstall({ purge: true, dryRun: true }, fixture.environment);
+      expect(planned.planned.some((line) => line.includes(`Stop the T3 Code companion for thread thread-a (pid ${child.pid})`))).toBe(true);
+      expect(child.exitCode).toBeNull();
+      const result = await runPlannotatorUninstall({ purge: true, dryRun: false }, fixture.environment);
+      expect(result.removed.some((line) => line.includes(`Stopped the T3 Code companion for thread thread-a (pid ${child.pid})`))).toBe(true);
+      expect(await child.exited).toBe(0);
+      expect(existsSync(join(fixture.dataDir, "t3-code"))).toBe(false);
+    } finally {
+      child.kill(); // inbox-guard: own child
+    }
+  });
+
+  test("without a T3 connection, uninstall reports nothing about it", async () => {
+    const fixture = createFixture();
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect([...result.removed, ...result.planned, ...result.warnings, ...result.errors].some((line) => line.includes("T3"))).toBe(false);
+  });
+});
+
 describe("default uninstall", () => {
+  test("removes the optional T3 hook only for the installed binary, preserving other Bash hooks", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    writeText(binary);
+    const settings = join(fixture.homeDir, ".claude", "settings.json");
+    const customHooks = [
+      { type: "command", command: "my-custom-hook" },
+      { type: "command", command: t3HookCommand("/custom/plannotator", fixture.dataDir) },
+    ];
+    writeJson(settings, {
+      theme: "dark",
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [
+        { type: "command", command: t3HookCommand(binary, fixture.dataDir), timeout: 10 },
+        ...customHooks,
+      ] }] },
+    });
+    // The backup `t3-hook install` keeps of settings before its first change.
+    const backup = `${settings}.plannotator-t3.bak`;
+    writeText(backup);
+    const planned = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(planned.planned).toContain(backup);
+    expect(existsSync(backup)).toBe(true);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.ok).toBe(true);
+    expect(readJson(settings)).toEqual({
+      theme: "dark", hooks: { PreToolUse: [{ matcher: "Bash", hooks: customHooks }] },
+    });
+    expect(existsSync(backup)).toBe(false);
+    expect(result.removed).toContain(backup);
+  });
+
   test("removes recognized installer components and preserves local data", async () => {
     const fixture = createFixture();
     const { homeDir, dataDir } = fixture;
@@ -278,6 +390,7 @@ describe("default uninstall", () => {
       "plannotator-review",
       "plannotator-annotate",
       "plannotator-last",
+      "plannotator-inbox",
       // The knowledge-layer CLI reference skill, installed to the same scopes.
       "plannotator",
     ]) {
@@ -386,7 +499,30 @@ describe("default uninstall", () => {
       "opencode",
       "0.25.1@@@1",
     );
+    // OpenCode 2 caches npm plugins at <cache>/opencode/npm/<name>@<spec>/<generation>/.
+    const openCode2PluginCache = join(
+      homeDir,
+      ".cache",
+      "opencode",
+      "npm",
+      "@plannotator",
+      "opencode@latest",
+      "1790000000000",
+      "package.json",
+    );
+    const openCode2UnrelatedCache = join(
+      homeDir,
+      ".cache",
+      "opencode",
+      "npm",
+      "@plannotator",
+      "pi-extension@latest",
+      "1790000000000",
+      "package.json",
+    );
     writeText(openCodePackageCache);
+    writeText(openCode2PluginCache);
+    writeText(openCode2UnrelatedCache);
     writeText(unrelatedScopedCache);
     writeText(unrelatedBunCache);
     writeText(bunOpenCodeVersionCache);
@@ -455,6 +591,14 @@ describe("default uninstall", () => {
     writeText(
       join(homeDir, ".gemini", "commands", "plannotator-review.toml"),
     );
+    // /plannotator-inbox: Gemini command, OpenCode stub, Kiro and Vibe skills.
+    writeText(join(homeDir, ".gemini", "commands", "plannotator-inbox.toml"));
+    writeText(join(alternateConfig, "opencode", "commands", "plannotator-inbox.md"));
+    writeText(join(homeDir, ".kiro", "skills", "plannotator-inbox", "SKILL.md"));
+    writeText(join(homeDir, ".vibe", "skills", "plannotator-inbox", "SKILL.md"));
+    // The installer never wrote a Claude command of that name: one there is the person's.
+    const ownInboxCommand = join(homeDir, ".claude", "commands", "plannotator-inbox.md");
+    writeText(ownInboxCommand, "my own command");
 
     const conventionalOpenCode = join(
       homeDir,
@@ -511,12 +655,25 @@ describe("default uninstall", () => {
     expect(existsSync(join(homeDir, ".kiro", "skills", "plannotator-setup-goal"))).toBe(false);
     expect(existsSync(join(homeDir, ".vibe", "skills", "plannotator-review"))).toBe(false);
     expect(existsSync(join(homeDir, ".vibe", "skills", "my-custom-skill"))).toBe(true);
+    for (const installed of [
+      join(homeDir, ".claude", "skills", "plannotator-inbox"),
+      join(homeDir, ".agents", "skills", "plannotator-inbox"),
+      join(homeDir, ".kiro", "skills", "plannotator-inbox"),
+      join(homeDir, ".vibe", "skills", "plannotator-inbox"),
+      join(homeDir, ".gemini", "commands", "plannotator-inbox.toml"),
+      join(alternateConfig, "opencode", "commands", "plannotator-inbox.md"),
+    ]) {
+      expect(existsSync(installed)).toBe(false);
+    }
+    expect(readFileSync(ownInboxCommand, "utf8")).toBe("my own command");
     const vibeHooksAfter = readFileSync(vibeHooks, "utf8");
     expect(vibeHooksAfter).toContain("my-own-hook");
     expect(vibeHooksAfter).not.toContain("plannotator-managed-vibe-hooks");
     expect(vibeHooksAfter).not.toContain("exit_plan_mode");
     expect(existsSync(customStaleLayoutEntry)).toBe(true);
     expect(existsSync(openCodePackageCache)).toBe(false);
+    expect(existsSync(join(homeDir, ".cache", "opencode", "npm", "@plannotator", "opencode@latest"))).toBe(false);
+    expect(existsSync(openCode2UnrelatedCache)).toBe(true);
     expect(existsSync(unrelatedScopedCache)).toBe(true);
     expect(existsSync(unrelatedBunCache)).toBe(true);
     expect(existsSync(bunOpenCodeVersionCache)).toBe(false);
@@ -2037,5 +2194,221 @@ describe("host and platform integrations", () => {
       PLANNOTATOR_UNINSTALL_ORIGINAL_PATH:
         `C:\\Before;${dirname(currentExe)};C:\\After;;`,
     });
+  });
+});
+
+describe("the Inbox's agent connections (inbox-agents.ts)", () => {
+  const cursorFile = (fixture: Fixture) => join(fixture.homeDir, ".cursor", "mcp.json");
+  const ours = { command: "/old/bin/plannotator", args: ["inbox", "mcp"] };
+
+  function seed(fixture: Fixture): void {
+    writeJson(cursorFile(fixture), { mcpServers: { mine: { command: "x" }, "plannotator-inbox": ours } });
+    writeJson(join(fixture.dataDir, "inbox", "agents.json"), {
+      v: 1,
+      agents: { cursor: { state: "added", reach: "mcp", path: cursorFile(fixture), command: ["/old/bin/plannotator", "inbox", "mcp"], at: "2026-10-12T00:00:00.000Z" } },
+    });
+  }
+
+  test("--dry-run lists the entry and changes nothing", async () => {
+    const fixture = createFixture();
+    seed(fixture);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(result.planned).toContain(`MCP server plannotator-inbox from Cursor (${join("~", ".cursor", "mcp.json")}, that entry only)`);
+    expect((readJson(cursorFile(fixture)).mcpServers as Record<string, unknown>)["plannotator-inbox"]).toEqual(ours);
+  });
+
+  test("a plain uninstall removes the entry, keeps the person's others, and forgets the record", async () => {
+    const fixture = createFixture();
+    seed(fixture);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.removed).toContain(`MCP server plannotator-inbox from Cursor (${join("~", ".cursor", "mcp.json")}, that entry only)`);
+    expect(readJson(cursorFile(fixture)).mcpServers).toEqual({ mine: { command: "x" } });
+    expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toBeUndefined();
+  });
+
+  test("Plannotator's trusted-sender token in Qwen Code is revoked through qwen before the data goes (also with --purge); --dry-run only lists it", async () => {
+    const fixture = createFixture();
+    const trust = join(fixture.dataDir, "inbox", "qwen-trust.json");
+    writeJson(trust, { v: 1, home: join(fixture.homeDir, ".qwen"), id: "c_0a1b2c3d", token: `qpc_${"ab".repeat(32)}`, created_at: "2026-10-27T00:00:00.000Z" });
+    const describe = "Plannotator's trusted-sender token in Qwen Code (qwen sessions controllers remove c_0a1b2c3d)";
+    const environment = { ...fixture.environment, which: (command: string) => (command === "qwen" ? "/fake/qwen" : null) };
+
+    const dry = await runPlannotatorUninstall({ purge: false, dryRun: true }, environment);
+    expect(dry.planned).toContain(describe);
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen")).toEqual([]);
+    expect(existsSync(trust)).toBe(true);
+
+    const result = await runPlannotatorUninstall({ purge: true, dryRun: false }, environment);
+    expect(result.removed).toContain(describe);
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen").map((call) => call.args)).toEqual([["sessions", "controllers", "remove", "c_0a1b2c3d"]]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a grant Qwen will not revoke while the data folder can't be written: the uninstall still removes the binary, and says so", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    writeText(binary);
+    const inbox = join(fixture.dataDir, "inbox");
+    writeJson(join(inbox, "qwen-trust.json"), { v: 1, home: join(fixture.homeDir, ".qwen"), id: "c_0a1b2c3d", token: `qpc_${"ab".repeat(32)}`, created_at: "2026-10-27T00:00:00.000Z" });
+    const environment = {
+      ...fixture.environment,
+      which: (command: string) => (command === "qwen" ? "/fake/qwen" : null),
+      runCommand: async (command: string, args: string[], env?: Record<string, string>) => {
+        fixture.commandCalls.push({ command, args, env });
+        return command === "/fake/qwen" ? { exitCode: 1, timedOut: false, stdout: "", stderr: "Error: could not write" } : { exitCode: 0, timedOut: false, stdout: "" };
+      },
+    };
+    chmodSync(inbox, 0o500);
+    try {
+      const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+      expect(result.warnings.join("\n")).toContain("qwen sessions controllers remove c_0a1b2c3d");
+      expect(existsSync(binary)).toBe(false);
+    } finally {
+      chmodSync(inbox, 0o700);
+    }
+  });
+
+  test("an agent with one entry left (of two a move left) keeps its whole record, so the next uninstall tries again", async () => {
+    const fixture = createFixture();
+    const stray = join(fixture.homeDir, "elsewhere", "mcp.json");
+    writeJson(stray, { mcpServers: { "plannotator-inbox": ours } });
+    // Its own entry cannot go: the key is there twice, which Plannotator never cuts around (on every platform,
+    // unlike a read-only folder, which Windows ignores). The other one can.
+    const twice = `{\n  "mcpServers": {\n    "plannotator-inbox": ${JSON.stringify(ours)},\n    "plannotator-inbox": ${JSON.stringify(ours)}\n  }\n}\n`;
+    writeText(cursorFile(fixture), twice);
+    const record = {
+      state: "added",
+      reach: "mcp",
+      path: cursorFile(fixture),
+      command: ["/old/bin/plannotator", "inbox", "mcp"],
+      strays: [{ path: stray, command: ["/old/bin/plannotator", "inbox", "mcp"] }],
+      at: "2026-10-12T00:00:00.000Z",
+    };
+    writeJson(join(fixture.dataDir, "inbox", "agents.json"), { v: 1, agents: { cursor: record } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(readJson(stray).mcpServers).toEqual({});
+    expect(readFileSync(cursorFile(fixture), "utf8")).toBe(twice);
+    expect(result.warnings.some((warning) => warning.startsWith("Could not remove MCP server plannotator-inbox from Cursor"))).toBe(true);
+    expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toEqual(record);
+  });
+
+  test("the notes: only the marked section, from a file the record no longer names too", async () => {
+    const fixture = createFixture();
+    const note = [
+      "<!-- plannotator-inbox:start v1 · added by Plannotator. Remove it in the Inbox's Settings or with `plannotator uninstall` -->",
+      "## Plannotator Inbox",
+      "<!-- plannotator-inbox:end -->",
+    ].join("\n");
+    writeText(join(fixture.homeDir, ".codex", "AGENTS.md"), `Mine.\n\n${note}\n`);
+    const dry = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(dry.planned).toContain(`Note for Codex (${join("~", ".codex", "AGENTS.md")}, marked section only; you edited it)`);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.removed).toContain(`Note for Codex (${join("~", ".codex", "AGENTS.md")}, marked section only; you edited it)`);
+    expect(readFileSync(join(fixture.homeDir, ".codex", "AGENTS.md"), "utf8")).toBe("Mine.\n");
+  });
+
+  test("with no record (agents.json lost), an entry that runs this binary is named and left, never removed", async () => {
+    const fixture = createFixture();
+    const entry = { command: fixture.environment.execPath, args: ["inbox", "mcp"] };
+    writeJson(cursorFile(fixture), { mcpServers: { "plannotator-inbox": entry } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.warnings).toContain(
+      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs this Plannotator, but no record says Plannotator added it, so it may be yours (to remove it, delete that entry by hand).`,
+    );
+    expect(readJson(cursorFile(fixture)).mcpServers).toEqual({ "plannotator-inbox": entry });
+  });
+
+  test("an entry that runs something else now is named and left", async () => {
+    const fixture = createFixture();
+    seed(fixture);
+    writeJson(cursorFile(fixture), { mcpServers: { "plannotator-inbox": { command: "theirs" } } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.warnings).toContain(`Skipped: Cursor's "plannotator-inbox" now runs something else (changed by hand), so it is yours.`);
+    expect(readJson(cursorFile(fixture)).mcpServers).toEqual({ "plannotator-inbox": { command: "theirs" } });
+  });
+});
+
+describe("Qwen Code", () => {
+  function writeQwenInstall(qwenDir: string): void {
+    writeJson(join(qwenDir, "extensions", "plannotator", "qwen-extension.json"), { name: "plannotator", version: "1.0.0" });
+    for (const skill of ["plannotator-review", "plannotator-annotate", "plannotator-last"]) {
+      writeText(join(qwenDir, "skills", skill, "SKILL.md"));
+    }
+    writeText(join(qwenDir, "skills", "my-own-skill", "SKILL.md"));
+  }
+
+  test("removes the extension with qwen and the installed skills, and keeps the person's own skill", async () => {
+    const fixture = createFixture();
+    const qwenDir = join(fixture.homeDir, ".qwen");
+    writeQwenInstall(qwenDir);
+
+    const result = await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => (command === "qwen" ? "/fake/qwen" : null) },
+    );
+
+    expect(fixture.commandCalls.map((call) => [call.command, ...call.args])).toEqual([
+      ["/fake/qwen", "extensions", "uninstall", "plannotator"],
+    ]);
+    expect(result.removed).toContain("Qwen Code extension plannotator");
+    for (const skill of ["plannotator-review", "plannotator-annotate", "plannotator-last"]) {
+      expect(existsSync(join(qwenDir, "skills", skill))).toBe(false);
+    }
+    expect(existsSync(join(qwenDir, "skills", "my-own-skill", "SKILL.md"))).toBe(true);
+  });
+
+  test("removes the extension source the installers keep in the data folder", async () => {
+    const fixture = createFixture();
+    writeQwenInstall(join(fixture.homeDir, ".qwen"));
+    writeJson(join(fixture.dataDir, "qwen-code", "extension", "qwen-extension.json"), { name: "plannotator", version: "1.0.0" });
+    writeText(join(fixture.dataDir, "config.json"));
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => (command === "qwen" ? "/fake/qwen" : null) },
+    );
+
+    expect(existsSync(join(fixture.dataDir, "qwen-code"))).toBe(false);
+    expect(existsSync(join(fixture.dataDir, "config.json"))).toBe(true);
+  });
+
+  test("QWEN_HOME with a leading ~ is the Qwen folder", async () => {
+    const fixture = createFixture();
+    const qwenDir = join(fixture.homeDir, "qwen-home");
+    writeQwenInstall(qwenDir);
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      {
+        ...fixture.environment,
+        env: { QWEN_HOME: "~/qwen-home" },
+        which: (command) => (command === "qwen" ? "/fake/qwen" : null),
+      },
+    );
+
+    expect(fixture.commandCalls.map((call) => call.args)).toEqual([["extensions", "uninstall", "plannotator"]]);
+    expect(existsSync(join(qwenDir, "skills", "plannotator-last"))).toBe(false);
+  });
+
+  test("without the qwen command, the extension is reported with the command to run", async () => {
+    const fixture = createFixture();
+    writeQwenInstall(join(fixture.homeDir, ".qwen"));
+
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+
+    expect(fixture.commandCalls).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain("run `qwen extensions uninstall plannotator`");
+  });
+
+  test("no extension installed: qwen is never run", async () => {
+    const fixture = createFixture();
+    mkdirSync(join(fixture.homeDir, ".qwen"), { recursive: true });
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => `/fake/${command}` },
+    );
+
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen")).toEqual([]);
   });
 });

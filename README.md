@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=a_AT7cEN_9I">Watch the og demo</a> · <a href="https://docs.plannotator.ai/open-source/start/installation">Installation guide</a> · <a href="https://plannotator.ai/">Official site</a> · <a href="https://github.com/plannotator/effective-html">Visual HTML Skills</a> · <a href="#herdr-annotate-plannotator-in-the-terminal">Herdr Annotate</a>
+  <a href="https://www.youtube.com/watch?v=a_AT7cEN_9I">Watch the og demo</a> · <a href="https://docs.plannotator.ai/open-source/start/installation">Installation guide</a> · <a href="https://plannotator.ai/">Official site</a> · <a href="https://github.com/plannotator/effective-html">Visual HTML Skills</a> · <a href="#plannotator-inbox">Plannotator Inbox</a> · <a href="#herdr-annotate-plannotator-in-the-terminal">Herdr Annotate</a>
 </p>
 
 # Plannotator
@@ -83,6 +83,25 @@ Review local changes or remote PRs. Comment on diffs, suggest code. Your comment
 <p align="center">
   <img src=".github/assets/html.webp" alt="Annotating a rendered HTML artifact" width="720" />
 </p>
+
+## Plannotator Inbox
+
+<p align="center">
+  <a href="https://plannotator.ai/inbox/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/inbox-dark.webp" />
+      <img src=".github/assets/inbox-light.webp" alt="Plannotator Inbox: threads from several agents grouped by what each needs, with a question and an attached screenshot open beside the list" width="720" />
+    </picture>
+  </a>
+</p>
+
+The Plannotator Inbox is one local window where your agents leave you messages, questions, files, and guided reviews while they keep working. Answer a question with a click, annotate a file, and press Send when you can. Nothing holds an agent session open while you do, and your reply goes back to the session that asked.
+
+```
+plannotator inbox
+```
+
+Claude Code, Pi, and OpenCode connect through Plannotator's plugins, and your replies arrive as their next turn. Any other agent reaches it over MCP with `plannotator inbox mcp`, and `plannotator inbox --help` is the guide an agent reads. [Watch the demo](https://plannotator.ai/assets/inbox-film.mp4) · [More on the Inbox](https://plannotator.ai/inbox/) · [Docs](https://plannotator.ai/docs/reference/inbox/)
 
 ## Herdr Annotate: Plannotator in the Terminal
 
@@ -156,7 +175,7 @@ Content leaves the local workflow only when a network feature needs it:
 
 - URL annotation fetches the requested site, through Jina Reader by default for public pages or directly when Jina is disabled or unavailable.
 - GitHub and GitLab review uses your authenticated CLI and Git remote to retrieve PR or MR data.
-- Ask AI and review agents send the selected question and relevant plan, document, repository, or diff context to your configured provider.
+- Ask AI and review agents send the selected question and relevant plan, document, repository, or diff context to your configured provider. When Ask AI is answered by the agent session that opened Plannotator ("Ask this session"), the question goes to that session instead.
 - Sharing sends the complete link to whoever or whatever service you use to deliver it. Encrypted short links upload ciphertext to the paste service.
 - Workspaces is a separate hosted product, so the open source app's local-storage model does not apply to content placed there.
 
@@ -233,6 +252,10 @@ Then finish the step for your agent:
 | **Kiro CLI** | Nothing. Skills and an example agent are installed automatically. Try `kiro-cli chat --agent plannotator`. | [README](apps/kiro-cli/README.md) |
 | **OpenCode** | Add `"plugin": ["@plannotator/opencode@latest"]` to `opencode.json`. Restart OpenCode. | [README](apps/opencode-plugin/README.md) |
 | **Pi** | Skip the installer. Just `pi install npm:@plannotator/pi-extension`. Start Pi with `--plan`, or toggle with `/plannotator-plan-mode`. | [README](apps/pi-extension/README.md) |
+
+**Updating:** run the installer again for the binary and slash commands. It also updates an installed Claude Code plugin when the `claude` command is on your PATH (opt out with `--skip-claude-plugin`); otherwise run `claude plugin marketplace update plannotator`, then `claude plugin update plannotator@plannotator`, then restart Claude Code (refreshing the marketplace alone does not update the plugin). Pi: `pi update --extensions` (a plain `pi update` updates only Pi).
+
+On Claude Code 2.1.287 or newer, plan review, code review and annotate don't make Claude wait: Claude ends its turn and your decision arrives later as a message. Set `PLANNOTATOR_CLAUDE_MOD=0` to go back to the classic flow.
 
 Full walkthroughs live in the [installation docs](https://docs.plannotator.ai/open-source/start/installation).
 
@@ -486,7 +509,7 @@ implementation architecture.
 |---|---|
 | `PLANNOTATOR_REMOTE` | `1`/`true` for remote mode, `0`/`false` for local, unset for SSH auto-detection |
 | `PLANNOTATOR_PORT` | Fixed port (default: random locally, `19432` remote) |
-| `PLANNOTATOR_BROWSER` | Custom browser to open plans in |
+| `PLANNOTATOR_BROWSER` | Custom browser to open plans in. `none` (also `false`, `0`, `off`, `no`, `true`, `1`, `:`) opens no browser at all; the session URL is always printed. |
 | `PLANNOTATOR_AI` | `disabled` to disable Ask AI, Review Agents, and Guided Review; the annotate agent terminal is separate |
 | `PLANNOTATOR_SHARE` | `disabled` to turn off URL sharing |
 | `PLANNOTATOR_SHARE_URL` | Custom base URL for share links (self-hosted portal) |
