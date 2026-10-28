@@ -4,11 +4,11 @@
  * the guard below needs node:fs.
  *
  * Every working-tree file the explorer opens is read through `readRepoFile`
- * (repo-file.ts), the same guard code navigation uses: the real path must stay
- * inside the repository, before and after the open (a tracked
- * `link -> /etc/hosts` or a folder symlinked out is refused), only regular
- * files are read (a FIFO never blocks the server), and a file over the cap is
- * refused before any byte is read. Vendored to Pi, so both runtimes share it.
+ * (repo-file.ts), the same reader code navigation uses: links are followed
+ * like VS Code (the owner's ruling on #2261), only regular files are read (a
+ * FIFO never blocks the server), and a file over the cap is refused before any
+ * byte is read. Only a listed path reaches it (repo-files.ts). Vendored to Pi,
+ * so both runtimes share it.
  */
 
 import { readRepoFile } from "./repo-file";
@@ -35,8 +35,7 @@ export async function readRepoWorkingTreeFile(root: string, path: string, maxByt
         return { kind: "too-large", size: result.size ?? maxBytes + 1 };
       case "not-found":
         return { kind: "missing" };
-      // Outside the repository, not a regular file, or a path the guard
-      // refuses: nothing to show, and nothing said about what is out there.
+      // Not a regular file, or a path the guard refuses: nothing to show.
       default:
         return { kind: "unavailable" };
     }

@@ -383,8 +383,8 @@ export interface RepoFileRequestInput {
   /**
    * Read one working-tree file from disk. Required so neither runtime can
    * skip it: both pass `readRepoWorkingTreeFile` (repo-files-node.ts), which
-   * goes through the shared guard in repo-file.ts (realpath containment,
-   * regular files only, the 5 MB cap, no FIFO).
+   * goes through the shared reader in repo-file.ts (links followed like
+   * VS Code, regular files only, the 5 MB cap, no FIFO hang).
    */
   readWorkingTree: (root: string, path: string, maxBytes: number) => RepoFileRead | Promise<RepoFileRead>;
 }
@@ -392,7 +392,7 @@ export interface RepoFileRequestInput {
 /**
  * `GET /api/repo-file?path=<path>&snapshot=<id>`: one file of the listing, as
  * text. Only a listed path is read, so nothing `.gitignore` hides (an `.env`)
- * and nothing outside the repository is reachable.
+ * and no `..` path is reachable.
  */
 export async function handleRepoFileRequest(input: RepoFileRequestInput): Promise<HandlerResult> {
   const snapshot = input.params.get("snapshot");

@@ -562,6 +562,12 @@
           "scope": "machine",
           "markdownDescription": "Install a missing ACP adapter automatically. Claude Code, Codex and Pi speak ACP through a separate npm adapter (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`, `pi-acp`). When it is not set in `#plannotator.guides.agentCommands#` and not on PATH, Guided Reviews installs the exact pinned version into the extension's own storage with npm (no global install, no install scripts), and reuses it. Needs npm. Agents that are their own program (OpenCode, Copilot CLI, Cursor, Kiro CLI, Kilo Code) are never installed for you."
         },
+        "plannotator.guides.useInstalledCli": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Run your own `claude` / `codex` (the one on PATH) through the Claude Code and Codex ACP adapters, by setting `CLAUDE_CODE_EXECUTABLE` / `CODEX_PATH` for them. Turn off to run the copy that comes with each adapter instead, for example when your CLI is older than the adapter expects. A `CLAUDE_CODE_EXECUTABLE` or `CODEX_PATH` already in your environment is always used as it is. On Windows only an `.exe` is used (an npm-installed `claude.cmd` cannot be started by the adapter)."
+        },
         "plannotator.guides.autoApprove": {
           "type": "string",
           "enum": [
@@ -640,6 +646,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
+    "@plannotator/acp-client": "workspace:*",
     "@vscode/codicons": "0.0.45",
     "dompurify": "3.4.17",
     "marked": "17.0.6",
